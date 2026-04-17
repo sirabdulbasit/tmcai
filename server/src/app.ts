@@ -27,6 +27,14 @@ import agentRoutes from './routes/agentRoutes';
 import { developerRouter, externalApiRouter } from './routes/apiGatewayRoutes';
 import webhookRoutes from './routes/webhookRoutes';
 import whatsappAdminRoutes from './routes/admin/whatsappAdminRoutes';
+// MyOS routes
+import connectorRoutes from './routes/connectorRoutes';
+import connectorAdminRoutes from './routes/admin/connectorAdminRoutes';
+import openItemsRoutes from './routes/openItemsRoutes';
+import entityRoutes from './routes/entityRoutes';
+import brainConfigRoutes from './routes/brainConfigRoutes';
+import decisionsRoutes from './routes/decisionsRoutes';
+import thoughtRoutes from './routes/thoughtRoutes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestLoggerMiddleware } from './middleware/requestLogger';
 
@@ -99,6 +107,14 @@ v1.use('/uploads', fileUploadRoutes);
 v1.use('/knowledge', knowledgeBaseRoutes);
 v1.use('/agents', agentRoutes);
 v1.use('/admin/whatsapp', whatsappAdminRoutes);
+// MyOS endpoints
+v1.use('/connectors', connectorRoutes);
+v1.use('/admin/connectors', connectorAdminRoutes);
+v1.use('/open-items', openItemsRoutes);
+v1.use('/entities', entityRoutes);
+v1.use('/brain', brainConfigRoutes);
+v1.use('/decisions', decisionsRoutes);
+v1.use('/thoughts', thoughtRoutes);
 v1.use('/developer', developerRouter);
 v1.use('/index', indexRoutes);
 v1.use('/chat', chatRoutes);

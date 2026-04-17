@@ -30,3 +30,15 @@ Thumbs.db
 
 # PM2 logs
 /var/log/tmcai/
+
+# WhatsApp Web.js session cache + auth (device-specific, re-scan QR on new machine)
+server/.wwebjs_cache/
+server/.wwebjs_auth/
+server/whatsapp-sessions/
+
+# Local Claude Code settings (machine-specific)
+.claude/
+
+# Reference binaries (optional — uncomment to exclude large specs from repo)
+# reference/*.pdf
+# reference/*.docx

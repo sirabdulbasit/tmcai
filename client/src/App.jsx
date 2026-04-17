@@ -7,6 +7,12 @@ import AdminPage from './pages/AdminPage';
 import SetupPasswordPage from './pages/SetupPasswordPage';
 import SchedulerPage from './pages/SchedulerPage';
 import AgentsPage from './pages/AgentsPage';
+import OpenItemsPage from './pages/OpenItemsPage';
+import BrainConfigPage from './pages/BrainConfigPage';
+import ConnectorsPage from './pages/ConnectorsPage';
+import ConnectorGuidePage from './pages/ConnectorGuidePage';
+import ThoughtPipelinePage from './pages/ThoughtPipelinePage';
+import DayBriefPage from './pages/DayBriefPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -34,6 +40,12 @@ export default function App() {
       <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
       <Route path="/schedules" element={<ProtectedRoute><SchedulerPage /></ProtectedRoute>} />
       <Route path="/agents" element={<ProtectedRoute><AgentsPage /></ProtectedRoute>} />
+      <Route path="/open-items" element={<ProtectedRoute><OpenItemsPage /></ProtectedRoute>} />
+      <Route path="/brain" element={<ProtectedRoute><BrainConfigPage /></ProtectedRoute>} />
+      <Route path="/connectors" element={<ProtectedRoute><ConnectorsPage /></ProtectedRoute>} />
+      <Route path="/connector-guide" element={<ConnectorGuidePage />} />
+      <Route path="/thoughts" element={<ProtectedRoute><ThoughtPipelinePage /></ProtectedRoute>} />
+      <Route path="/day-brief" element={<ProtectedRoute><DayBriefPage /></ProtectedRoute>} />
       <Route path="/*" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
     </Routes>
   );

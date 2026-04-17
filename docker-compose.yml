@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: tmcai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tmcai_secret}
+      POSTGRES_DB: tmcai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tmcai"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      DATABASE_URL: postgres://tmcai:${POSTGRES_PASSWORD:-tmcai_secret}@postgres:5432/tmcai
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "25"
+      MAX_CLIENT_CONN: "500"
+      AUTH_TYPE: scram-sha-256
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "4002:4002"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://tmcai:${POSTGRES_PASSWORD:-tmcai_secret}@pgbouncer:5432/tmcai
+      DATABASE_URL_DIRECT: postgres://tmcai:${POSTGRES_PASSWORD:-tmcai_secret}@postgres:5432/tmcai
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

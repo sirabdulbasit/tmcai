@@ -4,6 +4,7 @@ import { buildSystemPrompt } from '../../services/promptService';
 import { getDataSummary, getDataLastUpdated } from '../../services/indexCacheService';
 import { getDataSummaryFromBQ } from '../../connectors/BigQueryConnector';
 import { getConfig } from '../../services/configService';
+import { buildContextBlock } from '../../services/userContextService';
 
 // ── Confidence Thresholds ──────────────────────────────────────
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -24,6 +25,7 @@ export async function buildFullPrompt(params: {
   message: string;
   provider: string;
   clientNumber: string | undefined;
+  userId?: number;
   isWidget: boolean;
   isDashboardQuery: boolean;
   aiConfig: { contextLimitFast: number; contextLimitFull: number; maxOutputTokensWidget: number; maxOutputTokensQuick: number; maxOutputTokensText: number };
@@ -129,7 +131,15 @@ export async function buildFullPrompt(params: {
       'Do NOT guess. If data is insufficient, say so clearly.\n\n';
   }
 
-  const systemPrompt = profileDirective + aiMemoryBlock + userMemoryBlock + contextBlock + learningBlock + historyBlock + confidenceDirective + brevityDirective + tierFormatDirective + dataSummary + intentDirective + buildSystemPrompt(context, getDataLastUpdated());
+  // ── MyOS User Setup Context (connectors, open items, agents, etc.) ──
+  let userSetupBlock = '';
+  if (params.userId && params.clientNumber) {
+    try {
+      userSetupBlock = await buildContextBlock(params.userId, params.clientNumber) + '\n\n';
+    } catch {}
+  }
+
+  const systemPrompt = profileDirective + aiMemoryBlock + userMemoryBlock + contextBlock + userSetupBlock + learningBlock + historyBlock + confidenceDirective + brevityDirective + tierFormatDirective + dataSummary + intentDirective + buildSystemPrompt(context, getDataLastUpdated());
 
   return { systemPrompt, conversationTurns };
 }

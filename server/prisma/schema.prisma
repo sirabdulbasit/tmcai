@@ -13,9 +13,9 @@ datasource db {
 model Tenant {
   clientNumber String    @id @map("client_number") @db.VarChar(20)
   name         String    @db.VarChar(200)
-  domain       String?   @db.VarChar(100)           // e.g. tmc.com
+  domain       String?   @db.VarChar(100) // e.g. tmc.com
   isActive     Boolean   @default(true) @map("is_active")
-  expiry       DateTime? @map("expiry")              // Subscription expiry date
+  expiry       DateTime? @map("expiry") // Subscription expiry date
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -35,35 +35,35 @@ model Tenant {
 // ─── Licensing ─────────────────────────────────────────────────
 
 model License {
-  id          Int      @id @default(autoincrement())
-  roleType    String   @unique @map("role_type") @db.VarChar(20) // admin, standard, basic
-  pricePerSeat Decimal @map("price_per_seat") @db.Decimal(10, 2)
-  currency    String   @default("USD") @db.VarChar(5)
-  description String?  @db.VarChar(200)
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  id           Int      @id @default(autoincrement())
+  roleType     String   @unique @map("role_type") @db.VarChar(20) // admin, standard, basic
+  pricePerSeat Decimal  @map("price_per_seat") @db.Decimal(10, 2)
+  currency     String   @default("USD") @db.VarChar(5)
+  description  String?  @db.VarChar(200)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("licenses")
 }
 
 model ClientLicense {
-  id            Int       @id @default(autoincrement())
-  clientNumber  String    @unique @map("client_number") @db.VarChar(20)
-  adminSeats    Int       @default(0) @map("admin_seats")       // Admin seat count
-  standardSeats Int       @default(0) @map("standard_seats")    // Standard seat count
-  basicSeats    Int       @default(0) @map("basic_seats")       // Basic seat count
-  licenseAmount Decimal   @default(0) @map("license_amount") @db.Decimal(12, 2) // Total before discount
-  discount      Decimal   @default(0) @map("discount") @db.Decimal(5, 2)        // Discount %
-  discAmount    Decimal   @default(0) @map("disc_amount") @db.Decimal(12, 2)    // Discount amount
-  netAmount     Decimal   @default(0) @map("net_amount") @db.Decimal(12, 2)     // Final billing
-  termAmount    Decimal   @default(0) @map("term_amount") @db.Decimal(12, 2)    // Per-period cost
-  term          String    @default("M") @db.VarChar(5)   // M=monthly, Q=quarterly, Y=yearly
-  startDate     DateTime  @map("start_date")
-  endDate       DateTime  @map("end_date")
-  isActive      Boolean   @default(true) @map("is_active")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+  id            Int      @id @default(autoincrement())
+  clientNumber  String   @unique @map("client_number") @db.VarChar(20)
+  adminSeats    Int      @default(0) @map("admin_seats") // Admin seat count
+  standardSeats Int      @default(0) @map("standard_seats") // Standard seat count
+  basicSeats    Int      @default(0) @map("basic_seats") // Basic seat count
+  licenseAmount Decimal  @default(0) @map("license_amount") @db.Decimal(12, 2) // Total before discount
+  discount      Decimal  @default(0) @map("discount") @db.Decimal(5, 2) // Discount %
+  discAmount    Decimal  @default(0) @map("disc_amount") @db.Decimal(12, 2) // Discount amount
+  netAmount     Decimal  @default(0) @map("net_amount") @db.Decimal(12, 2) // Final billing
+  termAmount    Decimal  @default(0) @map("term_amount") @db.Decimal(12, 2) // Per-period cost
+  term          String   @default("M") @db.VarChar(5) // M=monthly, Q=quarterly, Y=yearly
+  startDate     DateTime @map("start_date")
+  endDate       DateTime @map("end_date")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
 
@@ -89,51 +89,51 @@ model SystemConfig {
 // ─── Users ─────────────────────────────────────────────────────
 
 model User {
-  id             Int       @id @default(autoincrement())
-  clientNumber   String    @map("client_number") @db.VarChar(20)
-  empcode        String    @db.VarChar(20)
-  name           String    @db.VarChar(100)
-  email          String    @unique @db.VarChar(100)  // Globally unique across all tenants
-  passwordHash   String    @map("password_hash") @db.VarChar(255)
-  userType       String    @default("BS") @map("user_type") @db.VarChar(5) // SA, AD, ST, BS
-  department     String?   @db.VarChar(50)
-  isActive       Boolean   @default(true) @map("is_active")
-  inviteToken    String?   @unique @map("invite_token") @db.VarChar(255)
+  id              Int       @id @default(autoincrement())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  empcode         String    @db.VarChar(20)
+  name            String    @db.VarChar(100)
+  email           String    @unique @db.VarChar(100) // Globally unique across all tenants
+  passwordHash    String    @map("password_hash") @db.VarChar(255)
+  userType        String    @default("BS") @map("user_type") @db.VarChar(5) // SA, AD, ST, BS
+  department      String?   @db.VarChar(50)
+  isActive        Boolean   @default(true) @map("is_active")
+  inviteToken     String?   @unique @map("invite_token") @db.VarChar(255)
   inviteExpiresAt DateTime? @map("invite_expires_at")
-  inviteSentAt   DateTime? @map("invite_sent_at")
-  passwordSet    Boolean   @default(false) @map("password_set")  // false = needs to set via invite
-  lastLoginAt    DateTime? @map("last_login_at")
-  failedAttempts Int       @default(0) @map("failed_attempts")
-  lockedUntil    DateTime? @map("locked_until")
-  jobDescription String?   @map("job_description") @db.Text
-  city           String?   @db.VarChar(100)
-  contactNumber  String?   @map("contact_number") @db.VarChar(30)
-  aboutMe        String?   @map("about_me") @db.Text
-  instructions   String?   @db.Text
-  tonePreference String?   @map("tone_preference") @db.VarChar(30)
+  inviteSentAt    DateTime? @map("invite_sent_at")
+  passwordSet     Boolean   @default(false) @map("password_set") // false = needs to set via invite
+  lastLoginAt     DateTime? @map("last_login_at")
+  failedAttempts  Int       @default(0) @map("failed_attempts")
+  lockedUntil     DateTime? @map("locked_until")
+  jobDescription  String?   @map("job_description") @db.Text
+  city            String?   @db.VarChar(100)
+  contactNumber   String?   @map("contact_number") @db.VarChar(30)
+  aboutMe         String?   @map("about_me") @db.Text
+  instructions    String?   @db.Text
+  tonePreference  String?   @map("tone_preference") @db.VarChar(30)
 
   // ── Personal Intelligence (Phase 4 — Envelope Encryption) ──
-  encryptedDek  String?   @map("encrypted_dek") @db.Text    // DEK encrypted with MEK (AES-256-GCM). NULL = DEK not yet generated.
+  encryptedDek String? @map("encrypted_dek") @db.Text // DEK encrypted with MEK (AES-256-GCM). NULL = DEK not yet generated.
 
   // ── Personal GDrive (Phase 3.1) ─────────────────────────────
-  personalDriveFolderId   String?   @map("personal_drive_folder_id") @db.VarChar(255)  // GDrive folder ID user selected
-  personalDriveLastSync   DateTime? @map("personal_drive_last_sync")                   // Last successful sync timestamp
+  personalDriveFolderId String?   @map("personal_drive_folder_id") @db.VarChar(255) // GDrive folder ID user selected
+  personalDriveLastSync DateTime? @map("personal_drive_last_sync") // Last successful sync timestamp
 
   // ── Email & Calendar Integration (per-user, admin-managed) ──
-  integrationProvider     String?   @map("integration_provider") @db.VarChar(20)   // 'google' or 'microsoft'
-  integrationEmail        String?   @map("integration_email") @db.VarChar(150)     // connected email address
-  integrationAccessToken  String?   @map("integration_access_token") @db.Text      // OAuth access token (encrypted)
-  integrationRefreshToken String?   @map("integration_refresh_token") @db.Text     // OAuth refresh token (encrypted)
-  integrationTokenExpiry  DateTime? @map("integration_token_expiry")               // when access token expires
-  integrationScopes       String?   @map("integration_scopes") @db.VarChar(200)   // 'email,calendar' or 'email' or 'calendar'
-  integrationStatus       String?   @map("integration_status") @db.VarChar(20)    // 'active', 'expired', 'error'
-  integrationError        String?   @map("integration_error") @db.Text            // last error message if any
-  integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text  // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
+  integrationProvider     String?   @map("integration_provider") @db.VarChar(20) // 'google' or 'microsoft'
+  integrationEmail        String?   @map("integration_email") @db.VarChar(150) // connected email address
+  integrationAccessToken  String?   @map("integration_access_token") @db.Text // OAuth access token (encrypted)
+  integrationRefreshToken String?   @map("integration_refresh_token") @db.Text // OAuth refresh token (encrypted)
+  integrationTokenExpiry  DateTime? @map("integration_token_expiry") // when access token expires
+  integrationScopes       String?   @map("integration_scopes") @db.VarChar(200) // 'email,calendar' or 'email' or 'calendar'
+  integrationStatus       String?   @map("integration_status") @db.VarChar(20) // 'active', 'expired', 'error'
+  integrationError        String?   @map("integration_error") @db.Text // last error message if any
+  integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
 
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant           @relation(fields: [clientNumber], references: [clientNumber])
+  tenant             Tenant              @relation(fields: [clientNumber], references: [clientNumber])
   sessions           Session[]
   conversations      Conversation[]
   auditLogs          AuditLog[]
@@ -148,14 +148,14 @@ model User {
 // ─── Sessions ──────────────────────────────────────────────────
 
 model Session {
-  id        Int       @id @default(autoincrement())
-  token     String    @unique @db.VarChar(255)
-  userId    Int       @map("user_id")
-  expiresAt DateTime  @map("expires_at")
-  isRevoked Boolean   @default(false) @map("is_revoked")
-  userAgent String?   @map("user_agent") @db.VarChar(500)
-  ipAddress String?   @map("ip_address") @db.VarChar(50)
-  createdAt DateTime  @default(now()) @map("created_at")
+  id        Int      @id @default(autoincrement())
+  token     String   @unique @db.VarChar(255)
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  userAgent String?  @map("user_agent") @db.VarChar(500)
+  ipAddress String?  @map("ip_address") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id])
 
@@ -179,7 +179,7 @@ model Document {
   createdAt      DateTime  @default(now()) @map("created_at")
   archivedAt     DateTime? @map("archived_at")
 
-  tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
+  tenant Tenant  @relation(fields: [clientNumber], references: [clientNumber])
   chunks Chunk[]
 
   @@map("documents")
@@ -212,15 +212,15 @@ model Chunk {
 // ─── Chat History ──────────────────────────────────────────────
 
 model Conversation {
-  id           Int       @id @default(autoincrement())
-  clientNumber String    @map("client_number") @db.VarChar(20)
-  userId       Int       @map("user_id")
-  title        String?   @db.VarChar(255)
-  provider     String?   @db.VarChar(20)
-  messageCount Int       @default(0) @map("message_count")
-  isArchived   Boolean   @default(false) @map("is_archived")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  title        String?  @db.VarChar(255)
+  provider     String?  @db.VarChar(20)
+  messageCount Int      @default(0) @map("message_count")
+  isArchived   Boolean  @default(false) @map("is_archived")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant   Tenant    @relation(fields: [clientNumber], references: [clientNumber])
   user     User      @relation(fields: [userId], references: [id])
@@ -239,7 +239,7 @@ model Message {
   inputTokens    Int?     @map("input_tokens")
   outputTokens   Int?     @map("output_tokens")
   responseTimeMs Int?     @map("response_time_ms")
-  source         String?  @default("web") @db.VarChar(20)    // web | whatsapp | api | agent
+  source         String?  @default("web") @db.VarChar(20) // web | whatsapp | api | agent
   createdAt      DateTime @default(now()) @map("created_at")
 
   tenant       Tenant       @relation(fields: [clientNumber], references: [clientNumber])
@@ -267,7 +267,7 @@ model AuditLog {
   outputTokens     Int?     @map("output_tokens")
   responseTimeMs   Int      @map("response_time_ms")
   intentType       String?  @map("intent_type") @db.VarChar(30)
-  source           String?  @default("web") @db.VarChar(20)    // web | whatsapp | api | agent
+  source           String?  @default("web") @db.VarChar(20) // web | whatsapp | api | agent
   error            String?  @db.Text
   createdAt        DateTime @default(now()) @map("created_at")
 
@@ -281,20 +281,20 @@ model AuditLog {
 // Scoped to userId only — admin queries NEVER touch these tables.
 
 model PersonalDocument {
-  id           Int       @id @default(autoincrement())
-  userId       Int       @map("user_id")
-  source       String    @db.VarChar(20)                   // 'gdrive' | 'upload'
-  externalId   String?   @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
-  folderId     String?   @map("folder_id") @db.VarChar(255)   // GDrive folder ID (null for uploads)
-  fileName     String    @map("file_name") @db.VarChar(255)
-  mimeType     String    @map("mime_type") @db.VarChar(100)
-  sizeBytes    Int?      @map("size_bytes")
-  contentHash  String?   @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
-  storagePath  String?   @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
-  parseStatus  String    @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
-  parseError   String?   @map("parse_error") @db.Text
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  source      String   @db.VarChar(20) // 'gdrive' | 'upload'
+  externalId  String?  @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
+  folderId    String?  @map("folder_id") @db.VarChar(255) // GDrive folder ID (null for uploads)
+  fileName    String   @map("file_name") @db.VarChar(255)
+  mimeType    String   @map("mime_type") @db.VarChar(100)
+  sizeBytes   Int?     @map("size_bytes")
+  contentHash String?  @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
+  storagePath String?  @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
+  parseStatus String   @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
+  parseError  String?  @map("parse_error") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   chunks PersonalChunk[]
@@ -306,14 +306,14 @@ model PersonalDocument {
 }
 
 model PersonalChunk {
-  id           Int      @id @default(autoincrement())
-  userId       Int      @map("user_id")
-  documentId   Int      @map("document_id")
-  content      String   @db.Text
-  embedding    Json     @default("[]")
-  chunkIndex   Int      @map("chunk_index")
-  contentHash  String   @map("content_hash") @db.VarChar(64)
-  createdAt    DateTime @default(now()) @map("created_at")
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  documentId  Int      @map("document_id")
+  content     String   @db.Text
+  embedding   Json     @default("[]")
+  chunkIndex  Int      @map("chunk_index")
+  contentHash String   @map("content_hash") @db.VarChar(64)
+  createdAt   DateTime @default(now()) @map("created_at")
 
   document PersonalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
@@ -328,11 +328,11 @@ model PersonalChunk {
 model IndexEvent {
   id           Int       @id @default(autoincrement())
   clientNumber String    @map("client_number") @db.VarChar(20)
-  eventType    String    @map("event_type") @db.VarChar(50)   // file_changed|data_updated|manual_sync
-  source       String?   @db.VarChar(50)                      // gdrive|bigquery|manual
-  sourceId     String?   @map("source_id") @db.VarChar(255)   // file_id, table_name, etc.
-  status       String    @default("pending") @db.VarChar(20)  // pending|processing|done|error
-  priority     Int       @default(5)                          // 1=highest, 10=lowest
+  eventType    String    @map("event_type") @db.VarChar(50) // file_changed|data_updated|manual_sync
+  source       String?   @db.VarChar(50) // gdrive|bigquery|manual
+  sourceId     String?   @map("source_id") @db.VarChar(255) // file_id, table_name, etc.
+  status       String    @default("pending") @db.VarChar(20) // pending|processing|done|error
+  priority     Int       @default(5) // 1=highest, 10=lowest
   payload      Json      @default("{}")
   error        String?   @db.Text
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -346,10 +346,10 @@ model IndexEvent {
 model ProactiveAlert {
   id           Int       @id @default(autoincrement())
   clientNumber String    @map("client_number") @db.VarChar(20)
-  alertType    String    @map("alert_type") @db.VarChar(50)   // anomaly|insight|risk|opportunity
+  alertType    String    @map("alert_type") @db.VarChar(50) // anomaly|insight|risk|opportunity
   title        String    @db.VarChar(255)
   content      String    @db.Text
-  severity     String    @default("info") @db.VarChar(20)     // info|warning|critical
+  severity     String    @default("info") @db.VarChar(20) // info|warning|critical
   isRead       Boolean   @default(false) @map("is_read")
   notifiedAt   DateTime? @map("notified_at")
   expiresAt    DateTime? @map("expires_at")
@@ -363,7 +363,7 @@ model ProactiveAlert {
 model KnowledgeItem {
   id           Int      @id @default(autoincrement())
   clientNumber String   @map("client_number") @db.VarChar(20)
-  category     String   @db.VarChar(50)     // decision|lesson_learned|transcript|procedure
+  category     String   @db.VarChar(50) // decision|lesson_learned|transcript|procedure
   title        String   @db.VarChar(255)
   content      String   @db.Text
   tags         String[] @default([])
@@ -382,19 +382,19 @@ model KnowledgeItem {
 // ─── Phase 6: Domain Expert Knowledge Base ─────────────────────
 
 model DomainKnowledge {
-  id         Int      @id @default(autoincrement())
-  region     String   @db.VarChar(20)   // pk|ae|ksa|qa|global
-  vertical   String   @db.VarChar(30)   // manufacturing|petroleum|financial|public_sector|general
-  category   String   @db.VarChar(30)   // regulatory|industry|procedure|definition
-  title      String   @db.VarChar(255)
-  content    String   @db.Text
-  parentId   Int?     @map("parent_id")  // For knowledge graph traversal (recursive CTE)
-  tags       String[] @default([])
-  source     String?  @db.VarChar(100)
-  sourceRef  String?  @map("source_ref") @db.VarChar(255)
-  embedding  Json     @default("[]")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at")
+  id        Int      @id @default(autoincrement())
+  region    String   @db.VarChar(20) // pk|ae|ksa|qa|global
+  vertical  String   @db.VarChar(30) // manufacturing|petroleum|financial|public_sector|general
+  category  String   @db.VarChar(30) // regulatory|industry|procedure|definition
+  title     String   @db.VarChar(255)
+  content   String   @db.Text
+  parentId  Int?     @map("parent_id") // For knowledge graph traversal (recursive CTE)
+  tags      String[] @default([])
+  source    String?  @db.VarChar(100)
+  sourceRef String?  @map("source_ref") @db.VarChar(255)
+  embedding Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   parent   DomainKnowledge?  @relation("KnowledgeHierarchy", fields: [parentId], references: [id])
   children DomainKnowledge[] @relation("KnowledgeHierarchy")
@@ -407,19 +407,19 @@ model DomainKnowledge {
 // ─── Phase 8: Agentic Capabilities ─────────────────────────────
 
 model AgentAction {
-  id           Int       @id @default(autoincrement())
-  clientNumber String    @map("client_number") @db.VarChar(20)
-  userId       Int       @map("user_id")
-  actionType   String    @map("action_type") @db.VarChar(50)  // draft_email|send_email|create_event|update_project|generate_report
-  status       String    @default("pending") @db.VarChar(20)  // pending|approved|rejected|executing|done|error
-  input        Json      @default("{}")
-  output       Json?
-  requiresApproval Boolean @default(true) @map("requires_approval")
-  approvedBy   Int?      @map("approved_by")
-  approvedAt   DateTime? @map("approved_at")
-  error        String?   @db.Text
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  id               Int       @id @default(autoincrement())
+  clientNumber     String    @map("client_number") @db.VarChar(20)
+  userId           Int       @map("user_id")
+  actionType       String    @map("action_type") @db.VarChar(50) // draft_email|send_email|create_event|update_project|generate_report
+  status           String    @default("pending") @db.VarChar(20) // pending|approved|rejected|executing|done|error
+  input            Json      @default("{}")
+  output           Json?
+  requiresApproval Boolean   @default(true) @map("requires_approval")
+  approvedBy       Int?      @map("approved_by")
+  approvedAt       DateTime? @map("approved_at")
+  error            String?   @db.Text
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([clientNumber, userId])
   @@index([status])
@@ -434,9 +434,9 @@ model Agent {
   userId         Int       @map("user_id")
   name           String    @db.VarChar(100)
   instructions   String    @db.Text
-  dataSources    String[]  @default([]) @map("data_sources")  // org|personal_drive|uploads
-  schedule       String?   @db.VarChar(50)   // cron expression
-  actions        String[]  @default([])       // allowed action types
+  dataSources    String[]  @default([]) @map("data_sources") // org|personal_drive|uploads
+  schedule       String?   @db.VarChar(50) // cron expression
+  actions        String[]  @default([]) // allowed action types
   notifyEmail    Boolean   @default(true) @map("notify_email")
   notifyWhatsApp Boolean   @default(false) @map("notify_whatsapp")
   isActive       Boolean   @default(true) @map("is_active")
@@ -444,9 +444,9 @@ model Agent {
   lastResult     String?   @map("last_result") @db.Text
   lastError      String?   @map("last_error") @db.Text
   nextRunAt      DateTime? @map("next_run_at")
-  memoryContext  Json      @default("{}") @map("memory_context")  // persistent cross-run memory (max 10KB)
+  memoryContext  Json      @default("{}") @map("memory_context") // persistent cross-run memory (max 10KB)
   runCount       Int       @default(0) @map("run_count")
-  errorCount     Int       @default(0) @map("error_count")        // for circuit breaker
+  errorCount     Int       @default(0) @map("error_count") // for circuit breaker
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -458,14 +458,14 @@ model Agent {
 // ─── WhatsApp ───────────────────────────────────────────────────
 
 model WhatsAppConnection {
-  id           Int       @id @default(autoincrement())
-  userId       Int       @unique @map("user_id")
-  phoneNumber  String    @map("phone_number") @db.VarChar(30)
-  waId         String?   @map("wa_id") @db.VarChar(50)       // WhatsApp contact ID
-  status       String    @default("active") @db.VarChar(20)  // active|inactive
-  provider     String    @default("meta") @db.VarChar(20)    // meta|twilio
-  connectedAt  DateTime  @default(now()) @map("connected_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  id          Int      @id @default(autoincrement())
+  userId      Int      @unique @map("user_id")
+  phoneNumber String   @map("phone_number") @db.VarChar(30)
+  waId        String?  @map("wa_id") @db.VarChar(50) // WhatsApp contact ID
+  status      String   @default("active") @db.VarChar(20) // active|inactive
+  provider    String   @default("meta") @db.VarChar(20) // meta|twilio
+  connectedAt DateTime @default(now()) @map("connected_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -473,15 +473,15 @@ model WhatsAppConnection {
 }
 
 model WhatsAppMessage {
-  id           Int       @id @default(autoincrement())
-  userId       Int       @map("user_id")
-  direction    String    @db.VarChar(10)    // inbound|outbound
-  content      String    @db.Text
-  messageId    String?   @map("message_id") @db.VarChar(100) // Meta/Twilio message ID
-  status       String    @default("sent") @db.VarChar(20)    // sent|delivered|read|failed
-  agentId      Int?      @map("agent_id")
-  sessionId    Int?      @map("session_id")
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  direction String   @db.VarChar(10) // inbound|outbound
+  content   String   @db.Text
+  messageId String?  @map("message_id") @db.VarChar(100) // Meta/Twilio message ID
+  status    String   @default("sent") @db.VarChar(20) // sent|delivered|read|failed
+  agentId   Int?     @map("agent_id")
+  sessionId Int?     @map("session_id")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([userId])
   @@map("whatsapp_messages")
@@ -524,4 +524,305 @@ model ScheduledTask {
   user   User   @relation(fields: [userId], references: [id])
 
   @@map("scheduled_tasks")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── MyOS: Personal Intelligence Operating System ─────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Connector Registry (platform-level) ──────────────────────────
+
+model ConnectorType {
+  id           String   @id @default(cuid())
+  slug         String   @unique @db.VarChar(50) // "gmail", "whatsapp", "sap", etc.
+  name         String   @db.VarChar(100) // "Gmail", "WhatsApp", "SAP ERP"
+  description  String?  @db.VarChar(500)
+  category     String   @db.VarChar(30) // email | calendar | tasks | messaging | chat | drive | social | meetings | notes | data_warehouse | spreadsheets | project_mgmt | erp | crm | hr | intelligence | support | dev | kb | custom
+  scope        String   @db.VarChar(20) // "personal" | "organizational"
+  authMethod   String   @map("auth_method") @db.VarChar(30) // oauth2 | api_key | webhook | credentials | bot_token | service_account | none
+  configSchema Json     @default("{}") @map("config_schema") // JSON Schema for setup form fields
+  capabilities Json     @default("[]") // ["read", "write"]
+  icon         String?  @db.VarChar(100)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenantConfigs  TenantConnectorConfig[]
+  userConnectors UserConnector[]
+
+  @@map("connector_types")
+}
+
+// ─── Tenant Connector Config (admin-level) ────────────────────────
+
+model TenantConnectorConfig {
+  id              String    @id @default(cuid())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  connectorTypeId String    @map("connector_type_id")
+  scope           String    @db.VarChar(20) // "personal" | "organizational"
+  isEnabled       Boolean   @default(false) @map("is_enabled") // for personal: can users use this?
+  config          Json? // for org: admin-provided credentials/endpoints (encrypted)
+  syncSchedule    String?   @map("sync_schedule") @db.VarChar(50) // cron expression for org connectors
+  lastSyncAt      DateTime? @map("last_sync_at")
+  syncStatus      String?   @map("sync_status") @db.VarChar(20) // idle | syncing | error
+  syncError       String?   @map("sync_error") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  connectorType ConnectorType @relation(fields: [connectorTypeId], references: [id])
+
+  @@unique([clientNumber, connectorTypeId])
+  @@index([clientNumber])
+  @@map("tenant_connector_configs")
+}
+
+// ─── User Connector (personal connections) ────────────────────────
+
+model UserConnector {
+  id              String    @id @default(cuid())
+  userId          Int       @map("user_id")
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  connectorTypeId String    @map("connector_type_id")
+  config          Json? // encrypted OAuth tokens, phone number, etc.
+  status          String    @default("disconnected") @db.VarChar(20) // connected | disconnected | expired | error
+  lastSyncAt      DateTime? @map("last_sync_at")
+  syncStatus      String?   @map("sync_status") @db.VarChar(20) // idle | syncing | error
+  errorMessage    String?   @map("error_message") @db.Text
+  metadata        Json? // connector-specific state
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  connectorType ConnectorType @relation(fields: [connectorTypeId], references: [id])
+
+  @@unique([userId, connectorTypeId])
+  @@index([clientNumber, userId])
+  @@map("user_connectors")
+}
+
+// ─── Open Items ───────────────────────────────────────────────────
+
+model OpenItem {
+  id              String    @id @default(cuid())
+  itemNumber      Int       @default(autoincrement()) @map("item_number")
+  title           String    @db.VarChar(500)
+  description     String?   @db.Text
+  entityId        String?   @map("entity_id")
+  type            String    @db.VarChar(30) // task | email | delegation | alert | erp | okr | risk
+  status          String    @default("open") @db.VarChar(20) // open | in_progress | delegated | blocked | done | overdue
+  priority        String    @default("medium") @db.VarChar(10) // critical | high | medium | low
+  ownerId         Int       @map("owner_id") // FK → User
+  delegateeId     Int?      @map("delegatee_id") // FK → User (internal)
+  delegateeName   String?   @map("delegatee_name") @db.VarChar(200) // external person name
+  delegateeEmail  String?   @map("delegatee_email") @db.VarChar(200)
+  dueDate         DateTime? @map("due_date")
+  sourceFeed      String?   @map("source_feed") @db.VarChar(30) // gmail | whatsapp | chat | erp | okr | manual
+  sourceRef       String?   @map("source_ref") @db.VarChar(500) // thread ID, session ID, etc.
+  connectorId     String?   @map("connector_id") // FK → UserConnector
+  delegationTrail Json      @default("[]") @map("delegation_trail")
+  notes           Json      @default("[]")
+  metadata        Json?
+  priorityScore   Float?    @map("priority_score")
+  idempotencyKey  String?   @unique @map("idempotency_key")
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  userId          Int       @map("user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, userId, status])
+  @@index([clientNumber, userId, priority])
+  @@index([clientNumber, entityId])
+  @@index([priorityScore])
+  @@map("open_items")
+}
+
+// ─── Entity Knowledge Graph ───────────────────────────────────────
+
+model Entity {
+  id                   String    @id @default(cuid())
+  entityType           String    @map("entity_type") @db.VarChar(30) // contact | account | project | opportunity | risk | okr
+  name                 String    @db.VarChar(300)
+  email                String?   @db.VarChar(200)
+  phone                String?   @db.VarChar(50)
+  company              String?   @db.VarChar(300)
+  role                 String?   @db.VarChar(200)
+  metadata             Json?
+  sentimentScore       Float?    @map("sentiment_score")
+  relationshipStrength Float?    @map("relationship_strength")
+  lastInteraction      DateTime? @map("last_interaction")
+  clientNumber         String    @map("client_number") @db.VarChar(20)
+  createdBy            Int?      @map("created_by")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  linksFrom EntityLink[] @relation("entity_from")
+  linksTo   EntityLink[] @relation("entity_to")
+
+  @@unique([clientNumber, entityType, email])
+  @@index([clientNumber, entityType])
+  @@index([clientNumber, name])
+  @@map("entities")
+}
+
+model EntityLink {
+  id             String   @id @default(cuid())
+  entityId       String   @map("entity_id")
+  linkedEntityId String   @map("linked_entity_id")
+  linkType       String   @map("link_type") @db.VarChar(30) // works_at | manages | owns | sponsors | reports_to
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  entity       Entity @relation("entity_from", fields: [entityId], references: [id])
+  linkedEntity Entity @relation("entity_to", fields: [linkedEntityId], references: [id])
+
+  @@unique([entityId, linkedEntityId, linkType])
+  @@index([clientNumber])
+  @@map("entity_links")
+}
+
+// ─── Brain Configuration (per-user) ──────────────────────────────
+
+model BrainConfig {
+  id              String   @id @default(cuid())
+  userId          Int      @unique @map("user_id")
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  masterContext   String?  @map("master_context") @db.Text // user's self-described role, team, responsibilities
+  delegationRules Json     @default("[]") @map("delegation_rules")
+  escalationRules Json     @default("[]") @map("escalation_rules")
+  privacyRules    Json     @default("[]") @map("privacy_rules")
+  feedSettings    Json     @default("{}") @map("feed_settings")
+  briefingConfig  Json     @default("{}") @map("briefing_config")
+  alertThresholds Json     @default("{}") @map("alert_thresholds")
+  automationLevel     String   @default("drafts_only") @map("automation_level") @db.VarChar(20) // observe_only | drafts_only | supervised | full_auto
+  confirmedPatterns   Json     @default("[]") @map("confirmed_patterns")
+  revokedPatterns     Json     @default("[]") @map("revoked_patterns")
+  thoughtPipelineConfig Json   @default("{}") @map("thought_pipeline_config")
+  // Brain Engine fields (v2 spec)
+  engineSchedule      String?  @map("engine_schedule") @db.VarChar(50)  // cron expression, null = on demand only, default "0 3 * * *"
+  engineTimezone      String   @default("Asia/Karachi") @map("engine_timezone") @db.VarChar(50)
+  lastEngineRun       DateTime? @map("last_engine_run")
+  nextEngineRun       DateTime? @map("next_engine_run")
+  briefDeliveryTime   String?  @map("brief_delivery_time") @db.VarChar(10) // HH:MM format, null = on demand only
+  engineRunning       Boolean  @default(false) @map("engine_running")    // mutex lock
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber])
+  @@map("brain_configs")
+}
+
+// ─── Decision Log ─────────────────────────────────────────────────
+
+model DecisionLog {
+  id              String   @id @default(cuid())
+  userId          Int      @map("user_id")
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  sessionType     String   @map("session_type") @db.VarChar(30) // morning_briefing | intraday | auto_action
+  itemType        String   @map("item_type") @db.VarChar(30) // email | whatsapp | task | calendar | erp | okr | manual
+  entityId        String?  @map("entity_id")
+  connectorSlug   String?  @map("connector_slug") @db.VarChar(50)
+  suggestedAction String?  @map("suggested_action") @db.Text
+  userDecision    String   @map("user_decision") @db.VarChar(20) // approved | overrode | delegated | snoozed | dismissed
+  actionTaken     String?  @map("action_taken") @db.Text
+  isMatch         Boolean  @map("is_match") // true = accepted AI suggestion
+  overrideReason  String?  @map("override_reason") @db.Text
+  responseTimeMs  Int?     @map("response_time_ms")
+  outcome         String?  @db.VarChar(20) // positive | negative | neutral
+  openItemId      String?  @map("open_item_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([userId, clientNumber])
+  @@index([clientNumber, createdAt])
+  @@index([userId, itemType, isMatch])
+  @@map("decision_logs")
+}
+
+// ─── Thought Pipeline ─────────────────────────────────────────────
+
+model ThoughtEntry {
+  id              String    @id @default(cuid())
+  userId          Int       @map("user_id")
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  type            String    @db.VarChar(30) // reflection_prompt | weekly_review | strategic_question | pattern_insight | user_note
+  title           String    @db.VarChar(500)
+  content         String    @db.Text
+  status          String    @default("draft") @db.VarChar(20) // draft | published | dismissed | archived
+  triggerSource   String?   @map("trigger_source") @db.VarChar(30) // pattern_analysis | feed_correlation | user_request | scheduled
+  relatedEntities Json      @default("[]") @map("related_entities")
+  relatedItems    Json      @default("[]") @map("related_items")
+  publishedTo     String?   @map("published_to") @db.VarChar(50) // connector slug
+  publishedAt     DateTime? @map("published_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([userId, clientNumber, status])
+  @@index([userId, type])
+  @@map("thought_entries")
+}
+
+// ─── OKR (Objectives & Key Results) ──────────────────────────────
+
+model OKR {
+  id              String   @id @default(cuid())
+  userId          Int      @map("user_id")
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  objective       String   @db.VarChar(500)
+  period          String   @db.VarChar(20) // Q1-2026 | H1-2026 | 2026
+  periodStart     DateTime @map("period_start")
+  periodEnd       DateTime @map("period_end")
+  status          String   @default("on_track") @db.VarChar(20) // on_track | at_risk | behind | critical
+  ownerId         Int      @map("owner_id")
+  entityId        String?  @map("entity_id") // linked entity (project, team, account)
+  keyResults      Json     @default("[]") @map("key_results") // [{title, target, current, unit, weight}]
+  progressPct     Float    @default(0) @map("progress_pct")
+  autoFetchMetric String?  @map("auto_fetch_metric") @db.VarChar(100) // ERP metric ID
+  lastUpdated     DateTime @default(now()) @map("last_updated")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, userId])
+  @@index([clientNumber, status])
+  @@index([clientNumber, ownerId])
+  @@map("okrs")
+}
+
+// ─── Risk Register ────────────────────────────────────────────────
+
+model RiskRegisterItem {
+  id           String    @id @default(cuid())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  description  String    @db.Text
+  category     String    @db.VarChar(30) // financial | operational | compliance | technical | client | employee
+  severity     String    @db.VarChar(10) // critical | high | medium | low
+  status       String    @default("open") @db.VarChar(20) // open | mitigating | mitigated | closed
+  mitigation   String?   @db.Text
+  ownerId      Int?      @map("owner_id")
+  entityId     String?   @map("entity_id")
+  source       String    @db.VarChar(30) // erp | email | chat | known | manual
+  sourceRef    String?   @map("source_ref") @db.VarChar(500)
+  detectedAt   DateTime  @default(now()) @map("detected_at")
+  resolvedAt   DateTime? @map("resolved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, status])
+  @@index([clientNumber, severity])
+  @@index([clientNumber, entityId])
+  @@map("risk_register_items")
+}
+
+// ─── Action Idempotency Log ──────────────────────────────────────
+
+model ActionIdempotencyLog {
+  id             String   @id @default(cuid())
+  idempotencyKey String   @unique @map("idempotency_key")
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  userId         Int      @map("user_id")
+  actionType     String   @map("action_type") @db.VarChar(30)
+  result         Json
+  executedAt     DateTime @default(now()) @map("executed_at")
+  expiresAt      DateTime @map("expires_at")
+
+  @@index([clientNumber, userId])
+  @@index([expiresAt])
+  @@map("action_idempotency_logs")
 }

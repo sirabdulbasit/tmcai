@@ -158,6 +158,7 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
   });
   if (!user) return { greeting: '', aiName: '', weather: '', memoryNote: '', newsHeadlines: [], daySnapshot: [], activitySnapshot: [], actions: [], emailSnapshot: { unreadCount: 0, totalRecent: 0, topEmails: [] }, calendarSnapshot: [], hasIntegration: false };
 
+  const t0 = Date.now();
   const [profile, profileMemory, recentMsgs] = await Promise.all([
     getUserProfile(userId),
     getProfileMemory(userId),
@@ -181,8 +182,20 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
 
   const city = profile?.city || (user as any).city || '';
   const hasMemoryData = profileMemory.userPersonal || profileMemory.activeConcerns;
-  const hasIntegration = user.integrationProvider && user.integrationStatus === 'active';
+  // Check both legacy User fields AND new UserConnector for gmail
+  let hasIntegration = !!(user.integrationProvider && user.integrationStatus === 'active');
+  if (!hasIntegration) {
+    try {
+      const gmailType = await prisma.connectorType.findUnique({ where: { slug: 'gmail' } });
+      if (gmailType) {
+        const uc = await prisma.userConnector.findUnique({ where: { userId_connectorTypeId: { userId, connectorTypeId: gmailType.id } } });
+        if (uc?.status === 'connected') hasIntegration = true;
+      }
+    } catch {}
+  }
 
+  console.log(`[Welcome] Phase 1 (profile+memory+msgs): ${Date.now() - t0}ms`);
+  const t1 = Date.now();
   // ── Run weather, news, and AI note ALL IN PARALLEL ─────
   // Weather has 1.5s timeout — external API can be slow, don't block welcome
   const weatherWithTimeout = city
@@ -192,23 +205,8 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
   const [weather, newsHeadlines, memoryNote, emailSnapshot, calendarSnapshot] = await Promise.all([
     weatherWithTimeout,
 
-    // News — cached for 15 min, try business/tech first
-    Promise.race([
-      (async () => {
-        // Check news cache
-        const cacheKey = 'welcome_news';
-        const cached = newsCache.get(cacheKey);
-        if (cached && Date.now() - cached.ts < NEWS_CACHE_TTL) return cached.data;
-
-        let news = await getWelcomeNews('', 'business').catch(() => [] as string[]);
-        if (!news || news.length === 0) news = await getWelcomeNews('', 'technology').catch(() => [] as string[]);
-        if (!news || news.length === 0) news = await getWelcomeNews('pk').catch(() => [] as string[]);
-
-        if (news && news.length > 0) newsCache.set(cacheKey, { data: news, ts: Date.now() });
-        return news;
-      })(),
-      new Promise<string[]>(r => setTimeout(() => r([]), 1500)),
-    ]),
+    // News — disabled for faster welcome screen load
+    Promise.resolve([] as string[]),
 
     // AI personal note — 1.2s timeout (skip if slow, user sees greeting without note)
     (hasMemoryData || hasIntegration) ? Promise.race([
@@ -238,52 +236,59 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
       new Promise<string>(r => setTimeout(() => r(''), 1200)),
     ]) : Promise.resolve(''),
 
-    // Email snapshot — cached 10 min
-    hasIntegration ? (async () => {
-      const cached = emailSnapshotCache.get(userId);
-      if (cached && Date.now() - cached.ts < SNAPSHOT_CACHE_TTL) return cached.data;
-      try {
-        const { getInbox } = require('./gmailService');
-        // Fetch today's emails only (not 201 lifetime unread)
-        const today = new Date();
-        const todayStr = `${today.getFullYear()}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
-        const { emails } = await getInbox(userId, 10, `after:${todayStr}`);
-        const unreadCount = emails.filter((e: any) => e.isUnread).length;
-        const result = {
-          unreadCount: unreadCount || 0,
-          totalRecent: emails.length,
-          topEmails: emails.slice(0, 3).map((e: any) => ({
-            from: e.from?.replace(/<.*>/, '').trim().split('<')[0].trim() || 'Unknown',
-            subject: e.subject || '(no subject)',
-            isUnread: e.isUnread,
-          })),
-        };
-        emailSnapshotCache.set(userId, { data: result, ts: Date.now() });
-        return result;
-      } catch { return { unreadCount: 0, totalRecent: 0, topEmails: [] }; }
-    })() : Promise.resolve({ unreadCount: 0, totalRecent: 0, topEmails: [] }),
-
-    // Calendar snapshot — cached 10 min
-    hasIntegration ? (async () => {
-      const cached = calendarSnapshotCache.get(userId);
-      if (cached && Date.now() - cached.ts < SNAPSHOT_CACHE_TTL) return cached.data;
-      try {
-        const { getTodayEvents } = require('./calendarService');
-        const { events } = await getTodayEvents(userId);
-        const result = events.map((e: any) => {
-          const loc = (e.location || '').split(';')[0].replace(/https?:\/\/\S+/g, '').trim();
-          return {
-            title: e.title || '(no title)',
-            time: e.isAllDay ? 'All day' : new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
-            location: loc || '',
+    // Email snapshot — cached 10 min, 2s timeout
+    hasIntegration ? Promise.race([
+      (async () => {
+        const cached = emailSnapshotCache.get(userId);
+        if (cached && Date.now() - cached.ts < SNAPSHOT_CACHE_TTL) return cached.data;
+        try {
+          const { getInbox } = require('./gmailService');
+          const today = new Date();
+          const todayStr = `${today.getFullYear()}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
+          const { emails } = await getInbox(userId, 10, `after:${todayStr}`);
+          const unreadCount = emails.filter((e: any) => e.isUnread).length;
+          const result = {
+            unreadCount: unreadCount || 0,
+            totalRecent: emails.length,
+            topEmails: emails.slice(0, 3).map((e: any) => ({
+              from: e.from?.replace(/<.*>/, '').trim().split('<')[0].trim() || 'Unknown',
+              subject: e.subject || '(no subject)',
+              isUnread: e.isUnread,
+            })),
           };
-        });
-        calendarSnapshotCache.set(userId, { data: result, ts: Date.now() });
-        return result;
-      } catch { return []; }
-    })() : Promise.resolve([]),
+          emailSnapshotCache.set(userId, { data: result, ts: Date.now() });
+          return result;
+        } catch { return { unreadCount: 0, totalRecent: 0, topEmails: [] }; }
+      })(),
+      new Promise<any>(r => setTimeout(() => r({ unreadCount: 0, totalRecent: 0, topEmails: [] }), 2000)),
+    ]) : Promise.resolve({ unreadCount: 0, totalRecent: 0, topEmails: [] }),
+
+    // Calendar snapshot — cached 10 min, 2s timeout
+    hasIntegration ? Promise.race([
+      (async () => {
+        const cached = calendarSnapshotCache.get(userId);
+        if (cached && Date.now() - cached.ts < SNAPSHOT_CACHE_TTL) return cached.data;
+        try {
+          const { getTodayEvents } = require('./calendarService');
+          const { events } = await getTodayEvents(userId);
+          const result = events.map((e: any) => {
+            const loc = (e.location || '').split(';')[0].replace(/https?:\/\/\S+/g, '').trim();
+            return {
+              title: e.title || '(no title)',
+              time: e.isAllDay ? 'All day' : new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
+              location: loc || '',
+            };
+          });
+          calendarSnapshotCache.set(userId, { data: result, ts: Date.now() });
+          return result;
+        } catch { return []; }
+      })(),
+      new Promise<any[]>(r => setTimeout(() => r([]), 2000)),
+    ]) : Promise.resolve([]),
   ]);
 
+  console.log(`[Welcome] Phase 2 (weather+note+email+calendar): ${Date.now() - t1}ms | weather=${weather?'yes':'no'} note=${memoryNote?'yes':'no'} emails=${emailSnapshot.totalRecent} cal=${calendarSnapshot.length}`);
+  const t2 = Date.now();
   // Data snapshot (instant — from cache)
   const sections = getCachedSections();
   const snapshot = extractDataSnapshot(sections);
@@ -346,5 +351,6 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
     adminStats,
   };
 
+  console.log(`[Welcome] Phase 3 (snapshot+admin): ${Date.now() - t2}ms | TOTAL: ${Date.now() - t0}ms`);
   return result;
 }

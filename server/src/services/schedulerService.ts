@@ -131,6 +131,108 @@ export async function initScheduler(): Promise<void> {
     scheduleTask(task);
   }
   log.info('Initialized', { activeTasks: tasks.length });
+
+  // ── MyOS Phase 2/3 background jobs ────────────────────────
+
+  // Idempotency key cleanup — daily 3am PKT
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      const { cleanupExpiredKeys } = await import('./actionIdempotencyService');
+      const deleted = await cleanupExpiredKeys();
+      if (deleted > 0) log.info('Idempotency cleanup', { deleted });
+    } catch (err: any) { log.error('Idempotency cleanup failed', { error: err.message }); }
+  }, { timezone: 'Asia/Karachi' });
+
+  // Decision outcome assessment — daily 2am PKT
+  cron.schedule('0 2 * * *', async () => {
+    try {
+      const { assessOutcomesForAllTenants } = await import('./decisionsLogService');
+      await assessOutcomesForAllTenants();
+      log.info('Decision outcome assessment completed');
+    } catch (err: any) { log.error('Outcome assessment failed', { error: err.message }); }
+  }, { timezone: 'Asia/Karachi' });
+
+  // Pattern analysis — weekly Sunday 6am PKT
+  cron.schedule('0 6 * * 0', async () => {
+    try {
+      const { runForAllTenants } = await import('./patternAnalysisService');
+      await runForAllTenants();
+      log.info('Pattern analysis completed');
+    } catch (err: any) { log.error('Pattern analysis failed', { error: err.message }); }
+  }, { timezone: 'Asia/Karachi' });
+
+  // Thought pipeline weekly review — Friday 7am PKT
+  cron.schedule('0 7 * * 5', async () => {
+    try {
+      const { generateWeeklyReviewsForAllTenants } = await import('./thoughtPipelineService');
+      await generateWeeklyReviewsForAllTenants();
+      log.info('Weekly reviews generated');
+    } catch (err: any) { log.error('Weekly review generation failed', { error: err.message }); }
+  }, { timezone: 'Asia/Karachi' });
+
+  // Shadow scoring calibration — first Monday of each month, 7am PKT
+  cron.schedule('0 7 1-7 * 1', async () => {
+    try {
+      const { runForAllTenants } = await import('./shadowScoringService');
+      await runForAllTenants();
+      log.info('Shadow scoring calibration completed');
+    } catch (err: any) { log.error('Shadow scoring failed', { error: err.message }); }
+  }, { timezone: 'Asia/Karachi' });
+
+  // ── Per-user Brain Engine crons ─────────────────────────────
+  await registerAllEngineCrons();
+}
+
+// ─── Dynamic per-user engine cron management ──────────────────
+
+const activeEngineCrons = new Map<string, ReturnType<typeof cron.schedule>>();
+
+async function registerAllEngineCrons(): Promise<void> {
+  try {
+    const configs = await prisma.$queryRawUnsafe(
+      `SELECT user_id, client_number, engine_schedule, engine_timezone FROM brain_configs WHERE engine_schedule IS NOT NULL AND engine_running = false`
+    ) as any[];
+
+    for (const cfg of configs) {
+      registerUserEngineCron(cfg.user_id, cfg.client_number, cfg.engine_schedule, cfg.engine_timezone || 'Asia/Karachi');
+    }
+    log.info('Engine crons registered', { count: configs.length });
+  } catch (err: any) {
+    log.error('Failed to register engine crons', { error: err.message });
+  }
+}
+
+export function registerUserEngineCron(userId: number, clientNumber: string, schedule: string, timezone: string): void {
+  const key = `engine:${clientNumber}:${userId}`;
+
+  // Stop existing cron if any
+  if (activeEngineCrons.has(key)) {
+    activeEngineCrons.get(key)!.stop();
+    activeEngineCrons.delete(key);
+  }
+
+  if (!schedule || !cron.validate(schedule)) return;
+
+  const job = cron.schedule(schedule, async () => {
+    try {
+      const { runForUser } = await import('./brainEngineService');
+      log.info('Engine cron triggered', { userId, clientNumber });
+      await runForUser(userId, clientNumber);
+    } catch (err: any) {
+      log.error('Engine cron failed', { userId, error: err.message });
+    }
+  }, { timezone });
+
+  activeEngineCrons.set(key, job);
+  log.info('Engine cron registered', { userId, schedule, timezone });
+}
+
+export function stopUserEngineCron(userId: number, clientNumber: string): void {
+  const key = `engine:${clientNumber}:${userId}`;
+  if (activeEngineCrons.has(key)) {
+    activeEngineCrons.get(key)!.stop();
+    activeEngineCrons.delete(key);
+  }
 }
 
 /**

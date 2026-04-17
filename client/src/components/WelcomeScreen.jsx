@@ -26,7 +26,6 @@ export default function WelcomeScreen({ onAction, onLoadingChange }) {
 
   const hasNote = briefing?.memoryNote;
   const hasWeather = briefing?.weather;
-  const hasNews = briefing?.newsHeadlines?.length > 0;
   const hasIntegration = briefing?.hasIntegration;
   const rawAiName = briefing?.aiName || '';
   const aiDisplayName = rawAiName ? rawAiName.charAt(0).toUpperCase() + rawAiName.slice(1) : (appName || 'TMC AI');
@@ -47,9 +46,6 @@ export default function WelcomeScreen({ onAction, onLoadingChange }) {
               ) : (
                 <div className="welcome-flow">
                   <p>{greeting} {hasWeather && <span className="welcome-weather-inline">{briefing.weather}</span>}</p>
-                  {hasNews && briefing.newsHeadlines.slice(0, 2).map((h, i) => (
-                    <p key={i} className="welcome-news-line">{h}</p>
-                  ))}
                   {hasNote && <p className="welcome-caring">{briefing.memoryNote}</p>}
                   {isNewUser ? (
                     <div className="welcome-intro">
@@ -76,18 +72,9 @@ export default function WelcomeScreen({ onAction, onLoadingChange }) {
                         </button>
                       </>
                     )}
-                    {hasIntegration && (
-                      <>
-                        <button className="welcome-chip" onClick={() => onAction?.("what's on my calendar today?")}>
-                          Schedule Events ({briefing.calendarSnapshot?.length || 0})
-                        </button>
-                        <button className="welcome-chip" onClick={() => onAction?.('check my emails')}>
-                          {briefing.emailSnapshot?.totalRecent > 0
-                            ? `Today's Emails (${briefing.emailSnapshot.totalRecent})`
-                            : 'Check Emails'}
-                        </button>
-                      </>
-                    )}
+                    <button className="welcome-chip" onClick={() => window.location.href = '/day-brief'}>
+                      Day Brief ↗
+                    </button>
                     {user?.isAdmin && briefing?.adminStats && (
                       <>
                         <button className="welcome-chip admin-chip" onClick={() => onAction?.('show me system logs and suggest fixes')}>
@@ -114,7 +101,7 @@ export default function WelcomeScreen({ onAction, onLoadingChange }) {
 const LOADING_STEPS = [
   { text: 'Checking your calendar...', delay: 0 },
   { text: 'Reading your emails...', delay: 800 },
-  { text: 'Fetching weather & news...', delay: 1600 },
+  { text: 'Fetching weather...', delay: 1600 },
   { text: 'Almost ready...', delay: 2800 },
 ];
 

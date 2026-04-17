@@ -94,6 +94,74 @@ export async function handleCallback(code: string, userId: number): Promise<{ su
 // ─── Get authenticated client for a user ──────────────────────
 
 export async function getAuthenticatedClient(userId: number): Promise<{ client: any; error?: string }> {
+  // ── Try MyOS UserConnector first (new connector framework) ──
+  // Check ANY connected Google connector (gmail, calendar, tasks, chat, drive — they all share the same OAuth tokens)
+  try {
+    const googleSlugs = ['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal'];
+    const googleConnectorTypes = await prisma.connectorType.findMany({ where: { slug: { in: googleSlugs } } });
+    let userConnector = null;
+    for (const ct of googleConnectorTypes) {
+      const uc = await prisma.userConnector.findUnique({
+        where: { userId_connectorTypeId: { userId, connectorTypeId: ct.id } },
+      });
+      if (uc?.status === 'connected' && uc.config) { userConnector = uc; break; }
+    }
+    if (userConnector) {
+        const { decrypt } = await import('./configService');
+        const cfg = userConnector.config as Record<string, unknown>;
+        // Decrypt sensitive fields
+        let accessToken = cfg.accessToken as string;
+        let refreshToken = cfg.refreshToken as string;
+        let clientId = cfg.clientId as string;
+        let clientSecret = cfg.clientSecret as string;
+        try { accessToken = await decrypt(accessToken); } catch {}
+        try { refreshToken = await decrypt(refreshToken); } catch {}
+        try { if (clientId) clientId = await decrypt(clientId); } catch {}
+        try { if (clientSecret) clientSecret = await decrypt(clientSecret); } catch {}
+
+        const oauth2Client = new (await import('googleapis')).google.auth.OAuth2(
+          clientId || process.env.GOOGLE_CLIENT_ID,
+          clientSecret || process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_CONNECTOR_REDIRECT_URI || 'http://localhost:4002/api/v1/connectors/oauth/callback',
+        );
+        oauth2Client.setCredentials({
+          access_token: accessToken,
+          refresh_token: refreshToken || undefined,
+          expiry_date: cfg.tokenExpiry ? new Date(cfg.tokenExpiry as string).getTime() : undefined,
+        });
+
+        // Auto-refresh if expired
+        const tokenExpiry = cfg.tokenExpiry ? new Date(cfg.tokenExpiry as string) : null;
+        if (tokenExpiry && new Date() > tokenExpiry && refreshToken) {
+          try {
+            const { credentials } = await oauth2Client.refreshAccessToken();
+            const { encrypt } = await import('./configService');
+            const newAccessToken = credentials.access_token || accessToken;
+            const encAccessToken = await encrypt(newAccessToken).catch(() => newAccessToken);
+            await prisma.userConnector.update({
+              where: { id: userConnector.id },
+              data: {
+                config: {
+                  ...cfg,
+                  accessToken: encAccessToken,
+                  tokenExpiry: credentials.expiry_date ? new Date(credentials.expiry_date).toISOString() : (cfg.tokenExpiry as string) || '',
+                } as any,
+              },
+            });
+            oauth2Client.setCredentials(credentials);
+            console.log(`[Integration] UserConnector token refreshed for user ${userId}`);
+          } catch (err: any) {
+            console.error(`[Integration] UserConnector token refresh failed for user ${userId}:`, err.message);
+          }
+        }
+
+        return { client: oauth2Client };
+    }
+  } catch (err: any) {
+    console.error(`[Integration] UserConnector lookup failed:`, err.message);
+  }
+
+  // ── Fallback: legacy User table fields ──────────────────────
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -106,7 +174,7 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
   });
 
   if (!user?.integrationProvider || !user.integrationAccessToken) {
-    return { client: null, error: 'No email/calendar integration configured. Ask your admin to connect your account.' };
+    return { client: null, error: 'No email/calendar integration configured. Connect Gmail or Outlook in My Connectors.' };
   }
 
   const oauth2Client = getOAuth2Client();
@@ -131,13 +199,13 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
         },
       });
       oauth2Client.setCredentials(credentials);
-      console.log(`[Integration] Token refreshed for user ${userId}`);
+      console.log(`[Integration] Legacy token refreshed for user ${userId}`);
     } catch (err: any) {
       await prisma.user.update({
         where: { id: userId },
         data: { integrationStatus: 'expired', integrationError: `Token refresh failed: ${err.message}` },
       });
-      return { client: null, error: 'Integration token expired. Ask your admin to reconnect.' };
+      return { client: null, error: 'Integration token expired. Reconnect in My Connectors.' };
     }
   }
 

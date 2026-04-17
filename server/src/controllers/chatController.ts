@@ -62,6 +62,41 @@ export async function streamChat(req: Request, res: Response) {
 
     const isUtilityQuery = /^(check my emails?|what'?s on my calendar|show my schedule|show my emails)/i.test(message.trim());
 
+    // ── MyOS: Day Briefing shortcut ──────────────────────────
+    const isBriefingQuery = /\b(day brief|daily brief|morning brief|my brief|give me.*(brief|briefing)|today'?s brief)/i.test(message.trim());
+    if (isBriefingQuery && userId && clientNumber) {
+      try {
+        const { generateDayBriefing, formatBriefingAsMarkdown } = await import('../services/dayBriefingService');
+
+        // Set up SSE (same format as normal chat)
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        // Show status while loading
+        res.write(`data: ${JSON.stringify({ type: 'status', content: 'Preparing your Day Brief...' })}\n\n`);
+
+        const briefing = await generateDayBriefing(userId, clientNumber);
+        const markdown = formatBriefingAsMarkdown(briefing);
+
+        // Stream the briefing content
+        res.write(`data: ${JSON.stringify({ type: 'chunk', content: markdown })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'meta', elapsed: '0', outputTokens: 0, inputTokens: 0, totalTokens: 0 })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+        res.end();
+
+        // Save to conversation
+        if (conversationId) {
+          addMessage({ clientNumber, conversationId, role: 'assistant', content: markdown, provider: 'system' }).catch(() => {});
+        }
+        return;
+      } catch (err: any) {
+        console.error('[DayBriefing] Error:', err.message);
+        // Fall through to normal chat pipeline
+      }
+    }
+
     if (userId && clientNumber && !conversationId && !isUtilityQuery) {
       const conv = await createConversation(clientNumber, userId, provider);
       conversationId = conv.id;
@@ -251,7 +286,7 @@ export async function streamChat(req: Request, res: Response) {
     const { systemPrompt, conversationTurns } = await buildFullPrompt({
       context, topScore, intent, tierSettings, userProfile, userLearnings,
       memoryBlocks, chatHistory, message, provider, clientNumber,
-      isWidget, isDashboardQuery, aiConfig,
+      userId, isWidget, isDashboardQuery, aiConfig,
     });
 
     const pipelineMs = Date.now() - startTime;

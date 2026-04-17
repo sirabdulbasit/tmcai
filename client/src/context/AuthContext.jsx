@@ -31,7 +31,10 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = useCallback(async (email, password) => {
-    const res = await api.post('/user/login', { email, password });
+    // Support both email and empcode login
+    const isEmail = email.includes('@');
+    const payload = isEmail ? { email, password } : { empcode: email, password };
+    const res = await api.post('/user/login', payload);
     setUser(res.data.user);
     return res.data;
   }, []);

@@ -1,12 +1,18 @@
 # TMC AI Intelligence -- Architecture & Roadmap
 
-**Last Updated**: 2026-03-28
+**Last Updated**: 2026-04-11
 
 ## Project Overview
 
 TMC AI Intelligence is a custom AI-powered business intelligence platform for TallyMarks Consulting (TMC). It provides executive-quality insights over internal business data (clients, projects, sales, HR) using multi-provider AI with semantic search, privacy protection, and interactive dashboards.
 
-**Current Status**: All core phases complete -- full-stack multi-tenant platform with PostgreSQL, password-based auth, React login page, chat history, user profiles, scheduled tasks, audit logging, and optimized RAG pipeline (~5-15s response times).
+**Current Status**: All core phases complete + **MyOS Phase 1 (Foundation)** in progress. Full-stack multi-tenant platform with PostgreSQL, password-based auth, React login page, chat history, user profiles, scheduled tasks, audit logging, optimized RAG pipeline (~5-15s response times), and the MyOS personal intelligence layer (connectors, open items, entities, brain config).
+
+### MyOS — Personal Intelligence Operating System (NEW)
+MyOS adds a per-user configurable AI chief-of-staff layer on top of TMCAI. See [MYOS.md](MYOS.md) for full spec.
+- **Phase 1 (Gather & Present)**: Unified connector framework, open items DB, entity knowledge graph, brain config — **IN PROGRESS**
+- **Phase 2 (AI Brain Suggests)**: Email intelligence pipeline, delegation engine, conversational briefing — PLANNED
+- **Phase 3 (Decisions & Memory)**: Decision logging, pattern analysis, auto-action promotion, thought pipeline — PLANNED
 
 ---
 

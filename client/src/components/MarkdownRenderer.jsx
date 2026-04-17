@@ -357,18 +357,33 @@ export default function MarkdownRenderer({ content, isStreaming, onFollowUp, onO
 }
 
 function extractFollowUps(text) {
-  // Match the last bullet list at the end (after "Next steps:", "Would you like me to:", etc.)
+  // Match the last bullet list ONLY if it looks like suggestions/questions (not data descriptions).
+  // Must have a header like "Next steps:", "Would you like:", "You can:", etc.
   const lines = text.trim().split('\n');
   const suggestions = [];
+  let hasHeader = false;
+
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (line.startsWith('- ') || line.startsWith('* ')) {
-      suggestions.unshift(line.replace(/^[-*]\s*/, '').replace(/\*\*/g, '').trim());
+      const content = line.replace(/^[-*]\s*/, '').replace(/\*\*/g, '').trim();
+      // Only treat as follow-up if it looks like a suggestion (question, action verb, short)
+      if (content.length < 120 && (/\?$/.test(content) || /^(show|check|view|tell|give|list|create|send|analyze|compare|help|would|can|shall|want|try)/i.test(content))) {
+        suggestions.unshift(content);
+      } else {
+        // Long descriptive bullet — not a follow-up suggestion, stop
+        break;
+      }
     } else if (suggestions.length > 0) {
-      break; // Stop when we hit non-list content
+      // Check if this line is a header introducing follow-ups
+      if (/next steps|would you like|you can also|here are some|try asking|you might want|what would you like/i.test(line)) {
+        hasHeader = true;
+      }
+      break;
     }
   }
-  return suggestions.length >= 2 ? suggestions : []; // Only show if 2+ suggestions
+  // Only show pills if we found a clear follow-up section with 2+ items
+  return (suggestions.length >= 2 && hasHeader) ? suggestions : [];
 }
 
 function removeFollowUps(text) {

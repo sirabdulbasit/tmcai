@@ -1,10 +1,10 @@
 # TMC AI Intelligence — Database Design
 
-**Last Updated**: 2026-04-02
+**Last Updated**: 2026-04-11
 **Database**: `tmcai` on PostgreSQL 18
 **ORM**: Prisma 6 (prisma-client-js generator)
 **Schema**: `server/prisma/schema.prisma`
-**Total tables**: 38
+**Total tables**: 49 (38 original + 11 MyOS)
 
 ---
 
@@ -17,6 +17,14 @@ Multi-tenant PostgreSQL database for the 3-layer Enterprise Intelligence Platfor
 - **Infrastructure:** `tenants`, `users`, `sessions`, `system_config`, `audit_log`, `api_keys`
 - **Comms:** `whatsapp_connections`, `whatsapp_messages`, `whatsapp_sessions`
 - **Marketplace:** `marketplace_connectors`, `marketplace_installations`
+- **MyOS Connectors:** `connector_types`, `tenant_connector_configs`, `user_connectors`
+- **MyOS Open Items:** `open_items`
+- **MyOS Entities:** `entities`, `entity_links`
+- **MyOS Brain:** `brain_configs`
+- **MyOS Decisions:** `decision_logs`
+- **MyOS Thought Pipeline:** `thought_entries`
+- **MyOS OKR:** `okrs`
+- **MyOS Risk:** `risk_register_items`
 
 All tables include `client_number` for tenant isolation **except** personal data tables which are scoped by `user_id` only (admin cannot query them).
 
