@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: tmcai-agents
+Version: 0.1.0
+Summary: HaseebOS v15 — Gemini ADK agent worker for TMCAI
+Requires-Python: >=3.11
+Requires-Dist: google-adk>=1.0.0
+Requires-Dist: google-cloud-aiplatform>=1.60.0
+Requires-Dist: google-cloud-pubsub>=2.20.0
+Requires-Dist: google-cloud-bigquery>=3.20.0
+Requires-Dist: google-cloud-secret-manager>=2.20.0
+Requires-Dist: google-generativeai>=0.8.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: redis>=5.0.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: pydantic-settings>=2.5.0
+Requires-Dist: python-dotenv>=1.0.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+Requires-Dist: mypy>=1.11.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"

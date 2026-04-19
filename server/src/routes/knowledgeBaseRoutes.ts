@@ -22,6 +22,18 @@ router.get('/', async (req, res) => {
   res.json({ items });
 });
 
+// POST /api/v1/knowledge/search  (agent-callable, structured body)
+router.post('/search', async (req, res) => {
+  const cn = req.user!.clientNumber;
+  const { query, category, topK } = req.body ?? {};
+  if (!query) return res.status(400).json({ error: 'query required' });
+  const results = await searchKnowledgeBase(cn, String(query), {
+    category: category as any,
+    topK: Number.isFinite(topK) ? Number(topK) : undefined,
+  } as any);
+  res.json({ results });
+});
+
 // POST /api/v1/knowledge
 router.post('/', async (req, res) => {
   const cn = req.user!.clientNumber;

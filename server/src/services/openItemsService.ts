@@ -11,7 +11,11 @@ import prisma from '../db/prisma';
 // ─── Types ────────────────────────────────────────────────────────
 
 export type OpenItemType = 'task' | 'email' | 'delegation' | 'alert' | 'erp' | 'okr' | 'risk';
-export type OpenItemStatus = 'open' | 'in_progress' | 'delegated' | 'blocked' | 'done' | 'overdue';
+// v15 L2 — 8-value lifecycle + legacy aliases for backwards compatibility with
+// callers still passing the old vocabulary (they get translated in changeStatus).
+export type OpenItemStatus =
+  | 'NEW' | 'TRIAGED' | 'IN_PROGRESS' | 'DELEGATED' | 'WAITING_INFO' | 'SNOOZED' | 'INFORMED' | 'CLOSED'
+  | 'open' | 'in_progress' | 'delegated' | 'blocked' | 'done' | 'overdue';
 export type OpenItemPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export interface CreateOpenItemInput {
@@ -40,7 +44,7 @@ export interface UpdateOpenItemInput {
 // ─── CRUD ─────────────────────────────────────────────────────────
 
 export async function createItem(userId: number, clientNumber: string, input: CreateOpenItemInput) {
-  return prisma.openItem.create({
+  const item = await prisma.openItem.create({
     data: {
       title: input.title,
       description: input.description,
@@ -57,6 +61,46 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
       clientNumber,
     },
   });
+  // L2+ — embed title+description+archetype into open_item_embeddings for
+  // similar-items lookup. Best-effort and async-friendly.
+  try {
+    const { embedAndStore } = await import('./triage/openItemEmbeddingService');
+    const text = [item.title, item.description ?? '', (item as any).archetype ?? ''].filter(Boolean).join('\n');
+    embedAndStore(item.id, clientNumber, text).catch(() => {});
+  } catch { /* embedding is optional */ }
+
+  // L2.7 — publish creation event on tmcai-open-item-events so Brain,
+  // Reflection, and the Steering Wheel see new items live (not just on status
+  // transitions). Best-effort: a publish failure does not block creation.
+  try {
+    const { publish } = await import('./infra/pubsubPublisher');
+    const { PUBSUB_TOPICS } = await import('../config/pubsub');
+    await publish(
+      PUBSUB_TOPICS.OPEN_ITEM_EVENTS,
+      {
+        openItemId: item.id,
+        clientNumber,
+        fromStatus: null,
+        toStatus: item.status,
+        transitionDescription: 'created',
+        actor: `user:${userId}`,
+        title: item.title,
+        priority: item.priority,
+        type: item.type,
+        entityId: item.entityId,
+        occurredAt: item.createdAt?.toISOString?.() ?? new Date().toISOString(),
+      },
+      {
+        tenantId: clientNumber,
+        traceId: undefined,
+        orderingKey: `${clientNumber}:openitem:${item.id}`,
+        attributes: { fromStatus: 'created', toStatus: item.status, actor: `user:${userId}` },
+      },
+    );
+  } catch (err: any) {
+    console.warn(`[openItemsService] open-item-events create publish failed ${item.id}: ${err.message}`);
+  }
+  return item;
 }
 
 export async function getItem(id: string, clientNumber: string) {
@@ -113,20 +157,49 @@ export async function listItems(
 }
 
 // ─── Status transitions ──────────────────────────────────────────
+// L2.4 — DEPRECATED direct path. All status changes must flow through
+// services/itemLifecycle/lifecycleService.transitionStatus() so guards +
+// history + open-item-events publish are enforced. This legacy helper
+// translates its inputs into the v15 8-status set and delegates.
 
-export async function changeStatus(id: string, clientNumber: string, status: OpenItemStatus, note?: string) {
-  const item = await prisma.openItem.findFirst({ where: { id, clientNumber } });
-  if (!item) throw new Error('Item not found');
+const LEGACY_TO_V15: Record<string, string> = {
+  open: 'NEW',
+  in_progress: 'IN_PROGRESS',
+  delegated: 'DELEGATED',
+  blocked: 'WAITING_INFO',
+  done: 'CLOSED',
+  overdue: 'IN_PROGRESS',
+  snoozed: 'SNOOZED',
+  triaged: 'TRIAGED',
+  informed: 'INFORMED',
+  closed: 'CLOSED',
+};
 
-  const notes = (item.notes as Array<Record<string, unknown>>) || [];
-  if (note) {
-    notes.push({ text: note, at: new Date().toISOString(), action: `status_changed_to_${status}` });
-  }
-
-  return prisma.openItem.update({
-    where: { id },
-    data: { status, notes: notes as any },
+export async function changeStatus(
+  id: string,
+  clientNumber: string,
+  status: OpenItemStatus,
+  note?: string,
+  actor?: string,
+) {
+  const { transitionStatus } = await import('./itemLifecycle/lifecycleService');
+  const v15 = (LEGACY_TO_V15[status as string] ?? status) as any;
+  const result = await transitionStatus(id, v15, {
+    clientNumber,
+    actor: actor ?? 'system',
+    reason: note,
   });
+  if (!result.ok) {
+    throw new Error(result.error ?? 'transition rejected');
+  }
+  const item = await prisma.openItem.findFirst({ where: { id, clientNumber } });
+  if (!item) throw new Error('Item not found after transition');
+  if (note) {
+    const notes = (item.notes as Array<Record<string, unknown>>) || [];
+    notes.push({ text: note, at: new Date().toISOString(), action: `status_changed_to_${v15}` });
+    await prisma.openItem.update({ where: { id }, data: { notes: notes as any } });
+  }
+  return prisma.openItem.findFirst({ where: { id, clientNumber } });
 }
 
 // ─── Delegation ──────────────────────────────────────────────────

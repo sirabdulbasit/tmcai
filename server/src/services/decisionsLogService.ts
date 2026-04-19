@@ -4,10 +4,14 @@
  * Auto-called by actionExecutionService after every user decision.
  * Zero user effort — happens silently.
  *
+ * As of HaseebOS v15: writes delegate to decisions/decisionLogService.record()
+ * which adds BigQuery archive + trace_id enrichment on top of the Postgres write.
+ *
  * Feature flag: ff_decisions_log
  */
 
 import prisma from '../db/prisma';
+import { record as recordDecision } from './decisions/decisionLogService';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -30,7 +34,23 @@ export interface DecisionParams {
 // ─── Append decision ────────────────────────────────────────────
 
 export async function appendDecision(params: DecisionParams) {
-  return prisma.decisionLog.create({ data: params as any });
+  const result = await recordDecision({
+    userId: params.userId,
+    clientNumber: params.clientNumber,
+    sessionType: params.sessionType,
+    itemType: params.itemType,
+    entityId: params.entityId,
+    connectorSlug: params.connectorSlug,
+    suggestedAction: params.suggestedAction,
+    userDecision: params.userDecision,
+    actionTaken: params.actionTaken,
+    isMatch: params.isMatch,
+    overrideReason: params.overrideReason,
+    responseTimeMs: params.responseTimeMs,
+    openItemId: params.openItemId,
+  });
+  // Preserve prior return shape — callers expect the row back
+  return prisma.decisionLog.findUnique({ where: { id: result.id } });
 }
 
 // ─── Read queries ───────────────────────────────────────────────

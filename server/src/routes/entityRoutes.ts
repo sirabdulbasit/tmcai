@@ -83,4 +83,17 @@ router.post('/link', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ─── L5.7 — Entity graph traversal (N-hop BFS) ───────────────────
+router.get('/:id/graph', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const depth = Math.min(parseInt(String(req.query.depth ?? '2'), 10) || 2, 4);
+    const { traverse } = await import('../services/entity/graphService');
+    const result = await traverse(user.clientNumber, String(req.params.id), depth);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

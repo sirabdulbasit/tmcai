@@ -13,6 +13,7 @@ import ConnectorsPage from './pages/ConnectorsPage';
 import ConnectorGuidePage from './pages/ConnectorGuidePage';
 import ThoughtPipelinePage from './pages/ThoughtPipelinePage';
 import DayBriefPage from './pages/DayBriefPage';
+import SteeringWheelPage from './pages/SteeringWheelPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
       <Route path="/connector-guide" element={<ConnectorGuidePage />} />
       <Route path="/thoughts" element={<ProtectedRoute><ThoughtPipelinePage /></ProtectedRoute>} />
       <Route path="/day-brief" element={<ProtectedRoute><DayBriefPage /></ProtectedRoute>} />
+      <Route path="/steering" element={<ProtectedRoute><SteeringWheelPage /></ProtectedRoute>} />
       <Route path="/*" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
     </Routes>
   );

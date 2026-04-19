@@ -130,6 +130,12 @@ model User {
   integrationError        String?   @map("integration_error") @db.Text // last error message if any
   integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
 
+  // ── HaseebOS v15 — per-user risk + agent config (M11) ──
+  riskTolerance          String? @map("risk_tolerance") @db.VarChar(10) // conservative | balanced | aggressive
+  agentConfigOverrides   Json?   @map("agent_config_overrides") // per-user agent tweaks
+  notificationPreferences Json?  @map("notification_preferences") // channel prefs, quiet hours
+  killSwitchEnabled      Boolean @default(false) @map("kill_switch_enabled") // allow this user to trigger tenant kill switch
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -418,11 +424,19 @@ model AgentAction {
   approvedBy       Int?      @map("approved_by")
   approvedAt       DateTime? @map("approved_at")
   error            String?   @db.Text
+  // ── HaseebOS v15 (M13) ──
+  riskTier          String?  @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  undoStatus        String?  @map("undo_status") @db.VarChar(20) // none | undoable | undone | expired
+  idempotencyKey    String?  @unique @map("idempotency_key") @db.VarChar(128) // sha256 from actionIdempotencyService
+  dependencyGraphId String?  @map("dependency_graph_id") // groups related actions for cascading undo
+  executedByAgent   String?  @map("executed_by_agent") @db.VarChar(50) // brain | feed_curator | triage | action_executor | ...
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([clientNumber, userId])
   @@index([status])
+  @@index([dependencyGraphId])
+  @@index([executedByAgent])
   @@map("agent_actions")
 }
 
@@ -607,7 +621,8 @@ model OpenItem {
   description     String?   @db.Text
   entityId        String?   @map("entity_id")
   type            String    @db.VarChar(30) // task | email | delegation | alert | erp | okr | risk
-  status          String    @default("open") @db.VarChar(20) // open | in_progress | delegated | blocked | done | overdue
+  // HaseebOS v15 §3.2 L2 — 8-value lifecycle enforced by services/itemLifecycle
+  status          String    @default("NEW") @db.VarChar(20) // NEW | TRIAGED | IN_PROGRESS | DELEGATED | WAITING_INFO | SNOOZED | INFORMED | CLOSED
   priority        String    @default("medium") @db.VarChar(10) // critical | high | medium | low
   ownerId         Int       @map("owner_id") // FK → User
   delegateeId     Int?      @map("delegatee_id") // FK → User (internal)
@@ -624,6 +639,12 @@ model OpenItem {
   idempotencyKey  String?   @unique @map("idempotency_key")
   clientNumber    String    @map("client_number") @db.VarChar(20)
   userId          Int       @map("user_id")
+  // ── HaseebOS v15 (M12) ──
+  dedupHash           String?  @map("dedup_hash") @db.VarChar(64) // sha256 over canonical content for dedup
+  enrichmentData      Json?    @map("enrichment_data") // classifier output, entity links, features
+  shadowScore         Float?   @map("shadow_score") // score from shadow rules (no UI action)
+  sourceFeedEventId   String?  @map("source_feed_event_id") // FK → feed_events.id (soft ref)
+  archetype           String?  @db.VarChar(30) // reply_needed | delegate | inform_only | schedule_meeting | review_risk | acknowledge
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -631,7 +652,53 @@ model OpenItem {
   @@index([clientNumber, userId, priority])
   @@index([clientNumber, entityId])
   @@index([priorityScore])
+  @@index([clientNumber, dedupHash])
+  @@index([sourceFeedEventId])
   @@map("open_items")
+}
+
+/**
+ * HaseebOS v15 L2+ — OpenItem embeddings for similar-items lookup.
+ * Stored as a JSON float array to avoid a pgvector dependency in dev. When
+ * pgvector is available, a separate migration can add a `vector(1536)` column
+ * + IVFFlat index; the service layer stays backwards-compatible.
+ */
+model OpenItemEmbedding {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  openItemId   String   @unique @map("open_item_id")
+  model        String   @db.VarChar(50)
+  dim          Int
+  embedding    Json
+  textHash     String   @map("text_hash") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, createdAt])
+  @@map("open_item_embeddings")
+}
+
+/**
+ * HaseebOS v15 L2 — append-only history of status transitions per OpenItem.
+ * Written atomically with every status change by lifecycleService. Powers the
+ * Steering Wheel timeline view and serves as the audit trail for invalid
+ * transition attempts (status from==to, reason='rejected').
+ */
+model ItemStatusHistory {
+  id            Int      @id @default(autoincrement())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  openItemId    String   @map("open_item_id")
+  fromStatus    String   @map("from_status") @db.VarChar(20)
+  toStatus      String   @map("to_status") @db.VarChar(20)
+  outcome       String   @default("accepted") @db.VarChar(20) // accepted | rejected
+  reason        String?  @db.VarChar(500)
+  actor         String?  @db.VarChar(50) // user:<id> | agent:<name> | system
+  traceId       String?  @map("trace_id") @db.VarChar(64)
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, openItemId, createdAt])
+  @@index([clientNumber, outcome, createdAt])
+  @@map("item_status_history")
 }
 
 // ─── Entity Knowledge Graph ───────────────────────────────────────
@@ -728,11 +795,21 @@ model DecisionLog {
   responseTimeMs  Int?     @map("response_time_ms")
   outcome         String?  @db.VarChar(20) // positive | negative | neutral
   openItemId      String?  @map("open_item_id")
+  // ── HaseebOS v15 (M14) ──
+  confidenceScore Float?   @map("confidence_score") // agent's own confidence in suggestion
+  riskTier        String?  @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  inputSummary    String?  @map("input_summary") @db.Text
+  outputSummary   String?  @map("output_summary") @db.Text
+  durationMs      Int?     @map("duration_ms") // end-to-end decision latency
+  traceId         String?  @map("trace_id") @db.VarChar(64) // Global Trace ID across Pub/Sub
+  agentId         String?  @map("agent_id") @db.VarChar(50) // which of the 7 agents made this decision
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@index([userId, clientNumber])
   @@index([clientNumber, createdAt])
   @@index([userId, itemType, isMatch])
+  @@index([traceId])
+  @@index([clientNumber, riskTier])
   @@map("decision_logs")
 }
 
@@ -825,4 +902,201 @@ model ActionIdempotencyLog {
   @@index([clientNumber, userId])
   @@index([expiresAt])
   @@map("action_idempotency_logs")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HaseebOS v15 — Phase 2 schema additions (M1–M10)
+// See docs/vscode-analysis/HASEEBOS_V15_IMPLEMENTATION_PLAN.md §5
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── M1: Feed Events (immutable raw capture) ────────────────────
+model FeedEvent {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  sourceType    String   @map("source_type") @db.VarChar(30) // gmail | whatsapp | gchat | gcal | gtasks
+  sourceId      String   @map("source_id") @db.VarChar(500) // external id (thread, message, event)
+  contentHash   String   @map("content_hash") @db.VarChar(64) // sha256 for dedup
+  rawPayload    Json     @map("raw_payload")
+  status        String   @default("new") @db.VarChar(20) // new | processed | dlq | skipped
+  traceId       String?  @map("trace_id") @db.VarChar(64)
+  // HaseebOS v15 §3.2 F-4 — canonical event_type and sender fields promoted
+  // out of rawPayload so Triage Analyst + Steering can index + filter on them.
+  eventType     String?  @map("event_type") @db.VarChar(30) // message_received | meeting_invite | task_assigned | …
+  senderId      String?  @map("sender_id") @db.VarChar(200)
+  senderEmail   String?  @map("sender_email") @db.VarChar(200)
+  senderName    String?  @map("sender_name") @db.VarChar(200)
+  senderPhone   String?  @map("sender_phone") @db.VarChar(30)
+  // L1.3/L1.4 — publish state for pre-publish SETNX gate + catch-up worker
+  publishedMessageId String? @map("published_message_id") @db.VarChar(100)
+  publishedAt        DateTime? @map("published_at")
+  publishAttempts    Int     @default(0) @map("publish_attempts")
+  // L1.5 — tamper-evidence. HMAC(contentHash + sourceId) over rawPayload at ingest.
+  sourceIntegrity    String? @map("source_integrity") @db.VarChar(64)
+  processedAt        DateTime? @map("processed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@unique([clientNumber, contentHash])
+  @@index([clientNumber, status])
+  @@index([clientNumber, sourceType, createdAt])
+  @@index([clientNumber, eventType])
+  @@index([clientNumber, senderEmail])
+  @@index([clientNumber, publishedMessageId])
+  @@map("feed_events")
+}
+
+// ─── M2: Agent Memory (cross-session state for ADK agents) ──────
+model AgentMemory {
+  id           String   @id @default(cuid())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  agentId      String   @map("agent_id") @db.VarChar(50) // brain | feed_curator | triage | action_executor | reflection | steering | shadow_scorer
+  memoryKey    String   @map("memory_key") @db.VarChar(200)
+  memoryValue  Json     @map("memory_value")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([clientNumber, agentId, memoryKey])
+  @@index([expiresAt])
+  @@map("agent_memory")
+}
+
+// ─── M3: Action Dependencies (cascading undo graph edges) ───────
+model ActionDependency {
+  id             Int      @id @default(autoincrement())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  parentActionId Int      @map("parent_action_id") // FK → agent_actions.id
+  childActionId  Int      @map("child_action_id")  // FK → agent_actions.id
+  dependencyType String   @map("dependency_type") @db.VarChar(30) // triggers | blocks | informs | compensates
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([parentActionId, childActionId])
+  @@index([clientNumber, parentActionId])
+  @@index([childActionId])
+  @@map("action_dependencies")
+}
+
+// ─── M4: Shadow Scores (Shadowing pipeline results) ─────────────
+model ShadowScore {
+  id                String   @id @default(cuid())
+  clientNumber      String   @map("client_number") @db.VarChar(20)
+  modelVersion      String   @map("model_version") @db.VarChar(50)
+  agentId           String   @map("agent_id") @db.VarChar(50)
+  ruleId            String?  @map("rule_id")
+  goldenDatasetId   String?  @map("golden_dataset_id")
+  score             Float
+  evaluationDetails Json     @map("evaluation_details")
+  evaluatedAt       DateTime @default(now()) @map("evaluated_at")
+
+  @@index([clientNumber, agentId, evaluatedAt])
+  @@index([ruleId, evaluatedAt])
+  @@map("shadow_scores")
+}
+
+// ─── M5: Golden Dataset (labeled historical decisions) ──────────
+model GoldenDataset {
+  id                 String   @id @default(cuid())
+  clientNumber       String   @map("client_number") @db.VarChar(20)
+  category           String   @db.VarChar(50) // action_type or archetype
+  inputHash          String   @map("input_hash") @db.VarChar(64)
+  inputText          String?  @map("input_text") @db.Text // small inputs only; large go to GCS
+  expectedOutput     Json     @map("expected_output")
+  scoreThreshold     Float    @map("score_threshold") // promotion gate (0.95 LOW, 0.98 MEDIUM)
+  riskTier           String   @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  cloudStorageRef    String?  @map("cloud_storage_ref") @db.VarChar(500) // gs://bucket/path for large payloads
+  lastEvaluatedAt    DateTime? @map("last_evaluated_at")
+  curatedBy          Int?     @map("curated_by") // FK → User
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([clientNumber, inputHash])
+  @@index([clientNumber, category, riskTier])
+  @@map("golden_dataset")
+}
+
+// ─── M6: KPI Values (Steering Wheel time-series) ────────────────
+model KpiValue {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  metricType   String   @map("metric_type") @db.VarChar(50)
+  metricValue  Float    @map("metric_value")
+  dimensions   Json?    // optional breakdown keys (by agent, by entity, etc.)
+  periodStart  DateTime @map("period_start")
+  periodEnd    DateTime @map("period_end")
+  computedAt   DateTime @default(now()) @map("computed_at")
+
+  @@index([clientNumber, metricType, periodStart])
+  @@map("kpi_values")
+}
+
+// ─── M7: Agent Config Overrides (per-tenant customization) ──────
+model AgentConfigOverride {
+  id             Int      @id @default(autoincrement())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  agentType      String   @map("agent_type") @db.VarChar(50)
+  configKey      String   @map("config_key") @db.VarChar(100)
+  configValue    Json     @map("config_value")
+  overrideReason String?  @map("override_reason") @db.Text
+  updatedBy      Int?     @map("updated_by") // FK → User
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([clientNumber, agentType, configKey])
+  @@map("agent_config_overrides")
+}
+
+// ─── M8: Notification Queue (unified dispatch) ──────────────────
+model NotificationQueue {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  recipientId  Int      @map("recipient_id") // FK → User
+  channel      String   @db.VarChar(20) // email | whatsapp | in_app | chat
+  payload      Json
+  status       String   @default("pending") @db.VarChar(20) // pending | sending | sent | failed | cancelled
+  retryCount   Int      @default(0) @map("retry_count")
+  scheduledAt  DateTime @default(now()) @map("scheduled_at")
+  sentAt       DateTime? @map("sent_at")
+  failedAt     DateTime? @map("failed_at")
+  errorMessage String?  @map("error_message") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, status, scheduledAt])
+  @@index([recipientId])
+  @@map("notification_queue")
+}
+
+// ─── M9: Action Undo Log (reverse-operation records) ────────────
+model ActionUndoLog {
+  id              Int      @id @default(autoincrement())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  actionId        Int      @map("action_id") // FK → agent_actions.id
+  reverseOperation Json    @map("reverse_operation") // what to call to undo
+  diffSnapshot    Json?    @map("diff_snapshot") // pre/post state for audit
+  executedBy      Int?     @map("executed_by") // FK → User (who triggered undo)
+  undoneAt        DateTime? @map("undone_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([actionId])
+  @@index([clientNumber, createdAt])
+  @@map("action_undo_log")
+}
+
+// ─── M10: Rule Lifecycle (Shadowing state machine) ──────────────
+model RuleLifecycle {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  ruleName      String   @map("rule_name") @db.VarChar(200)
+  state         String   @default("DRAFT") @db.VarChar(20) // DRAFT | SHADOW | ACTIVE | DEPRECATED | ARCHIVED
+  enteredAt     DateTime @default(now()) @map("entered_at")
+  goldenScore   Float?   @map("golden_score") // most recent Golden Dataset score
+  driftStd      Float?   @map("drift_std") // std dev shift over 7-day window
+  frozen        Boolean  @default(false) // true = promotion blocked by drift guard
+  frozenReason  String?  @map("frozen_reason") @db.Text
+  ruleSpec      Json     @map("rule_spec") // rule definition (conditions, actions, thresholds)
+  riskTier      String   @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  authorId      Int?     @map("author_id") // FK → User
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([clientNumber, ruleName])
+  @@index([clientNumber, state])
+  @@map("rule_lifecycle")
 }

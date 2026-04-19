@@ -1,0 +1,32 @@
+[project]
+name = "tmcai-agents"
+version = "0.1.0"
+description = "HaseebOS v15 — Gemini ADK agent worker for TMCAI"
+requires-python = ">=3.11"
+dependencies = [
+  "google-adk>=1.0.0",
+  "google-cloud-aiplatform>=1.60.0",
+  "google-cloud-pubsub>=2.20.0",
+  "google-cloud-bigquery>=3.20.0",
+  "google-cloud-secret-manager>=2.20.0",
+  "google-generativeai>=0.8.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "redis>=5.0.0",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.5.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "mypy>=1.11.0", "ruff>=0.6.0"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true

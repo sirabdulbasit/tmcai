@@ -22,7 +22,16 @@ logs/
 
 # Database dumps (never commit)
 *.sql.dump
+*.dump
 tmcai_data.sql
+
+# LibreOffice / Office lock files
+.~lock.*#
+
+# Python virtualenv (agent worker local dev)
+agents/.venv/
+**/__pycache__/
+*.pyc
 
 # OS files
 .DS_Store

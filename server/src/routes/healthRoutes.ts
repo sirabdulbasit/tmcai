@@ -172,4 +172,214 @@ router.get('/live', (_req, res) => {
   res.status(200).json({ status: 'alive' });
 });
 
+/**
+ * L4.1 — HaseebOS v15 deep health check across all 13 monitored components.
+ * Drives the Steering Wheel Health Check tab. Each component reports
+ * `status: 'up' | 'degraded' | 'down'` + a `detail` string.
+ */
+router.get('/deep', async (_req, res) => {
+  const [
+    postgres,
+    redis,
+    killSwitch,
+    feedAdapters,
+    pubsub,
+    agentWorker,
+    gemini,
+    handlerRegistry,
+    dlq,
+    notifications,
+    scheduler,
+    tokenRefresh,
+    cache,
+  ] = await Promise.all([
+    checkPostgres(),
+    checkRedis(),
+    checkKillSwitchState(),
+    checkFeedAdapters(),
+    checkPubSub(),
+    checkAgentWorker(),
+    checkGeminiDeep(),
+    checkHandlerRegistry(),
+    checkDlqDepth(),
+    checkNotificationQueue(),
+    checkScheduler(),
+    checkTokenRefresh(),
+    checkCacheHitRate(),
+  ]);
+  const components = [
+    postgres, redis, killSwitch, feedAdapters, pubsub, agentWorker, gemini,
+    handlerRegistry, dlq, notifications, scheduler, tokenRefresh, cache,
+  ];
+  const up = components.filter((c) => c.status === 'up').length;
+  const degraded = components.filter((c) => c.status === 'degraded').length;
+  const down = components.filter((c) => c.status === 'down').length;
+  res.status(200).json({
+    overall: down > 0 ? 'down' : degraded > 0 ? 'degraded' : 'up',
+    counts: { total: components.length, up, degraded, down },
+    components,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+type ComponentHealth = { name: string; status: 'up' | 'degraded' | 'down'; detail?: string; latencyMs?: number };
+
+async function checkPostgres(): Promise<ComponentHealth> {
+  const t0 = Date.now();
+  try {
+    await prisma.$queryRawUnsafe('SELECT 1');
+    return { name: 'postgres', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'postgres', status: 'down', detail: err.message };
+  }
+}
+
+async function checkRedis(): Promise<ComponentHealth> {
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const t0 = Date.now();
+    await getRedis().ping();
+    return { name: 'redis', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'redis', status: 'down', detail: err.message };
+  }
+}
+
+async function checkKillSwitchState(): Promise<ComponentHealth> {
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const keys = await getRedis().keys('kill_switch:*');
+    return {
+      name: 'kill_switch',
+      status: keys.length > 0 ? 'degraded' : 'up',
+      detail: keys.length > 0 ? `${keys.length} tenant(s) halted` : 'no active halts',
+    };
+  } catch (err: any) {
+    return { name: 'kill_switch', status: 'down', detail: err.message };
+  }
+}
+
+async function checkFeedAdapters(): Promise<ComponentHealth> {
+  try {
+    const { listAll } = await import('../services/adapters/adapterRegistry');
+    const count = listAll().length;
+    return {
+      name: 'feed_adapters',
+      status: count > 0 ? 'up' : 'degraded',
+      detail: `${count} adapter(s) registered`,
+    };
+  } catch (err: any) {
+    return { name: 'feed_adapters', status: 'down', detail: err.message };
+  }
+}
+
+async function checkPubSub(): Promise<ComponentHealth> {
+  if (process.env.PUBSUB_EMULATOR_HOST) {
+    return { name: 'pubsub', status: 'up', detail: `emulator at ${process.env.PUBSUB_EMULATOR_HOST}` };
+  }
+  return { name: 'pubsub', status: 'up', detail: 'using real GCP (not probed to avoid quota)' };
+}
+
+async function checkAgentWorker(): Promise<ComponentHealth> {
+  const url = process.env.AGENT_WORKER_URL || 'http://localhost:8080';
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${url}/health`);
+    if (!r.ok) return { name: 'agent_worker', status: 'degraded', detail: `HTTP ${r.status}` };
+    return { name: 'agent_worker', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'agent_worker', status: 'down', detail: err.message };
+  }
+}
+
+async function checkGeminiDeep(): Promise<ComponentHealth> {
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    return { name: 'gemini', status: 'degraded', detail: 'no API key configured' };
+  }
+  return { name: 'gemini', status: 'up', detail: 'API key configured' };
+}
+
+async function checkHandlerRegistry(): Promise<ComponentHealth> {
+  try {
+    const { listAll } = await import('../services/actions/handlerRegistry');
+    const n = listAll().length;
+    return { name: 'handler_registry', status: n >= 36 ? 'up' : 'degraded', detail: `${n} handlers registered` };
+  } catch (err: any) {
+    return { name: 'handler_registry', status: 'down', detail: err.message };
+  }
+}
+
+async function checkDlqDepth(): Promise<ComponentHealth> {
+  try {
+    const dlqCount = await prisma.feedEvent.count({ where: { status: 'dlq' } as any }).catch(() => 0);
+    return {
+      name: 'dlq_depth',
+      status: dlqCount === 0 ? 'up' : dlqCount < 10 ? 'degraded' : 'down',
+      detail: `${dlqCount} row(s) in feed_events dlq`,
+    };
+  } catch (err: any) {
+    return { name: 'dlq_depth', status: 'down', detail: err.message };
+  }
+}
+
+async function checkNotificationQueue(): Promise<ComponentHealth> {
+  try {
+    const pending = await (prisma as any).notificationQueue?.count?.({
+      where: { status: 'pending' },
+    }).catch(() => 0) ?? 0;
+    return {
+      name: 'notification_queue',
+      status: pending < 100 ? 'up' : 'degraded',
+      detail: `${pending} pending`,
+    };
+  } catch (err: any) {
+    return { name: 'notification_queue', status: 'down', detail: err.message };
+  }
+}
+
+async function checkScheduler(): Promise<ComponentHealth> {
+  try {
+    const n = await (prisma as any).scheduledTask?.count?.({ where: { isActive: true } }).catch(() => 0) ?? 0;
+    return { name: 'scheduler', status: 'up', detail: `${n} active tasks` };
+  } catch (err: any) {
+    return { name: 'scheduler', status: 'down', detail: err.message };
+  }
+}
+
+async function checkTokenRefresh(): Promise<ComponentHealth> {
+  try {
+    const expiringSoon = await prisma.user.count({
+      where: {
+        integrationStatus: 'active',
+        integrationTokenExpiry: { lt: new Date(Date.now() + 10 * 60 * 1000) },
+      } as any,
+    }).catch(() => 0);
+    return {
+      name: 'token_refresh',
+      status: expiringSoon === 0 ? 'up' : 'degraded',
+      detail: expiringSoon === 0 ? 'all tokens valid >10m' : `${expiringSoon} user token(s) expire within 10m`,
+    };
+  } catch (err: any) {
+    return { name: 'token_refresh', status: 'down', detail: err.message };
+  }
+}
+
+async function checkCacheHitRate(): Promise<ComponentHealth> {
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const info = await getRedis().info('stats');
+    const hits = parseInt(info.match(/keyspace_hits:(\d+)/)?.[1] ?? '0', 10);
+    const misses = parseInt(info.match(/keyspace_misses:(\d+)/)?.[1] ?? '0', 10);
+    const total = hits + misses;
+    const rate = total === 0 ? 1 : hits / total;
+    return {
+      name: 'cache_hit_rate',
+      status: rate > 0.7 ? 'up' : rate > 0.4 ? 'degraded' : 'down',
+      detail: `${(rate * 100).toFixed(1)}% (${hits}/${total})`,
+    };
+  } catch (err: any) {
+    return { name: 'cache_hit_rate', status: 'down', detail: err.message };
+  }
+}
+
 export default router;

@@ -6,6 +6,13 @@ import { errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/healthRoutes';
 import indexRoutes from './routes/indexRoutes';
 import chatRoutes from './routes/chatRoutes';
+import safetyRoutes from './routes/safetyRoutes';
+import riskRoutes from './routes/riskRoutes';
+import undoRoutes from './routes/undoRoutes';
+import steeringRoutes from './routes/steeringRoutes';
+import shadowRoutes from './routes/shadowRoutes';
+import feedRoutes from './routes/feedRoutes';
+import triageRoutes from './routes/triageRoutes';
 import authRoutes from './routes/authRoutes';
 import userAuthRoutes from './routes/userAuthRoutes';
 import conversationRoutes from './routes/conversationRoutes';
@@ -37,6 +44,8 @@ import decisionsRoutes from './routes/decisionsRoutes';
 import thoughtRoutes from './routes/thoughtRoutes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestLoggerMiddleware } from './middleware/requestLogger';
+import { killSwitchMiddleware } from './middleware/killSwitchMiddleware';
+import { agentAuthMiddleware } from './middleware/agentAuthMiddleware';
 
 const app = express();
 
@@ -76,7 +85,14 @@ app.use(cors({
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// HaseebOS v15 — agent auth: accept Bearer PLATFORM_API_TOKEN + X-Tenant-Id
+// MUST come before cookieParser so it can build req.user without cookie-based auth
+app.use(agentAuthMiddleware);
 app.use(cookieParser());
+
+// HaseebOS v15 — block mutations when tenant kill switch is active
+app.use(killSwitchMiddleware);
 
 // ── API v1 Router ──────────────────────────────────────────────────────
 const v1 = Router();
@@ -118,6 +134,14 @@ v1.use('/thoughts', thoughtRoutes);
 v1.use('/developer', developerRouter);
 v1.use('/index', indexRoutes);
 v1.use('/chat', chatRoutes);
+// HaseebOS v15 — safety + risk gating + cascading undo + steering wheel
+v1.use('/safety', safetyRoutes);
+v1.use('/risk', riskRoutes);
+v1.use('/actions', undoRoutes);
+v1.use('/steering', steeringRoutes);
+v1.use('/shadow', shadowRoutes);
+v1.use('/feed', feedRoutes);
+v1.use('/triage', triageRoutes);
 
 // Mount versioned API
 app.use('/api/v1', v1);

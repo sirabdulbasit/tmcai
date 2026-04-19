@@ -1,0 +1,51 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=$_IMAGE
+      - --file=Dockerfile
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: [push, $_IMAGE]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - $_SERVICE
+      - --image=$_IMAGE
+      - --region=$_REGION
+      - --platform=managed
+      - --service-account=$_SERVICE_ACCOUNT
+      # No --vpc-connector: using Ubuntu Redis over public IP (auth'd).
+      # If Memorystore is adopted later, add:
+      #   --vpc-connector=projects/$PROJECT_ID/locations/us-central1/connectors/tmcai-vpc
+      #   --vpc-egress=private-ranges-only
+      - --min-instances=1
+      - --max-instances=10
+      - --cpu=2
+      - --memory=2Gi
+      - --timeout=300
+      - --concurrency=10
+      - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=$_REGION,REDIS_HOST=$_REDIS_HOST,REDIS_PORT=$_REDIS_PORT,PLATFORM_API_URL=$_PLATFORM_API_URL,TMC_CONTEXT_API_URL=$_TMC_CONTEXT_API_URL,KNOW_API_URL=$_KNOW_API_URL
+      - --set-secrets=PLATFORM_API_TOKEN=platform-api-token:latest,REDIS_AUTH=memorystore-auth:latest,GEMINI_API_KEY=tmcai-gemini-api-key:latest,TMC_CONTEXT_API_KEY=tmcai-tmc-context-api-key:latest,KNOW_API_KEY=tmcai-know-api-key:latest
+
+substitutions:
+  _SERVICE: tmcai-agents
+  _REGION: us-central1
+  _IMAGE: us-central1-docker.pkg.dev/$PROJECT_ID/tmcai/agents:latest
+  _SERVICE_ACCOUNT: tmcai-agent-worker@$PROJECT_ID.iam.gserviceaccount.com
+  # Ubuntu server's public IP for Redis. Override via --substitutions=_REDIS_HOST=...
+  _REDIS_HOST: 127.0.0.1
+  _REDIS_PORT: "6379"
+  # Platform API (Cloud Run URL of tmcai-server in prod)
+  _PLATFORM_API_URL: http://host.docker.internal:4002
+  # External Knowledge APIs — override at deploy time when URLs are provisioned
+  _TMC_CONTEXT_API_URL: ""
+  _KNOW_API_URL: ""
+
+images:
+  - $_IMAGE
+
+options:
+  logging: CLOUD_LOGGING_ONLY
