@@ -39,6 +39,11 @@ router.get('/available', requireAuth, async (req: Request, res: Response) => {
     // with adapters that don't yet read or write data.
     const { getReadiness } = await import('../services/connectorRegistry');
     const stamped = available.map((c: any) => ({ ...c, readiness: getReadiness(c.slug) }));
+    // Connection state can change between requests (OAuth callback in a
+    // different tab, admin enable/disable). Force re-validation every
+    // time so two browser tabs don't show divergent connection statuses.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
     res.json({ connectors: stamped });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

@@ -127,6 +127,39 @@ export default function ConnectorsPage() {
 
   useEffect(() => { load(); loadRedirectUri(); }, []);
 
+  // ── Cross-tab + cross-window state refresh ─────────────────────────
+  // OAuth flows commonly happen in a second tab/window (Google's
+  // accountchooser opens a new tab). When OAuth completes, only that
+  // tab learns about the new connection — the original tab keeps
+  // showing "Connect" until something forces a refetch. The fix:
+  // refetch whenever this tab regains focus or visibility, and also
+  // listen for a same-origin BroadcastChannel ping that other tabs
+  // can send when they see a successful connect.
+  useEffect(() => {
+    let bc;
+    const onFocus = () => load();
+    const onVisible = () => { if (!document.hidden) load(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    try {
+      bc = new BroadcastChannel('myos-connectors');
+      bc.onmessage = (e) => { if (e.data?.type === 'refresh') load(); };
+    } catch { /* older browser — focus/visibility cover the common case */ }
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+      try { bc?.close(); } catch {}
+    };
+  }, []);
+
+  // After a successful OAuth callback in THIS tab, broadcast so other
+  // tabs of the same app reload their connector list immediately.
+  useEffect(() => {
+    const s = searchParams.get('success');
+    if (s !== 'true') return;
+    try { new BroadcastChannel('myos-connectors').postMessage({ type: 'refresh' }); } catch {}
+  }, [searchParams]);
+
   async function loadRedirectUri() {
     try { const r = await api.get('/connectors/oauth/redirect-uri'); setRedirectUri(r.data.redirectUri); } catch { setRedirectUri('http://localhost:4002/api/v1/connectors/oauth/callback'); }
   }
