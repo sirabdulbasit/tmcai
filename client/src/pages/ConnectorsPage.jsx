@@ -550,11 +550,33 @@ export default function ConnectorsPage() {
                   </>
                 ) : needs ? (
                   <>
-                    <strong>Brain memory not built yet.</strong>
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-                      One click scribes all your connected sources — pulls history and builds sender-memory pages.
-                      {(scribeState.unscribedNames?.length ?? 0) > 0 && ` Unscribed: ${scribeState.unscribedNames.join(', ')}.`}
+                    <strong>
+                      ⚠ Pending scribe — {scribeState.unscribedNames?.length ?? 0} connector
+                      {(scribeState.unscribedNames?.length ?? 0) === 1 ? '' : 's'} waiting
+                    </strong>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
+                      Brain has no memory from these sources yet. Click <em>Scribe all</em> to pull history and build sender-memory pages.
                     </div>
+                    {(scribeState.unscribedNames?.length ?? 0) > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                        {scribeState.unscribedNames.map((nm) => (
+                          <span
+                            key={nm}
+                            style={{
+                              fontSize: 11,
+                              padding: '3px 9px',
+                              borderRadius: 12,
+                              background: 'rgba(204,107,74,0.18)',
+                              border: '1px solid rgba(204,107,74,0.45)',
+                              color: '#cc6b4a',
+                              fontWeight: 600,
+                            }}
+                          >
+                            ⏳ {nm}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <>
@@ -609,6 +631,10 @@ export default function ConnectorsPage() {
               {items.map(c => {
                 const st = c.userConnector?.status;
                 const cardSt = st === 'connected' ? s.cardConnected : st === 'error' ? s.cardError : st === 'configured' ? s.cardConfigured : {};
+                const scribeItem = (scribeState.items || []).find((it) => it.slug === c.slug);
+                const scribePending = st === 'connected' && scribeItem?.supportsScribe && !scribeItem.lastScribedAt && !scribeItem.isRunning;
+                const scribeRunning = scribeItem?.isRunning;
+                const scribeDone = st === 'connected' && scribeItem?.supportsScribe && scribeItem.lastScribedAt && !scribeItem.isRunning;
                 return (
                   <div key={c.id} style={{ ...s.card, ...cardSt }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -619,6 +645,54 @@ export default function ConnectorsPage() {
                             <span style={s.statusDot(st || 'disconnected')} />
                             {c.name}
                             {st && STATUS_LABEL[st] && <span style={s.badge(STATUS_LABEL[st].color)}>{STATUS_LABEL[st].text}</span>}
+                            {scribePending && (
+                              <span
+                                title="Brain has no memory from this source yet — click Scribe all in the banner above."
+                                style={{
+                                  fontSize: 10,
+                                  padding: '2px 7px',
+                                  marginLeft: 6,
+                                  borderRadius: 10,
+                                  background: 'rgba(204,107,74,0.18)',
+                                  border: '1px solid rgba(204,107,74,0.45)',
+                                  color: '#cc6b4a',
+                                  fontWeight: 700,
+                                  letterSpacing: 0.3,
+                                }}
+                              >⏳ PENDING SCRIBE</span>
+                            )}
+                            {scribeRunning && (
+                              <span
+                                title="Brain is pulling history right now."
+                                style={{
+                                  fontSize: 10,
+                                  padding: '2px 7px',
+                                  marginLeft: 6,
+                                  borderRadius: 10,
+                                  background: 'rgba(96,165,250,0.18)',
+                                  border: '1px solid rgba(96,165,250,0.45)',
+                                  color: '#60a5fa',
+                                  fontWeight: 700,
+                                  letterSpacing: 0.3,
+                                }}
+                              >⏳ SCRIBING…</span>
+                            )}
+                            {scribeDone && (
+                              <span
+                                title={`Last scribed: ${new Date(scribeItem.lastScribedAt).toLocaleString()}`}
+                                style={{
+                                  fontSize: 10,
+                                  padding: '2px 7px',
+                                  marginLeft: 6,
+                                  borderRadius: 10,
+                                  background: 'rgba(74,222,128,0.12)',
+                                  border: '1px solid rgba(74,222,128,0.35)',
+                                  color: '#4ade80',
+                                  fontWeight: 700,
+                                  letterSpacing: 0.3,
+                                }}
+                              >✓ SCRIBED</span>
+                            )}
                           </div>
                           <div style={s.desc}>{c.description}</div>
                           {st === 'connected' && <div style={{ fontSize: 11, color: '#4ade80', marginTop: 4 }}>Connected {c.userConnector?.lastSyncAt ? `• Last sync: ${new Date(c.userConnector.lastSyncAt).toLocaleString()}` : ''}</div>}
