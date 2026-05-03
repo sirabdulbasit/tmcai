@@ -22,6 +22,72 @@ export interface ConnectorTypeSeed {
   icon: string;
 }
 
+/**
+ * Honest readiness state per slug.
+ *
+ *   production  Connection ceremony AND data path both work end-to-end.
+ *               Admins/users can pair via Connectors UI and Brain
+ *               actually reads/writes data via this connector today.
+ *   beta        Connection works, but data path is partial. UI should
+ *               warn before pairing.
+ *   declared    Slug exists in registry but neither connection nor
+ *               data path is wired. Hidden from default UI; surfaced
+ *               only when admin enables "show experimental connectors".
+ */
+export type ConnectorReadiness = 'production' | 'beta' | 'declared';
+
+/**
+ * Single source of truth for what's actually buildable today. Sync with
+ * implementation: when an OAuth flow + adapter both ship, promote
+ * 'declared' → 'beta' → 'production'.
+ */
+export const CONNECTOR_READINESS: Record<string, ConnectorReadiness> = {
+  // Google family — full OAuth + adapters live
+  gmail: 'production',
+  google_calendar: 'production',
+  google_tasks: 'production',
+  google_chat: 'production',
+  google_drive_personal: 'production',
+  google_drive_org: 'production',
+  google_sheets: 'production',
+  bigquery: 'declared',
+
+  // Microsoft family — OAuth + adapters live for outlook + calendar
+  // + teams + onedrive. ms_todo OAuth ready, adapter not yet.
+  outlook: 'production',
+  outlook_calendar: 'production',
+  ms_todo: 'beta',
+  ms_teams: 'production',
+  onedrive_personal: 'production',
+  onedrive_org: 'beta',
+
+  // Messaging — Slack OAuth + inbound adapter + send_slack_message action all live
+  slack: 'production',
+  ms_teams_org: 'declared',
+  telegram: 'declared',
+  whatsapp: 'beta',           // Meta Business API skeleton, not active
+  whatsapp_personal: 'production',  // WebJS pairing live
+
+  // Notion / Drive / FACL
+  notion_personal: 'production',
+  notion_tasks: 'declared',
+
+  // Tasks
+  trello: 'declared',
+  ms_todo_personal: 'declared',
+  todoist: 'declared',
+  clickup_personal: 'declared',
+
+  // Social / video
+  zoom: 'declared',
+  linkedin_personal: 'declared',
+  twitter_x: 'declared',
+};
+
+export function getReadiness(slug: string): ConnectorReadiness {
+  return CONNECTOR_READINESS[slug] ?? 'declared';
+}
+
 // ─── Personal Connectors ──────────────────────────────────────────
 
 const personalConnectors: ConnectorTypeSeed[] = [
@@ -144,12 +210,23 @@ const personalConnectors: ConnectorTypeSeed[] = [
   // Messaging
   {
     slug: 'whatsapp',
-    name: 'WhatsApp',
-    description: 'Send and receive WhatsApp messages',
+    name: 'WhatsApp (Meta Cloud API)',
+    description: 'Send and receive WhatsApp messages via Meta Cloud API (tenant-scoped).',
     category: 'messaging',
     scope: 'personal',
     authMethod: 'webhook',
     configSchema: { fields: [{ name: 'phoneNumber', label: 'Phone Number', type: 'tel', required: true }] },
+    capabilities: ['read', 'write'],
+    icon: 'whatsapp',
+  },
+  {
+    slug: 'whatsapp_personal',
+    name: 'WhatsApp (Personal)',
+    description: 'Pair your personal WhatsApp via QR scan. Brain reads incoming chats, replies, and marks as read.',
+    category: 'messaging',
+    scope: 'personal',
+    authMethod: 'qr_pair',
+    configSchema: { fields: [] },
     capabilities: ['read', 'write'],
     icon: 'whatsapp',
   },

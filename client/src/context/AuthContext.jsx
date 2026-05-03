@@ -3,12 +3,22 @@ import api from '../services/api';
 
 const AuthContext = createContext(null);
 
+// Apply the user's chosen font scale to :root as --fs-scale. Persisted in
+// the user's notificationPreferences.ui.fontScale via /profile/ui-prefs.
+function applyFontScale(scale) {
+  const s = typeof scale === 'number' && isFinite(scale) ? scale : 1;
+  document.documentElement.style.setProperty('--fs-scale', String(s));
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [appName, setAppName] = useState('');
   const [aiName, setAiName] = useState('');
   const [logoUrl, setLogoUrl] = useState('/api/health/logo');
   const [loading, setLoading] = useState(true);
+  const [fontScale, setFontScaleState] = useState(1);
+  const [appDefaultFontScale, setAppDefaultFontScale] = useState(1);
+  const [fontScaleIsOverride, setFontScaleIsOverride] = useState(false);
 
   useEffect(() => {
     // Fetch app name + check session in parallel
@@ -25,9 +35,40 @@ export function AuthProvider({ children }) {
           api.get('/chat/welcome').then(w => {
             if (w.data?.aiName) setAiName(w.data.aiName);
           }).catch(() => {});
+          // Per-user UI prefs (font scale). Applied immediately so every
+          // screen renders at the user's chosen size from first paint.
+          // Response now includes { fontScale, userOverride, appDefault }
+          // — fontScale is already the effective merged value.
+          api.get('/profile/ui-prefs').then(u => {
+            const s = u.data?.fontScale ?? 1;
+            setFontScaleState(s);
+            setAppDefaultFontScale(u.data?.appDefault ?? 1);
+            setFontScaleIsOverride(u.data?.userOverride != null);
+            applyFontScale(s);
+          }).catch(() => {});
         }
       }).catch(() => {}),
     ]).finally(() => setLoading(false));
+  }, []);
+
+  const setFontScale = useCallback(async (next) => {
+    const clamped = Math.min(1.4, Math.max(0.85, Number(next) || 1));
+    setFontScaleState(clamped);
+    setFontScaleIsOverride(true);
+    applyFontScale(clamped);
+    // Persist; swallow network errors (user still sees the change locally).
+    api.put('/profile/ui-prefs', { fontScale: clamped }).catch(() => {});
+  }, []);
+
+  const resetFontScaleToDefault = useCallback(async () => {
+    try {
+      const { data } = await api.put('/profile/ui-prefs', { fontScale: null });
+      const s = data?.fontScale ?? 1;
+      setFontScaleState(s);
+      setFontScaleIsOverride(false);
+      setAppDefaultFontScale(data?.appDefault ?? s);
+      applyFontScale(s);
+    } catch { /* keep local state if network fails */ }
   }, []);
 
   const login = useCallback(async (email, password) => {
@@ -45,7 +86,11 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, appName, aiName, logoUrl, loading, login, logout }}>
+    <AuthContext.Provider value={{
+      user, appName, aiName, logoUrl, loading, login, logout,
+      fontScale, appDefaultFontScale, fontScaleIsOverride,
+      setFontScale, resetFontScaleToDefault,
+    }}>
       {children}
     </AuthContext.Provider>
   );

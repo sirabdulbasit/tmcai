@@ -1,0 +1,594 @@
+/**
+ * MyOS component library — shared styles for Button, Pill, Card, Input,
+ * AppShell, Rail, TopBar, Avatar, Dot, etc. Class-based to avoid Vite's
+ * CSS-module quirks; prefix `ui-` to prevent collisions.
+ */
+
+/* ─── Button ─── */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  border: 1px solid transparent;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ui-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ui-btn-primary { background: var(--accent); color: var(--accent-text); }
+.ui-btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.ui-btn-primary:active:not(:disabled) { background: var(--accent-active); }
+.ui-btn-secondary { background: var(--bg-2); color: var(--text); border-color: var(--border); }
+.ui-btn-secondary:hover:not(:disabled) { background: var(--bg-3); border-color: var(--border-strong); }
+.ui-btn-ghost { background: transparent; color: var(--text-muted); }
+.ui-btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.ui-btn-danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.ui-btn-danger:hover:not(:disabled) { background: var(--danger-dim); }
+
+.ui-btn-sm { font-size: var(--fs-sm); padding: var(--s-1) var(--s-3); }
+.ui-btn-xs { font-size: var(--fs-xs); padding: 2px var(--s-2); border-radius: var(--r-sm); }
+.ui-btn-lg { font-size: var(--fs-lg); padding: var(--s-3) var(--s-5); }
+.ui-btn-block { width: 100%; }
+
+.ui-btn-icon {
+  padding: var(--s-2);
+  width: 32px;
+  height: 32px;
+}
+.ui-btn-icon.ui-btn-sm { width: 28px; height: 28px; padding: var(--s-1); }
+
+/* ─── Pill / Badge ─── */
+.ui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: 2px var(--s-2);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  background: var(--bg-3);
+  color: var(--text-muted);
+}
+.ui-pill-success { background: var(--success-dim); color: var(--success); }
+.ui-pill-warning { background: var(--warning-dim); color: var(--warning); }
+.ui-pill-danger { background: var(--danger-dim); color: var(--danger); }
+.ui-pill-info { background: var(--info-dim); color: var(--info); }
+.ui-pill-accent { background: var(--accent-dim); color: var(--accent); }
+
+/* ─── Dot (status indicator) ─── */
+.ui-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ui-dot-up { background: var(--success); box-shadow: 0 0 6px rgba(59, 193, 139, 0.6); }
+.ui-dot-degraded { background: var(--warning); }
+.ui-dot-down { background: var(--danger); }
+.ui-dot-muted { background: var(--text-dim); }
+
+/* ─── Avatar ─── */
+.ui-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #4a5065, #2a2e3a);
+  color: var(--text);
+  text-transform: uppercase;
+}
+.ui-avatar-sm { width: 22px; height: 22px; font-size: var(--fs-xs); }
+.ui-avatar-md { width: 32px; height: 32px; font-size: var(--fs-md); }
+.ui-avatar-lg { width: 40px; height: 40px; font-size: var(--fs-base); }
+.ui-avatar-accent { background: linear-gradient(135deg, var(--accent), #8b3a1e); color: var(--accent-text); }
+
+/* ─── Field / Input / Textarea / Select ─── */
+.ui-field {
+  display: block;
+  margin-bottom: var(--s-4);
+}
+.ui-label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-bottom: var(--s-1);
+  font-weight: var(--fw-medium);
+}
+.ui-input, .ui-textarea, .ui-select {
+  width: 100%;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.ui-input:focus, .ui-textarea:focus, .ui-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-focus);
+}
+.ui-textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+.ui-input-sm { padding: var(--s-1) var(--s-2); font-size: var(--fs-sm); }
+
+/* ─── Card ─── */
+.ui-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--s-5);
+}
+.ui-card-sm { padding: var(--s-3); }
+.ui-card-lg { padding: var(--s-8); }
+.ui-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--border);
+}
+.ui-card-title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); margin: 0 0 var(--s-1); }
+.ui-card-sub { color: var(--text-muted); font-size: var(--fs-sm); margin: 0; }
+
+/* ─── AppShell ─── */
+.ui-app {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  min-height: 100vh;
+  background: var(--bg-0);
+}
+.ui-canvas {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0; /* allow grid children to shrink */
+}
+.ui-page {
+  flex: 1;
+  padding: var(--s-6);
+  overflow: auto;
+}
+.ui-page-title {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-semibold);
+  margin: 0 0 var(--s-2);
+}
+.ui-page-sub {
+  color: var(--text-muted);
+  margin: 0 0 var(--s-6);
+}
+
+/* ─── Rail ─── */
+.ui-rail {
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--s-4) 0;
+  gap: var(--s-1);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: visible;
+}
+.ui-rail::-webkit-scrollbar { display: none; }
+.ui-rail-logo {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, var(--accent), #8b3a1e);
+  border-radius: var(--r-md);
+  margin-bottom: var(--s-5);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.ui-rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  align-items: center;
+  padding: var(--s-2) 0;
+  width: 100%;
+}
+.ui-rail-section + .ui-rail-section {
+  border-top: 1px solid var(--border);
+  margin-top: var(--s-2);
+  padding-top: var(--s-3);
+}
+.ui-rail-spacer { flex: 1; min-height: var(--s-6); }
+.ui-rail-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  transition: background var(--t-fast), color var(--t-fast);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.ui-rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.ui-rail-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.ui-rail-btn.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+}
+.ui-rail-btn svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+}
+.ui-rail-tooltip {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  padding: 4px var(--s-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast);
+  z-index: var(--z-dropdown);
+}
+.ui-rail-btn:hover .ui-rail-tooltip { opacity: 1; }
+
+/* ─── TopBar ─── */
+.ui-topbar {
+  height: var(--topbar-height);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--s-5);
+  gap: var(--s-4);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-topbar);
+}
+.ui-topbar-title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  flex: 1;
+  min-width: 0;
+}
+.ui-topbar-spacer { flex: 1; }
+.ui-topbar-search {
+  position: relative;
+  width: 320px;
+}
+.ui-topbar-search input {
+  padding-left: 32px;
+}
+.ui-topbar-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.ui-topbar-user {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.ui-topbar-user:hover { background: var(--bg-hover); }
+.ui-topbar-user-name {
+  font-size: var(--fs-sm);
+}
+.ui-topbar-tenant {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  padding: 3px var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+
+/* ─── Divider ─── */
+.ui-divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--s-4) 0;
+}
+
+/* ─── Risk banner ─── */
+.ui-risk-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  border: 1px solid;
+}
+.ui-risk-low { border-color: var(--success); background: var(--success-dim); color: var(--success); }
+.ui-risk-medium { border-color: var(--warning); background: var(--warning-dim); color: var(--warning); }
+.ui-risk-high { border-color: var(--danger); background: var(--danger-dim); color: var(--danger); }
+
+/* ─── Empty state ─── */
+.ui-empty {
+  padding: var(--s-8);
+  text-align: center;
+  color: var(--text-dim);
+}
+.ui-empty-title { color: var(--text-muted); margin-bottom: var(--s-2); font-weight: var(--fw-medium); }
+
+/* ─── List item (generic — used across wiki, approvals, custom actions) ─── */
+.ui-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.ui-list-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.ui-list-item.active {
+  background: var(--bg-3);
+  border-left: 3px solid var(--accent);
+  padding-left: calc(var(--s-4) - 3px);
+}
+.ui-list-item-body { flex: 1; min-width: 0; }
+.ui-list-item-title { font-weight: var(--fw-medium); display: flex; align-items: center; gap: var(--s-2); }
+.ui-list-item-meta { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; display: flex; gap: var(--s-3); flex-wrap: wrap; }
+
+/* ─── Grid helpers ─── */
+.ui-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+.ui-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-4); }
+.ui-grid-auto { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--s-3); }
+.ui-flex { display: flex; }
+.ui-flex-col { display: flex; flex-direction: column; }
+.ui-gap-1 { gap: var(--s-1); }
+.ui-gap-2 { gap: var(--s-2); }
+.ui-gap-3 { gap: var(--s-3); }
+.ui-gap-4 { gap: var(--s-4); }
+.ui-flex-1 { flex: 1; min-width: 0; }
+
+/* Spin animation for loading icons (e.g. Day Brief Sync button) */
+@keyframes ui-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin { animation: ui-spin 1s linear infinite; transform-origin: 50% 50%; }
+
+/* Mobile topbar + backdrop are hidden on desktop. Mobile media query
+   below flips them on. */
+.ui-mobile-topbar { display: none; }
+.ui-rail-backdrop { display: none; }
+
+/* ════════════════════════════════════════════════════════════════════
+   MOBILE MODE  (< 768px)
+   Purely additive overrides on top of the desktop layout. Strategy:
+     · Rail becomes a slide-out drawer triggered by a hamburger
+     · Single-column page layout, full-width
+     · Volume strip → 2-column grid (was 4-5 wide)
+     · Tables (Contacts, Withheld, etc.) reflow as cards via .ui-mobile-card-list
+     · Section headers stay tappable; hover effects gated to fine-pointer devices
+   No desktop styles are changed — every rule is wrapped in @media (max-width: 768px)
+   ════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* App grid → single column; rail slides in from left as drawer */
+  .ui-app {
+    grid-template-columns: 1fr;
+  }
+  .ui-rail {
+    /* Hidden by default on mobile; toggled via .ui-rail--open class
+       set by the hamburger button (added in SteeringWheelPage). */
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 80;
+    width: var(--rail-width, 64px);
+    transform: translateX(-100%);
+    transition: transform 220ms ease-out;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+  }
+  .ui-rail--open { transform: translateX(0); }
+
+  /* Backdrop scrim that closes the drawer when tapped. Rendered next
+     to the rail; only visible alongside .ui-rail--open. */
+  .ui-rail-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 79;
+  }
+  .ui-rail-backdrop--open { display: block; }
+
+  /* Mobile top bar — shows hamburger + tenant + user. Hidden on desktop
+     (display: none default above), shown via this override on mobile. */
+  .ui-mobile-topbar {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-1);
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .ui-mobile-hamburger {
+    width: 40px; height: 40px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .ui-mobile-hamburger:active { background: var(--bg-hover); }
+  .ui-mobile-topbar-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Page padding tightens on mobile */
+  .ui-page {
+    padding: var(--s-3);
+  }
+  .ui-page-title {
+    font-size: var(--fs-xl);
+  }
+
+  /* Day Brief tweaks — referenced via the page-level class wrapper */
+  .ui-page section,
+  .ui-page header {
+    max-width: 100% !important;
+  }
+
+  /* Volume strip: 4-5 cols on desktop → 2 cols on mobile */
+  .ui-page > section[style*="grid-template-columns"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: var(--s-2) !important;
+  }
+
+  /* Section headers stay tappable; reduce padding so it fits narrow */
+  .dbp-section-header {
+    padding: 10px 12px !important;
+    margin-left: -8px !important;
+    margin-right: -8px !important;
+  }
+
+  /* Disable hover effects on touch — touch devices don't have
+     proper hover, and the leftover styles look stuck. */
+  @media (hover: none) {
+    .dbp-section-header:hover {
+      background: transparent !important;
+      border-color: var(--border) !important;
+    }
+    .dbp-section-header.is-closed:hover > span:first-child,
+    .dbp-section-header.is-open:hover > span:first-child {
+      background: var(--bg-2) !important;
+      color: var(--accent) !important;
+    }
+  }
+
+  /* Help panel: keep same shape but more padding-friendly on narrow */
+  .ui-page section > div[style*="border-left: 3px solid"] {
+    padding: 10px 12px !important;
+    font-size: 13px !important;
+    line-height: 1.5 !important;
+  }
+
+  /* Rail tooltips — useless on touch, hide */
+  .ui-rail-tooltip { display: none !important; }
+
+  /* Tables — when wrapped in .ui-mobile-card-list, individual rows
+     become stacked cards instead of a horizontal-scrolling table.
+     Apply this class on the parent container in pages where tables
+     are too wide for narrow viewports (Contacts, Withheld). */
+  .ui-mobile-card-list table { display: block; }
+  .ui-mobile-card-list thead { display: none; }
+  .ui-mobile-card-list tbody { display: block; }
+  .ui-mobile-card-list tr {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: var(--bg-1);
+  }
+  .ui-mobile-card-list td {
+    padding: 0 !important;
+    border: 0 !important;
+    text-align: left !important;
+    font-size: 13px;
+  }
+  /* Pre-row label injected via data-label attribute (CSS::before) so
+     the user can still see what each value means without column headers. */
+  .ui-mobile-card-list td[data-label]::before {
+    content: attr(data-label) ': ';
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  /* Modal full-screen on mobile — modals as cards on desktop */
+  .ui-page form[onsubmit] {
+    max-width: 100% !important;
+  }
+
+  /* Toast stack — bottom-center on mobile so thumb can dismiss */
+  div[style*="position: fixed"][style*="bottom: 24px"][style*="right: 24px"] {
+    right: 12px !important;
+    bottom: 12px !important;
+    left: 12px !important;
+    max-width: none !important;
+  }
+}
+
+/* Smaller phones — extra tightening below 480px */
+@media (max-width: 480px) {
+  .ui-page {
+    padding: 10px;
+  }
+  .ui-page-title {
+    font-size: 18px;
+  }
+  /* Volume strip → 1 col on very narrow */
+  .ui-page > section[style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+}

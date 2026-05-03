@@ -107,6 +107,12 @@ export abstract class FeedAdapter {
    * not override it.
    */
   async storeAndPublish(event: NormalizedEvent, tenantId: string, traceId?: string): Promise<IngestResult> {
+    // If the adapter attached a userId via payload.userId (e.g. Gmail, GCal,
+    // Tasks each stamp the connector-owner's id), lift it to the column so
+    // per-user queries (Day Brief volume, triage) scope correctly.
+    const payloadUserId = typeof (event.payload as any)?.userId === 'number'
+      ? ((event.payload as any).userId as number)
+      : undefined;
     const input: RawEventInput = {
       clientNumber: tenantId,
       sourceType: this.sourceType,
@@ -115,6 +121,7 @@ export abstract class FeedAdapter {
       traceId,
       eventType: event.eventType,
       sender: event.sender,
+      userId: payloadUserId,
     };
     return feedIngest(input);
   }

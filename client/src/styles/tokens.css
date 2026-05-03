@@ -1,0 +1,134 @@
+/**
+ * MyOS design tokens — single source of truth for colors, spacing,
+ * typography, radii, shadows, and layout constants. Every new component
+ * references these variables; no raw values in component styles.
+ */
+
+:root {
+  /* ─── Colors — surfaces ─── */
+  --bg-0: #0a0a0b;              /* app background */
+  --bg-1: #111113;              /* panels, sidebar */
+  --bg-2: #17181c;              /* inputs, cards */
+  --bg-3: #1f2126;              /* hover states, nested panels */
+  --bg-hover: #1d1f24;
+  --bg-active: #22252c;
+
+  /* ─── Colors — borders & dividers ─── */
+  --border: #262830;
+  --border-strong: #3a3d46;
+  --border-accent: #5a2f1f;
+
+  /* ─── Colors — text ─── */
+  --text: #e7e9ee;
+  --text-muted: #9ba0aa;
+  --text-dim: #6b6f78;
+  --text-disabled: #4a4d56;
+
+  /* ─── Colors — brand (TMC orange) ─── */
+  --accent: #cc6b4a;
+  --accent-hover: #d97a59;
+  --accent-active: #bb5e3e;
+  --accent-dim: #5a2f1f;
+  --accent-text: #ffffff;
+
+  /* ─── Colors — semantic ─── */
+  --success: #3bc18b;
+  --success-dim: rgba(59, 193, 139, 0.15);
+  --warning: #e0a43c;
+  --warning-dim: rgba(224, 164, 60, 0.15);
+  --danger: #e25c5c;
+  --danger-dim: rgba(226, 92, 92, 0.15);
+  --info: #5a9fd7;
+  --info-dim: rgba(90, 159, 215, 0.15);
+
+  /* ─── Typography ─── */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", Consolas, monospace;
+
+  /* Type scale — base values. Multiplied by --fs-scale so each user
+     can scale up/down via Settings → Display. Default 1.0 = the values
+     below; 0.85–1.4 permitted. */
+  --fs-scale: 1;
+  --fs-xs:   calc(13px * var(--fs-scale));
+  --fs-sm:   calc(14px * var(--fs-scale));
+  --fs-md:   calc(15px * var(--fs-scale));
+  --fs-base: calc(16px * var(--fs-scale));
+  --fs-lg:   calc(18px * var(--fs-scale));
+  --fs-xl:   calc(24px * var(--fs-scale));
+  --fs-2xl:  calc(28px * var(--fs-scale));
+  --fs-3xl:  calc(36px * var(--fs-scale));
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.6;
+
+  /* ─── Spacing — 4px rhythm ─── */
+  --s-0: 0;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ─── Radii ─── */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-pill: 999px;
+
+  /* ─── Shadows ─── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 20px 40px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 2px var(--accent-dim);
+
+  /* ─── Layout ─── */
+  --rail-width: 64px;
+  --rail-width-expanded: 220px;
+  --topbar-height: 56px;
+  --content-max: 1200px;
+  --reading-max: 780px;
+
+  /* ─── Transitions ─── */
+  --t-fast: 0.12s ease;
+  --t-base: 0.18s ease;
+  --t-slow: 0.3s ease;
+
+  /* ─── Z-index ─── */
+  --z-base: 1;
+  --z-dropdown: 10;
+  --z-sticky: 20;
+  --z-topbar: 50;
+  --z-modal: 100;
+  --z-toast: 200;
+}
+
+/* Light mode scaffold — switch body.light-mode to activate. Not wired yet. */
+body.light-mode {
+  --bg-0: #ffffff;
+  --bg-1: #f7f7f8;
+  --bg-2: #f0f0f2;
+  --bg-3: #e4e4e7;
+  --bg-hover: #ebebee;
+  --bg-active: #e0e0e4;
+  --border: #dcdce0;
+  --border-strong: #c0c0c6;
+  --text: #1a1b20;
+  --text-muted: #525660;
+  --text-dim: #7a7e87;
+  --text-disabled: #b0b3bb;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 20px 40px rgba(0, 0, 0, 0.1);
+}

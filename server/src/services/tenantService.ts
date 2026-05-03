@@ -106,10 +106,22 @@ export async function listTenants() {
 
 /**
  * Deactivate a tenant (soft delete).
+ *
+ * M11 — Also evict the tenant's cached WhatsApp provider so that a
+ * disabled tenant can't keep sending messages through an instance that
+ * was warmed up before the flag flipped. The import is dynamic to avoid
+ * a circular dependency at module load.
  */
 export async function deactivateTenant(clientNumber: string) {
-  return prisma.tenant.update({
+  const result = await prisma.tenant.update({
     where: { clientNumber },
     data: { isActive: false },
   });
+  try {
+    const { clearProviderCache } = await import('./whatsapp/WhatsAppManager');
+    clearProviderCache(clientNumber);
+  } catch {
+    // Cache clear is best-effort; never fail the deactivation on it.
+  }
+  return result;
 }

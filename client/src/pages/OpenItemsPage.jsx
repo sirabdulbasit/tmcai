@@ -4,27 +4,27 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const s = {
-  wrapper: { height: '100vh', overflow: 'hidden', position: 'relative', background: '#111' },
+  wrapper: { height: '100vh', overflow: 'hidden', position: 'relative', background: 'var(--bg-1)' },
   scrollArea: { height: '100%', overflowY: 'auto', paddingBottom: 60, scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' },
-  fadeHint: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 60, background: 'linear-gradient(transparent, #111)', pointerEvents: 'none', zIndex: 10, transition: 'opacity 0.3s' },
-  page: { padding: '20px 24px', maxWidth: 1100, margin: '0 auto' },
+  fadeHint: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 60, background: 'linear-gradient(transparent, var(--bg-1))', pointerEvents: 'none', zIndex: 10, transition: 'opacity 0.3s' },
+  page: { padding: '24px 32px', maxWidth: 1500 },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  btn: { padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, fontFamily: 'inherit' },
+  btn: { padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 500, fontFamily: 'inherit' },
   btnPrimary: { background: '#cc6b4a', color: '#fff' },
-  btnOutline: { background: 'transparent', border: '1px solid #555', color: '#aaa' },
-  btnSmall: { padding: '4px 10px', fontSize: 11 },
+  btnOutline: { background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' },
+  btnSmall: { padding: '4px 10px', fontSize: 'var(--fs-xs)' },
   badge: (color) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, background: color + '22', color }),
-  card: { background: '#1e1e1e', border: '1px solid #333', borderRadius: 10, padding: 14, marginBottom: 8, cursor: 'pointer', transition: 'border-color 0.2s' },
-  input: { width: '100%', background: '#2a2a2a', border: '1px solid #444', color: '#eee', padding: '8px 12px', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box' },
-  label: { display: 'block', fontSize: 12, color: '#888', marginBottom: 4, marginTop: 14 },
+  card: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 8, cursor: 'pointer', transition: 'border-color 0.2s' },
+  input: { width: '100%', background: 'var(--bg-1)', border: '1px solid var(--border)', color: 'var(--text)', padding: '8px 12px', borderRadius: 8, fontSize: 'var(--fs-sm)', fontFamily: 'inherit', boxSizing: 'border-box' },
+  label: { display: 'block', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 4, marginTop: 14 },
   modal: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 },
-  modalBody: { background: '#1e1e1e', border: '1px solid #444', borderRadius: 12, padding: 24, width: '100%', maxWidth: 500, maxHeight: '80vh', overflow: 'auto' },
-  tab: (active) => ({ padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, fontFamily: 'inherit', background: active ? '#cc6b4a' : 'transparent', color: active ? '#fff' : '#888', marginRight: 4 }),
+  modalBody: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, width: '100%', maxWidth: 500, maxHeight: '80vh', overflow: 'auto' },
+  tab: (active) => ({ padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 500, fontFamily: 'inherit', background: active ? '#cc6b4a' : 'transparent', color: active ? '#fff' : 'var(--text-muted)', marginRight: 4 }),
   stats: { display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' },
-  statCard: (color) => ({ background: '#1e1e1e', border: `1px solid ${color}33`, borderRadius: 10, padding: '12px 18px', minWidth: 100, textAlign: 'center' }),
-  statNum: { fontSize: 24, fontWeight: 700, color: '#eee' },
-  statLabel: { fontSize: 11, color: '#888', marginTop: 2 },
-  empty: { textAlign: 'center', padding: 40, color: '#666', fontSize: 14 },
+  statCard: (color) => ({ background: 'var(--bg-2)', border: `1px solid ${color}33`, borderRadius: 10, padding: '12px 18px', minWidth: 100, textAlign: 'center' }),
+  statNum: { fontSize: 'var(--fs-2xl)', fontWeight: 700, color: 'var(--text)' },
+  statLabel: { fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 },
+  empty: { textAlign: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 'var(--fs-base)' },
 };
 
 const PRIORITY_COLORS = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#888' };
@@ -95,12 +95,12 @@ export default function OpenItemsPage() {
       <div style={s.header}>
         <div>
           <button style={{ ...s.btn, ...s.btnOutline, marginRight: 10 }} onClick={() => navigate('/')}>← Back to Chat</button>
-          <span style={{ fontSize: 20, fontWeight: 700, color: '#eee' }}>Open Items</span>
+          <span style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, color: 'var(--text)' }}>Open Items</span>
         </div>
         <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
       </div>
 
-      {msg && <div style={{ padding: '8px 14px', background: '#252525', border: '1px solid #444', borderRadius: 8, marginBottom: 12, color: '#eee', fontSize: 13 }}>{msg}</div>}
+      {msg && <div style={{ padding: '8px 14px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12, color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>{msg}</div>}
 
       {/* Stats */}
       {stats && (

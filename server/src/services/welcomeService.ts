@@ -4,6 +4,13 @@ import { getUserProfile } from './userProfileService';
 import { getCachedSections } from './indexCacheService';
 import { streamGemini } from './geminiService';
 import { getWelcomeNews } from './newsService';
+import createLogger from '../utils/logger';
+
+const log = createLogger('welcome');
+function logSwallowed(ctx: string, err: unknown) {
+  const m = err instanceof Error ? err.message : String(err);
+  log.warn(`swallowed at ${ctx}`, { error: m.slice(0, 240) });
+}
 
 /**
  * WelcomeService — generates a personalized landing experience.
@@ -54,7 +61,9 @@ export async function getWeather(city: string): Promise<string> {
         weatherCache.set(cacheKey, { data: result, ts: Date.now() });
         return result;
       }
-    } catch {}
+    } catch (err) {
+      logSwallowed('welcomeService:weatherapi', err);
+    }
   }
 
   // Fallback to OpenWeatherMap
@@ -68,7 +77,9 @@ export async function getWeather(city: string): Promise<string> {
         weatherCache.set(cacheKey, { data: result, ts: Date.now() });
         return result;
       }
-    } catch {}
+    } catch (err) {
+      logSwallowed('welcomeService:openweather', err);
+    }
   }
 
   return '';
@@ -191,7 +202,9 @@ export async function generateWelcomeBriefing(userId: number): Promise<{
         const uc = await prisma.userConnector.findUnique({ where: { userId_connectorTypeId: { userId, connectorTypeId: gmailType.id } } });
         if (uc?.status === 'connected') hasIntegration = true;
       }
-    } catch {}
+    } catch (err) {
+      logSwallowed('welcomeService:gmailConnectorLookup', err);
+    }
   }
 
   console.log(`[Welcome] Phase 1 (profile+memory+msgs): ${Date.now() - t0}ms`);

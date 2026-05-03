@@ -163,12 +163,67 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
 
           // Incoming messages
           for (const message of value.messages || []) {
+            const isVoice = message.type === 'audio' || message.type === 'voice';
+            let messageBody = message.text?.body || message.caption || '';
+            let inputWasVoice = false;
+
+            // Voice note inbound — parity with the legacy webjs path. The
+            // Meta webhook only delivers a media id; we fetch the actual
+            // audio bytes from /media, transcribe to text, and pass the
+            // transcript on to handleInboundMessage. If transcription
+            // fails, send back a "couldn't understand" prompt instead of
+            // dropping the message silently.
+            if (isVoice && message.audio?.id) {
+              inputWasVoice = true;
+              try {
+                const audio = await downloadMetaMedia(clientNumber, message.audio.id);
+                if (audio) {
+                  const { transcribeVoiceNote } = await import('../services/voiceService');
+                  const t = await transcribeVoiceNote(audio.buffer, audio.mimeType);
+                  messageBody = t.text;
+                  log.info('voice transcribed (meta)', { len: messageBody.length, lang: t.language });
+                }
+              } catch (err: any) {
+                log.error('meta voice transcription failed', { error: err.message });
+              }
+              if (!messageBody) {
+                const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                await sendTenantWhatsAppText(
+                  clientNumber, '+' + message.from,
+                  "Sorry, I couldn't understand the voice note. Please try again or type your message.",
+                  0,
+                );
+                continue;
+              }
+            }
+
+            // Build replyFn — when input was voice, the reply path generates
+            // TTS + sends as a voice note via the unified tenant sender,
+            // mirroring the webjs experience. Otherwise text only.
+            const replyFn = inputWasVoice
+              ? async (text: string) => {
+                  const { textToVoiceNote } = await import('../services/voiceService');
+                  const audioBuf = await textToVoiceNote(text);
+                  if (audioBuf) {
+                    const { sendTenantWhatsAppVoiceNote } = await import('../services/notifications/tenantWhatsappSender');
+                    await sendTenantWhatsAppVoiceNote(clientNumber, '+' + message.from, audioBuf, text, 0);
+                    // Also send text version so the user can re-read it.
+                    const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                    await sendTenantWhatsAppText(clientNumber, '+' + message.from, text, 0);
+                  } else {
+                    const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                    await sendTenantWhatsAppText(clientNumber, '+' + message.from, text, 0);
+                  }
+                }
+              : undefined;
+
             await handleInboundMessage({
               clientNumber,
               fromNumber: '+' + message.from,
-              messageBody: message.text?.body || message.caption || '',
-              messageType: message.type === 'audio' ? 'voice' : message.type === 'image' ? 'image' : 'text',
+              messageBody,
+              messageType: isVoice ? 'voice' : message.type === 'image' ? 'image' : 'text',
               mediaUrl: message.image?.id || message.audio?.id || undefined,
+              replyFn,
             });
           }
         }
@@ -178,5 +233,57 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
     }
   });
 });
+
+/**
+ * Download a Meta-hosted media object by id.
+ *
+ * Meta returns audio/image/video as opaque ids in the webhook payload;
+ * fetching the actual bytes is a two-hop: GET /{media-id} → returns a
+ * temporary URL → GET that URL with the same bearer token → bytes.
+ *
+ * The temporary URL is valid for ~5 minutes, so we download immediately
+ * inside the webhook handler (before the setImmediate completes).
+ *
+ * Uses the tenant's stored access token from `tenant_whatsapp_notifier`.
+ */
+async function downloadMetaMedia(
+  clientNumber: string,
+  mediaId: string,
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const n = await prisma.tenantWhatsappNotifier.findUnique({
+    where: { clientNumber },
+    select: { accessTokenEncrypted: true },
+  }).catch(() => null);
+  if (!n?.accessTokenEncrypted) {
+    log.warn('meta media download — notifier not configured', { clientNumber });
+    return null;
+  }
+  const { decrypt } = await import('../services/notifications/whatsappNotifierService');
+  let token: string;
+  try { token = decrypt(n.accessTokenEncrypted); }
+  catch { return null; }
+
+  // Step 1: resolve media URL.
+  const meta = await fetch(`https://graph.facebook.com/v18.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!meta.ok) {
+    log.warn('meta media metadata fetch failed', { status: meta.status });
+    return null;
+  }
+  const metaJson: any = await meta.json();
+  const url = metaJson?.url;
+  const mimeType = metaJson?.mime_type ?? 'audio/ogg';
+  if (!url) return null;
+
+  // Step 2: fetch bytes (Meta's signed URL still requires the bearer token).
+  const bin = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!bin.ok) {
+    log.warn('meta media bytes fetch failed', { status: bin.status });
+    return null;
+  }
+  const buffer = Buffer.from(await bin.arrayBuffer());
+  return { buffer, mimeType };
+}
 
 export default router;

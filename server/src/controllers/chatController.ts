@@ -257,7 +257,7 @@ export async function streamChat(req: Request, res: Response) {
 
     // ── 5. Retrieve data ─────────────────────────────────────
     sendStatus(res, clientDisconnected, 'Searching data...');
-    const { context, topScore, piiMapping } = await retrieveData(
+    const { context: rawContext, topScore, piiMapping } = await retrieveData(
       message, intent, provider, aiConfig, startTime,
       (text) => sendStatus(res, clientDisconnected, text),
       () => clientDisconnected,
@@ -266,6 +266,40 @@ export async function streamChat(req: Request, res: Response) {
       chatHistory,
     );
     if (clientDisconnected) return;
+
+    // ── 5b. Phase 3 — wiki pre-load ─────────────────────────
+    // Before the LLM sees the system prompt, inject top wiki matches from this
+    // user's own Memex. The user's compiled knowledge takes precedence over
+    // raw RAG chunks. Fail-open: a wiki miss just leaves the normal context.
+    let context = rawContext;
+    let wikiCitations: Array<{ id: string; title: string; pageType: string }> = [];
+    if (userId && clientNumber) {
+      try {
+        const { queryIndex, readPage } = await import('../services/wiki/wikiStorageService');
+        const hits = await queryIndex(clientNumber, userId, message, 3);
+        if (hits.length > 0) {
+          sendStatus(res, clientDisconnected, 'Checking your personal wiki...');
+          const pages = await Promise.all(
+            hits.slice(0, 3).map(async (h) => ({ hit: h, page: await readPage(clientNumber, userId, h.id) })),
+          );
+          const wikiBlock = pages
+            .filter((p) => p.page)
+            .map((p) => {
+              const pg = p.page!;
+              const body = (pg.bodyMarkdown ?? '').slice(0, 1500);
+              return `# [From your wiki] ${p.hit.title} (${p.hit.pageType})\n${body}`;
+            })
+            .join('\n\n---\n\n');
+          if (wikiBlock) {
+            context = `## User's personal wiki (authoritative for what is already known)\n${wikiBlock}\n\n## Additional retrieved context\n${rawContext}`;
+            wikiCitations = hits.slice(0, 3).map((h) => ({ id: h.id, title: h.title, pageType: h.pageType }));
+            log.info('[wiki] preloaded pages', { userId, count: wikiCitations.length });
+          }
+        }
+      } catch (err: any) {
+        log.warn('[wiki] preload skipped', { err: err.message });
+      }
+    }
 
     // ── 6. Classify + generate widget (if applicable) ────────
     const widgetClassification = await classifyWidgetIntent(message);

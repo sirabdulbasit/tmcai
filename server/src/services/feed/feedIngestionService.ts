@@ -5,7 +5,8 @@ import { PUBSUB_TOPICS } from '../../config/pubsub';
 import { getRedis } from '../../utils/redisClient';
 import { REDIS_KEY_PATTERNS, REDIS_TTL } from '../../config/redis';
 
-export type FeedSourceType = 'gmail' | 'whatsapp' | 'gchat' | 'gcal' | 'gtasks' | 'slack' | 'crm' | 'manual';
+export type FeedSourceType = 'gmail' | 'whatsapp' | 'gchat' | 'gcal' | 'gtasks' | 'slack' | 'crm'
+  | 'outlook' | 'outlook_calendar' | 'ms_teams' | 'onedrive_personal' | 'manual';
 
 /**
  * HaseebOS v15 FeedEvent canonical event types (§3.2 F-4).
@@ -46,6 +47,11 @@ export interface RawEventInput {
   eventType?: FeedEventType;
   /** Structured sender info for triage — far cheaper than re-parsing rawPayload downstream. */
   sender?: FeedSender;
+  /** MyOS — the user whose connector produced this event. Scopes per-user
+   *  volume counts, triage, and Day Brief. Should always be set for
+   *  user-scoped sources (gmail, whatsapp, gcal, gchat). Leave unset only
+   *  for tenant-wide sources (crm, erp). */
+  userId?: number;
 }
 
 export interface IngestResult {
@@ -93,8 +99,42 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
         senderName: sender?.name,
         senderPhone: sender?.phone,
         sourceIntegrity,
+        userId: input.userId,
       } as any,
     });
+
+    // Tier 1 #8 — Entity discipline: lightweight UPSERT of an
+    // entity_person wiki page for this sender so Brain has a stable
+    // reference id from now on. Heavy enrichment (signals + body) is
+    // deferred to the nightly entity sweep — this hook is a fire-and-
+    // forget side-effect; failures must never break ingestion.
+    if ((sender?.email || sender?.phone) && input.userId !== undefined) {
+      void import('../knowledge/entitySweepService')
+        .then(({ ensureEntityForSender }) => ensureEntityForSender({
+          clientNumber: input.clientNumber,
+          userId: input.userId!,
+          senderEmail: sender.email ?? null,
+          senderName: sender.name ?? null,
+          senderPhone: sender.phone ?? null,
+          // Forward the feed source so metadata.channels[] tracks which
+          // channels this sender has appeared on (gmail / whatsapp / gcal …).
+          sourceType: input.sourceType ?? null,
+        }))
+        .catch(() => { /* non-fatal */ });
+    }
+
+    // Tier 2 — Sentiment + urgency: classify the inbound message and
+    // stamp results onto the row. Async + best-effort — if the LLM is
+    // slow or unavailable, the deterministic fallback inside the
+    // service still produces values. The hot ingest path is unblocked.
+    void import('../triage/sentimentService')
+      .then(({ enrichFeedEvent }) => enrichFeedEvent(row.id))
+      .catch((err: any) => {
+        // Backfill cron will retry — no need to log loudly per event.
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(`[feedIngestion] sentiment enrich failed for ${row.id}: ${err.message}`);
+        }
+      });
 
     let publishedMessageId: string | undefined;
     try {
@@ -148,6 +188,201 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
         data: { publishAttempts: { increment: 1 } as any } as any,
       }).catch(() => {});
     }
+
+    // MyOS — autonomous executor: if this event matches an ACTIVE shadow rule
+    // for the user, Brain handles it now. Fire-and-forget.
+    if (input.userId) {
+      void (async () => {
+        try {
+          const { executeIfMatched } = await import('../triage/autonomousExecutor');
+          const r = await executeIfMatched({
+            id: row.id,
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            sourceType: input.sourceType,
+            senderEmail: sender?.email ?? null,
+            senderName: sender?.name ?? null,
+            rawPayload: input.payload,
+            createdAt: row.createdAt,
+          });
+          if (r?.executed) {
+            console.log(`[autoExec] ${row.id} → ${r.action} via rule ${r.ruleId} (agent_action ${r.agentActionId})`);
+          }
+        } catch (err: any) {
+          console.warn(`[autoExec] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // MyOS — delegation tracker: if this inbound is from a delegatee on an
+    // active DELEGATED open item for the user, classify and auto-close/
+    // update. Fire-and-forget; any auto-action gets logged into agent_actions
+    // and surfaces in the BRIEF section of Day Brief.
+    if (input.userId) {
+      void (async () => {
+        try {
+          const { checkInboundForDelegationUpdate } = await import('../delegation/delegationTrackerService');
+          await checkInboundForDelegationUpdate({
+            feedEventId: row.id,
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            sourceType: input.sourceType,
+            senderEmail: sender?.email ?? null,
+            senderName: sender?.name ?? null,
+            rawPayload: input.payload,
+          });
+        } catch (err: any) {
+          console.warn(`[delegationTracker] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // Phase C — ingest propagation: extract project/policy references and
+    // update the related tenant-shared wiki pages. One Flash call per
+    // ingest; bounded, fire-and-forget.
+    if (input.userId && sender?.email) {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const { propagateFeedEvent } = await import('../knowledge/propagationService');
+          await propagateFeedEvent({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            feedEventId: row.id,
+            sourceType: input.sourceType,
+            subject: p.subject ?? null,
+            snippet: p.snippet ?? p.body ?? null,
+            senderEmail: sender.email ?? null,
+            senderName: sender.name ?? null,
+            receivedAt: row.createdAt,
+          });
+        } catch (err: any) {
+          console.warn(`[propagation] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // MyOS Knowledge — email_message page per Gmail message. Captures
+    // the full body (HTML → plaintext) so Brain has "the actual content",
+    // not just the 280-char snippet. Fire-and-forget from the ingest path.
+    if (input.userId && input.sourceType === 'gmail' && sender?.email) {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const messageId: string | undefined = p.messageId ?? p.gmailMessageId ?? input.sourceId;
+          if (!messageId) return;
+          const { ingestEmailBody } = await import('../knowledge/emailBodyIngestService');
+          await ingestEmailBody({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            gmailMessageId: messageId,
+            feedEventId: row.id,
+            senderEmail: sender.email ?? null,
+            senderName: sender.name ?? null,
+            subject: p.subject ?? null,
+            receivedAt: row.createdAt,
+          });
+        } catch (err: any) {
+          console.warn(`[emailBody] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // MyOS Knowledge — attachment_doc pages for Gmail attachments.
+    // Fire-and-forget: downloads each attachment, extracts text
+    // (pdf/docx/xlsx/txt), creates/updates an attachment_doc wiki page
+    // so Brain can open + quote + cite the attachment like any other
+    // wiki page. Skipped for non-Gmail sources.
+    if (input.userId && input.sourceType === 'gmail') {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const messageId: string | undefined = p.messageId ?? p.gmailMessageId ?? input.sourceId;
+          if (!messageId) return;
+          const { ingestMessageAttachments } = await import('../knowledge/attachmentWikiService');
+          await ingestMessageAttachments({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            senderEmail: sender?.email ?? null,
+            gmailMessageId: messageId,
+            feedEventId: row.id,
+            subject: p.subject ?? null,
+            receivedAt: row.createdAt,
+          });
+        } catch (err: any) {
+          console.warn(`[attachmentWiki] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // MyOS Knowledge — sender & sender+topic wiki pages. These are the
+    // LLM-readable "running memory" of each relationship, updated on
+    // every ingest. Triage reads the markdown body directly instead of
+    // recomputing history from feed_events each call.
+    // Gate: we accept email OR phone — WhatsApp senders come with phone only.
+    if (input.userId && (sender?.email || sender?.phone)) {
+      void (async () => {
+        try {
+          const { updateSenderWikiOnIngest } = await import('../knowledge/senderWikiService');
+          // Compute dedup_hash + archetype lazily (avoids a hard dep on triage)
+          let dedupHash: string | undefined;
+          let archetype: string | undefined;
+          try {
+            const p: any = input.payload ?? {};
+            const { classifyArchetypeFromPayload } = await import('../triage/executorHelpers');
+            const { computeDedupHash } = await import('../triage/triageSuggester');
+            const itemType =
+              input.sourceType === 'gmail' ? 'email' :
+              input.sourceType === 'whatsapp' ? 'whatsapp' :
+              input.sourceType === 'gcal' ? 'meeting' :
+              input.sourceType === 'gtasks' ? 'task' : 'email';
+            archetype = classifyArchetypeFromPayload(
+              String(p.subject ?? ''),
+              String(p.snippet ?? p.body ?? ''),
+              String(p.from ?? sender?.email ?? ''),
+            );
+            const senderDomain = sender?.email?.split('@')[1]?.toLowerCase();
+            dedupHash = computeDedupHash({ userId: input.userId!, itemType: itemType as any, archetype: archetype as any, senderDomain });
+          } catch { /* hash is best-effort — topic page just skipped */ }
+
+          await updateSenderWikiOnIngest({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            senderEmail: sender.email ?? null,
+            senderPhone: sender.phone ?? null,
+            senderName: sender.name ?? null,
+            subject: String((input.payload as any)?.subject ?? '') || null,
+            preview: String((input.payload as any)?.snippet ?? (input.payload as any)?.body ?? '') || null,
+            dedupHash,
+            archetype,
+            sourceType: input.sourceType,
+            feedEventId: row.id,
+            receivedAt: row.createdAt,
+          });
+        } catch (err: any) {
+          console.warn(`[senderWiki] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
+    // MyOS Knowledge — wiki_scribe: maintain entity graph + auto-create wiki
+    // pages for contacts/companies. Fire-and-forget; no user-visible failure.
+    void (async () => {
+      try {
+        const { scribeFromFeedEvent } = await import('../knowledge/wikiScribeService');
+        await scribeFromFeedEvent({
+          clientNumber: input.clientNumber,
+          userId: input.userId ?? null,
+          senderEmail: sender?.email ?? null,
+          senderName: sender?.name ?? null,
+          fromHeader: (input.payload as any)?.from ?? null,
+          createdAt: row.createdAt,
+          feedEventId: row.id,
+        });
+      } catch (err: any) {
+        console.warn(`[wikiScribe] failed for ${row.id}: ${err.message}`);
+      }
+    })();
 
     return { status: 'new', feedEventId: row.id, contentHash, publishedMessageId };
   } catch (err: any) {

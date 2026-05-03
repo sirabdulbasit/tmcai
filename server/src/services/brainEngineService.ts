@@ -128,7 +128,10 @@ export async function runForUser(userId: number, clientNumber: string): Promise<
     if (engineSchedule) {
       try {
         nextRun = computeNextRun(engineSchedule, config.engineTimezone || 'Asia/Karachi');
-      } catch {}
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        console.warn('[brainEngine] swallowed at computeNextRun:', m.slice(0, 240));
+      }
     }
 
     await prisma.brainConfig.update({
@@ -213,7 +216,10 @@ async function ingestGmail(
           clientNumber,
           userId,
         });
-      } catch {}
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        console.warn('[brainEngine] swallowed at gmail-feed-ingest:', m.slice(0, 240));
+      }
     }
   } catch (err: any) {
     log.error('Gmail ingestion error', { userId, error: err.message });

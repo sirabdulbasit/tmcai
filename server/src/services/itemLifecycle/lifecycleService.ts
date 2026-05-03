@@ -183,6 +183,7 @@ async function publishOpenItemEvent(
       {
         openItemId: item.id,
         clientNumber: ctx.clientNumber,
+        userId: item.ownerId,
         fromStatus: from,
         toStatus: to,
         transitionDescription: spec.description,

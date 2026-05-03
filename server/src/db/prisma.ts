@@ -1,7 +1,94 @@
 import { PrismaClient } from '@prisma/client';
+import { currentTenant } from './tenantContext';
 
-const prisma = new PrismaClient({
+const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
+});
+
+/**
+ * Tenant isolation via Prisma's `$extends` query hook (Prisma v5/v6 API
+ * — the legacy `$use` middleware was removed). Every read / update /
+ * delete against a tenant-scoped model auto-injects the current
+ * tenant's `clientNumber` filter, sourced from `tenantContext`'s
+ * AsyncLocalStorage. Closes the 31 known-red `findUnique({where:{id}})`
+ * data-leak paths that the test suite has been flagging.
+ *
+ * NOT included: tables that are intrinsically global (system_config,
+ * connector_types, _prisma_migrations) or that don't carry a
+ * clientNumber column.
+ */
+const TENANT_SCOPED_MODELS = new Set<string>([
+  'User', 'WikiPage', 'WikiPageLink', 'FeedEvent',
+  'OpenItem', 'OpenItemEmbedding', 'ItemStatusHistory',
+  'AgentAction', 'DecisionLog', 'DelegationLog',
+  'WhatsAppConnection', 'WhatsAppMessage', 'WhatsAppSession',
+  'ShadowRule', 'PatternHidden', 'Entity',
+  // Session intentionally NOT scoped here: the table has no clientNumber
+  // column. Sessions are already tenant-isolated transitively via
+  // userId → user.clientNumber. Including it broke session.create().
+  'Conversation', 'Message',
+  'BrainPersona', 'NotificationQueue', 'TenantWhatsappNotifier',
+  'BrainUserMessage',
+]);
+
+const READ_OPS = new Set(['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);
+const WHERE_OPS = new Set(['update', 'updateMany', 'delete', 'deleteMany', 'upsert']);
+
+const prisma = base.$extends({
+  query: {
+    $allModels: {
+      async $allOperations({ model, operation, args, query }) {
+        if (!TENANT_SCOPED_MODELS.has(model)) return query(args);
+        const scope = currentTenant();
+        if (!scope || scope.bypass) return query(args);
+        const cn = scope.clientNumber;
+        if (!cn) return query(args);
+
+        // Reads + write-with-where: inject clientNumber if absent.
+        if (READ_OPS.has(operation) || WHERE_OPS.has(operation)) {
+          const a: any = args ?? {};
+          const where = a.where ?? {};
+          if (where.clientNumber === undefined && where.client_number === undefined) {
+            // findUnique only accepts unique-key shapes; we can't inject
+            // a non-unique field. Strategy: for findUnique we do the
+            // single-row query as-is, then verify clientNumber on the
+            // returned row (post-filter). Same for findUniqueOrThrow.
+            if (operation === 'findUnique' || operation === 'findUniqueOrThrow') {
+              const row: any = await query(args);
+              if (row && row.clientNumber !== cn && row.client_number !== cn) {
+                if (operation === 'findUniqueOrThrow') throw new Error('Tenant scope mismatch');
+                return null as any;
+              }
+              return row;
+            }
+            const next = { ...a, where: { ...where, clientNumber: cn } };
+            return query(next as any);
+          }
+        }
+
+        // create / createMany: default clientNumber if absent.
+        if (operation === 'create') {
+          const a: any = args ?? {};
+          const data = a.data ?? {};
+          if (data.clientNumber === undefined && data.client_number === undefined) {
+            return query({ ...a, data: { ...data, clientNumber: cn } } as any);
+          }
+        }
+        if (operation === 'createMany') {
+          const a: any = args ?? {};
+          const items = Array.isArray(a.data) ? a.data : [a.data];
+          const patched = items.map((d: any) =>
+            d?.clientNumber === undefined && d?.client_number === undefined
+              ? { ...d, clientNumber: cn }
+              : d,
+          );
+          return query({ ...a, data: patched } as any);
+        }
+
+        return query(args);
+      },
+    },
+  },
 });
 
 export default prisma;

@@ -121,6 +121,22 @@ async function dispatch(row: {
     }
     case 'whatsapp': {
       const content = payload.body ?? payload.text ?? JSON.stringify(payload);
+      // First try the tenant-level MyOS Notifier (preferred for Brain → user
+      // messages). Falls back to the legacy per-user WhatsApp adapter when
+      // no tenant notifier is configured or target phone isn't set.
+      const recipient = await prisma.user.findUnique({
+        where: { id: row.recipientId },
+        select: { contactNumber: true, notificationPreferences: true },
+      });
+      const prefs = (recipient?.notificationPreferences as any) || {};
+      const targetPhone = prefs.brain_channel?.whatsappNumber || recipient?.contactNumber;
+      if (targetPhone) {
+        const { sendViaNotifier } = await import('./whatsappNotifierService');
+        const r = await sendViaNotifier(row.clientNumber, String(targetPhone), String(content));
+        if (r.ok) return;
+        // Notifier failed — fall through to legacy adapter
+        console.warn(`[notifications] tenant notifier failed: ${r.error}; falling back to legacy`);
+      }
       const r = await sendWhatsAppMessage(row.recipientId, String(content));
       if (!r.sent) throw new Error(r.reason ?? 'whatsapp send failed');
       return;

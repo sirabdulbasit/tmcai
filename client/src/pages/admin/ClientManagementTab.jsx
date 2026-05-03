@@ -123,6 +123,7 @@ function ClientManagementTab({ user, msg, setMsg }) {
         {user?.isSuperAdmin && <button className={`config-tab ${subTab === 'tenants' ? 'active' : ''}`} onClick={() => setSubTab('tenants')}>Clients</button>}
         <button className={`config-tab ${subTab === 'users' ? 'active' : ''}`} onClick={() => setSubTab('users')}>Users</button>
         <button className={`config-tab ${subTab === 'clientconfig' ? 'active' : ''}`} onClick={() => setSubTab('clientconfig')}>Client Config</button>
+        <button className={`config-tab ${subTab === 'connectors' ? 'active' : ''}`} onClick={() => setSubTab('connectors')}>Client Connectors</button>
       </div>
 
       {/* ═══ Clients (SuperAdmin) ═══ */}
@@ -271,9 +272,14 @@ function ClientManagementTab({ user, msg, setMsg }) {
         </section>
       )}
 
-      {/* ═══ Client Config (SMTP, GDrive) ═══ */}
+      {/* ═══ Client Config (SMTP, GDrive raw keys) ═══ */}
       {subTab === 'clientconfig' && (
         <ClientConfigSection user={user} tenants={tenants} />
+      )}
+
+      {/* ═══ Client Connectors — tenant-level knowledge sources ═══ */}
+      {subTab === 'connectors' && (
+        <ClientConnectorsSection user={user} tenants={tenants} />
       )}
     </>
   );
@@ -306,6 +312,7 @@ function InviteButton({ userId, onInvite }) {
 function ClientConfigSection({ user, tenants }) {
   const [selectedClient, setSelectedClient] = useState(user?.clientNumber || '');
   const targetClient = user?.isSuperAdmin ? selectedClient : undefined;
+  const effectiveClient = targetClient || user?.clientNumber;
 
   return (
     <>
@@ -324,8 +331,428 @@ function ClientConfigSection({ user, tenants }) {
       </section>
 
       <ConfigEditor key={selectedClient} sections={CLIENT_SECTIONS} apiPath="/config" clientNumber={targetClient} />
+
+      <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(136,136,136,0.08)', border: '1px dashed rgba(136,136,136,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+        Looking for FACL folder setup + scribe? That moved to the <strong>Client Connectors</strong> tab.
+      </div>
     </>
   );
+}
+
+/** Client Connectors tab — tenant-level knowledge sources managed
+ *  separately from each user's personal connectors. Cards pattern mirrors
+ *  the My Connectors page so the mental model is the same. */
+function ClientConnectorsSection({ user, tenants }) {
+  const [selectedClient, setSelectedClient] = useState(user?.clientNumber || '');
+  const effective = user?.isSuperAdmin ? selectedClient : user?.clientNumber;
+  const [state, setState] = useState(null);
+  const [busySlug, setBusySlug] = useState(null);
+  const [msg, setMsg] = useState(null);
+  // Modal state: 'connect' picks which admin; 'folder' edits folder ID.
+  const [modal, setModal] = useState(null); // { kind: 'connect'|'folder', slug, item }
+
+  const load = async () => {
+    if (!effective) return;
+    try {
+      const { data } = await api.get(`/admin/client-connectors?cn=${effective}`);
+      setState(data);
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+  };
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [effective]);
+
+  const openFolder = (item) => setModal({ kind: 'folder', slug: item.slug, item });
+
+  // One-click Connect. No modal. Server returns 409 + oauthRedirectTo if
+  // the current admin hasn't OAuthed Google personally yet; we send them
+  // to the regular Connectors OAuth, they come back and click once more.
+  const doConnect = async (slug) => {
+    setBusySlug(slug); setMsg(null);
+    try {
+      const { data } = await api.post(`/admin/client-connectors/${slug}/connect`, { clientNumber: effective });
+      setMsg({ kind: 'ok', text: `✓ Connected as ${data.connectedAs}. Next: set the folder.` });
+      load();
+    } catch (e) {
+      const resp = e?.response?.data;
+      if (resp?.needsOauth && resp?.oauthRedirectTo) {
+        setMsg({ kind: 'ok', text: 'Opening Google authorisation — come back and click Connect once more when you return.' });
+        setTimeout(() => { window.location.href = resp.oauthRedirectTo; }, 600);
+      } else {
+        setMsg({ kind: 'error', text: resp?.error ?? e.message });
+      }
+    }
+    setBusySlug(null);
+  };
+
+  const submitFolder = async (folderId, indexFileName) => {
+    if (!modal) return;
+    setBusySlug(modal.slug); setMsg(null);
+    try {
+      await api.post(`/admin/client-connectors/${modal.slug}/set-folder`, { clientNumber: effective, folderId, indexFileName });
+      setMsg({ kind: 'ok', text: 'Folder saved. You can Test it now or Scribe all.' });
+      setModal(null);
+      load();
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+    setBusySlug(null);
+  };
+
+  const runTest = async (slug) => {
+    setBusySlug(slug); setMsg(null);
+    try {
+      const { data } = await api.post(`/admin/client-connectors/${slug}/test`, { clientNumber: effective });
+      const txt = data.stage === 'folder_verified'
+        ? `✓ Folder "${data.folder.name}" verified · ${data.sample.length} files visible · auth as ${data.adminEmail}`
+        : `✓ Connection verified · auth as ${data.adminEmail}${data.driveUser ? ` (Drive user ${data.driveUser})` : ''}`;
+      setMsg({ kind: 'ok', text: txt });
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+    setBusySlug(null);
+  };
+
+  const runDisconnect = async (slug) => {
+    setBusySlug(slug);
+    try { await api.post(`/admin/client-connectors/${slug}/disconnect`, { clientNumber: effective }); setMsg({ kind: 'ok', text: 'Disconnected.' }); load(); }
+    catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+    setBusySlug(null);
+  };
+
+  const scribeAll = async () => {
+    setBusySlug('__all__'); setMsg(null);
+    try {
+      const { data } = await api.post('/admin/client-connectors/scribe-all', { clientNumber: effective });
+      setMsg({ kind: 'ok', text: data.queued?.length ? `Scribing ${data.queued.length} connector${data.queued.length > 1 ? 's' : ''} in background.` : 'No ready-to-scribe connectors. Connect + set folder first.' });
+      setTimeout(load, 1500);
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+    setBusySlug(null);
+  };
+
+  if (!state) return <div style={{ padding: 20, color: 'var(--text-muted)' }}>Loading connectors…</div>;
+
+  const configured = state.configuredCount;
+  const total = state.items.length;
+  const anyRunning = state.anyRunning;
+  const needs = state.needsRescribe;
+
+  return (
+    <>
+      {/* Client selector (for SuperAdmin) */}
+      {user?.isSuperAdmin && (
+        <section className="settings-section" style={{ paddingBottom: 12 }}>
+          <div className="settings-field">
+            <label>Client</label>
+            <select value={selectedClient} onChange={e => setSelectedClient(e.target.value)}>
+              {tenants.map(t => <option key={t.clientNumber} value={t.clientNumber}>{t.clientNumber} — {t.name}</option>)}
+            </select>
+          </div>
+        </section>
+      )}
+
+      {/* Header + Scribe-all banner */}
+      <section className="settings-section" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ fontSize: 22 }}>🧠</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+            Tenant knowledge connectors · {configured}/{total} configured
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+            {anyRunning
+              ? 'Scribing in progress — rebuilding Brain memory from connected sources.'
+              : needs
+                ? 'One or more connectors changed since the last scribe. Re-scribe to keep Brain in sync.'
+                : configured === 0
+                  ? 'Connect a source first, then hit Scribe all to index the tenant knowledge base.'
+                  : 'All set. Auto-updates on new files; re-scribe if a connector changes.'}
+          </div>
+        </div>
+        <button
+          className="admin-action"
+          style={{ background: needs || configured > 0 ? '#cc6b4a' : 'transparent', color: needs || configured > 0 ? '#fff' : 'var(--text-muted)', borderColor: '#cc6b4a', fontWeight: 600 }}
+          disabled={busySlug === '__all__' || anyRunning || configured === 0}
+          onClick={scribeAll}
+        >
+          {anyRunning ? 'Scribing…' : needs ? '🧠 Re-scribe all' : '🧠 Scribe all'}
+        </button>
+      </section>
+
+      {msg && (
+        <div className={`settings-msg ${msg.kind === 'error' ? 'error' : ''}`} style={{ marginTop: 8 }}>{msg.text}</div>
+      )}
+
+      {/* Connector cards */}
+      <section className="settings-section" style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {state.items.map((item) => (
+          <ClientConnectorCard
+            key={item.slug}
+            item={item}
+            busy={busySlug === item.slug}
+            onConnect={() => doConnect(item.slug)}
+            onFolder={() => openFolder(item)}
+            onTest={() => runTest(item.slug)}
+            onDisconnect={() => runDisconnect(item.slug)}
+          />
+        ))}
+      </section>
+
+      {/* Step 2: set folder ID (only enabled after Connect) */}
+      {modal?.kind === 'folder' && (
+        <FolderModal
+          item={modal.item}
+          onCancel={() => setModal(null)}
+          onSave={submitFolder}
+          busy={busySlug === modal.slug}
+        />
+      )}
+    </>
+  );
+}
+
+function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDisconnect }) {
+  const running = item.scribeStatus === 'running';
+  const ok = !!item.lastScribedAt && !running;
+  const liveBlocked = !item.liveInPoc;
+
+  const pill = running ? { text: 'Scribing…', color: '#f59e0b' }
+    : liveBlocked ? { text: 'Coming soon', color: '#9ba0aa' }
+    : ok ? { text: `✓ ${item.docCount} docs`, color: '#4ade80' }
+    : item.scribeable ? { text: 'Ready to scribe', color: '#f59e0b' }
+    : item.connected ? { text: 'Connected · folder needed', color: '#f59e0b' }
+    : { text: 'Not connected', color: '#9ba0aa' };
+
+  return (
+    <div style={{
+      background: 'var(--bg-2)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: 14, opacity: liveBlocked ? 0.6 : 1,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ fontSize: 26 }}>{item.icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{item.name}</div>
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: pill.color + '22', color: pill.color, fontWeight: 600 }}>{pill.text}</span>
+          </div>
+          {item.connected && item.connectionDetail?.userEmail && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+              Connected as <strong>{item.connectionDetail.userEmail}</strong>
+            </div>
+          )}
+          {item.folderId && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, fontFamily: 'monospace' }}>
+              Folder: {String(item.folderId).slice(0, 28)}{String(item.folderId).length > 28 ? '…' : ''}
+              {item.indexFile && ` · Index: ${item.indexFile}`}
+            </div>
+          )}
+          {item.lastScribedAt && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+              Last scribed {humanAgo(Date.now() - new Date(item.lastScribedAt).getTime())}
+            </div>
+          )}
+          {liveBlocked && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+              Same connect → folder → scribe pattern as Google Drive. Wiring pending.
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {!item.connected && !liveBlocked && (
+            <button className="admin-action" disabled={busy} onClick={onConnect} style={{ background: '#cc6b4a', color: '#fff', borderColor: '#cc6b4a' }}>
+              Connect
+            </button>
+          )}
+          {item.connected && (
+            <>
+              <button className="admin-action" disabled={busy} onClick={onTest}>Test</button>
+              <button
+                className="admin-action"
+                disabled={busy}
+                onClick={onFolder}
+                style={item.scribeable ? {} : { background: '#cc6b4a', color: '#fff', borderColor: '#cc6b4a' }}
+              >
+                {item.folderId ? 'Change folder' : 'Set folder'}
+              </button>
+              <button className="admin-action" disabled={busy} onClick={onConnect}>Re-connect</button>
+              <button className="admin-action" disabled={busy} onClick={onDisconnect} style={{ color: '#ef4444', borderColor: '#ef4444' }}>Disconnect</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FolderModal({ item, onCancel, onSave, busy }) {
+  const [folderId, setFolderId] = useState(item.folderId ?? '');
+  const [indexFile, setIndexFile] = useState(item.indexFile ?? '');
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 20 }} onClick={onCancel}>
+      <div style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, width: '100%', maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>{item.folderId ? 'Change' : 'Set'} folder · {item.name}</div>
+          <button className="admin-action" onClick={onCancel}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+          This is the folder Brain reads as the tenant's shared knowledge base.
+        </div>
+        <div className="settings-field" style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+            Folder ID <span style={{ color: '#ef4444' }}>*</span>
+          </label>
+          <input
+            value={folderId}
+            onChange={(e) => setFolderId(e.target.value)}
+            placeholder="1abc…xyz"
+            autoFocus
+            style={{ width: '100%', padding: '8px 10px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box' }}
+          />
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+            From the Drive URL: drive.google.com/drive/folders/<strong>&lt;folderId&gt;</strong>
+          </div>
+        </div>
+        <div className="settings-field" style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Index file name (optional)</label>
+          <input
+            value={indexFile}
+            onChange={(e) => setIndexFile(e.target.value)}
+            placeholder="e.g. TMC_Drive_Index.md"
+            style={{ width: '100%', padding: '8px 10px', background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box' }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button className="admin-action" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="admin-action" disabled={busy || !folderId.trim()} onClick={() => onSave(folderId.trim(), indexFile.trim())} style={{ background: '#cc6b4a', color: '#fff', borderColor: '#cc6b4a' }}>
+            {busy ? 'Saving…' : 'Save folder'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Legacy inline Drive connector — kept for reference but no longer rendered.
+ *  Client Connectors tab supersedes this. */
+function ClientDriveConnector({ clientNumber }) {
+  const [state, setState] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => {
+    try {
+      const { data } = await api.get(`/admin/client-drive/status${clientNumber ? `?cn=${clientNumber}` : ''}`);
+      setState(data);
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+  };
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [clientNumber]);
+
+  const runTest = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.post('/admin/client-drive/test', { clientNumber });
+      setMsg({ kind: 'ok', text: `✓ Folder verified: ${data.folder.name} · ${data.sample.length} files visible · auth as ${data.adminEmail}` });
+    } catch (e) {
+      setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message });
+    }
+    setBusy(false);
+  };
+  const runScribe = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await api.post('/admin/client-drive/scribe', { clientNumber });
+      setMsg({ kind: 'ok', text: 'Scribing in background — takes a minute or two. Status updates automatically.' });
+      setTimeout(load, 1500);
+    } catch (e) { setMsg({ kind: 'error', text: e?.response?.data?.error ?? e.message }); }
+    setBusy(false);
+  };
+
+  if (!state) return null;
+  const hasFolder = !!state.folderId;
+  const running = state.scribeStatus === 'running';
+  const ok = state.scribeStatus === 'ok';
+  const err = state.scribeStatus === 'error';
+
+  const statusPill = running
+    ? { text: 'Scribing…', color: '#f59e0b' }
+    : ok ? { text: `✓ ${state.docCount} docs`, color: '#4ade80' }
+    : err ? { text: 'Error', color: '#ef4444' }
+    : hasFolder ? { text: 'Configured', color: '#9ba0aa' }
+    : { text: 'Folder not set', color: '#9ba0aa' };
+
+  const lastScribed = state.lastScribedAt ? new Date(state.lastScribedAt) : null;
+  const lastWhen = lastScribed ? humanAgo(Date.now() - lastScribed.getTime()) : 'never';
+
+  return (
+    <section className="settings-section" style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <div style={{ fontSize: 24 }}>📁</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+            Google Drive · Tenant knowledge (FACL)
+            <span style={{ marginLeft: 10, fontSize: 11, padding: '2px 8px', borderRadius: 10, background: statusPill.color + '22', color: statusPill.color, fontWeight: 600 }}>
+              {statusPill.text}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+            Every user in this tenant's Brain reads the docs in this folder as shared org knowledge.
+            {hasFolder && lastScribed && <> · Last scribed {lastWhen}.</>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="admin-action" onClick={runTest} disabled={busy || !hasFolder}>Test</button>
+          <button className="admin-action" onClick={runScribe} disabled={busy || !hasFolder || running} style={{ background: '#cc6b4a', color: '#fff', borderColor: '#cc6b4a' }}>
+            {running ? 'Scribing…' : '🧠 Scribe now'}
+          </button>
+        </div>
+      </div>
+      {!hasFolder && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 10, background: 'rgba(204,107,74,0.06)', border: '1px dashed rgba(204,107,74,0.3)', borderRadius: 6 }}>
+          Set <code>google_drive_folder_id</code> above and Save, then come back and hit Test + Scribe.
+        </div>
+      )}
+      {hasFolder && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+          Folder: {state.folderId}{state.indexFileName ? ` · Index: ${state.indexFileName}` : ''}
+        </div>
+      )}
+      {msg && (
+        <div style={{
+          marginTop: 8, fontSize: 12, padding: '8px 10px', borderRadius: 6,
+          background: msg.kind === 'ok' ? 'rgba(74,222,128,0.08)' : 'rgba(239,68,68,0.08)',
+          border: `1px solid ${msg.kind === 'ok' ? '#4ade80' : '#ef4444'}`,
+          color: msg.kind === 'ok' ? '#4ade80' : '#ef4444',
+        }}>{msg.text}</div>
+      )}
+      {state.lastSummary && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+          Last scribe: {state.lastSummary.scanned} scanned · {state.lastSummary.updated} updated · {state.lastSummary.unchanged} unchanged · {state.lastSummary.skipped} skipped
+          {state.lastSummary.errors > 0 && ` · ${state.lastSummary.errors} errors`}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ClientComingSoonConnector({ name, icon, note }) {
+  return (
+    <section className="settings-section" style={{ marginTop: 16, opacity: 0.55 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ fontSize: 24 }}>{icon}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+            {name} · Tenant knowledge
+            <span style={{ marginLeft: 10, fontSize: 11, padding: '2px 8px', borderRadius: 10, background: 'rgba(136,136,136,0.15)', color: '#9ba0aa', fontWeight: 600 }}>
+              Coming soon
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{note}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function humanAgo(ms) {
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 // ═══════════════════════════════════════════════════════════════

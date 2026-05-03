@@ -75,5 +75,8 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.4"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-linux-arm64-gnu": "^1.0.0-rc.17"
   }
 }

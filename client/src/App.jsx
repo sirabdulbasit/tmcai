@@ -14,12 +14,22 @@ import ConnectorGuidePage from './pages/ConnectorGuidePage';
 import ThoughtPipelinePage from './pages/ThoughtPipelinePage';
 import DayBriefPage from './pages/DayBriefPage';
 import SteeringWheelPage from './pages/SteeringWheelPage';
+import ContactsPage from './pages/ContactsPage';
+import ContactDetailPage from './pages/ContactDetailPage';
+import BrainAvatar from './components/BrainAvatar';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="app-loading">Loading...</div>;
   if (!user) return <Navigate to="/login" replace />;
-  return children;
+  // BrainAvatar is mounted once per protected route render so it lives
+  // above every authenticated page — the user always sees Brain thinking.
+  return (
+    <>
+      {children}
+      <BrainAvatar />
+    </>
+  );
 }
 
 function LoginRoute() {
@@ -47,8 +57,11 @@ export default function App() {
       <Route path="/connector-guide" element={<ConnectorGuidePage />} />
       <Route path="/thoughts" element={<ProtectedRoute><ThoughtPipelinePage /></ProtectedRoute>} />
       <Route path="/day-brief" element={<ProtectedRoute><DayBriefPage /></ProtectedRoute>} />
+      <Route path="/chat-legacy" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
       <Route path="/steering" element={<ProtectedRoute><SteeringWheelPage /></ProtectedRoute>} />
-      <Route path="/*" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+      <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
+      <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetailPage /></ProtectedRoute>} />
+      <Route path="/*" element={<ProtectedRoute><SteeringWheelPage /></ProtectedRoute>} />
     </Routes>
   );
 }

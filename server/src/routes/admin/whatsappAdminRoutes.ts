@@ -25,13 +25,19 @@ function getTargetClient(req: Request): string {
 }
 
 // ─── GET /config — current config (sensitive fields masked) ───────────────────
+//
+// Historical bug: this query used to reference `max_tokens_chat` (column never
+// existed) which made the whole SELECT throw — the React loader treated the
+// 500 as `{configured:false}` and silently rendered an empty form even when a
+// real device was paired. Limits/max-tokens were removed from the admin UI;
+// the column reference is gone here too. `max_tokens_data` is still in the
+// table schema as a backstop but no longer surfaced.
 router.get('/config', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
   const rows = await prisma.$queryRawUnsafe(
     `SELECT provider, meta_phone_number_id, meta_business_id, status, connected_number, connected_at,
             daily_limit, monthly_limit, messages_today, messages_this_month,
-            last_message_at, last_error, last_error_at, connected_number as company_number,
-            max_tokens_chat, max_tokens_data
+            last_message_at, last_error, last_error_at, connected_number as company_number
      FROM whatsapp_config WHERE client_number = $1`, cn,
   ) as any[];
 
@@ -117,11 +123,37 @@ router.get('/status', async (req: Request, res: Response) => {
 });
 
 // ─── POST /test-connection — validate connection (no message sent) ────────────
+//
+// Self-heals when the DB says `connected` but the in-process whatsapp-web.js
+// client Map is empty (typical after a nodemon restart): re-runs
+// `provider.initialize()` to re-load LocalAuth from disk and polls for
+// `ready` for up to 8s before reporting back. Same auto-recovery
+// pattern the send path uses, surfaced here so the admin's Test
+// Connection button doesn't lie about a paired session being dead.
 router.post('/test-connection', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
   try {
     const provider = await getProvider(cn);
-    const result = await provider.testConnection(cn);
+    let result = await provider.testConnection(cn);
+
+    if (!result.success && /not initialized|not connected/i.test(result.error ?? '')) {
+      // Check whether the DB believes we should be connected. If not,
+      // an admin needs to scan QR — don't silently re-init.
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT status FROM whatsapp_config WHERE client_number = $1`, cn,
+      );
+      if (rows[0]?.status === 'connected') {
+        log.info('test-connection: re-initializing from LocalAuth', { clientNumber: cn });
+        await provider.initialize(cn);
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          result = await provider.testConnection(cn);
+          if (result.success) break;
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+    }
+
     res.json(result);
   } catch (err: any) {
     res.json({ success: false, error: err.message });
@@ -136,8 +168,13 @@ router.post('/test', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'testNumber is required' });
     return;
   }
+  // `whatsapp_messages.user_id` is NOT NULL in the schema — pass the
+  // authenticated admin's id so the log insert doesn't violate the
+  // constraint. SuperAdmin + tenant-switched admin both satisfy this.
+  const authenticatedUserId = (req as any).user?.id;
   const result = await sendWhatsAppMessage({
     clientNumber: cn,
+    userId: authenticatedUserId,
     to: testNumber,
     message: 'This is a test message from TMCAI. WhatsApp is configured correctly. — Sent via TMCAI Admin Panel',
   });

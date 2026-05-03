@@ -84,4 +84,56 @@ router.post('/evaluate-all', async (req: Request, res: Response) => {
   res.json({ count: results.length, results });
 });
 
+/**
+ * GET /api/v1/shadow/rules/promotion-ready — rules eligible for Day Brief's
+ * "Ready to handle on my own" section. Returns up to 5 rules with agreement
+ * ≥ 0.95 and evidence ≥ 10 whose next-prompt timer has elapsed.
+ */
+router.get('/rules/promotion-ready', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user?.clientNumber) return res.status(401).json({ error: 'unauthenticated' });
+  try {
+    const prisma = (await import('../db/prisma')).default;
+    const rules = await prisma.shadowRule.findMany({
+      where: {
+        clientNumber: user.clientNumber,
+        mode: 'SHADOW',
+        agreement: { gte: 0.95 },
+        evidence: { gte: 10 },
+        OR: [
+          { nextPromotionPromptAt: null },
+          { nextPromotionPromptAt: { lte: new Date() } },
+        ],
+      } as any,
+      select: { id: true, name: true, description: true, evidence: true, agreement: true },
+      orderBy: [{ agreement: 'desc' }, { evidence: 'desc' }],
+      take: 5,
+    });
+    res.json({ rules });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/v1/shadow/rules/:id/keep-shadow — MD dismisses a promotion prompt.
+ * Rule stays in SHADOW; defers next prompt so it doesn't nag on tomorrow's Day Brief.
+ */
+router.post('/rules/:id/keep-shadow', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user?.clientNumber) return res.status(401).json({ error: 'unauthenticated' });
+  try {
+    const prisma = (await import('../db/prisma')).default;
+    await prisma.$executeRawUnsafe(
+      `UPDATE shadow_rules
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('next_promotion_prompt_at', (NOW() + INTERVAL '7 days')::text)
+       WHERE id = $1 AND client_number = $2`,
+      String(req.params.id), user.clientNumber,
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 export default router;

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { validateToken, TokenUser } from '../services/authService';
 import { checkSubscription } from '../services/licenseService';
+import { runInTenantScope } from '../db/tenantContext';
 
 // Extend Express Request to include authenticated user
 declare global {
@@ -47,7 +48,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   req.user = user;
-  next();
+  // Run the rest of the request inside a tenant scope so the Prisma
+  // middleware can auto-inject `clientNumber` on every read/write.
+  // SA bypass: SuperAdmin requests run with bypass=true so cross-tenant
+  // ops (admin tooling) aren't filtered.
+  await runInTenantScope(
+    {
+      clientNumber: user.clientNumber,
+      userId: user.id,
+      bypass: !!user.isSuperAdmin,
+    },
+    async () => next(),
+  );
 }
 
 /**
@@ -58,7 +70,14 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   const token = req.cookies?.[TOKEN_COOKIE] || extractBearerToken(req);
   if (token) {
     const user = await validateToken(token);
-    if (user) req.user = user;
+    if (user) {
+      req.user = user;
+      await runInTenantScope(
+        { clientNumber: user.clientNumber, userId: user.id, bypass: !!user.isSuperAdmin },
+        async () => next(),
+      );
+      return;
+    }
   }
   next();
 }

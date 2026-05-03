@@ -21,6 +21,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   // Phase 3.1: Personal GDrive folder access
   'https://www.googleapis.com/auth/drive.readonly',
+  // Tier 2 — Google Contacts import (People API).
+  // Existing users won't have this scope until they re-authorize;
+  // googleContactsService swallows 403s gracefully so the absence
+  // is visible (empty results) but not breaking.
+  'https://www.googleapis.com/auth/contacts.readonly',
 ];
 
 // ─── OAuth Client ─────────────────────────────────────────────

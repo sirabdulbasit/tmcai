@@ -211,6 +211,95 @@ class PlatformClient:
         r.raise_for_status()
         return r.json()
 
+    # ─── Wiki (Memex) per-user tools ─────────────────────────────
+    async def wiki_upsert_page(
+        self,
+        *,
+        client_number: str,
+        user_id: int,
+        page_type: str,
+        title: str,
+        body: str,
+        confidence: float,
+        source_ids: list[dict[str, Any]] | None = None,
+        outbound_links: list[dict[str, Any]] | None = None,
+        actor: str = "wiki_scribe",
+    ) -> dict[str, Any]:
+        r = await self._client.post(
+            "/api/v1/wiki/pages",
+            json={
+                "pageType": page_type,
+                "title": title,
+                "body": body,
+                "confidence": confidence,
+                "sourceIds": source_ids or [],
+                "outboundLinks": outbound_links or [],
+                "actor": actor,
+                "_asUserId": user_id,
+            },
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def wiki_read_page(self, client_number: str, user_id: int, page_id: str) -> dict[str, Any]:
+        r = await self._client.get(
+            f"/api/v1/wiki/pages/{page_id}",
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def wiki_query_index(
+        self, client_number: str, user_id: int, question: str, limit: int = 5
+    ) -> dict[str, Any]:
+        r = await self._client.get(
+            "/api/v1/wiki/index",
+            params={"q": question, "limit": limit},
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def wiki_link_pages(
+        self, client_number: str, user_id: int, from_page_id: str, to_page_id: str, link_type: str
+    ) -> dict[str, Any]:
+        r = await self._client.post(
+            "/api/v1/wiki/links",
+            json={"fromPageId": from_page_id, "toPageId": to_page_id, "linkType": link_type},
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def wiki_refresh_index(self, client_number: str, user_id: int) -> dict[str, Any]:
+        r = await self._client.post(
+            "/api/v1/wiki/index/refresh",
+            json={},
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def wiki_append_log(
+        self, client_number: str, user_id: int, kind: str, title: str, details: str | None = None
+    ) -> dict[str, Any]:
+        r = await self._client.post(
+            "/api/v1/wiki/log/append",
+            json={"kind": kind, "title": title, "details": details},
+            headers={**self._tenant_headers(client_number), "X-On-Behalf-Of-User": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def read_feed_event(self, client_number: str, feed_event_id: str) -> dict[str, Any]:
+        r = await self._client.get(
+            f"/api/v1/feed/events/{feed_event_id}",
+            headers=self._tenant_headers(client_number),
+        )
+        r.raise_for_status()
+        return r.json()
+
     async def classify_archetype(self, client_number: str, body: dict[str, Any]) -> dict[str, Any]:
         r = await self._client.post(
             "/api/v1/triage/archetype",

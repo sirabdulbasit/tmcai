@@ -156,12 +156,20 @@ export class SlackFeedAdapter extends FeedAdapter {
 // ─── helpers ────────────────────────────────────────────────────────
 
 async function getBotToken(tenantId: string): Promise<string | null> {
+  // Slack OAuth saves the bot token in user_connectors.config.botToken
+  // envelope-encrypted via the connector OAuth flow. Look up the first
+  // active slack user_connector for this tenant and decrypt.
   try {
+    const ct = await prisma.connectorType.findUnique({ where: { slug: 'slack' } });
+    if (!ct) return null;
     const row = await prisma.userConnector.findFirst({
-      where: { clientNumber: tenantId, providerName: 'slack', status: 'active' } as any,
-      select: { accessToken: true } as any,
+      where: { clientNumber: tenantId, connectorTypeId: ct.id, status: 'connected' },
+      select: { config: true },
     });
-    return (row as any)?.accessToken ?? null;
+    if (!row?.config) return null;
+    const { decryptConnectorConfig } = await import('../../connectorService');
+    const cfg = await decryptConnectorConfig(row.config as Record<string, unknown>);
+    return (cfg.botToken as string | undefined) ?? null;
   } catch {
     return null;
   }

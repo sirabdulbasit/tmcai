@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
+import { leaderOnly } from '../utils/leaderLock';
 
 const log = createLogger('scheduler');
 import { sendEmail } from './emailService';
@@ -117,7 +118,14 @@ function scheduleTask(task: { id: number; cronExpression: string; isActive: bool
     return;
   }
 
-  const job = cron.schedule(task.cronExpression, () => executeTask(task.id), { timezone: 'Asia/Karachi' });
+  // C3 — fire executeTask under a cluster-wide advisory lock so only one
+  // replica runs each tick. Key on task id so different tasks don't block
+  // each other.
+  const job = cron.schedule(
+    task.cronExpression,
+    () => leaderOnly(`scheduled_task:${task.id}`, () => executeTask(task.id)),
+    { timezone: 'Asia/Karachi' },
+  );
   activeJobs.set(task.id, job);
   log.info('Scheduled task', { taskId: task.id, cronExpression: task.cronExpression });
 }
@@ -134,53 +142,129 @@ export async function initScheduler(): Promise<void> {
 
   // ── MyOS Phase 2/3 background jobs ────────────────────────
 
+  // C3 — Each background cron runs under a leader lock so only one cluster
+  // replica fires per tick. Keys are hardcoded job names; collisions across
+  // different jobs are impossible since each name is unique.
+
   // Idempotency key cleanup — daily 3am PKT
-  cron.schedule('0 3 * * *', async () => {
+  cron.schedule('0 3 * * *', () => leaderOnly('cron:idempotency_cleanup', async () => {
     try {
       const { cleanupExpiredKeys } = await import('./actionIdempotencyService');
       const deleted = await cleanupExpiredKeys();
       if (deleted > 0) log.info('Idempotency cleanup', { deleted });
     } catch (err: any) { log.error('Idempotency cleanup failed', { error: err.message }); }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: 'Asia/Karachi' });
+
+  // Approval-token cleanup — daily 3:15am PKT. Sweeps tokens past their
+  // 7-day audit grace window so the table doesn't grow unbounded.
+  cron.schedule('15 3 * * *', () => leaderOnly('cron:approval_token_cleanup', async () => {
+    try {
+      const { cleanupExpired } = await import('./notifications/approvalTokenService');
+      const deleted = await cleanupExpired();
+      if (deleted > 0) log.info('Approval token cleanup', { deleted });
+    } catch (err: any) { log.error('Approval token cleanup failed', { error: err.message }); }
+  }), { timezone: 'Asia/Karachi' });
 
   // Decision outcome assessment — daily 2am PKT
-  cron.schedule('0 2 * * *', async () => {
+  cron.schedule('0 2 * * *', () => leaderOnly('cron:decision_outcomes', async () => {
     try {
       const { assessOutcomesForAllTenants } = await import('./decisionsLogService');
       await assessOutcomesForAllTenants();
       log.info('Decision outcome assessment completed');
     } catch (err: any) { log.error('Outcome assessment failed', { error: err.message }); }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: 'Asia/Karachi' });
 
   // Pattern analysis — weekly Sunday 6am PKT
-  cron.schedule('0 6 * * 0', async () => {
+  cron.schedule('0 6 * * 0', () => leaderOnly('cron:pattern_analysis', async () => {
     try {
       const { runForAllTenants } = await import('./patternAnalysisService');
       await runForAllTenants();
       log.info('Pattern analysis completed');
     } catch (err: any) { log.error('Pattern analysis failed', { error: err.message }); }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: 'Asia/Karachi' });
 
   // Thought pipeline weekly review — Friday 7am PKT
-  cron.schedule('0 7 * * 5', async () => {
+  cron.schedule('0 7 * * 5', () => leaderOnly('cron:thought_weekly_review', async () => {
     try {
       const { generateWeeklyReviewsForAllTenants } = await import('./thoughtPipelineService');
       await generateWeeklyReviewsForAllTenants();
       log.info('Weekly reviews generated');
     } catch (err: any) { log.error('Weekly review generation failed', { error: err.message }); }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: 'Asia/Karachi' });
 
   // Shadow scoring calibration — first Monday of each month, 7am PKT
-  cron.schedule('0 7 1-7 * 1', async () => {
+  cron.schedule('0 7 1-7 * 1', () => leaderOnly('cron:shadow_scoring', async () => {
     try {
       const { runForAllTenants } = await import('./shadowScoringService');
       await runForAllTenants();
       log.info('Shadow scoring calibration completed');
     } catch (err: any) { log.error('Shadow scoring failed', { error: err.message }); }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: 'Asia/Karachi' });
+
+  // Tier 2 — Sentiment backfill. Async on-ingest enrichment occasionally
+  // misses (LLM timeout, restart mid-batch). Hourly sweep picks up any
+  // unanalyzed feed events from the last 7 days and classifies them.
+  // 25-event batch keeps cost bounded; backlog drains across cycles.
+  cron.schedule('20 * * * *', () => leaderOnly('cron:sentiment_backfill', async () => {
+    try {
+      const { backfillAllTenants } = await import('./triage/sentimentService');
+      const r = await backfillAllTenants();
+      if (r.aggregate.updated > 0) log.info('Sentiment backfill', { tenants: r.tenants, ...r.aggregate });
+    } catch (err: any) { log.error('Sentiment backfill failed', { error: err.message }); }
+  }), { timezone: 'Asia/Karachi' });
+
+  // Tier 1 #8 — Entity discipline sweep. Runs at 4:30am PKT — BEFORE
+  // the Odoo mirror at 5am so that Odoo enrichment can match the entity
+  // pages we just touched. Discovers every distinct sender from the
+  // last 30 days, ensures each has a canonical wiki_page (entity_person),
+  // computes aggregate signals (last contact, frequency, recent topics,
+  // active open items, delegation owner, CRM match), and re-embeds for
+  // vector search.
+  cron.schedule('30 4 * * *', () => leaderOnly('cron:entity_sweep', async () => {
+    try {
+      const { sweepForAllTenants } = await import('./knowledge/entitySweepService');
+      const r = await sweepForAllTenants();
+      log.info('Entity sweep complete', { tenants: r.tenants, ...r.aggregate });
+    } catch (err: any) { log.error('Entity sweep failed', { error: err.message }); }
+  }), { timezone: 'Asia/Karachi' });
+
+  // CRM mirror — Odoo → wiki, daily 5am PKT. Feeds opportunities + partners
+  // into wiki_pages so the criticality engine's cascade-dimension can read
+  // live deal data without an Odoo round-trip.
+  cron.schedule('0 5 * * *', () => leaderOnly('cron:odoo_wiki_mirror', async () => {
+    try {
+      const { mirrorOdooForAllTenants } = await import('./crm/odooWikiMirror');
+      const r = await mirrorOdooForAllTenants();
+      log.info('Odoo wiki mirror complete', { tenants: r.tenants, ...r.result });
+    } catch (err: any) { log.error('Odoo wiki mirror failed', { error: err.message }); }
+  }), { timezone: 'Asia/Karachi' });
+
+  // M1 — Chunk pgvector backfill: copy JSON `embedding` arrays into the
+  // pgvector column for every tenant that has chunks but no vector index
+  // yet. Runs nightly 4am PKT; idempotent and cheap once the corpus is
+  // backfilled.
+  cron.schedule('0 4 * * *', () => leaderOnly('cron:chunk_vector_backfill', async () => {
+    try {
+      const { backfillChunkVectors } = await import('./knowledge/chunkVectorService');
+      const tenants = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT DISTINCT client_number FROM chunks WHERE vector_embedding IS NULL`,
+      );
+      for (const t of tenants) {
+        const r = await backfillChunkVectors(t.client_number);
+        if (r.written > 0) log.info('Chunk vector backfill', { clientNumber: t.client_number, ...r });
+      }
+    } catch (err: any) { log.error('Chunk vector backfill failed', { error: err.message }); }
+  }), { timezone: 'Asia/Karachi' });
 
   // ── Per-user Brain Engine crons ─────────────────────────────
   await registerAllEngineCrons();
+
+  // ── Per-user Risk Radar crons ──────────────────────────────
+  // Each user can configure their own schedule + signals. Default
+  // (08:15 PKT) applies when the user hasn't customized. Each tick is
+  // leader-locked keyed by user so multi-replica clusters fire once per
+  // user per tick.
+  await registerAllRiskRadarCrons();
 }
 
 // ─── Dynamic per-user engine cron management ──────────────────
@@ -213,7 +297,9 @@ export function registerUserEngineCron(userId: number, clientNumber: string, sch
 
   if (!schedule || !cron.validate(schedule)) return;
 
-  const job = cron.schedule(schedule, async () => {
+  // C3 — keyed by clientNumber+userId so each user's engine fires on
+  // exactly one replica per tick, but different users can run in parallel.
+  const job = cron.schedule(schedule, () => leaderOnly(`engine:${clientNumber}:${userId}`, async () => {
     try {
       const { runForUser } = await import('./brainEngineService');
       log.info('Engine cron triggered', { userId, clientNumber });
@@ -221,7 +307,7 @@ export function registerUserEngineCron(userId: number, clientNumber: string, sch
     } catch (err: any) {
       log.error('Engine cron failed', { userId, error: err.message });
     }
-  }, { timezone });
+  }), { timezone });
 
   activeEngineCrons.set(key, job);
   log.info('Engine cron registered', { userId, schedule, timezone });
@@ -232,6 +318,72 @@ export function stopUserEngineCron(userId: number, clientNumber: string): void {
   if (activeEngineCrons.has(key)) {
     activeEngineCrons.get(key)!.stop();
     activeEngineCrons.delete(key);
+  }
+}
+
+// ─── Dynamic per-user Risk Radar cron management ────────────────
+//
+// Each active user gets a cron registration honoring their per-user
+// risk_radar_config (schedule + timezone + enabled). Default schedule
+// is 08:15 PKT — the v16 risk_radar slot — when the user hasn't picked
+// their own. Edits to a user's config should call registerUserRiskRadarCron
+// with the new values so the cron rebinds.
+
+const activeRadarCrons = new Map<string, ReturnType<typeof cron.schedule>>();
+
+async function registerAllRiskRadarCrons(): Promise<void> {
+  try {
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT bc.user_id, bc.client_number, bc.risk_radar_config
+         FROM brain_configs bc
+         JOIN users u ON u.id = bc.user_id
+        WHERE u.is_active = TRUE`,
+    );
+    let count = 0;
+    for (const r of rows) {
+      const cfg = (r.risk_radar_config ?? {}) as { enabled?: boolean; schedule?: string; timezone?: string };
+      if (cfg.enabled === false) continue;
+      const schedule = cfg.schedule || '15 8 * * *';
+      const timezone = cfg.timezone || 'Asia/Karachi';
+      registerUserRiskRadarCron(r.user_id, r.client_number, schedule, timezone);
+      count += 1;
+    }
+    log.info('Risk radar crons registered', { count });
+  } catch (err: any) {
+    log.error('Failed to register risk radar crons', { error: err.message });
+  }
+}
+
+export function registerUserRiskRadarCron(
+  userId: number,
+  clientNumber: string,
+  schedule: string,
+  timezone: string,
+): void {
+  const key = `radar:${clientNumber}:${userId}`;
+  if (activeRadarCrons.has(key)) {
+    activeRadarCrons.get(key)!.stop();
+    activeRadarCrons.delete(key);
+  }
+  if (!schedule || !cron.validate(schedule)) return;
+  const job = cron.schedule(schedule, () => leaderOnly(`radar:${clientNumber}:${userId}`, async () => {
+    try {
+      const { runForUser } = await import('./brain/riskRadarService');
+      log.info('Risk radar cron triggered', { userId, clientNumber });
+      await runForUser(clientNumber, userId);
+    } catch (err: any) {
+      log.error('Risk radar cron failed', { userId, error: err.message });
+    }
+  }), { timezone });
+  activeRadarCrons.set(key, job);
+  log.info('Risk radar cron registered', { userId, clientNumber, schedule, timezone });
+}
+
+export function stopUserRiskRadarCron(userId: number, clientNumber: string): void {
+  const key = `radar:${clientNumber}:${userId}`;
+  if (activeRadarCrons.has(key)) {
+    activeRadarCrons.get(key)!.stop();
+    activeRadarCrons.delete(key);
   }
 }
 

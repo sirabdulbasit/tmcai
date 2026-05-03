@@ -11,6 +11,7 @@ import { DemoteHandler } from './lifecycle/demote';
 import { SendEmailHandler } from './communication/sendEmail';
 import { SendEmailReplyHandler } from './communication/sendEmailReply';
 import { ForwardEmailHandler } from './communication/forwardEmail';
+import { SendSlackMessageHandler } from './communication/sendSlackMessage';
 import { SendChatReplyHandler } from './communication/sendChatReply';
 import { SendWhatsappMessageHandler } from './communication/sendWhatsappMessage';
 // Calendar
@@ -62,6 +63,7 @@ export function registerAllHandlers(): void {
   register(new ForwardEmailHandler());
   register(new SendChatReplyHandler());
   register(new SendWhatsappMessageHandler());
+  register(new SendSlackMessageHandler());
   // Calendar (5)
   register(new CreateEventHandler());
   register(new RescheduleEventHandler());

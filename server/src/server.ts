@@ -15,6 +15,10 @@ import { register as registerFeedAdapter } from './services/adapters/adapterRegi
 import gmailFeedAdapter from './services/adapters/impl/gmailFeedAdapter';
 import slackFeedAdapter from './services/adapters/impl/slackFeedAdapter';
 import crmFeedAdapter from './services/adapters/impl/crmFeedAdapter';
+import outlookFeedAdapter from './services/adapters/impl/outlookFeedAdapter';
+import outlookCalendarFeedAdapter from './services/adapters/impl/outlookCalendarFeedAdapter';
+import onedriveFeedAdapter from './services/adapters/impl/onedriveFeedAdapter';
+import msTeamsFeedAdapter from './services/adapters/impl/msTeamsFeedAdapter';
 
 validateEnv();
 // HaseebOS v15 — register action handlers on boot
@@ -23,10 +27,34 @@ registerAllHandlers();
 registerFeedAdapter(gmailFeedAdapter);
 registerFeedAdapter(slackFeedAdapter);
 registerFeedAdapter(crmFeedAdapter);
+registerFeedAdapter(outlookFeedAdapter);
+registerFeedAdapter(outlookCalendarFeedAdapter);
+registerFeedAdapter(onedriveFeedAdapter);
+registerFeedAdapter(msTeamsFeedAdapter);
 
-app.listen(env.port, async () => {
+// L1 — track interval/timeout handles so SIGTERM can clear them cleanly.
+// Every setInterval/setTimeout below that is assigned-for-cleanup gets
+// pushed into `backgroundHandles` and is cleared by the shutdown hook.
+// NOTE: the current implementation registers 15+ timers without capturing
+// their handles; full cleanup requires converting them as part of the
+// broader scheduler-extraction work (finding C3). This hook gets us the
+// HTTP-server drain and DB disconnect today.
+const backgroundHandles: Array<NodeJS.Timeout> = [];
+
+const server = app.listen(env.port, async () => {
   console.log(`TMCAI Server listening on port ${env.port}`);
   startAutoRefresh(env.indexRefreshIntervalMs);
+  // Tier 1 #7 — install/update canonical system gate rules. Idempotent,
+  // safe on every boot. Runs before the scheduler so any cron that hits
+  // the gate engine sees the seeded rules.
+  await import('./services/triage/systemRuleSeeder')
+    .then(({ seedSystemRules }) => seedSystemRules())
+    .catch(err => console.error('System rule seed failed:', err.message));
+  // Risk Radar — install/update canonical system risk rules. Same idempotent
+  // pattern as gate rules; safe on every boot.
+  await import('./services/brain/riskRulesSeeder')
+    .then(({ seedSystemRiskRules }) => seedSystemRiskRules())
+    .catch(err => console.error('Risk rule seed failed:', err.message));
   await initScheduler().catch(err => console.error('Scheduler init failed:', err.message));
   // Cleanup expired context memories every hour
   cleanupExpiredContextMemories().catch(() => {});
@@ -48,6 +76,26 @@ app.listen(env.port, async () => {
     import('./services/whatsapp/WhatsAppManager').then(({ initializeAllTenants }) => {
       initializeAllTenants().then(() => console.log('[WhatsApp] All tenants initialized')).catch(() => {});
     }).catch(() => {});
+
+    // Heartbeat watchdog — every 5 minutes, probe each tenant marked as
+    // connected and self-heal silent dropouts (Chromium hung, browser
+    // detached, host slept). Catches the class of failures that don't
+    // fire `client.on('disconnected')`. Pairs with the email alert that
+    // already fires on hard disconnects.
+    import('./services/whatsapp/connectionWatchdog').then(({ startConnectionWatchdog }) => {
+      startConnectionWatchdog();
+      console.log('[WhatsApp] Connection watchdog started');
+    }).catch(() => {});
+  }
+
+  // WhatsApp (Personal): resume any previously-paired user sessions so the
+  // MD doesn't re-scan after a server restart. Whatsapp-web.js LocalAuth
+  // persists the browser session on disk; this call just re-creates the
+  // Client instance and reconnects silently.
+  if (process.env.ENABLE_WHATSAPP_PERSONAL !== 'false') {
+    import('./services/whatsapp/UserWebjsProvider').then(({ resumeAllSessions }) => {
+      resumeAllSessions().then(() => console.log('[WhatsApp Personal] User sessions resumed')).catch(() => {});
+    }).catch(() => {});
   }
   // Smart log maintenance — hourly: escalate high-recurrence, auto-fix known patterns, cleanup old
   setInterval(async () => {
@@ -58,6 +106,50 @@ app.listen(env.port, async () => {
       await cleanupOldLogs(90);
     } catch {}
   }, 60 * 60 * 1000);
+
+  // Memory consolidation — nightly. Archives low-value episodic pages
+  // (email_message / sender_topic / observation / answer / gap) after
+  // their aging policy is met. Conservative — only sets status='archived',
+  // never deletes. First run waits 6h after boot to avoid restart churn.
+  const memoryConsolidationHandle = setTimeout(() => {
+    const tick = async () => {
+      try {
+        const { runConsolidationAllTenants } = await import('./services/knowledge/memoryConsolidationService');
+        await runConsolidationAllTenants();
+      } catch (err: any) {
+        console.warn('[memory-consolidation] tick failed:', err.message);
+      }
+    };
+    void tick();
+    const handle = setInterval(tick, 24 * 60 * 60 * 1000);
+    backgroundHandles.push(handle);
+  }, 6 * 60 * 60 * 1000);
+  backgroundHandles.push(memoryConsolidationHandle);
+
+  // MyOS — attachment_doc backfill worker (Batch 2):
+  //   drains historical Gmail events whose attachments pre-date the
+  //   attachment-wiki hook. Per-user cursor in system_config, resumable,
+  //   idempotent, self-terminating once a user is fully caught up.
+  //   New users connecting AFTER activation get attachments live via
+  //   the ingest hook and are skipped by this worker.
+  import('./jobs/attachmentBackfillWorker').then(({ startAttachmentBackfillWorker }) => {
+    startAttachmentBackfillWorker();
+  }).catch((e) => console.warn('[attachmentBackfill] start failed:', e.message));
+
+  // Phase F — Wiki lint (hourly): orphans, stale pages, open gaps,
+  // contradictions, missing entity pages. Files a Wiki Lint Report page
+  // per user so the MD can skim what Brain has flagged.
+  import('./jobs/wikiLintWorker').then(({ startWikiLintWorker }) => {
+    startWikiLintWorker();
+  }).catch((e) => console.warn('[wikiLint] start failed:', e.message));
+
+  // Brain Cognitive Engine — every 30 min, produce observations + a
+  // mind_state per user. This is the "thinking on top of feed + wiki"
+  // loop: open loops, stale threads, new contacts, rising topics,
+  // frequency shifts. Brain's continuous awareness of what's happening.
+  import('./jobs/brainCognitiveWorker').then(({ startBrainCognitiveWorker }) => {
+    startBrainCognitiveWorker();
+  }).catch((e) => console.warn('[brainCognitive] start failed:', e.message));
 
   // HaseebOS v15 — notification queue drain every 60s
   setInterval(async () => {
@@ -71,6 +163,93 @@ app.listen(env.port, async () => {
       console.warn('[notifications] drain error:', err.message);
     }
   }, 60 * 1000);
+
+  // MyOS wiki lint — nightly 03:00 PKT (22:00 UTC previous day) per user
+  setInterval(async () => {
+    const now = new Date();
+    // PKT is UTC+5. 03:00 PKT = 22:00 UTC. Fire once within the first 5 min.
+    if (now.getUTCHours() !== 22 || now.getUTCMinutes() >= 5) return;
+    try {
+      const prisma = (await import('./db/prisma')).default;
+      const { mineWikiHealth } = await import('./services/wiki/wikiLintService');
+      const { enqueue: enqueueNotification } = await import('./services/notifications/notificationService');
+      const tenants = await prisma.tenant.findMany({ where: { isActive: true }, select: { clientNumber: true } });
+      for (const t of tenants) {
+        const users = await prisma.user.findMany({
+          where: { clientNumber: t.clientNumber, isActive: true } as any,
+          select: { id: true },
+        });
+        for (const u of users) {
+          try {
+            const findings = await mineWikiHealth(t.clientNumber, u.id);
+            if (findings.suggestions.length > 0) {
+              await enqueueNotification({
+                clientNumber: t.clientNumber,
+                recipientId: u.id,
+                channel: 'in_app',
+                payload: {
+                  kind: 'wiki_lint',
+                  subject: `Wiki health: ${findings.pageCount} pages, ${findings.suggestions.length} suggestions`,
+                  body: findings.suggestions.join('\n'),
+                  findings,
+                },
+              }).catch(() => {});
+            }
+          } catch (err: any) {
+            console.warn(`[wikiLint] ${t.clientNumber}/${u.id} failed:`, err.message);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[wikiLint] loop error:', err.message);
+    }
+  }, 5 * 60 * 1000);
+
+  // MyOS — daily FACL folder scribe. Re-walks every user's designated
+  // Gdrive folder, re-summarizes docs that changed, and refreshes the
+  // sender-aware org knowledge in wiki_pages (pageType='org_doc').
+  // Fires once every 24h at the first tick after boot, then every 24h.
+  // Uses an interval, not cron, for simplicity; idle if no user has a
+  // faclFolderId set.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runDailyFaclScribe } = await import('./services/knowledge/folderScribeService');
+        const results = await runDailyFaclScribe();
+        if (results.length > 0) {
+          console.log(`[faclScribe] daily: ${results.length} users scribed, ${results.reduce((s, r) => s + r.updated, 0)} docs updated`);
+        }
+      } catch (err: any) {
+        console.warn('[faclScribe] daily error:', err.message);
+      }
+    })();
+  }, 5 * 60 * 1000); // first run 5 min after boot
+  setInterval(async () => {
+    try {
+      const { runDailyFaclScribe } = await import('./services/knowledge/folderScribeService');
+      const results = await runDailyFaclScribe();
+      if (results.length > 0) {
+        console.log(`[faclScribe] daily: ${results.length} users scribed, ${results.reduce((s, r) => s + r.updated, 0)} docs updated`);
+      }
+    } catch (err: any) {
+      console.warn('[faclScribe] daily error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000);
+
+  // MyOS — delegation follow-up scheduler every 30 min: nudge delegatees
+  // whose 7-day window has passed without a response. Escalates after 3
+  // attempts without response instead of nagging forever.
+  setInterval(async () => {
+    try {
+      const { runDelegationFollowUp } = await import('./jobs/delegationFollowUpJob');
+      const s = await runDelegationFollowUp();
+      if (s.sent > 0 || s.escalated > 0 || s.errors > 0) {
+        console.log(`[delegationFollowUp] scanned=${s.scanned} sent=${s.sent} escalated=${s.escalated} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[delegationFollowUp] error:', err.message);
+    }
+  }, 30 * 60 * 1000);
 
   // HaseebOS v15 L2 — snooze timer every 60s: wake SNOOZED items when due
   setInterval(async () => {
@@ -118,6 +297,78 @@ app.listen(env.port, async () => {
       console.warn('[genericPoll] error:', err.message);
     }
   }, 5 * 60 * 1000);
+
+  // MyOS — Google Calendar poller every 10 min. Pulls next 48h of events
+  // for every user with an active Google integration so the Meetings tile
+  // and the triage pipeline see fresh calendar data.
+  setInterval(async () => {
+    try {
+      const { pollAllActiveCalendarUsers } = await import('./jobs/gcalFeedPoller');
+      const r = await pollAllActiveCalendarUsers();
+      const ingested = r.reduce((s, x) => s + x.ingested, 0);
+      const errors = r.reduce((s, x) => s + x.errors, 0);
+      if (ingested > 0 || errors > 0) {
+        console.log(`[gcalPoll] users=${r.length} ingested=${ingested} errors=${errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[gcalPoll] error:', err.message);
+    }
+  }, 10 * 60 * 1000);
+
+  // MyOS — Notion mirror every 10 min. Pushes postgres-backed wiki pages to
+  // Notion for users with a connected Notion connector. Graceful no-op when
+  // no connector is present.
+  setInterval(async () => {
+    try {
+      const { mirrorAllTenants } = await import('./jobs/notionMirrorSync');
+      await mirrorAllTenants();
+    } catch (err: any) {
+      console.warn('[notionMirror] error:', err.message);
+    }
+  }, 10 * 60 * 1000);
+
+  // MyOS — Reflection agent every 6 hours. Aggregates decisions / delegations
+  // / ignores / autonomous actions into human-readable pattern_insights that
+  // surface on Day Brief's "Noticed overnight" section.
+  setInterval(async () => {
+    try {
+      const { reflectAllUsers } = await import('./services/reflection/reflectionService');
+      const rs = await reflectAllUsers();
+      const written = rs.reduce((s, r) => s + r.insightsWritten, 0);
+      if (written > 0) console.log(`[reflection] users=${rs.length} insights_written=${written}`);
+    } catch (err: any) {
+      console.warn('[reflection] error:', err.message);
+    }
+  }, 6 * 60 * 60 * 1000);
+
+  // MyOS Knowledge — Wiki Linter every hour: classify each wiki_page as
+  // active / stale / orphan / contradicted + reconcile link counts.
+  setInterval(async () => {
+    try {
+      const { lintAllWikiPages } = await import('./services/knowledge/wikiLinterService');
+      const r = await lintAllWikiPages();
+      if (r.scanned > 0 && (r.marked_stale > 0 || r.marked_orphan > 0 || r.marked_contradicted > 0 || r.marked_active > 0)) {
+        console.log(`[wikiLinter] scanned=${r.scanned} active=${r.marked_active} stale=${r.marked_stale} orphan=${r.marked_orphan} contradicted=${r.marked_contradicted} ${r.durationMs}ms`);
+      }
+    } catch (err: any) {
+      console.warn('[wikiLinter] error:', err.message);
+    }
+  }, 60 * 60 * 1000);
+
+  // MyOS — Rule Miner every 15 min: walks decision_logs + delegation_logs
+  // aggregates, auto-creates shadow_rules as patterns reach DRAFT/SHADOW
+  // thresholds. Cheap (one raw aggregate query + per-row upsert).
+  setInterval(async () => {
+    try {
+      const { mineRulesForAllTenants } = await import('./services/triage/ruleMiner');
+      const r = await mineRulesForAllTenants();
+      if (r.scanned > 0 || r.drafts > 0 || r.shadows > 0 || r.errors > 0) {
+        console.log(`[ruleMiner] scanned=${r.scanned} newDrafts=${r.drafts} newShadows=${r.shadows} unchanged=${r.unchanged} errors=${r.errors} ${r.durationMs}ms`);
+      }
+    } catch (err: any) {
+      console.warn('[ruleMiner] error:', err.message);
+    }
+  }, 15 * 60 * 1000);
 
   // HaseebOS v15 — Notion reverse sync every 5 min (feature-flag gated per tenant)
   setInterval(async () => {
@@ -174,4 +425,63 @@ app.listen(env.port, async () => {
       console.warn('[steering] snapshot loop error:', err.message);
     }
   }, 5 * 60 * 1000); // check every 5 min, fires once within the 06:00 PKT window
+});
+
+// L1 — Graceful shutdown. Cloud Run sends SIGTERM and waits 10s before
+// SIGKILL. We stop accepting new connections, let in-flight requests drain,
+// clear scheduler intervals we hold handles for, and disconnect Prisma so
+// the DB pool shuts down cleanly.
+async function gracefulShutdown(signal: string) {
+  console.log(`[shutdown] received ${signal}, draining...`);
+
+  // Stop accepting new connections; in-flight requests finish.
+  server.close(() => console.log('[shutdown] HTTP server closed'));
+
+  // Clear any scheduler intervals whose handles we have captured.
+  for (const h of backgroundHandles) clearInterval(h);
+
+  // Destroy the WhatsApp Web.js clients BEFORE exiting — otherwise
+  // the headless Chromium gets SIGKILL'd by the OS, which leaves
+  // LocalAuth's session store half-written on disk. That's the
+  // "keeps needing a new QR scan after every restart" symptom.
+  try {
+    const { destroyAllClients } = await import('./services/whatsapp/WebjsProvider');
+    await destroyAllClients();
+    console.log('[shutdown] whatsapp (tenant) clients destroyed');
+  } catch (err: any) {
+    console.warn('[shutdown] whatsapp tenant destroy error:', err.message);
+  }
+  try {
+    const { destroyAllUserSessions } = await import('./services/whatsapp/UserWebjsProvider');
+    await destroyAllUserSessions();
+    console.log('[shutdown] whatsapp (user) sessions destroyed');
+  } catch (err: any) {
+    console.warn('[shutdown] whatsapp user destroy error:', err.message);
+  }
+
+  // Release DB pool. Dynamic import to avoid circular issues.
+  try {
+    const prisma = (await import('./db/prisma')).default;
+    await prisma.$disconnect();
+    console.log('[shutdown] prisma disconnected');
+  } catch (err: any) {
+    console.warn('[shutdown] prisma disconnect error:', err.message);
+  }
+
+  // Hard-kill fallback after 8s so we never exceed the 10s SIGKILL window.
+  setTimeout(() => {
+    console.warn('[shutdown] forced exit after timeout');
+    process.exit(0);
+  }, 8000).unref();
+}
+
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
+
+// Observability: don't let a stray rejection crash the process silently.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
 });

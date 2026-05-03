@@ -131,7 +131,10 @@ async function buildCriticalItems(userId: number, clientNumber: string): Promise
       situationBlocks += `### [SITUATION] ${sit.entityName} — ${sit.itemCount} signals · Score ${sit.topScore?.toFixed(1) || '?'}\n`;
       situationBlocks += `> ${sit.situationBlock}\n\n`;
     }
-  } catch {}
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err);
+    console.warn('[dayBriefing] swallowed at getSituationBlocks:', m.slice(0, 240));
+  }
 
   // Individual items (exclude those covered by situation blocks)
   const individualItems = items.filter(i => !i.entityId || !situationEntityIds.has(i.entityId));

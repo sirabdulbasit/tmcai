@@ -19,6 +19,10 @@ export interface InboundParams {
   mediaUrl?: string;
   replyFn?: (text: string) => Promise<void>;
   typingFn?: () => Promise<void>;  // Shows "typing..." indicator in WhatsApp
+  /** Set by handleInboundMessage after identity resolution; used by
+   *  sendReply so the outbound whatsapp_messages row carries a valid
+   *  user_id (column is NOT NULL — previously the insert failed silently). */
+  _resolvedUserId?: number;
 }
 
 // Dedup: prevent processing same message twice (WhatsApp Web.js can fire duplicate events)
@@ -43,12 +47,28 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   log.info('Inbound', { clientNumber: params.clientNumber, from: params.fromNumber, type: params.messageType });
 
-  // Log inbound message
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO whatsapp_messages (client_number, direction, from_number, to_number, content, message_type, status, created_at)
-     VALUES ($1, 'inbound', $2, '', $3, $4, 'received', NOW())`,
-    params.clientNumber, params.fromNumber, params.messageBody, params.messageType,
-  );
+  // Log inbound message. We don't have the resolved userId yet (that's
+  // the next step), so fall back to a tenant SA to satisfy the
+  // NOT NULL constraint. The resolution-based update-to-correct-user_id
+  // is a nice-to-have follow-up but not essential — the from_number is
+  // the authoritative identity signal anyway.
+  try {
+    const sa = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
+         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    const logUserId = sa[0]?.id;
+    if (logUserId) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, message_type, status, created_at)
+         VALUES ($1, $2, 'inbound', $3, '', $4, $5, 'received', NOW())`,
+        params.clientNumber, logUserId, params.fromNumber, params.messageBody, params.messageType,
+      );
+    }
+  } catch (err: any) {
+    log.warn('inbound log insert failed', { error: err.message });
+  }
 
   // ── Step 1: Check if sender's number is registered ────────────────────────
   // Normalize number for matching: strip +, leading 0, try multiple formats
@@ -60,29 +80,36 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     '0' + rawNum.slice(rawNum.startsWith('92') ? 2 : 0), // 03226288256 (local)
   ];
 
+  // Tenant filter lives on the USER row — not on whatsapp_connections —
+  // because `wc.client_number` is allowed to be null (historical bug;
+  // see smoke log). The user's client_number is the authoritative
+  // tenant binding and is NOT NULL on every row.
   const connections = await prisma.$queryRawUnsafe(
     `SELECT wc.user_id, wc.id as connection_id, wc.display_name, u.name as user_name, u.client_number, u.department
      FROM whatsapp_connections wc JOIN users u ON u.id = wc.user_id
-     WHERE wc.client_number = $1 AND wc.status = 'active'
-     AND (wc.phone_number = $2 OR wc.phone_number = $3 OR wc.phone_number = $4 OR wc.phone_number = $5)`,
+     WHERE u.client_number = $1 AND wc.status = 'active' AND u.is_active = TRUE
+       AND (wc.phone_number = $2 OR wc.phone_number = $3 OR wc.phone_number = $4 OR wc.phone_number = $5)`,
     params.clientNumber, numVariants[0], numVariants[1], numVariants[2], numVariants[3],
   ) as any[];
 
-  // Unknown number — send registration prompt
+  // Unknown number — silently drop the message.
+  //
+  // Why ignore instead of replying with a registration prompt:
+  //   1. Privacy — replying confirms to the sender that this is an
+  //      automated business number, attracting spam/scrapers.
+  //   2. Quota — every reply consumes a slot from the tenant's daily
+  //      cap; auto-replying to wrong-number / spam senders burns it.
+  //   3. UX — a real user who needs to register will be onboarded by
+  //      their admin via the Settings page; they don't need a reply
+  //      from the bot to figure that out.
+  //
+  // Still logged so admins can audit unknown-number traffic in the
+  // server log if they ever need to investigate.
   if (!connections.length) {
-    log.info('Unregistered number', { from: params.fromNumber, clientNumber: params.clientNumber });
-    const reply = [
-      `This WhatsApp number (${params.fromNumber}) is not registered with TMCAI.`,
-      '',
-      'To use TMCAI on WhatsApp:',
-      '1. Login to your TMCAI portal',
-      '2. Go to Settings',
-      '3. Under WhatsApp, enter this phone number',
-      '4. Send a message here again',
-      '',
-      'Contact your admin if you need help.',
-    ].join('\n');
-    await sendReply(params, reply);
+    log.info('Unregistered number — ignored', {
+      from: params.fromNumber,
+      clientNumber: params.clientNumber,
+    });
     return;
   }
 
@@ -90,6 +117,11 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   const userId = conn.user_id;
   const userName = conn.display_name || conn.user_name || 'there';
   let queryText = params.messageBody;
+
+  // Thread the resolved userId onto params so sendReply's log insert
+  // carries it — whatsapp_messages.user_id is NOT NULL and the outbound
+  // row was previously being swallowed by an empty catch.
+  params._resolvedUserId = userId;
 
   log.info('Identified user', { from: params.fromNumber, userId, name: userName });
 
@@ -438,16 +470,29 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     return;
   }
 
-  // ── Step 5: Process query through TMCAI chat pipeline ────────────────────
+  // ── Step 5: Process query through Brain (the living two-pass pipeline) ────
   // Refresh typing indicator (it expires after ~25s, processing can take 5-15s)
   if (params.typingFn) await params.typingFn().catch(() => {});
 
+  // Brain identifies WHO is asking from the sender phone (resolved to
+  // userId above) and answers with THAT user's full context: their
+  // user-scope instructions, private knowledge, open items, calendar.
+  // Client-scope instructions apply tenant-wide. This is the same
+  // pipeline `POST /brain/ask` uses on the web surface.
   let responseText: string;
   try {
-    responseText = await processWhatsAppQuery(userId, params.clientNumber, queryText, history);
+    const { answerAsBrain } = await import('../../routes/brainAskRoutes');
+    const r = await answerAsBrain(params.clientNumber, userId, queryText);
+    responseText = r.answer;
+    log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0 });
   } catch (error: any) {
-    log.error('Query processing failed', { error: error.message, userId });
-    responseText = `Sorry ${userName}, I encountered an error processing your request. Please try again or visit the TMCAI portal.`;
+    log.warn('answerAsBrain failed — falling back to legacy pipeline', { error: error.message, userId });
+    try {
+      responseText = await processWhatsAppQuery(userId, params.clientNumber, queryText, history);
+    } catch (err2: any) {
+      log.error('Query processing failed', { error: err2.message, userId });
+      responseText = `Sorry ${userName}, I couldn't process that just now. Try again or open MyOS on the web.`;
+    }
   }
 
   // No prefix needed — the LLM already knows the user's name from memory/profile
@@ -528,23 +573,45 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
     else clean += '...';
   }
 
-  // Log outbound message
+  // Log outbound message. `whatsapp_messages.user_id` is NOT NULL — if
+  // the resolver upstream didn't set one (edge case: reply before
+  // identity resolution, e.g., the "unregistered number" prompt), fall
+  // back to the tenant's first active SA so the log row is valid.
+  let logUserId = params._resolvedUserId;
+  if (!logUserId) {
+    const sa = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
+         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    logUserId = sa[0]?.id;
+  }
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO whatsapp_messages (client_number, direction, from_number, to_number, content, status, created_at)
-       VALUES ($1, 'outbound', $2, $3, $4, 'sent', NOW())`,
-      params.clientNumber, '', params.fromNumber, clean,
-    );
-  } catch {}
+    if (logUserId) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, status, created_at)
+         VALUES ($1, $2, 'outbound', $3, $4, $5, 'sent', NOW())`,
+        params.clientNumber, logUserId, '', params.fromNumber, clean,
+      );
+    }
+  } catch (err: any) {
+    log.warn('outbound log insert failed', { error: err.message });
+  }
 
   if (params.replyFn) {
+    // Provider-supplied reply path (legacy webjs uses MessageMedia for
+    // voice). When inbound came over Meta webhook, no replyFn is passed
+    // and we route through the unified tenant-WhatsApp sender — which
+    // picks Meta Notifier when configured, falls back to webjs otherwise.
     await params.replyFn(clean);
   } else {
-    await sendWhatsAppMessage({
-      clientNumber: params.clientNumber,
-      to: params.fromNumber,
-      message: clean,
-    });
+    const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+    await sendTenantWhatsAppText(
+      params.clientNumber,
+      params.fromNumber,
+      clean,
+      logUserId ?? 0,
+    );
   }
 }
 

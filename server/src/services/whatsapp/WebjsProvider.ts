@@ -9,6 +9,8 @@
 import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, TestResult } from './IWhatsAppProvider';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import fs from 'fs';
+import path from 'path';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -17,9 +19,108 @@ const clients = new Map<string, any>();           // whatsapp-web.js Client inst
 const qrCodes = new Map<string, string>();        // base64 QR images
 const statusMap = new Map<string, string>();       // connection status
 
+// Reconnect coordination — prevents the "keeps disconnecting" loop:
+//   - initFlight: an initialize() call is already running for this tenant
+//   - reconnectTimer: a scheduled reconnect handle we can cancel
+//   - reconnectAttempt: exponential-backoff counter, reset on successful ready
+const initFlight = new Set<string>();
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
+const reconnectAttempts = new Map<string, number>();
+const RECONNECT_BACKOFF_MS = [10_000, 30_000, 120_000, 300_000, 600_000]; // 10s → 30s → 2m → 5m → 10m
+const MAX_RECONNECT_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
+
+/**
+ * Remove stale Chromium SingletonLock files from a LocalAuth session
+ * folder when the PID inside them is no longer alive.
+ *
+ * Why this exists: when the prior server process gets SIGKILL'd (nodemon
+ * crash, OOM, OS reboot), Chrome doesn't get a chance to clean up its
+ * SingletonLock / SingletonCookie / SingletonSocket files. The next
+ * process tries to launch Chromium against the same user-data dir,
+ * Chromium sees the lock, refuses to start, and the WhatsApp client
+ * never reaches `ready`. The user then has to manually re-pair via QR.
+ *
+ * Safety: SingletonLock contains "<hostname>-<pid>". We only remove
+ * when the PID is dead (process.kill(pid, 0) throws ESRCH). If the PID
+ * is alive — meaning a different running server process owns the
+ * session — we leave it alone and let the new client fail loudly.
+ */
+function cleanStaleSingletonLocks(sessionDir: string): boolean {
+  if (!fs.existsSync(sessionDir)) return false;
+  const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+  let cleaned = false;
+  for (const name of lockFiles) {
+    const p = path.join(sessionDir, name);
+    let stale = false;
+    try {
+      // SingletonLock is a symlink whose link target is "host-pid".
+      const target = fs.readlinkSync(p);
+      const m = /-(\d+)$/.exec(target);
+      const pid = m ? Number(m[1]) : NaN;
+      if (Number.isFinite(pid) && pid > 0) {
+        try { process.kill(pid, 0); /* alive */ }
+        catch (err: any) { if (err.code === 'ESRCH') stale = true; }
+      } else {
+        // Not a parseable lock — treat as stale.
+        stale = true;
+      }
+    } catch (err: any) {
+      // Not a symlink (or doesn't exist) — try a plain file unlink. If
+      // it doesn't exist that's fine; if it exists as a regular file
+      // it was left over from an older Chromium version, also stale.
+      if (err.code === 'ENOENT') continue;
+      stale = true;
+    }
+    if (stale) {
+      try { fs.unlinkSync(p); cleaned = true; log.warn('removed stale chromium lock', { file: p }); }
+      catch { /* ignore — fail loudly when initialize tries to launch */ }
+    }
+  }
+  return cleaned;
+}
+
+/** Destroy every tenant client cleanly — called by gracefulShutdown on
+ *  SIGTERM so LocalAuth's disk writes don't get truncated on nodemon/deploy. */
+export async function destroyAllClients(): Promise<void> {
+  for (const [cn, timer] of reconnectTimers) { clearTimeout(timer); reconnectTimers.delete(cn); }
+  const work: Promise<void>[] = [];
+  for (const [cn, c] of clients) {
+    work.push((async () => {
+      try { await c.destroy(); } catch {
+        try { const b = await c.pupBrowser; if (b) await b.close(); } catch {}
+      }
+      clients.delete(cn); statusMap.delete(cn); qrCodes.delete(cn);
+    })());
+  }
+  // Give each client up to 3s to finish destroy() so disk writes flush.
+  await Promise.race([
+    Promise.all(work),
+    new Promise((res) => setTimeout(res, 3000)),
+  ]);
+}
+
 export class WebjsProvider implements IWhatsAppProvider {
 
   async initialize(clientNumber: string): Promise<void> {
+    // Idempotency — refuse to start a second init for the same tenant.
+    // Previously every reconnect attempt could race a boot-time
+    // initializeAllTenants call, spawning two Chromiums that fought
+    // over the same WhatsApp account and kicked each other out.
+    if (initFlight.has(clientNumber)) {
+      log.info('initialize skipped — already in flight', { clientNumber });
+      return;
+    }
+    const current = statusMap.get(clientNumber);
+    if ((current === 'connected' || current === 'connecting') && clients.has(clientNumber)) {
+      log.info('initialize skipped — already connected/connecting', { clientNumber, current });
+      return;
+    }
+    initFlight.add(clientNumber);
+
+    // Cancel any pending reconnect timer — we're (re)initializing NOW.
+    const pending = reconnectTimers.get(clientNumber);
+    if (pending) { clearTimeout(pending); reconnectTimers.delete(clientNumber); }
+
     // Clean up any stale client before reinitializing
     if (clients.has(clientNumber)) {
       const oldClient = clients.get(clientNumber);
@@ -50,9 +151,21 @@ export class WebjsProvider implements IWhatsAppProvider {
 
     const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
 
-    // Find Chrome/Chromium executable on the system
+    // Restart resilience: if the previous process got SIGKILL'd (crash,
+    // nodemon SIGTERM grace exceeded, OOM, host reboot), Chromium left
+    // SingletonLock files behind in the LocalAuth folder pointing at a
+    // dead PID. Without this cleanup, Chromium refuses to launch against
+    // that user-data dir and the WhatsApp client never reaches `ready`,
+    // forcing the admin to re-scan QR after every hard restart.
+    const sessionDir = path.join(sessionPath, `session-${clientNumber}`);
+    cleanStaleSingletonLocks(sessionDir);
+
+    // Find Chrome/Chromium executable on the system — match UserWebjsProvider
+    // so both legacy and personal paths resolve the same way on macOS.
     const executablePath = process.env.CHROME_PATH
-      || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/chromium-browser');
+      || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        : process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+        : '/usr/bin/chromium-browser');
 
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: clientNumber, dataPath: sessionPath }),
@@ -83,6 +196,7 @@ export class WebjsProvider implements IWhatsAppProvider {
     client.on('ready', async () => {
       statusMap.set(clientNumber, 'connected');
       qrCodes.delete(clientNumber);
+      reconnectAttempts.delete(clientNumber);  // reset backoff counter on a clean connection
       const number = '+' + client.info.wid.user;
       await prisma.$executeRawUnsafe(
         `UPDATE whatsapp_config SET status = 'connected', connected_number = $1, connected_at = NOW(), qr_code = NULL, qr_expires_at = NULL, last_error = NULL WHERE client_number = $2`,
@@ -259,22 +373,81 @@ export class WebjsProvider implements IWhatsAppProvider {
       statusMap.set(clientNumber, 'disconnected');
       clients.delete(clientNumber);
       await prisma.$executeRawUnsafe(
-        `UPDATE whatsapp_config SET status = 'disconnected' WHERE client_number = $1`, clientNumber,
+        `UPDATE whatsapp_config SET status = 'disconnected', last_error = $2, last_error_at = NOW() WHERE client_number = $1`,
+        clientNumber, `disconnected: ${reason}`,
       );
       log.info('Disconnected', { clientNumber, reason });
 
-      // Auto-reconnect after 10 seconds (if session data exists, no QR scan needed)
-      if (reason !== 'LOGOUT') {
-        log.info('Attempting auto-reconnect in 10s', { clientNumber });
-        setTimeout(async () => {
-          try {
-            const self = new WebjsProvider();
-            await self.initialize(clientNumber);
-          } catch (e: any) {
-            log.error('Auto-reconnect failed', { clientNumber, error: e.message });
-          }
-        }, 10_000);
+      // Don't try to reconnect on explicit LOGOUT or when a CONFLICT has
+      // already fired — WA is telling us another session took over, and
+      // reconnecting would just kick them out and cause another conflict.
+      // Surface to the UI instead so the MD can decide.
+      const NO_RECONNECT = ['LOGOUT', 'CONFLICT', 'UNPAIRED', 'UNLAUNCHED'];
+      if (NO_RECONNECT.includes(String(reason).toUpperCase())) {
+        log.info('Not reconnecting — user action required', { clientNumber, reason });
+        reconnectAttempts.delete(clientNumber);
+        // Hard fail — the user explicitly logged out from their phone,
+        // another session took over, or the device was unpaired.
+        // Notify admins by email so they don't find out via "Brain went
+        // silent" complaints from users.
+        try {
+          const { alertWhatsAppDisconnect } = await import('./connectionWatchdog');
+          await alertWhatsAppDisconnect({
+            clientNumber,
+            tenantPhone: '(check Admin → WhatsApp)',
+            reason: `WhatsApp closed the session: ${reason}`,
+            requiresAction: 'Open Admin → WhatsApp and click Connect to scan a fresh QR code with the tenant phone.',
+          });
+        } catch (err: any) {
+          log.error('disconnect alert send failed', { clientNumber, error: err.message });
+        }
+        return;
       }
+
+      // Exponential backoff with circuit breaker. Previously a fixed
+      // 10s retry looped endlessly when WA kept rejecting — looked like
+      // "keeps disconnecting" to the user. Now: 10s → 30s → 2m → 5m →
+      // 10m, then stop and require manual reconnect.
+      const attempt = reconnectAttempts.get(clientNumber) ?? 0;
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        log.warn('Reconnect circuit breaker open — stopping', { clientNumber, attempts: attempt });
+        await prisma.$executeRawUnsafe(
+          `UPDATE whatsapp_config SET last_error = $2, last_error_at = NOW() WHERE client_number = $1`,
+          clientNumber, `auto-reconnect gave up after ${attempt} attempts — scan QR to recover`,
+        );
+        reconnectAttempts.delete(clientNumber);
+        // Five auto-retries already burned. Time to email admins —
+        // every retry already failed, so transient issues are ruled out.
+        try {
+          const { alertWhatsAppDisconnect } = await import('./connectionWatchdog');
+          await alertWhatsAppDisconnect({
+            clientNumber,
+            tenantPhone: '(check Admin → WhatsApp)',
+            reason: `auto-reconnect circuit breaker after ${attempt} attempts (last reason: ${reason})`,
+            requiresAction: 'Open Admin → WhatsApp and click Connect to scan a fresh QR code.',
+            attemptCount: attempt,
+          });
+        } catch (err: any) {
+          log.error('disconnect alert send failed', { clientNumber, error: err.message });
+        }
+        return;
+      }
+      const delay = RECONNECT_BACKOFF_MS[attempt];
+      reconnectAttempts.set(clientNumber, attempt + 1);
+      log.info('Scheduling reconnect', { clientNumber, attempt: attempt + 1, delayMs: delay });
+      const existing = reconnectTimers.get(clientNumber);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(async () => {
+        reconnectTimers.delete(clientNumber);
+        try {
+          const self = new WebjsProvider();
+          await self.initialize(clientNumber);
+        } catch (e: any) {
+          log.error('Auto-reconnect failed', { clientNumber, attempt: attempt + 1, error: e.message });
+        }
+      }, delay);
+      timer.unref();
+      reconnectTimers.set(clientNumber, timer);
     });
 
     client.on('auth_failure', async (msg: string) => {
@@ -285,7 +458,14 @@ export class WebjsProvider implements IWhatsAppProvider {
       );
     });
 
-    await client.initialize();
+    try {
+      await client.initialize();
+    } finally {
+      // Release the initFlight lock — regardless of success/failure —
+      // so a later reconnect can proceed once the current attempt
+      // resolves.
+      initFlight.delete(clientNumber);
+    }
   }
 
   async getQRCode(clientNumber: string): Promise<string | null> {
@@ -309,6 +489,40 @@ export class WebjsProvider implements IWhatsAppProvider {
     try {
       const chatId = params.to.replace('+', '') + '@c.us';
       const msg = await client.sendMessage(chatId, params.message);
+      return { success: true, messageId: msg.id.id };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send a voice note (OGG/Opus buffer) through whatsapp-web.js.
+   *
+   * The `sendAudioAsVoice: true` flag is what makes WhatsApp render the
+   * file as a playable voice bubble rather than a generic audio
+   * attachment — without it, OGG arrives as a downloadable file.
+   *
+   * Caller is responsible for daily-limit accounting; this method only
+   * handles the wire send. WhatsAppManager.sendWhatsAppVoiceNote wraps
+   * with the atomic-claim pattern (mirrors sendWhatsAppMessage).
+   */
+  async sendVoiceMessage(
+    clientNumber: string,
+    to: string,
+    audio: Buffer,
+    mimeType: string = 'audio/ogg; codecs=opus',
+  ): Promise<SendResult> {
+    const client = clients.get(clientNumber);
+    if (!client || statusMap.get(clientNumber) !== 'connected') {
+      return { success: false, error: 'WhatsApp not connected' };
+    }
+    try {
+      // @ts-ignore optional dep — already loaded during initialize()
+      const wwebjs = await import('whatsapp-web.js' as string);
+      const MessageMedia = wwebjs.MessageMedia || wwebjs.default?.MessageMedia;
+      const chatId = to.replace('+', '') + '@c.us';
+      const media = new MessageMedia(mimeType, audio.toString('base64'), `voice-${Date.now()}.ogg`);
+      const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
       return { success: true, messageId: msg.id.id };
     } catch (error: any) {
       return { success: false, error: error.message };

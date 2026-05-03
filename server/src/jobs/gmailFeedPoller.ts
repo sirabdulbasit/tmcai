@@ -17,7 +17,11 @@ import { isFeatureEnabled } from '../services/featureFlagService';
  * no-op so the default deploy doesn't spam feed.raw during development.
  */
 
-const MAX_PER_USER = 15;
+// Per-tick cap. 100 covers a very active MD's daily inflow. Initial historical
+// backfill is done separately via scripts/backfillTodayGmail.ts or a future
+// backfill endpoint — the steady-state poller just catches "what's new since
+// last tick" and dedup by sourceId drops anything already seen.
+const MAX_PER_USER = 100;
 
 interface PollResult {
   userId: number;
@@ -65,8 +69,10 @@ async function pollUser(userId: number, clientNumber: string): Promise<PollResul
     try {
       const result = await ingest({
         clientNumber,
+        userId,
         sourceType: 'gmail',
         sourceId: e.id,
+        sender: { email: e.from },
         payload: {
           userId,
           threadId: e.threadId,

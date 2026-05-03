@@ -22,6 +22,10 @@ export interface RegistryExecutionInput {
   existingActionId?: number;
   /** idempotency disambiguator */
   disambiguator?: string;
+  /** Brain's self-assessed confidence in this action (0.0–1.0). If below the
+   *  user's per-channel threshold, the action is held as a DRAFT for MD review
+   *  instead of being executed. Absent = treat as 1.0 (full confidence). */
+  confidence?: number;
 }
 
 export interface RegistryExecutionResult {
@@ -47,6 +51,57 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
   const traceId = input.traceId ?? crypto.randomUUID();
   const graphId = input.dependencyGraphId ?? newGraphId(traceId);
 
+  // Per-tenant kill switch — enforce at the action-handler boundary so
+  // that backend paths (cron, brain engine, autonomous executor) are
+  // also blocked, not just HTTP mutating routes. The middleware catches
+  // user-initiated POSTs; this catches the autonomous fallout. We hold
+  // as a DRAFT (status='blocked_by_kill_switch') instead of throwing so
+  // the user can review what would have happened once the switch
+  // releases. Read-only and undo handlers are not blocked here — undo
+  // routes through executeViaRegistry only via explicit human action.
+  try {
+    const { isActive } = await import('../safety/killSwitchService');
+    const blocked = await isActive(input.clientNumber);
+    if (blocked) {
+      const heldDraft = await prisma.agentAction.create({
+        data: {
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          actionType: input.actionType,
+          status: 'blocked_by_kill_switch',
+          input: input.payload as any,
+          output: {
+            reason: 'Kill switch is engaged for this tenant. Action withheld; release the kill switch to retry.',
+            actionType: input.actionType,
+            withheldAt: new Date().toISOString(),
+          } as any,
+          riskTier: await handler.riskLevel({
+            clientNumber: input.clientNumber, userId: input.userId,
+            traceId, dependencyGraphId: graphId,
+            payload: input.payload,
+          } as HandlerContext),
+          dependencyGraphId: graphId,
+          executedByAgent: input.executedByAgent,
+          requiresApproval: true,
+        } as any,
+        select: { id: true },
+      });
+      return {
+        ok: false,
+        actionId: heldDraft.id,
+        handlerName: input.actionType,
+        error: 'kill_switch_active',
+        dependencyGraphId: graphId,
+        traceId,
+      };
+    }
+  } catch (err: any) {
+    // Failing OPEN here matches the HTTP middleware's behaviour — kill
+    // switch is a safety net, not a critical-path dependency. Logged
+    // for visibility, then we proceed normally.
+    console.error(`[executeViaRegistry] kill switch check failed, proceeding: ${err.message}`);
+  }
+
   // Resolve rootActionId *after* we know whether we're reusing an existing AgentAction row
   const ctx: HandlerContext = {
     clientNumber: input.clientNumber,
@@ -65,6 +120,44 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
   }
 
   const riskTier = await handler.riskLevel(ctx);
+
+  // Confidence-gated draft mode: if the Brain provided a confidence score and
+  // it falls below the user's per-channel threshold, hold as DRAFT for MD
+  // review instead of executing. Surfaced on Day Brief.
+  if (typeof input.confidence === 'number' && input.confidence < 1) {
+    const channel = inferChannel(input.actionType);
+    const threshold = await getUserChannelThreshold(input.clientNumber, input.userId, channel);
+    if (input.confidence < threshold) {
+      const draft = await prisma.agentAction.create({
+        data: {
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          actionType: input.actionType,
+          status: 'draft',
+          input: input.payload as any,
+          output: {
+            confidence: input.confidence,
+            channel,
+            threshold,
+            reason: `Brain confidence ${Math.round(input.confidence * 100)}% below your ${channel} threshold ${Math.round(threshold * 100)}%`,
+          } as any,
+          riskTier,
+          dependencyGraphId: graphId,
+          executedByAgent: input.executedByAgent,
+          requiresApproval: true,
+        } as any,
+        select: { id: true },
+      });
+      return {
+        ok: true,
+        actionId: draft.id,
+        handlerName: input.actionType,
+        output: { status: 'draft', confidence: input.confidence, threshold },
+        dependencyGraphId: graphId,
+        traceId,
+      } as any;
+    }
+  }
 
   // Persist AgentAction upfront so downstream can reference it even if execute throws
   let actionRow: { id: number };
@@ -230,4 +323,38 @@ function coerceIdempotencyType(actionType: string): IdempotencyActionType {
   if (actionType.includes('odoo') || actionType === 'erp') return 'ERP';
   if (actionType.includes('okr')) return 'OKR_ALERT';
   return 'CLOSE';
+}
+
+/**
+ * Map an action type to the logical channel used by the per-channel autonomy
+ * thresholds stored in users.notification_preferences.brain_channel_thresholds.
+ */
+function inferChannel(actionType: string): 'email' | 'whatsapp' | 'delegation' | 'calendar' {
+  if (actionType.includes('whatsapp')) return 'whatsapp';
+  if (actionType.includes('email')) return 'email';
+  if (actionType.includes('event') || actionType.includes('schedule') || actionType.includes('attendee')) return 'calendar';
+  if (actionType.includes('delegate') || actionType.includes('reassign')) return 'delegation';
+  return 'email'; // reasonable default
+}
+
+/**
+ * Read the user's per-channel confidence threshold from their notification_preferences JSON.
+ * Falls back to conservative defaults if unset.
+ */
+async function getUserChannelThreshold(
+  clientNumber: string,
+  userId: number,
+  channel: 'email' | 'whatsapp' | 'delegation' | 'calendar',
+): Promise<number> {
+  const DEFAULTS = { email: 0.88, whatsapp: 0.92, delegation: 0.75, calendar: 0.82 } as const;
+  try {
+    const u = await prisma.user.findFirst({
+      where: { id: userId, clientNumber },
+      select: { notificationPreferences: true },
+    });
+    const prefs = (u?.notificationPreferences as any) ?? {};
+    const t = prefs.brain_channel_thresholds?.[channel];
+    if (typeof t === 'number' && t >= 0 && t <= 1) return t;
+  } catch { /* ignore */ }
+  return DEFAULTS[channel];
 }

@@ -153,6 +153,26 @@ export async function readRecord<T = Record<string, unknown>>(
   return rows[0] ?? null;
 }
 
+/**
+ * search_read with domain + field projection. Used by the CRM mirror to
+ * pull lists of opportunities, partners, and activities for wiki sync.
+ */
+export async function searchRead<T = Record<string, unknown>>(
+  clientNumber: string,
+  model: string,
+  domain: unknown[],
+  fields: string[],
+  opts: { limit?: number; offset?: number; order?: string } = {},
+): Promise<T[]> {
+  const config = await loadConfig(clientNumber);
+  const uid = await authenticate(config);
+  const kwargs: Record<string, unknown> = { fields };
+  if (opts.limit !== undefined) kwargs.limit = opts.limit;
+  if (opts.offset !== undefined) kwargs.offset = opts.offset;
+  if (opts.order) kwargs.order = opts.order;
+  return executeKw<T[]>(config, uid, model, 'search_read', [domain], kwargs);
+}
+
 export async function healthCheck(clientNumber: string): Promise<{ ok: boolean; error?: string; uid?: number }> {
   try {
     const config = await loadConfig(clientNumber);

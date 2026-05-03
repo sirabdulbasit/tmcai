@@ -193,10 +193,47 @@ async def compose_brief(client_number: str, style: str = "morning", user_id: int
         await p.close()
 
 
+# ─── Wiki (Memex) — per-user knowledge lookup ───────────────────
+
+
+async def query_wiki_index(
+    client_number: str,
+    user_id: int,
+    question: str,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Search the querying user's personal wiki for pre-synthesized pages relevant
+    to their question. Call this FIRST for any knowledge/retrieval question —
+    the user's wiki likely already contains the answer in compiled form.
+
+    Returns up to `limit` candidate pages with titles + summaries. Call
+    `read_wiki_page` on the top hits to get full content.
+
+    Privacy: wiki is per-user. Never call with another user's user_id.
+    """
+    p = PlatformClient()
+    try:
+        return await p.wiki_query_index(client_number, user_id, question, limit)
+    finally:
+        await p.close()
+
+
+async def read_wiki_page(client_number: str, user_id: int, page_id: str) -> dict[str, Any]:
+    """Fetch one wiki page's full body + metadata for the specified user."""
+    p = PlatformClient()
+    try:
+        return await p.wiki_read_page(client_number, user_id, page_id)
+    finally:
+        await p.close()
+
+
 ALL_BRAIN_TOOLS = [
     # Inference side (stateless LLM-friendly)
     current_time,
     kill_switch_check,
+    # Wiki — per-user knowledge lookup (try first for knowledge questions)
+    query_wiki_index,
+    read_wiki_page,
     # Orchestration wrappers (deterministic workflows)
     run_sequential,
     run_parallel,
@@ -216,4 +253,4 @@ ALL_BRAIN_TOOLS = [
     compose_brief,
 ]
 
-assert len(ALL_BRAIN_TOOLS) == 14, f"Brain must expose 14 tools, got {len(ALL_BRAIN_TOOLS)}"
+assert len(ALL_BRAIN_TOOLS) == 16, f"Brain exposes 16 tools post-wiki, got {len(ALL_BRAIN_TOOLS)}"

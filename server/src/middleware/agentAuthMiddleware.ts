@@ -1,5 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import prisma from '../db/prisma';
+import createLogger from '../utils/logger';
+
+const log = createLogger('agentAuth');
 
 /**
  * HaseebOS v15 — machine-to-machine auth for the ADK agent worker.
@@ -17,12 +21,32 @@ import prisma from '../db/prisma';
  *    (`if (!user?.id)`) pass. Attribution: the agent acts on behalf of that SA.
  *
  * Falls through to cookie-session auth if the header is absent or mismatched.
+ *
+ * Security: the expected token is ONLY read from `process.env.PLATFORM_API_TOKEN`.
+ * There is no hard-coded fallback — in production, boot fails if the env var
+ * is missing. In development we log a loud warning and reject all agent
+ * bearers rather than accepting a known string.
  */
 
-const DEV_FALLBACK_TOKEN = 'dev-local-platform-token-change-me';
+const MIN_TOKEN_BYTES = 32;
 
 // Cached: tenant → SA userId. Avoids a DB hit on every agent request.
 const saIdCache = new Map<string, number>();
+
+/** Read-and-validate the expected token once, at middleware-call time, from env. */
+export function getExpectedAgentToken(): string | null {
+  const raw = process.env.PLATFORM_API_TOKEN;
+  if (!raw || raw.length < MIN_TOKEN_BYTES) return null;
+  return raw;
+}
+
+/** Constant-time token comparison; safely handles unequal-length inputs. */
+function tokensMatch(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, 'utf8');
+  const bBuf = Buffer.from(b, 'utf8');
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
 
 async function resolveSaId(clientNumber: string): Promise<number> {
   const hit = saIdCache.get(clientNumber);
@@ -41,9 +65,19 @@ export async function agentAuthMiddleware(req: Request, _res: Response, next: Ne
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return next();
   const token = header.slice('Bearer '.length).trim();
-  const expected = process.env.PLATFORM_API_TOKEN || DEV_FALLBACK_TOKEN;
 
-  if (!token || token !== expected) {
+  const expected = getExpectedAgentToken();
+  if (!expected) {
+    // No valid token configured — never accept an agent bearer. Fall through
+    // to cookie auth so human sessions still work (e.g. a developer running
+    // locally without the env var set).
+    log.warn('agent bearer rejected: PLATFORM_API_TOKEN missing or too short', {
+      path: req.path,
+    });
+    return next();
+  }
+
+  if (!token || !tokensMatch(token, expected)) {
     return next();
   }
 
@@ -67,5 +101,12 @@ export async function agentAuthMiddleware(req: Request, _res: Response, next: Ne
     agentId,
   };
 
-  next();
+  // Run downstream in tenant scope so Prisma middleware auto-injects
+  // clientNumber on tenant-scoped queries. Agent calls are scoped to
+  // exactly the tenant they specified — no cross-tenant bypass.
+  const { runInTenantScope } = await import('../db/tenantContext');
+  await runInTenantScope(
+    { clientNumber: tenantId, userId: saId || null, bypass: false },
+    async () => next(),
+  );
 }

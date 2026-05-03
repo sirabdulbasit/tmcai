@@ -125,12 +125,41 @@ export async function listAvailableForUser(userId: number, clientNumber: string)
     include: { connectorType: true },
   });
 
+  // Find any tenant-tier OAuth app creds the admin may have stored in
+  // tenant_connector_configs.config (per connector family). Env vars are the
+  // final fallback.
+  const tenantConfigs = await prisma.tenantConnectorConfig.findMany({
+    where: { clientNumber },
+  });
+  const tenantCfgByType = new Map(tenantConfigs.map(t => [t.connectorTypeId, t.config as any | null]));
+
+  const googleSlugs = new Set(['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal', 'google_sheets']);
+  const hasGoogleEnv = !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
+
+  // If any Google-family tenant config carries an OAuth app, all Google slugs
+  // in this tenant count as tenant-managed (they share the app).
+  const tenantHasGoogleApp = Array.from(tenantCfgByType.entries()).some(([typeId, cfg]) => {
+    const ct = enabledTypes.find(t => t.id === typeId);
+    if (!ct || !googleSlugs.has(ct.slug)) return false;
+    return !!(cfg?.oauthClientId || cfg?.clientId);
+  });
+
   return enabledTypes.map(ct => {
     const uc = userConnectors.find(u => u.connectorTypeId === ct.id) || null;
+    const tenantCfg = tenantCfgByType.get(ct.id) ?? null;
+    const tenantHasOAuthApp = !!((tenantCfg?.oauthClientId || tenantCfg?.clientId));
+    const googleInheritsTenant = googleSlugs.has(ct.slug) && tenantHasGoogleApp;
+    const tenantOauthAvailable =
+      tenantHasOAuthApp ||
+      googleInheritsTenant ||
+      (googleSlugs.has(ct.slug) && hasGoogleEnv);
+
     return {
       ...ct,
       isConnected: uc?.status === 'connected',
       userConnector: uc,
+      tenantOauthAvailable,
+      tenantOauthSource: (tenantHasOAuthApp || googleInheritsTenant) ? 'tenant' : (tenantOauthAvailable ? 'env' : null),
     };
   });
 }
@@ -158,7 +187,14 @@ export async function connectUserConnector(
 
   const encryptedConfig = await encryptConnectorConfig(config);
 
-  return prisma.userConnector.upsert({
+  // Detect first-time connection (status was not 'connected' before this save)
+  const existing = await prisma.userConnector.findUnique({
+    where: { userId_connectorTypeId: { userId, connectorTypeId } },
+    select: { status: true, connectorType: { select: { slug: true } } },
+  }).catch(() => null);
+  const freshConnect = !existing || existing.status !== 'connected';
+
+  const saved = await prisma.userConnector.upsert({
     where: { userId_connectorTypeId: { userId, connectorTypeId } },
     create: {
       userId,
@@ -174,6 +210,39 @@ export async function connectUserConnector(
     },
     include: { connectorType: true },
   });
+
+  // Fresh connect → kick off historical pull + Brain memory warm-up in
+  // the background. The user's Connector flips to "Connected" immediately;
+  // past emails/events flow in over the next few minutes and sender_wiki
+  // pages get built so Brain has context from the moment the MD opens
+  // Day Brief. Fire-and-forget; no user-visible failure if it errors.
+  if (freshConnect && ['gmail', 'google_calendar'].includes(saved.connectorType.slug)) {
+    void (async () => {
+      try {
+        const { warmUpBrainFromSources } = await import('./knowledge/historicalFeedPull');
+        await warmUpBrainFromSources(clientNumber, userId);
+      } catch (err: any) {
+        console.warn(`[warmUpBrain] failed for user=${userId} slug=${saved.connectorType.slug}: ${err.message}`);
+      }
+    })();
+  }
+
+  // Fresh Gmail connect → also kick off attachment backfill immediately
+  // and publish an ETA so the UI can show "we're setting things up, ~N
+  // minutes remaining". New events flow live through the ingest hook;
+  // this worker drains any historical backlog.
+  if (freshConnect && saved.connectorType.slug === 'gmail') {
+    void (async () => {
+      try {
+        const { triggerBackfillForUser } = await import('../jobs/attachmentBackfillWorker');
+        await triggerBackfillForUser(clientNumber, userId, { reason: 'gmail_connected' });
+      } catch (err: any) {
+        console.warn(`[attachmentBackfill] trigger failed for user=${userId}: ${err.message}`);
+      }
+    })();
+  }
+
+  return saved;
 }
 
 /** Disconnect a personal connector — keeps config for easy reconnect */
@@ -525,11 +594,17 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
     return { error: 'This connector does not use OAuth' };
   }
 
-  // Check for user-provided OAuth credentials, then fall back to env vars, then fall back to saved UserConnector config
+  // Resolution order for OAuth app credentials (clientId/clientSecret):
+  //   1. user-provided in this form (BYOA)
+  //   2. user's existing UserConnector row for this type
+  //   3. any already-connected sibling Google connector for this user
+  //   4. tenant-tier app creds on tenant_connector_configs.config
+  //      (admin-configured, shared across all users in the tenant)
+  //   5. env vars (platform-level default)
   let clientId = userConfig?.clientId as string || '';
   let clientSecret = userConfig?.clientSecret as string || '';
 
-  // Try to load from previously saved UserConnector config for THIS connector
+  // (2) saved UserConnector config for THIS connector
   if (!clientId) {
     const existing = await prisma.userConnector.findUnique({
       where: { userId_connectorTypeId: { userId, connectorTypeId } },
@@ -541,8 +616,8 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
     }
   }
 
-  // For Google connectors: try to reuse credentials from ANY connected Google connector
-  const googleSlugs = ['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal'];
+  // (3) any connected sibling Google connector
+  const googleSlugs = ['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal', 'google_sheets'];
   if (!clientId && googleSlugs.includes(connectorType.slug)) {
     const allGoogleTypes = await prisma.connectorType.findMany({ where: { slug: { in: googleSlugs } } });
     for (const gt of allGoogleTypes) {
@@ -554,7 +629,28 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
     }
   }
 
-  // Final fallback: env vars
+  // (4) tenant-tier OAuth app (admin-configured). Tied to the user's tenant.
+  if (!clientId) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { clientNumber: true } });
+    if (user?.clientNumber) {
+      // Look at this connector type first, then any other Google family type for the same tenant
+      const tenantTypeIds = googleSlugs.includes(connectorType.slug)
+        ? (await prisma.connectorType.findMany({ where: { slug: { in: googleSlugs } }, select: { id: true } })).map(t => t.id)
+        : [connectorTypeId];
+      const tenantCfg = await prisma.tenantConnectorConfig.findFirst({
+        where: { clientNumber: user.clientNumber, connectorTypeId: { in: tenantTypeIds } },
+      });
+      if (tenantCfg?.config) {
+        const cfg = await decryptConnectorConfig(tenantCfg.config as Record<string, unknown>);
+        const tcClientId = (cfg.oauthClientId || cfg.clientId) as string | undefined;
+        const tcClientSecret = (cfg.oauthClientSecret || cfg.clientSecret) as string | undefined;
+        if (tcClientId) clientId = tcClientId;
+        if (tcClientSecret) clientSecret = tcClientSecret;
+      }
+    }
+  }
+
+  // (5) env fallback
   if (!clientId) clientId = process.env.GOOGLE_CLIENT_ID || '';
   if (!clientSecret) clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
 
@@ -580,6 +676,12 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
         'https://www.googleapis.com/auth/calendar.events',
         'https://www.googleapis.com/auth/tasks',
         'https://www.googleapis.com/auth/drive.readonly',
+        // People API — powers the DelegateePicker's search across the user's
+        // Google Contacts + Workspace directory. Without this, the picker
+        // falls back to DB-only (MyOS users + scribed contacts + history).
+        'https://www.googleapis.com/auth/contacts.readonly',
+        'https://www.googleapis.com/auth/contacts.other.readonly',
+        'https://www.googleapis.com/auth/directory.readonly',
       ];
 
       const url = client.generateAuthUrl({
@@ -595,16 +697,110 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
     }
   }
 
-  // For Microsoft connectors
+  // For Microsoft connectors — Office 365 / Outlook / Teams / OneDrive / ms_todo.
+  // Uses Microsoft Identity v2.0 (common tenant) so personal AND work accounts
+  // both work. Same three-tier credential resolution as Google.
   const microsoftSlugs = ['outlook', 'outlook_calendar', 'ms_todo', 'ms_teams', 'onedrive_personal'];
   if (microsoftSlugs.includes(connectorType.slug)) {
-    clientId = (userConfig?.clientId as string) || process.env.MICROSOFT_CLIENT_ID || '';
-    clientSecret = (userConfig?.clientSecret as string) || process.env.MICROSOFT_CLIENT_SECRET || '';
-    if (!clientId || !clientSecret) {
-      return { error: 'Microsoft OAuth not configured. Enter your own Client ID and Client Secret below, or ask your admin to configure it.' };
+    // Tier 1: form-supplied. Tier 2: saved on this UC. Tier 3: tenant-shared
+    // admin config. Tier 4: env. Same precedence as Google family above.
+    clientId = (userConfig?.clientId as string) || '';
+    clientSecret = (userConfig?.clientSecret as string) || '';
+    if (!clientId) {
+      const existing = await prisma.userConnector.findUnique({
+        where: { userId_connectorTypeId: { userId, connectorTypeId } },
+      });
+      if (existing?.config) {
+        const cfg = await decryptConnectorConfig(existing.config as Record<string, unknown>);
+        if (cfg.clientId) clientId = cfg.clientId as string;
+        if (cfg.clientSecret) clientSecret = cfg.clientSecret as string;
+      }
     }
-    // TODO: Implement Microsoft OAuth URL generation
-    return { error: 'Microsoft OAuth redirect coming soon. Credentials saved for when it is ready.' };
+    if (!clientId) {
+      const u = await prisma.user.findUnique({ where: { id: userId }, select: { clientNumber: true } });
+      if (u?.clientNumber) {
+        const tenantTypeIds = (await prisma.connectorType.findMany({
+          where: { slug: { in: microsoftSlugs } }, select: { id: true },
+        })).map((t) => t.id);
+        const tcfg = await prisma.tenantConnectorConfig.findFirst({
+          where: { clientNumber: u.clientNumber, connectorTypeId: { in: tenantTypeIds } },
+        });
+        if (tcfg?.config) {
+          const cfg = await decryptConnectorConfig(tcfg.config as Record<string, unknown>);
+          const id = (cfg.oauthClientId || cfg.clientId) as string | undefined;
+          const sec = (cfg.oauthClientSecret || cfg.clientSecret) as string | undefined;
+          if (id) clientId = id;
+          if (sec) clientSecret = sec;
+        }
+      }
+    }
+    if (!clientId) clientId = process.env.MICROSOFT_CLIENT_ID || '';
+    if (!clientSecret) clientSecret = process.env.MICROSOFT_CLIENT_SECRET || '';
+    if (!clientId || !clientSecret) {
+      return { error: 'Microsoft OAuth not configured. Enter your own Client ID and Secret below, or ask your admin to configure it.' };
+    }
+
+    // Per-slug scope mapping. We request the minimal scopes needed for
+    // each connector; admins can extend by passing custom scopes via
+    // tenantConnectorConfig.config.scopes if needed.
+    const scopesBySlug: Record<string, string[]> = {
+      outlook:           ['Mail.Read', 'Mail.Send', 'Mail.ReadWrite', 'User.Read', 'offline_access'],
+      outlook_calendar:  ['Calendars.ReadWrite', 'User.Read', 'offline_access'],
+      ms_todo:           ['Tasks.ReadWrite', 'User.Read', 'offline_access'],
+      ms_teams:          ['Chat.Read', 'Chat.ReadWrite', 'ChannelMessage.Read.All', 'User.Read', 'offline_access'],
+      onedrive_personal: ['Files.Read', 'Files.ReadWrite', 'User.Read', 'offline_access'],
+    };
+    const scopes = scopesBySlug[connectorType.slug] ?? ['User.Read', 'offline_access'];
+    const redirectUri = process.env.MICROSOFT_CONNECTOR_REDIRECT_URI
+      || process.env.GOOGLE_CONNECTOR_REDIRECT_URI?.replace('/api/v1/connectors/oauth/callback', '/api/v1/connectors/oauth/callback')
+      || 'http://localhost:4002/api/v1/connectors/oauth/callback';
+
+    // Microsoft Identity v2 endpoint. `common` tenant accepts both
+    // personal Microsoft accounts (Outlook.com) and any work/school
+    // tenant — minimal friction for the user.
+    const params = new URLSearchParams({
+      client_id: clientId,
+      response_type: 'code',
+      redirect_uri: redirectUri,
+      response_mode: 'query',
+      scope: scopes.join(' '),
+      state: JSON.stringify({ userId, connectorTypeId, clientId, clientSecret, provider: 'microsoft' }),
+      prompt: 'consent',
+    });
+    const url = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`;
+    return { url };
+  }
+
+  // Slack OAuth — admin installs MyOS to a workspace. We use the v2
+  // OAuth flow which returns a bot token + user token. Bot token drives
+  // the SlackFeedAdapter for inbound + send_chat_reply for outbound.
+  if (connectorType.slug === 'slack') {
+    clientId = (userConfig?.clientId as string) || '';
+    clientSecret = (userConfig?.clientSecret as string) || '';
+    if (!clientId) {
+      const existing = await prisma.userConnector.findUnique({
+        where: { userId_connectorTypeId: { userId, connectorTypeId } },
+      });
+      if (existing?.config) {
+        const cfg = await decryptConnectorConfig(existing.config as Record<string, unknown>);
+        if (cfg.clientId) clientId = cfg.clientId as string;
+        if (cfg.clientSecret) clientSecret = cfg.clientSecret as string;
+      }
+    }
+    if (!clientId) clientId = process.env.SLACK_CLIENT_ID || '';
+    if (!clientSecret) clientSecret = process.env.SLACK_CLIENT_SECRET || '';
+    if (!clientId || !clientSecret) {
+      return { error: 'Slack OAuth not configured. Enter your own Slack app Client ID and Secret below, or ask your admin to configure it.' };
+    }
+    const slackRedirect = process.env.SLACK_CONNECTOR_REDIRECT_URI || redirectUri;
+    const params = new URLSearchParams({
+      client_id: clientId,
+      scope: 'channels:history,channels:read,chat:write,im:history,im:read,mpim:history,mpim:read,users:read,users:read.email,team:read',
+      user_scope: 'identify',
+      redirect_uri: slackRedirect,
+      state: JSON.stringify({ userId, connectorTypeId, clientId, clientSecret, provider: 'slack' }),
+    });
+    return { url: `https://slack.com/oauth/v2/authorize?${params.toString()}` };
   }
 
   return { error: `OAuth not yet implemented for ${connectorType.name}. Enter your own Client ID and Secret below.` };
@@ -700,6 +896,116 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
       return { success: true, slug: connectorType.slug };
     }
 
+    // Microsoft OAuth — exchanges the auth code for an access+refresh
+    // token via Identity v2.0 token endpoint, then saves to UserConnector.
+    const microsoftSlugs = ['outlook', 'outlook_calendar', 'ms_todo', 'ms_teams', 'onedrive_personal'];
+    if (microsoftSlugs.includes(connectorType.slug)) {
+      const msClientId = stateClientId || process.env.MICROSOFT_CLIENT_ID;
+      const msClientSecret = stateClientSecret || process.env.MICROSOFT_CLIENT_SECRET;
+      const msRedirectUri = process.env.MICROSOFT_CONNECTOR_REDIRECT_URI || redirectUri;
+      if (!msClientId || !msClientSecret) {
+        return { success: false, error: 'Microsoft OAuth credentials missing on callback' };
+      }
+
+      const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: msClientId,
+          client_secret: msClientSecret,
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: msRedirectUri,
+        }).toString(),
+      });
+      if (!tokenRes.ok) {
+        const txt = await tokenRes.text().catch(() => '');
+        return { success: false, error: `Microsoft token exchange failed: ${txt.slice(0, 240)}` };
+      }
+      const tokenJson: any = await tokenRes.json();
+      if (!tokenJson.access_token) {
+        return { success: false, error: 'No access token from Microsoft' };
+      }
+
+      // Pull user identity (email) so the UI can show "connected as foo@bar".
+      let email = '';
+      try {
+        const meRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+          headers: { Authorization: `Bearer ${tokenJson.access_token}` },
+        });
+        if (meRes.ok) {
+          const me: any = await meRes.json();
+          email = me.userPrincipalName || me.mail || me.email || '';
+        }
+      } catch { /* email is best-effort */ }
+
+      const expiry = tokenJson.expires_in
+        ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
+        : '';
+      const configToSave: Record<string, unknown> = {
+        accessToken: tokenJson.access_token,
+        refreshToken: tokenJson.refresh_token || '',
+        tokenExpiry: expiry,
+        scope: tokenJson.scope || '',
+        email,
+        provider: 'microsoft',
+        clientId: msClientId,
+        clientSecret: msClientSecret,
+      };
+      const encryptedConfig = await encryptConnectorConfig(configToSave);
+      await prisma.userConnector.upsert({
+        where: { userId_connectorTypeId: { userId, connectorTypeId } },
+        create: { userId, clientNumber: user.clientNumber, connectorTypeId, config: encryptedConfig as any, status: 'connected' },
+        update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
+      });
+
+      console.log(`[Connector] Microsoft OAuth: ${connectorType.slug} connected for user ${userId} as ${email || '(unknown email)'}`);
+      return { success: true, slug: connectorType.slug };
+    }
+
+    // Slack OAuth callback — exchanges code for bot + user tokens.
+    if (connectorType.slug === 'slack') {
+      const slackClientId = stateClientId || process.env.SLACK_CLIENT_ID;
+      const slackClientSecret = stateClientSecret || process.env.SLACK_CLIENT_SECRET;
+      const slackRedirectUri = process.env.SLACK_CONNECTOR_REDIRECT_URI || redirectUri;
+      if (!slackClientId || !slackClientSecret) {
+        return { success: false, error: 'Slack OAuth credentials missing on callback' };
+      }
+      const tokRes = await fetch('https://slack.com/api/oauth.v2.access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: slackClientId,
+          client_secret: slackClientSecret,
+          code,
+          redirect_uri: slackRedirectUri,
+        }).toString(),
+      });
+      const tok: any = await tokRes.json().catch(() => ({}));
+      if (!tok.ok || !tok.access_token) {
+        return { success: false, error: `Slack OAuth failed: ${tok.error ?? 'unknown'}` };
+      }
+      const configToSave: Record<string, unknown> = {
+        botToken: tok.access_token,                        // xoxb-…
+        userToken: tok.authed_user?.access_token || '',    // xoxp-…
+        teamId: tok.team?.id || '',
+        teamName: tok.team?.name || '',
+        botUserId: tok.bot_user_id || '',
+        scope: tok.scope || '',
+        provider: 'slack',
+        clientId: slackClientId,
+        clientSecret: slackClientSecret,
+      };
+      const encryptedConfig = await encryptConnectorConfig(configToSave);
+      await prisma.userConnector.upsert({
+        where: { userId_connectorTypeId: { userId, connectorTypeId } },
+        create: { userId, clientNumber: user.clientNumber, connectorTypeId, config: encryptedConfig as any, status: 'connected' },
+        update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
+      });
+      console.log(`[Connector] Slack OAuth: workspace ${tok.team?.name} connected for user ${userId}`);
+      return { success: true, slug: connectorType.slug };
+    }
+
     return { success: false, error: 'OAuth handler not implemented for this provider' };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -710,7 +1016,7 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
 // ─── Encryption helpers ───────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
-async function encryptConnectorConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function encryptConnectorConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
   const sensitiveKeys = ['apiKey', 'apiToken', 'password', 'secret', 'token', 'refreshToken', 'accessToken', 'botToken', 'webhookSecret'];
   const encrypted: Record<string, unknown> = { ...config };
 
@@ -727,7 +1033,7 @@ async function encryptConnectorConfig(config: Record<string, unknown>): Promise<
   return encrypted;
 }
 
-async function decryptConnectorConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function decryptConnectorConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {
   const sensitiveKeys = ['apiKey', 'apiToken', 'password', 'secret', 'token', 'refreshToken', 'accessToken', 'botToken', 'webhookSecret'];
   const decrypted: Record<string, unknown> = { ...config };
 

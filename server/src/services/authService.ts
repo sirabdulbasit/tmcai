@@ -5,8 +5,26 @@ import { getUserTypeConfig } from '../config/userTypes';
 import { getConfig } from './configService';
 import { sendPasswordChangedEmail } from './inviteService';
 
-const SALT_ROUNDS = 10;
+// M12 — bumped from 10 (2020-era) to 12 (2024+ guidance). Existing
+// users keep their 10-round hashes until their next password change;
+// this is forward-safe because bcrypt.compare reads the cost from the
+// stored hash. For eager upgrades, re-hash on successful login.
+const SALT_ROUNDS = 12;
 const TOKEN_LENGTH = 64;
+
+// C2 — Session tokens are hashed at rest. The bearer token returned to the
+// client is the raw `token`; only `sha256(token)` is stored in `sessions`.
+// Lookups use the hash, so a read-only DB leak cannot impersonate users.
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+// H5 — Dummy hash used to equalise timing when the submitted identifier
+// matches no user. Generated once at module load so the per-request work
+// is a bcrypt.compare against a real 12-round hash, matching the real
+// login path's CPU profile. The secret content is irrelevant; no user can
+// ever have this hash because bcrypt hashes are unique per salt.
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync('decoy-password-no-user-has-this', SALT_ROUNDS);
 
 // Read security settings from system_config (with fallback defaults)
 async function getSecurityConfig(clientNumber: string) {
@@ -70,7 +88,15 @@ export async function login(identifier: string, password: string, meta?: { userA
     where: { OR: [{ email: identifier }, { empcode: identifier }] },
   });
 
-  if (!user || !user.isActive) return { success: false, error: 'Invalid credentials' };
+  // H5 — When the identifier matches no user OR the account is disabled,
+  // still run a bcrypt compare against a dummy hash so the response time
+  // matches the real path. This closes the account-enumeration oracle
+  // that previously let attackers distinguish "user not found" (fast)
+  // from "wrong password" (slow) by timing alone.
+  if (!user || !user.isActive) {
+    await bcrypt.compare(password, DUMMY_BCRYPT_HASH).catch(() => false);
+    return { success: false, error: 'Invalid credentials' };
+  }
 
   const sec = await getSecurityConfig(user.clientNumber);
 
@@ -97,7 +123,7 @@ export async function login(identifier: string, password: string, meta?: { userA
   const expiresAt = new Date(Date.now() + sec.sessionHours * 60 * 60 * 1000);
 
   await prisma.session.create({
-    data: { token, userId: user.id, expiresAt, userAgent: meta?.userAgent?.slice(0, 500), ipAddress: meta?.ip?.slice(0, 50) },
+    data: { tokenHash: hashToken(token), userId: user.id, expiresAt, userAgent: meta?.userAgent?.slice(0, 500), ipAddress: meta?.ip?.slice(0, 50) },
   });
 
   await prisma.user.update({
@@ -143,7 +169,7 @@ export interface TokenUser {
 
 export async function validateToken(token: string): Promise<TokenUser | null> {
   const session = await prisma.session.findUnique({
-    where: { token },
+    where: { tokenHash: hashToken(token) },
     include: { user: true },
   });
 
@@ -165,7 +191,7 @@ export async function validateToken(token: string): Promise<TokenUser | null> {
 }
 
 export async function logout(token: string): Promise<void> {
-  await prisma.session.update({ where: { token }, data: { isRevoked: true } }).catch(() => {});
+  await prisma.session.update({ where: { tokenHash: hashToken(token) }, data: { isRevoked: true } }).catch(() => {});
 }
 
 export async function changePassword(userId: number, currentPassword: string, newPassword: string): Promise<{ success: boolean; error?: string }> {

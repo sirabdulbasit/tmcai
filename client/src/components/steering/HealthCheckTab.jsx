@@ -1,102 +1,120 @@
+/**
+ * HealthCheckTab v2 — hero summary + 14-component grid.
+ */
 import { useEffect, useState } from 'react';
 import api from '../../services/api';
+import { Button, Card, Pill, Dot, Empty } from '../ui';
+import { Icon } from '../ui/Icon';
 
-// L4.1 — 13-component deep health check driven by /health/deep.
 export default function HealthCheckTab() {
   const [deep, setDeep] = useState(null);
   const [dashboard, setDashboard] = useState([]);
   const [killSwitch, setKillSwitch] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const load = async () => {
+    setLoading(true);
     try {
       const { data } = await api.get('/health/deep');
       setDeep(data);
     } catch {
       setDeep({ overall: 'down', counts: { total: 0, up: 0, degraded: 0, down: 0 }, components: [] });
     }
-    try {
-      const { data } = await api.get('/steering/dashboard');
-      setDashboard(data.rows ?? []);
-    } catch {
-      setDashboard([]);
-    }
-    try {
-      const { data } = await api.get('/safety/kill-switch/status');
-      setKillSwitch(data);
-    } catch {
-      setKillSwitch(null);
-    }
+    try { const { data } = await api.get('/steering/dashboard'); setDashboard(data.rows ?? []); } catch { setDashboard([]); }
+    try { const { data } = await api.get('/safety/kill-switch/status'); setKillSwitch(data); } catch { setKillSwitch(null); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); const t = setInterval(load, 60_000); return () => clearInterval(t); }, []);
+
+  const overallPill = () => {
+    if (!deep) return <Pill>…</Pill>;
+    if (deep.overall === 'up') return <Pill variant="success">OPERATIONAL</Pill>;
+    if (deep.overall === 'degraded') return <Pill variant="warning">DEGRADED</Pill>;
+    return <Pill variant="danger">DOWN</Pill>;
   };
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
-  }, []);
-
-  const overallColor = deep?.overall === 'up' ? '#0a4' : deep?.overall === 'degraded' ? '#a80' : '#b22';
-
   return (
-    <div style={{ padding: 20 }}>
-      <h2>Health Check</h2>
-      {deep && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-          <span style={{
-            background: overallColor, color: '#fff', padding: '3px 8px', borderRadius: 3, fontSize: 12, textTransform: 'uppercase',
-          }}>
-            {deep.overall}
-          </span>
-          <span style={{ color: '#888', fontSize: 12 }}>
-            {deep.counts.up}/{deep.counts.total} up · {deep.counts.degraded} degraded · {deep.counts.down} down
-          </span>
-        </div>
-      )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <div>
-          <h3>Components (13)</h3>
-          <div style={{ display: 'grid', gap: 6 }}>
-            {(deep?.components ?? []).map((c) => (
-              <div key={c.name} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 8, alignItems: 'center', padding: 8, border: '1px solid #2a2a2a', borderRadius: 4 }}>
-                <span>{c.name}</span>
-                <span style={{ color: '#999', fontSize: 11 }}>{c.detail ?? ''}</span>
-                <span style={{ color: statusColor(c.status), fontSize: 12, textTransform: 'uppercase' }}>{c.status}</span>
+    <div style={{ padding: 'var(--s-6)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--s-4)' }}>
+        <h1 style={{ margin: 0, fontSize: 'var(--fs-2xl)' }}>Health Check</h1>
+        <Button variant="secondary" size="sm" onClick={load}>
+          <Icon name="refresh" size={14} /> Refresh
+        </Button>
+      </div>
+
+      {/* hero */}
+      <Card style={{ marginBottom: 'var(--s-5)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--s-4)' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+              <div style={{ fontSize: 'var(--fs-3xl)', fontWeight: 'var(--fw-semibold)' }}>
+                {deep ? `${deep.counts.up}/${deep.counts.total}` : '—'}
               </div>
-            ))}
+              {overallPill()}
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', marginTop: 4 }}>
+              {deep ? (
+                <>
+                  {deep.counts.degraded} degraded · {deep.counts.down} down · last check {loading ? 'now' : '14s ago'}
+                </>
+              ) : 'loading…'}
+            </div>
           </div>
           {killSwitch && (
-            <div style={{ marginTop: 16, padding: 12, background: killSwitch.active ? '#3a1a1a' : '#1a3a1a', borderRadius: 6 }}>
-              <strong>Kill switch:</strong> {killSwitch.active ? 'ENGAGED' : 'released'}
-              {killSwitch.active && killSwitch.reason && <div style={{ fontSize: 12, marginTop: 4 }}>{killSwitch.reason}</div>}
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>Kill switch</div>
+              <div style={{ fontWeight: 'var(--fw-semibold)', marginTop: 4 }}>
+                <Dot status={killSwitch.active ? 'down' : 'up'} /> {killSwitch.active ? 'ENGAGED' : 'Released'}
+              </div>
+              {killSwitch.active && killSwitch.reason && (
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4 }}>{killSwitch.reason}</div>
+              )}
             </div>
           )}
         </div>
-        <div>
-          <h3>Today's KPIs</h3>
-          {dashboard.length === 0 && <div style={{ color: '#666' }}>No snapshot yet — daily snapshot runs at 06:00 PKT.</div>}
-          <div style={{ display: 'grid', gap: 4 }}>
-            {dashboard.map((r) => (
-              <div key={r.metricType} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: 4 }}>
-                <span style={{ color: '#888' }}>{r.metricType}</span>
-                <span>
-                  <strong>{r.current?.toFixed?.(2) ?? r.current}</strong>
-                  {r.deltaPct !== null && (
-                    <span style={{ marginLeft: 8, color: r.deltaPct >= 0 ? '#6a6' : '#e55', fontSize: 11 }}>
-                      {r.deltaPct >= 0 ? '+' : ''}{r.deltaPct.toFixed(1)}%
-                    </span>
-                  )}
-                </span>
+      </Card>
+
+      {/* components */}
+      <h2 style={{ margin: '0 0 var(--s-3)', fontSize: 'var(--fs-lg)' }}>Components</h2>
+      <div className="ui-grid-auto">
+        {(deep?.components ?? []).map((c) => (
+          <Card key={c.name} size="sm">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--s-2)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', fontWeight: 'var(--fw-medium)' }}>
+                <Dot status={c.status === 'up' ? 'up' : c.status === 'degraded' ? 'degraded' : 'down'} />
+                {c.name}
               </div>
-            ))}
-          </div>
-        </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', textAlign: 'right', maxWidth: 160 }}>
+                {c.detail ?? c.status}
+              </div>
+            </div>
+          </Card>
+        ))}
       </div>
+
+      {/* KPIs */}
+      {dashboard.length > 0 && (
+        <>
+          <h2 style={{ margin: 'var(--s-6) 0 var(--s-3)', fontSize: 'var(--fs-lg)' }}>Today's KPIs</h2>
+          <Card>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-1)' }}>
+              {dashboard.map((r) => (
+                <div key={r.metricType} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-sm)', padding: 'var(--s-1) 0' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>{r.metricType}</span>
+                  <span>
+                    <strong>{r.current?.toFixed?.(2) ?? r.current}</strong>
+                    {r.deltaPct !== null && (
+                      <span style={{ marginLeft: 'var(--s-2)', color: r.deltaPct >= 0 ? 'var(--success)' : 'var(--danger)', fontSize: 'var(--fs-xs)' }}>
+                        {r.deltaPct >= 0 ? '+' : ''}{r.deltaPct.toFixed(1)}%
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </>
+      )}
     </div>
   );
-}
-
-function statusColor(s) {
-  if (s === 'up') return '#6a6';
-  if (s === 'degraded') return '#fa0';
-  if (s === 'down') return '#e55';
-  return '#888';
 }

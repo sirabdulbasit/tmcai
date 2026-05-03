@@ -55,3 +55,89 @@ export async function streamGemini(
     if (text) onChunk(text);
   }
 }
+
+/** Non-streaming variant — returns the full completion as one string. */
+// Input-context caps per model (leave ~20% safety margin).
+// Gemini 2.5 Pro:   ~2M token window, safe to 1.6M
+// Gemini 2.5 Flash: ~1M token window, safe to 800K
+const MODEL_INPUT_SAFE_LIMIT = {
+  pro: 1_600_000,
+  flash: 800_000,
+} as const;
+
+/**
+ * Count tokens for a planned Gemini request. Uses the model's own tokenizer
+ * (not estimation). Returns total tokens for system+user; callers can
+ * reject / trim before spending on a generate call that would truncate
+ * context silently.
+ */
+export async function countGeminiTokens(
+  systemPrompt: string,
+  userMessage: string,
+  flash = false,
+): Promise<number> {
+  if (!env.geminiApiKey) return Math.ceil((systemPrompt.length + userMessage.length) / 4);
+  try {
+    const ai = getGenAI();
+    const modelId = flash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
+    const r = await ai.models.countTokens({
+      model: modelId,
+      contents: [
+        { role: 'user', parts: [{ text: systemPrompt }] },
+        { role: 'user', parts: [{ text: userMessage }] },
+      ],
+    });
+    return r.totalTokens ?? Math.ceil((systemPrompt.length + userMessage.length) / 4);
+  } catch {
+    return Math.ceil((systemPrompt.length + userMessage.length) / 4);
+  }
+}
+
+export async function callGemini(
+  systemPrompt: string,
+  userMessage: string,
+  opts?: { maxTokens?: number; flash?: boolean },
+): Promise<string> {
+  if (!env.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
+  const modelId = opts?.flash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
+  const ai = getGenAI();
+
+  // Guard against silent-truncation. countTokens is a network roundtrip
+  // (~200-500ms), so only spend it when the prompt could plausibly blow
+  // the window. ~4 chars/token → 1.6M tokens ≈ 6.4M chars; anything under
+  // 300K chars (~75K tokens) has a huge margin and we skip the check.
+  const promptChars = systemPrompt.length + userMessage.length;
+  if (promptChars > 300_000) {
+    try {
+      const totalIn = await countGeminiTokens(systemPrompt, userMessage, !!opts?.flash);
+      const cap = opts?.flash ? MODEL_INPUT_SAFE_LIMIT.flash : MODEL_INPUT_SAFE_LIMIT.pro;
+      if (totalIn > cap) {
+        // Keep the FIRST portion of the system prompt (persona + user
+        // identity live there), trim the tail (less-relevant retrieval
+        // blocks come last). Proportional trim based on overage.
+        const ratio = cap / totalIn;
+        const keepChars = Math.floor(systemPrompt.length * ratio * 0.9); // 10% safety
+        systemPrompt = systemPrompt.slice(0, keepChars) + '\n\n[Note: lower-priority context trimmed to fit model input window.]';
+      }
+    } catch { /* countTokens failure — proceed, Gemini will handle */ }
+  }
+
+  // Gemini 2.5 counts its internal "thinking" tokens against
+  // maxOutputTokens. With a small budget (< 2048) the model burns most
+  // of it thinking and emits a truncated response. Two protections:
+  //   1. Floor the budget to 2048 so there's always room for real output.
+  //   2. Set thinkingBudget: 0 for chat-style short responses (we want
+  //      the answer, not a reasoning trace).
+  const requested = opts?.maxTokens ?? 1024;
+  const effectiveMax = Math.max(2048, requested);
+  const resp = await ai.models.generateContent({
+    model: modelId,
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    config: {
+      systemInstruction: systemPrompt,
+      maxOutputTokens: effectiveMax,
+      thinkingConfig: { thinkingBudget: 0 } as any,
+    } as any,
+  });
+  return (resp.text ?? '').trim();
+}

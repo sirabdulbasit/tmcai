@@ -1,5 +1,10 @@
+/**
+ * ActionExecutionTab v2 — Pending approvals split-pane (list + detail).
+ */
 import { useEffect, useState } from 'react';
 import api from '../../services/api';
+import { Button, Card, Pill, Empty, ListItem, RiskBanner } from '../ui';
+import { Icon } from '../ui/Icon';
 
 export default function ActionExecutionTab() {
   const [pending, setPending] = useState([]);
@@ -8,28 +13,16 @@ export default function ActionExecutionTab() {
   const [selected, setSelected] = useState(null);
 
   const load = async () => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const { data } = await api.get('/risk/pending-approvals');
       setPending(Array.isArray(data) ? data : []);
-    } catch (err) {
-      setError(err?.response?.data?.error ?? err.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { setError(err?.response?.data?.error ?? err.message); }
+    finally { setLoading(false); }
   };
+  useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, []);
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, []);
-
-  const approve = async (id) => {
-    await api.post(`/risk/approve/${id}`, {});
-    load();
-  };
+  const approve = async (id) => { await api.post(`/risk/approve/${id}`, {}); load(); };
   const reject = async (id) => {
     const reason = window.prompt('Reason for rejection?', 'not needed');
     if (reason === null) return;
@@ -40,68 +33,80 @@ export default function ActionExecutionTab() {
     try {
       const { data } = await api.get(`/actions/${actionId}/preview`);
       setSelected(data);
-    } catch (err) {
-      setError(err?.response?.data?.error ?? err.message);
-    }
+    } catch (err) { setError(err?.response?.data?.error ?? err.message); }
   };
+
+  const tierPill = (tier) => {
+    if (tier === 'HIGH') return <Pill variant="danger">HIGH</Pill>;
+    if (tier === 'MEDIUM' || tier === 'MED') return <Pill variant="warning">MEDIUM</Pill>;
+    if (tier === 'LOW') return <Pill variant="success">LOW</Pill>;
+    return <Pill>{tier ?? '—'}</Pill>;
+  };
+
+  const counts = pending.reduce((a, p) => {
+    if (p.riskTier === 'HIGH') a.high++;
+    else if (p.riskTier === 'MEDIUM' || p.riskTier === 'MED') a.med++;
+    else a.low++;
+    return a;
+  }, { high: 0, med: 0, low: 0 });
 
   return (
-    <div style={{ padding: 20 }}>
-      <h2>Action Execution</h2>
-      <p style={{ color: '#888', fontSize: 13 }}>
-        Pending approvals for MEDIUM / HIGH-risk actions. Approve to execute, reject to decline.
-      </p>
-      {error && <div style={{ color: '#e55', padding: 12 }}>{error}</div>}
-      {loading && <div>Loading…</div>}
-      {!loading && pending.length === 0 && <div style={{ color: '#666', padding: 24 }}>No pending approvals.</div>}
-      <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-        {pending.map((p) => (
-          <div key={p.id} style={{ border: '1px solid #2a2a2a', borderRadius: 6, padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <strong>{p.actionType}</strong>
-                <span style={{ marginLeft: 8, fontSize: 12, color: tierColor(p.riskTier) }}>
-                  {p.riskTier ?? '—'}
-                </span>
-              </div>
-              <div style={{ fontSize: 12, color: '#888' }}>
-                {new Date(p.createdAt).toLocaleString()}
-              </div>
-            </div>
-            <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-              <button onClick={() => approve(p.id)} style={btnStyle('#2a8')}>Approve</button>
-              <button onClick={() => reject(p.id)} style={btnStyle('#a33')}>Reject</button>
-              <button onClick={() => preview(p.id)} style={btnStyle('#555')}>Preview undo</button>
-            </div>
-          </div>
-        ))}
+    <div style={{ padding: 'var(--s-6)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-3)', marginBottom: 'var(--s-2)' }}>
+        <h1 style={{ margin: 0, fontSize: 'var(--fs-2xl)' }}>Pending Approvals</h1>
+        <Pill variant="danger">{counts.high} HIGH</Pill>
+        <Pill variant="warning">{counts.med} MEDIUM</Pill>
       </div>
-      {selected && (
-        <div style={{ marginTop: 24, padding: 16, border: '1px solid #2a2a2a', borderRadius: 6 }}>
-          <h3>Undo Preview for action {selected.rootActionId}</h3>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{JSON.stringify(selected, null, 2)}</pre>
-          <button onClick={() => setSelected(null)} style={btnStyle('#555')}>Close</button>
-        </div>
-      )}
+      <p style={{ color: 'var(--text-muted)', marginTop: 0, marginBottom: 'var(--s-5)' }}>
+        MEDIUM and HIGH risk actions wait here for your approval. Approve to execute, reject to decline.
+      </p>
+
+      {error && <Card style={{ background: 'var(--danger-dim)', color: 'var(--danger)', borderColor: 'var(--danger)', marginBottom: 'var(--s-4)' }}>{error}</Card>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 'var(--s-4)' }}>
+        <Card style={{ padding: 0, overflow: 'auto', maxHeight: 640 }}>
+          {loading && <div style={{ padding: 'var(--s-4)', color: 'var(--text-muted)' }}>Loading…</div>}
+          {!loading && pending.length === 0 && <Empty title="No pending approvals">All action proposals are auto-executed or already processed.</Empty>}
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {pending.map((p) => (
+              <div key={p.id} style={{ padding: 'var(--s-3) var(--s-4)', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                   onClick={() => preview(p.id)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <strong>{p.actionType}</strong>
+                  {tierPill(p.riskTier)}
+                </div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                  {new Date(p.createdAt).toLocaleString()}
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-2)' }}>
+                  <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); approve(p.id); }}>Approve</Button>
+                  <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); reject(p.id); }}>Reject</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card>
+          {!selected && <Empty title="Select an approval">Pick a pending action from the list to preview its undo graph and entity context.</Empty>}
+          {selected && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--s-3)', marginBottom: 'var(--s-4)' }}>
+                <div>
+                  <h2 style={{ margin: 0 }}>Action {selected.rootActionId}</h2>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', marginTop: 4 }}>Undo preview</div>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+                  <Icon name="close" size={14} /> Close
+                </Button>
+              </div>
+              <pre style={{ background: 'var(--bg-0)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: 'var(--s-3)', fontSize: 'var(--fs-sm)', overflow: 'auto', fontFamily: 'var(--font-mono)' }}>
+                {JSON.stringify(selected, null, 2)}
+              </pre>
+            </>
+          )}
+        </Card>
+      </div>
     </div>
   );
-}
-
-function tierColor(tier) {
-  if (tier === 'HIGH') return '#e55';
-  if (tier === 'MEDIUM') return '#fa0';
-  if (tier === 'LOW') return '#6a6';
-  return '#888';
-}
-
-function btnStyle(bg) {
-  return {
-    background: bg,
-    color: '#fff',
-    border: 'none',
-    borderRadius: 4,
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontSize: 13,
-  };
 }
