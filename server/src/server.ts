@@ -50,6 +50,12 @@ const server = app.listen(env.port, async () => {
   await import('./services/triage/systemRuleSeeder')
     .then(({ seedSystemRules }) => seedSystemRules())
     .catch(err => console.error('System rule seed failed:', err.message));
+  // Clear any scribe rows stuck in scribeStatus='running' from a previous
+  // crash/restart. Without this, the connector card shows a permanent
+  // "SCRIBING…" badge and the Scribe button stays hidden, blocking recovery.
+  await import('./services/knowledge/scribeRecovery')
+    .then(({ recoverStuckScribes }) => recoverStuckScribes())
+    .catch(err => console.error('Scribe recovery failed:', err.message));
   // Risk Radar — install/update canonical system risk rules. Same idempotent
   // pattern as gate rules; safe on every boot.
   await import('./services/brain/riskRulesSeeder')
