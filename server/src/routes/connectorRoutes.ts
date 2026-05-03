@@ -525,7 +525,7 @@ router.post('/scribe-all', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const body = req.body ?? {};
-    const supportedSlugs = ['gmail', 'google_calendar'];
+    const supportedSlugs = ['gmail', 'google_calendar', 'whatsapp_personal'];
     const rows = await prisma.userConnector.findMany({
       where: { userId: user.id, clientNumber: user.clientNumber, status: 'connected' } as any,
       include: { connectorType: { select: { slug: true } } },
@@ -544,6 +544,9 @@ router.post('/scribe-all', requireAuth, async (req: Request, res: Response) => {
         gmailCap: Number.isFinite(body.gmailCap) ? Number(body.gmailCap) : undefined,
         calendarDaysBack: Number.isFinite(body.calendarDaysBack) ? Number(body.calendarDaysBack) : undefined,
         calendarDaysAhead: Number.isFinite(body.calendarDaysAhead) ? Number(body.calendarDaysAhead) : undefined,
+        whatsappDays: Number.isFinite(body.whatsappDays) ? Number(body.whatsappDays) : undefined,
+        whatsappMessagesPerChat: Number.isFinite(body.whatsappMessagesPerChat) ? Number(body.whatsappMessagesPerChat) : undefined,
+        whatsappTotalCap: Number.isFinite(body.whatsappTotalCap) ? Number(body.whatsappTotalCap) : undefined,
       });
       queued.push({ slug: uc.connectorType.slug, connectorTypeId: uc.connectorTypeId });
     }
