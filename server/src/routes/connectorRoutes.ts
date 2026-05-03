@@ -286,9 +286,40 @@ router.post('/whatsapp_personal/excluded', requireAuth, async (req: Request, res
 // immediately with { queued: true } so the browser doesn't hang on a
 // long Gmail pull. UI polls /scribe-state to watch progress.
 async function runScribeInBackground(userId: number, clientNumber: string, ucId: string, slug: string, opts: any) {
+  // Throttle progress writes — DB hit at most every 1.5s OR every 25 events.
+  let lastWriteAt = 0;
+  let lastWriteCount = 0;
+  const PROGRESS_MIN_MS = 1500;
+  const PROGRESS_MIN_COUNT = 25;
+  const writeProgress = async (snap: { fetched: number; ingested: number; duplicates: number; errors: number; phase?: string }, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastWriteAt < PROGRESS_MIN_MS && snap.fetched - lastWriteCount < PROGRESS_MIN_COUNT) return;
+    lastWriteAt = now;
+    lastWriteCount = snap.fetched;
+    try {
+      const cur = await prisma.userConnector.findUnique({ where: { id: ucId }, select: { metadata: true } });
+      await prisma.userConnector.update({
+        where: { id: ucId },
+        data: {
+          metadata: {
+            ...((cur?.metadata as any) || {}),
+            scribeStatus: 'running',
+            scribeProgress: { ...snap, updatedAt: new Date().toISOString() },
+          } as any,
+        },
+      });
+    } catch { /* best-effort — progress is non-critical */ }
+  };
+
   try {
     const { pullHistoricalFeed } = await import('../services/knowledge/historicalFeedPull');
-    const pull = await pullHistoricalFeed(clientNumber, userId, slug, opts);
+    const pull = await pullHistoricalFeed(clientNumber, userId, slug, {
+      ...opts,
+      onProgress: (snap) => { void writeProgress(snap); },
+    });
+
+    // Switch phase to "building wiki" so the UI shows that step too.
+    await writeProgress({ fetched: pull.fetched, ingested: pull.ingested, duplicates: pull.duplicates, errors: pull.errors, phase: 'building_wiki' }, true);
 
     const { backfillSenderWiki } = await import('../services/knowledge/senderWikiBackfill');
     const wiki = await backfillSenderWiki(clientNumber, userId, { wipeFirst: true });
@@ -305,6 +336,7 @@ async function runScribeInBackground(userId: number, clientNumber: string, ucId:
           lastScribeSummary: { pull, wiki },
           scribeError: null,
           scribeStartedAt: null,
+          scribeProgress: null,
         } as any,
       },
     });
@@ -313,7 +345,7 @@ async function runScribeInBackground(userId: number, clientNumber: string, ucId:
     await prisma.userConnector.update({
       where: { id: ucId },
       data: {
-        metadata: { ...((current?.metadata as any) || {}), scribeStatus: 'error', scribeError: err.message, scribeStartedAt: null } as any,
+        metadata: { ...((current?.metadata as any) || {}), scribeStatus: 'error', scribeError: err.message, scribeStartedAt: null, scribeProgress: null } as any,
       },
     }).catch(() => {});
   }
@@ -541,6 +573,8 @@ router.get('/scribe-state', requireAuth, async (req: Request, res: Response) => 
         lastScribedAt: m.lastScribedAt ?? null,
         scribeStatus: m.scribeStatus ?? 'never',
         scribeError: m.scribeError ?? null,
+        scribeStartedAt: m.scribeStartedAt ?? null,
+        scribeProgress: m.scribeProgress ?? null,
         supportsScribe: ['gmail', 'google_calendar', 'whatsapp_personal'].includes(r.connectorType.slug),
         isRunning: m.scribeStatus === 'running',
       };

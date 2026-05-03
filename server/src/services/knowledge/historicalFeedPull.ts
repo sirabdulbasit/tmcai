@@ -48,6 +48,13 @@ export interface PullOptions {
   whatsappMessagesPerChat?: number;
   /** WhatsApp: global message cap across all chats (default 5000). */
   whatsappTotalCap?: number;
+  /**
+   * Progress callback. Fires whenever the running totals change. Used by
+   * runScribeInBackground to throttle-write progress to metadata so the
+   * UI can render a live "Scribing… 143 fetched · 87 saved" status
+   * instead of a static spinner.
+   */
+  onProgress?: (snapshot: { fetched: number; ingested: number; duplicates: number; errors: number; phase?: string }) => void;
 }
 
 /**
@@ -153,9 +160,11 @@ async function pullGmailHistory(
         if (r.status === 'new') summary.ingested += 1;
         else if (r.status === 'duplicate') summary.duplicates += 1;
         else summary.errors += 1;
+        opts.onProgress?.({ ...summary, phase: 'gmail' });
       } catch (err: any) {
         summary.errors += 1;
         log.warn('gmail msg ingest failed', { id: m.id, error: err.message });
+        opts.onProgress?.({ ...summary, phase: 'gmail' });
       }
     }
 
@@ -201,9 +210,11 @@ async function pullCalendarHistory(
       if (result.status === 'new') summary.ingested += 1;
       else if (result.status === 'duplicate') summary.duplicates += 1;
       else summary.errors += 1;
+      opts.onProgress?.({ ...summary, phase: 'calendar' });
     } catch (err: any) {
       summary.errors += 1;
       log.warn('calendar ingest failed', { id: e.id, error: err.message });
+      opts.onProgress?.({ ...summary, phase: 'calendar' });
     }
   }
 }
@@ -295,9 +306,11 @@ async function pullWhatsAppHistory(
       if (r.status === 'new') summary.ingested += 1;
       else if (r.status === 'duplicate') summary.duplicates += 1;
       else summary.errors += 1;
+      opts.onProgress?.({ ...summary, phase: 'whatsapp' });
     } catch (err: any) {
       summary.errors += 1;
       log.warn('whatsapp msg ingest failed', { waMessageId: msg.waMessageId, error: err.message });
+      opts.onProgress?.({ ...summary, phase: 'whatsapp' });
     }
   }
 

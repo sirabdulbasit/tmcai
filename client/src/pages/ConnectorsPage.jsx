@@ -376,12 +376,24 @@ export default function ConnectorsPage() {
   const [scribeState, setScribeState] = useState({ items: [], rescribeRecommended: false, unscribedNames: [], runningCount: 0 });
 
   useEffect(() => {
+    let cancelled = false;
+    let timer = null;
     async function refresh() {
-      try { const r = await api.get('/connectors/scribe-state'); setScribeState(r.data); } catch {}
+      try {
+        const r = await api.get('/connectors/scribe-state');
+        if (cancelled) return;
+        setScribeState(r.data);
+        // Poll fast while a scribe is running so progress feels live; slow
+        // back down to 15s when idle to keep DB load minimal.
+        const fast = (r.data?.runningCount ?? 0) > 0;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(refresh, fast ? 2000 : 15000);
+      } catch {
+        if (!cancelled) timer = setTimeout(refresh, 15000);
+      }
     }
     refresh();
-    const t = setInterval(refresh, 15000);
-    return () => clearInterval(t);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
   // ── FACL folder configuration (Google Drive → specific folder ID) ──
@@ -541,14 +553,41 @@ export default function ConnectorsPage() {
             }}>
               <div style={{ fontSize: 20 }}>🧠</div>
               <div style={{ flex: 1, fontSize: 'var(--fs-sm)', color: 'var(--text)' }}>
-                {isRunning ? (
-                  <>
-                    <strong>Scribing {scribeState.runningCount} connector{scribeState.runningCount > 1 ? 's' : ''}…</strong>
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 }}>
-                      Pulling history and building Brain memory. Takes a minute or two — you can leave this page.
-                    </div>
-                  </>
-                ) : needs ? (
+                {isRunning ? (() => {
+                  const running = (scribeState.items || []).filter((i) => i.isRunning);
+                  const totals = running.reduce((acc, it) => {
+                    const p = it.scribeProgress || {};
+                    acc.fetched += p.fetched || 0;
+                    acc.ingested += p.ingested || 0;
+                    acc.duplicates += p.duplicates || 0;
+                    acc.errors += p.errors || 0;
+                    return acc;
+                  }, { fetched: 0, ingested: 0, duplicates: 0, errors: 0 });
+                  const phase = running[0]?.scribeProgress?.phase;
+                  const phaseLabel = phase === 'building_wiki' ? 'building sender pages'
+                    : phase === 'gmail' ? 'pulling Gmail'
+                    : phase === 'calendar' ? 'pulling Calendar'
+                    : phase === 'whatsapp' ? 'pulling WhatsApp'
+                    : 'pulling history';
+                  const startedAt = running[0]?.scribeStartedAt;
+                  const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)) : 0;
+                  const elapsedLabel = elapsed > 90 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`;
+                  return (
+                    <>
+                      <strong>
+                        <span className="scribe-pulse" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#60a5fa', marginRight: 8, verticalAlign: 'middle' }} />
+                        Scribing {scribeState.runningCount} connector{scribeState.runningCount > 1 ? 's' : ''} — {phaseLabel}…
+                      </strong>
+                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                        <span>📥 <strong style={{ color: 'var(--text)' }}>{totals.fetched}</strong> fetched</span>
+                        <span>💾 <strong style={{ color: '#4ade80' }}>{totals.ingested}</strong> saved</span>
+                        {totals.duplicates > 0 && <span>↻ <strong>{totals.duplicates}</strong> dupes</span>}
+                        {totals.errors > 0 && <span style={{ color: '#ef4444' }}>✗ {totals.errors} errors</span>}
+                        <span>⏱ {elapsedLabel}</span>
+                      </div>
+                    </>
+                  );
+                })() : needs ? (
                   <>
                     <strong>
                       ⚠ Pending scribe — {scribeState.unscribedNames?.length ?? 0} connector
@@ -661,22 +700,33 @@ export default function ConnectorsPage() {
                                 }}
                               >⏳ PENDING SCRIBE</span>
                             )}
-                            {scribeRunning && (
-                              <span
-                                title="Brain is pulling history right now."
-                                style={{
-                                  fontSize: 10,
-                                  padding: '2px 7px',
-                                  marginLeft: 6,
-                                  borderRadius: 10,
-                                  background: 'rgba(96,165,250,0.18)',
-                                  border: '1px solid rgba(96,165,250,0.45)',
-                                  color: '#60a5fa',
-                                  fontWeight: 700,
-                                  letterSpacing: 0.3,
-                                }}
-                              >⏳ SCRIBING…</span>
-                            )}
+                            {scribeRunning && (() => {
+                              const p = scribeItem?.scribeProgress;
+                              const counts = p ? `${p.fetched ?? 0}/${p.ingested ?? 0}` : null;
+                              return (
+                                <span
+                                  className="scribe-running-badge"
+                                  title={p ? `${p.fetched ?? 0} fetched, ${p.ingested ?? 0} saved${p.errors ? `, ${p.errors} errors` : ''} — phase: ${p.phase ?? 'pulling'}` : 'Brain is pulling history right now.'}
+                                  style={{
+                                    fontSize: 10,
+                                    padding: '2px 7px',
+                                    marginLeft: 6,
+                                    borderRadius: 10,
+                                    background: 'rgba(96,165,250,0.18)',
+                                    border: '1px solid rgba(96,165,250,0.45)',
+                                    color: '#60a5fa',
+                                    fontWeight: 700,
+                                    letterSpacing: 0.3,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                  }}
+                                >
+                                  <span className="scribe-spinner" style={{ display: 'inline-block', width: 9, height: 9, border: '2px solid rgba(96,165,250,0.35)', borderTopColor: '#60a5fa', borderRadius: '50%' }} />
+                                  SCRIBING{counts ? ` ${counts}` : '…'}
+                                </span>
+                              );
+                            })()}
                             {scribeDone && (
                               <span
                                 title={`Last scribed: ${new Date(scribeItem.lastScribedAt).toLocaleString()}`}
