@@ -40,6 +40,9 @@ const PENDING = [
   '20260421_triage_scoring',
   '20260421_user_prompts',
   '20260429_brain_outbound_channels',
+  // Order matters: backfill connector_types catalog FIRST so the
+  // default-enable migration has rows to enable.
+  '20260504_backfill_connector_types',
   '20260504_enable_default_personal_connectors',
 ];
 
