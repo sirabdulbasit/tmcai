@@ -348,6 +348,9 @@ router.post('/scribe/:connectorTypeId', requireAuth, async (req: Request, res: R
       gmailCap: Number.isFinite(body.gmailCap) ? Number(body.gmailCap) : undefined,
       calendarDaysBack: Number.isFinite(body.calendarDaysBack) ? Number(body.calendarDaysBack) : undefined,
       calendarDaysAhead: Number.isFinite(body.calendarDaysAhead) ? Number(body.calendarDaysAhead) : undefined,
+      whatsappDays: Number.isFinite(body.whatsappDays) ? Number(body.whatsappDays) : undefined,
+      whatsappMessagesPerChat: Number.isFinite(body.whatsappMessagesPerChat) ? Number(body.whatsappMessagesPerChat) : undefined,
+      whatsappTotalCap: Number.isFinite(body.whatsappTotalCap) ? Number(body.whatsappTotalCap) : undefined,
     });
 
     res.json({ ok: true, queued: true, slug });
@@ -538,7 +541,7 @@ router.get('/scribe-state', requireAuth, async (req: Request, res: Response) => 
         lastScribedAt: m.lastScribedAt ?? null,
         scribeStatus: m.scribeStatus ?? 'never',
         scribeError: m.scribeError ?? null,
-        supportsScribe: ['gmail', 'google_calendar'].includes(r.connectorType.slug),
+        supportsScribe: ['gmail', 'google_calendar', 'whatsapp_personal'].includes(r.connectorType.slug),
         isRunning: m.scribeStatus === 'running',
       };
     });

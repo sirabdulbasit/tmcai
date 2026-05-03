@@ -500,6 +500,136 @@ export async function resumeAllSessions(): Promise<void> {
   }
 }
 
+/**
+ * Iterate the user's recent WhatsApp chats and yield each chat together
+ * with its recent message buffer. Used by the historical scribe to
+ * backfill Brain memory with past WhatsApp conversations after a fresh
+ * pair (without it, only messages arriving after pairing land in feed).
+ *
+ * Filtering rules:
+ *   - Skip group chats (`chat.isGroup`) — too noisy, low signal
+ *   - Skip status broadcasts and newsletters
+ *   - Skip excluded contacts (read from notificationPreferences)
+ *   - Only chats touched in the last `daysBack` days
+ *   - Per-chat message cap (`messagesPerChat`)
+ *   - Global message cap (`totalCap`) prevents runaway on heavy users
+ *
+ * Returns an async iterator so the caller can stream-process and
+ * checkpoint progress without holding the entire history in memory.
+ */
+export interface WhatsAppHistoryItem {
+  chatId: string;
+  contactNumber: string | null;
+  contactName: string | null;
+  isFromMe: boolean;
+  body: string;
+  type: string;
+  timestamp: number;
+  waMessageId: string;
+}
+
+export interface WhatsAppHistoryOpts {
+  /** How far back to look in days. Default 14. */
+  daysBack?: number;
+  /** Cap on messages per chat. Default 100. */
+  messagesPerChat?: number;
+  /** Global cap across all chats. Default 5000. */
+  totalCap?: number;
+}
+
+export async function* iterateWhatsAppHistory(
+  userId: number,
+  opts: WhatsAppHistoryOpts = {},
+): AsyncGenerator<WhatsAppHistoryItem> {
+  const client = clients.get(userId);
+  if (!client) return; // not paired
+
+  const daysBack = opts.daysBack ?? 14;
+  const messagesPerChat = opts.messagesPerChat ?? 100;
+  const totalCap = opts.totalCap ?? 5000;
+  const sinceMs = Date.now() - daysBack * 86_400_000;
+  const excluded = await excludedFor(userId);
+
+  let yielded = 0;
+
+  let chats: any[] = [];
+  try { chats = await client.getChats(); }
+  catch (err: any) { log.warn('getChats failed during scribe', { userId, error: err.message }); return; }
+
+  // Sort chats by last activity descending — most-recent conversations first
+  // so we hit the cap on what's relevant rather than ancient noise.
+  chats.sort((a: any, b: any) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+
+  for (const chat of chats) {
+    if (yielded >= totalCap) break;
+
+    const id = chat?.id?._serialized ?? '';
+    if (!id) continue;
+    if (chat.isGroup) continue;
+    if (id === 'status@broadcast' || id.includes('@g.us') || id.includes('@newsletter')) continue;
+
+    // chat.timestamp is the last-message-at; skip cold chats outside the window.
+    const lastTs = (chat.timestamp ?? 0) * 1000;
+    if (lastTs && lastTs < sinceMs) continue;
+
+    // Resolve the other party's phone number for the exclusion check.
+    let contactNumber: string | null = null;
+    let contactName: string | null = chat.name ?? null;
+    try {
+      const contact = await chat.getContact();
+      const num = contact?.number || contact?.id?.user;
+      if (num) contactNumber = '+' + String(num).replace(/^\+/, '');
+      if (!contactName) contactName = contact?.pushname || contact?.name || null;
+    } catch { /* fallback to chat-id parsing below */ }
+    if (!contactNumber) {
+      const m = /^(\d+)@/.exec(id);
+      if (m) contactNumber = '+' + m[1];
+    }
+
+    if (contactNumber && excluded.has(normalizePhone(contactNumber))) {
+      log.info('whatsapp scribe: skipping excluded contact', { contactNumber });
+      continue;
+    }
+
+    let messages: any[] = [];
+    try { messages = await chat.fetchMessages({ limit: messagesPerChat }); }
+    catch (err: any) {
+      log.warn('fetchMessages failed during scribe', { chatId: id, error: err.message });
+      continue;
+    }
+
+    // Iterate oldest → newest within the chat so feed_events land in time order.
+    for (const m of (messages || [])) {
+      if (yielded >= totalCap) break;
+      const tsMs = (m.timestamp ?? 0) * 1000;
+      if (tsMs && tsMs < sinceMs) continue;
+      // Skip non-chat messages: notifications, system, calls. Voice notes
+      // (ptt) and audio carry no transcribed body in the snapshot, so we
+      // log them with a placeholder so Brain at least knows they happened.
+      const body = m.body && m.body.trim()
+        ? m.body
+        : m.type === 'ptt' || m.type === 'audio'
+          ? '[voice note]'
+          : m.type === 'image' ? '[image]'
+          : m.type === 'video' ? '[video]'
+          : m.type === 'document' ? '[document]'
+          : '';
+      if (!body) continue;
+      yield {
+        chatId: id,
+        contactNumber,
+        contactName,
+        isFromMe: !!m.fromMe,
+        body: String(body).slice(0, 4000),
+        type: m.type ?? 'chat',
+        timestamp: tsMs || Date.now(),
+        waMessageId: m.id?.id ?? `${id}:${tsMs}`,
+      };
+      yielded += 1;
+    }
+  }
+}
+
 /** Destroy every per-user session — called from gracefulShutdown so
  *  LocalAuth finishes writing session state before the process exits. */
 export async function destroyAllUserSessions(): Promise<void> {

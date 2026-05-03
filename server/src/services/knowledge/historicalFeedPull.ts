@@ -42,6 +42,12 @@ export interface PullOptions {
   calendarDaysBack?: number;
   /** Calendar: days forward (default 60). */
   calendarDaysAhead?: number;
+  /** WhatsApp: how far back in days (default 14). */
+  whatsappDays?: number;
+  /** WhatsApp: per-chat message cap (default 100). */
+  whatsappMessagesPerChat?: number;
+  /** WhatsApp: global message cap across all chats (default 5000). */
+  whatsappTotalCap?: number;
 }
 
 /**
@@ -66,6 +72,8 @@ export async function pullHistoricalFeed(
       await pullGmailHistory(clientNumber, userId, summary, opts);
     } else if (slug === 'google_calendar') {
       await pullCalendarHistory(clientNumber, userId, summary, opts);
+    } else if (slug === 'whatsapp_personal') {
+      await pullWhatsAppHistory(clientNumber, userId, summary, opts);
     } else {
       log.info('no historical puller for slug', { slug });
     }
@@ -227,4 +235,73 @@ export async function warmUpBrainFromSources(clientNumber: string, userId: numbe
   const wikiBackfill = await backfillSenderWiki(clientNumber, userId, { wipeFirst: true });
 
   return { pulls, wikiBackfill };
+}
+
+/**
+ * Pull historical WhatsApp messages from the user's paired webjs session
+ * into feed_events. Mirrors the gmail/calendar pull pattern: fetch from
+ * the source, ingest each message via the same `ingestFeedEvent` that
+ * receives live messages, dedupe via contentHash. After this completes,
+ * `backfillSenderWiki` (called by the caller) summarises each contact
+ * the same way it does for Gmail senders.
+ *
+ * Bounded cost (defaults):
+ *   - 14 days back
+ *   - 100 messages per chat
+ *   - 5000 messages total
+ *
+ * Skips groups, status broadcasts, and the user's excluded-contacts list.
+ * The user's own outbound messages are included with `isFromMe: true` —
+ * Brain uses these for tone/style learning.
+ */
+async function pullWhatsAppHistory(
+  clientNumber: string,
+  userId: number,
+  summary: PullSummary,
+  opts: PullOptions,
+): Promise<void> {
+  const { iterateWhatsAppHistory } = await import('../whatsapp/UserWebjsProvider');
+  const iterOpts = {
+    daysBack: opts.whatsappDays,
+    messagesPerChat: opts.whatsappMessagesPerChat,
+    totalCap: opts.whatsappTotalCap,
+  };
+
+  for await (const msg of iterateWhatsAppHistory(userId, iterOpts)) {
+    summary.fetched += 1;
+    try {
+      const r = await ingestFeedEvent({
+        clientNumber,
+        userId,
+        sourceType: 'whatsapp',
+        sourceId: msg.waMessageId,
+        eventType: msg.isFromMe ? 'message_sent' : 'message_received',
+        sender: {
+          phone: msg.contactNumber ?? undefined,
+          name: msg.contactName ?? undefined,
+        } as any,
+        payload: {
+          userId,
+          chatId: msg.chatId,
+          phoneNumber: msg.contactNumber,
+          contactName: msg.contactName,
+          content: msg.body,
+          messageType: msg.type,
+          fromMe: msg.isFromMe,
+          timestamp: msg.timestamp,
+          historical: true,
+        },
+      });
+      if (r.status === 'new') summary.ingested += 1;
+      else if (r.status === 'duplicate') summary.duplicates += 1;
+      else summary.errors += 1;
+    } catch (err: any) {
+      summary.errors += 1;
+      log.warn('whatsapp msg ingest failed', { waMessageId: msg.waMessageId, error: err.message });
+    }
+  }
+
+  log.info('whatsapp historical pull complete', {
+    userId, fetched: summary.fetched, ingested: summary.ingested, duplicates: summary.duplicates,
+  });
 }
