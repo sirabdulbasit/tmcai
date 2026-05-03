@@ -56,6 +56,22 @@ router.put('/', async (req: Request, res: Response) => {
     });
   }
   const profile = await updateUserProfile(req.user!.id, { city, contactNumber, aboutMe, instructions, tonePreference });
+
+  // Sync whatsapp_connections from the user's contact number so the
+  // tenant WhatsApp inbound handler recognises them. Without this row
+  // the inbound handler silently drops their messages — see
+  // WhatsAppInbound.handleInboundMessage's "Unregistered number" path.
+  // Idempotent: per user we keep a single 'active' row; updating the
+  // number simply rewrites it.
+  if (contactNumber !== undefined) {
+    void (async () => {
+      try {
+        const { syncWhatsAppConnectionFromProfile } = await import('../services/whatsapp/connectionSync');
+        await syncWhatsAppConnectionFromProfile(req.user!.id, contactNumber);
+      } catch { /* non-fatal — profile save already succeeded */ }
+    })();
+  }
+
   res.json({ success: true, profile });
 });
 

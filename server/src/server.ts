@@ -56,6 +56,14 @@ const server = app.listen(env.port, async () => {
   await import('./services/knowledge/scribeRecovery')
     .then(({ recoverStuckScribes }) => recoverStuckScribes())
     .catch(err => console.error('Scribe recovery failed:', err.message));
+
+  // Backfill whatsapp_connections from users.contact_number for any user
+  // who saved their number before the auto-bind hook shipped. Without a
+  // matching whatsapp_connections row, the tenant WhatsApp inbound
+  // handler silently drops their messages.
+  await import('./services/whatsapp/connectionSync')
+    .then(({ backfillAllWhatsAppConnections }) => backfillAllWhatsAppConnections())
+    .catch(err => console.error('WhatsApp connection backfill failed:', err.message));
   // Risk Radar — install/update canonical system risk rules. Same idempotent
   // pattern as gate rules; safe on every boot.
   await import('./services/brain/riskRulesSeeder')
