@@ -127,27 +127,49 @@ export default function ConnectorsPage() {
 
   useEffect(() => { load(); loadRedirectUri(); }, []);
 
-  // ── Cross-tab + cross-window state refresh ─────────────────────────
-  // OAuth flows commonly happen in a second tab/window (Google's
-  // accountchooser opens a new tab). When OAuth completes, only that
-  // tab learns about the new connection — the original tab keeps
-  // showing "Connect" until something forces a refetch. The fix:
-  // refetch whenever this tab regains focus or visibility, and also
-  // listen for a same-origin BroadcastChannel ping that other tabs
-  // can send when they see a successful connect.
+  // ── Cross-tab + cross-system state sync ─────────────────────────────
+  // Connector status changes happen on the server (OAuth callback,
+  // admin enable/disable, disconnect). Multiple clients viewing this
+  // page need to converge on the latest server state. Three layers:
+  //
+  //   1. BroadcastChannel — instant (same browser only). When OAuth
+  //      lands in tab A, tab B in the same browser refreshes within ms.
+  //   2. focus + visibilitychange — when ANY tab regains focus, it
+  //      refetches. Catches the cross-browser case where a user
+  //      switches browsers / machines.
+  //   3. Polling every 30s — cross-system fallback. Two users on
+  //      different machines viewing the page each see updates within
+  //      30s without anyone refreshing. Pauses while the tab is
+  //      hidden (no point burning CPU) and resumes on visibility.
+  //
+  // 30s is a deliberate trade-off: low enough that "I just connected
+  // Gmail in the office, my colleague at home should see it" is fast,
+  // high enough not to hammer the server.
   useEffect(() => {
     let bc;
+    let poll;
     const onFocus = () => load();
-    const onVisible = () => { if (!document.hidden) load(); };
+    const onVisible = () => {
+      if (!document.hidden) {
+        load();
+        // Restart polling on visibility return (was paused)
+        if (!poll) poll = setInterval(() => { if (!document.hidden) load(); }, 30000);
+      } else {
+        if (poll) { clearInterval(poll); poll = null; }
+      }
+    };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     try {
       bc = new BroadcastChannel('myos-connectors');
       bc.onmessage = (e) => { if (e.data?.type === 'refresh') load(); };
-    } catch { /* older browser — focus/visibility cover the common case */ }
+    } catch { /* older browser */ }
+    // Start polling immediately (page is visible on mount)
+    poll = setInterval(() => { if (!document.hidden) load(); }, 30000);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
+      if (poll) clearInterval(poll);
       try { bc?.close(); } catch {}
     };
   }, []);
