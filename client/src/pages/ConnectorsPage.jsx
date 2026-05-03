@@ -447,15 +447,21 @@ export default function ConnectorsPage() {
     return `${faclStatus.docCount ?? 0} docs indexed · last scribe ${when}`;
   }
 
-  async function handleScribeAll() {
+  async function handleScribeAll(force = false) {
     try {
-      const r = await api.post('/connectors/scribe-all');
+      const r = await api.post('/connectors/scribe-all', { force });
       const queued = r.data?.queued || [];
+      const skipped = r.data?.skipped || [];
       if (queued.length === 0) {
-        flash('No supported connectors to scribe. Connect Gmail or Google Calendar first.', 'info');
+        if (skipped.length > 0) {
+          flash('All connectors are already scribed. Click Re-scribe all to force a refresh.', 'info');
+        } else {
+          flash('No supported connectors to scribe. Connect Gmail or Google Calendar first.', 'info');
+        }
         return;
       }
-      flash(`Scribing ${queued.length} connector${queued.length > 1 ? 's' : ''} in background — takes a minute or two.`, 'success');
+      const skipNote = skipped.length > 0 ? ` (skipped ${skipped.length} already-scribed)` : '';
+      flash(`Scribing ${queued.length} connector${queued.length > 1 ? 's' : ''} in background — takes a minute or two${skipNote}.`, 'success');
     } catch (err) {
       flash(err.response?.data?.error || 'Scribe-all failed', 'error');
     }
@@ -653,7 +659,10 @@ export default function ConnectorsPage() {
                   </button>
                   <button
                     style={{ ...s.btn, ...s.btnPrimary, whiteSpace: 'nowrap' }}
-                    onClick={handleScribeAll}
+                    onClick={() => handleScribeAll(!needs)}
+                    title={needs
+                      ? 'Pull history for connectors that have never been scribed (skips already-scribed ones).'
+                      : 'Force a fresh scribe across every connected source — re-fetches everything.'}
                   >
                     🧠 {needs ? 'Scribe all' : 'Re-scribe all'}
                   </button>

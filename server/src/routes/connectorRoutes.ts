@@ -526,13 +526,25 @@ router.post('/scribe-all', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const body = req.body ?? {};
+    // force=true → re-scribe even already-scribed connectors (the
+    // "Re-scribe all" path). Default false → skip anything that already
+    // has a lastScribedAt, so the button doesn't burn API calls re-pulling
+    // history that's already in feed_events. Dedup catches dupes either
+    // way, but skipping saves the Gmail API round-trips entirely.
+    const force = body.force === true;
     const rows = await prisma.userConnector.findMany({
       where: { userId: user.id, clientNumber: user.clientNumber, status: 'connected' } as any,
       include: { connectorType: { select: { slug: true } } },
     });
     const queued: Array<{ slug: string; connectorTypeId: string }> = [];
+    const skipped: Array<{ slug: string; reason: string }> = [];
     for (const uc of rows) {
       if (!isScribeSupported(uc.connectorType.slug)) continue;
+      const m: any = uc.metadata ?? {};
+      if (!force && m.lastScribedAt) {
+        skipped.push({ slug: uc.connectorType.slug, reason: 'already_scribed' });
+        continue;
+      }
       await prisma.userConnector.update({
         where: { id: uc.id },
         data: {
@@ -550,7 +562,7 @@ router.post('/scribe-all', requireAuth, async (req: Request, res: Response) => {
       });
       queued.push({ slug: uc.connectorType.slug, connectorTypeId: uc.connectorTypeId });
     }
-    res.json({ ok: true, queued });
+    res.json({ ok: true, queued, skipped });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
