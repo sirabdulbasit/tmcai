@@ -125,41 +125,25 @@ export async function listAvailableForUser(userId: number, clientNumber: string)
     include: { connectorType: true },
   });
 
-  // Find any tenant-tier OAuth app creds the admin may have stored in
-  // tenant_connector_configs.config (per connector family). Env vars are the
-  // final fallback.
-  const tenantConfigs = await prisma.tenantConnectorConfig.findMany({
-    where: { clientNumber },
-  });
-  const tenantCfgByType = new Map(tenantConfigs.map(t => [t.connectorTypeId, t.config as any | null]));
-
+  // Single platform OAuth app (in tmcai-491811) — used by every tenant +
+  // every user. Per-tenant BYO-OAuth was removed (see memory:
+  // project_gcp_simplification). The Google-family slugs always inherit
+  // the platform OAuth client when GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
+  // are present in env.
   const googleSlugs = new Set(['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal', 'google_sheets']);
   const hasGoogleEnv = !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 
-  // If any Google-family tenant config carries an OAuth app, all Google slugs
-  // in this tenant count as tenant-managed (they share the app).
-  const tenantHasGoogleApp = Array.from(tenantCfgByType.entries()).some(([typeId, cfg]) => {
-    const ct = enabledTypes.find(t => t.id === typeId);
-    if (!ct || !googleSlugs.has(ct.slug)) return false;
-    return !!(cfg?.oauthClientId || cfg?.clientId);
-  });
-
   return enabledTypes.map(ct => {
     const uc = userConnectors.find(u => u.connectorTypeId === ct.id) || null;
-    const tenantCfg = tenantCfgByType.get(ct.id) ?? null;
-    const tenantHasOAuthApp = !!((tenantCfg?.oauthClientId || tenantCfg?.clientId));
-    const googleInheritsTenant = googleSlugs.has(ct.slug) && tenantHasGoogleApp;
-    const tenantOauthAvailable =
-      tenantHasOAuthApp ||
-      googleInheritsTenant ||
-      (googleSlugs.has(ct.slug) && hasGoogleEnv);
-
+    const oauthAvailable = googleSlugs.has(ct.slug) && hasGoogleEnv;
     return {
       ...ct,
       isConnected: uc?.status === 'connected',
       userConnector: uc,
-      tenantOauthAvailable,
-      tenantOauthSource: (tenantHasOAuthApp || googleInheritsTenant) ? 'tenant' : (tenantOauthAvailable ? 'env' : null),
+      // Kept for UI back-compat. Always 'env' (= platform OAuth) when
+      // available; older 'tenant' source has been retired.
+      tenantOauthAvailable: oauthAvailable,
+      tenantOauthSource: oauthAvailable ? 'env' : null,
     };
   });
 }
@@ -594,65 +578,20 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
     return { error: 'This connector does not use OAuth' };
   }
 
-  // Resolution order for OAuth app credentials (clientId/clientSecret):
-  //   1. user-provided in this form (BYOA)
-  //   2. user's existing UserConnector row for this type
-  //   3. any already-connected sibling Google connector for this user
-  //   4. tenant-tier app creds on tenant_connector_configs.config
-  //      (admin-configured, shared across all users in the tenant)
-  //   5. env vars (platform-level default)
-  let clientId = userConfig?.clientId as string || '';
-  let clientSecret = userConfig?.clientSecret as string || '';
-
-  // (2) saved UserConnector config for THIS connector
-  if (!clientId) {
-    const existing = await prisma.userConnector.findUnique({
-      where: { userId_connectorTypeId: { userId, connectorTypeId } },
-    });
-    if (existing?.config) {
-      const cfg = await decryptConnectorConfig(existing.config as Record<string, unknown>);
-      if (cfg.clientId) clientId = cfg.clientId as string;
-      if (cfg.clientSecret) clientSecret = cfg.clientSecret as string;
-    }
-  }
-
-  // (3) any connected sibling Google connector
+  // OAuth app credentials come from the platform-wide GCP project
+  // (`tmcai-491811`). Per-user / per-tenant BYO-OAuth was retired in
+  // 2026-05-04 — see memory `project_gcp_simplification.md`. Every
+  // tenant + user shares the same `GOOGLE_CLIENT_ID` /
+  // `GOOGLE_CLIENT_SECRET` from `.env`. User-only data lives in
+  // `user_connectors.config` (the access/refresh tokens), nothing else.
+  //
+  // `let` (not `const`) because the Microsoft + Slack OAuth blocks
+  // below reassign these locals. Those providers still carry the older
+  // BYO-OAuth resolution chain — same simplification can be done in a
+  // follow-up commit.
   const googleSlugs = ['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal', 'google_sheets'];
-  if (!clientId && googleSlugs.includes(connectorType.slug)) {
-    const allGoogleTypes = await prisma.connectorType.findMany({ where: { slug: { in: googleSlugs } } });
-    for (const gt of allGoogleTypes) {
-      const uc = await prisma.userConnector.findUnique({ where: { userId_connectorTypeId: { userId, connectorTypeId: gt.id } } });
-      if (uc?.config && uc.status === 'connected') {
-        const cfg = await decryptConnectorConfig(uc.config as Record<string, unknown>);
-        if (cfg.clientId) { clientId = cfg.clientId as string; clientSecret = cfg.clientSecret as string; break; }
-      }
-    }
-  }
-
-  // (4) tenant-tier OAuth app (admin-configured). Tied to the user's tenant.
-  if (!clientId) {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { clientNumber: true } });
-    if (user?.clientNumber) {
-      // Look at this connector type first, then any other Google family type for the same tenant
-      const tenantTypeIds = googleSlugs.includes(connectorType.slug)
-        ? (await prisma.connectorType.findMany({ where: { slug: { in: googleSlugs } }, select: { id: true } })).map(t => t.id)
-        : [connectorTypeId];
-      const tenantCfg = await prisma.tenantConnectorConfig.findFirst({
-        where: { clientNumber: user.clientNumber, connectorTypeId: { in: tenantTypeIds } },
-      });
-      if (tenantCfg?.config) {
-        const cfg = await decryptConnectorConfig(tenantCfg.config as Record<string, unknown>);
-        const tcClientId = (cfg.oauthClientId || cfg.clientId) as string | undefined;
-        const tcClientSecret = (cfg.oauthClientSecret || cfg.clientSecret) as string | undefined;
-        if (tcClientId) clientId = tcClientId;
-        if (tcClientSecret) clientSecret = tcClientSecret;
-      }
-    }
-  }
-
-  // (5) env fallback
-  if (!clientId) clientId = process.env.GOOGLE_CLIENT_ID || '';
-  if (!clientSecret) clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
+  let clientId = process.env.GOOGLE_CLIENT_ID || '';
+  let clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
 
   const redirectUri = process.env.GOOGLE_CONNECTOR_REDIRECT_URI || 'http://localhost:4002/api/v1/connectors/oauth/callback';
 
