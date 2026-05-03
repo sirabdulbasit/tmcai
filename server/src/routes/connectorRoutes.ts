@@ -17,6 +17,7 @@ import {
   saveConnectorRow as saveNotionConnector,
   findNotionConnector,
 } from '../services/connectors/notionConnectorService';
+import { isScribeSupported } from '../services/knowledge/historicalFeedPull';
 
 const router = Router();
 
@@ -525,14 +526,13 @@ router.post('/scribe-all', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const body = req.body ?? {};
-    const supportedSlugs = ['gmail', 'google_calendar', 'whatsapp_personal'];
     const rows = await prisma.userConnector.findMany({
       where: { userId: user.id, clientNumber: user.clientNumber, status: 'connected' } as any,
       include: { connectorType: { select: { slug: true } } },
     });
     const queued: Array<{ slug: string; connectorTypeId: string }> = [];
     for (const uc of rows) {
-      if (!supportedSlugs.includes(uc.connectorType.slug)) continue;
+      if (!isScribeSupported(uc.connectorType.slug)) continue;
       await prisma.userConnector.update({
         where: { id: uc.id },
         data: {
@@ -578,7 +578,7 @@ router.get('/scribe-state', requireAuth, async (req: Request, res: Response) => 
         scribeError: m.scribeError ?? null,
         scribeStartedAt: m.scribeStartedAt ?? null,
         scribeProgress: m.scribeProgress ?? null,
-        supportsScribe: ['gmail', 'google_calendar', 'whatsapp_personal'].includes(r.connectorType.slug),
+        supportsScribe: isScribeSupported(r.connectorType.slug),
         isRunning: m.scribeStatus === 'running',
       };
     });

@@ -200,10 +200,13 @@ export async function connectUserConnector(
   // past emails/events flow in over the next few minutes and sender_wiki
   // pages get built so Brain has context from the moment the MD opens
   // Day Brief. Fire-and-forget; no user-visible failure if it errors.
-  if (freshConnect && ['gmail', 'google_calendar'].includes(saved.connectorType.slug)) {
+  // Driven by the puller registry — any slug with a registered historical
+  // puller auto-warms on fresh connect.
+  if (freshConnect) {
     void (async () => {
       try {
-        const { warmUpBrainFromSources } = await import('./knowledge/historicalFeedPull');
+        const { warmUpBrainFromSources, isScribeSupported } = await import('./knowledge/historicalFeedPull');
+        if (!isScribeSupported(saved.connectorType.slug)) return;
         await warmUpBrainFromSources(clientNumber, userId);
       } catch (err: any) {
         console.warn(`[warmUpBrain] failed for user=${userId} slug=${saved.connectorType.slug}: ${err.message}`);

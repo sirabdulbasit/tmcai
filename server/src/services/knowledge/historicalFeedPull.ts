@@ -58,8 +58,33 @@ export interface PullOptions {
 }
 
 /**
+ * Single source of truth for what can be scribed. To support a new
+ * connector type, add its slug + puller here — no other code path needs
+ * to learn about it (route handlers, UI flags, recovery sweeps all read
+ * from this registry).
+ */
+type Puller = (clientNumber: string, userId: number, summary: PullSummary, opts: PullOptions) => Promise<void>;
+
+const PULLERS: Record<string, Puller> = {
+  gmail: pullGmailHistory,
+  google_calendar: pullCalendarHistory,
+  whatsapp_personal: pullWhatsAppHistory,
+};
+
+/** Slugs that have a registered historical puller. Drive UI/route filters from this. */
+export function getScribeSupportedSlugs(): string[] {
+  return Object.keys(PULLERS);
+}
+
+/** True if the slug has a registered historical puller. */
+export function isScribeSupported(slug: string): boolean {
+  return slug in PULLERS;
+}
+
+/**
  * Pull historical messages from a connector into feed_events.
  * Safe to call more than once — ingest dedupes by contentHash.
+ * No-op if the slug has no registered puller.
  */
 export async function pullHistoricalFeed(
   clientNumber: string,
@@ -74,16 +99,15 @@ export async function pullHistoricalFeed(
     durationMs: 0,
   };
 
+  const puller = PULLERS[slug];
+  if (!puller) {
+    log.info('no historical puller for slug', { slug });
+    summary.durationMs = Date.now() - t0;
+    return summary;
+  }
+
   try {
-    if (slug === 'gmail') {
-      await pullGmailHistory(clientNumber, userId, summary, opts);
-    } else if (slug === 'google_calendar') {
-      await pullCalendarHistory(clientNumber, userId, summary, opts);
-    } else if (slug === 'whatsapp_personal') {
-      await pullWhatsAppHistory(clientNumber, userId, summary, opts);
-    } else {
-      log.info('no historical puller for slug', { slug });
-    }
+    await puller(clientNumber, userId, summary, opts);
   } catch (err: any) {
     log.warn('historical pull failed', { slug, userId, error: err.message });
     summary.errors += 1;
