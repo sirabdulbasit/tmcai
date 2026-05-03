@@ -64,6 +64,13 @@ const server = app.listen(env.port, async () => {
   await import('./services/whatsapp/connectionSync')
     .then(({ backfillAllWhatsAppConnections }) => backfillAllWhatsAppConnections())
     .catch(err => console.error('WhatsApp connection backfill failed:', err.message));
+
+  // Re-run tenant bootstrap on every boot — seeds connector defaults
+  // for any tenant created before this code shipped, and fills in any
+  // new defaults added since the tenant was created. Idempotent.
+  await import('./services/tenantBootstrap')
+    .then(({ bootstrapAllTenants }) => bootstrapAllTenants())
+    .catch(err => console.error('Tenant bootstrap sweep failed:', err.message));
   // Risk Radar — install/update canonical system risk rules. Same idempotent
   // pattern as gate rules; safe on every boot.
   await import('./services/brain/riskRulesSeeder')
