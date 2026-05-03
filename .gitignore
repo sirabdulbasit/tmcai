@@ -48,22 +48,13 @@ server/whatsapp-sessions/
 # Local Claude Code settings (machine-specific)
 .claude/
 
-# Reference materials
-# Code/data files in reference/ are tracked (Google Apps Script, etc.).
-# Binary specs (PDFs, Word, Excel) and anything that looks like
-# credentials by filename are excluded — those typically contain secrets,
-# OAuth client IDs, API tokens, or proprietary diagrams that shouldn't
-# be in Git history.
-reference/*.pdf
-reference/*.docx
-reference/*.xlsx
-reference/*.pptx
-reference/*Secret*
-reference/*Credential*
-reference/*credential*
-reference/*secret*
-reference/*Token*
-reference/*token*
+# Reference + documentation folders are kept local only.
+# They contain proprietary diagrams, credential reference files, vendor
+# specs, and internal architecture notes that shouldn't ship with the
+# code. Anything that needs to be public-facing belongs in README files
+# inside the relevant code package, not these folders.
+reference/
+docs/
 
 # Per-tenant Meta WhatsApp session — explicitly extra layer beyond the
 # whatsapp-sessions/ rule above; some tooling lives in subdirs.
