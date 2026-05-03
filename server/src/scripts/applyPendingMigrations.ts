@@ -40,6 +40,7 @@ const PENDING = [
   '20260421_triage_scoring',
   '20260421_user_prompts',
   '20260429_brain_outbound_channels',
+  '20260504_enable_default_personal_connectors',
 ];
 
 /** Strip SQL comments + split on ; while respecting $$...$$ procedural blocks. */
