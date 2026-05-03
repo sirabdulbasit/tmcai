@@ -694,6 +694,46 @@ export async function suggestForFeedEvent(row: {
 }
 
 /**
+ * Best-effort extractor of the source-native event timestamp from a
+ * feed_event payload. Falls back to row.createdAt when nothing parseable.
+ *
+ * Why this matters: feed_events.createdAt is INGESTION time. When the
+ * historical scribe pulls 30 days of Gmail in one pass, every row gets
+ * createdAt=now() — making the 7-day attention window catch month-old
+ * emails as if they just arrived. We need the source's own timestamp:
+ *   - Gmail: rawPayload.date (RFC2822 from the Date: header)
+ *   - WhatsApp: rawPayload.timestamp (Unix seconds)
+ *   - Calendar: rawPayload.start (ISO date or { dateTime })
+ */
+function extractEventOccurredAt(row: { rawPayload: any; createdAt: Date }): Date {
+  const p = row.rawPayload || {};
+  // Gmail
+  if (typeof p.date === 'string' && p.date) {
+    const t = Date.parse(p.date);
+    if (Number.isFinite(t)) return new Date(t);
+  }
+  // WhatsApp — webjs gives Unix seconds; tolerate ms.
+  if (typeof p.timestamp === 'number' && p.timestamp > 0) {
+    const ms = p.timestamp < 1e12 ? p.timestamp * 1000 : p.timestamp;
+    return new Date(ms);
+  }
+  // Calendar — start is either ISO string or { dateTime, date }
+  if (p.start) {
+    if (typeof p.start === 'string') {
+      const t = Date.parse(p.start);
+      if (Number.isFinite(t)) return new Date(t);
+    } else if (typeof p.start === 'object') {
+      const s = p.start.dateTime ?? p.start.date;
+      if (typeof s === 'string') {
+        const t = Date.parse(s);
+        if (Number.isFinite(t)) return new Date(t);
+      }
+    }
+  }
+  return row.createdAt;
+}
+
+/**
  * Return attention items for the user. Caller passes feed_event rows (unread
  * / not-yet-acted-on). Each returns with a fresh suggestion.
  */
@@ -724,16 +764,23 @@ export async function buildAttentionList(
   }).catch(() => [] as Array<{ entityId: string | null }>);
   const decidedSet = new Set(decidedIds.map((d) => d.entityId).filter(Boolean) as string[]);
 
+  // Widen the SQL window to 90 days. The historical scribe writes
+  // createdAt=now() for month-old emails, so a tight 7-day SQL window
+  // would either miss legitimately fresh items (if it strictly used the
+  // event's true date — we don't have that as a column yet) or include
+  // a flood of month-old rows (current behaviour). We over-fetch here
+  // and filter on the source-native timestamp in JS below.
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
   const rows = await prisma.feedEvent.findMany({
     where: {
       clientNumber,
       userId,
       sourceType: { in: ['gmail', 'whatsapp', 'gcal', 'gtasks'] as any },
-      createdAt: { gte: sevenDaysAgo },
+      createdAt: { gte: ninetyDaysAgo },
     } as any,
     select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
-    take: limit * 3, // over-fetch; filter decided + hidden next
+    take: limit * 10, // over-fetch — most rows will be filtered out by the 7-day event-date filter
   });
 
   // Drop events whose dedup_hash has been hidden by this user.
@@ -744,9 +791,17 @@ export async function buildAttentionList(
   });
   hidden.forEach((h) => hashes.add(h.dedupHash));
 
-  // Filter the already-decided rows up front so we don't waste per-row
-  // LLM/context work on events that will never surface in the UI.
-  const candidates = rows.filter((r) => !decidedSet.has(r.id));
+  // Filter:
+  //  1. Drop already-decided rows (no point running LLM on them).
+  //  2. Drop rows whose source-native timestamp is older than the 7-day
+  //     attention window. Without this, historical scribe ingests every
+  //     row with createdAt=now() and floods My Attention with month-old
+  //     mail.
+  const candidates = rows.filter((r) => {
+    if (decidedSet.has(r.id)) return false;
+    const eventDate = extractEventOccurredAt(r);
+    return eventDate >= sevenDaysAgo;
+  });
 
   // Run suggestForFeedEvent in PARALLEL across candidates. Each call does
   // 5+ DB reads (entity, decisions, delegations, open items, wiki, org
