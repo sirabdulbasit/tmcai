@@ -142,10 +142,15 @@ async function loadDeps() {
 }
 
 function resolveChromePath() {
+  // Honour both PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
+  // and CHROME_PATH (legacy). Linux fallback uses google-chrome-stable
+  // because /usr/bin/chromium-browser on Ubuntu 24.04 is a snap shim that
+  // won't launch from headless node processes.
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
   if (process.platform === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (process.platform === 'win32') return 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-  return '/usr/bin/chromium-browser';
+  return '/usr/bin/google-chrome-stable';
 }
 
 /** Inlined from WebjsProvider — see comment there for the full rationale. */

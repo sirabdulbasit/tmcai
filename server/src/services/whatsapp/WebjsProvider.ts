@@ -160,12 +160,16 @@ export class WebjsProvider implements IWhatsAppProvider {
     const sessionDir = path.join(sessionPath, `session-${clientNumber}`);
     cleanStaleSingletonLocks(sessionDir);
 
-    // Find Chrome/Chromium executable on the system — match UserWebjsProvider
-    // so both legacy and personal paths resolve the same way on macOS.
-    const executablePath = process.env.CHROME_PATH
+    // Find Chrome/Chromium executable on the system. Honour both names:
+    //   - PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
+    //   - CHROME_PATH (older internal name, kept for back-compat)
+    // Linux fallback is google-chrome-stable since /usr/bin/chromium-browser
+    // on Ubuntu 24.04 is a snap shim that won't launch from headless node.
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+      || process.env.CHROME_PATH
       || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
         : process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-        : '/usr/bin/chromium-browser');
+        : '/usr/bin/google-chrome-stable');
 
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: clientNumber, dataPath: sessionPath }),
