@@ -802,6 +802,7 @@ function RiskRadarTab() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -836,6 +837,7 @@ function RiskRadarTab() {
   const remove = async (rule) => {
     try {
       await api.delete(`/risk-rules/${rule.id}`);
+      setConfirmDeleteId(null);
       await load();
     } catch (err) { setError(err.response?.data?.error ?? err.message); }
   };
@@ -908,7 +910,14 @@ function RiskRadarTab() {
                     <input type="checkbox" checked={r.enabled} onChange={(e) => toggleEnabled(r, e.target.checked)} />
                     enabled
                   </label>
-                  <button onClick={() => remove(r)} style={pillBtnStyle('delete')}>Delete</button>
+                  {confirmDeleteId === r.id ? (
+                    <>
+                      <button onClick={() => remove(r)} style={pillBtnStyle('delete')}>Yes, delete</button>
+                      <button onClick={() => setConfirmDeleteId(null)} style={pillBtnStyle('disable')}>Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirmDeleteId(r.id)} style={pillBtnStyle('delete')}>Delete</button>
+                  )}
                 </span>
               )}
             />

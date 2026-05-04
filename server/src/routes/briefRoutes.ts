@@ -1464,25 +1464,52 @@ router.get('/delegations', async (req: Request, res: Response) => {
 // own user_id so an admin can't quietly nuke another user's audit trail
 // by hitting this endpoint with a different id.
 
+/**
+ * Audit-log deletes use raw SQL inside an interactive transaction so that
+ * `SET LOCAL myos.allow_log_delete = 'true'` reliably applies to the
+ * subsequent DELETE on the same connection. Going through Prisma's client
+ * (`tx.delegationLog.deleteMany`) routes through the $extends tenant
+ * middleware which broke the SET LOCAL coupling on prod — the trigger
+ * fired and the user saw the raw Postgres error.
+ */
+function sanitizeDeleteError(err: any): string {
+  const msg = String(err?.message ?? '');
+  if (/append-only/i.test(msg) && /cannot be deleted/i.test(msg)) {
+    return 'This audit row is append-only and cannot be deleted by the platform. Contact support if removal is required for compliance.';
+  }
+  if (/permission denied/i.test(msg)) {
+    return 'Permission denied — your account cannot delete this row.';
+  }
+  if (/not found/i.test(msg) || /no rows/i.test(msg)) {
+    return 'Row not found or already deleted.';
+  }
+  // Generic fallback — never leak Postgres / Prisma internals to the UI.
+  return 'Could not delete the row. Please try again or refresh the page.';
+}
+
 /** DELETE a single decision_log row. Body: { confirm: true } */
 router.delete('/decisions/:id', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const id = String(req.params.id);
   if (req.body?.confirm !== true) {
-    return res.status(400).json({ error: 'confirm:true body flag required to delete audit rows' });
+    return res.status(400).json({ error: 'confirm flag required' });
   }
   try {
     const count = await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL myos.allow_log_delete = 'true'`);
-      const r = await tx.decisionLog.deleteMany({
-        where: { id, clientNumber: user.clientNumber, userId: user.id },
-      });
-      return r.count;
+      // Raw SQL — going through tx.decisionLog.deleteMany hits the
+      // $extends middleware which on prod broke the SET LOCAL coupling
+      // and the trigger fired anyway. Raw SQL stays on the same conn.
+      const r = await tx.$executeRawUnsafe(
+        `DELETE FROM decision_logs WHERE id = $1 AND client_number = $2 AND user_id = $3`,
+        id, user.clientNumber, user.id,
+      );
+      return Number(r);
     });
-    if (count === 0) return res.status(404).json({ error: 'not found or not yours' });
+    if (count === 0) return res.status(404).json({ error: 'Row not found or not yours.' });
     res.json({ ok: true, deleted: count });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeDeleteError(err) });
   }
 });
 
@@ -1492,24 +1519,30 @@ router.post('/decisions/delete-all', async (req: Request, res: Response) => {
   const phrase = String(req.body?.confirmPhrase ?? '');
   if (phrase !== 'DELETE ALL MY DECISIONS') {
     return res.status(400).json({
-      error: "confirmPhrase must exactly match 'DELETE ALL MY DECISIONS'",
+      error: "Type DELETE ALL MY DECISIONS exactly to confirm.",
     });
   }
-  // Optional filter — e.g. only brain's actions, or only a date range
-  const source = String(req.body?.source ?? 'mine');  // mine | brain | all
+  const source = String(req.body?.source ?? 'mine');
   const sinceStr = req.body?.since ? String(req.body.since) : null;
-  const where: any = { clientNumber: user.clientNumber, userId: user.id };
-  if (sinceStr) where.createdAt = { gte: new Date(sinceStr) };
-  if (source === 'brain') where.agentId = { not: null };
+  const conds: string[] = ['client_number = $1', 'user_id = $2'];
+  const params: any[] = [user.clientNumber, user.id];
+  if (sinceStr) {
+    params.push(new Date(sinceStr));
+    conds.push(`created_at >= $${params.length}`);
+  }
+  if (source === 'brain') conds.push(`agent_id IS NOT NULL`);
   try {
     const count = await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL myos.allow_log_delete = 'true'`);
-      const r = await tx.decisionLog.deleteMany({ where });
-      return r.count;
+      const r = await tx.$executeRawUnsafe(
+        `DELETE FROM decision_logs WHERE ${conds.join(' AND ')}`,
+        ...params,
+      );
+      return Number(r);
     });
     res.json({ ok: true, deleted: count });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeDeleteError(err) });
   }
 });
 
@@ -1518,20 +1551,21 @@ router.delete('/delegations/:id', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const id = String(req.params.id);
   if (req.body?.confirm !== true) {
-    return res.status(400).json({ error: 'confirm:true body flag required' });
+    return res.status(400).json({ error: 'confirm flag required' });
   }
   try {
     const count = await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL myos.allow_log_delete = 'true'`);
-      const r = await tx.delegationLog.deleteMany({
-        where: { id, clientNumber: user.clientNumber, userId: user.id },
-      });
-      return r.count;
+      const r = await tx.$executeRawUnsafe(
+        `DELETE FROM delegation_logs WHERE id = $1 AND client_number = $2 AND user_id = $3`,
+        id, user.clientNumber, user.id,
+      );
+      return Number(r);
     });
-    if (count === 0) return res.status(404).json({ error: 'not found or not yours' });
+    if (count === 0) return res.status(404).json({ error: 'Row not found or not yours.' });
     res.json({ ok: true, deleted: count });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeDeleteError(err) });
   }
 });
 
@@ -1546,19 +1580,26 @@ router.post('/delegations/delete-all', async (req: Request, res: Response) => {
   }
   const source = String(req.body?.source ?? 'mine'); // mine | brain | all
   const sinceStr = req.body?.since ? String(req.body.since) : null;
-  const where: any = { clientNumber: user.clientNumber, userId: user.id };
-  if (sinceStr) where.createdAt = { gte: new Date(sinceStr) };
-  if (source === 'mine') where.delegatedBy = 'user';
-  else if (source === 'brain') where.delegatedBy = 'brain';
+  const conds: string[] = ['client_number = $1', 'user_id = $2'];
+  const params: any[] = [user.clientNumber, user.id];
+  if (sinceStr) {
+    params.push(new Date(sinceStr));
+    conds.push(`created_at >= $${params.length}`);
+  }
+  if (source === 'mine') conds.push(`delegated_by = 'user'`);
+  else if (source === 'brain') conds.push(`delegated_by = 'brain'`);
   try {
     const count = await prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL myos.allow_log_delete = 'true'`);
-      const r = await tx.delegationLog.deleteMany({ where });
-      return r.count;
+      const r = await tx.$executeRawUnsafe(
+        `DELETE FROM delegation_logs WHERE ${conds.join(' AND ')}`,
+        ...params,
+      );
+      return Number(r);
     });
     res.json({ ok: true, deleted: count });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeDeleteError(err) });
   }
 });
 
