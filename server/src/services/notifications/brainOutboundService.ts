@@ -140,6 +140,32 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }
   }
 
+  // ── Per-kind rate limit ─────────────────────────────────────────────
+  // Backstop against twin notifications when dedupKey legitimately
+  // changes (e.g. a critical bundle that adds one new item, producing
+  // a different sorted-feedEventIds fingerprint). The user got two
+  // near-identical pings 60s apart in 2026-05-04 — this guard keeps
+  // any one `kind` from firing more than once per 60s, no matter what
+  // dedupKey the caller sent.
+  const KIND_MIN_INTERVAL_MS = 60_000;
+  const rec = await prisma.brainUserMessage.findFirst({
+    where: {
+      userId: user.id, kind: req.kind,
+      createdAt: { gte: new Date(Date.now() - KIND_MIN_INTERVAL_MS) },
+      status: { in: ['sent', 'partial'] },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, createdAt: true },
+  }).catch(() => null);
+  if (rec) {
+    const ageSec = Math.round((Date.now() - rec.createdAt.getTime()) / 1000);
+    log.info('rate-limited', { userId: user.id, kind: req.kind, ageSec });
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, `rate_limited (kind sent ${ageSec}s ago)`);
+  }
+
   // ── Quiet hours check ───────────────────────────────────────────────
   if (!bypassQuiet && isWithinQuietHours(bc)) {
     return await record({

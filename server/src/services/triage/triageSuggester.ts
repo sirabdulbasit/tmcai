@@ -270,6 +270,51 @@ export async function suggestForFeedEvent(row: {
   const fromEmail = row.senderEmail ?? undefined;
   const senderDomain = domainOf(fromEmail ?? fromFull);
 
+  // ── Self-message gate ──
+  // If the sender IS the user (their own email or one of their integration
+  // mailboxes — Gmail "from me" copies, WhatsApp messages where isFromMe=true),
+  // the item is the user's own outbound, not someone asking THEM for action.
+  // Surfacing it as Attention (or worse, pushing it as a critical alert) is
+  // the bug behind "Brain: 1 critical item — basit.ahmed@tmcltd.ai is a key
+  // client". Skip it entirely.
+  const userRow = await prisma.user.findUnique({
+    where: { id: row.userId },
+    select: { email: true, integrationEmail: true },
+  } as any).catch(() => null) as { email?: string | null; integrationEmail?: string | null } | null;
+  const userEmails = new Set(
+    [userRow?.email, userRow?.integrationEmail]
+      .filter(Boolean)
+      .map((e) => String(e).toLowerCase()),
+  );
+  const fromMeFlag = (payload as any).fromMe === true || (payload as any).isFromMe === true;
+  const senderIsSelf =
+    fromMeFlag ||
+    (fromEmail && userEmails.has(String(fromEmail).toLowerCase())) ||
+    (typeof fromFull === 'string' && [...userEmails].some((u) => fromFull.toLowerCase().includes(u)));
+  if (senderIsSelf) {
+    return {
+      id: row.id,
+      feedEventId: row.id,
+      itemType,
+      archetype: 'inform_only',
+      from: fromFull,
+      fromEmail: fromEmail ?? null,
+      subject,
+      preview,
+      receivedAt: row.createdAt.toISOString(),
+      sourceType: row.sourceType,
+      suggestedAction: 'ignore',
+      confidence: 1,
+      rationale: 'Self-authored message — not surfaced.',
+      alternatives: [],
+      handledByRule: false,
+      noise: true,                  // keeps it out of My Attention
+      critical: false,              // and out of critical-bundle pushes
+      criticality: null as any,
+      dedupHash: '',
+    } as AttentionItem;
+  }
+
   const archetype = classifyArchetype(itemType, fromFull, subject, preview);
   const dedupHash = computeDedupHash({ userId: row.userId, itemType, archetype, senderDomain });
 
