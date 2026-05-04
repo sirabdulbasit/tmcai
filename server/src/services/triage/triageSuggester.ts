@@ -868,11 +868,74 @@ export async function buildAttentionList(
   const items: AttentionItem[] = [];
   for (const item of suggestions) {
     if (!item) continue;
-    if (items.length >= limit) break;
     if (hashes.has(item.dedupHash)) continue;
     if (item.handledByRule) continue;  // autonomous — lives in Section 1, not Attention
     items.push(item);
   }
+
+  // ── Recurring meeting series collapse ──
+  // A weekly cadence ("Project MATRIX Weekly Governance Meeting") arrives
+  // as N separate calendar invites — one per occurrence — each producing
+  // its own attention card. The user just sees the same decision N times.
+  // Collapse: group meetings by (organizer, normalised subject) and keep
+  // only the EARLIEST upcoming occurrence; attach `seriesCount` so the UI
+  // can render "3 occurrences" + "delegate the whole series" affordance.
+  const collapsedItems: AttentionItem[] = [];
+  const seriesMap = new Map<string, AttentionItem[]>();
+  for (const it of items) {
+    if (it.itemType !== 'meeting') {
+      collapsedItems.push(it);
+      continue;
+    }
+    const subjectKey = (it.subject || '').toLowerCase()
+      .replace(/[\s\-_/.]+/g, ' ')
+      .replace(/\b(weekly|biweekly|bi-weekly|monthly|daily)\b/g, '')
+      .trim();
+    const organiser = (it.fromEmail || it.from || '').toLowerCase();
+    const seriesKey = `${organiser}::${subjectKey}`;
+    if (!seriesMap.has(seriesKey)) seriesMap.set(seriesKey, []);
+    seriesMap.get(seriesKey)!.push(it);
+  }
+  for (const occurrences of seriesMap.values()) {
+    if (occurrences.length === 1) {
+      collapsedItems.push(occurrences[0]);
+      continue;
+    }
+    // Pick the earliest upcoming occurrence as the representative.
+    occurrences.sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime());
+    const representative = occurrences[0];
+    (representative as any).seriesCount = occurrences.length;
+    (representative as any).seriesOccurrenceIds = occurrences.map((o) => o.feedEventId);
+    representative.rationale = `${representative.rationale}\nThis is occurrence 1 of ${occurrences.length} in the series — accepting/delegating applies to all.`;
+    collapsedItems.push(representative);
+  }
+  items.length = 0;
+  items.push(...collapsedItems);
+
+  // ── Autonomy gate ──
+  // Brain's historyDrivenSuggestion can return ≥0.85 confidence with N
+  // prior matching delegations. At that point, surfacing the card again
+  // is noise — Brain already knows what to do. Drop it from My Attention
+  // and let the autonomous shadow rule pipeline pick it up. We don't
+  // execute the action here (that's the executor's job); we just stop
+  // bothering the user with a decision they've made dozens of times.
+  // Delegation needs an actual delegate (no point auto-handling if we
+  // don't know who to send it to).
+  const AUTONOMY_THRESHOLD = 0.85;
+  const autonomousFiltered = items.filter((it) => {
+    if (it.critical) return true; // never auto-hide criticals
+    const isAutonomyReady =
+      (it.confidence ?? 0) >= AUTONOMY_THRESHOLD
+      && it.suggestedAction === 'delegate'
+      && !!it.suggestedDelegateeUserId;
+    return !isAutonomyReady;
+  });
+  items.length = 0;
+  items.push(...autonomousFiltered);
+
+  // Trim to limit AFTER collapse + autonomy filter so we surface the
+  // most useful `limit` decisions, not the first N pre-collapse items.
+  if (items.length > limit) items.length = limit;
 
   // Hard cap on the critical band. The old UX was drowning in
   // false-positive criticals because the LLM's boolean flag was too

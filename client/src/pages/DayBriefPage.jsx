@@ -98,6 +98,31 @@ function timeAgo(dateStr) {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
+/**
+ * Format a meeting start time as a forward-looking pointer: "in 3d",
+ * "tomorrow 14:00", "Fri 4 May 16:00". Used on attention cards instead
+ * of timeAgo() so a calendar invite for a meeting two weeks away doesn't
+ * read as "1h ago" (i.e. ingestion time).
+ */
+function meetingWhen(startStr) {
+  if (!startStr) return '';
+  const start = new Date(startStr);
+  if (Number.isNaN(start.getTime())) return '';
+  const diffMs = start.getTime() - Date.now();
+  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+  const hh = String(start.getHours()).padStart(2, '0');
+  const mm = String(start.getMinutes()).padStart(2, '0');
+  if (diffMs < 0) {
+    const dAgo = Math.abs(diffDays);
+    return dAgo === 0 ? `today ${hh}:${mm}` : `${dAgo}d ago`;
+  }
+  if (diffDays === 0) return `today ${hh}:${mm}`;
+  if (diffDays === 1) return `tomorrow ${hh}:${mm}`;
+  if (diffDays < 7) return `in ${diffDays}d · ${hh}:${mm}`;
+  const dayName = start.toLocaleDateString(undefined, { weekday: 'short' });
+  const monthDay = start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${dayName} ${monthDay} · ${hh}:${mm}`;
+}
 function getGreeting() {
   const h = new Date().getHours();
   if (h < 12) return 'Good morning';
@@ -1921,7 +1946,21 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
             <strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 'var(--fs-sm)' }}>
               {(item.from ?? '').replace(/^"|"$/g, '').slice(0, 60)}
             </strong>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>{timeAgo(item.receivedAt)}</span>
+            {/*
+              For meetings, show the MEETING START time, not when Brain
+              ingested the calendar invite. For everything else, the
+              relative time of receipt is the right reference.
+            */}
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+              {item.itemType === 'meeting' && item.meeting?.start
+                ? meetingWhen(item.meeting.start)
+                : timeAgo(item.receivedAt)}
+            </span>
+            {/* Series collapse badge — shown when a recurring meeting was
+                collapsed from N occurrences into this representative card. */}
+            {item.seriesCount > 1 && (
+              <Pill variant="info">↻ {item.seriesCount}-occurrence series</Pill>
+            )}
           </div>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', marginTop: 4 }}>
             {/* WhatsApp has no subject — show the message body inline.
