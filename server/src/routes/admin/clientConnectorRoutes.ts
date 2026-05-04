@@ -249,27 +249,53 @@ router.post('/client-connectors/:slug/connect', requireAdmin, async (req: Reques
     if (slug !== 'google_drive_org') return res.status(501).json({ error: `${slug} connect not implemented yet` });
 
     const me = req.user!;
-    // Check if current admin has Google active at user level
-    const admin = await prisma.user.findFirst({
-      where: { id: me.id, clientNumber, integrationProvider: 'google', integrationStatus: 'active' } as any,
-      select: { id: true, email: true, integrationEmail: true },
+    const adminRow = await prisma.user.findFirst({
+      where: { id: me.id, clientNumber } as any,
+      select: { id: true, email: true, integrationEmail: true, integrationProvider: true, integrationStatus: true },
     });
+    if (!adminRow) return res.status(404).json({ error: 'Admin user not found in tenant' });
 
-    if (!admin) {
-      // Not yet connected personally — hand back an OAuth URL. Frontend
-      // redirects to it; after consent the user lands back here and can
-      // click Connect again to finalize.
+    // Probe the actual OAuth token instead of trusting the stale
+    // integration_status='active' flag. The flag persists across token
+    // expiry; Basit hit this when the column said active but the
+    // refresh token had been rejected by Google. getAuthenticatedClient
+    // tries user_connectors first, then legacy User columns.
+    const { getAuthenticatedClient } = await import('../../services/integrationService');
+    const auth = await getAuthenticatedClient(me.id);
+    let probeOk = false;
+    let probeError: string | null = null;
+    if (auth?.client) {
+      try {
+        const { google } = await import('googleapis');
+        const drive = google.drive({ version: 'v3', auth: auth.client });
+        // Cheapest call that exercises both auth + Drive scope.
+        await drive.about.get({ fields: 'user(emailAddress)' });
+        probeOk = true;
+      } catch (err: any) {
+        probeError = sanitizeScribeError(err);
+      }
+    } else if (auth?.error) {
+      probeError = sanitizeScribeError({ message: auth.error });
+    } else {
+      probeError = 'No Google connector configured for your account.';
+    }
+
+    if (!probeOk) {
+      // Token is stale, missing, or revoked. Redirect to the
+      // user-level Connectors OAuth flow — that's the only place that
+      // can issue a fresh refresh token. After consent they return and
+      // click Connect again on the tenant card.
       return res.status(409).json({
         needsOauth: true,
-        message: 'You need to connect Google first. Redirecting to authorize…',
+        message: probeError ?? 'Google authorisation required.',
         oauthRedirectTo: '/connectors?highlight=gmail',
       });
     }
 
-    await writeConfig(clientNumber, 'google_drive_org_user_id', String(admin.id));
+    await writeConfig(clientNumber, 'google_drive_org_user_id', String(adminRow.id));
     scribeState.delete(skey(clientNumber, slug));
     const updated = await statusFor(clientNumber, def);
-    res.json({ ok: true, item: updated, connectedAs: admin.integrationEmail ?? admin.email });
+    res.json({ ok: true, item: updated, connectedAs: adminRow.integrationEmail ?? adminRow.email });
   } catch (err: any) {
     res.status(500).json({ error: sanitizeScribeError(err) });
   }
