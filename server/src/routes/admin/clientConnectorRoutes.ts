@@ -144,6 +144,20 @@ async function statusFor(clientNumber: string, def: ConnectorDef) {
     value: k.sensitive ? (k.value ? '••••••••' : null) : (k.key === 'google_drive_org_user_id' ? null : k.value),
   }));
 
+  // Surface the last scribe's per-run breakdown so the UI can show
+  // "Scribed 12 / 47 scanned · 35 skipped · 0 errors" instead of an
+  // opaque "✓ 0 docs" badge that can't tell empty-folder apart from
+  // mime-rejected apart from access-denied.
+  const lastSummary = st.lastSummary ?? null;
+  const lastScribe = lastSummary ? {
+    scanned: Number(lastSummary.scanned ?? 0),
+    updated: Number(lastSummary.updated ?? 0),
+    unchanged: Number(lastSummary.unchanged ?? 0),
+    skipped: Number(lastSummary.skipped ?? 0),
+    errors: Number(lastSummary.errors ?? 0),
+    durationMs: Number(lastSummary.durationMs ?? 0),
+  } : null;
+
   return {
     slug: def.slug, name: def.name, icon: def.icon, category: def.category, liveInPoc: def.liveInPoc,
     connected,
@@ -155,6 +169,8 @@ async function statusFor(clientNumber: string, def: ConnectorDef) {
     docCount,
     lastScribedAt: st.lastScribedAt ?? null,
     scribeStatus: st.status,
+    scribeError: st.error ?? null,
+    lastScribe,
     needsScribe,
   };
 }

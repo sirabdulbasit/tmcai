@@ -508,13 +508,39 @@ function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDiscon
   const running = item.scribeStatus === 'running';
   const ok = !!item.lastScribedAt && !running;
   const liveBlocked = !item.liveInPoc;
+  const last = item.lastScribe;
+  const hasErrors = (last?.errors ?? 0) > 0;
 
-  const pill = running ? { text: 'Scribing…', color: '#f59e0b' }
-    : liveBlocked ? { text: 'Coming soon', color: '#9ba0aa' }
-    : ok ? { text: `✓ ${item.docCount} docs`, color: '#4ade80' }
-    : item.scribeable ? { text: 'Ready to scribe', color: '#f59e0b' }
-    : item.connected ? { text: 'Connected · folder needed', color: '#f59e0b' }
-    : { text: 'Not connected', color: '#9ba0aa' };
+  // Pill text — informative variants of the post-scribe state.
+  // "✓ 0 docs" was opaque: empty folder vs all-mime-skipped vs zero-access
+  // looked identical. Now we say "✓ 12 of 47" / "0 scribed (47 skipped)" /
+  // "1 error" / etc.
+  let pill;
+  if (running) {
+    pill = { text: 'Scribing…', color: '#f59e0b' };
+  } else if (liveBlocked) {
+    pill = { text: 'Coming soon', color: '#9ba0aa' };
+  } else if (ok) {
+    if (hasErrors) {
+      pill = { text: `⚠ ${last.updated} of ${last.scanned} · ${last.errors} err`, color: '#ef4444' };
+    } else if ((last?.scanned ?? 0) === 0) {
+      pill = { text: `✓ folder is empty`, color: '#9ba0aa' };
+    } else if ((last?.updated ?? 0) === 0) {
+      pill = { text: `✓ no scribeable files (${last.skipped} skipped)`, color: '#9ba0aa' };
+    } else {
+      pill = { text: `✓ ${last.updated} of ${last.scanned} scribed`, color: '#4ade80' };
+    }
+  } else if (item.scribeable) {
+    pill = { text: 'Ready to scribe', color: '#f59e0b' };
+  } else if (item.connected) {
+    pill = { text: 'Connected · folder needed', color: '#f59e0b' };
+  } else {
+    pill = { text: 'Not connected', color: '#9ba0aa' };
+  }
+  // Tooltip with the full breakdown — visible on hover for power users.
+  const pillTooltip = ok && last
+    ? `Last scribe: ${last.updated} updated · ${last.unchanged} unchanged · ${last.skipped} skipped (wrong mime/empty) · ${last.errors} errors · ${(last.durationMs/1000).toFixed(1)}s`
+    : '';
 
   return (
     <div style={{
@@ -526,7 +552,7 @@ function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDiscon
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{item.name}</div>
-            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: pill.color + '22', color: pill.color, fontWeight: 600 }}>{pill.text}</span>
+            <span title={pillTooltip} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: pill.color + '22', color: pill.color, fontWeight: 600 }}>{pill.text}</span>
           </div>
           {item.connected && item.connectionDetail?.userEmail && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
@@ -542,6 +568,18 @@ function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDiscon
           {item.lastScribedAt && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
               Last scribed {humanAgo(Date.now() - new Date(item.lastScribedAt).getTime())}
+              {last && last.scanned > 0 && (
+                <> · scanned {last.scanned} · updated {last.updated}{last.unchanged ? ` · ${last.unchanged} unchanged` : ''}{last.skipped ? ` · ${last.skipped} skipped` : ''}{last.errors ? ` · ${last.errors} errors` : ''}</>
+              )}
+            </div>
+          )}
+          {item.scribeStatus === 'error' && item.scribeError && (
+            <div style={{
+              fontSize: 11, color: '#ef4444', marginTop: 3,
+              padding: '4px 8px', background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6,
+            }}>
+              ✗ Last scribe failed: {item.scribeError}
             </div>
           )}
           {liveBlocked && (
