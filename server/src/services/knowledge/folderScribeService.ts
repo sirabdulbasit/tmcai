@@ -45,31 +45,66 @@ export interface FolderScribeSummary {
   durationMs: number;
 }
 
-/** Find an admin/super-admin in the tenant with an active Google OAuth
- *  connection. This is the user whose credentials will read the FACL
- *  folder on behalf of the whole tenant. */
+/** Find the user whose credentials will read the FACL folder on
+ *  behalf of the tenant. Resolution order:
+ *
+ *  1. system_config['google_drive_org_user_id'] — the user the admin
+ *     EXPLICITLY picked via the Connect button. This is the source of
+ *     truth and matches what the preview uses.
+ *  2. Any tenant admin/super-admin with a connected Google connector
+ *     (via the modern user_connectors table — Gmail / Calendar / Drive
+ *     / etc., they all share OAuth tokens).
+ *  3. Any tenant user with a connected Google connector.
+ *
+ *  The legacy User.integration_status='active' lookup that lived here
+ *  before broke after we nuked stale legacy columns: it picked a user
+ *  with column flags but no real OAuth token, while the explicitly-
+ *  picked admin had user_connectors but no legacy columns. Connect/
+ *  Test/Preview said success, scribe failed — same user, different
+ *  resolution paths.
+ */
 async function pickTenantScribeUser(clientNumber: string): Promise<number | null> {
-  const admin = await prisma.user.findFirst({
+  // 1. Honour the admin's explicit choice from system_config.
+  const cfg = await prisma.systemConfig.findFirst({
+    where: { clientNumber, key: 'google_drive_org_user_id' },
+    select: { value: true },
+  }).catch(() => null);
+  const explicitId = cfg?.value ? parseInt(cfg.value, 10) : NaN;
+  if (Number.isFinite(explicitId)) {
+    const u = await prisma.user.findFirst({
+      where: { id: explicitId, clientNumber, isActive: true } as any,
+      select: { id: true },
+    }).catch(() => null);
+    if (u) return u.id;
+  }
+
+  // 2/3. Find any tenant user with a connected Google connector via
+  // user_connectors (the modern source of truth). Two reads — the
+  // user_connectors include relation isn't part of UserConnectorSelect
+  // by default, so we resolve userType in a follow-up query.
+  const googleSlugs = ['gmail', 'google_calendar', 'google_tasks', 'google_chat', 'google_drive_personal'];
+  const ucs = await prisma.userConnector.findMany({
     where: {
       clientNumber,
-      isActive: true,
-      userType: { in: ['SA', 'AD'] } as any,
-      integrationProvider: 'google',
-      integrationStatus: 'active',
+      status: 'connected',
+      connectorType: { slug: { in: googleSlugs } },
     } as any,
-    select: { id: true },
-    orderBy: { userType: 'asc' }, // SA before AD
-  }).catch(() => null);
-  if (admin) return admin.id;
-  // Fallback: any active user in the tenant with a Google connector
-  const anyGoogleUser = await prisma.user.findFirst({
-    where: {
-      clientNumber, isActive: true,
-      integrationProvider: 'google', integrationStatus: 'active',
-    } as any,
-    select: { id: true },
-  }).catch(() => null);
-  return anyGoogleUser?.id ?? null;
+    select: { userId: true },
+  }).catch(() => [] as Array<{ userId: number }>);
+  const userIds = Array.from(new Set(ucs.map((u) => u.userId).filter(Boolean) as number[]));
+  if (!userIds.length) return null;
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds }, clientNumber, isActive: true } as any,
+    select: { id: true, userType: true },
+  }).catch(() => [] as Array<{ id: number; userType: string }>);
+  if (!users.length) return null;
+
+  // Prefer admin / super-admin (SA before AD).
+  const ranked = [...users].sort((a, b) => {
+    const rank = (t: string) => t === 'SA' ? 0 : t === 'AD' ? 1 : 2;
+    return rank(a.userType) - rank(b.userType);
+  });
+  return ranked[0].id;
 }
 
 const MAX_FILES = 100;
