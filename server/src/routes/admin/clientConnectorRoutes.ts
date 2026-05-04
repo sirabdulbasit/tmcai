@@ -497,7 +497,13 @@ router.post('/client-connectors/scribe-all', requireAdmin, async (req: Request, 
     for (const def of CATALOG.filter((d) => d.liveInPoc)) {
       const st = await statusFor(clientNumber, def);
       if (!st.scribeable) continue;
-      scribeState.set(skey(clientNumber, def.slug), { status: 'running', startedAt: new Date().toISOString() });
+      // Mark as running and clear any prior error message — the new
+      // run hasn't completed yet, so leaving the stale "Last scribe
+      // failed: …" pill on screen confuses the user.
+      scribeState.set(skey(clientNumber, def.slug), {
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      });
       queued.push(def.slug);
       void (async () => {
         try {

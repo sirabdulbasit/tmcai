@@ -116,6 +116,27 @@ export async function previewTenantFolder(
   const drive = google.drive({ version: 'v3', auth: auth.client });
 
   const out: FolderPreview = { ...empty, byKind: { ...empty.byKind }, sampleNames: [] };
+
+  // Mirror what the scribe does: walk top-level + one level into
+  // each subfolder. Caps match scribeFaclFolder (10 subfolders, 500
+  // total files). Without recursion the preview undercounts heavily
+  // for the typical FACL/{SOPs,Deals,HR,…} layout.
+  const tally = (f: { name?: string | null; mimeType?: string | null }) => {
+    out.total += 1;
+    if (f.mimeType === 'application/vnd.google-apps.folder') { out.subfolders += 1; return; }
+    if (TEXT_EXTRACTABLE_MIMES.has(String(f.mimeType ?? ''))) out.scribeable += 1;
+    switch (f.mimeType) {
+      case 'application/vnd.google-apps.document': out.byKind.docs += 1; break;
+      case 'application/vnd.google-apps.spreadsheet': out.byKind.sheets += 1; break;
+      case 'application/vnd.google-apps.presentation': out.byKind.slides += 1; break;
+      case 'application/pdf': out.byKind.pdfs += 1; break;
+      case 'text/plain': case 'text/markdown': case 'text/csv': out.byKind.text += 1; break;
+      default: out.byKind.other += 1; break;
+    }
+    if (out.sampleNames.length < 5 && f.name) out.sampleNames.push(f.name);
+  };
+
+  const topLevel: any[] = [];
   let pageToken: string | undefined;
   while (out.total < 500) {
     const r = await drive.files.list({
@@ -126,22 +147,26 @@ export async function previewTenantFolder(
     });
     const files = r.data.files ?? [];
     if (files.length === 0) break;
-    for (const f of files) {
-      out.total += 1;
-      if (f.mimeType === 'application/vnd.google-apps.folder') { out.subfolders += 1; continue; }
-      if (TEXT_EXTRACTABLE_MIMES.has(String(f.mimeType ?? ''))) out.scribeable += 1;
-      switch (f.mimeType) {
-        case 'application/vnd.google-apps.document': out.byKind.docs += 1; break;
-        case 'application/vnd.google-apps.spreadsheet': out.byKind.sheets += 1; break;
-        case 'application/vnd.google-apps.presentation': out.byKind.slides += 1; break;
-        case 'application/pdf': out.byKind.pdfs += 1; break;
-        case 'text/plain': case 'text/markdown': case 'text/csv': out.byKind.text += 1; break;
-        default: out.byKind.other += 1; break;
-      }
-      if (out.sampleNames.length < 5 && f.name) out.sampleNames.push(f.name);
-    }
+    for (const f of files) { tally(f); topLevel.push(f); }
     if (!r.data.nextPageToken) break;
     pageToken = r.data.nextPageToken;
+  }
+
+  // One level deep into the first 10 subfolders — same cap the scribe uses.
+  const subFolders = topLevel.filter((f) => f.mimeType === 'application/vnd.google-apps.folder').slice(0, 10);
+  for (const sf of subFolders) {
+    if (out.total >= 500) break;
+    const r = await drive.files.list({
+      q: `'${sf.id}' in parents and trashed=false`,
+      fields: 'files(id,name,mimeType)',
+      pageSize: 50,
+    }).catch(() => null);
+    if (r?.data?.files) {
+      for (const f of r.data.files) {
+        if (out.total >= 500) break;
+        tally(f);
+      }
+    }
   }
   return out;
 }
