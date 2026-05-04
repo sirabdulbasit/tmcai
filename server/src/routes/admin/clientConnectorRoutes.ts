@@ -281,14 +281,29 @@ router.post('/client-connectors/:slug/connect', requireAdmin, async (req: Reques
     }
 
     if (!probeOk) {
-      // Token is stale, missing, or revoked. Redirect to the
-      // user-level Connectors OAuth flow — that's the only place that
-      // can issue a fresh refresh token. After consent they return and
-      // click Connect again on the tenant card.
+      // Token is stale, missing, or revoked. Issue a direct Google
+      // consent URL so the admin lands on Google's screen in one click
+      // rather than being told to go figure out which button to press
+      // on /connectors. Uses the Gmail connector_type as the source —
+      // Google OAuth is single-grant for all configured scopes
+      // (Gmail/Calendar/Drive), so consenting via Gmail also grants
+      // Drive access. After consent the user is redirected back via
+      // /connectors/oauth/callback, lands on /connectors, and clicks
+      // Connect once more on the admin Drive card — probe now passes.
+      let oauthRedirectTo = '/connectors?highlight=gmail';
+      try {
+        const gmailType = await prisma.connectorType.findFirst({ where: { slug: 'gmail' }, select: { id: true } });
+        if (gmailType) {
+          const { getOAuthUrl } = await import('../../services/connectorService');
+          const r = await getOAuthUrl(me.id, gmailType.id);
+          if (r.url) oauthRedirectTo = r.url;
+        }
+      } catch { /* fall back to /connectors page */ }
+
       return res.status(409).json({
         needsOauth: true,
-        message: probeError ?? 'Google authorisation required.',
-        oauthRedirectTo: '/connectors?highlight=gmail',
+        message: probeError ?? 'Google authorisation required — opening Google consent.',
+        oauthRedirectTo,
       });
     }
 
