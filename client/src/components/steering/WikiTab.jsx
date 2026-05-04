@@ -26,6 +26,7 @@ export default function WikiTab() {
   const [notion, setNotion] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+  const [confirmDisconnectNotion, setConfirmDisconnectNotion] = useState(false);
 
   const load = async () => {
     setLoading(true); setErr(null);
@@ -76,8 +77,7 @@ export default function WikiTab() {
     } catch (e) { setErr(e?.response?.data?.error ?? e.message); }
   };
   const disconnectNotion = async () => {
-    if (!window.confirm('Disconnect Notion? Pages stay in database; new writes go to Postgres fallback.')) return;
-    try { await api.post('/connectors/notion/disconnect'); load(); }
+    try { await api.post('/connectors/notion/disconnect'); setConfirmDisconnectNotion(false); load(); }
     catch (e) { setErr(e?.response?.data?.error ?? e.message); }
   };
 
@@ -94,7 +94,17 @@ export default function WikiTab() {
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
               <div><Dot status="up" /> Notion <Pill variant="success">{notion.workspace ?? 'connected'}</Pill></div>
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 4 }}>{Object.keys(notion.databases ?? {}).length} databases</div>
-              <Button variant="ghost" size="xs" onClick={disconnectNotion} style={{ marginTop: 'var(--s-2)' }}>Disconnect</Button>
+              {confirmDisconnectNotion ? (
+                <div style={{ marginTop: 'var(--s-2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>Pages stay; new writes go to Postgres fallback.</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Button variant="danger" size="xs" onClick={disconnectNotion}>Yes, disconnect</Button>
+                    <Button variant="ghost" size="xs" onClick={() => setConfirmDisconnectNotion(false)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="ghost" size="xs" onClick={() => setConfirmDisconnectNotion(true)} style={{ marginTop: 'var(--s-2)' }}>Disconnect</Button>
+              )}
             </div>
           ) : (
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>

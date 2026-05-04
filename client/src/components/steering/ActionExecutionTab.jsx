@@ -11,6 +11,9 @@ export default function ActionExecutionTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
+  // Inline reject prompt — id of the row whose reject form is open + its current text.
+  const [rejectingId, setRejectingId] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const load = async () => {
     setLoading(true); setError(null);
@@ -23,10 +26,10 @@ export default function ActionExecutionTab() {
   useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, []);
 
   const approve = async (id) => { await api.post(`/risk/approve/${id}`, {}); load(); };
-  const reject = async (id) => {
-    const reason = window.prompt('Reason for rejection?', 'not needed');
-    if (reason === null) return;
+  const reject = async (id, reason) => {
     await api.post(`/risk/reject/${id}`, { reason });
+    setRejectingId(null);
+    setRejectReason('');
     load();
   };
   const preview = async (actionId) => {
@@ -78,10 +81,35 @@ export default function ActionExecutionTab() {
                 <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                   {new Date(p.createdAt).toLocaleString()}
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-2)' }}>
-                  <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); approve(p.id); }}>Approve</Button>
-                  <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); reject(p.id); }}>Reject</Button>
-                </div>
+                {rejectingId === p.id ? (
+                  <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 'var(--s-2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={rejectReason}
+                      onChange={(e) => setRejectReason(e.target.value)}
+                      placeholder="Reason for rejection?"
+                      style={{
+                        padding: '6px 10px',
+                        background: 'var(--bg-2)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--r-sm)',
+                        fontSize: 'var(--fs-sm)',
+                        color: 'var(--text)',
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && rejectReason.trim()) reject(p.id, rejectReason.trim()); if (e.key === 'Escape') { setRejectingId(null); setRejectReason(''); } }}
+                    />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <Button variant="danger" size="sm" disabled={!rejectReason.trim()} onClick={() => reject(p.id, rejectReason.trim())}>Confirm reject</Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setRejectingId(null); setRejectReason(''); }}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-2)' }}>
+                    <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); approve(p.id); }}>Approve</Button>
+                    <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); setRejectingId(p.id); setRejectReason('not needed'); }}>Reject</Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

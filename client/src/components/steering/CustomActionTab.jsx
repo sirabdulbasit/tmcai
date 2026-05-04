@@ -10,6 +10,8 @@ export default function CustomActionTab() {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+  const [demotingId, setDemotingId] = useState(null);
+  const [demoteReason, setDemoteReason] = useState('');
   const [form, setForm] = useState({
     name: '',
     archetype: 'reply_needed',
@@ -44,10 +46,13 @@ export default function CustomActionTab() {
     try { await api.post(`/shadow/rules/${id}/promote`, { targetMode: to }); load(); }
     catch (e) { setErr(e?.response?.data?.error ?? e.message); }
   };
-  const demote = async (id) => {
-    const reason = window.prompt('Reason?', 'false positives');
-    if (reason === null) return;
-    try { await api.post(`/shadow/rules/${id}/demote`, { reason }); load(); }
+  const demote = async (id, reason) => {
+    try {
+      await api.post(`/shadow/rules/${id}/demote`, { reason });
+      setDemotingId(null);
+      setDemoteReason('');
+      load();
+    }
     catch (e) { setErr(e?.response?.data?.error ?? e.message); }
   };
 
@@ -109,7 +114,25 @@ export default function CustomActionTab() {
                 </div>
                 {r.mode === 'DRAFT' && <Button variant="secondary" size="sm" onClick={() => promote(r.id, 'SHADOW')}>→ SHADOW</Button>}
                 {r.mode === 'SHADOW' && <Button variant="primary" size="sm" onClick={() => promote(r.id, 'ACTIVE')}>→ ACTIVE</Button>}
-                {r.mode && r.mode !== 'DRAFT' && <Button variant="danger" size="sm" onClick={() => demote(r.id)}>Demote</Button>}
+                {r.mode && r.mode !== 'DRAFT' && (
+                  demotingId === r.id ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <input
+                        type="text"
+                        autoFocus
+                        value={demoteReason}
+                        onChange={(e) => setDemoteReason(e.target.value)}
+                        placeholder="Reason?"
+                        style={{ padding: '4px 8px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-sm)', color: 'var(--text)', width: 180 }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && demoteReason.trim()) demote(r.id, demoteReason.trim()); if (e.key === 'Escape') { setDemotingId(null); setDemoteReason(''); } }}
+                      />
+                      <Button variant="danger" size="sm" disabled={!demoteReason.trim()} onClick={() => demote(r.id, demoteReason.trim())}>Confirm</Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setDemotingId(null); setDemoteReason(''); }}>Cancel</Button>
+                    </span>
+                  ) : (
+                    <Button variant="danger" size="sm" onClick={() => { setDemotingId(r.id); setDemoteReason('false positives'); }}>Demote</Button>
+                  )
+                )}
                 <Button variant="ghost" size="sm">⋯</Button>
               </div>
             </Card>

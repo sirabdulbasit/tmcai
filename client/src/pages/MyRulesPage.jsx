@@ -149,6 +149,8 @@ function RuleRow({ rule, onChange }) {
   const [pickAction, setPickAction] = useState(rule.action);
   const [delegatee, setDelegatee] = useState(null);       // { userId?, email, name }
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState(null);
 
   const call = async (fn) => { setBusy(true); try { await fn(); onChange(); } catch {} finally { setBusy(false); } };
 
@@ -164,7 +166,7 @@ function RuleRow({ rule, onChange }) {
       });
       setEditOpen(false);
       onChange();
-    } catch (e) { alert(e?.response?.data?.error ?? 'Failed'); }
+    } catch (e) { setError(e?.response?.data?.error ?? 'Failed'); }
     finally { setBusy(false); }
   };
 
@@ -192,12 +194,37 @@ function RuleRow({ rule, onChange }) {
           {rule.mode === 'ACTIVE' && <Button variant="secondary" size="sm" disabled={busy} onClick={() => call(() => api.post(`/brief/rules/${rule.id}/freeze`))}>Freeze</Button>}
           {rule.mode === 'FROZEN' && <Button variant="primary" size="sm" disabled={busy} onClick={() => call(() => api.post(`/brief/rules/${rule.id}/unfreeze`))}>Unfreeze</Button>}
           {rule.mode === 'SHADOW' && <Button variant="primary" size="sm" disabled={busy} onClick={() => call(() => api.post(`/shadow/rules/${rule.id}/promote`, { targetMode: 'ACTIVE' }))}>Activate</Button>}
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => {
-            if (!window.confirm('Delete this rule permanently?')) return;
-            call(() => api.delete(`/brief/rules/${rule.id}`));
-          }}>Delete</Button>
+          {confirmDelete ? (
+            <>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>Delete permanently?</span>
+              <Button variant="danger" size="sm" disabled={busy} onClick={() => {
+                call(() => api.delete(`/brief/rules/${rule.id}`));
+                setConfirmDelete(false);
+              }}>Yes, delete</Button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)}>Delete</Button>
+          )}
         </div>
       </div>
+      {error && (
+        <div style={{
+          marginTop: 6, padding: '6px 10px',
+          fontSize: 'var(--fs-xs)', color: '#ef4444',
+          background: 'rgba(239,68,68,0.08)',
+          border: '1px solid rgba(239,68,68,0.3)',
+          borderRadius: 'var(--r-sm)',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+        }}>
+          <span>✗ {error}</span>
+          <button
+            onClick={() => setError(null)}
+            style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}
+            aria-label="Dismiss"
+          >×</button>
+        </div>
+      )}
 
       {editOpen && (
         <div style={{ marginTop: 'var(--s-3)', padding: 'var(--s-3)', background: 'var(--bg-2)', borderRadius: 'var(--r-sm)' }}>
@@ -241,6 +268,9 @@ function DecisionsTab() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ itemType: '', action: '', q: '', since: sinceDays(7), source: 'mine' });
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [rowError, setRowError] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -297,19 +327,50 @@ function DecisionsTab() {
                   {new Date(d.createdAt).toLocaleString()}{d.dedupHash && ` · hash ${d.dedupHash.slice(0, 8)}`}{d.overrideReason && ` · override: ${d.overrideReason}`}
                 </div>
               </div>
-              <Button
-                variant="ghost" size="sm"
-                onClick={async () => {
-                  if (!window.confirm(
-                    `Delete this decision log?\n\nBrain's learned patterns that relied on this decision will lose 1 point of evidence. This can't be undone.\n\nRow: ${d.outputSummary || d.actionTaken || d.id}`
-                  )) return;
-                  try {
-                    await api.delete(`/brief/decisions/${d.id}`, { data: { confirm: true } });
-                    load();
-                  } catch (e) { alert(e?.response?.data?.error ?? 'Failed'); }
-                }}
-              >Delete</Button>
+              {confirmDeleteId === d.id ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                    Delete decision log? Brain loses 1 evidence point.
+                  </span>
+                  <Button
+                    variant="danger" size="sm"
+                    disabled={deletingId === d.id}
+                    onClick={async () => {
+                      setDeletingId(d.id);
+                      try {
+                        await api.delete(`/brief/decisions/${d.id}`, { data: { confirm: true } });
+                        setConfirmDeleteId(null);
+                        load();
+                      } catch (e) {
+                        setRowError({ id: d.id, message: e?.response?.data?.error ?? 'Failed to delete' });
+                      } finally {
+                        setDeletingId(null);
+                      }
+                    }}
+                  >{deletingId === d.id ? 'Deleting…' : 'Yes, delete'}</Button>
+                  <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
+                </div>
+              ) : (
+                <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteId(d.id)}>Delete</Button>
+              )}
             </div>
+            {rowError?.id === d.id && (
+              <div style={{
+                marginTop: 6, padding: '6px 10px',
+                fontSize: 'var(--fs-xs)', color: '#ef4444',
+                background: 'rgba(239,68,68,0.08)',
+                border: '1px solid rgba(239,68,68,0.3)',
+                borderRadius: 'var(--r-sm)',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+              }}>
+                <span>✗ {rowError.message}</span>
+                <button
+                  onClick={() => setRowError(null)}
+                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}
+                  aria-label="Dismiss"
+                >×</button>
+              </div>
+            )}
           </Card>
         ))}
     </>
@@ -322,6 +383,11 @@ function DelegationsTab() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [f, setF] = useState({ delegatee: '', itemType: '', q: '', since: sinceDays(30), source: 'mine' });
+  // Inline-confirm state for per-row deletes — no browser dialogs.
+  // Tracks which row's "Delete" was clicked once; second click confirms.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [rowError, setRowError] = useState(null); // { id, message }
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -380,19 +446,58 @@ function DelegationsTab() {
                   {new Date(d.createdAt).toLocaleString()} {d.senderEmail && ` · from ${d.senderEmail}`}
                 </div>
               </div>
-              <Button
-                variant="ghost" size="sm"
-                onClick={async () => {
-                  if (!window.confirm(
-                    `Delete this delegation record?\n\nBrain's delegatee-frequency pattern for this person will lose 1 point. Not undoable.\n\nDelegated: ${d.delegateeName ?? d.delegateeEmail} · ${d.subject ?? '(no subject)'}`
-                  )) return;
-                  try {
-                    await api.delete(`/brief/delegations/${d.id}`, { data: { confirm: true } });
-                    load();
-                  } catch (e) { alert(e?.response?.data?.error ?? 'Failed'); }
-                }}
-              >Delete</Button>
+              {confirmDeleteId === d.id ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                    Confirm delete? Brain will lose 1 frequency point.
+                  </span>
+                  <Button
+                    variant="danger" size="sm"
+                    disabled={deletingId === d.id}
+                    onClick={async () => {
+                      setDeletingId(d.id);
+                      try {
+                        await api.delete(`/brief/delegations/${d.id}`, { data: { confirm: true } });
+                        setConfirmDeleteId(null);
+                        load();
+                      } catch (e) {
+                        setRowError({ id: d.id, message: e?.response?.data?.error ?? 'Failed to delete' });
+                      } finally {
+                        setDeletingId(null);
+                      }
+                    }}
+                  >{deletingId === d.id ? 'Deleting…' : 'Yes, delete'}</Button>
+                  <Button
+                    variant="ghost" size="sm"
+                    onClick={() => setConfirmDeleteId(null)}
+                  >Cancel</Button>
+                </div>
+              ) : (
+                <Button
+                  variant="ghost" size="sm"
+                  onClick={() => setConfirmDeleteId(d.id)}
+                >Delete</Button>
+              )}
             </div>
+            {rowError?.id === d.id && (
+              <div style={{
+                marginTop: 6,
+                padding: '6px 10px',
+                fontSize: 'var(--fs-xs)',
+                color: '#ef4444',
+                background: 'rgba(239,68,68,0.08)',
+                border: '1px solid rgba(239,68,68,0.3)',
+                borderRadius: 'var(--r-sm)',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+              }}>
+                <span>✗ {rowError.message}</span>
+                <button
+                  onClick={() => setRowError(null)}
+                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}
+                  aria-label="Dismiss"
+                >×</button>
+              </div>
+            )}
           </Card>
         ))}
     </>
@@ -407,6 +512,7 @@ function DangerZone({ label, count, confirmPhrase, explainer, onConfirm }) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
 
   if (count === 0) return null;
 
@@ -453,7 +559,7 @@ function DangerZone({ label, count, confirmPhrase, explainer, onConfirm }) {
               onClick={async () => {
                 if (typed !== confirmPhrase) return;
                 setBusy(true);
-                try { await onConfirm(); } catch (e) { alert(e?.response?.data?.error ?? 'Failed'); }
+                try { await onConfirm(); setError(null); } catch (e) { setError(e?.response?.data?.error ?? 'Failed'); }
                 finally { setBusy(false); setOpen(false); setTyped(''); }
               }}
               disabled={typed !== confirmPhrase || busy}
@@ -468,6 +574,23 @@ function DangerZone({ label, count, confirmPhrase, explainer, onConfirm }) {
               {busy ? 'Deleting…' : 'Delete all'}
             </button>
           </div>
+          {error && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px',
+              fontSize: 'var(--fs-xs)', color: '#ef4444',
+              background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: 'var(--r-sm)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            }}>
+              <span>✗ {error}</span>
+              <button
+                onClick={() => setError(null)}
+                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -487,6 +610,8 @@ function PromptsTab() {
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(null); // { id?, text, scope, isActive }
   const [loading, setLoading] = useState(true);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [saveError, setSaveError] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -502,8 +627,9 @@ function PromptsTab() {
       if (editing.id) await api.put(`/brief/prompts/${editing.id}`, body);
       else await api.post('/brief/prompts', body);
       setEditing(null);
+      setSaveError(null);
       load();
-    } catch (e) { alert(e?.response?.data?.error ?? 'Failed'); }
+    } catch (e) { setSaveError(e?.response?.data?.error ?? 'Failed to save'); }
   };
 
   const toggle = async (row) => {
@@ -512,8 +638,8 @@ function PromptsTab() {
   };
 
   const remove = async (row) => {
-    if (!window.confirm('Delete this prompt?')) return;
     await api.delete(`/brief/prompts/${row.id}`);
+    setConfirmDeleteId(null);
     load();
   };
 
@@ -560,7 +686,14 @@ function PromptsTab() {
               <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'flex-start' }}>
                 <Button variant="ghost" size="sm" onClick={() => setEditing({ id: p.id, text: p.text, scope: p.scope, isActive: p.isActive })}>Edit</Button>
                 <Button variant="ghost" size="sm" onClick={() => toggle(p)}>{p.isActive ? 'Pause' : 'Resume'}</Button>
-                <Button variant="ghost" size="sm" onClick={() => remove(p)}>Delete</Button>
+                {confirmDeleteId === p.id ? (
+                  <>
+                    <Button variant="danger" size="sm" onClick={() => remove(p)}>Yes, delete</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
+                  </>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteId(p.id)}>Delete</Button>
+                )}
               </div>
             </div>
           </Card>
@@ -592,9 +725,26 @@ function PromptsTab() {
               Active
             </label>
             <div style={{ flex: 1 }} />
-            <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setEditing(null); setSaveError(null); }}>Cancel</Button>
             <Button variant="primary" size="sm" onClick={save} disabled={!editing.text.trim()}>Save</Button>
           </div>
+          {saveError && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px',
+              fontSize: 'var(--fs-xs)', color: '#ef4444',
+              background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: 'var(--r-sm)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            }}>
+              <span>✗ {saveError}</span>
+              <button
+                onClick={() => setSaveError(null)}
+                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
         </Card>
       )}
     </>

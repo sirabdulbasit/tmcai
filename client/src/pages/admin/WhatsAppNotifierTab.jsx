@@ -15,6 +15,7 @@ export default function WhatsAppNotifierTab() {
   });
   const [test, setTest] = useState({ phone: '', msg: 'MyOS notifier test — ignore', userId: '' });
   const [msg, setMsg] = useState(null);
+  const [confirmDisable, setConfirmDisable] = useState(false);
 
   const load = async () => {
     setState({ loading: true });
@@ -109,8 +110,8 @@ export default function WhatsAppNotifierTab() {
     } catch (e) { setMsg({ ok: false, text: e?.response?.data?.error ?? e.message }); }
   };
   const disable = async () => {
-    if (!window.confirm('Disable the tenant WhatsApp Notifier? Brain will fall back to legacy per-user adapter.')) return;
     await api.post('/admin/whatsapp-notifier/disable');
+    setConfirmDisable(false);
     load();
   };
 
@@ -136,7 +137,15 @@ export default function WhatsAppNotifierTab() {
             </div>
             <div style={{ flex: 1 }} />
             <Button variant="secondary" size="sm" onClick={verify}>Verify</Button>
-            <Button variant="danger" size="sm" onClick={disable}>Disable</Button>
+            {confirmDisable ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>Brain will fall back to legacy per-user adapter.</span>
+                <Button variant="danger" size="sm" onClick={disable}>Yes, disable</Button>
+                <Button variant="ghost" size="sm" onClick={() => setConfirmDisable(false)}>Cancel</Button>
+              </span>
+            ) : (
+              <Button variant="danger" size="sm" onClick={() => setConfirmDisable(true)}>Disable</Button>
+            )}
           </div>
         </Card>
       ) : (

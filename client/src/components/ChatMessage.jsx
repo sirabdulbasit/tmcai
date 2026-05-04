@@ -134,25 +134,62 @@ function FeedbackButtons({ query, response, conversationId }) {
 function SaveToWikiButton({ query, response }) {
   const [state, setState] = useState('idle');
   const [pageType, setPageType] = useState('concept');
-  const save = async () => {
-    const titleSeed = (query || response).slice(0, 80).replace(/\n/g, ' ').trim();
-    const defaultTitle = pageType === 'decision'
-      ? `Decision — ${new Date().toISOString().slice(0, 10)} — ${titleSeed}`
-      : `Concept — ${titleSeed}`;
-    const title = window.prompt('Wiki page title', defaultTitle);
-    if (!title) return;
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [title, setTitle] = useState('');
+
+  const titleSeed = () => (query || response).slice(0, 80).replace(/\n/g, ' ').trim();
+  const buildDefaultTitle = (type) => type === 'decision'
+    ? `Decision — ${new Date().toISOString().slice(0, 10)} — ${titleSeed()}`
+    : `Concept — ${titleSeed()}`;
+
+  const startSave = () => {
+    setTitle(buildDefaultTitle(pageType));
+    setTitleEditing(true);
+  };
+
+  const confirmSave = async () => {
+    const finalTitle = title.trim();
+    if (!finalTitle) return;
+    setTitleEditing(false);
     setState('saving');
     try {
       const body = [
-        `# ${title}`, '', `> Saved from chat: "${(query || '').slice(0, 120)}"`, '',
+        `# ${finalTitle}`, '', `> Saved from chat: "${(query || '').slice(0, 120)}"`, '',
         '## Key facts',
         ...response.split('\n').slice(0, 20).filter(Boolean).map((l) => `- ${l.slice(0, 220)}`),
         '', '## Change log', `- ${new Date().toISOString().slice(0, 10)}: Saved from chat answer`,
       ].join('\n');
-      await api.post('/wiki/pages', { pageType, title, body, confidence: 0.7, actor: 'chat-save' });
+      await api.post('/wiki/pages', { pageType, title: finalTitle, body, confidence: 0.7, actor: 'chat-save' });
       setState('saved');
     } catch { setState('error'); }
   };
+
+  if (titleEditing) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <input
+          type="text"
+          autoFocus
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') confirmSave(); if (e.key === 'Escape') setTitleEditing(false); }}
+          placeholder="Wiki page title"
+          style={{
+            background: 'var(--bg-2)', color: 'var(--text)',
+            border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+            padding: '2px 6px', fontSize: 'var(--fs-xs)', minWidth: 280,
+          }}
+        />
+        <button type="button" onClick={confirmSave} disabled={!title.trim()}
+                className="msg-action-chip"
+                style={{ margin: 0, padding: '2px var(--s-2)' }}>Save</button>
+        <button type="button" onClick={() => setTitleEditing(false)}
+                className="msg-action-chip"
+                style={{ margin: 0, padding: '2px var(--s-2)', color: 'var(--text-muted)' }}>Cancel</button>
+      </span>
+    );
+  }
+
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       <select value={pageType} onChange={(e) => setPageType(e.target.value)} disabled={state !== 'idle'}
@@ -161,7 +198,7 @@ function SaveToWikiButton({ query, response }) {
         <option value="decision">Decision</option>
         <option value="pattern">Pattern</option>
       </select>
-      <button type="button" onClick={save} disabled={state !== 'idle'}
+      <button type="button" onClick={startSave} disabled={state !== 'idle'}
               className="msg-action-chip"
               style={{ margin: 0, padding: '2px var(--s-2)', background: state === 'saved' ? 'var(--success-dim)' : 'transparent', color: state === 'saved' ? 'var(--success)' : 'var(--text-muted)' }}>
         <Icon name="save" size={12} />
