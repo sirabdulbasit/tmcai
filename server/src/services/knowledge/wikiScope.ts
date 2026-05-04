@@ -15,20 +15,30 @@
  * for raw SQL paths.
  */
 
-/** Page types that default to tenant-scope when written. */
+/**
+ * Page types that default to tenant scope when no explicit scope is
+ * passed by the writer. Source-based rule:
+ *
+ *   - User connector ingest (Gmail, Calendar, WhatsApp Personal) → user
+ *   - Tenant connector ingest (FACL Drive, future tenant CRM/ERP)   → tenant
+ *   - System tenant chronology / catalog                            → tenant
+ *
+ * Most page types are ambiguous (entity_person, attachment_doc, project,
+ * decision, etc.) — they could be created from EITHER kind of connector.
+ * Default them to 'user' (privacy-safe) and require the tenant-source
+ * writer to pass `scope: 'tenant'` explicitly.
+ *
+ * The narrow set below captures only page types that are unambiguously
+ * tenant-by-construction:
+ *
+ *   - org_doc        — FACL folder content (tenant connector by definition)
+ *   - tenant_log     — system-maintained tenant chronology
+ *   - tenant_index   — system-maintained planner catalog
+ */
 export const TENANT_SCOPED_PAGE_TYPES = new Set<string>([
   'org_doc',
-  'policy',
-  'project',
-  'decision',
-  'pattern',
-  'entity_person',
-  'entity',
-  'topic',
-  'attachment_doc',
-  'concept',
-  'meeting_minutes',
-  'plan',
+  'tenant_log',
+  'tenant_index',
 ]);
 
 export function defaultScopeForPageType(pageType: string): 'user' | 'tenant' {

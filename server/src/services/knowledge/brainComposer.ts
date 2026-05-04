@@ -60,15 +60,17 @@ export async function openPagesForPlan(
   //    able to open them regardless of which user owns the row. Other
   //    types stay user-scoped.
   if (plan.openPageIds.length > 0) {
+    // Visibility: tenant-scoped pages open for any user in the tenant;
+    // user-scoped only for the owner. See services/knowledge/wikiScope.ts.
     const pages = await prisma.wikiPage.findMany({
       where: {
         id: { in: plan.openPageIds },
         clientNumber,
         OR: [
-          { userId },
-          { pageType: { in: TENANT_SHARED_PAGE_TYPES as unknown as string[] } },
+          { scope: 'tenant' },
+          { scope: 'user', userId },
         ],
-      },
+      } as any,
       select: { id: true, title: true, pageType: true, bodyMarkdown: true },
     }).catch(() => [] as any[]);
     for (const p of pages) {
@@ -370,7 +372,9 @@ export async function openPagesForPlan(
         if (seen.has(l.id)) continue;
         // Respect multi-tenancy: only surface user-scoped pages that
         // belong to this user (or tenant-shared types).
-        if (!['org_doc','policy','project','decision','pattern','attachment_doc','entity_person','topic'].includes(l.pageType) && l.userId !== userId) continue;
+        // Visibility: tenant-scoped pages OK for anyone; user-scoped
+        // pages must belong to this user. Driven by wiki_pages.scope.
+        if (l.scope !== 'tenant' && l.userId !== userId) continue;
         const page = await prisma.wikiPage.findUnique({
           where: { id: l.id },
           select: { id: true, title: true, pageType: true, bodyMarkdown: true },
@@ -428,7 +432,9 @@ export async function openPagesForPlan(
         const linked = await getPagesLinkedToEntity(clientNumber, e.id);
         for (const l of linked) {
           if (seen.has(l.id)) continue;
-          if (!['org_doc','policy','project','decision','pattern','attachment_doc','entity_person','topic'].includes(l.pageType) && l.userId !== userId) continue;
+          // Visibility: tenant-scoped pages OK for anyone; user-scoped
+        // pages must belong to this user. Driven by wiki_pages.scope.
+        if (l.scope !== 'tenant' && l.userId !== userId) continue;
           const page = await prisma.wikiPage.findUnique({
             where: { id: l.id },
             select: { id: true, title: true, pageType: true, bodyMarkdown: true },

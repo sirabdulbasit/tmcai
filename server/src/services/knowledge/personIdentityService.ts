@@ -145,9 +145,9 @@ export async function resolvePersonByPhone(phone: string, opts: ResolveOptions):
 export async function getPagesLinkedToEntity(
   clientNumber: string,
   entityId: string,
-): Promise<Array<{ id: string; pageType: string; title: string; userId: number }>> {
+): Promise<Array<{ id: string; pageType: string; title: string; userId: number; scope: string }>> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT id, page_type AS "pageType", title, user_id AS "userId"
+    `SELECT id, page_type AS "pageType", title, user_id AS "userId", scope
        FROM wiki_pages
       WHERE client_number = $1
         AND metadata->>'entityId' = $2

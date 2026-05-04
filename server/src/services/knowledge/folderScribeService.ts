@@ -358,6 +358,10 @@ export async function scribeFaclFolder(
             clientNumber, userId, pageType: 'org_doc', title: pageTitle,
             storage: 'postgres', bodyMarkdown: body, metadata: nextMeta as any,
             lastUpdatedBy: 'facl_scribe', status: 'active',
+            // Explicit — FACL is a tenant connector, every page it
+            // produces must be visible to every user in the tenant.
+            // Don't rely on the page-type heuristic alone.
+            scope: 'tenant',
           } as any,
         });
         scribePageId = created.id;
