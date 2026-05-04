@@ -416,8 +416,17 @@ export default function DayBriefPage() {
 
       {/* ── Volume strip ────────────────────────────────────── */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
-        <MiniStat icon="mail"           label="Emails unread" big={emailsUnread}        sub={`${emailsRecv} today`} />
-        <MiniStat icon="message-circle" label="WhatsApp"       big={volume?.whatsappHandled ?? 0} sub={`${volume?.whatsappNeedYou ?? 0} need you`} />
+        <MiniStat icon="mail"           label="Emails unread"   big={emailsUnread}        sub={emailsRecv > 0 ? `${emailsRecv} today · live` : 'live'} />
+        <MiniStat
+          icon="message-circle"
+          label="WhatsApp today"
+          big={volume?.whatsappHandled ?? 0}
+          sub={
+            (volume?.whatsappHandled ?? 0) > 0
+              ? `${volume?.whatsappNeedYou ?? 0} need you`
+              : 'via Brain connector'
+          }
+        />
         <MiniStat icon="check-square"   label="Tasks"          big={tasksOpen}           sub={tasksDue > 0 ? `${tasksDue} due today` : 'open items'} />
         <MiniStat icon="calendar"       label="Meetings today" big={meetings}            sub={meetings > 0 ? 'in your calendar' : 'nothing scheduled'} />
         {autonomyPct !== null && (

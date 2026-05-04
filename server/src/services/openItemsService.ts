@@ -44,6 +44,39 @@ export interface UpdateOpenItemInput {
 // ─── CRUD ─────────────────────────────────────────────────────────
 
 export async function createItem(userId: number, clientNumber: string, input: CreateOpenItemInput) {
+  // Dedup gate. Without this, every email/feed_event spawns a fresh
+  // row even when an open item for the SAME thread/sender/subject is
+  // already on the user's plate — that's how local accumulated 2,460
+  // open items, 71 critical. If a NEW or TRIAGED item already exists
+  // with the same sourceRef (or same title for ad-hoc items), return
+  // the existing row instead of creating a duplicate.
+  if (input.sourceRef || input.title) {
+    const dedupWhere: any = {
+      clientNumber, userId,
+      status: { in: ['NEW', 'TRIAGED'] as any },
+    };
+    if (input.sourceRef) {
+      dedupWhere.sourceRef = input.sourceRef;
+    } else {
+      dedupWhere.title = input.title;
+      dedupWhere.type = input.type;
+    }
+    const existing = await prisma.openItem.findFirst({ where: dedupWhere }).catch(() => null);
+    if (existing) {
+      // Bump priority if the new signal is stronger; otherwise leave alone.
+      const order = { critical: 4, high: 3, medium: 2, low: 1 } as Record<string, number>;
+      const cur = order[String(existing.priority).toLowerCase()] ?? 2;
+      const next = order[String(input.priority ?? 'medium').toLowerCase()] ?? 2;
+      if (next > cur) {
+        await prisma.openItem.update({
+          where: { id: existing.id },
+          data: { priority: input.priority },
+        }).catch(() => {});
+      }
+      return existing;
+    }
+  }
+
   const item = await prisma.openItem.create({
     data: {
       title: input.title,

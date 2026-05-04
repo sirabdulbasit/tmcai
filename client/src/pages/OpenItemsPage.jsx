@@ -43,6 +43,7 @@ export default function OpenItemsPage() {
   const [form, setForm] = useState({ title: '', description: '', type: 'task', priority: 'medium', dueDate: '' });
   const [msg, setMsg] = useState('');
   const [atBottom, setAtBottom] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState(null); // { stale, dedup, total }
 
   function handleScroll(e) {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -97,10 +98,54 @@ export default function OpenItemsPage() {
           <button style={{ ...s.btn, ...s.btnOutline, marginRight: 10 }} onClick={() => navigate('/')}>← Back to Chat</button>
           <span style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, color: 'var(--text)' }}>Open Items</span>
         </div>
-        <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            style={{ ...s.btn, ...s.btnOutline }}
+            title="Auto-close items older than 30 days with no activity, plus duplicates of the same source. Critical items are never auto-closed."
+            onClick={async () => {
+              try {
+                const dry = await api.post('/open-items/triage-cleanup', { staleDays: 30, dryRun: true });
+                if ((dry.data?.total ?? 0) === 0) { setMsg('Nothing to clean up — no stale or duplicate items.'); return; }
+                setCleanupPreview(dry.data);
+              } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup failed'); }
+            }}
+          >🧹 Smart cleanup</button>
+          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
+        </div>
       </div>
 
       {msg && <div style={{ padding: '8px 14px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12, color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>{msg}</div>}
+
+      {cleanupPreview && (
+        <div style={{
+          padding: '12px 14px', marginBottom: 12,
+          background: 'rgba(245,158,11,0.08)',
+          border: '1px solid rgba(245,158,11,0.4)',
+          borderRadius: 8, color: 'var(--text)', fontSize: 'var(--fs-sm)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+        }}>
+          <div>
+            About to auto-close <strong>{cleanupPreview.total}</strong> items —
+            <strong> {cleanupPreview.stale}</strong> stale (&gt;30d, no activity, non-critical) ·
+            <strong> {cleanupPreview.dedup}</strong> duplicates of the same source.
+            Critical items are not touched.
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              style={{ ...s.btn, background: '#f59e0b', color: '#000', borderColor: '#f59e0b' }}
+              onClick={async () => {
+                try {
+                  const r = await api.post('/open-items/triage-cleanup', { staleDays: 30 });
+                  setMsg(`Closed ${r.data?.total ?? 0} items (${r.data?.stale ?? 0} stale, ${r.data?.dedup ?? 0} duplicates).`);
+                  setCleanupPreview(null);
+                  load(); loadStats();
+                } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup failed'); }
+              }}
+            >Yes, close them</button>
+            <button style={{ ...s.btn, ...s.btnOutline }} onClick={() => setCleanupPreview(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       {stats && (

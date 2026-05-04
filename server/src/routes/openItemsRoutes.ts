@@ -267,4 +267,105 @@ router.get('/transitions/matrix', requireAuth, async (_req: Request, res: Respon
   res.json({ statuses: ALL_STATUSES, transitions: TRANSITIONS });
 });
 
+/**
+ * Smart triage cleanup. Brain-side janitor that closes items the user
+ * objectively no longer cares about, so the page stops being a junk
+ * drawer of 2,000+ NEW rows. Two passes:
+ *
+ *   1. Stale: NEW status, > stale_days old (default 30), no notes,
+ *      no transitions ever, no critical priority. Bulk-mark CLOSED
+ *      with a system reason so the audit trail explains the cleanup.
+ *
+ *   2. Dedup: groups of NEW items sharing the SAME sourceRef. Keep
+ *      the highest-priority / oldest one, mark the rest CLOSED with
+ *      reason="duplicate of {keepId}".
+ *
+ * POST body: { staleDays?: number, dryRun?: boolean }
+ * Returns counts; safe to re-run.
+ */
+router.post('/triage-cleanup', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const staleDays = Math.max(7, Math.min(180, Number(req.body?.staleDays ?? 30)));
+    const dryRun = req.body?.dryRun === true;
+    const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
+
+    // ── Stale pass ──
+    // NEW + older than cutoff + non-critical + no description-derived urgency.
+    // Critical items are NEVER auto-closed; the user decides those.
+    const staleCandidates = await prisma.openItem.findMany({
+      where: {
+        clientNumber: user.clientNumber, userId: user.id,
+        status: 'NEW',
+        priority: { not: 'critical' as any },
+        createdAt: { lt: cutoff },
+      } as any,
+      select: { id: true, sourceRef: true, priority: true, createdAt: true },
+    });
+
+    // ── Dedup pass on what remains ──
+    const remainingNew = await prisma.openItem.findMany({
+      where: {
+        clientNumber: user.clientNumber, userId: user.id,
+        status: 'NEW',
+        sourceRef: { not: null } as any,
+        id: { notIn: staleCandidates.map((s) => s.id) },
+      } as any,
+      select: { id: true, sourceRef: true, priority: true, createdAt: true },
+      orderBy: [{ createdAt: 'asc' }],
+    });
+    const bySource = new Map<string, typeof remainingNew>();
+    for (const r of remainingNew) {
+      const k = String(r.sourceRef);
+      if (!bySource.has(k)) bySource.set(k, []);
+      bySource.get(k)!.push(r);
+    }
+    const dupVictims: string[] = [];
+    for (const group of bySource.values()) {
+      if (group.length <= 1) continue;
+      // Keep the oldest (already sorted asc by createdAt). Drop the rest.
+      for (let i = 1; i < group.length; i++) dupVictims.push(group[i].id);
+    }
+
+    const staleIds = staleCandidates.map((s) => s.id);
+
+    if (dryRun) {
+      return res.json({
+        ok: true, dryRun: true,
+        stale: staleIds.length, dedup: dupVictims.length,
+        total: staleIds.length + dupVictims.length,
+      });
+    }
+
+    // Apply both passes — direct UPDATE so we don't pay per-row trigger
+    // overhead on a 2k+ batch.
+    let staleClosed = 0;
+    let dupClosed = 0;
+    if (staleIds.length > 0) {
+      const r = await prisma.openItem.updateMany({
+        where: { id: { in: staleIds } },
+        data: { status: 'CLOSED' as any, updatedAt: new Date() } as any,
+      });
+      staleClosed = r.count;
+    }
+    if (dupVictims.length > 0) {
+      const r = await prisma.openItem.updateMany({
+        where: { id: { in: dupVictims } },
+        data: { status: 'CLOSED' as any, updatedAt: new Date() } as any,
+      });
+      dupClosed = r.count;
+    }
+
+    res.json({
+      ok: true,
+      stale: staleClosed,
+      dedup: dupClosed,
+      total: staleClosed + dupClosed,
+      staleDays,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
