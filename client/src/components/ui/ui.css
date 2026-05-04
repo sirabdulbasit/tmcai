@@ -258,19 +258,41 @@
   position: absolute;
   left: calc(100% + 12px);
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateX(-4px);
   background: var(--bg-3);
+  color: var(--text);
   border: 1px solid var(--border);
-  padding: 4px var(--s-2);
+  padding: 6px 10px;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--t-fast);
+  transition: opacity 140ms ease, transform 140ms ease;
   z-index: var(--z-dropdown);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
 }
-.ui-rail-btn:hover .ui-rail-tooltip { opacity: 1; }
+/* Arrow callout pointing back at the icon */
+.ui-rail-tooltip::before {
+  content: '';
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-right-color: var(--bg-3);
+  filter: drop-shadow(-1px 0 0 var(--border));
+}
+.ui-rail-btn:hover .ui-rail-tooltip,
+.ui-rail-btn:focus-visible .ui-rail-tooltip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+/* Subtle rail-button hover lift to feel tactile */
+.ui-rail-btn:hover { transform: translateX(1px); }
+.ui-rail-btn { transition: background var(--t-fast), color var(--t-fast), transform var(--t-fast); }
 
 /* ─── TopBar ─── */
 .ui-topbar {

@@ -39,7 +39,7 @@ const TABS = [
   { key: 'rules',     label: 'My Rules',        icon: 'zap',      group: 'work',      render: () => <MyRulesPage /> },
   { key: 'wiki',      label: 'Wiki',            icon: 'book',     group: 'knowledge', render: () => <WikiPage /> },
   { key: 'connectors',label: 'Connectors',      icon: 'external', group: 'knowledge', render: () => <ConnectorsPage /> },
-  { key: 'custom',    label: 'Custom Actions',  icon: 'settings', group: 'knowledge', render: () => <CustomActionTab /> },
+  { key: 'custom',    label: 'Custom Actions',  icon: 'wand',     group: 'knowledge', render: () => <CustomActionTab /> },
   { key: 'health',    label: 'Health Check',    icon: 'pulse',    group: 'ops',       render: () => <HealthCheckTab /> },
   { key: 'settings',  label: 'Settings',        icon: 'user',     group: 'ops',       render: () => <SettingsPage /> },
 ];

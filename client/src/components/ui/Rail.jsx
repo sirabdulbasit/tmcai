@@ -34,6 +34,10 @@ export function RailSpacer() {
 }
 
 export function RailButton({ active = false, label, onClick, children }) {
+  // Note: no `title` attribute — that triggers the browser's native
+  // OS-styled tooltip on top of our themed one (~1s after the styled
+  // one already slid in), which looks like two tooltips. We rely on
+  // the CSS .ui-rail-tooltip span for the visual and aria-label for a11y.
   return (
     <button
       type="button"
@@ -41,7 +45,6 @@ export function RailButton({ active = false, label, onClick, children }) {
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
-      title={label}
     >
       {children}
       {label && <span className="ui-rail-tooltip">{label}</span>}
