@@ -86,6 +86,34 @@ const scribeState = new Map<string, {
 }>();
 const skey = (cn: string, slug: string) => `${cn}::${slug}`;
 
+/**
+ * Map raw scribe-time errors to actionable, user-facing messages. The
+ * Google SDK throws e.g. "request to https://oauth2.googleapis.com/token
+ * failed, reason: invalid_grant" — surfacing that verbatim to admins
+ * tells them nothing about what to do. Map known patterns to one-line
+ * fixes; fall back to a generic "try again" for anything unrecognised.
+ */
+function sanitizeScribeError(err: any): string {
+  const raw = String(err?.message ?? err ?? '');
+  if (/oauth2\.googleapis\.com\/token|invalid_grant|invalid_token|Token has been expired|refresh.*token/i.test(raw)) {
+    return 'Google access expired — click Re-connect on the Google Drive card to refresh authorisation.';
+  }
+  if (/insufficientPermissions|not authorized|403/i.test(raw)) {
+    return 'Google account does not have read access to that folder. Re-connect with an account that can read the folder, or change the folder ID.';
+  }
+  if (/404|notFound|file not found/i.test(raw)) {
+    return 'Folder ID not found in Google Drive. Open Change folder and paste the correct folder ID.';
+  }
+  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i.test(raw)) {
+    return 'Network error reaching Google. Try again in a minute.';
+  }
+  if (/quota|rate.?limit|429/i.test(raw)) {
+    return 'Google API rate limit reached. Try again in a few minutes.';
+  }
+  // Unknown — generic message; never leak SDK internals.
+  return 'Scribe failed. Try Re-connect, then Re-scribe.';
+}
+
 async function readConfig(clientNumber: string, key: string): Promise<string | null> {
   const r = await prisma.systemConfig.findUnique({
     where: { clientNumber_key: { clientNumber, key } },
@@ -202,7 +230,7 @@ router.get('/client-connectors', requireAdmin, async (req: Request, res: Respons
       anyRunning,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
@@ -243,7 +271,7 @@ router.post('/client-connectors/:slug/connect', requireAdmin, async (req: Reques
     const updated = await statusFor(clientNumber, def);
     res.json({ ok: true, item: updated, connectedAs: admin.integrationEmail ?? admin.email });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
@@ -270,7 +298,7 @@ router.post('/client-connectors/:slug/set-folder', requireAdmin, async (req: Req
     const updated = await statusFor(clientNumber, def);
     res.json({ ok: true, item: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
@@ -289,7 +317,7 @@ router.post('/client-connectors/:slug/disconnect', requireAdmin, async (req: Req
     scribeState.delete(skey(clientNumber, slug));
     res.json({ ok: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
@@ -350,7 +378,7 @@ router.post('/client-connectors/:slug/test', requireAdmin, async (req: Request, 
 
     return res.status(501).json({ error: `${slug} test not implemented yet` });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
@@ -381,14 +409,16 @@ router.post('/client-connectors/scribe-all', requireAdmin, async (req: Request, 
             });
           }
         } catch (err: any) {
-          scribeState.set(skey(clientNumber, def.slug), { status: 'error', error: err.message });
+          // Map raw OAuth/Google SDK noise to an actionable message
+          // before storing — UI surfaces this verbatim.
+          scribeState.set(skey(clientNumber, def.slug), { status: 'error', error: sanitizeScribeError(err) });
         }
       })();
     }
 
     res.json({ ok: true, queued });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: sanitizeScribeError(err) });
   }
 });
 
