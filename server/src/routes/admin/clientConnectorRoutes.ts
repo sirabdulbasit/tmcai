@@ -255,28 +255,38 @@ router.post('/client-connectors/:slug/connect', requireAdmin, async (req: Reques
     });
     if (!adminRow) return res.status(404).json({ error: 'Admin user not found in tenant' });
 
+    // Re-connect button passes force=true → skip the probe, always
+    // start a fresh Google OAuth. The button's purpose is "the
+    // current token is bad, give me a new one"; running a probe that
+    // reuses the bad token would just confirm what the user already
+    // knows. First-time Connect omits force and probes — if there's
+    // already a working token it skips the OAuth round-trip.
+    const force = req.body?.force === true;
+
     // Probe the actual OAuth token instead of trusting the stale
     // integration_status='active' flag. The flag persists across token
     // expiry; Basit hit this when the column said active but the
     // refresh token had been rejected by Google. getAuthenticatedClient
     // tries user_connectors first, then legacy User columns.
     const { getAuthenticatedClient } = await import('../../services/integrationService');
-    const auth = await getAuthenticatedClient(me.id);
+    const auth = force ? null : await getAuthenticatedClient(me.id);
     let probeOk = false;
-    let probeError: string | null = null;
-    if (auth?.client) {
+    let probeError: string | null = force ? 'Forcing fresh Google authorisation.' : null;
+    if (!force && auth?.client) {
       try {
         const { google } = await import('googleapis');
         const drive = google.drive({ version: 'v3', auth: auth.client });
-        // Cheapest call that exercises both auth + Drive scope.
-        await drive.about.get({ fields: 'user(emailAddress)' });
+        // Probe with the same call the scribe will make — drive.files.list
+        // requires the full drive.readonly scope, while drive.about.get
+        // would pass with a lighter scope and let scribe still fail.
+        await drive.files.list({ pageSize: 1, fields: 'files(id)' });
         probeOk = true;
       } catch (err: any) {
         probeError = sanitizeScribeError(err);
       }
-    } else if (auth?.error) {
+    } else if (!force && auth?.error) {
       probeError = sanitizeScribeError({ message: auth.error });
-    } else {
+    } else if (!force) {
       probeError = 'No Google connector configured for your account.';
     }
 

@@ -374,10 +374,14 @@ function ClientConnectorsSection({ user, tenants }) {
   // One-click Connect. No modal. Server returns 409 + oauthRedirectTo if
   // the current admin hasn't OAuthed Google personally yet; we send them
   // to the regular Connectors OAuth, they come back and click once more.
-  const doConnect = async (slug) => {
+  // `force=true` skips the OAuth probe and goes straight to a fresh
+  // Google consent. Used by the Re-connect button — the user is
+  // explicitly saying "the current token is bad, give me a new one"
+  // so probing would just confirm what they already know.
+  const doConnect = async (slug, { force = false } = {}) => {
     setBusySlug(slug); setMsg(null);
     try {
-      const { data } = await api.post(`/admin/client-connectors/${slug}/connect`, { clientNumber: effective });
+      const { data } = await api.post(`/admin/client-connectors/${slug}/connect`, { clientNumber: effective, force });
       setMsg({ kind: 'ok', text: `✓ Connected as ${data.connectedAs}. Next: set the folder.` });
       load();
     } catch (e) {
@@ -500,6 +504,7 @@ function ClientConnectorsSection({ user, tenants }) {
             item={item}
             busy={busySlug === item.slug}
             onConnect={() => doConnect(item.slug)}
+            onReconnect={() => doConnect(item.slug, { force: true })}
             onFolder={() => openFolder(item)}
             onTest={() => runTest(item.slug)}
             onDisconnect={() => runDisconnect(item.slug)}
@@ -520,7 +525,7 @@ function ClientConnectorsSection({ user, tenants }) {
   );
 }
 
-function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDisconnect }) {
+function ClientConnectorCard({ item, busy, onConnect, onReconnect, onFolder, onTest, onDisconnect }) {
   const running = item.scribeStatus === 'running';
   const ok = !!item.lastScribedAt && !running;
   const liveBlocked = !item.liveInPoc;
@@ -621,7 +626,7 @@ function ClientConnectorCard({ item, busy, onConnect, onFolder, onTest, onDiscon
               >
                 {item.folderId ? 'Change folder' : 'Set folder'}
               </button>
-              <button className="admin-action" disabled={busy} onClick={onConnect}>Re-connect</button>
+              <button className="admin-action" disabled={busy} onClick={onReconnect}>Re-connect</button>
               <button className="admin-action" disabled={busy} onClick={onDisconnect} style={{ color: '#ef4444', borderColor: '#ef4444' }}>Disconnect</button>
             </>
           )}
