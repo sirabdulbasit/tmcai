@@ -51,9 +51,11 @@ const TYPE_ORDER = [
 export default function WikiPage() {
   const [type, setType] = useState(null);
   const [q, setQ] = useState('');
+  const [scope, setScope] = useState('all'); // 'all' | 'user' | 'tenant'
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState([]);
+  const [scopeCounts, setScopeCounts] = useState({ user: 0, tenant: 0 });
   const [loading, setLoading] = useState(false);
   const [searchMode, setSearchMode] = useState('browse');
   const [detailId, setDetailId] = useState(null);
@@ -64,11 +66,13 @@ export default function WikiPage() {
       const params = new URLSearchParams();
       if (type) params.set('type', type);
       if (q.trim()) params.set('q', q.trim());
+      if (scope && scope !== 'all') params.set('scope', scope);
       params.set('limit', '100');
       const { data } = await api.get(`/brain/wiki?${params}`);
       setItems(data.items ?? []);
       setTotal(data.total ?? 0);
       setCounts(data.counts ?? []);
+      setScopeCounts(data.scopeCounts ?? { user: 0, tenant: 0 });
       setSearchMode(data.searchMode ?? 'browse');
     } catch (err) {
       setItems([]); setTotal(0);
@@ -76,7 +80,7 @@ export default function WikiPage() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [type]);
+  useEffect(() => { load(); }, [type, scope]);
   // Debounce the text search so we don't hammer the server on every keystroke.
   useEffect(() => {
     const t = setTimeout(load, 250);
@@ -101,13 +105,27 @@ export default function WikiPage() {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-        {/* Sidebar — type filters */}
+        {/* Sidebar — visibility + type filters */}
         <aside style={{
           width: 220, flexShrink: 0, borderRight: '1px solid var(--border)',
           overflowY: 'auto', padding: 'var(--s-3)',
         }}>
+          {/* Visibility section — keep this on top, it's the highest-level cut */}
+          <div style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: '.5px',
+            textTransform: 'uppercase', color: 'var(--text-dim)',
+            padding: '4px 10px 6px',
+          }}>Visibility</div>
+          <TypeButton active={scope === 'all'}    label="All visible"   count={(scopeCounts.user || 0) + (scopeCounts.tenant || 0)} onClick={() => setScope('all')} />
+          <TypeButton active={scope === 'user'}   label="🔒 My wiki"     count={scopeCounts.user || 0}    onClick={() => setScope('user')} />
+          <TypeButton active={scope === 'tenant'} label="👥 Tenant wiki" count={scopeCounts.tenant || 0}  onClick={() => setScope('tenant')} />
+          <div style={{ height: 14 }} />
+          <div style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: '.5px',
+            textTransform: 'uppercase', color: 'var(--text-dim)',
+            padding: '4px 10px 6px',
+          }}>Page types</div>
           <TypeButton active={type === null} label="All" count={totalAllTypes} onClick={() => setType(null)} />
-          <div style={{ height: 10 }} />
           {orderedCounts.map((c) => (
             <TypeButton
               key={c.pageType}
@@ -244,6 +262,25 @@ function WikiRow({ page, onOpen }) {
             >
               {Math.round(page.score * 100)}%
             </span>
+          )}
+          {page.scope === 'tenant' ? (
+            <span
+              title="Shared with everyone in this tenant"
+              style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                background: 'rgba(96,165,250,0.14)', color: '#60a5fa',
+                textTransform: 'uppercase', letterSpacing: '.5px', whiteSpace: 'nowrap',
+              }}
+            >👥 tenant</span>
+          ) : (
+            <span
+              title="Private to your account"
+              style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                background: 'rgba(168,85,247,0.14)', color: '#a855f7',
+                textTransform: 'uppercase', letterSpacing: '.5px', whiteSpace: 'nowrap',
+              }}
+            >🔒 mine</span>
           )}
           <span style={{
             fontSize: 10, padding: '2px 8px', borderRadius: 10,

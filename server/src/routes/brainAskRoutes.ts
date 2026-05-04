@@ -685,24 +685,55 @@ router.get('/wiki', async (req: Request, res: Response) => {
   const q = req.query.q ? String(req.query.q).trim() : '';
   const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
   const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
+  // Visibility filter — three modes:
+  //   'user'   → only this user's private pages
+  //   'tenant' → only the shared tenant pages
+  //   'all'    → both (default)
+  const scope = (req.query.scope ? String(req.query.scope) : 'all').toLowerCase();
 
-  // Type counts across the user's visible scope — always computed, shown
-  // in the sidebar filters. Independent of q + type so filters always
-  // reflect the full catalog.
+  // Visibility predicate (raw SQL fragment + matching params).
+  // Always anchored on client_number; scope flag narrows further.
+  // We keep client_number = $1 and user_id = $2 in fixed slots so the
+  // downstream queries don't have to renumber positional args.
+  let visibilitySql: string;
+  if (scope === 'user') {
+    visibilitySql = `wiki_pages.scope = 'user' AND wiki_pages.user_id = $2`;
+  } else if (scope === 'tenant') {
+    visibilitySql = `wiki_pages.scope = 'tenant'`;
+  } else {
+    visibilitySql = `(wiki_pages.scope = 'tenant' OR (wiki_pages.scope = 'user' AND wiki_pages.user_id = $2))`;
+  }
+
+  // Counts: by page type AND by scope. UI shows totals for each
+  // sidebar section. Independent of q + type so filters always
+  // reflect the full catalog the user can see.
   const counts = await prisma.$queryRawUnsafe<any[]>(
     `SELECT page_type AS "pageType", COUNT(*)::int AS n
        FROM wiki_pages
       WHERE client_number = $1
         AND status NOT IN ('superseded','deleted')
         AND page_type NOT IN ('tenant_index','tenant_log')
-        AND (
-          user_id = $2
-          OR page_type IN ('org_doc','policy','project','decision','pattern','attachment_doc','entity_person','topic')
-        )
+        AND ${visibilitySql}
       GROUP BY page_type
       ORDER BY n DESC`,
     user.clientNumber, user.id,
   ).catch(() => [] as any[]);
+
+  // Scope-level counts for the Visibility section in the sidebar.
+  // Always computed against the FULL visible set (user + tenant),
+  // ignoring the active scope filter so the user can see how many
+  // pages exist on each side.
+  const scopeCounts = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT scope, COUNT(*)::int AS n
+       FROM wiki_pages
+      WHERE client_number = $1
+        AND status NOT IN ('superseded','deleted')
+        AND page_type NOT IN ('tenant_index','tenant_log')
+        AND (scope = 'tenant' OR (scope = 'user' AND user_id = $2))
+      GROUP BY scope`,
+    user.clientNumber, user.id,
+  ).catch(() => [] as any[]);
+  const scopeMap = Object.fromEntries(scopeCounts.map((r) => [r.scope, Number(r.n)])) as { user?: number; tenant?: number };
 
   // ── Search mode (semantic) ─────────────────────────────────────
   if (q.length > 0) {
@@ -721,14 +752,14 @@ router.get('/wiki', async (req: Request, res: Response) => {
     const ilikeParams: any[] = [user.clientNumber, user.id, q];
     if (type) ilikeParams.push(type);
     const ilikeHits = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT id, title, page_type AS "pageType", user_id AS "userId",
+      `SELECT id, title, page_type AS "pageType", user_id AS "userId", scope,
               SUBSTRING(COALESCE(body_markdown,''), 1, 220) AS snippet,
               last_updated_at AS "lastUpdatedAt", source_count AS "sourceCount"
          FROM wiki_pages
         WHERE client_number = $1
           AND status NOT IN ('superseded','deleted')
           AND page_type NOT IN ('tenant_index','tenant_log')
-          AND (user_id = $2 OR page_type IN ('org_doc','policy','project','decision','pattern','attachment_doc','entity_person','topic'))
+          AND ${visibilitySql}
           AND (title ILIKE '%' || $3 || '%' OR body_markdown ILIKE '%' || $3 || '%')
           ${typeClause}
         LIMIT 40`,
@@ -785,7 +816,10 @@ router.get('/wiki', async (req: Request, res: Response) => {
         return (b.lastUpdatedAt?.getTime?.() ?? 0) - (a.lastUpdatedAt?.getTime?.() ?? 0);
       })
       .slice(0, limit);
-    res.json({ total: merged.length, items: merged, counts, searchMode: 'semantic' });
+    res.json({
+      total: merged.length, items: merged, counts, scopeCounts: scopeMap,
+      searchMode: 'semantic',
+    });
     return;
   }
 
@@ -797,10 +831,7 @@ router.get('/wiki', async (req: Request, res: Response) => {
     WHERE client_number = $1
       AND status NOT IN ('superseded','deleted')
       AND page_type NOT IN ('tenant_index','tenant_log')
-      AND (
-        user_id = $2
-        OR page_type IN ('org_doc','policy','project','decision','pattern','attachment_doc')
-      )
+      AND ${visibilitySql}
       ${typeClause}
   `;
   const totalRow = await prisma.$queryRawUnsafe<any[]>(
@@ -810,7 +841,7 @@ router.get('/wiki', async (req: Request, res: Response) => {
   const total = Number(totalRow[0]?.n ?? 0);
 
   const items = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT id, title, page_type AS "pageType", user_id AS "userId",
+    `SELECT id, title, page_type AS "pageType", user_id AS "userId", scope,
             SUBSTRING(COALESCE(body_markdown,''), 1, 220) AS snippet,
             last_updated_at AS "lastUpdatedAt", source_count AS "sourceCount"
        FROM wiki_pages ${whereBase}
@@ -819,7 +850,7 @@ router.get('/wiki', async (req: Request, res: Response) => {
     ...browseParams,
   ).catch(() => [] as any[]);
 
-  res.json({ total, items, counts, searchMode: 'browse' });
+  res.json({ total, items, counts, scopeCounts: scopeMap, searchMode: 'browse' });
 });
 
 export default router;
