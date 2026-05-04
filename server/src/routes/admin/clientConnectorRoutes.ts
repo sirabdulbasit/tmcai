@@ -400,12 +400,13 @@ router.post('/client-connectors/scribe-all', requireAdmin, async (req: Request, 
             const folderId = await readConfig(clientNumber, 'google_drive_folder_id');
             const { scribeFaclForTenant } = await import('../../services/knowledge/folderScribeService');
             const summary = await scribeFaclForTenant(clientNumber, folderId ?? '');
-            const endOk = summary.scanned > 0 || summary.updated > 0;
+            // scanned=0 now genuinely means "folder is empty" because
+            // auth failures throw and hit the catch below. Always 'ok'
+            // here; the pill renderer interprets the summary nicely.
             scribeState.set(skey(clientNumber, def.slug), {
-              status: endOk ? 'ok' : 'error',
+              status: 'ok',
               lastScribedAt: new Date().toISOString(),
               lastSummary: summary,
-              error: endOk ? undefined : 'Folder returned no text-extractable docs (check folder ID + admin auth)',
             });
           }
         } catch (err: any) {

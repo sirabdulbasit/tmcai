@@ -228,12 +228,18 @@ export async function scribeFaclFolder(
   const auth = await getAuthenticatedClient(userId);
   if (!auth?.client) {
     log.warn('no Google auth for FACL scribe', { userId });
-    return { ...summary, durationMs: Date.now() - t0 };
+    // Make this distinguishable from "scribe ran but folder was empty".
+    // Throw so the caller's catch sets a real error message instead of
+    // logging "scanned=0, updated=0" as if it were a clean run.
+    throw new Error('Google access expired or revoked — re-authorisation required');
   }
   const drive = google.drive({ version: 'v3', auth: auth.client });
 
   // List files in the folder — recurse one level into sub-folders to catch
   // simple "FACL/SOPs" layouts without a full tree walk.
+  // Drive.files.list errors must propagate (auth expiry, quota, network)
+  // — silently catching them and returning [] makes a real failure look
+  // like an empty folder and the admin chases the wrong fix.
   const files: any[] = [];
   let pageToken: string | undefined;
   while (files.length < MAX_FILES) {
@@ -242,7 +248,7 @@ export async function scribeFaclFolder(
       fields: 'nextPageToken, files(id,name,mimeType,modifiedTime,size)',
       pageSize: 50,
       ...(pageToken ? { pageToken } : {}),
-    }).catch((e: any) => { log.warn('drive list failed', { folderId, error: e.message }); return null; });
+    });
     if (!r?.data?.files?.length) break;
     for (const f of r.data.files) files.push(f);
     if (!r.data.nextPageToken) break;

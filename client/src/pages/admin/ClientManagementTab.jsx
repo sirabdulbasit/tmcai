@@ -351,6 +351,15 @@ function ClientConnectorsSection({ user, tenants }) {
   // Modal state: 'connect' picks which admin; 'folder' edits folder ID.
   const [modal, setModal] = useState(null); // { kind: 'connect'|'folder', slug, item }
 
+  // Auto-dismiss the toast after 8s so a stale error doesn't sit
+  // forever after the underlying issue has been fixed (e.g. user
+  // clicked Re-connect and the OAuth flow completed in another tab).
+  useEffect(() => {
+    if (!msg) return;
+    const t = setTimeout(() => setMsg(null), 8000);
+    return () => clearTimeout(t);
+  }, [msg]);
+
   const load = async () => {
     if (!effective) return;
     try {
@@ -473,7 +482,14 @@ function ClientConnectorsSection({ user, tenants }) {
       </section>
 
       {msg && (
-        <div className={`settings-msg ${msg.kind === 'error' ? 'error' : ''}`} style={{ marginTop: 8 }}>{msg.text}</div>
+        <div className={`settings-msg ${msg.kind === 'error' ? 'error' : ''}`} style={{ marginTop: 8, display: 'flex', alignItems: 'flex-start', gap: 10, justifyContent: 'space-between' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{msg.text}</span>
+          <button
+            onClick={() => setMsg(null)}
+            aria-label="Dismiss"
+            style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 4px', flexShrink: 0 }}
+          >×</button>
+        </div>
       )}
 
       {/* Connector cards */}
