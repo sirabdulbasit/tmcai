@@ -603,6 +603,44 @@ function ClientConnectorCard({ item, busy, onConnect, onReconnect, onFolder, onT
               ✗ Last scribe failed: {item.scribeError}
             </div>
           )}
+          {/* Folder preview — shown as soon as the folder is set, before
+              the admin commits to a scribe. Tells them what's inside. */}
+          {item.preview && (
+            <div style={{
+              fontSize: 11, color: 'var(--text-muted)', marginTop: 6,
+              padding: '6px 10px', background: 'rgba(96,165,250,0.06)',
+              border: '1px solid rgba(96,165,250,0.25)', borderRadius: 6,
+            }}>
+              <div style={{ fontWeight: 600, color: 'var(--text)' }}>
+                📂 Folder contains <strong>{item.preview.total}</strong> item{item.preview.total === 1 ? '' : 's'}
+                {item.preview.subfolders > 0 && ` (incl. ${item.preview.subfolders} subfolder${item.preview.subfolders === 1 ? '' : 's'})`}
+                {' · '}
+                <strong style={{ color: '#4ade80' }}>{item.preview.scribeable}</strong> scribeable
+              </div>
+              <div style={{ marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {item.preview.byKind.docs > 0 && <span>📄 {item.preview.byKind.docs} doc{item.preview.byKind.docs === 1 ? '' : 's'}</span>}
+                {item.preview.byKind.sheets > 0 && <span>📊 {item.preview.byKind.sheets} sheet{item.preview.byKind.sheets === 1 ? '' : 's'}</span>}
+                {item.preview.byKind.slides > 0 && <span>🎞 {item.preview.byKind.slides} slide deck{item.preview.byKind.slides === 1 ? '' : 's'}</span>}
+                {item.preview.byKind.pdfs > 0 && <span>📕 {item.preview.byKind.pdfs} PDF{item.preview.byKind.pdfs === 1 ? '' : 's'}</span>}
+                {item.preview.byKind.text > 0 && <span>📝 {item.preview.byKind.text} text</span>}
+                {item.preview.byKind.other > 0 && <span style={{ color: 'var(--text-dim)' }}>· {item.preview.byKind.other} non-scribeable</span>}
+              </div>
+              {item.preview.sampleNames && item.preview.sampleNames.length > 0 && (
+                <div style={{ marginTop: 3, color: 'var(--text-dim)' }}>
+                  e.g. {item.preview.sampleNames.slice(0, 3).join(' · ')}
+                </div>
+              )}
+            </div>
+          )}
+          {item.previewError && !item.preview && (
+            <div style={{
+              fontSize: 11, color: '#f59e0b', marginTop: 6,
+              padding: '4px 8px', background: 'rgba(245,158,11,0.08)',
+              border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6,
+            }}>
+              ⚠ Preview unavailable: {item.previewError}
+            </div>
+          )}
           {liveBlocked && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
               Same connect → folder → scribe pattern as Google Drive. Wiring pending.

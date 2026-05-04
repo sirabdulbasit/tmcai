@@ -83,6 +83,69 @@ const TEXT_EXTRACTABLE_MIMES = new Set([
   'application/pdf',
 ]);
 
+export { TEXT_EXTRACTABLE_MIMES };
+
+export interface FolderPreview {
+  total: number;
+  scribeable: number;
+  subfolders: number;
+  byKind: { docs: number; sheets: number; slides: number; pdfs: number; text: number; other: number };
+  sampleNames: string[]; // first ~5 file titles for human verification
+}
+
+/**
+ * One-shot folder preview — fast, no scribe. Tells the admin "your
+ * folder has 47 items: 12 docs, 8 sheets, 3 PDFs, 24 other (1 subfolder)"
+ * BEFORE they commit to scribing. Costs 1 Drive API call.
+ */
+export async function previewTenantFolder(
+  userId: number,
+  folderId: string,
+): Promise<FolderPreview> {
+  const empty: FolderPreview = {
+    total: 0, scribeable: 0, subfolders: 0,
+    byKind: { docs: 0, sheets: 0, slides: 0, pdfs: 0, text: 0, other: 0 },
+    sampleNames: [],
+  };
+  if (!folderId) return empty;
+
+  const { google } = await import('googleapis');
+  const { getAuthenticatedClient } = await import('../integrationService');
+  const auth = await getAuthenticatedClient(userId);
+  if (!auth?.client) throw new Error('Google access expired or revoked — re-authorisation required');
+  const drive = google.drive({ version: 'v3', auth: auth.client });
+
+  const out: FolderPreview = { ...empty, byKind: { ...empty.byKind }, sampleNames: [] };
+  let pageToken: string | undefined;
+  while (out.total < 500) {
+    const r = await drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'nextPageToken, files(id,name,mimeType)',
+      pageSize: 100,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const files = r.data.files ?? [];
+    if (files.length === 0) break;
+    for (const f of files) {
+      out.total += 1;
+      if (f.mimeType === 'application/vnd.google-apps.folder') { out.subfolders += 1; continue; }
+      if (TEXT_EXTRACTABLE_MIMES.has(String(f.mimeType ?? ''))) out.scribeable += 1;
+      switch (f.mimeType) {
+        case 'application/vnd.google-apps.document': out.byKind.docs += 1; break;
+        case 'application/vnd.google-apps.spreadsheet': out.byKind.sheets += 1; break;
+        case 'application/vnd.google-apps.presentation': out.byKind.slides += 1; break;
+        case 'application/pdf': out.byKind.pdfs += 1; break;
+        case 'text/plain': case 'text/markdown': case 'text/csv': out.byKind.text += 1; break;
+        default: out.byKind.other += 1; break;
+      }
+      if (out.sampleNames.length < 5 && f.name) out.sampleNames.push(f.name);
+    }
+    if (!r.data.nextPageToken) break;
+    pageToken = r.data.nextPageToken;
+  }
+  return out;
+}
+
 const TABULAR_MIMES = new Set([
   'application/vnd.google-apps.spreadsheet',
   'text/csv',

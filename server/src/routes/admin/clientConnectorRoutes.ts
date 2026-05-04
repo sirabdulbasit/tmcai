@@ -86,6 +86,30 @@ const scribeState = new Map<string, {
 }>();
 const skey = (cn: string, slug: string) => `${cn}::${slug}`;
 
+// Folder preview cache. Key: ${cn}::${slug}::${folderId}. TTL ~120s
+// so the admin sees instant counts when they revisit the page without
+// thrashing the Drive API on every poll.
+const previewCache = new Map<string, { at: number; preview: any; error?: string }>();
+const PREVIEW_TTL_MS = 120_000;
+
+async function getCachedPreview(clientNumber: string, slug: string, userId: number, folderId: string): Promise<{ at: number; preview: any; error?: string } | null> {
+  if (!folderId) return null;
+  const key = `${clientNumber}::${slug}::${folderId}`;
+  const hit = previewCache.get(key);
+  if (hit && Date.now() - hit.at < PREVIEW_TTL_MS) return hit;
+  try {
+    const { previewTenantFolder } = await import('../../services/knowledge/folderScribeService');
+    const preview = await previewTenantFolder(userId, folderId);
+    const v: { at: number; preview: any; error?: string } = { at: Date.now(), preview };
+    previewCache.set(key, v);
+    return v;
+  } catch (err: any) {
+    const v: { at: number; preview: any; error?: string } = { at: Date.now(), preview: null, error: sanitizeScribeError(err) };
+    previewCache.set(key, v);
+    return v;
+  }
+}
+
 /**
  * Map raw scribe-time errors to actionable, user-facing messages. The
  * Google SDK throws e.g. "request to https://oauth2.googleapis.com/token
@@ -186,6 +210,20 @@ async function statusFor(clientNumber: string, def: ConnectorDef) {
     durationMs: Number(lastSummary.durationMs ?? 0),
   } : null;
 
+  // Folder preview — auto-fetched (cached) when we know the folder ID
+  // + connected user. Tells the admin "your folder has 47 items, 23
+  // scribeable" before they decide to scribe. Skipped when no folder
+  // is set (nothing to preview yet).
+  let preview: any = null;
+  let previewError: string | null = null;
+  if (def.slug === 'google_drive_org' && folderId && connectionDetail.userId) {
+    const v = await getCachedPreview(clientNumber, def.slug, connectionDetail.userId, folderId);
+    if (v) {
+      preview = v.preview;
+      previewError = v.error ?? null;
+    }
+  }
+
   return {
     slug: def.slug, name: def.name, icon: def.icon, category: def.category, liveInPoc: def.liveInPoc,
     connected,
@@ -199,6 +237,8 @@ async function statusFor(clientNumber: string, def: ConnectorDef) {
     scribeStatus: st.status,
     scribeError: st.error ?? null,
     lastScribe,
+    preview,
+    previewError,
     needsScribe,
   };
 }
@@ -346,6 +386,11 @@ router.post('/client-connectors/:slug/set-folder', requireAdmin, async (req: Req
     await writeConfig(clientNumber, 'google_drive_folder_id', folderId);
     if (indexFile) await writeConfig(clientNumber, 'google_index_file_name', indexFile);
     scribeState.delete(skey(clientNumber, slug));
+    // Drop any cached preview for the OLD folder so the next status
+    // poll fetches a fresh preview against the just-saved folder.
+    for (const k of [...previewCache.keys()]) {
+      if (k.startsWith(`${clientNumber}::${slug}::`)) previewCache.delete(k);
+    }
     const updated = await statusFor(clientNumber, def);
     res.json({ ok: true, item: updated });
   } catch (err: any) {
