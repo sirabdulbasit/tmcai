@@ -348,10 +348,16 @@ router.post('/client-connectors/:slug/test', requireAdmin, async (req: Request, 
       const folderId = await readConfig(clientNumber, 'google_drive_folder_id');
 
       if (folderId) {
-        const meta = await drive.files.get({ fileId: folderId, fields: 'id,name,mimeType' }).catch((e: any) => ({ data: null, err: e.message }));
+        const meta = await drive.files.get({ fileId: folderId, fields: 'id,name,mimeType' }).catch((e: any) => ({ data: null, err: e }));
         const folder = (meta as any).data;
         if (!folder || folder.mimeType !== 'application/vnd.google-apps.folder') {
-          return res.status(400).json({ error: (meta as any).err ?? `Folder ID is not a valid folder (mimeType: ${folder?.mimeType ?? '?'})` });
+          // Sanitise the inner error so OAuth failures stop leaking
+          // verbatim through Test → toast.
+          const inner = (meta as any).err;
+          const msg = inner
+            ? sanitizeScribeError(inner)
+            : `Folder ID is not a valid folder (mimeType: ${folder?.mimeType ?? '?'})`;
+          return res.status(400).json({ error: msg });
         }
         const list = await drive.files.list({
           q: `'${folderId}' in parents and trashed=false`,
@@ -367,8 +373,11 @@ router.post('/client-connectors/:slug/test', requireAdmin, async (req: Request, 
       }
 
       // No folder set — just verify OAuth works at all
-      const about = await drive.about.get({ fields: 'user(emailAddress)' }).catch((e: any) => ({ data: null, err: e.message }));
-      if (!(about as any).data) return res.status(400).json({ error: (about as any).err ?? 'Google Drive API call failed' });
+      const about = await drive.about.get({ fields: 'user(emailAddress)' }).catch((e: any) => ({ data: null, err: e }));
+      if (!(about as any).data) {
+        const inner = (about as any).err;
+        return res.status(400).json({ error: inner ? sanitizeScribeError(inner) : 'Google Drive API call failed' });
+      }
       return res.json({
         ok: true, stage: 'connection_verified',
         adminEmail: admin.integrationEmail ?? admin.email,
