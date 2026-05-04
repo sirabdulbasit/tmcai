@@ -40,10 +40,17 @@ export default function BrainChatPanel() {
     const q = (question ?? input).trim();
     if (!q) return;
     setInput('');
+    // Snapshot the existing thread before appending the new user turn —
+    // this is what we send to /brain/ask as `history` so the server can
+    // resolve follow-ups against prior turns.
+    const history = messages
+      .filter((m) => m.role === 'user' || m.role === 'brain')
+      .slice(-6)
+      .map((m) => ({ role: m.role, text: String(m.text ?? '') }));
     setMessages((m) => [...m, { role: 'user', text: q }]);
     setBusy(true);
     try {
-      const { data } = await api.post('/brain/ask', { question: q });
+      const { data } = await api.post('/brain/ask', { question: q, history });
       // Stable client-side id for this answer — feedback/subjectId references it.
       // The server doesn't persist a row per chat answer today, so we carry the
       // query + answer + sources as `context` in the feedback call so diagnosis

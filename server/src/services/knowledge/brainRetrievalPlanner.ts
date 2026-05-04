@@ -34,10 +34,32 @@ const EMPTY_PLAN: RetrievalPlan = {
   rationale: 'fallback:empty',
 };
 
+export interface PlannerHistoryTurn {
+  role: 'user' | 'brain';
+  text: string;
+}
+
+/**
+ * Render the recent conversation as a compact block the planner can read.
+ * Only the last 4 turns matter for follow-up resolution; older context
+ * is captured by the wiki pages anyway.
+ */
+function renderHistoryBlock(history: PlannerHistoryTurn[]): string {
+  if (!history.length) return '';
+  const recent = history.slice(-4);
+  const lines = recent.map((t) => {
+    const who = t.role === 'user' ? 'User' : 'Brain';
+    const txt = t.text.slice(0, 400);
+    return `${who}: ${txt}`;
+  });
+  return `\n# Recent conversation (most recent last)\n${lines.join('\n')}\n`;
+}
+
 export async function planRetrieval(
   clientNumber: string,
   userId: number,
   question: string,
+  history: PlannerHistoryTurn[] = [],
 ): Promise<RetrievalPlan> {
   const [schema, index, caps] = await Promise.all([
     Promise.resolve(getBrainSchemaText()),
@@ -46,6 +68,7 @@ export async function planRetrieval(
   ]);
 
   const capsBlock = caps ? renderCapabilitiesBlock(caps) : '';
+  const historyBlock = renderHistoryBlock(history);
 
   const systemPrompt = `You are Brain's retrieval planner. Your ONLY job is to decide which wiki pages Brain should open before answering, and which entities or FACL docs to search. You never answer the question yourself.
 
@@ -57,6 +80,9 @@ ${index}
 
 # System capabilities (what Brain can actually access right now)
 ${capsBlock}
+${historyBlock}
+# Follow-up resolution
+If the user's current question is short or refers to "it/that/this" without a clear noun, treat it as a follow-up to the most recent Brain turn above and plan retrieval AS IF the implied subject from that turn is part of the question. Example: Brain just said "missing admin authorization for FACL"; user asks "what kind of authorization?" → plan as if they asked "what kind of authorization is needed for FACL".
 
 # Rules for planning
 The composer does semantic vector search over the whole wiki for every non-casual question — you do NOT have to decompose multi-word subjects, add synonyms, or guess keywords. The vector layer matches "demo" to "CBL Demo" and "IP strategy" to any strategy page that talks about intellectual property, without keyword rules. Focus instead on INTENT and on surfacing FACL docs whose FULL body Brain should open (the vector stage returns previews only).

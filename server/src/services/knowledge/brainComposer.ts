@@ -454,12 +454,29 @@ function toOpenedPage(p: { id: string; title: string; pageType: string; bodyMark
   };
 }
 
+export interface ComposerHistoryTurn {
+  role: 'user' | 'brain';
+  text: string;
+}
+
+function renderComposerHistoryBlock(history: ComposerHistoryTurn[]): string {
+  if (!history.length) return '';
+  const recent = history.slice(-6);
+  const lines = recent.map((t) => {
+    const who = t.role === 'user' ? 'User' : 'Brain';
+    const txt = t.text.slice(0, 600);
+    return `${who}: ${txt}`;
+  });
+  return `Recent conversation (most recent last):\n${lines.join('\n')}\n\n`;
+}
+
 export async function compose(
   clientNumber: string,
   userId: number,
   question: string,
   plan: RetrievalPlan,
   opened: OpenedPage[],
+  history: ComposerHistoryTurn[] = [],
 ): Promise<ComposeResult> {
   // Read-through cache wraps the four read-heavy envelope blocks. Each
   // changes rarely (persona/capabilities/preferences/instructions are
@@ -539,7 +556,12 @@ H9. **Delegation matrix is the routing source of truth.** When the question is "
 
 H10. **Risk Radar block is the daily worry list.** When the user asks what to worry about, what's urgent, or what's going on today, lead with the flags in the "Risk Radar" block above (when present). The radar is the system's pre-computed forward-looking risk surface — quoting it is more accurate than re-deriving from feed history. Cite open_item / wiki ids from each flag's sourceRefs.`;
 
-  const userMessage = `User question: ${question}\n\nPlanner rationale: ${plan.rationale}`;
+  // Recent dialogue prepended so the LLM can resolve follow-ups like
+  // "what kind?" or "and that one?" against the previous turn instead
+  // of treating each question in isolation. Bounded by trimmedHistory in
+  // the caller; renderer also caps each turn to 600 chars.
+  const historyBlock = renderComposerHistoryBlock(history);
+  const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}`;
 
   let raw = '';
   try {

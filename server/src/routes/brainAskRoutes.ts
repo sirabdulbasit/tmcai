@@ -55,14 +55,24 @@ router.use((req: Request, res: Response, next) => {
  *   - tenant_index is rebuilt in the background (debounced 30s) so new
  *     pages become discoverable on the next turn.
  */
+export interface BrainHistoryTurn {
+  role: 'user' | 'brain';
+  text: string;
+}
+
 export async function answerAsBrain(
   clientNumber: string,
   userId: number,
   question: string,
+  history: BrainHistoryTurn[] = [],
 ): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string }> {
-  const plan = await planRetrieval(clientNumber, userId, question);
+  // Trim history to the last 6 turns so we don't blow up the prompt.
+  // Most follow-ups need only the immediately previous Q&A; 6 covers
+  // a chain of 3 back-and-forth pairs, which is plenty for most threads.
+  const trimmedHistory = history.slice(-6);
+  const plan = await planRetrieval(clientNumber, userId, question, trimmedHistory);
   const opened = await openPagesForPlan(clientNumber, userId, plan, question);
-  const result = await compose(clientNumber, userId, question, plan, opened);
+  const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory);
 
   // Side effects (fire-and-forget — don't block the response on them)
   Promise.resolve().then(async () => {
@@ -375,8 +385,15 @@ router.post('/ask', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const question = String(req.body?.question ?? '').trim();
   if (!question) return res.status(400).json({ error: 'question required' });
+  // Optional conversation history — client sends the last few turns so
+  // Brain can resolve follow-ups like "what kind of authorization?"
+  // against the prior turn instead of treating each question in isolation.
+  const rawHistory: any[] = Array.isArray(req.body?.history) ? req.body.history : [];
+  const history: BrainHistoryTurn[] = rawHistory
+    .filter((t) => t && (t.role === 'user' || t.role === 'brain') && typeof t.text === 'string')
+    .map((t) => ({ role: t.role, text: String(t.text).slice(0, 2000) })); // bound each turn
   try {
-    const out = await answerAsBrain(user.clientNumber, user.id, question);
+    const out = await answerAsBrain(user.clientNumber, user.id, question, history);
     res.json({ question, answer: out.answer, sources: out.sources, gaps: out.gaps, intent: out.intent });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
