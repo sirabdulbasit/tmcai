@@ -42,39 +42,36 @@ export const TENANT_SHARED_PAGE_TYPES = ['org_doc', 'policy', 'project', 'decisi
  * count with a note that they can be searched by email/name term.
  */
 export async function getCompactIndexForPlanner(clientNumber: string, userId: number): Promise<string> {
-  // Two reads, merged: user's own pages + the tenant-shared types from
-  // anyone in the tenant. Tenant-shared docs therefore appear in every
-  // user's planner view without being duplicated per user.
-  const [userPages, tenantSharedPages] = await Promise.all([
-    prisma.wikiPage.findMany({
-      where: {
-        clientNumber, userId,
-        pageType: { notIn: [INDEX_PAGE_TYPE, 'tenant_log'] },
-        status: { notIn: ['superseded', 'deleted'] },
-      },
-      select: {
-        id: true, title: true, pageType: true, bodyMarkdown: true,
-        sourceCount: true, lastUpdatedAt: true,
-      },
-    }).catch(() => [] as any[]),
-    prisma.wikiPage.findMany({
-      where: {
-        clientNumber,
-        userId: { not: userId },
-        pageType: { in: TENANT_SHARED_PAGE_TYPES as unknown as string[] },
-        status: { notIn: ['superseded', 'deleted'] },
-      },
-      select: {
-        id: true, title: true, pageType: true, bodyMarkdown: true,
-        sourceCount: true, lastUpdatedAt: true,
-      },
-    }).catch(() => [] as any[]),
-  ]);
+  // Single query, scope-aware visibility:
+  //   - tenant-scoped pages: visible to every user in the tenant
+  //   - user-scoped pages: visible only to the owning user_id
+  // The wiki_pages.scope column is set by writes (defaultScopeForPageType)
+  // and was backfilled in the 20260504_wiki_pages_scope migration.
+  const allPages = await prisma.wikiPage.findMany({
+    where: {
+      clientNumber,
+      pageType: { notIn: [INDEX_PAGE_TYPE, 'tenant_log'] },
+      status: { notIn: ['superseded', 'deleted'] },
+      OR: [
+        { scope: 'tenant' },
+        { scope: 'user', userId },
+      ],
+    } as any,
+    select: {
+      id: true, title: true, pageType: true, bodyMarkdown: true,
+      sourceCount: true, lastUpdatedAt: true, scope: true,
+    },
+  }).catch(() => [] as any[]);
 
-  // Dedupe by (pageType, title) — tenant shared always wins if duplicate
+  // Dedupe by (pageType, title): if a tenant copy and a user copy share
+  // the same logical identity, prefer the tenant copy (more authoritative).
   const byKey = new Map<string, any>();
-  for (const p of userPages) byKey.set(`${p.pageType}::${p.title}`, p);
-  for (const p of tenantSharedPages) byKey.set(`${p.pageType}::${p.title}`, p);
+  for (const p of allPages) {
+    const key = `${p.pageType}::${p.title}`;
+    const prev = byKey.get(key);
+    if (!prev) byKey.set(key, p);
+    else if (p.scope === 'tenant' && prev.scope !== 'tenant') byKey.set(key, p);
+  }
   const pages = Array.from(byKey.values());
 
   const byType = new Map<string, typeof pages>();

@@ -100,7 +100,25 @@ router.get('/pages', async (req: Request, res: Response) => {
   const ctx = resolveTargetUser(req);
   if (!ctx) return res.status(401).json({ error: 'unauthenticated' });
   const take = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
-  const where: any = { clientNumber: ctx.clientNumber, userId: ctx.userId };
+
+  // Visibility — see services/knowledge/wikiScope.ts:
+  //   tenant pages are visible to every user in the tenant
+  //   user pages are private to the owning user_id
+  // The optional `?scope=user|tenant` query param narrows the visible
+  // set further (powering the My Wiki / Tenant Wiki tabs in the UI).
+  const scopeFilter = String(req.query.scope ?? '');
+  const where: any = { clientNumber: ctx.clientNumber };
+  if (scopeFilter === 'tenant') {
+    where.scope = 'tenant';
+  } else if (scopeFilter === 'user') {
+    where.scope = 'user';
+    where.userId = ctx.userId;
+  } else {
+    where.OR = [
+      { scope: 'tenant' },
+      { scope: 'user', userId: ctx.userId },
+    ];
+  }
   if (req.query.pageType) where.pageType = String(req.query.pageType);
   if (req.query.status) where.status = String(req.query.status);
 
@@ -112,6 +130,7 @@ router.get('/pages', async (req: Request, res: Response) => {
       id: true, pageType: true, title: true, status: true, confidence: true,
       inboundLinks: true, outboundLinks: true, sourceCount: true,
       lastUpdatedAt: true, createdAt: true, storage: true,
+      scope: true, userId: true,
     },
   });
   res.json({ pages: rows });

@@ -27,12 +27,15 @@ export default function WikiTab() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [confirmDisconnectNotion, setConfirmDisconnectNotion] = useState(false);
+  // Scope filter: '' (all visible) | 'user' (my wiki) | 'tenant' (shared)
+  const [scopeFilter, setScopeFilter] = useState('');
 
   const load = async () => {
     setLoading(true); setErr(null);
     try {
       const params = new URLSearchParams({ limit: '50' });
       if (pageType) params.set('pageType', pageType);
+      if (scopeFilter) params.set('scope', scopeFilter);
       const [s, p, n] = await Promise.all([
         api.get('/wiki/stats'),
         api.get(`/wiki/pages?${params.toString()}`),
@@ -43,7 +46,7 @@ export default function WikiTab() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [pageType]);
+  useEffect(() => { load(); }, [pageType, scopeFilter]);
 
   const runSearch = async (e) => {
     e?.preventDefault();
@@ -116,6 +119,13 @@ export default function WikiTab() {
         </div>
 
         <div style={{ marginBottom: 'var(--s-4)' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: '.5px', color: 'var(--text-dim)', marginBottom: 'var(--s-2)' }}>Visibility</div>
+          <NavItem active={scopeFilter === ''} label="All visible" count={null} onClick={() => setScopeFilter('')} />
+          <NavItem active={scopeFilter === 'user'} label="🔒 My wiki" count={null} onClick={() => setScopeFilter('user')} />
+          <NavItem active={scopeFilter === 'tenant'} label="👥 Tenant wiki" count={null} onClick={() => setScopeFilter('tenant')} />
+        </div>
+
+        <div style={{ marginBottom: 'var(--s-4)' }}>
           <div style={{ fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: '.5px', color: 'var(--text-dim)', marginBottom: 'var(--s-2)' }}>Page types</div>
           <NavItem active={pageType === ''} label="All pages" count={totalPages} onClick={() => setPageType('')} />
           {PAGE_TYPES.map((t) => (
@@ -149,6 +159,9 @@ export default function WikiTab() {
               <ListItem key={p.id} active={selected?.id === p.id} onClick={() => openPage(p.id)}>
                 <ListItem.Title>
                   {p.title}
+                  {p.scope === 'tenant'
+                    ? <Pill variant="info" title="Visible to every user in this tenant">👥 tenant</Pill>
+                    : <Pill title="Private to your account">🔒 mine</Pill>}
                   {p.sourceCount > 0 && <Pill variant="success">{p.sourceCount}</Pill>}
                 </ListItem.Title>
                 <ListItem.Meta>
@@ -171,7 +184,12 @@ export default function WikiTab() {
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--s-4)', marginBottom: 'var(--s-4)', paddingBottom: 'var(--s-4)', borderBottom: '1px solid var(--border)' }}>
               <div>
-                <h1 style={{ margin: 0, fontSize: 'var(--fs-2xl)' }}>{selected.title}</h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', flexWrap: 'wrap' }}>
+                  <h1 style={{ margin: 0, fontSize: 'var(--fs-2xl)' }}>{selected.title}</h1>
+                  {selected.scope === 'tenant'
+                    ? <Pill variant="info" title="Shared with everyone in this tenant">👥 tenant</Pill>
+                    : <Pill title="Private to your account">🔒 mine</Pill>}
+                </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', marginTop: 4 }}>
                   {selected.pageType} · confidence {selected.confidence ?? '-'} · storage {selected.storage}
                 </div>

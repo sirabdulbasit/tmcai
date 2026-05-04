@@ -38,6 +38,27 @@ const prisma = base.$extends({
   query: {
     $allModels: {
       async $allOperations({ model, operation, args, query }) {
+        // Wiki-page scope auto-injection (runs even when there's no
+        // tenant context — e.g. boot-time backfill scripts). Any
+        // create/upsert that doesn't explicitly set `scope` gets it
+        // derived from pageType. See services/knowledge/wikiScope.ts.
+        if (model === 'WikiPage' && (operation === 'create' || operation === 'upsert')) {
+          const a: any = args ?? {};
+          if (operation === 'create') {
+            const data = a.data ?? {};
+            if (data.scope === undefined && typeof data.pageType === 'string') {
+              const { defaultScopeForPageType } = await import('../services/knowledge/wikiScope');
+              args = { ...a, data: { ...data, scope: defaultScopeForPageType(data.pageType) } };
+            }
+          } else {
+            const create = a.create ?? {};
+            if (create.scope === undefined && typeof create.pageType === 'string') {
+              const { defaultScopeForPageType } = await import('../services/knowledge/wikiScope');
+              args = { ...a, create: { ...create, scope: defaultScopeForPageType(create.pageType) } };
+            }
+          }
+        }
+
         if (!TENANT_SCOPED_MODELS.has(model)) return query(args);
         const scope = currentTenant();
         if (!scope || scope.bypass) return query(args);

@@ -122,10 +122,14 @@ export async function searchWikiByVector(
     ? `AND page_type IN (${opts.pageTypes.map((t) => `'${t.replace(/'/g, "''")}'`).join(',')})`
     : `AND page_type NOT IN ('gap','tenant_index','tenant_log')`;
 
-  // Tenant-shared page types (org_doc, project, policy, decision, pattern)
-  // are readable by anyone in the tenant; other page types are per-user.
+  // Visibility filter — see services/knowledge/wikiScope.ts:
+  //   (scope='tenant' OR (scope='user' AND user_id=$me))
+  // The previous version inferred this from page_type, which broke the
+  // moment a user's personal answer/gap page slipped into the planner's
+  // index for another user.
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, title, page_type AS "pageType", body_markdown AS "bodyMarkdown", user_id AS "userId",
+            scope AS "scope",
             embedding <=> $1::vector AS distance,
             embedding_model AS model
        FROM wiki_pages
@@ -134,8 +138,8 @@ export async function searchWikiByVector(
         AND embedding IS NOT NULL
         AND embedding_model = $3
         AND (
-          user_id = $4
-          OR page_type IN ('org_doc','policy','project','decision','pattern','attachment_doc','entity_person','topic')
+          scope = 'tenant'
+          OR (scope = 'user' AND user_id = $4)
         )
         ${typeFilter}
       ORDER BY embedding <=> $1::vector

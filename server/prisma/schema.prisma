@@ -727,6 +727,11 @@ model WikiPage {
   outboundLinks   Int       @default(0) @map("outbound_links")
   sourceCount     Int       @default(0) @map("source_count")
   status          String    @default("active") @db.VarChar(20) // active | orphan | stale | contradicted | draft
+  // Visibility scope. 'user' = private to user_id; 'tenant' = shared
+  // across all users with this clientNumber. Retrieval filters:
+  //   WHERE client_number = $cn AND
+  //         (scope = 'tenant' OR (scope = 'user' AND user_id = $me))
+  scope           String    @default("user") @db.VarChar(10)
   confidence      Float?
   metadata        Json?
   lastUpdatedBy   String?   @map("last_updated_by") @db.VarChar(50) // wiki_scribe | user:<id> | lint

@@ -86,8 +86,16 @@ export async function upsertPage(input: UpsertInput): Promise<UpsertResult> {
 }
 
 export async function readPage(clientNumber: string, userId: number, pageId: string): Promise<WikiPage | null> {
+  // Visibility: tenant-scoped pages are readable by anyone in the
+  // tenant; user-scoped only by their owner. See wikiScope.ts.
   const row = await prisma.wikiPage.findFirst({
-    where: { id: pageId, clientNumber, userId } as any,
+    where: {
+      id: pageId, clientNumber,
+      OR: [
+        { scope: 'tenant' },
+        { scope: 'user', userId },
+      ],
+    } as any,
   });
   if (!row) return null;
   if (row.storage === 'notion' && !row.bodyMarkdown) {
