@@ -62,14 +62,95 @@ body {
   align-items: center; padding: 12px 0; gap: 4px;
 }
 .rail-btn {
+  position: relative;
   width: 36px; height: 36px; border-radius: var(--radius-sm); border: none;
   background: transparent; color: var(--text-tertiary);
   cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
 }
-.rail-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  transform: translateX(1px);
+}
 .rail-btn svg { width: 18px; height: 18px; }
 .rail-spacer { flex: 1; }
+
+/* Active-route highlight: a soft accent pill behind the icon + a 3px
+ * left bar showing which page the user is on. The bar is the recognition
+ * cue at a glance; the pill is the colour cue for the icon itself. */
+.rail-btn.is-active {
+  background: rgba(204, 107, 74, 0.14);
+  color: var(--accent, #cc6b4a);
+}
+.rail-btn.is-active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent, #cc6b4a);
+}
+
+/* Tooltip — pure CSS. Renders the rail-btn's [data-tip] value as a
+ * floating chip to the right of the icon on hover/focus. Replaces the
+ * native `title` attribute (which appears slowly, looks default-OS, and
+ * isn't keyboard-friendly). Instant, themed, and accessible. */
+.rail-btn[data-tip]:hover::after,
+.rail-btn[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: var(--bg-1, #1a1a22);
+  color: var(--text, #e5e7eb);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 10000;
+  pointer-events: none;
+  animation: railTipIn 140ms ease-out;
+}
+/* Little arrow on the tooltip pointing back at the icon */
+.rail-btn[data-tip]:hover::before,
+.rail-btn[data-tip]:focus-visible::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  width: 8px;
+  height: 8px;
+  background: var(--bg-1, #1a1a22);
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  z-index: 10000;
+  pointer-events: none;
+  animation: railTipIn 140ms ease-out;
+}
+/* Active-route already uses ::before for its bar — keep that visible
+ * even on hover by overriding the tooltip arrow only when hovering. */
+.rail-btn.is-active[data-tip]:hover::before,
+.rail-btn.is-active[data-tip]:focus-visible::before {
+  /* arrow takes precedence on hover; the active bar fades briefly */
+  background: var(--bg-1, #1a1a22);
+  width: 8px;
+  height: 8px;
+  left: calc(100% + 4px);
+  top: 50%;
+  border-radius: 0;
+}
+@keyframes railTipIn {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
 
 /* Day Brief — collapsible section header.
    Hover lifts the row visibly: tinted background, accent border, slight shift
