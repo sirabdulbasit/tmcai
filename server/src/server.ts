@@ -1,3 +1,14 @@
+// Force IPv4-first DNS resolution. On hosts where outbound IPv6 is broken
+// (e.g. our Ubuntu prod box where AAAA records resolve but IPv6 routing
+// is unreachable), Node's default IPv6-first preference makes every
+// outbound request to oauth2.googleapis.com (and other Google APIs) hang
+// until ETIMEDOUT — exactly the symptom that was breaking OAuth + token
+// refresh on prod. This MUST run before any module that opens a socket.
+// NODE_OPTIONS=--dns-result-order=ipv4first via .env is too late because
+// dotenv fires after Node has already initialised DNS resolver state.
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import './instrumentation';
 import dotenv from 'dotenv';
 dotenv.config();
