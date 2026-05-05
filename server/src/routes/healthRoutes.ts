@@ -176,8 +176,19 @@ router.get('/live', (_req, res) => {
  * L4.1 — HaseebOS v15 deep health check across all 13 monitored components.
  * Drives the Steering Wheel Health Check tab. Each component reports
  * `status: 'up' | 'degraded' | 'down'` + a `detail` string.
+ *
+ * Privacy: per-user / per-tenant checks (token_refresh, wiki, dlq) are
+ * scoped to the CALLING user — never leak another user's email or
+ * activity. Operator infrastructure checks (postgres / redis / pubsub /
+ * agent_worker / scheduler) are system-wide because they describe the
+ * machine, not any user's data.
  */
-router.get('/deep', async (_req, res) => {
+router.get('/deep', async (req, res) => {
+  // Pull caller identity. Endpoint is mounted under optionalAuth, so
+  // req.user may be missing for unauth health probes (uptime monitors).
+  // When missing → infrastructure-only view (no per-user details).
+  const callerUserId = (req as any).user?.id ?? null;
+  const callerClientNumber = (req as any).user?.clientNumber ?? null;
   const [
     postgres,
     redis,
@@ -202,11 +213,11 @@ router.get('/deep', async (_req, res) => {
     checkAgentWorker(),
     checkGeminiDeep(),
     checkHandlerRegistry(),
-    checkWikiHealth(),
-    checkDlqDepth(),
+    checkWikiHealth(callerClientNumber, callerUserId),
+    checkDlqDepth(callerClientNumber),
     checkNotificationQueue(),
     checkScheduler(),
-    checkTokenRefresh(),
+    checkTokenRefresh(callerUserId),
     checkCacheHitRate(),
   ]);
   const components = [
@@ -311,9 +322,17 @@ async function checkHandlerRegistry(): Promise<ComponentHealth> {
   }
 }
 
-async function checkDlqDepth(): Promise<ComponentHealth> {
+async function checkDlqDepth(clientNumber: string | null): Promise<ComponentHealth> {
   try {
-    const dlqCount = await prisma.feedEvent.count({ where: { status: 'dlq' } as any }).catch(() => 0);
+    // Tenant-scoped — never count another tenant's stuck events.
+    // Unauth probes get a tenant-agnostic OK so uptime monitors stay
+    // green without leaking cross-tenant volumes.
+    if (!clientNumber) {
+      return { name: 'dlq_depth', status: 'up', detail: 'auth required for tenant DLQ count' };
+    }
+    const dlqCount = await prisma.feedEvent.count({
+      where: { status: 'dlq', clientNumber } as any,
+    }).catch(() => 0);
     return {
       name: 'dlq_depth',
       status: dlqCount === 0 ? 'up' : dlqCount < 10 ? 'degraded' : 'down',
@@ -348,47 +367,67 @@ async function checkScheduler(): Promise<ComponentHealth> {
   }
 }
 
-async function checkTokenRefresh(): Promise<ComponentHealth> {
+async function checkTokenRefresh(userId: number | null): Promise<ComponentHealth> {
   try {
-    // Surface WHICH users are affected, not just the count. The UI
-    // translator parses this list and renders names so the user can
-    // act ("click Reconnect on basit.ahmed@tmcltd.ai") instead of
-    // hunting for it.
-    const expiring = await prisma.user.findMany({
-      where: {
-        integrationStatus: 'active',
-        integrationTokenExpiry: { lt: new Date(Date.now() + 10 * 60 * 1000) },
-      } as any,
-      select: { id: true, email: true, name: true, integrationProvider: true, integrationTokenExpiry: true } as any,
-      take: 10,
-    }).catch(() => [] as any[]);
-    const n = expiring.length;
-    if (n === 0) {
-      return { name: 'token_refresh', status: 'up', detail: 'all tokens valid >10m' };
+    // PRIVACY BOUNDARY — only check the CALLING user's own token. Never
+    // surface another user's email or expiry status, regardless of
+    // tenant or admin role. The Connectors page (where each user
+    // manages their own connectors) is the authoritative place for
+    // multi-user OAuth status; Health Check is a per-user status board.
+    //
+    // When userId is null (unauth health probe / uptime monitor), skip
+    // per-user checks and return generic OK.
+    if (!userId) {
+      return { name: 'token_refresh', status: 'up', detail: 'auth required for personal token status' };
     }
-    // Pack a structured tail the UI can split: count + comma-separated
-    // user identifiers. e.g. "2 user token(s) expire within 10m: basit.ahmed@tmcltd.ai (google), asad@tmcltd.ai (google)"
-    const idents = (expiring as any[]).map((u) => {
-      const provider = u.integrationProvider ? ` (${u.integrationProvider})` : '';
-      return `${u.email ?? u.name ?? `user#${u.id}`}${provider}`;
-    });
+    const me: any = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, integrationStatus: true, integrationTokenExpiry: true, integrationProvider: true } as any,
+    }).catch(() => null);
+    if (!me) {
+      return { name: 'token_refresh', status: 'up', detail: 'no integration on your account' };
+    }
+    const expiry = me.integrationTokenExpiry;
+    const isExpiring =
+      me.integrationStatus === 'active'
+      && expiry
+      && new Date(expiry).getTime() < Date.now() + 10 * 60 * 1000;
+    if (!isExpiring) {
+      return { name: 'token_refresh', status: 'up', detail: 'your token is valid >10m' };
+    }
+    const provider = me.integrationProvider ? ` (${me.integrationProvider})` : '';
     return {
       name: 'token_refresh',
       status: 'degraded',
-      detail: `${n} user token(s) expire within 10m: ${idents.join(', ')}`,
+      detail: `your token expires within 10m: ${me.email}${provider}`,
     };
   } catch (err: any) {
     return { name: 'token_refresh', status: 'down', detail: err.message };
   }
 }
 
-async function checkWikiHealth(): Promise<ComponentHealth> {
+async function checkWikiHealth(clientNumber: string | null, userId: number | null): Promise<ComponentHealth> {
   try {
+    // Tenant-scoped + user-aware. Counts include:
+    //   - tenant-shared pages (org_doc, project, policy, etc.) for the
+    //     calling user's tenant
+    //   - the calling user's OWN private pages (sender_history, gap, etc.)
+    // Never counts another user's private pages or another tenant's data.
+    if (!clientNumber) {
+      return { name: 'wiki', status: 'up', detail: 'auth required for wiki status' };
+    }
+    const visibilityWhere: any = {
+      clientNumber,
+      OR: [
+        { scope: 'tenant' },
+        ...(userId ? [{ scope: 'user', userId }] : []),
+      ],
+    };
     const [pageCount, contradicted, stale, orphans] = await Promise.all([
-      prisma.wikiPage.count({}),
-      prisma.wikiPage.count({ where: { status: 'contradicted' } as any }),
-      prisma.wikiPage.count({ where: { status: 'stale' } as any }),
-      prisma.wikiPage.count({ where: { inboundLinks: 0, outboundLinks: 0 } as any }),
+      prisma.wikiPage.count({ where: visibilityWhere }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, status: 'contradicted' } as any }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, status: 'stale' } as any }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, inboundLinks: 0, outboundLinks: 0 } as any }),
     ]);
     // Triage rules — old logic flagged anything with > 9 orphans as DOWN,
     // which was wildly aggressive: a healthy wiki naturally has hundreds of
