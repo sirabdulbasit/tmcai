@@ -48,12 +48,16 @@ router.get('/', async (req: Request, res: Response) => {
     const args: any[] = [req.user!.clientNumber, req.user!.id, userIdJson];
     if (titleFilter) args.push(`%${q.toLowerCase()}%`);
     const rawRows = await prisma.$queryRawUnsafe<any[]>(
+      // Status filter: hide archived (junk_filter / self_contact) and
+      // deleted/contradicted. Keep active + orphan + stale — the wiki
+      // linter marks contacts as 'orphan' when nothing else links to
+      // them but they're still legitimate contacts.
       `SELECT id, title, last_updated_at AS "lastUpdatedAt", status, confidence,
               metadata, user_id AS "userId"
          FROM wiki_pages
         WHERE client_number = $1
           AND page_type = 'entity_person'
-          AND status <> 'deleted'
+          AND status NOT IN ('archived', 'deleted', 'contradicted')
           AND (
             user_id = $2
             OR metadata->>'scope' = 'tenant'

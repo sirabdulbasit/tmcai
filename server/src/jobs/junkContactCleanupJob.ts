@@ -55,10 +55,14 @@ export async function runJunkContactCleanup(): Promise<JunkCleanupResult> {
   const rows = await prisma.$queryRawUnsafe<Array<{
     id: string; client_number: string; user_id: number; metadata: any;
   }>>(
+    // Include 'orphan' too — the wiki linter marks contact rows as
+    // orphan when nothing links to them, but the contacts UI still
+    // surfaces them so cleanup must scan them as well. 'archived' and
+    // 'deleted' are already terminal so we skip those.
     `SELECT id, client_number, user_id, metadata
        FROM wiki_pages
       WHERE page_type = 'entity_person'
-        AND status = 'active'`,
+        AND status IN ('active', 'orphan')`,
   ).catch((err) => { log.warn('candidate query failed', { err: err.message }); return [] as any[]; });
 
   out.scanned = rows.length;
@@ -83,7 +87,7 @@ export async function runJunkContactCleanup(): Promise<JunkCleanupResult> {
                 last_updated_at = NOW(),
                 last_updated_by = 'junk_contact_cleanup_cron',
                 metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
-          WHERE id = $2 AND status = 'active'`,  // guard against double-archive
+          WHERE id = $2 AND status IN ('active', 'orphan')`,  // guard against double-archive
         JSON.stringify({
           archivedReason: isSelf ? 'self_contact' : 'junk_filter',
           archivedAt: new Date().toISOString(),

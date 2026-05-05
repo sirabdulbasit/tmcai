@@ -66,7 +66,15 @@ const REJECT_LOCAL_SUFFIX = [
 
 export function isLikelyAutomated(email: string | null | undefined): boolean {
   if (!email) return false;
-  const e = String(email).trim().toLowerCase();
+  // Some entity_person rows store the email as the full RFC2822 form
+  // ("Anthropic <no-reply-xyz@mail.anthropic.com>") — strip everything
+  // outside the angle brackets first, then any leading "Name " prefix.
+  // Without this, prefix matches like 'no-reply-' fail because the
+  // local-part is read as "<no-reply-xyz".
+  let raw = String(email).trim().toLowerCase();
+  const angle = raw.match(/<([^>]+@[^>]+)>/);
+  if (angle) raw = angle[1]!.trim();
+  const e = raw;
   if (!e.includes('@')) return false;
   const local = e.split('@')[0]!;
 
