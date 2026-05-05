@@ -120,7 +120,7 @@ export async function readEmail(userId: number, messageId: string): Promise<{ em
 
 // ─── Send email ───────────────────────────────────────────────
 
-export async function sendUserEmail(userId: number, to: string, subject: string, body: string, cc?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+export async function sendUserEmail(userId: number, to: string, subject: string, body: string, cc?: string): Promise<{ success: boolean; messageId?: string; threadId?: string; error?: string }> {
   const { client, error } = await getAuthenticatedClient(userId);
   if (!client) return { success: false, error };
 
@@ -167,7 +167,11 @@ export async function sendUserEmail(userId: number, to: string, subject: string,
       } catch { /* best-effort; never block the send */ }
     })();
 
-    return { success: true, messageId: response.data.id || undefined };
+    return {
+      success: true,
+      messageId: response.data.id || undefined,
+      threadId: response.data.threadId || undefined,
+    };
   } catch (err: any) {
     return { success: false, error: `Send failed: ${err.message}` };
   }

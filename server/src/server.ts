@@ -103,13 +103,18 @@ const server = app.listen(env.port, async () => {
     }, 60 * 60 * 1000);
   }, 5 * 60 * 1000);
 
-  // Brain prompt queue — producer sweep + expiry sweep, both every 30 min.
-  //   Producer: scans new auto-created open items missing a deadline /
-  //     missing an owner / critical-with-pending-deadline, enqueues the
-  //     right kind of prompt so Brain has something to ask the user
-  //     conversationally instead of guessing.
-  //   Expiry: auto-skips prompts past 48h TTL so a silent user doesn't
-  //     deadlock the queue forever; advances to the next prompt.
+  // Brain prompt queue — producer sweep + expiry sweep + delegatee email,
+  // all every 30 min.
+  //   Producer:        scans new auto-created open items missing a
+  //                    deadline / missing an owner / critical-with-pending-
+  //                    deadline, enqueues the right WhatsApp prompt for
+  //                    the user.
+  //   Expiry:          auto-skips prompts past 48h TTL so a silent user
+  //                    doesn't deadlock the queue forever.
+  //   Delegatee email: items DELEGATED with a delegateeEmail but no
+  //                    dueDate get an email from the user's Gmail asking
+  //                    "by when?". Reply matched on threadId by the feed
+  //                    ingestion handler updates dueDate automatically.
   setTimeout(() => {
     import('./services/brainPrompts/producerSweep')
       .then(({ runProducerSweep }) => runProducerSweep())
@@ -117,6 +122,9 @@ const server = app.listen(env.port, async () => {
     import('./services/brainPrompts/brainPromptQueueService')
       .then(({ expireStalePrompts }) => expireStalePrompts())
       .catch((err) => console.warn('Expiry sweep failed:', err.message));
+    import('./services/brainPrompts/delegateeEmailProducer')
+      .then(({ runDelegateeEmailSweep }) => runDelegateeEmailSweep())
+      .catch((err) => console.warn('Delegatee email sweep failed:', err.message));
     setInterval(() => {
       import('./services/brainPrompts/producerSweep')
         .then(({ runProducerSweep }) => runProducerSweep())
@@ -124,6 +132,9 @@ const server = app.listen(env.port, async () => {
       import('./services/brainPrompts/brainPromptQueueService')
         .then(({ expireStalePrompts }) => expireStalePrompts())
         .catch((err) => console.warn('Expiry sweep failed:', err.message));
+      import('./services/brainPrompts/delegateeEmailProducer')
+        .then(({ runDelegateeEmailSweep }) => runDelegateeEmailSweep())
+        .catch((err) => console.warn('Delegatee email sweep failed:', err.message));
     }, 30 * 60 * 1000);
   }, 6 * 60 * 1000);
   // Agent scheduler: initialize all scheduled agents

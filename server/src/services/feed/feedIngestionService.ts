@@ -262,6 +262,31 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
       })();
     }
 
+    // MyOS — Delegatee reply matcher. When the user previously emailed a
+    // delegatee asking "by when?" via delegateeEmailProducer, Brain
+    // stamped the open item with metadata.deadlineInquiry.threadId. This
+    // hook matches inbound gmail events on threadId, parses the body for
+    // a date phrase, updates dueDate, and notifies the user via the
+    // prompt queue. Fire-and-forget: never blocks ingestion.
+    if (input.userId && input.sourceType === 'gmail' && sender?.email) {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const threadId: string | null = p.threadId ?? p.gmailThreadId ?? null;
+          if (!threadId) return;
+          const { checkInboundForDelegateeReply } = await import('../brainPrompts/delegateeReplyHandler');
+          await checkInboundForDelegateeReply({
+            clientNumber: input.clientNumber,
+            threadId,
+            senderEmail: sender.email ?? null,
+            body: String(p.body ?? p.snippet ?? ''),
+          });
+        } catch (err: any) {
+          console.warn(`[delegateeReply] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
     // MyOS Knowledge — email_message page per Gmail message. Captures
     // the full body (HTML → plaintext) so Brain has "the actual content",
     // not just the 280-char snippet. Fire-and-forget from the ingest path.
