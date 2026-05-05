@@ -12,6 +12,7 @@ import ContactsPage from './ContactsPage';
 // components/steering/ActionForms.jsx and re-importable for admin/dev pages.
 import SettingsPage from './SettingsPage';
 import AdminPage from './AdminPage';
+import HowBrainWorksPage from './HowBrainWorksPage';
 import {
   AppShell, Canvas, Rail, RailLogo, RailSection, RailSpacer, RailButton,
   TopBar, TopBarTitle, TopBarSearch, TopBarUser, TopBarTenant,
@@ -41,6 +42,7 @@ const TABS = [
   { key: 'connectors',label: 'Connectors',      icon: 'external', group: 'knowledge', render: () => <ConnectorsPage /> },
   { key: 'custom',    label: 'Custom Actions',  icon: 'wand',     group: 'knowledge', render: () => <CustomActionTab /> },
   { key: 'health',    label: 'Health Check',    icon: 'pulse',    group: 'ops',       render: () => <HealthCheckTab /> },
+  { key: 'how',       label: 'How Brain Works', icon: 'help',     group: 'ops',       render: () => <HowBrainWorksPage /> },
   { key: 'settings',  label: 'Settings',        icon: 'user',     group: 'ops',       render: () => <SettingsPage /> },
 ];
 const ADMIN_TAB = { key: 'admin', label: 'Admin / Client Config', icon: 'settings', group: 'ops', render: () => <AdminPage /> };

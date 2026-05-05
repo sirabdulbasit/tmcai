@@ -34,6 +34,9 @@ const PATHS = {
   // Wand — used for Custom Actions to differentiate from the gear icon
   // that Admin / Settings already share.
   wand: (<g><path d="M15 4V2" /><path d="M15 16v-2" /><path d="M8 9h2" /><path d="M20 9h2" /><path d="M17.8 11.8 19 13" /><path d="M15 9h0" /><path d="M17.8 6.2 19 5" /><path d="m3 21 9-9" /><path d="M12.2 6.2 11 5" /></g>),
+  // Lightbulb — used for "How Brain Works" rail tab. Universal
+  // "explain / learn / discover" affordance.
+  help: (<g><path d="M9 18h6" /><path d="M10 22h4" /><path d="M12 2a7 7 0 0 0-4 12.7c.7.5 1.3 1.2 1.7 2L10 18h4l.3-1.3c.4-.8 1-1.5 1.7-2A7 7 0 0 0 12 2z" /></g>),
 };
 
 export function Icon({ name, size = 20, className = '', ...rest }) {
