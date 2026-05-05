@@ -55,6 +55,11 @@ server/whatsapp-sessions/
 # inside the relevant code package, not these folders.
 reference/
 docs/
+# Exception: server/docs/ holds the canonical architecture .md that
+# downstream views (Operations Manual wiki seed + How Brain Works
+# visual page) derive from. Must ship with the deployment artifact.
+!server/docs/
+!server/docs/**
 
 # Per-tenant Meta WhatsApp session — explicitly extra layer beyond the
 # whatsapp-sessions/ rule above; some tooling lives in subdirs.

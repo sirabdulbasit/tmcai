@@ -23,12 +23,59 @@
  *   npx ts-node src/scripts/seedOpsManual.ts TMC-0001         # one tenant
  */
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import prisma from '../db/prisma';
 
 const TITLE = 'MyOS Operations Manual';
 const PAGE_TYPE = 'org_doc';
 
+/**
+ * Single source of truth lives at docs/brain_architecture.md. We read
+ * it at run time so a stale embedded copy can never drift from the
+ * canonical doc. The seed script trims the doc's "Single source of
+ * truth..." preamble (since that's meta-commentary about the doc, not
+ * Brain's behaviour) and prepends the manual title.
+ */
 function manualBody(): string {
+  // Canonical doc lives at server/docs/brain_architecture.md. Path
+  // resolution covers both modes:
+  //   - ts-node from src/scripts/  → ../../docs/brain_architecture.md
+  //   - compiled to dist/scripts/  → ../../docs/brain_architecture.md
+  // The repo's top-level docs/ is gitignored, so we keep ours under
+  // server/ where it ships with the deployment artifact.
+  const candidates = [
+    path.resolve(__dirname, '../../docs/brain_architecture.md'),
+    path.resolve(__dirname, '../../../server/docs/brain_architecture.md'),
+  ];
+  let raw = '';
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { raw = fs.readFileSync(p, 'utf-8'); break; }
+  }
+  if (raw) {
+    // Strip the doc's blockquote preamble (between "# Brain — Operations
+    // Architecture" and the first "## 1." section). The Operations
+    // Manual is the same content but with a tenant-facing intro.
+    const firstSection = raw.indexOf('## 1.');
+    const body = firstSection > 0 ? raw.slice(firstSection) : raw;
+    return [
+      '# MyOS Operations Manual',
+      '',
+      'This is Brain\'s own description of how Brain works. Read this when the user asks operational questions like "how do you decide what becomes an open item?" or "when do you call me on the phone?"',
+      '',
+      'When someone asks about Brain\'s behaviour, quote from the relevant numbered section below. When the answer isn\'t here, say "I don\'t have that documented yet" rather than inventing details.',
+      '',
+      body,
+      '',
+      '_Generated from docs/brain_architecture.md by seedOpsManual on every deploy._',
+    ].join('\n');
+  }
+  // Fall back to the prior embedded copy when the .md isn't present in
+  // the deployed image (shouldn't happen — the file is checked in).
+  return manualBodyEmbedded();
+}
+
+function manualBodyEmbedded(): string {
   return `# MyOS Operations Manual
 
 This is Brain's own description of how Brain works. Read this when the user asks operational questions like "how do you decide what becomes an open item?" or "when do you call me on the phone?"

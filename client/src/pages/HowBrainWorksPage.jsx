@@ -16,7 +16,9 @@
  * Colors use the existing design tokens (var(--text), var(--accent),
  * etc.) so the page automatically follows light/dark theme changes.
  */
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import api from '../services/api';
 
 const COL = {
   bg: 'var(--bg-2)',
@@ -34,17 +36,57 @@ const COL = {
 
 export default function HowBrainWorksPage() {
   const navigate = useNavigate();
+  // Live state — per-user + per-tenant annotations layered on top of
+  // the generic skeleton. The shape of Brain is the same for everyone;
+  // what differs is each user's connectors, overlay rules, and queue.
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const out = { capabilities: null, overlay: [] };
+      try { const r = await api.get('/health/deep'); out.health = r.data; } catch {}
+      try { const r = await api.get('/brain/overlay'); out.overlay = r.data?.rules ?? []; } catch {}
+      try { const r = await api.get('/me/capabilities'); out.capabilities = r.data; } catch {}
+      if (!cancelled) setLive(out);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <div style={{ height: '100vh', overflowY: 'auto', background: 'var(--bg-1)' }}>
       <div style={{ maxWidth: 980, margin: '0 auto', padding: '32px 28px 80px' }}>
         <Header onBack={() => navigate(-1)} />
-        <Section1Inputs />
-        <Section2Understanding />
-        <Section3Surfaces />
-        <Section4Conversation />
-        <Section5Learning />
+        <Section1Inputs live={live} />
+        <Section2Understanding live={live} />
+        <Section3Surfaces live={live} />
+        <Section4Conversation live={live} />
+        <Section5Learning live={live} navigate={navigate} />
+        <Section6SelfRebuild live={live} />
         <Footer onBack={() => navigate('/day-brief')} />
       </div>
+    </div>
+  );
+}
+
+// ─── Live annotation card — rendered inside section bodies ────────
+// Tone: friendly status report ("Right now, on YOUR Brain: ..."). Renders
+// nothing when live state hasn't loaded yet so the skeleton is always
+// visible first. Always tinted with COL.accent2 to mark "this is YOUR
+// reality, not the design".
+function LiveAnnotation({ children, dim = false }) {
+  if (!children) return null;
+  return (
+    <div style={{
+      marginTop: 14, padding: '10px 14px',
+      background: dim ? 'rgba(255,255,255,0.02)' : 'rgba(99,102,241,0.08)',
+      border: `1px solid ${dim ? COL.border : 'rgba(99,102,241,0.3)'}`,
+      borderRadius: 8, fontSize: 13, color: COL.text, lineHeight: 1.5,
+    }}>
+      <span style={{ fontWeight: 600, color: COL.accent2, marginRight: 8 }}>
+        On your Brain right now:
+      </span>
+      {children}
     </div>
   );
 }
@@ -106,7 +148,28 @@ function SectionCard({ number, title, lead, children, action }) {
 }
 
 // ─── Section 1 — Inputs ──────────────────────────────────────────────
-function Section1Inputs() {
+function Section1Inputs({ live }) {
+  // Pull connector state from the health-deep payload (which already
+  // surfaces feed_adapters, token_refresh, dlq_depth) — those are
+  // tenant-wide AND per-user signals together.
+  const liveText = (() => {
+    const caps = live?.capabilities;
+    if (!caps) return null;
+    const connected = (caps.userConnectors ?? []).filter((c) => c.status === 'connected').map((c) => c.slug);
+    const failing = (caps.userConnectors ?? []).filter((c) => c.status !== 'connected').map((c) => c.slug);
+    const f = caps.feedCounts30d ?? {};
+    const feedBits = [];
+    if (f.gmail) feedBits.push(`${f.gmail.toLocaleString()} emails`);
+    if (f.gcal || f.calendar) feedBits.push(`${(f.gcal ?? f.calendar).toLocaleString()} calendar events`);
+    if (f.whatsapp) feedBits.push(`${f.whatsapp.toLocaleString()} WhatsApp messages`);
+    return (
+      <>
+        Connected: <strong>{connected.length ? connected.join(', ') : 'none'}</strong>
+        {failing.length ? <> · Needs reconnect: <strong>{failing.join(', ')}</strong></> : ''}
+        {feedBits.length ? <> · Last 30 days: {feedBits.join(', ')}</> : ''}
+      </>
+    );
+  })();
   return (
     <SectionCard
       number="1"
@@ -115,6 +178,7 @@ function Section1Inputs() {
       action="Visit Connectors to see what's connected and reconnect any expired tokens."
     >
       <InputsDiagram />
+      <LiveAnnotation>{liveText}</LiveAnnotation>
     </SectionCard>
   );
 }
@@ -158,7 +222,20 @@ function InputsDiagram() {
 }
 
 // ─── Section 2 — Understanding (wiki + scope) ────────────────────────
-function Section2Understanding() {
+function Section2Understanding({ live }) {
+  const liveText = (() => {
+    const w = live?.capabilities?.wikiStats;
+    if (!w) return null;
+    const bits = [];
+    if (w.orgDocs) bits.push(`${w.orgDocs} org docs (tenant)`);
+    if (w.projects) bits.push(`${w.projects} project pages`);
+    if (w.policies) bits.push(`${w.policies} policy pages`);
+    if (w.entities) bits.push(`${w.entities} contact pages`);
+    if (w.senderHistories) bits.push(`${w.senderHistories} sender histories (yours)`);
+    if (w.senderTopics) bits.push(`${w.senderTopics} sender-topic pages (yours)`);
+    if (w.gaps) bits.push(`${w.gaps} known gaps`);
+    return bits.length ? <>Brain has built {bits.join(', ')} for you so far.</> : null;
+  })();
   return (
     <SectionCard
       number="2"
@@ -167,6 +244,7 @@ function Section2Understanding() {
       action="Visit My Brain → wiki to browse what Brain has learned, or My Rules → Learned Preferences to see directives Brain has picked up from your feedback."
     >
       <UnderstandingDiagram />
+      <LiveAnnotation>{liveText}</LiveAnnotation>
     </SectionCard>
   );
 }
@@ -239,7 +317,8 @@ function UnderstandingDiagram() {
 }
 
 // ─── Section 3 — Surfaces ────────────────────────────────────────────
-function Section3Surfaces() {
+function Section3Surfaces({ live }) {
+  void live;
   const surfaces = [
     {
       icon: '☀',
@@ -298,7 +377,20 @@ function Section3Surfaces() {
 }
 
 // ─── Section 4 — Conversation (sequential queue + criticality) ──────
-function Section4Conversation() {
+function Section4Conversation({ live }) {
+  const liveText = (() => {
+    const q = live?.capabilities?.promptQueue;
+    if (!q) return null;
+    const bits = [];
+    if (q.awaitingReplyTitle) {
+      bits.push(<>Waiting on your reply: <em>"{q.awaitingReplyTitle}"</em></>);
+    }
+    if (q.queued > 0) bits.push(`${q.queued} more prompt${q.queued === 1 ? '' : 's'} queued`);
+    if (q.sentLast24h > 0) bits.push(`${q.sentLast24h} sent in the last 24h`);
+    if (q.answeredLast7d > 0) bits.push(`you answered ${q.answeredLast7d} in the last 7d`);
+    if (!bits.length) return <>No prompts active right now — Brain is quiet.</>;
+    return <>{bits.reduce((acc, b, i) => acc.length === 0 ? [b] : [...acc, ' · ', b], [])}</>;
+  })();
   return (
     <SectionCard
       number="4"
@@ -307,6 +399,7 @@ function Section4Conversation() {
       action="If Brain is asking too often or about things you don't care about, click 👎 in chat — Brain learns to back off. To pause prompts entirely, set quiet hours in your Brain Channel preferences."
     >
       <ConversationDiagram />
+      <LiveAnnotation>{liveText}</LiveAnnotation>
     </SectionCard>
   );
 }
@@ -358,7 +451,28 @@ function ConversationDiagram() {
 }
 
 // ─── Section 5 — Learning (feedback loop) ────────────────────────────
-function Section5Learning() {
+function Section5Learning({ live, navigate }) {
+  const overlay = live?.overlay ?? [];
+  const activeRules = overlay.filter((r) => r.active);
+  const liveText = (() => {
+    if (!live) return null;
+    if (activeRules.length === 0) {
+      return <>No rules learned yet — Brain is still neutral. Click 👎 on any answer that misses to start teaching it.</>;
+    }
+    const cats = Array.from(new Set(activeRules.map((r) => r.category))).slice(0, 4);
+    return (
+      <>
+        Brain has learned <strong>{activeRules.length}</strong> rule{activeRules.length === 1 ? '' : 's'} from your feedback so far
+        {cats.length ? <> (categories: {cats.join(', ')})</> : ''}
+        {' '}—{' '}
+        <button
+          type="button"
+          onClick={() => navigate('/brain?subtab=overlay')}
+          style={{ background: 'transparent', border: 'none', color: COL.accent2, cursor: 'pointer', padding: 0, fontSize: 13, textDecoration: 'underline' }}
+        >review them</button>.
+      </>
+    );
+  })();
   return (
     <SectionCard
       number="5"
@@ -367,6 +481,69 @@ function Section5Learning() {
       action="Click 👎 (and pick a quick category) on any Brain answer that misses. Visit My Rules → Learned Preferences to review what Brain has learned, edit a rule, or reset everything."
     >
       <LearningDiagram />
+      <LiveAnnotation>{liveText}</LiveAnnotation>
+    </SectionCard>
+  );
+}
+
+// ─── Section 6 — Self-rebuild spectrum ──────────────────────────────
+// Addresses the user's question: "what if Brain rebuilds itself based on
+// experience?" Layers 1-2 are live. Layers 3-4 are buildable. Layer 5 is
+// off-limits by design.
+function Section6SelfRebuild({ live }) {
+  void live;
+  const layers = [
+    { n: 1, label: 'Numeric calibration',     today: 'live',     color: COL.good,   desc: 'Criticality threshold drift, retrieval boosts, prompt usage counts.' },
+    { n: 2, label: 'Personal directives',      today: 'live',     color: COL.good,   desc: 'Per-user overlay rules auto-promoted from feedback (Phase B).' },
+    { n: 3, label: 'Tenant-shared learnings',  today: 'planned',  color: COL.warn,   desc: 'Rules other users in your tenant inherit. Requires admin review before propagation.' },
+    { n: 4, label: 'Architecture amendments',  today: 'planned',  color: COL.warn,   desc: 'Brain proposes additions to brain_architecture.md when it spots recurring patterns. You review + approve before merge.' },
+    { n: 5, label: 'Code rewriting',           today: 'never',    color: COL.danger, desc: 'Brain modifies its own TypeScript source. Off-limits by design — security boundary, goes through git review.' },
+  ];
+  return (
+    <SectionCard
+      number="6"
+      title="The self-rebuild spectrum"
+      lead={`"What if Brain rebuilds itself based on experience?" — five levels, by ascending agency. Higher levels = more change power, more user oversight required.`}
+      action="Brain proposes; you dispose. Anything that affects more than one user, or that adds to the architecture doc, requires human approval. The rule is non-negotiable."
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {layers.map((L) => (
+          <div key={L.n} style={{
+            display: 'flex', alignItems: 'center', gap: 14,
+            padding: '12px 16px', borderRadius: 10,
+            background: `${L.color}10`, border: `1px solid ${L.color}55`,
+          }}>
+            <div style={{
+              minWidth: 40, height: 40, borderRadius: 10,
+              background: `${L.color}25`, color: L.color,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontWeight: 700, fontSize: 16,
+            }}>{L.n}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, color: COL.text, fontSize: 14 }}>{L.label}</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600,
+                  padding: '2px 8px', borderRadius: 4,
+                  background: L.today === 'live' ? `${COL.good}25`
+                            : L.today === 'never' ? `${COL.danger}25`
+                            : `${COL.warn}25`,
+                  color: L.today === 'live' ? COL.good
+                        : L.today === 'never' ? COL.danger
+                        : COL.warn,
+                }}>
+                  {L.today === 'live' ? '✓ live today'
+                    : L.today === 'never' ? '⊘ never (by design)'
+                    : '○ planned'}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: COL.muted, marginTop: 4, lineHeight: 1.45 }}>
+                {L.desc}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </SectionCard>
   );
 }
