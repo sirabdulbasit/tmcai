@@ -127,10 +127,26 @@ router.get('/oauth/callback', async (req: Request, res: Response) => {
   const result = await connectorService.handleOAuthCallback(code, state);
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5174';
 
+  // Honor returnTo from state — set when an admin started the OAuth flow
+  // from /admin/client-connectors so they land back there ready to click
+  // Connect once more, not on the user's /connectors page (the original
+  // bug: admin trying to connect tenant-level Drive ended up stranded
+  // on the personal Connectors tab).
+  let returnTo: string | null = null;
+  try {
+    const parsed = JSON.parse(state);
+    if (typeof parsed?.returnTo === 'string' && parsed.returnTo.startsWith('/')) {
+      returnTo = parsed.returnTo;
+    }
+  } catch { /* invalid state — fall through to default redirect */ }
+
+  const baseRedirect = returnTo ?? '/connectors';
+  const sep = baseRedirect.includes('?') ? '&' : '?';
+
   if (result.success) {
-    res.redirect(`${clientUrl}/connectors?connected=${result.slug}&success=true`);
+    res.redirect(`${clientUrl}${baseRedirect}${sep}connected=${result.slug}&success=true`);
   } else {
-    res.redirect(`${clientUrl}/connectors?error=${encodeURIComponent(result.error || 'Connection failed')}`);
+    res.redirect(`${clientUrl}${baseRedirect}${sep}error=${encodeURIComponent(result.error || 'Connection failed')}`);
   }
 });
 

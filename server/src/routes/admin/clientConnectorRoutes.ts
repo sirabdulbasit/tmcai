@@ -345,7 +345,12 @@ router.post('/client-connectors/:slug/connect', requireAdmin, async (req: Reques
         const gmailType = await prisma.connectorType.findFirst({ where: { slug: 'gmail' }, select: { id: true } });
         if (gmailType) {
           const { getOAuthUrl } = await import('../../services/connectorService');
-          const r = await getOAuthUrl(me.id, gmailType.id);
+          // Pass returnTo so the OAuth callback redirects the admin back
+          // to the Client Connectors tab — and stamp ?retryConnect=<slug>
+          // so the page can auto-fire the second click after the round-trip.
+          const r = await getOAuthUrl(me.id, gmailType.id, undefined, {
+            returnTo: `/?tab=admin&subtab=connectors&retryConnect=${encodeURIComponent(slug)}`,
+          });
           if (r.url) oauthRedirectTo = r.url;
         }
       } catch { /* fall back to /connectors page */ }

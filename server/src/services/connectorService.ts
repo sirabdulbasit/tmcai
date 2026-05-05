@@ -575,7 +575,12 @@ async function testCredentials(
 // ═══════════════════════════════════════════════════════════════════
 
 /** Get OAuth URL for a connector that requires OAuth2 */
-export async function getOAuthUrl(userId: number, connectorTypeId: string, userConfig?: Record<string, unknown>): Promise<{ url?: string; error?: string }> {
+export async function getOAuthUrl(
+  userId: number,
+  connectorTypeId: string,
+  userConfig?: Record<string, unknown>,
+  options?: { returnTo?: string },
+): Promise<{ url?: string; error?: string }> {
   const connectorType = await prisma.connectorType.findUnique({ where: { id: connectorTypeId } });
   if (!connectorType || connectorType.authMethod !== 'oauth2') {
     return { error: 'This connector does not use OAuth' };
@@ -630,8 +635,15 @@ export async function getOAuthUrl(userId: number, connectorTypeId: string, userC
         access_type: 'offline',
         prompt: 'consent',
         scope: ALL_GOOGLE_SCOPES,
-        // Pass which connector triggered this + all Google connector IDs so callback can mark them all
-        state: JSON.stringify({ userId, connectorTypeId, clientId, clientSecret, markAllGoogle: true }),
+        // Pass which connector triggered this + all Google connector IDs so callback can mark them all.
+        // returnTo lets the caller (e.g. admin client-connectors page) tell
+        // the OAuth callback to redirect back to where the flow started
+        // instead of the default /connectors page — fixes the "I went
+        // through Google consent and ended up on the wrong page" UX.
+        state: JSON.stringify({
+          userId, connectorTypeId, clientId, clientSecret, markAllGoogle: true,
+          returnTo: options?.returnTo ?? null,
+        }),
       });
       return { url };
     } catch (err: any) {

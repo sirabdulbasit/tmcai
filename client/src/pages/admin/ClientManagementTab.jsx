@@ -373,6 +373,27 @@ function ClientConnectorsSection({ user, tenants }) {
   };
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [effective]);
 
+  // After Google OAuth redirects the admin back to /?tab=admin&subtab=connectors&retryConnect=<slug>,
+  // auto-fire the Connect call once so the user doesn't have to click again.
+  // Strip the param from the URL so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const retrySlug = params.get('retryConnect');
+    if (retrySlug && effective) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('retryConnect');
+      url.searchParams.delete('connected');
+      url.searchParams.delete('success');
+      window.history.replaceState({}, '', url.toString());
+      // Slight delay so the page state has loaded.
+      const t = setTimeout(() => {
+        doConnect(retrySlug);
+      }, 400);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effective]);
+
   const openFolder = (item) => setModal({ kind: 'folder', slug: item.slug, item });
 
   // One-click Connect. No modal. Server returns 409 + oauthRedirectTo if
