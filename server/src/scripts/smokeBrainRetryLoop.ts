@@ -159,6 +159,11 @@ async function main() {
 
   // ── Cleanup ────────────────────────────────────────────────
   await cleanup(user.id);
+  // Test 2 fired a fire-and-forget diagnosis (subjectType=observation,
+  // awaitDiagnosis=false) — give it 800ms to land before disconnecting,
+  // otherwise we get a "Engine is not yet connected" warning AFTER our
+  // success banner that confuses tail -2 smoke harnesses.
+  await new Promise((r) => setTimeout(r, 800));
   console.log('\n[smoke] ✅ all phase-A assertions passed');
   await prisma.$disconnect();
 }

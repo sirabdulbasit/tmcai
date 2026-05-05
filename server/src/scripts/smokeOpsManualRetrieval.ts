@@ -147,10 +147,15 @@ async function main() {
     where: { userId: user.id, metadata: { path: ['smoke_manual'], equals: true } as any },
   });
   void awaiting;
+  // Print the rendered preview FIRST so the success banner remains the
+  // final line of stdout — makes `tail -2` style smoke harnesses report
+  // green correctly.
+  if (process.env.SMOKE_VERBOSE) {
+    console.log('\nRendered capabilities block preview:');
+    console.log('---');
+    console.log(block.slice(0, 800));
+  }
   console.log('\n[smoke] ✅ all ops-manual retrieval assertions passed');
-  console.log('\nRendered capabilities block preview:');
-  console.log('---');
-  console.log(block.slice(0, 800));
   await prisma.$disconnect();
 }
 
