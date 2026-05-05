@@ -102,6 +102,30 @@ const server = app.listen(env.port, async () => {
         .catch((err) => console.warn('Followup sweep failed:', err.message));
     }, 60 * 60 * 1000);
   }, 5 * 60 * 1000);
+
+  // Brain prompt queue — producer sweep + expiry sweep, both every 30 min.
+  //   Producer: scans new auto-created open items missing a deadline /
+  //     missing an owner / critical-with-pending-deadline, enqueues the
+  //     right kind of prompt so Brain has something to ask the user
+  //     conversationally instead of guessing.
+  //   Expiry: auto-skips prompts past 48h TTL so a silent user doesn't
+  //     deadlock the queue forever; advances to the next prompt.
+  setTimeout(() => {
+    import('./services/brainPrompts/producerSweep')
+      .then(({ runProducerSweep }) => runProducerSweep())
+      .catch((err) => console.warn('Producer sweep failed:', err.message));
+    import('./services/brainPrompts/brainPromptQueueService')
+      .then(({ expireStalePrompts }) => expireStalePrompts())
+      .catch((err) => console.warn('Expiry sweep failed:', err.message));
+    setInterval(() => {
+      import('./services/brainPrompts/producerSweep')
+        .then(({ runProducerSweep }) => runProducerSweep())
+        .catch((err) => console.warn('Producer sweep failed:', err.message));
+      import('./services/brainPrompts/brainPromptQueueService')
+        .then(({ expireStalePrompts }) => expireStalePrompts())
+        .catch((err) => console.warn('Expiry sweep failed:', err.message));
+    }, 30 * 60 * 1000);
+  }, 6 * 60 * 1000);
   // Agent scheduler: initialize all scheduled agents
   import('./agents/agentScheduler').then(({ initializeAgentScheduler }) => {
     initializeAgentScheduler().then(() => console.log('[Agents] Scheduler initialized')).catch(() => {});
