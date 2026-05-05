@@ -276,12 +276,19 @@ export async function runAutoFix(clientNumber: string): Promise<{ fixed: number;
   let fixed = 0;
 
   for (const rule of AUTO_FIX_RULES) {
+    // Tenant scope: only this caller's logs (or NULL = system-wide
+    // infra issues with no tenant attribution). Previously the
+    // clientNumber arg was accepted but never applied — a tenant admin
+    // could sweep any tenant's matching logs.
     const logs: any[] = await prisma.$queryRawUnsafe(`
       SELECT id, suggestion, details, recurrence_count
       FROM system_logs
-      WHERE category = $1 AND status IN ('open', 'recurring') AND suggestion IS NOT NULL
+      WHERE category = $1
+        AND status IN ('open', 'recurring')
+        AND suggestion IS NOT NULL
+        AND (client_number = $2 OR client_number IS NULL)
       ORDER BY recurrence_count DESC LIMIT 5
-    `, rule.category);
+    `, rule.category, clientNumber);
 
     for (const logEntry of logs) {
       if (!rule.pattern.test(logEntry.suggestion || '')) continue;
