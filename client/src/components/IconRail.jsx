@@ -85,6 +85,14 @@ export default function IconRail({ onNewChat, onToggleHistory }) {
           </svg>
         </button>
       )}
+      <button className={cls('/how-it-works')} data-tip="How Brain Works" onClick={() => navigate('/how-it-works')}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          {/* Lightbulb — universal "explain / learn" affordance */}
+          <path d="M9 18h6" />
+          <path d="M10 22h4" />
+          <path d="M12 2a7 7 0 0 0-4 12.7c.7.5 1.3 1.2 1.7 2L10 18h4l.3-1.3c.4-.8 1-1.5 1.7-2A7 7 0 0 0 12 2z" />
+        </svg>
+      </button>
       <button className={cls('/settings')} data-tip="Settings" onClick={() => navigate('/settings')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
           <circle cx="12" cy="12" r="3" />
