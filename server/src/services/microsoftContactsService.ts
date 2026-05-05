@@ -82,6 +82,7 @@ export async function syncAllContactsFromMicrosoft(
         senderEmail: c.email,
         senderName: c.name,
         senderPhone: c.phone,
+        importSource: 'microsoft_import',
       });
       if (!ensured) { result.skipped += 1; continue; }
       await stampImportMetadata(ensured.id, {

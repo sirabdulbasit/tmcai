@@ -220,6 +220,10 @@ export async function syncAllContactsFromGoogle(
         senderEmail: c.email,
         senderName: c.name,
         senderPhone: c.phone,
+        // Explicit user-initiated import — bypass the auto-discovery
+        // junk filter. If the user has a no-reply address in their
+        // Google contacts, that's their choice.
+        importSource: 'google_import',
       });
       if (!ensured) { result.skipped += 1; continue; }
 

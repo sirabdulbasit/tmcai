@@ -70,10 +70,31 @@ export async function ensureEntityForSender(input: {
    *  outlook, slack, etc.). Tracked in metadata.channels[] so the UI
    *  can show "this contact came from gmail + whatsapp". */
   sourceType?: string | null;
+  /** Manual / google_import / microsoft_import bypass the junk filter.
+   *  Default unset = ingest path = filter applies. */
+  importSource?: string;
 }): Promise<{ id: string; created: boolean } | null> {
   const email = (input.senderEmail ?? '').trim().toLowerCase();
   const phone = (input.senderPhone ?? '').trim();
   if (!email && !phone) return null;
+
+  // Junk filter — skip auto-discovery for senders that look like
+  // newsletters / no-reply / tracking tokens. Bypassed when caller
+  // is a manual add or a Google/Outlook import (explicit user intent).
+  // Pass-2 signal gating (sent-to history, inbound count, calendar
+  // attendance) happens in entitySweep / sender-promotion paths after
+  // some history accumulates. For NEW unknown senders, the junk filter
+  // alone is the gate — anything that smells like noreply never gets
+  // a contact row created.
+  const importSource = input.importSource ?? '';
+  const bypassFilter = importSource === 'manual' || importSource.endsWith('_import') || input.sourceType === 'whatsapp';
+  if (!bypassFilter && email) {
+    const { isLikelyAutomated } = await import('./senderQualityFilter');
+    if (isLikelyAutomated(email)) {
+      return null;  // silently skip — sender_history may still record
+                    // the message, but no contact row is created.
+    }
+  }
 
   const id = email ? entityIdForEmail(email) : entityIdForPhone(phone);
   // Scope policy: USER-private by default. A discovered sender belongs
@@ -307,6 +328,7 @@ export async function createManualContact(input: ManualContactInput): Promise<{ 
     senderEmail: email || null,
     senderName: name,
     senderPhone: phone || null,
+    importSource: 'manual',  // bypass junk filter — explicit user intent
   });
   if (!ensured) throw new Error('failed to create entity');
 
