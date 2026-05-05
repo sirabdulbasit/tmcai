@@ -281,13 +281,10 @@ export default function DayBriefPage() {
   const [radarRunning, setRadarRunning] = useState(false);
   // Brain Cognitive Engine output — mind state + surfaced observations.
   const [cognitive, setCognitive] = useState({ mindState: null, observations: [] });
-  // Standing instructions — the 6th layer. Rules Brain must respect.
-  // Two scopes: 'client' (tenant-wide, admin-only) and 'user' (personal).
-  const [instructions, setInstructions] = useState([]);
-  const [isInstructionAdmin, setIsInstructionAdmin] = useState(false);
-  // "What Brain learned this week" rollup — feedback summary + criticality
-  // calibration state + Brain's own self-recommendations.
-  const [learned, setLearned] = useState(null);
+  // Standing instructions and "What Brain learned this week" used to live
+  // on Day Brief. Both are now managed full-time on My Rules (Standing
+  // Instructions tab + Learned Preferences tab) — Day Brief stays focused
+  // on TODAY (Zone 1) and WHAT BRAIN DID (Zone 2).
   const [loading, setLoading] = useState(true);
   const { toasts, notify, dismiss } = useToasts();
 
@@ -303,7 +300,7 @@ export default function DayBriefPage() {
       if (fullSync) {
         try { await api.post('/brief/sync-now'); } catch { /* non-fatal */ }
       }
-      const [brief, atten, brain, ds, ins, gap, cog, instr, learned, radarLatest] = await Promise.all([
+      const [brief, atten, brain, ds, ins, gap, cog, radarLatest] = await Promise.all([
         api.post('/steering/brief', { userId: user?.id, style: 'morning' }).then((r) => r.data.brief ?? r.data).catch(() => null),
         api.get('/brief/attention?limit=50').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
@@ -311,8 +308,6 @@ export default function DayBriefPage() {
         api.get('/brief/insights').then((r) => r.data.insights ?? []).catch(() => []),
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
-        api.get('/brain/instructions').then((r) => ({ list: r.data.instructions ?? [], isAdmin: !!r.data.isAdmin })).catch(() => ({ list: [], isAdmin: false })),
-        api.get('/brain/learned').then((r) => r.data ?? null).catch(() => null),
         api.get('/risk-radar/latest').then((r) => r.data?.doc ?? null).catch(() => null),
       ]);
       setVolume(brief?.volume ?? null);
@@ -324,9 +319,6 @@ export default function DayBriefPage() {
       setDrafts(ds);
       setGaps(gap);
       setCognitive(cog);
-      setInstructions(instr.list);
-      setIsInstructionAdmin(instr.isAdmin);
-      setLearned(learned);
       setRadar(radarLatest);
     } finally {
       setLoading(false);
@@ -647,21 +639,14 @@ export default function DayBriefPage() {
 
       {/* ═══════════════════════════════════════════════════════════
           ZONE 3 — SETUP & REFLECTION  (less-frequent)
-          Ask Brain → Standing Instructions → What Brain Learned
+          Ask Brain only — Standing Instructions and "What Brain Learned"
+          moved to My Rules where they live full-time, so Day Brief stays
+          focused on TODAY (Zone 1) + WHAT BRAIN DID (Zone 2).
           ═══════════════════════════════════════════════════════════ */}
-      <ZoneHeader label="Setup & reflection" sub="Ask, configure, and review what Brain has learned." />
+      <ZoneHeader label="Ask" sub="Anything else, just ask." />
 
       {/* Ask Brain — chat affordance, primary input */}
       <AskBrain />
-
-      <StandingInstructionsSection
-        instructions={instructions}
-        isAdmin={isInstructionAdmin}
-        onChange={load}
-        notify={notify}
-      />
-
-      <BrainLearnedSection learned={learned} />
     </div>
     </div>
   );
@@ -903,7 +888,6 @@ function RiskRadarPanel({ radar, running, onRunNow }) {
   const highCount = radar?.highSeverityCount ?? 0;
   const generatedAt = radar?.generatedAt ? new Date(radar.generatedAt) : null;
   const isStale = generatedAt && Date.now() - generatedAt.getTime() > 18 * 60 * 60 * 1000;
-  const [showTune, setShowTune] = useState(false);
 
   return (
     <Section
@@ -985,355 +969,27 @@ function RiskRadarPanel({ radar, running, onRunNow }) {
               {generatedAt ? `Last run ${fmtRelTime(generatedAt)}` : ''}
             </span>
             <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={() => setShowTune((s) => !s)} style={miniBtnStyle(false, 'subtle')}>
-                {showTune ? 'Hide tuning' : 'Tune radar'}
-              </button>
+              <a
+                href="/?tab=rules&subtab=risk-radar"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('tab', 'rules');
+                  url.searchParams.set('subtab', 'risk-radar');
+                  window.location.assign(url.toString());
+                }}
+                style={{ ...miniBtnStyle(false, 'subtle'), textDecoration: 'none' }}
+              >Tune in My Rules</a>
               <button onClick={onRunNow} disabled={running} style={miniBtnStyle(running, 'subtle')}>
                 {running ? 'Running…' : 'Re-run'}
               </button>
             </div>
           </div>
-          {showTune && <RadarTuningPanel onSaved={onRunNow} />}
         </>
       )}
     </Section>
   );
 }
-
-/**
- * Inline tuning panel — gives the user direct levers over what fires
- * on the radar. Sliders + toggles + an exclude-list, all save to
- * /risk-radar/config and re-run the radar so changes are visible
- * immediately (instead of waiting for tomorrow's 08:15 PKT cron).
- *
- * Per the no-dialogs rule: errors render inline in this panel via a
- * tiny banner, not alert/confirm.
- */
-function RadarTuningPanel({ onSaved }) {
-  const [config, setConfig] = useState(null);
-  const [defaults, setDefaults] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [excludeInput, setExcludeInput] = useState('');
-  const [error, setError] = useState(null);
-  const [savedFlash, setSavedFlash] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await api.get('/risk-radar/config');
-        if (!cancelled) {
-          setConfig(r.data?.config ?? null);
-          setDefaults(r.data?.defaults ?? null);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.response?.data?.error ?? err.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  if (loading) {
-    return <div style={tunePanelStyle}>Loading…</div>;
-  }
-  if (!config) {
-    return <div style={tunePanelStyle}>{error ?? 'Could not load config.'}</div>;
-  }
-
-  const updateSignal = (key, patch) => setConfig((c) => ({
-    ...c, signals: { ...c.signals, [key]: { ...c.signals[key], ...patch } },
-  }));
-  const setExcludeSenders = (next) => setConfig((c) => ({
-    ...c, excludeSenders: { emails: next.emails ?? [], domains: next.domains ?? [] },
-  }));
-
-  const addExcludes = () => {
-    const raw = excludeInput.trim();
-    if (!raw) return;
-    const tokens = raw.split(/[,\s]+/).map((t) => t.toLowerCase().trim()).filter(Boolean);
-    const emails = new Set(config.excludeSenders?.emails ?? []);
-    const domains = new Set(config.excludeSenders?.domains ?? []);
-    for (const t of tokens) {
-      if (!t) continue;
-      if (t.startsWith('@')) domains.add(t.slice(1));
-      else if (t.includes('@')) emails.add(t);
-      else domains.add(t);
-    }
-    setExcludeSenders({ emails: [...emails], domains: [...domains] });
-    setExcludeInput('');
-  };
-  const removeExclude = (kind, value) => {
-    const cur = config.excludeSenders ?? { emails: [], domains: [] };
-    setExcludeSenders({
-      emails: kind === 'email' ? cur.emails.filter((e) => e !== value) : cur.emails,
-      domains: kind === 'domain' ? cur.domains.filter((d) => d !== value) : cur.domains,
-    });
-  };
-
-  const save = async () => {
-    setSaving(true); setError(null); setSavedFlash(false);
-    let stage = 'patch';
-    try {
-      await api.patch('/risk-radar/config', config);
-      // Then auto re-run so the new filters apply immediately.
-      // Awaited so the user sees a single continuous "Saving → Re-running"
-      // indicator instead of a flash that disappears before the radar
-      // doc actually updates.
-      stage = 'rerun';
-      if (onSaved) {
-        const maybe = onSaved();
-        if (maybe && typeof maybe.then === 'function') await maybe;
-      }
-      setSavedFlash(true);
-      setTimeout(() => setSavedFlash(false), 2400);
-    } catch (err) {
-      const detail = err.response?.data?.error ?? err.message;
-      setError(stage === 'patch' ? `Save failed: ${detail}` : `Saved, but re-run failed: ${detail}`);
-    } finally { setSaving(false); }
-  };
-
-  const reset = () => { if (defaults) setConfig(JSON.parse(JSON.stringify(defaults))); };
-
-  const s = config.signals;
-
-  return (
-    <div style={tunePanelStyle}>
-      {error && (
-        <div style={{ background: 'rgba(217,83,79,0.15)', border: '1px solid #d9534f', color: '#f0a3a0', padding: 8, borderRadius: 4, marginBottom: 10, fontSize: 12 }}>
-          {error}
-        </div>
-      )}
-
-      <SignalToggle label="Stagnant criticality" enabled={s.stagnant_criticality.enabled}
-        onToggle={(v) => updateSignal('stagnant_criticality', { enabled: v })}
-        help="High-priority items still open" >
-        <NumStepper label="min priority" value={Math.round((s.stagnant_criticality.min_score ?? 0.6) * 10)} min={3} max={10}
-          onChange={(v) => updateSignal('stagnant_criticality', { min_score: v / 10 })} suffix="/10" />
-        <NumStepper label="within last" value={s.stagnant_criticality.max_age_days ?? 7} min={1} max={30}
-          onChange={(v) => updateSignal('stagnant_criticality', { max_age_days: v })} suffix=" days" />
-      </SignalToggle>
-
-      <SignalToggle label="Aging items (decay)" enabled={s.decay.enabled}
-        onToggle={(v) => updateSignal('decay', { enabled: v })}
-        help="Items past your typical resolution time">
-        <NumStepper label="multiplier" value={s.decay.age_multiplier ?? 1.5} min={1} max={5} step={0.5}
-          onChange={(v) => updateSignal('decay', { age_multiplier: v })} suffix="× median" />
-      </SignalToggle>
-
-      <SignalToggle label="Sender silence" enabled={s.silence.enabled}
-        onToggle={(v) => updateSignal('silence', { enabled: v })}
-        help="People gone quieter than usual">
-        <NumStepper label="trigger at" value={s.silence.silence_multiplier ?? 3} min={2} max={10}
-          onChange={(v) => updateSignal('silence', { silence_multiplier: v })} suffix="× typical window" />
-      </SignalToggle>
-
-      <SignalToggle label="Imminence" enabled={s.imminence.enabled}
-        onToggle={(v) => updateSignal('imminence', { enabled: v })}
-        help="Open items / instructions / meetings due soon">
-        <NumStepper label="horizon" value={s.imminence.hours_ahead ?? 48} min={6} max={168} step={6}
-          onChange={(v) => updateSignal('imminence', { hours_ahead: v })} suffix=" hours" />
-      </SignalToggle>
-
-      <SignalToggle label="CRM stagnation" enabled={s.crm_stagnation.enabled}
-        onToggle={(v) => updateSignal('crm_stagnation', { enabled: v })}
-        help="Odoo deals not updated">
-        <NumStepper label="stagnant after" value={s.crm_stagnation.stagnant_days ?? 14} min={3} max={60}
-          onChange={(v) => updateSignal('crm_stagnation', { stagnant_days: v })} suffix=" days" />
-      </SignalToggle>
-
-      <SignalToggle label="Tone shift" enabled={s.tone_shift.enabled}
-        onToggle={(v) => updateSignal('tone_shift', { enabled: v })}
-        help="Senders sounding more negative than usual">
-        <NumStepper label="min negative msgs" value={s.tone_shift.min_negative_count ?? 2} min={1} max={10}
-          onChange={(v) => updateSignal('tone_shift', { min_negative_count: v })} suffix="" />
-        <NumStepper label="lookback" value={s.tone_shift.lookback_days ?? 7} min={3} max={30}
-          onChange={(v) => updateSignal('tone_shift', { lookback_days: v })} suffix=" days" />
-      </SignalToggle>
-
-      <SignalToggle label="Contradicted wiki pages" enabled={s.contradicted_pages.enabled}
-        onToggle={(v) => updateSignal('contradicted_pages', { enabled: v })}
-        help="Wiki pages flagged contradicted/stale" />
-
-      <SignalToggle label="Custom keywords" enabled={s.custom_keywords.enabled}
-        onToggle={(v) => updateSignal('custom_keywords', { enabled: v })}
-        help="Watch any inbound containing these words">
-        <KeywordList
-          keywords={s.custom_keywords.keywords ?? []}
-          onChange={(kws) => updateSignal('custom_keywords', { keywords: kws })}
-        />
-      </SignalToggle>
-
-      {/* Exclude list */}
-      <div style={{ marginTop: 14, padding: '10px 12px', background: 'var(--bg-2, rgba(255,255,255,0.03))', borderRadius: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
-          Senders to skip in silence + tone-shift
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-          Add specific emails (<code>vendor@x.com</code>) or whole domains (<code>@x.com</code>). Add multiple separated by space or comma.
-        </div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <input
-            value={excludeInput}
-            onChange={(e) => setExcludeInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addExcludes(); } }}
-            placeholder="@google.com  haseeb@tmcltd.ai  …"
-            style={{
-              flex: 1, background: 'var(--panel-2, #1b232d)', color: 'var(--text)',
-              border: '1px solid var(--border)', borderRadius: 4,
-              padding: '6px 8px', fontSize: 12,
-            }}
-          />
-          <button onClick={addExcludes} style={miniBtnStyle(false, 'subtle')}>Add</button>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {(config.excludeSenders?.domains ?? []).map((d) => (
-            <ExcludeChip key={`d:${d}`} label={`@${d}`} onRemove={() => removeExclude('domain', d)} />
-          ))}
-          {(config.excludeSenders?.emails ?? []).map((e) => (
-            <ExcludeChip key={`e:${e}`} label={e} onRemove={() => removeExclude('email', e)} />
-          ))}
-          {(config.excludeSenders?.domains ?? []).length === 0 && (config.excludeSenders?.emails ?? []).length === 0 && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>(none — system noise filter still applies for no-reply / bot domains)</span>
-          )}
-        </div>
-      </div>
-
-      {/* Save / reset row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
-        <button onClick={reset} style={miniBtnStyle(false, 'subtle')}>Reset to defaults</button>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {savedFlash && (
-            <span style={{ fontSize: 12, color: '#5fbe61' }}>
-              ✓ Saved + radar re-run — flag list updated
-            </span>
-          )}
-          <button onClick={save} disabled={saving} style={miniBtnStyle(saving)}>
-            {saving ? 'Saving + re-running…' : 'Save & re-run'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const tunePanelStyle = {
-  marginTop: 14,
-  padding: '14px 16px',
-  background: 'var(--panel-2, #1b232d)',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  fontSize: 13,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-};
-
-function SignalToggle({ label, help, enabled, onToggle, children }) {
-  return (
-    <div style={{
-      padding: '10px 12px',
-      borderRadius: 6,
-      background: enabled ? 'rgba(79,169,255,0.06)' : 'rgba(255,255,255,0.02)',
-      border: `1px solid ${enabled ? 'rgba(79,169,255,0.25)' : 'var(--border)'}`,
-    }}>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          style={{ accentColor: 'var(--accent, #4fa9ff)' }}
-        />
-        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{label}</span>
-        {help && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>· {help}</span>}
-      </label>
-      {enabled && children && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8, paddingLeft: 26 }}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NumStepper({ label, value, min, max, step = 1, onChange, suffix = '' }) {
-  const dec = () => onChange(Math.max(min, +(Number(value) - step).toFixed(2)));
-  const inc = () => onChange(Math.min(max, +(Number(value) + step).toFixed(2)));
-  return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
-      <button onClick={dec} style={stepBtnStyle}>−</button>
-      <span style={{ minWidth: 32, textAlign: 'center', color: 'var(--text)' }}>{value}{suffix}</span>
-      <button onClick={inc} style={stepBtnStyle}>+</button>
-    </div>
-  );
-}
-
-const stepBtnStyle = {
-  background: 'var(--panel-2, #1b232d)',
-  border: '1px solid var(--border)',
-  color: 'var(--text)',
-  borderRadius: 4,
-  width: 22, height: 22,
-  fontSize: 13, lineHeight: 1,
-  cursor: 'pointer',
-  padding: 0,
-};
-
-function KeywordList({ keywords, onChange }) {
-  const [input, setInput] = useState('');
-  const add = () => {
-    const t = input.trim().toLowerCase();
-    if (!t || keywords.includes(t)) { setInput(''); return; }
-    onChange([...keywords, t]);
-    setInput('');
-  };
-  const remove = (k) => onChange(keywords.filter((x) => x !== k));
-  return (
-    <div style={{ width: '100%' }}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
-          placeholder="lawsuit, EXIM, pricing…"
-          style={{
-            flex: 1, background: 'var(--panel-2, #1b232d)', color: 'var(--text)',
-            border: '1px solid var(--border)', borderRadius: 4,
-            padding: '4px 8px', fontSize: 11,
-          }}
-        />
-        <button onClick={add} style={stepBtnStyle}>+</button>
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {keywords.map((k) => (
-          <ExcludeChip key={k} label={k} onRemove={() => remove(k)} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ExcludeChip({ label, onRemove }) {
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '2px 4px 2px 8px', borderRadius: 999,
-      background: 'var(--panel-2, #1b232d)',
-      border: '1px solid var(--border)',
-      color: 'var(--text)', fontSize: 11,
-    }}>
-      {label}
-      <button onClick={onRemove} aria-label="Remove" style={{
-        background: 'transparent', border: 0, color: 'var(--text-muted)',
-        cursor: 'pointer', padding: '0 4px', fontSize: 12, lineHeight: 1,
-      }}>×</button>
-    </span>
-  );
-}
-
 /**
  * Single Risk Radar flag row with severity stripe, Brain's recommendation,
  * and one-click actions mapped to the signal type. The actions navigate
@@ -2555,255 +2211,6 @@ function RulePromotionCard({ rule, onAction }) {
         </div>
       </div>
     </Card>
-  );
-}
-
-/**
- * StandingInstructionsSection — Day Brief quick-add affordance.
- *
- * The full management UI (list, pause, archive) lives in My Rules →
- * Standing Instructions. Day Brief keeps only the one-liner input so
- * the user can capture a rule in the moment without leaving the brief.
- * Active rule counts surface as a chip with a deep-link to manage.
- */
-function StandingInstructionsSection({ instructions, isAdmin, onChange, notify }) {
-  const [text, setText] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [scope, setScope] = useState(isAdmin ? 'client' : 'user');
-  useEffect(() => { if (!isAdmin && scope === 'client') setScope('user'); }, [isAdmin, scope]);
-
-  const save = async () => {
-    const clean = text.trim();
-    if (!clean) return;
-    setSaving(true);
-    try {
-      const r = await api.post('/brain/instructions', { text: clean, scope });
-      const kind = r.data?.structured?.kind ?? 'instruction';
-      const sc = r.data?.scope ?? scope;
-      notify?.(`Saved ${sc === 'client' ? 'tenant-wide' : 'personal'} ${kind.replace(/_/g, ' ')} — Brain will respect this from now on`, 'success');
-      setText('');
-      await onChange?.();
-    } catch (err) {
-      notify?.(err?.response?.data?.error ?? 'Could not save instruction', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const list = Array.isArray(instructions) ? instructions : [];
-  const clientCount = list.filter((i) => i.scope === 'client').length;
-  const userCount = list.filter((i) => i.scope !== 'client').length;
-  const total = list.length;
-
-  const placeholder = scope === 'client'
-    ? `Set a tenant-wide rule… e.g. "All client emails must be acknowledged within 4 hours"`
-    : `Tell Brain what to do… e.g. "Always delegate Raazia's emails to Asad"`;
-
-  return (
-    <Section
-      id="standing-instructions"
-      title="Standing instructions"
-      sub="Capture a rule in the moment. Manage the full list in My Rules → Standing Instructions."
-      icon="command"
-      help={(
-        <div>
-          <strong>What this is.</strong> Explicit orders you've given Brain — "always delegate Raazia's emails to Asad", "alert me if anyone mentions EXIM", "follow up with Fahim if no reply by Thursday".<br /><br />
-          <strong>How it works.</strong> Type the instruction in plain English. Brain parses it into a structured rule (subject + condition + action + due date) and respects it on every answer, triage decision, and autonomous action.<br /><br />
-          <strong>How it helps.</strong> The 6th layer of MyOS. Brain never contradicts an active standing instruction — when its answer is shaped by one, it tells you which rule it applied.<br /><br />
-          <strong>Where to manage.</strong> This box is the quick-add only. To list, pause, resume or archive existing rules, open <em>My Rules → Standing Instructions</em>.
-        </div>
-      )}
-    >
-      <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'center', marginBottom: 'var(--s-2)', flexWrap: 'wrap' }}>
-        {isAdmin && (
-          <div style={{ display: 'inline-flex', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', padding: 2 }}>
-            <button
-              type="button"
-              onClick={() => setScope('client')}
-              style={{
-                padding: '6px 10px', fontSize: 'var(--fs-xs)', fontWeight: 600,
-                border: 'none', borderRadius: 'var(--r-sm)', cursor: 'pointer',
-                background: scope === 'client' ? 'var(--accent-soft, rgba(59,130,246,0.18))' : 'transparent',
-                color: scope === 'client' ? '#60a5fa' : 'var(--text-muted)',
-              }}
-              title="Rule applies to every user in the tenant"
-            >Client rule</button>
-            <button
-              type="button"
-              onClick={() => setScope('user')}
-              style={{
-                padding: '6px 10px', fontSize: 'var(--fs-xs)', fontWeight: 600,
-                border: 'none', borderRadius: 'var(--r-sm)', cursor: 'pointer',
-                background: scope === 'user' ? 'rgba(34,197,94,0.18)' : 'transparent',
-                color: scope === 'user' ? '#4ade80' : 'var(--text-muted)',
-              }}
-              title="Rule applies only to you"
-            >My rule</button>
-          </div>
-        )}
-        <input
-          type="text" value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !saving) save(); }}
-          placeholder={placeholder}
-          style={{
-            flex: 1, minWidth: 260, padding: '10px 12px', fontSize: 'var(--fs-sm)',
-            background: 'var(--bg-2)', border: '1px solid var(--border)',
-            borderRadius: 'var(--r-md)', color: 'var(--text)',
-          }}
-          disabled={saving}
-        />
-        <Button variant="primary" size="sm" onClick={save} disabled={saving || !text.trim()}>
-          {saving ? 'Saving…' : (scope === 'client' ? 'Set tenant rule' : 'Tell Brain')}
-        </Button>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)', flexWrap: 'wrap' }}>
-        {total > 0 ? (
-          <>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-              {total} active rule{total === 1 ? '' : 's'}
-              {clientCount > 0 && ` · ${clientCount} tenant`}
-              {userCount > 0 && ` · ${userCount} mine`}
-            </span>
-            <a
-              href="/?tab=rules&subtab=standing"
-              onClick={(e) => {
-                e.preventDefault();
-                const url = new URL(window.location.href);
-                url.searchParams.set('tab', 'rules');
-                url.searchParams.set('subtab', 'standing');
-                window.location.assign(url.toString());
-              }}
-              style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)', textDecoration: 'none' }}
-            >Manage in My Rules →</a>
-          </>
-        ) : (
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-            No standing instructions yet — anything you type here becomes a rule Brain reads before every decision.
-          </span>
-        )}
-      </div>
-    </Section>
-  );
-}
-
-/**
- * BrainLearnedSection — "what Brain learned from your 👍/👎 this week".
- * Surfaces feedback counts, criticality calibration state, recent
- * 👎 diagnoses (with hypothesis + likely fix), and Brain's own
- * self-recommendations. Only renders when there's something to show.
- */
-function BrainLearnedSection({ learned }) {
-  if (!learned) return null;
-  const { feedback, diagnosesByCategory, recentDiagnoses, calibration, brainSuggests, windowDays } = learned;
-  const upN = feedback?.up ?? 0;
-  const downN = feedback?.down ?? 0;
-  if (upN === 0 && downN === 0 && (recentDiagnoses?.length ?? 0) === 0 && (calibration?.sampleCount ?? 0) === 0) {
-    return null;  // nothing learned yet — keep Day Brief uncluttered
-  }
-
-  return (
-    <Section
-      id="brain-learned"
-      title="What Brain learned this week"
-      sub={`Feedback rolled up over the last ${windowDays} day${windowDays === 1 ? '' : 's'}, calibration updates, and what Brain is adjusting.`}
-      icon="zap"
-      help={(
-        <div>
-          <strong>What this is.</strong> A weekly digest of your 👍 / 👎 feedback on Brain's outputs, plus the calibration changes Brain made in response — threshold shifts, dimension reweighting, retrieval tuning.<br /><br />
-          <strong>How it works.</strong> Each thumbs-up or thumbs-down you give in chat or on a triage decision feeds the shadow-scoring service. Once enough samples accumulate, Brain adjusts its critical threshold per-user and surfaces the changes here so you see what's moving.<br /><br />
-          <strong>How it helps.</strong> Brain becomes calibrated to <em>you</em> over time. The "what I'm adjusting" line is Brain's own commitment to do better next week.<br /><br />
-          <strong>Make it more useful for you:</strong>
-          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-            <li><em>Click 👍 / 👎 more often</em> — even one tap per chat answer or triage decision compounds. More samples = sharper calibration.</li>
-            <li><em>Read the diagnoses block</em> when 👎s pile up — Brain explains what it thinks went wrong; you can correct the diagnosis if it's misreading why you down-voted.</li>
-            <li><em>Review weekly</em> — if "what I'm adjusting" doesn't match your intent, leave a 👎 with a comment so Brain re-calibrates the calibration.</li>
-            <li><strong>Example:</strong> You 👎 three Brain answers about Fahim because they cited stale meeting notes. Brain logs "retrieval miss on stale data", and next week you see "extending freshness preference for Fahim queries to last 14 days".</li>
-          </ul>
-        </div>
-      )}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-        {/* Top counters */}
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Pill style={{ background: 'rgba(34,197,94,0.15)', color: '#4ade80', borderColor: 'rgba(34,197,94,0.4)' }}>
-            👍 {upN}
-          </Pill>
-          <Pill style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', borderColor: 'rgba(239,68,68,0.4)' }}>
-            👎 {downN}
-          </Pill>
-          {calibration?.sampleCount > 0 && (
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
-              Critical-band threshold calibrated to <strong>{Number(calibration.criticalThreshold).toFixed(2)}</strong> after {calibration.sampleCount} learning sample{calibration.sampleCount === 1 ? '' : 's'}.
-            </span>
-          )}
-        </div>
-
-        {/* Brain's self-recommendations */}
-        {Array.isArray(brainSuggests) && brainSuggests.length > 0 && (
-          <div style={{
-            padding: '12px 14px',
-            border: '1px solid rgba(99,102,241,0.35)',
-            borderRadius: 'var(--r-md)',
-            background: 'rgba(99,102,241,0.08)',
-          }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: '#c7d2fe', marginBottom: 6 }}>
-              What I'm adjusting
-            </div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--fs-sm)', color: 'var(--text)', lineHeight: 1.55 }}>
-              {brainSuggests.map((s, i) => <li key={i}>{s}</li>)}
-            </ul>
-          </div>
-        )}
-
-        {/* Recent 👎 diagnoses */}
-        {recentDiagnoses?.length > 0 && (
-          <div>
-            <div style={{
-              fontSize: 'var(--fs-xs)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px',
-              color: 'var(--text-muted)', marginBottom: 6,
-            }}>
-              Recent 👎 diagnoses
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-2)' }}>
-              {recentDiagnoses.map((d) => (
-                <div key={d.id} style={{
-                  padding: '10px 12px', background: 'var(--bg-2)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--r-md)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <Pill>{String(d.category).replace(/_/g, ' ')}</Pill>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      on {String(d.subjectType).replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', lineHeight: 1.5 }}>
-                    {d.hypothesis}
-                  </div>
-                  {d.likelyFix && (
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
-                      <strong>Brain's fix:</strong> {d.likelyFix}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Categorical breakdown */}
-        {diagnosesByCategory?.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {diagnosesByCategory.map((c) => (
-              <Pill key={c.category}>
-                {String(c.category).replace(/_/g, ' ')} · {c.n}
-              </Pill>
-            ))}
-          </div>
-        )}
-      </div>
-    </Section>
   );
 }
 
