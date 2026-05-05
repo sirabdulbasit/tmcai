@@ -130,6 +130,7 @@ export interface QualifyResult {
     | 'notification_only'
     | 'dashboard_nag'
     | 'automated_sender'
+    | 'user_marked_wrong_pattern'
     | 'empty_title';
 }
 

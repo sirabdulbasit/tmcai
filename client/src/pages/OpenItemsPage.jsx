@@ -81,6 +81,40 @@ export default function OpenItemsPage() {
     }
   };
 
+  // Mark wrong = "this shouldn't exist". Distinct from Done. Closes the
+  // row AND stamps a learning signal so Brain demotes future similar
+  // items (after 3 wrongs from same sender + title-prefix in 14 days).
+  const bulkMarkWrong = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selected];
+      let totalUpdated = 0;
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const r = await api.post('/open-items/bulk-mark-wrong', { ids: chunk, reason: 'user_marked_wrong_bulk' });
+        totalUpdated += r.data?.updated ?? 0;
+      }
+      setMsg(`✓ Removed ${totalUpdated}/${ids.length} item${ids.length === 1 ? '' : 's'} as not relevant. Brain will learn from this.`);
+      clearSelection();
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Mark-wrong failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const markWrongSingle = async (id) => {
+    try {
+      await api.post(`/open-items/${id}/mark-wrong`, { reason: 'user_marked_wrong' });
+      setMsg('✓ Removed as not relevant. Brain will learn from this.');
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Failed to mark wrong');
+    }
+  };
+
   function handleScroll(e) {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
     setAtBottom(scrollHeight - scrollTop - clientHeight < 40);
@@ -265,6 +299,12 @@ export default function OpenItemsPage() {
               title="Snooze all selected items"
             >Snooze</button>
             <button
+              style={{ ...s.btn, background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.55)', color: '#fca5a5', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={bulkMarkWrong}
+              title="Mark as not relevant — Brain learns to stop creating these"
+            >✕ Not relevant</button>
+            <button
               style={{ ...s.btn, ...s.btnOutline }}
               disabled={bulkBusy}
               onClick={clearSelection}
@@ -315,10 +355,17 @@ export default function OpenItemsPage() {
               </div>
               <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
                 {item.status !== 'done' && (
-                  <button style={{ ...s.btn, ...s.btnSmall, background: '#4ade80', color: '#111' }} onClick={() => handleStatusChange(item.id, 'done')}>✓ Done</button>
+                  <button style={{ ...s.btn, ...s.btnSmall, background: '#4ade80', color: '#111' }} onClick={() => handleStatusChange(item.id, 'done')} title="Mark as completed">✓ Done</button>
                 )}
                 {item.status === 'open' && (
                   <button style={{ ...s.btn, ...s.btnSmall, ...s.btnOutline }} onClick={() => handleStatusChange(item.id, 'in_progress')}>Start</button>
+                )}
+                {item.status !== 'done' && item.status !== 'closed' && (
+                  <button
+                    style={{ ...s.btn, ...s.btnSmall, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5' }}
+                    onClick={() => markWrongSingle(item.id)}
+                    title="Not relevant — Brain learns to stop creating these"
+                  >✕ Wrong</button>
                 )}
               </div>
             </div>

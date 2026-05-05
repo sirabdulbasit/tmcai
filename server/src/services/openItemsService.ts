@@ -56,6 +56,7 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
   const isManual = inputMeta.manualCreate === true || inputMeta.imported_from === 'manual';
   if (isAutoCreate && !isManual) {
     const { qualifyAutoOpenItem } = await import('./openItems/qualityGate');
+    const senderEmail = typeof inputMeta.senderEmail === 'string' ? (inputMeta.senderEmail as string) : null;
     const verdict = qualifyAutoOpenItem({
       title: input.title,
       body: input.description ?? '',
@@ -63,13 +64,71 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
       archetype: typeof inputMeta.archetype === 'string' ? (inputMeta.archetype as string) : null,
       intent: typeof inputMeta.pass2Intent === 'string' ? (inputMeta.pass2Intent as string) : null,
       confidence: typeof inputMeta.confidence === 'number' ? (inputMeta.confidence as number) : undefined,
-      senderEmail: typeof inputMeta.senderEmail === 'string' ? (inputMeta.senderEmail as string) : null,
+      senderEmail,
     });
     if (verdict.verdict === 'reject') {
-      // Audit the rejection so admins can tune the gate over time.
-      // Nothing is written to open_items.
       console.info(`[openItems] auto-create rejected: ${verdict.code} — ${verdict.reason} · "${input.title.slice(0, 80)}"`);
       return null as any;
+    }
+
+    // Cumulative learning: if the user has marked 3+ items with this
+    // (senderEmail, title-prefix) signature as "not relevant" in the
+    // last 14 days, treat future items matching the same signature as
+    // junk and reject at the gate. The user's pushback becomes a
+    // permanent block until they unblock manually.
+    if (senderEmail) {
+      const titlePrefix = input.title.toLowerCase()
+        .replace(/^(\s*(re|fwd|fw)\s*:\s*)+/g, '')
+        .replace(/[\d/.\-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 40);
+      const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+      const wrongCount = await prisma.openItem.count({
+        where: {
+          clientNumber, userId,
+          status: 'closed' as any,
+          createdAt: { gte: since },
+          metadata: {
+            path: ['archivedReason'],
+            equals: 'user_marked_wrong',
+          } as any,
+          // Match same sender + same title prefix
+          AND: [
+            { metadata: { path: ['senderEmail'], equals: senderEmail } as any },
+          ],
+        },
+      }).catch(() => 0);
+      if (wrongCount >= 3) {
+        // Confirm same title prefix by fetching titles and comparing.
+        // Cheap: 14d * 3+ wrongs is bounded by daily caps.
+        const recentWrongs = await prisma.openItem.findMany({
+          where: {
+            clientNumber, userId,
+            status: 'closed' as any,
+            createdAt: { gte: since },
+            metadata: {
+              path: ['archivedReason'],
+              equals: 'user_marked_wrong',
+            } as any,
+            AND: [
+              { metadata: { path: ['senderEmail'], equals: senderEmail } as any },
+            ],
+          },
+          select: { title: true },
+          take: 20,
+        }).catch(() => [] as Array<{ title: string }>);
+        const samePrefix = recentWrongs.filter((r) => r.title.toLowerCase()
+          .replace(/^(\s*(re|fwd|fw)\s*:\s*)+/g, '')
+          .replace(/[\d/.\-]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 40) === titlePrefix).length;
+        if (samePrefix >= 3) {
+          console.info(`[openItems] auto-create rejected: user_marked_wrong_pattern — sender=${senderEmail} prefix="${titlePrefix}" wrongs=${samePrefix}`);
+          return null as any;
+        }
+      }
     }
   }
 

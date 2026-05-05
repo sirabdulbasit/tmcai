@@ -262,6 +262,88 @@ router.post('/bulk-transition', requireAuth, async (req: Request, res: Response)
   }
 });
 
+/**
+ * Mark an item as "not relevant" — semantically distinct from "Done".
+ * Done means "I completed this work"; mark-wrong means "this row should
+ * never have existed". Both close the row, but mark-wrong stamps a
+ * learning signal so Brain can:
+ *   1. Stop creating future items matching the same (sender, title-prefix)
+ *   2. Demote the criticality of similar items if 3+ wrongs in 14 days
+ *
+ * Single-item form. Bulk form below.
+ *
+ * Body: { reason?: string }   — optional category like "vendor_noise",
+ *                                "duplicate", "not_actionable", "other"
+ */
+router.post('/:id/mark-wrong', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const id = String(req.params.id);
+    const reason = String(req.body?.reason ?? 'user_marked_wrong').slice(0, 80);
+
+    const item = await prisma.openItem.findFirst({
+      where: { id, clientNumber: user.clientNumber, userId: user.id },
+      select: { id: true, metadata: true, title: true },
+    });
+    if (!item) return res.status(404).json({ error: 'not found' });
+
+    const meta = (item.metadata as Record<string, unknown> | null) ?? {};
+    await prisma.openItem.update({
+      where: { id },
+      data: {
+        status: 'closed' as any,
+        metadata: {
+          ...(meta as any),
+          archivedReason: 'user_marked_wrong',
+          userWrongReason: reason,
+          archivedAt: new Date().toISOString(),
+        } as any,
+      },
+    });
+    res.json({ ok: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Bulk mark-wrong — same semantic, batched. Caps at 100 per call.
+ * Body: { ids: string[], reason?: string }
+ */
+router.post('/bulk-mark-wrong', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const reason = String(req.body?.reason ?? 'user_marked_wrong').slice(0, 80);
+    if (ids.length === 0) return res.status(400).json({ error: 'ids[] required' });
+    if (ids.length > 100) return res.status(400).json({ error: 'bulk limit is 100 items' });
+
+    const items = await prisma.openItem.findMany({
+      where: { id: { in: ids }, clientNumber: user.clientNumber, userId: user.id },
+      select: { id: true, metadata: true },
+    });
+    let updated = 0;
+    for (const it of items) {
+      const meta = (it.metadata as Record<string, unknown> | null) ?? {};
+      await prisma.openItem.update({
+        where: { id: it.id },
+        data: {
+          status: 'closed' as any,
+          metadata: {
+            ...(meta as any),
+            archivedReason: 'user_marked_wrong',
+            userWrongReason: reason,
+            archivedAt: new Date().toISOString(),
+          } as any,
+        },
+      }).then(() => { updated++; }).catch(() => {});
+    }
+    res.json({ attempted: ids.length, updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── L2+ Full transition matrix (read-only reference) ────────
 router.get('/transitions/matrix', requireAuth, async (_req: Request, res: Response) => {
   res.json({ statuses: ALL_STATUSES, transitions: TRANSITIONS });
