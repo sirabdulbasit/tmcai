@@ -134,46 +134,14 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
     console.warn(`[openItemsService] open-item-events create publish failed ${item.id}: ${err.message}`);
   }
 
-  // Star cadence — sender-stars-driven proactive WhatsApp notification
-  // schedule. Only fires for feed-originated items where we know the
-  // sender. Manual / internal-alert items have no sender so the service
-  // returns 'skipped_no_sender' and bails. Best-effort: failures here
-  // don't block item creation.
-  try {
-    const meta = (input.metadata as Record<string, unknown> | undefined) ?? {};
-    const senderEmail = pickSenderEmail(meta);
-    if (senderEmail) {
-      const { scheduleStarCadence } = await import('./triage/starCadenceService');
-      scheduleStarCadence({
-        clientNumber,
-        userId,
-        openItemId: item.id,
-        itemTitle: item.title,
-        itemBody: item.description ?? null,
-        intent: typeof meta.pass2Intent === 'string' ? (meta.pass2Intent as string) : null,
-        senderEmail,
-        senderName: typeof meta.senderName === 'string' ? (meta.senderName as string) : null,
-      }).catch((err) => {
-        console.warn(`[openItemsService] star cadence schedule failed ${item.id}: ${err?.message}`);
-      });
-    }
-  } catch { /* cadence is optional */ }
+  // Star cadence is now triggered at feed-ingest (feedIngestionService),
+  // not here, so a starred contact's message always gets the cadence
+  // treatment regardless of whether it lands as an open item. Re-anchoring
+  // the cadence to the new openItemId would only matter for the pause
+  // logic — and the queue dispatcher already skips queued rows whose
+  // openItemId points at a closed item via openItemsService.changeStatus.
 
   return item;
-}
-
-// Extract a normalised sender email from various places callers may have
-// stashed it. Handlers stash it under different keys (senderEmail in
-// feed-intelligence, fromEmail in delegation-tracker, etc.).
-function pickSenderEmail(meta: Record<string, unknown>): string | null {
-  const candidates = [
-    meta.senderEmail, meta.fromEmail, meta.from, meta.sender,
-    (meta.sender as Record<string, unknown> | undefined)?.email,
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && /@/.test(c)) return c.trim().toLowerCase();
-  }
-  return null;
 }
 
 export async function getItem(id: string, clientNumber: string) {

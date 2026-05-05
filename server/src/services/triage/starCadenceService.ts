@@ -124,7 +124,14 @@ export function passesContentGate(input: ContentGateInput): boolean {
 interface ScheduleInput {
   clientNumber: string;
   userId: number;
-  openItemId: string;
+  /** Either anchor works. Open-item is preferred when one exists (because
+   *  the pause logic snaps to item state changes). Feed-event is the
+   *  only available anchor at ingest time, before classification has
+   *  decided whether to create an open item — and a starred contact's
+   *  call shouldn't depend on whether their message happens to clear
+   *  the open-item-creation gate. */
+  openItemId?: string;
+  feedEventId?: string;
   itemTitle: string;
   itemBody?: string | null;
   intent?: string | null;
@@ -135,7 +142,7 @@ interface ScheduleInput {
 }
 
 export interface ScheduleResult {
-  status: 'scheduled' | 'skipped_unrated' | 'skipped_content_gate' | 'skipped_no_sender';
+  status: 'scheduled' | 'skipped_unrated' | 'skipped_content_gate' | 'skipped_no_sender' | 'skipped_no_anchor';
   attempts: number;
   stars: Stars;
 }
@@ -152,6 +159,10 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
   if (!input.senderEmail) {
     return { status: 'skipped_no_sender', attempts: 0, stars: 0 };
   }
+  const anchor = input.openItemId ?? input.feedEventId ?? null;
+  if (!anchor) {
+    return { status: 'skipped_no_anchor', attempts: 0, stars: 0 };
+  }
   const stars = ((await getStarsForSender(input.clientNumber, input.userId, input.senderEmail).catch(() => 0)) || 0) as Stars;
   const plan = PLAN[stars] ?? [];
   if (plan.length === 0) {
@@ -167,7 +178,7 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
   for (let attempt = 0; attempt < plan.length; attempt++) {
     const step = plan[attempt]!;
     const scheduledAt = new Date(Date.now() + step.delayMinutes * 60 * 1000);
-    const dedupKey = `cadence:${input.openItemId}:${attempt}`;
+    const dedupKey = `cadence:${anchor}:${attempt}`;
     const question = buildQuestion(input.itemTitle, senderHint, attempt, plan.length, stars);
 
     try {
@@ -185,11 +196,13 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
         metadata: {
           scheduledAt: scheduledAt.toISOString(),
           starCadence: { stars, attempt, totalAttempts: plan.length, senderEmail: input.senderEmail },
+          openItemId: input.openItemId ?? null,
+          feedEventId: input.feedEventId ?? null,
         },
       });
       scheduled++;
     } catch (err) {
-      log.warn('star-cadence enqueue failed', { openItemId: input.openItemId, attempt, err: String(err) });
+      log.warn('star-cadence enqueue failed', { anchor, attempt, err: String(err) });
     }
   }
 

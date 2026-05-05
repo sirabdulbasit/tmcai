@@ -287,6 +287,38 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
       })();
     }
 
+    // Star cadence — sender-stars-driven WhatsApp notification schedule.
+    // Triggers HERE (at feed-ingest) rather than at open-item creation,
+    // so a starred contact's message ALWAYS gets the cadence treatment
+    // — even if the message ends up classified as inform_only and never
+    // becomes an open item. Without this, a 5★ contact's email would
+    // silently bypass the voice-call schedule whenever the classifier
+    // didn't promote it to an open item. Fire-and-forget; failures
+    // never block ingestion.
+    if (input.userId && sender?.email) {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const { scheduleStarCadence } = await import('../triage/starCadenceService');
+          await scheduleStarCadence({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            feedEventId: row.id,
+            senderEmail: sender.email!,
+            senderName: sender.name ?? null,
+            itemTitle: p.subject ?? p.title ?? '(no subject)',
+            itemBody: p.snippet ?? p.body ?? null,
+            // Classification hasn't run yet at ingest time — pass null
+            // so the content gate uses its regex fallbacks (action verbs,
+            // question marks, deadline phrases, thanks/OOO detection).
+            intent: null,
+          });
+        } catch (err: any) {
+          console.warn(`[starCadence] feed-ingest schedule failed ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
     // MyOS Knowledge — email_message page per Gmail message. Captures
     // the full body (HTML → plaintext) so Brain has "the actual content",
     // not just the 280-char snippet. Fire-and-forget from the ingest path.
