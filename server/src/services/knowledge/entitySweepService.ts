@@ -61,6 +61,84 @@ export function normalizeEmail(raw: string): string {
   return s;
 }
 
+// Standardise display names from raw RFC2822 / inbox-junk input into
+// clean, title-cased proper nouns. Without this, the contacts list
+// shows entries like `saroosh saeed <saroosh.saeed` (raw lockup,
+// truncated, lowercased) instead of `Saroosh Saeed`.
+//
+//   "Saroosh Saeed <saroosh.saeed@tmcltd.com>"   → "Saroosh Saeed"
+//   "\"dr. s. sohail h. naqvi\" <sohail.naqvi…>" → "Dr. S. Sohail H. Naqvi"
+//   "JOHN SMITH"                                  → "John Smith"
+//   "raazia gulam hussain (s.e.o - finance)"      → "Raazia Gulam Hussain"
+//   "<noreply@x.com>"  + email "noreply@x.com"   → "Noreply"
+//   "محمد على"                                    → "محمد على"  (untouched)
+//   ""               + email "john.doe@x.com"   → "John Doe"
+export function normalizeContactName(raw: string | null | undefined, fallbackEmail?: string | null): string {
+  let s = String(raw ?? '').trim();
+
+  // Strip well-formed RFC2822 angle-bracket email part: "Name <addr>" → "Name"
+  s = s.replace(/\s*<[^>]+>\s*/g, ' ').trim();
+  // Strip dangling/truncated open bracket: "Name <addr" → "Name"
+  s = s.replace(/\s*<.*$/g, '').trim();
+  // Strip surrounding quotes (RFC2822 quoted-string syntax)
+  s = s.replace(/^['"]+|['"]+$/g, '').trim();
+  // Strip trailing parenthesised role/department: "Name (S.E.O)" → "Name"
+  s = s.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+  // Collapse internal whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+
+  // Empty after cleanup → derive from email local-part
+  if (!s) return emailLocalPartToName(fallbackEmail) || '';
+
+  // If name is literally just the email, replace with local-part rendering
+  if (/^\S+@\S+\.\S+$/.test(s)) {
+    return emailLocalPartToName(s);
+  }
+
+  // Non-Latin scripts: leave untouched (Arabic, CJK, Cyrillic, etc.)
+  if (!/[A-Za-z]/.test(s)) return s;
+
+  return titleCaseName(s);
+}
+
+function titleCaseName(s: string): string {
+  // Tokenize preserving whitespace and hyphens as separators.
+  return s
+    .split(/(\s+|-)/)
+    .map((part) => {
+      if (/^\s+$/.test(part) || part === '-') return part;
+      return titleCaseWord(part);
+    })
+    .join('');
+}
+
+function titleCaseWord(word: string): string {
+  if (!word) return word;
+  // Single letter (with optional period) — initial → uppercase
+  if (/^[A-Za-z]\.?$/.test(word)) return word.toUpperCase();
+  // Acronym written with periods (S.E.O., U.K., etc.) → uppercase
+  if (/^([A-Za-z]\.){2,}[A-Za-z]?\.?$/.test(word)) return word.toUpperCase();
+  // Short ALL-CAPS word (2–5 letters) — treat as acronym, preserve.
+  // Catches TMC, HR, SAP, EMEA, USA, CEO without an explicit list.
+  // Longer all-caps (e.g. "DAVID") falls through to title-case.
+  if (/^[A-Z]{2,5}$/.test(word)) return word;
+  // Default: first letter up, rest lower. Trailing period preserved
+  // ("Mr." stays "Mr.").
+  const lower = word.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function emailLocalPartToName(emailOrLocal: string | null | undefined): string {
+  if (!emailOrLocal) return '';
+  const local = String(emailOrLocal).split('@')[0] ?? '';
+  if (!local) return '';
+  return local
+    .split(/[._\-]+/)
+    .filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+    .join(' ');
+}
+
 // Stable id format. Email is the canonical identifier when present;
 // otherwise we fall back to phone (whatsapp). Both are normalized.
 function entityIdForEmail(email: string): string {
@@ -143,9 +221,13 @@ export async function ensureEntityForSender(input: {
   const ownerUserId = scope === 'tenant' ? await pickSystemUserId(input.clientNumber) : input.userId;
   if (!ownerUserId) return null;
 
-  // Title preference: name when known, else local-part of email, else phone
-  const localPart = email.includes('@') ? email.split('@')[0] : '';
-  const title = (input.senderName?.trim() || localPart || phone || 'Unknown').slice(0, 280);
+  // Title preference: standardised name when known, else local-part of
+  // email rendered as a name, else phone. normalizeContactName strips
+  // RFC2822 wrapping, surrounding quotes, parenthesised role suffixes,
+  // and title-cases — so the contacts list shows "Saroosh Saeed", not
+  // "saroosh saeed <saroosh.saeed".
+  const normalized = normalizeContactName(input.senderName, email);
+  const title = (normalized || phone || 'Unknown').slice(0, 280);
 
   const existing = await prisma.wikiPage.findUnique({
     where: { id },
@@ -363,7 +445,7 @@ export interface ManualContactInput {
 export async function createManualContact(input: ManualContactInput): Promise<{ id: string; created: boolean }> {
   const email = (input.email ?? '').trim().toLowerCase();
   const phone = (input.phone ?? '').trim();
-  const name = input.name.trim();
+  const name = normalizeContactName(input.name, email) || input.name.trim();
   if (!name) throw new Error('name required');
   if (!email && !phone) throw new Error('email or phone required');
 

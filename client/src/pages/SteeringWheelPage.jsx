@@ -121,7 +121,7 @@ export default function SteeringWheelPage() {
       />
 
       <Rail className={railOpen ? 'ui-rail--open' : ''}>
-        <RailLogo onClick={() => railSelect('brief')} />
+        <RailLogo src="/nexeo-logo.jpeg" onClick={() => railSelect('brief')} />
         {byGroup.work.map((t) => (
           <RailButton key={t.key} active={active === t.key} label={t.label} onClick={() => railSelect(t.key)}>
             <Icon name={t.icon} />

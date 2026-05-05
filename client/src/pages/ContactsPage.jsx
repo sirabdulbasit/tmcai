@@ -13,7 +13,7 @@
  * Saves immediately, no Save button. Optimistic update with revert on
  * error.
  */
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -393,12 +393,11 @@ function ContactsTable({ entities, onSetStars }) {
                 <StarRating value={e.stars ?? 0} onChange={(s) => onSetStars(e.id, s)} />
               </Td>
               <Td>
-                <Link
-                  to={`/contacts/${encodeURIComponent(e.id)}`}
-                  style={{ color: 'var(--text, #e6e8eb)', textDecoration: 'none', fontWeight: e.stars >= 4 ? 600 : 400 }}
-                >
-                  {e.title}
-                </Link>
+                <EditableName
+                  id={e.id}
+                  title={e.title}
+                  bold={e.stars >= 4}
+                />
                 {e.scope === 'tenant' && (
                   <span
                     style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
@@ -477,6 +476,101 @@ function InactiveButton({ id, title }) {
       style={{ background: 'transparent', border: '1px solid var(--border, #28323e)', color: 'var(--text-muted, #98a0a8)', padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
       title="Mark inactive — Brain will not re-create this contact from feed events. Reversible."
     >Mark inactive</button>
+  );
+}
+
+// EditableName — name as a Link by default; on pencil click, swap to an
+// inline input. Save calls PATCH /entity-catalog/:id/rename, which sets
+// metadata.userRenamed=true so feed ingest can never overwrite the user's
+// chosen name. Esc cancels, Enter saves.
+function EditableName({ id, title, bold }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => { setDraft(title); }, [title]);
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.select(); }, [editing]);
+
+  const save = async () => {
+    const next = draft.trim();
+    if (!next || next === title) { setEditing(false); setDraft(title); return; }
+    setBusy(true);
+    try {
+      await api.patch(`/entity-catalog/${id}/rename`, { name: next });
+      window.dispatchEvent(new CustomEvent('contacts:reload'));
+      setEditing(false);
+    } catch {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); save(); }
+            if (e.key === 'Escape') { e.preventDefault(); setEditing(false); setDraft(title); }
+          }}
+          maxLength={280}
+          disabled={busy}
+          style={{
+            background: 'var(--bg-2, #0f1418)',
+            border: '1px solid var(--accent, #d66d3c)',
+            color: 'var(--text, #e6e8eb)',
+            padding: '2px 6px',
+            fontSize: 13,
+            borderRadius: 4,
+            minWidth: 200,
+          }}
+        />
+        <button
+          type="button"
+          onClick={save}
+          disabled={busy}
+          style={{ background: 'var(--accent, #d66d3c)', color: '#fff', border: 0, padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
+        >{busy ? '…' : 'Save'}</button>
+        <button
+          type="button"
+          onClick={() => { setEditing(false); setDraft(title); }}
+          disabled={busy}
+          style={{ background: 'transparent', border: '1px solid var(--border, #28323e)', color: 'var(--text-muted, #98a0a8)', padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
+        >Cancel</button>
+      </span>
+    );
+  }
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} className="ui-editable-name">
+      <Link
+        to={`/contacts/${encodeURIComponent(id)}`}
+        style={{ color: 'var(--text, #e6e8eb)', textDecoration: 'none', fontWeight: bold ? 600 : 400 }}
+      >
+        {title}
+      </Link>
+      <button
+        type="button"
+        onClick={(e) => { e.preventDefault(); setEditing(true); }}
+        aria-label="Rename contact"
+        title="Rename contact"
+        style={{
+          background: 'transparent', border: 0, padding: 2, cursor: 'pointer',
+          color: 'var(--text-muted, #98a0a8)', display: 'inline-flex', alignItems: 'center',
+          opacity: 0.5, transition: 'opacity 120ms',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.opacity = 1; }}
+        onMouseLeave={(e) => { e.currentTarget.style.opacity = 0.5; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+        </svg>
+      </button>
+    </span>
   );
 }
 

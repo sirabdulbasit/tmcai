@@ -170,6 +170,48 @@ router.patch('/:id/restore', async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+/** PATCH /:id/rename  →  user-overrideable display name. Sets
+ *  metadata.userRenamed=true so feed ingest can never overwrite.
+ *  Body: { name: string }. */
+router.patch('/:id/rename', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const raw = String((req.body ?? {}).name ?? '').trim();
+    if (!raw) { res.status(400).json({ error: 'name required' }); return; }
+    if (raw.length > 280) { res.status(400).json({ error: 'name too long (max 280)' }); return; }
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can rename' }); return;
+    }
+    // Trust the user — don't title-case their input. They may have a
+    // specific casing in mind ("McDonald", "iPhone"). We only enforce
+    // length and stamp the override flag.
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages
+          SET title = $1,
+              last_updated_at = NOW(),
+              last_updated_by = 'user_renamed',
+              metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+        WHERE id = $3`,
+      raw.slice(0, 280),
+      JSON.stringify({
+        userRenamed: true,
+        renamedAt: new Date().toISOString(),
+        renamedBy: req.user!.id,
+      }),
+      id,
+    );
+    res.json({ ok: true, id, name: raw.slice(0, 280) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
 router.patch('/:id/stars', async (req: Request, res: Response) => {
   // Per-user star rating. Returns the new effective stars value.
   // Caller doesn't need admin — every user manages their own stars.
