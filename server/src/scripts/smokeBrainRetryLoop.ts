@@ -128,8 +128,14 @@ async function main() {
   // injection block we added.
   const fs = await import('fs');
   const path = await import('path');
+  // Compiled .js dropped under dist/scripts; .ts source lives at src/.
+  // Resolve from server-root regardless of which mode we're in.
+  const inDist = __dirname.includes(`${path.sep}dist${path.sep}`);
+  const srcRoot = inDist
+    ? path.resolve(__dirname, '../..', 'src')
+    : path.resolve(__dirname, '..');
   const composerSrc = fs.readFileSync(
-    path.resolve(__dirname, '../services/knowledge/brainComposer.ts'),
+    path.resolve(srcRoot, 'services/knowledge/brainComposer.ts'),
     'utf-8',
   );
   assert(composerSrc.includes('Retry guidance'),
@@ -141,7 +147,7 @@ async function main() {
 
   // ── 4. answerAsBrain forwards steeringHint ──────────────────
   const askSrc = fs.readFileSync(
-    path.resolve(__dirname, '../routes/brainAskRoutes.ts'),
+    path.resolve(srcRoot, 'routes/brainAskRoutes.ts'),
     'utf-8',
   );
   assert(askSrc.includes('steeringHint: opts.steeringHint'),

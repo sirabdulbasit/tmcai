@@ -66,10 +66,13 @@ async function main() {
   // a verifying read by checking the file source.
   const fs = await import('fs');
   const path = await import('path');
-  const plannerFile = fs.readFileSync(
-    path.resolve(__dirname, '../services/knowledge/brainRetrievalPlanner.ts'),
-    'utf-8',
-  );
+  // When compiled (running from dist/scripts), the .ts source lives at
+  // src/services/... — not next to the .js. Detect and adjust.
+  const inDist = __dirname.includes(`${path.sep}dist${path.sep}`);
+  const plannerPath = inDist
+    ? path.resolve(__dirname, '../..', 'src/services/knowledge/brainRetrievalPlanner.ts')
+    : path.resolve(__dirname, '../services/knowledge/brainRetrievalPlanner.ts');
+  const plannerFile = fs.readFileSync(plannerPath, 'utf-8');
   assert(
     plannerFile.includes('MyOS Operations Manual'),
     '2.1 planner system prompt mentions "MyOS Operations Manual" by name',
