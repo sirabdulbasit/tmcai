@@ -47,6 +47,13 @@ export default function ContactsPage() {
   // Modal state
   const [showAdd, setShowAdd] = useState(false);
   const [importing, setImporting] = useState('');
+  // Smart cleanup state — mirrors the Open Items pattern. Two stages:
+  //   cleanupBusy=true while the dry-run scan is happening
+  //   cleanupPreview holds the { total, samples } from a successful scan
+  //   cleanupApplying=true while the actual archive call is running
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState(null);
+  const [cleanupApplying, setCleanupApplying] = useState(false);
 
   // Inline toast queue (replaces alert()). Each toast auto-dismisses
   // after 6s; click-to-dismiss is also wired.
@@ -112,6 +119,43 @@ export default function ContactsPage() {
       setRefreshing(false);
     }
   }, [load, notify]);
+
+  // Smart cleanup — scan-then-confirm flow. Preview lists what would be
+  // archived; user clicks "Yes, archive them" to apply. Junk filter is
+  // the same one that blocks new auto-discovery, so the criteria match
+  // user expectations: no-reply, mailer-daemon, marketing@, newsletter@,
+  // tracking-token prefixes, etc.
+  const startCleanup = useCallback(async () => {
+    setCleanupBusy(true);
+    setCleanupPreview(null);
+    try {
+      const r = await api.post('/entity-catalog/cleanup-junk', { dryRun: true });
+      const total = r.data?.total ?? 0;
+      if (total === 0) {
+        notify('ok', 'Nothing to clean up — all contacts look like real humans.');
+      } else {
+        setCleanupPreview(r.data);
+      }
+    } catch (err) {
+      notify('error', `Cleanup scan failed: ${err.response?.data?.error ?? err.message}`);
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [notify]);
+
+  const applyCleanup = useCallback(async () => {
+    setCleanupApplying(true);
+    try {
+      const r = await api.post('/entity-catalog/cleanup-junk', { dryRun: false });
+      notify('ok', `Archived ${r.data?.archived ?? 0} junk contact${(r.data?.archived ?? 0) === 1 ? '' : 's'}.`);
+      setCleanupPreview(null);
+      await load();
+    } catch (err) {
+      notify('error', `Cleanup failed: ${err.response?.data?.error ?? err.message}`);
+    } finally {
+      setCleanupApplying(false);
+    }
+  }, [notify, load]);
 
   const importFrom = useCallback(async (provider) => {
     setImporting(provider);
@@ -180,8 +224,51 @@ export default function ContactsPage() {
             <button onClick={triggerSweep} disabled={refreshing} style={btnStyle(refreshing, 'subtle')}>
               {refreshing ? 'Refreshing…' : 'Refresh from feed'}
             </button>
+            <button
+              onClick={startCleanup}
+              disabled={cleanupBusy}
+              style={btnStyle(cleanupBusy, 'subtle')}
+              title="Find no-reply / newsletter / postmaster contacts and archive them. You'll see a preview before anything is archived."
+            >
+              {cleanupBusy ? 'Scanning…' : '🧹 Smart cleanup'}
+            </button>
           </div>
         </div>
+
+        {/* Cleanup confirmation banner — mirrors the Open Items pattern */}
+        {cleanupPreview && (
+          <div style={{
+            marginTop: 12, padding: '12px 14px',
+            background: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.4)',
+            borderRadius: 8, color: 'var(--text)', fontSize: 13, lineHeight: 1.45,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 280 }}>
+                About to archive <strong>{cleanupPreview.total}</strong> contact{cleanupPreview.total === 1 ? '' : 's'} that look like newsletter / no-reply / system addresses. Reversible — they're soft-archived, not deleted.
+                {cleanupPreview.samples?.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                    Examples:&nbsp;
+                    {cleanupPreview.samples.slice(0, 3).map((s, i) => (
+                      <span key={i}>{i > 0 ? ' · ' : ''}{s.email}</span>
+                    ))}
+                    {cleanupPreview.samples.length > 3 && <span> · … and {cleanupPreview.total - 3} more</span>}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={applyCleanup} disabled={cleanupApplying}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #f59e0b', background: '#f59e0b', color: '#000', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                >{cleanupApplying ? 'Archiving…' : 'Yes, archive them'}</button>
+                <button
+                  onClick={() => setCleanupPreview(null)}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
+                >Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {showAdd && (

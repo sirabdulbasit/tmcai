@@ -192,6 +192,89 @@ router.post('/manual', async (req: Request, res: Response) => {
   } catch (err: any) { res.status(400).json({ error: err.message }); }
 });
 
+/**
+ * POST /contacts/cleanup-junk
+ *
+ * Two-step ergonomics matching the Open Items Smart cleanup pattern:
+ *   - dryRun: true   → return preview { total, samples[] } without
+ *                       changing anything. UI shows "About to archive
+ *                       N contacts" banner.
+ *   - dryRun: false  → archive flagged rows. Reversible: status flips
+ *                       from 'active' → 'archived'; flipping back via
+ *                       SQL or future "Show archived" view restores.
+ *
+ * Tenant-scoped — only operates on the caller's tenant. Admin role NOT
+ * required: any user can clean their own visible contacts (the listing
+ * filter already scopes by user/tenant visibility).
+ *
+ * Conservative criteria — uses isLikelyAutomated() pattern checks, the
+ * same gate that blocks NEW junk on auto-discovery. We do NOT use the
+ * signal-based shouldCreateContact pass-2 here because that would
+ * archive low-frequency real contacts the user hasn't replied to yet.
+ */
+router.post('/cleanup-junk', async (req: Request, res: Response) => {
+  const dryRun = (req.body?.dryRun ?? true) === true;
+  try {
+    const { isLikelyAutomated } = await import('../services/knowledge/senderQualityFilter');
+    const prismaClient = (await import('../db/prisma')).default;
+    // Pull all active entity_person rows visible to this caller's tenant.
+    const rows = await prismaClient.$queryRawUnsafe<Array<{
+      id: string; title: string; metadata: any;
+    }>>(
+      `SELECT id, title, metadata
+         FROM wiki_pages
+        WHERE page_type = 'entity_person'
+          AND status = 'active'
+          AND client_number = $1`,
+      req.user!.clientNumber,
+    );
+    const flagged: Array<{ id: string; title: string; email: string }> = [];
+    for (const r of rows) {
+      const email = String(r.metadata?.email ?? '').trim().toLowerCase();
+      if (email && isLikelyAutomated(email)) {
+        flagged.push({ id: r.id, title: r.title, email });
+      }
+    }
+    if (dryRun) {
+      res.json({
+        total: flagged.length,
+        samples: flagged.slice(0, 50).map(({ title, email }) => ({ title, email })),
+      });
+      return;
+    }
+    // Apply — soft-archive each flagged row. Stamp metadata so we know
+    // why and when, so a future "show archived" UI can render it.
+    let archived = 0;
+    for (const f of flagged) {
+      try {
+        await prismaClient.$executeRawUnsafe(
+          `UPDATE wiki_pages
+              SET status = 'archived',
+                  last_updated_at = NOW(),
+                  last_updated_by = $1,
+                  metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+            WHERE id = $3`,
+          'contacts_cleanup_user',
+          JSON.stringify({
+            archivedReason: 'junk_filter',
+            archivedAt: new Date().toISOString(),
+            archivedBy: req.user!.id,
+            archivedEmail: f.email,
+          }),
+          f.id,
+        );
+        archived += 1;
+      } catch (err: any) {
+        // continue; report partial below
+        void err;
+      }
+    }
+    res.json({ total: flagged.length, archived });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/sweep', requireAdmin, async (req: Request, res: Response) => {
   // Admin-only: trigger the full tenant sweep right now (out of cycle).
   // Safe to call repeatedly — sweep is idempotent on signature.

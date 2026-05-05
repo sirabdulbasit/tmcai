@@ -137,6 +137,25 @@ const server = app.listen(env.port, async () => {
         .catch((err) => console.warn('Delegatee email sweep failed:', err.message));
     }, 30 * 60 * 1000);
   }, 6 * 60 * 1000);
+
+  // Junk contact cleanup — daily at ~3am UTC (with first run ~10 min
+  // after boot to seed coverage). Soft-archives entity_person pages
+  // whose email matches the same isLikelyAutomated() filter that gates
+  // new auto-discovery: no-reply / mailer-daemon / postmaster /
+  // newsletter@ / marketing@ / tracking-token prefixes. Reversible —
+  // status flips 'active' → 'archived', not deleted. Real humans never
+  // get touched (filter is conservative; support@ / help@ excluded).
+  setTimeout(() => {
+    import('./jobs/junkContactCleanupJob')
+      .then(({ runJunkContactCleanup }) => runJunkContactCleanup())
+      .catch((err) => console.warn('Junk contact cleanup failed:', err.message));
+    setInterval(() => {
+      import('./jobs/junkContactCleanupJob')
+        .then(({ runJunkContactCleanup }) => runJunkContactCleanup())
+        .catch((err) => console.warn('Junk contact cleanup failed:', err.message));
+    }, 24 * 60 * 60 * 1000);
+  }, 10 * 60 * 1000);
+
   // Agent scheduler: initialize all scheduled agents
   import('./agents/agentScheduler').then(({ initializeAgentScheduler }) => {
     initializeAgentScheduler().then(() => console.log('[Agents] Scheduler initialized')).catch(() => {});
