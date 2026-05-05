@@ -456,20 +456,26 @@ export default function HealthCheckTab() {
         </>
       )}
 
-      {/* KPIs */}
+      {/* Today's activity — audience-aware. User view shows a plain-
+          English summary; admin view shows the raw operator metrics. */}
       <h2 style={{ margin: 'var(--s-6) 0 var(--s-3)', fontSize: 'var(--fs-lg)' }}>Today's activity</h2>
       <Card>
         {!dashboardActive ? (
           <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', padding: 'var(--s-1) 0' }}>
             No activity processed yet today. Brain is watching for the first event — counters will populate as emails / calendar / WhatsApp arrive.
           </div>
-        ) : (
+        ) : showFull ? (
+          // Admin view — all metrics. Three small bug-fixes vs the old
+          // version: integer counts render as integers (whole numbers
+          // don't get a trailing .00), labels are consistently
+          // Title Case, and rows are sorted into operator-meaningful
+          // groups instead of insertion order.
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-1)' }}>
-            {dashboard.map((r) => (
+            {sortedDashboard(dashboard).map((r) => (
               <div key={r.metricType} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-sm)', padding: 'var(--s-1) 0' }}>
                 <span style={{ color: 'var(--text-muted)' }}>{kpiLabel(r.metricType)}</span>
                 <span>
-                  <strong>{r.current?.toFixed?.(2) ?? r.current}</strong>
+                  <strong>{formatKpi(r.current)}</strong>
                   {r.deltaPct !== null && r.deltaPct !== undefined && (
                     <span style={{ marginLeft: 'var(--s-2)', color: r.deltaPct >= 0 ? 'var(--success)' : 'var(--danger)', fontSize: 'var(--fs-xs)' }}>
                       {r.deltaPct >= 0 ? '+' : ''}{r.deltaPct.toFixed(1)}%
@@ -479,6 +485,11 @@ export default function HealthCheckTab() {
               </div>
             ))}
           </div>
+        ) : (
+          // User view — plain-English daily summary derived from the
+          // same dashboard payload. Three to four sentences, no numbers
+          // floating in space without context.
+          <UserActivitySummary rows={dashboard} />
         )}
       </Card>
     </div>
@@ -509,6 +520,108 @@ function DiagnosticBlock({ c, tone }) {
       <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', marginTop: 4 }}>
         <span style={{ fontFamily: 'monospace' }}>{c.name}</span> · {c.detail || c.status}
       </div>
+    </div>
+  );
+}
+
+// ─── KPI formatting helpers ──────────────────────────────────────────
+
+// Render integer counts without trailing .00. The dashboard endpoint
+// stores everything as float (because some metrics like match_rate are
+// fractions), but for whole-number counts (events ingested, items
+// created) the .00 looks broken to users.
+function formatKpi(value) {
+  if (value == null) return '—';
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  // Whole number → render as int. Fractional → keep 2dp.
+  return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+}
+
+// Group + sort dashboard rows so admins see them in a useful order.
+// Throughput first, then quality (matches), then friction (failed,
+// overridden), instead of the random insertion order from the DB.
+function sortedDashboard(rows) {
+  const ORDER = [
+    'feed_events_ingested',
+    'open_items_new',
+    'actions_executed',
+    'decisions_total',
+    'decisions_approved',
+    'decisions_overridden',
+    'actions_failed',
+    'match_rate_high',
+    'match_rate_medium',
+    'match_rate_low',
+  ];
+  const idx = (k) => {
+    const i = ORDER.indexOf(k);
+    return i < 0 ? 999 : i;
+  };
+  return [...rows].sort((a, b) => idx(a.metricType) - idx(b.metricType));
+}
+
+// ─── User-friendly daily summary ─────────────────────────────────────
+
+function UserActivitySummary({ rows }) {
+  // Pull each metric out of the rows array — defaulting to 0 when
+  // the row doesn't exist (e.g. tenant hasn't ingested anything yet).
+  const get = (k) => Number(rows.find((r) => r.metricType === k)?.current ?? 0);
+  const ingested      = get('feed_events_ingested');
+  const newItems      = get('open_items_new');
+  const autoActions   = get('actions_executed');
+  const decisions     = get('decisions_total');
+  const overridden    = get('decisions_overridden');
+  const failed        = get('actions_failed');
+
+  // Build sentences only for non-zero metrics so the summary stays tight.
+  const lines = [];
+  if (ingested > 0) {
+    lines.push(
+      <span key="ingested">
+        Brain processed <strong>{ingested.toLocaleString()}</strong> {ingested === 1 ? 'signal' : 'signals'} from your inbox / calendar / WhatsApp.
+      </span>
+    );
+  }
+  if (autoActions > 0 || decisions > 0) {
+    lines.push(
+      <span key="actions">
+        {autoActions > 0 && <>Brain ran <strong>{autoActions.toLocaleString()}</strong> auto-{autoActions === 1 ? 'action' : 'actions'} for you</>}
+        {autoActions > 0 && decisions > 0 && ' · '}
+        {decisions > 0 && <>made <strong>{decisions.toLocaleString()}</strong> {decisions === 1 ? 'decision' : 'decisions'}</>}
+        .
+      </span>
+    );
+  }
+  if (newItems > 0) {
+    lines.push(
+      <span key="new">
+        <strong>{newItems.toLocaleString()}</strong> new {newItems === 1 ? 'item landed' : 'items landed'} on your plate.
+      </span>
+    );
+  }
+  if (overridden > 0 || failed > 0) {
+    const bits = [];
+    if (overridden > 0) bits.push(<><strong>{overridden}</strong> {overridden === 1 ? 'decision' : 'decisions'} you overrode (Brain learned from this)</>);
+    if (failed > 0) bits.push(<><strong>{failed}</strong> auto-{failed === 1 ? 'action failed' : 'actions failed'}</>);
+    lines.push(
+      <span key="friction">
+        Friction signals: {bits.map((b, i) => <span key={i}>{b}{i < bits.length - 1 ? ' · ' : ''}</span>)}.
+      </span>
+    );
+  }
+
+  if (lines.length === 0) {
+    return (
+      <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+        Nothing notable happened today yet — Brain is watching.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-2)', fontSize: 'var(--fs-sm)', lineHeight: 1.5 }}>
+      {lines}
     </div>
   );
 }
