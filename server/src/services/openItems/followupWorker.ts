@@ -109,19 +109,27 @@ export async function runFollowupSweep(opts: { dryRun?: boolean } = {}): Promise
     }
 
     try {
-      const { brainContactsUser } = await import('../notifications/brainOutboundService');
-      const r = await brainContactsUser({
+      // Route through the Brain prompt queue instead of firing
+      // brainContactsUser directly. This serialises the conversation:
+      // 10 stale items become 10 sequential prompts the user answers
+      // one at a time, not 10 simultaneous WhatsApp pings.
+      const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
+      const criticality = tier.label === 'escalate'
+        ? 'high'
+        : 'routine';
+      const r = await enqueueBrainPrompt({
         userId: it.userId,
-        kind: 'followup_nudge',
-        summary: `Follow-up · ${tier.label} · ${it.title.slice(0, 60)}`,
-        body,
-        urgency: tier.label === 'escalate' ? 'high' : 'normal',
+        clientNumber: it.clientNumber,
+        question: body,
+        openItemId: it.id,
+        sideEffect: { kind: 'free_form_note', openItemId: it.id },
+        criticality,
         dedupKey: `followup:${it.id}:${tier.label}`,
-        metadata: { openItemId: it.id, tier: tier.label, daysSilent },
+        metadata: { tier: tier.label, daysSilent, source: 'followup_worker' },
       });
-      if (!r.sent && r.reason?.startsWith('quiet')) {
-        out.skippedQuiet += 1;
-        continue; // try again next sweep when not quiet
+      if (r.status === 'duplicate') {
+        // Already enqueued in a prior sweep; tier hasn't crossed yet.
+        continue;
       }
       // Record so we don't fire this tier again. Next tier will fire when
       // daysSilent crosses its threshold.

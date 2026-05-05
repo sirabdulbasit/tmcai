@@ -128,6 +128,29 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // Show "typing..." indicator immediately so user knows bot is working
   if (params.typingFn) await params.typingFn().catch(() => {});
 
+  // ── Step 1.5: Brain prompt queue reply ───────────────────────────────────
+  // If Brain is currently asking the user a question (brain_prompt_queue
+  // row in awaiting_reply), this inbound message IS the answer. Apply the
+  // side-effect, ack, and dispatch the next prompt — do NOT route to the
+  // chat LLM. Bypass session control / email-detection paths because those
+  // would mis-classify a one-word date answer like "friday" as gibberish
+  // and burn a chat turn.
+  try {
+    const { handlePromptReply } = await import('../brainPrompts/promptReplyHandler');
+    const r = await handlePromptReply({ userId, text: queryText });
+    if (r.handled) {
+      log.info('consumed as prompt reply', {
+        userId, promptId: r.promptId, sideEffect: r.sideEffectStatus,
+      });
+      if (r.ackMessage) {
+        await sendReply(params, r.ackMessage);
+      }
+      return;  // do NOT continue to chat router
+    }
+  } catch (err: any) {
+    log.warn('prompt reply handler errored — falling through to chat', { err: err.message });
+  }
+
   // ── Step 2: Session control commands ─────────────────────────────────────
   const lower = queryText.toLowerCase().trim();
   if (['bye', 'stop', 'end', 'quit', 'exit'].includes(lower)) {
