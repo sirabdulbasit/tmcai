@@ -128,6 +128,24 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // Show "typing..." indicator immediately so user knows bot is working
   if (params.typingFn) await params.typingFn().catch(() => {});
 
+  // ── Step 1.4: Negative-feedback shortcut ─────────────────────────────────
+  // Phrases like "shouldn't be", "stop", "ignore this", "don't care",
+  // "leave me alone" sent in response to a recent Brain bundle / prompt
+  // are FEEDBACK, not chat questions. Treat them as an explicit demote
+  // signal on whatever Brain most-recently nudged the user about, so
+  // Brain learns instead of explaining itself again.
+  try {
+    const { tryConsumeAsFeedback } = await import('../brainPrompts/negativeFeedbackHandler');
+    const fb = await tryConsumeAsFeedback({ userId, clientNumber: params.clientNumber, text: queryText });
+    if (fb.handled) {
+      log.info('consumed as negative feedback', { userId, action: fb.action });
+      if (fb.ackMessage) await sendReply(params, fb.ackMessage);
+      return;
+    }
+  } catch (err: any) {
+    log.warn('negative-feedback handler errored — falling through', { err: err.message });
+  }
+
   // ── Step 1.5: Brain prompt queue reply ───────────────────────────────────
   // If Brain is currently asking the user a question (brain_prompt_queue
   // row in awaiting_reply), this inbound message IS the answer. Apply the

@@ -354,6 +354,22 @@ const server = app.listen(env.port, async () => {
     }
   }, 60 * 1000);
 
+  // MyOS — critical-bundle WhatsApp sweep every 90s. Lives here, not in
+  // /brief/attention, so opening the Day Brief in two tabs (or any other
+  // double-fetch) doesn't cause duplicate WhatsApp pushes. The sweep
+  // itself is idempotent via in-flight set + lastSent fingerprint cache.
+  setInterval(async () => {
+    try {
+      const { sweepCriticalBundles } = await import('./services/triage/criticalityNotifier');
+      const s = await sweepCriticalBundles();
+      if (s.sent > 0 || s.errors > 0) {
+        console.log(`[criticalBundleSweep] users=${s.users} sent=${s.sent} skipped=${s.skipped} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[criticalBundleSweep] error:', err.message);
+    }
+  }, 90 * 1000);
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {

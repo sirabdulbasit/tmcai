@@ -29,6 +29,26 @@ const reconnectAttempts = new Map<string, number>();
 const RECONNECT_BACKOFF_MS = [10_000, 30_000, 120_000, 300_000, 600_000]; // 10s → 30s → 2m → 5m → 10m
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
 
+// Per-message dedup so the `message` and `message_create` listeners
+// don't both invoke handleInboundMessage for the same inbound. Without
+// this, replies like "Friday" produce TWO replies — one from the date
+// parser (correct), one from the chat router (wrong, "Happy Friday").
+// Returns true if msgId was ALREADY seen (caller should skip).
+const seenMessageIds = new Map<string, number>();
+const SEEN_TTL_MS = 60 * 1000;
+function markSeen(msgId: string): boolean {
+  const now = Date.now();
+  // Clean entries older than TTL
+  if (seenMessageIds.size > 200) {
+    for (const [k, t] of seenMessageIds) {
+      if (now - t > SEEN_TTL_MS) seenMessageIds.delete(k);
+    }
+  }
+  if (seenMessageIds.has(msgId)) return true;
+  seenMessageIds.set(msgId, now);
+  return false;
+}
+
 /**
  * Remove stale Chromium SingletonLock files from a LocalAuth session
  * folder when the PID inside them is no longer alive.
@@ -223,6 +243,12 @@ export class WebjsProvider implements IWhatsAppProvider {
       const isVoice = message.type === 'ptt' || message.type === 'audio';
       if (!isVoice && (!message.body || !message.body.trim())) return;
 
+      const msgId = message.id?._serialized ?? message.id?.id ?? `${rawFrom}:${message.timestamp}:${message.body?.slice(0, 16)}`;
+      if (markSeen(msgId)) {
+        log.info('Raw message event — duplicate, skipping', { msgId });
+        return;
+      }
+
       log.info('Raw message event', { from: rawFrom, body: (message.body || '').slice(0, 50), type: message.type, hasMedia: message.hasMedia });
 
       try {
@@ -329,13 +355,23 @@ export class WebjsProvider implements IWhatsAppProvider {
       }
     });
 
-    // Also listen to message_create (newer whatsapp-web.js versions use this instead of message)
-    // The dedup check in WhatsAppInbound prevents double-processing
+    // Older whatsapp-web.js fires `message`; newer fires `message_create`.
+    // Some versions fire BOTH for the same inbound. Without a dedup
+    // gate that produced the "Friday" double-reply: the date parser
+    // answered, then the chat router replied "Happy Friday" because
+    // the second handler invocation found the awaiting prompt already
+    // answered and fell through to chat. Dedup at the message-id level
+    // so each inbound is processed exactly once.
     client.on('message_create', async (message: any) => {
       if (message.fromMe) return;
       const rawFrom = message.from || '';
       if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
       if (!message.body || !message.body.trim()) return;
+      const msgId = message.id?._serialized ?? message.id?.id ?? `${rawFrom}:${message.timestamp}:${message.body?.slice(0, 16)}`;
+      if (markSeen(msgId)) {
+        log.info('message_create event — duplicate of a `message` event, skipping', { msgId });
+        return;
+      }
 
       log.info('message_create event', { from: rawFrom, body: (message.body || '').slice(0, 50) });
 

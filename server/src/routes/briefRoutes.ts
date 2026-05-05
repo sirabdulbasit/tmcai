@@ -25,15 +25,12 @@ router.get('/attention', async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(String(req.query.limit ?? '30'), 10) || 30, 100);
   try {
     const items = await buildAttentionList(user.clientNumber, user.id, limit);
-    // Fire WhatsApp push for any new critical items. Fire-and-forget: if
-    // the user has no WA connection or a push was sent recently, this
-    // silently no-ops. The user sees the same items in the response.
-    void (async () => {
-      try {
-        const { maybePushCriticalBundle } = await import('../services/triage/criticalityNotifier');
-        await maybePushCriticalBundle(user.clientNumber, user.id, items);
-      } catch { /* best effort */ }
-    })();
+    // NOTE: WhatsApp push for critical items is NOT fired here anymore.
+    // It used to be fire-and-forget on every /brief/attention call,
+    // which meant opening the Day Brief in two tabs (or React's
+    // strict-mode double-fetch) sent the user the same bundle twice.
+    // The push now runs from a per-tenant cron tick (criticalityBundleSweep)
+    // so it fires once per minute regardless of how often the page polls.
     res.json({ items, count: items.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
