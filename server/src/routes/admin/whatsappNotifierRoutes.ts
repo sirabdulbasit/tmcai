@@ -191,6 +191,11 @@ router.post('/whatsapp-notifier/test-brain', requireAdmin, async (req: Request, 
     body: String(body ?? '🔴 Brain test (criticality channel): this came from a non-WhatsApp source.'),
     urgency: (urgency ?? 'normal') as any,
     dedupKey: `admin_test_${Date.now()}`,
+    // The verify panel fires up to 4 cards back-to-back. The 60s
+    // per-kind rate limit is meant for production criticality bundling,
+    // not for admin probing — bypass so each card can land its own
+    // outbound message + audit row instead of suppressing 3 of 4.
+    bypassRateLimit: true,
   });
   res.json(r);
 });

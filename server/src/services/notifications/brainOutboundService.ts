@@ -80,6 +80,12 @@ export interface BrainContactRequest {
    * urgency=emergency.
    */
   bypassQuietHours?: boolean;
+  /**
+   * Bypass the per-kind 60s rate limit + dedup. Intended for admin
+   * verify-panel sends and smoke tests where the user is intentionally
+   * firing back-to-back probes. NEVER set from production code paths.
+   */
+  bypassRateLimit?: boolean;
   /** Free-form metadata persisted on the audit row. */
   metadata?: Record<string, unknown>;
 }
@@ -120,7 +126,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // even on misconfigured users.
 
   // ── Dedup check ─────────────────────────────────────────────────────
-  if (req.dedupKey) {
+  if (req.dedupKey && !req.bypassRateLimit) {
     const last = await prisma.brainUserMessage.findFirst({
       where: {
         userId: user.id, kind: req.kind, dedupKey: req.dedupKey,
@@ -148,7 +154,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // any one `kind` from firing more than once per 60s, no matter what
   // dedupKey the caller sent.
   const KIND_MIN_INTERVAL_MS = 60_000;
-  const rec = await prisma.brainUserMessage.findFirst({
+  const rec = !req.bypassRateLimit ? await prisma.brainUserMessage.findFirst({
     where: {
       userId: user.id, kind: req.kind,
       createdAt: { gte: new Date(Date.now() - KIND_MIN_INTERVAL_MS) },
@@ -156,7 +162,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     },
     orderBy: { createdAt: 'desc' },
     select: { id: true, createdAt: true },
-  }).catch(() => null);
+  }).catch(() => null) : null;
   if (rec) {
     const ageSec = Math.round((Date.now() - rec.createdAt.getTime()) / 1000);
     log.info('rate-limited', { userId: user.id, kind: req.kind, ageSec });
