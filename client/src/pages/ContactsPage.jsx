@@ -71,7 +71,7 @@ export default function ContactsPage() {
   const [q, setQ] = useState('');
   const [minStars, setMinStars] = useState(0);
   const [source, setSource] = useState('');
-  const [sort, setSort] = useState('');
+  const [sort, setSort] = useState('stars');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -319,8 +319,8 @@ export default function ContactsPage() {
           ))}
         </select>
         <select value={sort} onChange={(e) => setSort(e.target.value)} style={selectStyle}>
-          <option value="">Sort: Recent</option>
           <option value="stars">Sort: Stars</option>
+          <option value="recent">Sort: Recent</option>
         </select>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
           Showing {entities.length}{total > entities.length ? ` of ${total}` : ''} contacts

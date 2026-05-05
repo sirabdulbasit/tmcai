@@ -32,8 +32,10 @@ router.get('/', async (req: Request, res: Response) => {
     const minStars = Math.max(0, Math.min(5, parseInt(String(req.query.minStars ?? '0'), 10) || 0));
     // Filter: by import source ('google_contacts' | 'whatsapp_history' | …)
     const source = String(req.query.source ?? '').trim();
-    // Sort: recent | stars (default: stars desc when filter applied, else recent)
-    const sort = String(req.query.sort ?? '').trim();
+    // Sort: stars (default) | recent. Stars-first puts the contacts the
+    // user has explicitly marked important at the top; recency is the
+    // tiebreaker (most rows are 0 stars).
+    const sort = String(req.query.sort ?? 'stars').trim();
 
     // Visibility rule:
     //   · entities the requesting user owns (user_id = self)
@@ -77,10 +79,12 @@ router.get('/', async (req: Request, res: Response) => {
     if (minStars > 0) projected = projected.filter((p) => (p.stars ?? 0) >= minStars);
     if (source) projected = projected.filter((p) => p.importedFrom === source);
 
-    if (sort === 'stars' || (sort === '' && minStars > 0)) {
+    if (sort === 'stars') {
       projected.sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0)
         || new Date(b.lastUpdatedAt).getTime() - new Date(a.lastUpdatedAt).getTime());
     }
+    // sort === 'recent' falls through — rows already arrive
+    // last_updated_at DESC from the SQL above.
 
     const total = projected.length;
     const paged = projected.slice(offset, offset + limit);
