@@ -174,12 +174,16 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
   }
 
   const senderHint = input.senderName ?? input.senderEmail;
+  // Localise the prompt body (text + voicenote TTS + voice call TTS).
+  // Pakistani users default to Urdu via contact-number detection; user
+  // can override via notification_preferences.language.
+  const lang = await getUserLanguage(input.userId);
   let scheduled = 0;
   for (let attempt = 0; attempt < plan.length; attempt++) {
     const step = plan[attempt]!;
     const scheduledAt = new Date(Date.now() + step.delayMinutes * 60 * 1000);
     const dedupKey = `cadence:${anchor}:${attempt}`;
-    const question = buildQuestion(input.itemTitle, senderHint, attempt, plan.length, stars);
+    const question = buildQuestion(input.itemTitle, senderHint, attempt, plan.length, stars, lang);
 
     try {
       await enqueueBrainPrompt({
@@ -209,12 +213,39 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
   return { status: 'scheduled', attempts: scheduled, stars };
 }
 
-function buildQuestion(itemTitle: string, senderHint: string, attempt: number, total: number, stars: Stars): string {
+type Lang = 'en' | 'ur';
+
+function buildQuestion(itemTitle: string, senderHint: string, attempt: number, total: number, stars: Stars, lang: Lang): string {
   const starBadge = '★'.repeat(stars);
-  const followup = attempt === 0
-    ? ''
-    : ` (follow-up ${attempt + 1}/${total})`;
+  if (lang === 'ur') {
+    const followup = attempt === 0 ? '' : ` (یاد دہانی ${attempt + 1}/${total})`;
+    return `${starBadge} ${senderHint}: "${truncate(itemTitle, 120)}"${followup}\n\nآپ کیا کرنا چاہیں گے — جواب دیں، کسی کو سونپیں، یا بند کریں؟`;
+  }
+  const followup = attempt === 0 ? '' : ` (follow-up ${attempt + 1}/${total})`;
   return `${starBadge} ${senderHint}: "${truncate(itemTitle, 120)}"${followup}\n\nWhat would you like to do — reply, delegate, or close?`;
+}
+
+/**
+ * Resolve the language to render the prompt + speak the voice in.
+ * Order:
+ *   1. user.notificationPreferences.language explicit setting ('en' | 'ur')
+ *   2. user.contactNumber starts with +92 → Urdu (Pakistan default)
+ *   3. fallback English
+ */
+async function getUserLanguage(userId: number): Promise<Lang> {
+  try {
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { contactNumber: true, notificationPreferences: true } as any,
+    }) as any;
+    if (!u) return 'en';
+    const prefs = (u.notificationPreferences as Record<string, unknown> | null) ?? {};
+    const explicit = String(prefs.language ?? '').toLowerCase();
+    if (explicit === 'ur') return 'ur';
+    if (explicit === 'en') return 'en';
+    if (typeof u.contactNumber === 'string' && u.contactNumber.startsWith('+92')) return 'ur';
+  } catch { /* fall through */ }
+  return 'en';
 }
 
 function truncate(s: string, n: number): string {
