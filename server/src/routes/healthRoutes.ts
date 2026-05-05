@@ -350,16 +350,32 @@ async function checkScheduler(): Promise<ComponentHealth> {
 
 async function checkTokenRefresh(): Promise<ComponentHealth> {
   try {
-    const expiringSoon = await prisma.user.count({
+    // Surface WHICH users are affected, not just the count. The UI
+    // translator parses this list and renders names so the user can
+    // act ("click Reconnect on basit.ahmed@tmcltd.ai") instead of
+    // hunting for it.
+    const expiring = await prisma.user.findMany({
       where: {
         integrationStatus: 'active',
         integrationTokenExpiry: { lt: new Date(Date.now() + 10 * 60 * 1000) },
       } as any,
-    }).catch(() => 0);
+      select: { id: true, email: true, name: true, integrationProvider: true, integrationTokenExpiry: true } as any,
+      take: 10,
+    }).catch(() => [] as any[]);
+    const n = expiring.length;
+    if (n === 0) {
+      return { name: 'token_refresh', status: 'up', detail: 'all tokens valid >10m' };
+    }
+    // Pack a structured tail the UI can split: count + comma-separated
+    // user identifiers. e.g. "2 user token(s) expire within 10m: basit.ahmed@tmcltd.ai (google), asad@tmcltd.ai (google)"
+    const idents = (expiring as any[]).map((u) => {
+      const provider = u.integrationProvider ? ` (${u.integrationProvider})` : '';
+      return `${u.email ?? u.name ?? `user#${u.id}`}${provider}`;
+    });
     return {
       name: 'token_refresh',
-      status: expiringSoon === 0 ? 'up' : 'degraded',
-      detail: expiringSoon === 0 ? 'all tokens valid >10m' : `${expiringSoon} user token(s) expire within 10m`,
+      status: 'degraded',
+      detail: `${n} user token(s) expire within 10m: ${idents.join(', ')}`,
     };
   } catch (err: any) {
     return { name: 'token_refresh', status: 'down', detail: err.message };
