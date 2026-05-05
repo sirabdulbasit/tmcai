@@ -165,7 +165,18 @@ export async function listItems(
   const where: Record<string, unknown> = { userId, clientNumber };
 
   if (filters?.status) {
-    where.status = Array.isArray(filters.status) ? { in: filters.status } : filters.status;
+    // Frontend tabs send legacy lowercase ('delegated', 'done', …) but the
+    // DB stores v15 enums uppercase ('DELEGATED', 'CLOSED', …). Translate
+    // both forms so either still hits the right rows.
+    const toV15 = (s: string) => LEGACY_TO_V15[s] ?? s;
+    const arr = Array.isArray(filters.status) ? filters.status : [filters.status];
+    const expanded: string[] = [];
+    for (const s of arr) {
+      if (!s) continue;
+      expanded.push(s, toV15(s));
+    }
+    const uniq = Array.from(new Set(expanded));
+    where.status = uniq.length === 1 ? uniq[0] : { in: uniq };
   }
   if (filters?.priority) {
     where.priority = Array.isArray(filters.priority) ? { in: filters.priority } : filters.priority;
@@ -286,16 +297,21 @@ export async function addNote(id: string, clientNumber: string, text: string, us
 // ─── Stats ───────────────────────────────────────────────────────
 
 export async function getStats(userId: number, clientNumber: string) {
+  // v15 lifecycle uses uppercase CLOSED; legacy callers may still send 'done'.
+  // Exclude both so "Total Open" is the live workload, not all-time history.
   const items = await prisma.openItem.findMany({
-    where: { userId, clientNumber, status: { not: 'done' } },
+    where: { userId, clientNumber, status: { notIn: ['CLOSED', 'done'] as any } },
     select: { status: true, priority: true },
   });
 
   const byStatus: Record<string, number> = {};
   const byPriority: Record<string, number> = {};
 
+  // Frontend reads byStatus.delegated / .done in lowercase; normalise here so
+  // DELEGATED (v15) and delegated (legacy) collapse into the same bucket.
   for (const item of items) {
-    byStatus[item.status] = (byStatus[item.status] || 0) + 1;
+    const sKey = String(item.status).toLowerCase();
+    byStatus[sKey] = (byStatus[sKey] || 0) + 1;
     byPriority[item.priority] = (byPriority[item.priority] || 0) + 1;
   }
 

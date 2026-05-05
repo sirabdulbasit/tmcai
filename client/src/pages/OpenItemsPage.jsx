@@ -44,6 +44,8 @@ export default function OpenItemsPage() {
   const [msg, setMsg] = useState('');
   const [atBottom, setAtBottom] = useState(false);
   const [cleanupPreview, setCleanupPreview] = useState(null); // { stale, dedup, total }
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupApplying, setCleanupApplying] = useState(false);
 
   function handleScroll(e) {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -100,16 +102,32 @@ export default function OpenItemsPage() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
-            style={{ ...s.btn, ...s.btnOutline }}
+            style={{ ...s.btn, ...s.btnOutline, opacity: cleanupBusy ? 0.7 : 1 }}
+            disabled={cleanupBusy}
             title="Auto-close items older than 30 days with no activity, plus duplicates of the same source. Critical items are never auto-closed."
             onClick={async () => {
+              setCleanupBusy(true);
+              setMsg('');
+              setCleanupPreview(null);
               try {
                 const dry = await api.post('/open-items/triage-cleanup', { staleDays: 30, dryRun: true });
-                if ((dry.data?.total ?? 0) === 0) { setMsg('Nothing to clean up — no stale or duplicate items.'); return; }
-                setCleanupPreview(dry.data);
-              } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup failed'); }
+                const total = dry.data?.total ?? 0;
+                if (total === 0) {
+                  // Explain WHY nothing matched — pull totals from stats so the
+                  // message is concrete instead of "no stale or duplicates".
+                  const recentNote = (stats?.byStatus?.new ?? 0) > 0
+                    ? `Your ${stats?.byStatus?.new ?? 0} NEW items are either <30 days old, marked critical (protected), or have unique sources.`
+                    : 'No NEW items in the eligible set.';
+                  setMsg(`Nothing to clean up. ${recentNote} Try the Done button on individual items, or wait until items age past 30 days.`);
+                } else {
+                  setCleanupPreview(dry.data);
+                }
+              } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup scan failed'); }
+              finally { setCleanupBusy(false); }
             }}
-          >🧹 Smart cleanup</button>
+          >
+            {cleanupBusy ? <><span className="btn-spinner" />Scanning…</> : '🧹 Smart cleanup'}
+          </button>
           <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
         </div>
       </div>
@@ -132,17 +150,20 @@ export default function OpenItemsPage() {
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button
-              style={{ ...s.btn, background: '#f59e0b', color: '#000', borderColor: '#f59e0b' }}
+              style={{ ...s.btn, background: '#f59e0b', color: '#000', borderColor: '#f59e0b', opacity: cleanupApplying ? 0.7 : 1 }}
+              disabled={cleanupApplying}
               onClick={async () => {
+                setCleanupApplying(true);
                 try {
                   const r = await api.post('/open-items/triage-cleanup', { staleDays: 30 });
-                  setMsg(`Closed ${r.data?.total ?? 0} items (${r.data?.stale ?? 0} stale, ${r.data?.dedup ?? 0} duplicates).`);
+                  setMsg(`✓ Closed ${r.data?.total ?? 0} items (${r.data?.stale ?? 0} stale, ${r.data?.dedup ?? 0} duplicates).`);
                   setCleanupPreview(null);
                   load(); loadStats();
                 } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup failed'); }
+                finally { setCleanupApplying(false); }
               }}
-            >Yes, close them</button>
-            <button style={{ ...s.btn, ...s.btnOutline }} onClick={() => setCleanupPreview(null)}>Cancel</button>
+            >{cleanupApplying ? <><span className="btn-spinner" />Closing…</> : 'Yes, close them'}</button>
+            <button style={{ ...s.btn, ...s.btnOutline }} disabled={cleanupApplying} onClick={() => setCleanupPreview(null)}>Cancel</button>
           </div>
         </div>
       )}

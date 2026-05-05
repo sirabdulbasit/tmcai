@@ -327,8 +327,23 @@ export async function digestMeetingFromEmail(emailMessagePageId: string): Promis
   // 7. Create open_items for commitments, with the meeting as source
   const sourceLine = formatSourceLine(digest);
   const openItemIds: string[] = [];
+  const { qualifyAutoOpenItem } = await import('../openItems/qualityGate');
   for (const c of digest.commitments) {
-    if (!c.text || c.confidence < 0.35) continue;  // skip junk / low-confidence
+    if (!c.text) continue;
+    // Quality gate — replaces the previous fixed 0.35 floor. Now a commitment
+    // must clear confidence ≥ 0.65 AND carry an action signal (verb / question
+    // / due date) before it lands on the user's plate.
+    const verdict = qualifyAutoOpenItem({
+      title: c.text,
+      body: '',
+      dueDate: c.dueAt ? new Date(c.dueAt) : null,
+      archetype: 'reply_needed',
+      confidence: c.confidence,
+    });
+    if (verdict.verdict === 'reject') {
+      log.info('commitment rejected by quality gate', { text: c.text.slice(0, 80), code: verdict.code });
+      continue;
+    }
 
     // Try to resolve owner to a real email/entity. Best-effort — if the
     // ownerLabel is a named person we can match by attendee.name/email.

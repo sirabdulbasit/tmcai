@@ -1124,13 +1124,45 @@ router.post('/decide', async (req: Request, res: Response) => {
     }
   }
 
-  // If add_open_item, create an OpenItem linked back to the feed_event
+  // If add_open_item, create an OpenItem linked back to the feed_event.
+  // Forwarded-email aware: when the source is gmail and the message is a
+  // forward, lift the title from the forwarder's note (the actual ask) and
+  // record original sender + forwarder in metadata so Brain knows who asked
+  // who.
   let openItemId: string | undefined;
   if (action === 'add_open_item') {
+    const rawPayload: any = event.rawPayload ?? {};
+    const bodyText: string = String(rawPayload.body ?? rawPayload.snippet ?? '');
+    let title = subject || `Follow up on ${itemType}`;
+    let description = String(rawPayload.snippet ?? '');
+    let forwardedMeta: any = undefined;
+    if (event.sourceType === 'gmail') {
+      try {
+        const { parseForwardedEmail, buildOpenItemFromForward } = await import('../services/openItems/forwardedEmailParser');
+        const parsed = parseForwardedEmail(subject ?? null, bodyText);
+        if (parsed.isForwarded) {
+          const built = buildOpenItemFromForward(
+            parsed,
+            senderEmail ?? null,
+            (event as any).senderName ?? null,
+            subject || `Follow up on ${itemType}`,
+          );
+          title = built.title;
+          description = built.description;
+          forwardedMeta = {
+            forwarderEmail: senderEmail ?? null,
+            forwarderName: (event as any).senderName ?? null,
+            originalSenderEmail: parsed.originalSenderEmail,
+            originalSenderName: parsed.originalSenderName,
+            forwarderNote: parsed.forwarderNote,
+          };
+        }
+      } catch { /* best-effort: fall back to raw subject/snippet */ }
+    }
     const created = await prisma.openItem.create({
       data: {
-        title: subject || `Follow up on ${itemType}`,
-        description: String((event.rawPayload as any)?.snippet ?? ''),
+        title,
+        description,
         type: itemType as string,
         status: 'NEW',
         priority: body.priority ?? 'medium',
@@ -1141,6 +1173,7 @@ router.post('/decide', async (req: Request, res: Response) => {
         userId: user.id,
         sourceFeedEventId: feedEventId,
         archetype: archetype ?? null,
+        metadata: forwardedMeta ? { forwarded: forwardedMeta } as any : undefined,
       } as any,
     });
     openItemId = created.id;

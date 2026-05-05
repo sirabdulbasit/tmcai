@@ -42,6 +42,28 @@ export default function MyRulesPage() {
     const q = new URLSearchParams(window.location.search).get('subtab');
     return TABS.some((t) => t.id === q) ? q : 'standing';
   });
+  // Compose Hints is deprecated. Hide the tab unless this user actually
+  // has legacy hints to manage. Once empty, the tab disappears entirely
+  // and the only place rules can be added is Standing Instructions.
+  const [hasPrompts, setHasPrompts] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/brief/prompts')
+      .then((r) => { if (!cancelled) setHasPrompts((r.data?.prompts ?? []).length > 0); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  // If the user lands on the prompts tab via URL but has no hints,
+  // bounce to Standing Instructions so the empty tab isn't the default.
+  useEffect(() => {
+    if (tab === 'prompts' && !hasPrompts) {
+      // Don't auto-bounce — user might be on prompts to clean up. We
+      // only filter the visible tabs; selection stays valid.
+    }
+  }, [tab, hasPrompts]);
+
+  const visibleTabs = TABS.filter((t) => t.id !== 'prompts' || hasPrompts);
+
   const select = (id) => {
     setTab(id);
     if (typeof window !== 'undefined') {
@@ -62,7 +84,7 @@ export default function MyRulesPage() {
       </header>
 
       <div style={{ display: 'flex', gap: 'var(--s-2)', marginBottom: 'var(--s-3)', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             onClick={() => select(t.id)}
