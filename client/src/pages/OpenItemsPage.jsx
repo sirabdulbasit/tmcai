@@ -46,6 +46,40 @@ export default function OpenItemsPage() {
   const [cleanupPreview, setCleanupPreview] = useState(null); // { stale, dedup, total }
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupApplying, setCleanupApplying] = useState(false);
+  // Bulk select — Set of item ids the user has ticked. Sticky toolbar
+  // appears at the top whenever this is non-empty.
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleSelect = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAllVisible = () => setSelected(new Set(items.map((it) => it.id)));
+  const clearSelection = () => setSelected(new Set());
+  const bulkAction = async (target, reasonLabel) => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selected];
+      // bulk-transition caps at 100 per call; chunk if more.
+      let totalAccepted = 0;
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const r = await api.post('/open-items/bulk-transition', { ids: chunk, target, reason: reasonLabel });
+        totalAccepted += r.data?.accepted ?? 0;
+      }
+      setMsg(`✓ ${target === 'closed' ? 'Closed' : target === 'snoozed' ? 'Snoozed' : 'Updated'} ${totalAccepted}/${ids.length} item${ids.length === 1 ? '' : 's'}.`);
+      clearSelection();
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Bulk action failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   function handleScroll(e) {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -180,13 +214,64 @@ export default function OpenItemsPage() {
       )}
 
       {/* Filter tabs */}
-      <div style={{ marginBottom: 16 }}>
-        {['all', 'open', 'in_progress', 'delegated', 'blocked', 'done', 'overdue'].map(f => (
-          <button key={f} style={s.tab(filter === f)} onClick={() => setFilter(f)}>
-            {f === 'all' ? 'All' : f.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          {['all', 'open', 'in_progress', 'delegated', 'blocked', 'done', 'overdue'].map(f => (
+            <button key={f} style={s.tab(filter === f)} onClick={() => setFilter(f)}>
+              {f === 'all' ? 'All' : f.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+            </button>
+          ))}
+        </div>
+        {items.length > 0 && (
+          <button
+            onClick={selected.size === items.length ? clearSelection : selectAllVisible}
+            style={{ ...s.btn, ...s.btnOutline, marginLeft: 'auto', fontSize: 'var(--fs-xs)' }}
+          >
+            {selected.size === items.length ? 'Unselect all' : `Select all visible (${items.length})`}
           </button>
-        ))}
+        )}
       </div>
+
+      {/* Bulk action bar — sticky-feel banner only when something is selected */}
+      {selected.size > 0 && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 50,
+          padding: '10px 14px', marginBottom: 12,
+          background: 'rgba(204,107,74,0.12)',
+          border: '1px solid rgba(204,107,74,0.55)',
+          borderRadius: 10, color: 'var(--text)', fontSize: 'var(--fs-sm)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, flexWrap: 'wrap',
+        }}>
+          <div>
+            <strong>{selected.size}</strong> selected
+            {selected.size > 100 && (
+              <span style={{ color: 'var(--text-muted)', marginLeft: 8, fontSize: 'var(--fs-xs)' }}>
+                (will be archived in batches of 100)
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button
+              style={{ ...s.btn, background: '#4ade80', color: '#0e1116', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={() => bulkAction('done', 'bulk_close_from_action_center')}
+              title="Mark all selected items as Done"
+            >{bulkBusy ? 'Working…' : `✓ Mark Done (${selected.size})`}</button>
+            <button
+              style={{ ...s.btn, background: '#f59e0b', color: '#0e1116', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={() => bulkAction('snoozed', 'bulk_snooze_from_action_center')}
+              title="Snooze all selected items"
+            >Snooze</button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline }}
+              disabled={bulkBusy}
+              onClick={clearSelection}
+            >Clear</button>
+          </div>
+        </div>
+      )}
 
       {/* Items list */}
       {loading ? (
@@ -195,8 +280,24 @@ export default function OpenItemsPage() {
         <div style={s.empty}>No items found. Create your first open item or connect data sources to auto-generate items.</div>
       ) : (
         items.map(item => (
-          <div key={item.id} style={s.card} onClick={() => setSelectedItem(item)}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div
+            key={item.id}
+            style={{
+              ...s.card,
+              borderColor: selected.has(item.id) ? 'rgba(204,107,74,0.7)' : 'var(--border)',
+              background: selected.has(item.id) ? 'rgba(204,107,74,0.06)' : 'var(--bg-2)',
+            }}
+            onClick={() => setSelectedItem(item)}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={selected.has(item.id)}
+                onChange={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${item.title}`}
+                style={{ width: 16, height: 16, marginTop: 4, cursor: 'pointer', flexShrink: 0 }}
+              />
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 14 }}>{TYPE_ICONS[item.type] || '•'}</span>

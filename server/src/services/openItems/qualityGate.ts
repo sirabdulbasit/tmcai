@@ -44,6 +44,54 @@ const NEWSLETTER_HINTS = [
   'view in browser', 'no-reply', 'noreply',
 ];
 
+// Title patterns that look critical because of keywords ("Critical Patch
+// Update", "Security Advisory", "[Plaud-AutoFlow] X Crisis: …") but are
+// actually vendor / automated reports — never genuinely actionable for the
+// user. Match conservatively against the start of the title.
+const VENDOR_BULLETIN_PREFIXES = [
+  'security advisory', 'critical patch update', 'security alert',
+  'security bulletin', 'patch tuesday', 'cve-', 'security update available',
+  'service advisory', 'system advisory',
+];
+
+// Notification patterns — informational events that report state changes
+// the user did NOT request action on. "Docusign password changed", "X
+// approved your Y", "You have a new Z". The user wants to KNOW these
+// happened, not work on them.
+const NOTIFICATION_PATTERNS = [
+  /\bpassword (was )?(changed|reset|updated)\b/i,
+  /\b(was|has been) approved\b/i,
+  /\b(was|has been) submitted\b/i,
+  /\b(was|has been) (received|delivered|sent|completed)\b/i,
+  /^you (have|received) (a |new )/i,
+  /^(invitation|invite):\s/i,           // calendar invites — already on cal
+  /\bsuccessfully (signed|signed up|registered|enrolled|completed)\b/i,
+];
+
+// Dashboard nags from automation tools — recurring "X off track" /
+// "objectives need attention" / "report is ready" sweeps that fire from
+// service accounts on a schedule.
+const DASHBOARD_NAG_PATTERNS = [
+  /\bobjectives? (need|requires?) attention\b/i,
+  /\boff[- ]track\b/i,
+  /\breport (is )?ready\b/i,
+  /\bweekly (summary|update|status|standup|review)\b/i,
+  /\bmonthly (summary|update|status|review)\b/i,
+  /\bdaily (summary|update|status|standup)\b/i,
+  /\bauto[- ]?(generated|flow|report)\b/i,
+  /^\[(plaud|autoflow|metrics?|analytics|dashboard|kpi)/i,
+];
+
+// Sender local-parts that always indicate automated/system mail. Catches
+// the "oracle-security-alerts@oracle.com", "no-reply-foo-12345@*",
+// "billing-system@*" patterns the broader noreply test misses.
+const AUTOMATED_SENDER_LOCAL_HINTS = [
+  'security-alert', 'security-alerts', 'security-bulletin', 'advisory',
+  'advisories', 'notify', 'notifier', 'alerts', 'alert',
+  'system', 'systems', 'monitoring', 'monitor', 'auto-', 'automation',
+  'cronjob', 'scheduler', 'pipeline',
+];
+
 export interface QualifyInput {
   /** Title destined for the open item */
   title: string;
@@ -78,6 +126,10 @@ export interface QualifyResult {
     | 'fyi_intent'
     | 'low_confidence'
     | 'newsletter'
+    | 'vendor_bulletin'
+    | 'notification_only'
+    | 'dashboard_nag'
+    | 'automated_sender'
     | 'empty_title';
 }
 
@@ -116,6 +168,37 @@ export function qualifyAutoOpenItem(input: QualifyInput): QualifyResult {
     NEWSLETTER_HINTS.some((h) => blob.includes(h))
   ) {
     return { verdict: 'reject', reason: 'looks like newsletter / no-reply', code: 'newsletter' };
+  }
+
+  // Hard reject: vendor security/service bulletin — Oracle Critical Patch
+  // Update, Microsoft Security Advisory, generic CVE notices. These read
+  // urgent ("Critical Patch Update — April 2026") but never need the
+  // user to do anything; they're for IT to read.
+  const titleLowerForPrefix = title.toLowerCase();
+  if (VENDOR_BULLETIN_PREFIXES.some((p) => titleLowerForPrefix.startsWith(p))) {
+    return { verdict: 'reject', reason: 'vendor security/service bulletin', code: 'vendor_bulletin' };
+  }
+
+  // Hard reject: notification-only state changes — "Docusign password
+  // changed", "X was approved", "Invitation: ...". Informational, not
+  // actionable. The user gets these in their inbox and that's enough.
+  if (NOTIFICATION_PATTERNS.some((re) => re.test(title))) {
+    return { verdict: 'reject', reason: 'notification (informational state change)', code: 'notification_only' };
+  }
+
+  // Hard reject: dashboard nags from automated tools — "VM:: 4 objectives
+  // off track", "[Plaud-AutoFlow] Strategic Crisis", "Weekly summary".
+  // These are scheduled outputs from internal automation, not asks.
+  if (DASHBOARD_NAG_PATTERNS.some((re) => re.test(title))) {
+    return { verdict: 'reject', reason: 'dashboard nag / automated report', code: 'dashboard_nag' };
+  }
+
+  // Hard reject: sender's local-part is a known automation pattern. Catches
+  // oracle-security-alerts@*, monitoring@*, system@*. The earlier noreply
+  // test only checked for that exact substring; this widens the net.
+  const localPart = sender.includes('@') ? sender.split('@')[0] : sender;
+  if (AUTOMATED_SENDER_LOCAL_HINTS.some((h) => localPart!.includes(h))) {
+    return { verdict: 'reject', reason: `sender local-part matches automated pattern`, code: 'automated_sender' };
   }
 
   // Accept paths — any single signal lets it through.

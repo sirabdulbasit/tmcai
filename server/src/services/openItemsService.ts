@@ -44,6 +44,35 @@ export interface UpdateOpenItemInput {
 // ─── CRUD ─────────────────────────────────────────────────────────
 
 export async function createItem(userId: number, clientNumber: string, input: CreateOpenItemInput) {
+  // Quality gate — only applies to auto-created items where Brain
+  // produced the title from a feed event. Manual / split / "+ New Item"
+  // creates carry metadata.manualCreate=true (or no senderEmail in
+  // metadata) and bypass the gate entirely. The gate rejects vendor
+  // bulletins, password-changed notifications, dashboard nags, and
+  // automated-sender mail BEFORE the row is written, so the backlog
+  // stops growing from junk.
+  const inputMeta = (input.metadata as Record<string, unknown> | undefined) ?? {};
+  const isAutoCreate = inputMeta.senderEmail || inputMeta.classificationPass || inputMeta.fromAutomation;
+  const isManual = inputMeta.manualCreate === true || inputMeta.imported_from === 'manual';
+  if (isAutoCreate && !isManual) {
+    const { qualifyAutoOpenItem } = await import('./openItems/qualityGate');
+    const verdict = qualifyAutoOpenItem({
+      title: input.title,
+      body: input.description ?? '',
+      dueDate: input.dueDate,
+      archetype: typeof inputMeta.archetype === 'string' ? (inputMeta.archetype as string) : null,
+      intent: typeof inputMeta.pass2Intent === 'string' ? (inputMeta.pass2Intent as string) : null,
+      confidence: typeof inputMeta.confidence === 'number' ? (inputMeta.confidence as number) : undefined,
+      senderEmail: typeof inputMeta.senderEmail === 'string' ? (inputMeta.senderEmail as string) : null,
+    });
+    if (verdict.verdict === 'reject') {
+      // Audit the rejection so admins can tune the gate over time.
+      // Nothing is written to open_items.
+      console.info(`[openItems] auto-create rejected: ${verdict.code} — ${verdict.reason} · "${input.title.slice(0, 80)}"`);
+      return null as any;
+    }
+  }
+
   // Dedup gate. Without this, every email/feed_event spawns a fresh
   // row even when an open item for the SAME thread/sender/subject is
   // already on the user's plate — that's how local accumulated 2,460

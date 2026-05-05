@@ -370,6 +370,37 @@ const server = app.listen(env.port, async () => {
     }
   }, 90 * 1000);
 
+  // MyOS — open-items backlog cleanup every 60min. Walks the backlog and
+  // applies the same quality gate that gates auto-creates, plus a
+  // stale-no-engagement sweep and duplicate collapse. Critical items
+  // are never touched. This is the "Brain handles it itself" half of
+  // bulk archive — runaway backlogs (2K+ open items) get pulled back
+  // to a usable size autonomously.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runOpenItemsBacklogCleanup } = await import('./jobs/openItemsBacklogCleanupJob');
+        const s = await runOpenItemsBacklogCleanup();
+        if (s.archivedByGate + s.archivedStale + s.archivedDuplicate > 0) {
+          console.log(`[openItemsBacklog] scanned=${s.scanned} gate=${s.archivedByGate} stale=${s.archivedStale} dup=${s.archivedDuplicate} errors=${s.errors}`);
+        }
+      } catch (err: any) {
+        console.warn('[openItemsBacklog] error:', err.message);
+      }
+    })();
+  }, 2 * 60 * 1000); // first run 2 min after boot
+  setInterval(async () => {
+    try {
+      const { runOpenItemsBacklogCleanup } = await import('./jobs/openItemsBacklogCleanupJob');
+      const s = await runOpenItemsBacklogCleanup();
+      if (s.archivedByGate + s.archivedStale + s.archivedDuplicate > 0) {
+        console.log(`[openItemsBacklog] scanned=${s.scanned} gate=${s.archivedByGate} stale=${s.archivedStale} dup=${s.archivedDuplicate} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[openItemsBacklog] error:', err.message);
+    }
+  }, 60 * 60 * 1000);
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {
