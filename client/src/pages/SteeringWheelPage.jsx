@@ -4,7 +4,10 @@ import DayBriefPage from './DayBriefPage';
 import OpenItemsPage from './OpenItemsPage';
 import WikiPage from './WikiPage';
 import HealthCheckTab from '../components/steering/HealthCheckTab';
-import CustomActionTab from '../components/steering/CustomActionTab';
+// CustomActionTab removed from rail — its JSON-rule-builder UI was a
+// developer surface and the API behind it had drifted (POST /shadow/rules
+// now writes to a different table). Standing Instructions on My Rules
+// covers user-facing rule creation in plain English.
 import ConnectorsPage from './ConnectorsPage';
 import MyRulesPage from './MyRulesPage';
 import ContactsPage from './ContactsPage';
@@ -40,7 +43,6 @@ const TABS = [
   { key: 'rules',     label: 'My Rules',        icon: 'zap',      group: 'work',      render: () => <MyRulesPage /> },
   { key: 'wiki',      label: 'Wiki',            icon: 'book',     group: 'knowledge', render: () => <WikiPage /> },
   { key: 'connectors',label: 'Connectors',      icon: 'external', group: 'knowledge', render: () => <ConnectorsPage /> },
-  { key: 'custom',    label: 'Custom Actions',  icon: 'wand',     group: 'knowledge', render: () => <CustomActionTab /> },
   { key: 'health',    label: 'Health Check',    icon: 'pulse',    group: 'ops',       render: () => <HealthCheckTab /> },
   { key: 'how',       label: 'How Nexeo Works', icon: 'help',     group: 'ops',       render: () => <HowBrainWorksPage /> },
   { key: 'settings',  label: 'Settings',        icon: 'user',     group: 'ops',       render: () => <SettingsPage /> },

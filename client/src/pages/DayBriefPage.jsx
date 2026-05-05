@@ -277,8 +277,8 @@ export default function DayBriefPage() {
   const [patterns, setPatterns] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [gaps, setGaps] = useState(null); // { gaps: [...], hasAnyFeed: bool }
-  const [radar, setRadar] = useState(null); // { flags, summary, generatedAt, …}
-  const [radarRunning, setRadarRunning] = useState(false);
+  // Risk Radar lives full-time on My Rules → Risk Radar (rules + flags).
+  // Day Brief no longer mirrors it.
   // Brain Cognitive Engine output — mind state + surfaced observations.
   const [cognitive, setCognitive] = useState({ mindState: null, observations: [] });
   // Standing instructions and "What Brain learned this week" used to live
@@ -300,7 +300,7 @@ export default function DayBriefPage() {
       if (fullSync) {
         try { await api.post('/brief/sync-now'); } catch { /* non-fatal */ }
       }
-      const [brief, atten, brain, ds, ins, gap, cog, radarLatest] = await Promise.all([
+      const [brief, atten, brain, ds, ins, gap, cog] = await Promise.all([
         api.post('/steering/brief', { userId: user?.id, style: 'morning' }).then((r) => r.data.brief ?? r.data).catch(() => null),
         api.get('/brief/attention?limit=50').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
@@ -308,7 +308,6 @@ export default function DayBriefPage() {
         api.get('/brief/insights').then((r) => r.data.insights ?? []).catch(() => []),
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
-        api.get('/risk-radar/latest').then((r) => r.data?.doc ?? null).catch(() => null),
       ]);
       setVolume(brief?.volume ?? null);
       setOpenItems(brief?.topOpenItems ?? []);
@@ -319,7 +318,6 @@ export default function DayBriefPage() {
       setDrafts(ds);
       setGaps(gap);
       setCognitive(cog);
-      setRadar(radarLatest);
     } finally {
       setLoading(false);
       window.dispatchEvent(new CustomEvent('brain:thinking:end'));
@@ -437,33 +435,10 @@ export default function DayBriefPage() {
       {/* ═══════════════════════════════════════════════════════════
           ZONE 1 — TODAY  (urgent, action-needed)
           Status snapshot already above (Volume strip).
-          Risk Radar → My Attention → Rule promotions
+          My Attention → Rule promotions. Risk Radar moved to My Rules
+          → Risk Radar where rules and live flags both live.
           ═══════════════════════════════════════════════════════════ */}
-      <ZoneHeader label="Today" sub="What's at risk and what needs you right now." />
-
-      <RiskRadarPanel
-        radar={radar}
-        running={radarRunning}
-        onRunNow={async () => {
-          setRadarRunning(true);
-          try {
-            const r = await api.post('/risk-radar/run-now');
-            setRadar({
-              ...(radar ?? {}),
-              flags: r.data?.result?.flags ?? [],
-              summary: r.data?.result?.summary ?? '',
-              narrative: r.data?.result?.narrative ?? null,
-              flagCount: r.data?.result?.flagCount ?? 0,
-              highSeverityCount: r.data?.result?.highSeverityCount ?? 0,
-              generatedAt: new Date().toISOString(),
-            });
-          } catch (e) {
-            notify({ kind: 'error', text: `Radar run failed: ${e.response?.data?.error ?? e.message}` });
-          } finally {
-            setRadarRunning(false);
-          }
-        }}
-      />
+      <ZoneHeader label="Today" sub="What needs you right now." />
 
       {/* ── My Attention — moved into Zone 1 since this IS the queue ── */}
       <Section
@@ -877,331 +852,6 @@ function Section({ id, title, sub, icon, help, defaultOpen = false, right, child
   );
 }
 
-/**
- * Risk Radar — daily forward-looking flags. Sits high on Day Brief
- * so the user sees "what to worry about today" before scrolling into
- * Brief / Drafts / Attention. Empty state explains the system; loaded
- * state shows up to 8 ranked flags with severity dots and source chip.
- */
-function RiskRadarPanel({ radar, running, onRunNow }) {
-  const flags = Array.isArray(radar?.flags) ? radar.flags : [];
-  const highCount = radar?.highSeverityCount ?? 0;
-  const generatedAt = radar?.generatedAt ? new Date(radar.generatedAt) : null;
-  const isStale = generatedAt && Date.now() - generatedAt.getTime() > 18 * 60 * 60 * 1000;
-
-  return (
-    <Section
-      id="risk-radar"
-      title="Risk Radar"
-      sub={radar
-        ? (highCount > 0
-            ? `${highCount} high-severity flag${highCount === 1 ? '' : 's'}${flags.length > highCount ? ` · ${flags.length - highCount} other${flags.length - highCount === 1 ? '' : 's'}` : ''}${isStale ? ' · last run >18h ago' : ''}`
-            : flags.length > 0
-              ? `${flags.length} flag${flags.length === 1 ? '' : 's'} surfaced${isStale ? ' · last run >18h ago' : ''}`
-              : 'Nothing flagged today.')
-        : 'Forward-looking risks across feed, deals, and tone.'}
-      icon="alert-triangle"
-      help={(
-        <div>
-          <strong>What this is.</strong> A daily scan of <em>resting</em> state — things already in your system that are silently aging in dangerous ways: escalation emails, frustrated VIPs, unresolved high-priority items, delayed projects, stale deals, imminent deadlines.<br /><br />
-          <strong>How it works.</strong> Runs automatically each morning at 08:15. Now <strong>rules-driven</strong>: every flag comes from a Risk Radar rule that has a predicate against a data source (inbound mail · open items · wiki / CRM pages). 8 system rules ship with MyOS; you add your own under <em>My Rules → Risk Radar</em>.<br /><br />
-          <strong>How it helps.</strong> The radar catches what didn't happen — escalations, stagnation, broken commitments. Each flag links back to its source so you can act in one click.<br /><br />
-          <strong>Make it more useful for you:</strong>
-          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-            <li><em>Open <strong>My Rules → Risk Radar</strong></em> — see every rule firing on your radar, plus the 8 system rules you can disable per user.</li>
-            <li><em>Add your own rule</em> with <strong>+ Add rule</strong>. Three sources to scan:
-              <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
-                <li><strong>Inbox</strong> (<code>feed_event</code>) — escalation keywords, negative sentiment from a VIP, urgency above threshold</li>
-                <li><strong>Open items</strong> — high-priority work unresolved past N days, items overdue, items in WAITING_INFO too long</li>
-                <li><strong>Wiki / CRM</strong> — projects past deadline, opportunities stagnant in stage, contradicted pages</li>
-              </ul>
-            </li>
-            <li><em>Star contacts who matter</em> — rules referencing <code>importance_stars</code> get sharper signal (e.g. "VIP negative sentiment" only fires for ★3+).</li>
-            <li><em>Disable system rules</em> you don't want — each system rule has a "Disable for me" button under My Rules.</li>
-            <li><strong>Example user rule:</strong> "Alert me on any email mentioning 'lawsuit' or 'breach' from anyone" — predicate <code>{`{ subject: matches "(lawsuit|breach)" OR body_preview matches ... }`}</code>, severity high, lookback 48h.</li>
-            <li><strong>Example user rule:</strong> "Project X overdue by &gt; 3 days" — source wiki_page, predicate <code>{`{ title contains "Project X", deadline_overrun_days >= 3 }`}</code>.</li>
-          </ul>
-        </div>
-      )}
-    >
-      {!radar ? (
-        <div style={panelEmptyStyle}>
-          <p style={{ margin: 0, color: 'var(--text-muted)' }}>
-            Brain hasn't run the radar yet today. It runs automatically each morning at 08:15;
-            you can also run it now.
-          </p>
-          <button onClick={onRunNow} disabled={running} style={miniBtnStyle(running)}>
-            {running ? 'Running…' : 'Run radar now'}
-          </button>
-        </div>
-      ) : flags.length === 0 ? (
-        <div style={panelEmptyStyle}>
-          <p style={{ margin: 0, color: 'var(--text-muted)' }}>
-            Nothing flagged. Open items moving on schedule, no tone shifts, no stale deals.
-          </p>
-          <button onClick={onRunNow} disabled={running} style={miniBtnStyle(running)}>
-            {running ? 'Running…' : 'Re-run radar'}
-          </button>
-        </div>
-      ) : (
-        <>
-          {radar.narrative && (
-            <p style={{
-              margin: '0 0 var(--s-3) 0', padding: 'var(--s-3)',
-              background: 'rgba(240,161,74,0.07)',
-              border: '1px solid rgba(240,161,74,0.25)',
-              borderRadius: 'var(--border-radius-md)',
-              fontSize: 'var(--fs-sm)', lineHeight: 1.5,
-            }}>{radar.narrative}</p>
-          )}
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {flags.slice(0, 8).map((f) => (
-              <RiskFlagRow key={f.id} flag={f} />
-            ))}
-          </ul>
-          {flags.length > 8 && (
-            <div style={{ fontSize: 'var(--fs-xs, 11px)', color: 'var(--text-muted)', marginTop: 8, textAlign: 'right' }}>
-              +{flags.length - 8} more flagged
-            </div>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-            <span style={{ fontSize: 'var(--fs-xs, 11px)', color: 'var(--text-muted)' }}>
-              {generatedAt ? `Last run ${fmtRelTime(generatedAt)}` : ''}
-            </span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <a
-                href="/?tab=rules&subtab=risk-radar"
-                onClick={(e) => {
-                  e.preventDefault();
-                  const url = new URL(window.location.href);
-                  url.searchParams.set('tab', 'rules');
-                  url.searchParams.set('subtab', 'risk-radar');
-                  window.location.assign(url.toString());
-                }}
-                style={{ ...miniBtnStyle(false, 'subtle'), textDecoration: 'none' }}
-              >Tune in My Rules</a>
-              <button onClick={onRunNow} disabled={running} style={miniBtnStyle(running, 'subtle')}>
-                {running ? 'Running…' : 'Re-run'}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-    </Section>
-  );
-}
-/**
- * Single Risk Radar flag row with severity stripe, Brain's recommendation,
- * and one-click actions mapped to the signal type. The actions navigate
- * to the right surface (Open Items, Wiki page, etc.) or fire a quick
- * snooze/dismiss API. v16-style "what should I do?" affordance.
- */
-function RiskFlagRow({ flag }) {
-  const navigate = useNavigate();
-  const [busy, setBusy] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
-
-  const actions = buildFlagActions(flag);
-
-  const fireAction = async (a) => {
-    if (busy) return;
-    if (a.kind === 'navigate') {
-      navigate(a.target);
-      return;
-    }
-    if (a.kind === 'snooze' || a.kind === 'close' || a.kind === 'dismiss') {
-      setBusy(true);
-      try {
-        if (a.kind === 'snooze') {
-          // Snooze the linked open item (3 days). Tolerant fail — if the
-          // item id isn't an open_item, the request is a no-op locally.
-          const oi = (flag.sourceRefs || []).find((r) => r.kind === 'open_item');
-          if (oi) {
-            await api.post(`/open-items/${oi.id}/snooze`, { hours: 72 }).catch(() => {});
-          }
-        } else if (a.kind === 'close') {
-          const oi = (flag.sourceRefs || []).find((r) => r.kind === 'open_item');
-          if (oi) {
-            await api.post(`/open-items/${oi.id}/status`, { status: 'CLOSED' }).catch(() => {});
-          }
-        }
-        setDismissed(true);
-      } finally { setBusy(false); }
-    }
-  };
-
-  return (
-    <li style={{
-      display: 'flex', gap: 10, alignItems: 'flex-start',
-      padding: '10px 12px',
-      border: '1px solid var(--border)',
-      borderLeft: `3px solid ${severityColor(flag.severity)}`,
-      borderRadius: 'var(--border-radius-md)',
-      background: 'var(--panel)',
-    }}>
-      <SeverityDot severity={flag.severity} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text)' }}>{flag.title}</div>
-        <div style={{ fontSize: 'var(--fs-xs, 11px)', color: 'var(--text-muted)', marginTop: 2 }}>{flag.reason}</div>
-        {flag.suggestedAction && (
-          <div style={{
-            fontSize: 'var(--fs-xs, 11px)', marginTop: 6,
-            padding: '4px 8px', display: 'inline-block',
-            background: 'rgba(240,161,74,0.10)',
-            border: '1px solid rgba(240,161,74,0.3)',
-            borderRadius: 4, color: 'var(--accent, #f0a14a)',
-          }}>
-            <strong>Brain suggests →</strong> {flag.suggestedAction}
-          </div>
-        )}
-        {actions.length > 0 && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-            {actions.map((a, i) => (
-              <button
-                key={i}
-                onClick={() => fireAction(a)}
-                disabled={busy}
-                style={{
-                  background: a.primary ? 'var(--accent)' : 'transparent',
-                  color: a.primary ? '#0e1116' : 'var(--accent)',
-                  border: a.primary ? '1px solid var(--accent)' : '1px solid var(--border)',
-                  borderRadius: 6, padding: '4px 10px',
-                  fontSize: 12, fontWeight: 500,
-                  cursor: busy ? 'wait' : 'pointer',
-                  opacity: busy ? 0.6 : 1,
-                  transition: 'background 120ms, border-color 120ms',
-                }}
-                title={a.title || ''}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <SignalChip signal={flag.signal} />
-    </li>
-  );
-}
-
-/**
- * Map a flag's signal + sourceRefs to a list of one-click actions.
- * Each action is `{ label, kind, target?, primary? }`. Actions are
- * deliberately conservative: navigate to the right place, or fire a
- * lightweight API (snooze 3 days / mark closed). Anything heavier
- * (drafting a reply, escalating) stays as a navigation away from
- * Day Brief into the proper surface.
- */
-function buildFlagActions(f) {
-  const oi = (f.sourceRefs || []).find((r) => r.kind === 'open_item');
-  const wiki = (f.sourceRefs || []).find((r) => r.kind === 'wiki_page');
-  const sender = (f.sourceRefs || []).find((r) => r.kind === 'sender');
-  const event = (f.sourceRefs || []).find((r) => r.kind === 'feed_event');
-
-  const out = [];
-  switch (f.signal) {
-    case 'stagnant_criticality':
-      if (oi) out.push({ label: 'Open item', kind: 'navigate', target: `/?tab=center`, primary: true });
-      out.push({ label: 'Snooze 3 days', kind: 'snooze' });
-      out.push({ label: 'Mark done', kind: 'close' });
-      break;
-    case 'decay':
-      if (oi) out.push({ label: 'Open item', kind: 'navigate', target: `/?tab=center`, primary: true });
-      out.push({ label: 'Snooze 3 days', kind: 'snooze' });
-      out.push({ label: 'Mark done', kind: 'close' });
-      break;
-    case 'silence':
-      if (sender) out.push({ label: `View ${sender.id}`, kind: 'navigate', target: `/?tab=contacts`, primary: true });
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-      break;
-    case 'imminence':
-      if (oi) out.push({ label: 'Open item', kind: 'navigate', target: `/?tab=center`, primary: true });
-      else if (event) out.push({ label: 'Open event', kind: 'navigate', target: `/?tab=center`, primary: true });
-      out.push({ label: 'Snooze 1 day', kind: 'snooze' });
-      break;
-    case 'crm_stagnation':
-      if (wiki) out.push({ label: 'Open deal', kind: 'navigate', target: `/?tab=wiki`, primary: true });
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-      break;
-    case 'contradicted_pages':
-      if (wiki) out.push({ label: 'Open page', kind: 'navigate', target: `/?tab=wiki`, primary: true });
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-      break;
-    case 'tone_shift':
-      if (sender) out.push({ label: `View ${sender.id}`, kind: 'navigate', target: `/?tab=contacts`, primary: true });
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-      break;
-    case 'custom_keywords':
-      if (event) out.push({ label: 'Open in Attention', kind: 'navigate', target: `/?tab=brief`, primary: true });
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-      break;
-    default:
-      out.push({ label: 'Dismiss', kind: 'dismiss' });
-  }
-  return out;
-}
-
-function severityColor(sev) {
-  if (sev === 'high') return '#d9534f';
-  if (sev === 'medium') return '#f0a14a';
-  return '#888780';
-}
-
-function SeverityDot({ severity }) {
-  return (
-    <span style={{
-      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-      background: severityColor(severity), marginTop: 6, flexShrink: 0,
-    }} />
-  );
-}
-
-function SignalChip({ signal }) {
-  const labels = {
-    stagnant_criticality: 'stagnant',
-    decay: 'aging',
-    silence: 'silence',
-    imminence: 'imminent',
-    crm_stagnation: 'deal',
-    contradicted_pages: 'wiki',
-    custom_keywords: 'watchlist',
-    tone_shift: 'tone',
-  };
-  return (
-    <span style={{
-      fontSize: 10, padding: '2px 8px', borderRadius: 999,
-      background: 'var(--panel-2)', color: 'var(--text-muted)',
-      whiteSpace: 'nowrap', alignSelf: 'flex-start', marginTop: 2,
-      textTransform: 'lowercase', letterSpacing: '.3px',
-    }}>{labels[signal] ?? signal}</span>
-  );
-}
-
-const panelEmptyStyle = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  gap: 12, padding: 'var(--s-3)',
-  border: '1px dashed var(--border)', borderRadius: 'var(--border-radius-md)',
-};
-
-function miniBtnStyle(disabled, variant = 'primary') {
-  if (variant === 'subtle') {
-    return {
-      background: 'transparent', color: 'var(--accent)',
-      border: '1px solid var(--border)', borderRadius: 6,
-      padding: '4px 10px', fontSize: 12,
-      cursor: disabled ? 'not-allowed' : 'pointer',
-      opacity: disabled ? 0.6 : 1,
-    };
-  }
-  return {
-    background: disabled ? 'var(--panel-2)' : 'var(--accent)',
-    color: disabled ? 'var(--text-muted)' : '#0e1116',
-    border: 0, borderRadius: 6, padding: '6px 12px', fontSize: 12,
-    cursor: disabled ? 'not-allowed' : 'pointer', fontWeight: 500,
-    flexShrink: 0,
-  };
-}
 
 function fmtRelTime(d) {
   const ms = Date.now() - d.getTime();
