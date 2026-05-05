@@ -195,6 +195,55 @@ function formatTimeRange(startISO, endISO) {
  * standard-feed connectors. Speaks as Brain ("I can't see your email yet")
  * so a new MD feels guided, not lost.
  */
+/**
+ * Welcome-walkthrough banner. Renders once until the user has visited
+ * /welcome (which stamps `nexeo:walkthrough_seen` in localStorage)
+ * OR explicitly dismissed it (`nexeo:walkthrough_dismissed`). Shows
+ * to brand-new users on their first Day Brief load.
+ */
+function FirstTimeWalkthroughBanner({ navigate }) {
+  const [hidden, setHidden] = useState(true);
+  useEffect(() => {
+    try {
+      const seen = localStorage.getItem('nexeo:walkthrough_seen');
+      const dismissed = localStorage.getItem('nexeo:walkthrough_dismissed');
+      setHidden(!!seen || !!dismissed);
+    } catch { setHidden(true); }
+  }, []);
+  if (hidden) return null;
+  const dismiss = () => {
+    try { localStorage.setItem('nexeo:walkthrough_dismissed', '1'); } catch {}
+    setHidden(true);
+  };
+  return (
+    <div style={{
+      marginBottom: 'var(--s-4)', padding: '14px 18px',
+      background: 'linear-gradient(135deg, rgba(214,109,60,0.10), rgba(214,109,60,0.04))',
+      border: '1px solid rgba(214,109,60,0.35)', borderRadius: 12,
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: 1, minWidth: 240 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+          New to Nexeo? Take 5 minutes to learn what it does.
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
+          A short walkthrough covers the four surfaces, star ratings, WhatsApp pushback, and the safety nets.
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={() => navigate('/welcome')}
+          style={{ background: 'var(--accent)', color: '#fff', border: 0, padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+        >Start walkthrough →</button>
+        <button
+          onClick={dismiss}
+          style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', padding: '8px 14px', borderRadius: 6, fontSize: 13, cursor: 'pointer' }}
+        >Skip</button>
+      </div>
+    </div>
+  );
+}
+
 function ConnectorGapBanner({ gaps, onConnect }) {
   if (!gaps || !gaps.gaps || gaps.gaps.length === 0) return null;
   const required = gaps.gaps.filter((g) => g.required);
@@ -403,6 +452,9 @@ export default function DayBriefPage() {
           </Button>
         </div>
       </header>
+
+      {/* ── First-time walkthrough banner — shown once until visited. ─ */}
+      <FirstTimeWalkthroughBanner navigate={navigate} />
 
       {/* ── Connector gaps (Brain-voice onboarding) ─────────── */}
       <ConnectorGapBanner

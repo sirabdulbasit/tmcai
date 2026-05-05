@@ -17,6 +17,7 @@ import SteeringWheelPage from './pages/SteeringWheelPage';
 import ContactsPage from './pages/ContactsPage';
 import ContactDetailPage from './pages/ContactDetailPage';
 import HowBrainWorksPage from './pages/HowBrainWorksPage';
+import WelcomePage from './pages/WelcomePage';
 import BrainAvatar from './components/BrainAvatar';
 
 function ProtectedRoute({ children }) {
@@ -63,6 +64,7 @@ export default function App() {
       <Route path="/contacts" element={<ProtectedRoute><ContactsPage /></ProtectedRoute>} />
       <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetailPage /></ProtectedRoute>} />
       <Route path="/how-it-works" element={<ProtectedRoute><HowBrainWorksPage /></ProtectedRoute>} />
+      <Route path="/welcome" element={<ProtectedRoute><WelcomePage /></ProtectedRoute>} />
       <Route path="/*" element={<ProtectedRoute><SteeringWheelPage /></ProtectedRoute>} />
     </Routes>
   );

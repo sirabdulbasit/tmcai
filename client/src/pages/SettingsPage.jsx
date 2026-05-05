@@ -67,8 +67,20 @@ export default function SettingsPage() {
   return (
     <div className="settings-page">
       <div className="settings-container">
-        <div className="settings-header">
+        <div className="settings-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h1>Settings</h1>
+          <a
+            href="/welcome"
+            onClick={(e) => { e.preventDefault(); window.location.assign('/welcome'); }}
+            style={{
+              fontSize: 12, color: 'var(--accent)', textDecoration: 'none',
+              padding: '6px 12px', border: '1px solid var(--border)', borderRadius: 6,
+              background: 'transparent', cursor: 'pointer',
+            }}
+            title="Re-open the new-user walkthrough"
+          >
+            👋 Walkthrough
+          </a>
         </div>
 
         {msg && <div className={`settings-msg ${msg.includes('Failed') || msg.includes('incorrect') ? 'error' : ''}`}>{msg}</div>}
