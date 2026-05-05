@@ -31,6 +31,13 @@ export interface OpenedPage {
   title: string;
   pageType: string;
   body: string;
+  /**
+   * Visibility scope of the source page. Drives H11/H12/H13 in the
+   * composer system prompt: which layer to lead with, the authority
+   * hierarchy, and how citations are annotated. Falls back to 'user'
+   * for safety when the source row pre-dates the scope column.
+   */
+  scope?: 'tenant' | 'user';
   relationshipStrength?: number | null;
   sourceRef: { type: string; id: string; snippet: string };
 }
@@ -71,7 +78,7 @@ export async function openPagesForPlan(
           { scope: 'user', userId },
         ],
       } as any,
-      select: { id: true, title: true, pageType: true, bodyMarkdown: true },
+      select: { id: true, title: true, pageType: true, bodyMarkdown: true, scope: true },
     }).catch(() => [] as any[]);
     for (const p of pages) {
       if (seen.has(p.id)) continue;
@@ -87,7 +94,7 @@ export async function openPagesForPlan(
         clientNumber, pageType: 'org_doc',
         title: { in: plan.faclTitles },
       },
-      select: { id: true, title: true, pageType: true, bodyMarkdown: true },
+      select: { id: true, title: true, pageType: true, bodyMarkdown: true, scope: true },
     }).catch(() => [] as any[]);
     for (const p of faclPages) {
       if (seen.has(p.id)) continue;
@@ -111,6 +118,7 @@ export async function openPagesForPlan(
         title: h.title,
         pageType: h.pageType,
         body: String(h.bodyMarkdown ?? ''),
+        scope: ((h as any).scope === 'tenant' ? 'tenant' : 'user') as 'tenant' | 'user',
         sourceRef: { type: 'wiki_page', id: h.id, snippet: h.title },
       });
     }
@@ -377,7 +385,7 @@ export async function openPagesForPlan(
         if (l.scope !== 'tenant' && l.userId !== userId) continue;
         const page = await prisma.wikiPage.findUnique({
           where: { id: l.id },
-          select: { id: true, title: true, pageType: true, bodyMarkdown: true },
+          select: { id: true, title: true, pageType: true, bodyMarkdown: true, scope: true },
         }).catch(() => null);
         if (!page) continue;
         seen.add(l.id);
@@ -437,7 +445,7 @@ export async function openPagesForPlan(
         if (l.scope !== 'tenant' && l.userId !== userId) continue;
           const page = await prisma.wikiPage.findUnique({
             where: { id: l.id },
-            select: { id: true, title: true, pageType: true, bodyMarkdown: true },
+            select: { id: true, title: true, pageType: true, bodyMarkdown: true, scope: true },
           }).catch(() => null);
           if (!page) continue;
           seen.add(l.id);
@@ -450,12 +458,17 @@ export async function openPagesForPlan(
   return opened;
 }
 
-function toOpenedPage(p: { id: string; title: string; pageType: string; bodyMarkdown: string | null }): OpenedPage {
+function toOpenedPage(p: { id: string; title: string; pageType: string; bodyMarkdown: string | null; scope?: string | null }): OpenedPage {
+  // Tag scope on the OpenedPage so the composer prompt's per-page
+  // header can carry it through to H11/H12/H13. Default to 'user' if
+  // the source row pre-dates the scope column.
+  const scope = (p.scope === 'tenant' ? 'tenant' : 'user') as 'tenant' | 'user';
   return {
     id: p.id,
     title: p.title,
     pageType: p.pageType,
     body: String(p.bodyMarkdown ?? ''),
+    scope,
     sourceRef: { type: 'wiki_page', id: p.id, snippet: p.title },
   };
 }
@@ -560,14 +573,31 @@ H8. **Standing instructions are non-negotiable.** If the "Standing instructions 
 
 H9. **Delegation matrix is the routing source of truth.** When the question is "who handles X" or you need to choose a delegate/escalate target, look up the area in the "Delegation matrix" block above before inferring from feed history. If a matched area exists, use that owner. Only invent a routing target when no area in the matrix matches the question.
 
-H10. **Risk Radar block is the daily worry list.** When the user asks what to worry about, what's urgent, or what's going on today, lead with the flags in the "Risk Radar" block above (when present). The radar is the system's pre-computed forward-looking risk surface — quoting it is more accurate than re-deriving from feed history. Cite open_item / wiki ids from each flag's sourceRefs.`;
+H10. **Risk Radar block is the daily worry list.** When the user asks what to worry about, what's urgent, or what's going on today, lead with the flags in the "Risk Radar" block above (when present). The radar is the system's pre-computed forward-looking risk surface — quoting it is more accurate than re-deriving from feed history. Cite open_item / wiki ids from each flag's sourceRefs.
+
+H11. **Scope lean drives what to lead with.** Each opened page header above carries a \`scope=tenant\` or \`scope=user\` tag. Use the planner's \`scopeLean\` value to decide which to lead with:
+  - \`scopeLean=personal\`: lead with user-scoped pages (sender_history / sender_topic / mind_state / answer / gap / observation). Tenant pages may add background context but should not dominate.
+  - \`scopeLean=org\`: lead with tenant-scoped pages (org_doc / project / decision / policy / FACL Drive Index / tenant_log). User pages add no value and should be ignored unless the user explicitly references their own touchpoint.
+  - \`scopeLean=mixed\`: lead with tenant-scoped pages (more authoritative for definitions / status / org-level facts), then OVERLAY with user-scoped recent threads ("here's how this touches you"). When tenant and user contradict, surface BOTH timestamps and let the user reconcile — do NOT silently pick one.
+
+H12. **Authority hierarchy for factual claims.** When multiple pages claim the same fact:
+  1. Tenant FACL org_doc (Drive Index, OKR Tree, Org Chart, SOPs) is most authoritative for definitions and counts.
+  2. Tenant project / decision pages are authoritative for org-level decisions.
+  3. User-scoped recent threads (sender_history, sender_topic) are authoritative for "what someone said to me", and for current status when tenant pages are stale.
+  4. User patterns / mind_state are Brain's own observations — lowest authority; never override an explicitly stated fact.
+
+H13. **Annotate scope on every citation.** When you cite a page, the answer prose should make the source layer visible. Suggested style: prefix tenant-sourced facts with "Per the [tenant] X page:" or "(tenant FACL doc:)" and user-sourced facts with "Per your [thread/notes]:". This is for the user, NOT the cites array — cites stays a list of page IDs as before. The goal is the user can SEE whether a fact came from organisational knowledge or their own inbox.`;
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
   // "what kind?" or "and that one?" against the previous turn instead
   // of treating each question in isolation. Bounded by trimmedHistory in
   // the caller; renderer also caps each turn to 600 chars.
   const historyBlock = renderComposerHistoryBlock(history);
-  const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}`;
+  // Pass the planner's scopeLean through so H11 can use it to pick
+  // which layer to lead with. Defaults to "mixed" if the planner
+  // omitted it (older plans / fallback path).
+  const lean = (plan as any).scopeLean ?? 'mixed';
+  const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}\nPlanner scopeLean: ${lean}`;
 
   let raw = '';
   try {
@@ -642,7 +672,11 @@ function renderOpenedPageWithQuery(p: OpenedPage, query: string, lastUpdatedAt?:
   const whenBit = lastUpdatedAt
     ? ` last_updated="${new Date(lastUpdatedAt).toISOString().slice(0, 10)}" age_days="${Math.floor((Date.now() - new Date(lastUpdatedAt).getTime()) / (24*60*60*1000))}"`
     : '';
-  const header = `--- PAGE id=${p.id} type=${p.pageType} title="${p.title}"${whenBit} ---`;
+  // Tag scope on every page header so H11/H12/H13 in the system prompt
+  // can act on it. Default 'user' if absent for safety (matches the
+  // scope-column default).
+  const scopeBit = ` scope="${p.scope ?? 'user'}"`;
+  const header = `--- PAGE id=${p.id} type=${p.pageType}${scopeBit} title="${p.title}"${whenBit} ---`;
   const SOFT_CAP =
     p.pageType === 'org_doc' ? 60_000 :
     p.pageType === 'attachment_doc' ? 30_000 :

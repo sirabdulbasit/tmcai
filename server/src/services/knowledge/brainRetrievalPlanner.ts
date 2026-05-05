@@ -13,9 +13,29 @@ import { getCompactIndexForPlanner } from './tenantIndexService';
 import { getSystemCapabilities, renderCapabilitiesBlock } from './systemCapabilitiesService';
 
 export type PlanIntent = 'casual' | 'factual' | 'introspective';
+/**
+ * Orthogonal to PlanIntent. Tells the composer which wiki layer the
+ * answer should LEAD with:
+ *
+ *   'personal' — about the user / their interactions / their tasks.
+ *                Compose primarily from user-scoped pages; cite tenant
+ *                pages only as background context.
+ *   'org'      — about the company / policies / org structure / named
+ *                tenant entities. Compose primarily from tenant pages;
+ *                user pages only as personal overlay.
+ *   'mixed'    — a named entity (project / person / topic) where both
+ *                layers contribute. Lead with tenant facts (more
+ *                authoritative), overlay with user-recent threads.
+ *
+ * The visibility filter at the SQL layer still enforces what each
+ * user can SEE; this is purely about which layer the composer should
+ * PREFER when both have material.
+ */
+export type ScopeLean = 'personal' | 'org' | 'mixed';
 
 export interface RetrievalPlan {
   intent: PlanIntent;
+  scopeLean: ScopeLean;
   /** Page IDs from the tenant_index the planner wants to open. */
   openPageIds: string[];
   /** Entity names / emails to search (pg_trgm + relationshipStrength rank). */
@@ -28,6 +48,7 @@ export interface RetrievalPlan {
 
 const EMPTY_PLAN: RetrievalPlan = {
   intent: 'casual',
+  scopeLean: 'mixed',
   openPageIds: [],
   entityTerms: [],
   faclTitles: [],
@@ -94,9 +115,19 @@ The composer does semantic vector search over the whole wiki for every non-casua
 - Never return pages / titles that aren't listed in the index above.
 - Output JSON only, no prose. No markdown fences.
 
+# Scope lean — which wiki layer should LEAD the answer
+Independent from intent. Tells the composer how to weight tenant vs user pages.
+
+- **scopeLean = "personal"** — question is about the USER's own interactions, inbox, calendar, tasks, decisions. Phrases: "I", "me", "my", "what did X tell ME", "MY meetings", "MY tasks". Answer should LEAD with user-scoped pages (sender_history, sender_topic, mind_state, answer, gap, observation). Tenant pages may add background.
+- **scopeLean = "org"** — question is about the COMPANY: policies, SOPs, org chart, named tenant entities (FACL docs, Drive Index, Sales Deals, Project Status). Phrases: "our policy", "the company", "who handles", named org doc. Answer should LEAD with tenant-scoped pages. User pages add no value.
+- **scopeLean = "mixed"** — a named entity (project / person / topic) that has BOTH layers contributing. Phrases: "what's happening with Project X", "tell me about Asad", "status of MATRIX". Lead with tenant facts (more authoritative on definitions/status), then OVERLAY with user-recent threads (more current on day-to-day).
+
+When in doubt → "mixed". Better to retrieve more than to miss context.
+
 # Output shape
 {
   "intent": "casual" | "factual" | "introspective",
+  "scopeLean": "personal" | "org" | "mixed",
   "openPageIds": [string],
   "entityTerms": [string],
   "faclTitles": [string],
@@ -126,8 +157,11 @@ function parsePlan(text: string): RetrievalPlan {
     const obj = JSON.parse(match[0]);
     const intent: PlanIntent =
       obj.intent === 'factual' || obj.intent === 'introspective' ? obj.intent : 'casual';
+    const scopeLean: ScopeLean =
+      obj.scopeLean === 'personal' || obj.scopeLean === 'org' ? obj.scopeLean : 'mixed';
     return {
       intent,
+      scopeLean,
       openPageIds: toStringArray(obj.openPageIds).slice(0, 8),
       entityTerms: toStringArray(obj.entityTerms).slice(0, 5),
       faclTitles: toStringArray(obj.faclTitles).slice(0, 5),
