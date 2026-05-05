@@ -374,8 +374,20 @@ async function checkWikiHealth(): Promise<ComponentHealth> {
       prisma.wikiPage.count({ where: { status: 'stale' } as any }),
       prisma.wikiPage.count({ where: { inboundLinks: 0, outboundLinks: 0 } as any }),
     ]);
-    const unhealthy = contradicted + stale + orphans;
-    const status = unhealthy === 0 ? 'up' : unhealthy < 10 ? 'degraded' : 'down';
+    // Triage rules — old logic flagged anything with > 9 orphans as DOWN,
+    // which was wildly aggressive: a healthy wiki naturally has hundreds of
+    // orphan pages (sender_history rows that no other page links to,
+    // thread-leaf email_message pages, etc.). New thresholds:
+    //   - contradicted > 0  → DOWN (Brain is giving conflicting facts)
+    //   - stale ratio > 30% → DEGRADED (lots of old data)
+    //   - orphan ratio > 70% → DEGRADED (most pages disconnected — linker
+    //                           may not be running)
+    //   - else → UP (orphans alone are normal)
+    const staleRatio  = pageCount > 0 ? stale  / pageCount : 0;
+    const orphanRatio = pageCount > 0 ? orphans / pageCount : 0;
+    let status: ComponentHealth['status'] = 'up';
+    if (contradicted > 0) status = 'down';
+    else if (staleRatio > 0.3 || orphanRatio > 0.7) status = 'degraded';
     return {
       name: 'wiki',
       status,
