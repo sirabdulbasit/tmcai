@@ -41,7 +41,13 @@ export type SuggestedAction = 'draft_reply' | 'delegate' | 'add_open_item' | 'ig
 export interface AttentionItem {
   feedEventId: string;
   itemType: ItemType;
+  /** Raw RFC2822 form ("Name <addr@x>") — kept for pattern matching
+   *  inside the engine. Don't render this to the user. */
   from: string;
+  /** Cleaned display name for the UI. Title-cased, no angle brackets,
+   *  falls back to the email's local-part when the From: header had no
+   *  display name. Always prefer this over `from` for rendering. */
+  fromDisplay?: string;
   fromEmail?: string;
   senderDomain?: string;
   subject: string;
@@ -269,6 +275,13 @@ export async function suggestForFeedEvent(row: {
   const fromFull = String((payload as any).from ?? (payload as any).organizer?.email ?? (payload as any).organizer?.displayName ?? row.senderName ?? row.senderEmail ?? '');
   const fromEmail = row.senderEmail ?? undefined;
   const senderDomain = domainOf(fromEmail ?? fromFull);
+  // Compute a cleaned display name once. Used for every AttentionItem
+  // render so the Day Brief never shows raw RFC2822 ("L&OD\" <…>") or
+  // stray quote artifacts. Engine still uses fromFull internally for
+  // pattern-matching (bulk-mailer detection etc.) where the raw form
+  // carries signal.
+  const { normalizeContactName } = await import('../knowledge/entitySweepService');
+  const fromDisplay = normalizeContactName(row.senderName ?? fromFull, fromEmail ?? null) || (fromEmail ?? fromFull);
 
   // ── Self-message gate ──
   // If the sender IS the user (their own email or one of their integration
@@ -298,6 +311,7 @@ export async function suggestForFeedEvent(row: {
       itemType,
       archetype: 'inform_only',
       from: fromFull,
+      fromDisplay,
       fromEmail: fromEmail ?? null,
       subject,
       preview,
@@ -363,6 +377,45 @@ export async function suggestForFeedEvent(row: {
     }
   } catch { /* gate is fail-open by design */ }
 
+  // ── Platform-default automated-sender filter ─────────────
+  // Catches departmental mailers (LOD@, training@, announcements@,
+  // events@, advisory@, etc.) and embedded-noreply addresses
+  // (powerautomatenoreply@…) that already exist as contacts. The
+  // contact-create junk filter doesn't help here because the row
+  // already exists. Same star-bypass as the rule gate: ≥4★ senders
+  // never get auto-archived even by this filter.
+  if (!gateMatch && fromEmail) {
+    let importanceStars = 0;
+    try {
+      const { getStarsForSender } = await import('../knowledge/entitySweepService');
+      importanceStars = await getStarsForSender(row.clientNumber, row.userId, fromEmail);
+    } catch { /* default 0 */ }
+    if (importanceStars < 4) {
+      const { isLikelyAutomated } = await import('../knowledge/senderQualityFilter');
+      if (isLikelyAutomated(fromEmail)) {
+        return {
+          feedEventId: row.id,
+          itemType,
+          from: fromFull,
+      fromDisplay,
+          fromEmail,
+          senderDomain,
+          subject,
+          preview,
+          receivedAt: row.createdAt.toISOString(),
+          dedupHash,
+          archetype: 'inform_only',
+          suggestedAction: 'ignore',
+          confidence: 0.95,
+          rationale: 'Automated / departmental mailer pattern — auto-archived. Star this sender to override.',
+          alternatives: [],
+          handledByRule: true,
+          noise: true,
+        } as AttentionItem;
+      }
+    }
+  }
+
   if (gateMatch) {
     const a = gateMatch.action;
     const isNoise = a.decision === 'auto_ack' || (a.tags ?? []).includes('newsletter');
@@ -370,6 +423,7 @@ export async function suggestForFeedEvent(row: {
       feedEventId: row.id,
       itemType,
       from: fromFull,
+      fromDisplay,
       fromEmail,
       senderDomain,
       subject,
@@ -703,6 +757,7 @@ export async function suggestForFeedEvent(row: {
     feedEventId: row.id,
     itemType,
     from: fromFull,
+      fromDisplay,
     fromEmail,
     senderDomain,
     subject,

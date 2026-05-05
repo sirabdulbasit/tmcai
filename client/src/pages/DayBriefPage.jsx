@@ -2024,7 +2024,10 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
             {item.critical && <Pill variant="danger">🔴 critical</Pill>}
             {item.archetype && <Pill variant={item.archetype === 'review_risk' ? 'warning' : item.archetype === 'inform_only' ? undefined : 'info'}>{item.archetype.replace('_', ' ')}</Pill>}
             <strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 'var(--fs-sm)' }}>
-              {(item.from ?? '').replace(/^"|"$/g, '').slice(0, 60)}
+              {/* Prefer the server-side normalised display name. Falls
+                  back to a quote-stripped, RFC2822-truncated form for
+                  pre-`fromDisplay` items still in cache. */}
+              {(item.fromDisplay || (item.from ?? '').replace(/<[^>]*>/g, '').replace(/^["']|["']$/g, '').trim() || item.fromEmail || '').slice(0, 60)}
             </strong>
             {/*
               For meetings, show the MEETING START time, not when Brain

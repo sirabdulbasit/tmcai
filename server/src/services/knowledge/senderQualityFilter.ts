@@ -39,6 +39,17 @@ const REJECT_LOCAL_EXACT = new Set([
   'delivery', 'delivered', 'mailer', 'mail',
   'updates', 'update',
   'system', 'root',
+  // Departmental / training / advisory mailers — these are bulk
+  // distribution lists, never a real human signing replies.
+  'lod', 'l&od', 'l_od', 'learninganddevelopment', 'learning',
+  'training', 'hr', 'humanresources', 'people',
+  'announcements', 'announcement',
+  'advisory', 'advisories', 'advices', 'advice',
+  'events', 'event',
+  'communications', 'communication', 'comms',
+  'broadcast', 'broadcasts',
+  'reminders', 'reminder',
+  'team', 'teams', 'office',
 ]);
 
 // Local-part PREFIXES that indicate auto-generated tracking addresses.
@@ -49,6 +60,17 @@ const REJECT_LOCAL_PREFIX = [
   'notification-', 'notifications-', 'notify-',
   'bounce-', 'bounces-',
   'mailer-', 'delivery-',
+  // Bulk mailer prefixes
+  'lod-', 'lnd-', 'training-', 'announce-', 'announcements-',
+  'comms-', 'broadcast-', 'reminder-', 'reminders-',
+  'events-', 'advisory-', 'advisor-',
+];
+
+// Substring matches inside the local-part — catches "noreply" embedded
+// in longer addresses ("powerautomatenoreply", "marketing-noreply-2024",
+// etc.) that the prefix/exact rules miss.
+const REJECT_LOCAL_SUBSTRING = [
+  'noreply', 'no-reply', 'donotreply',
 ];
 
 // Token-y local parts: ≥ 12 chars long AND ≥ 3 digits (real names
@@ -81,6 +103,7 @@ export function isLikelyAutomated(email: string | null | undefined): boolean {
   if (REJECT_LOCAL_EXACT.has(local)) return true;
   for (const p of REJECT_LOCAL_PREFIX) if (local.startsWith(p)) return true;
   for (const s of REJECT_LOCAL_SUFFIX) if (local.endsWith(s)) return true;
+  for (const sub of REJECT_LOCAL_SUBSTRING) if (local.includes(sub)) return true;
 
   // Token-only local part (no recognisable name structure)
   if (TOKEN_REGEX.test(local) && !/^[a-z]+\.[a-z]+$/.test(local)) return true;
