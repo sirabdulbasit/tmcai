@@ -147,6 +147,7 @@ model User {
   personalDocuments  PersonalDocument[]
   whatsappConnection WhatsAppConnection?
   brainUserMessages  BrainUserMessage[]
+  brainPromptQueue   BrainPromptQueue[]
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -1539,6 +1540,39 @@ model BrainUserMessage {
   @@index([userId, kind, createdAt(sort: Desc)])
   @@index([clientNumber, createdAt(sort: Desc)])
   @@map("brain_user_messages")
+}
+
+/**
+ * BrainPromptQueue — sequential conversation queue for Brain → user prompts.
+ *
+ * One question at a time per user (enforced by partial unique index on
+ * state='awaiting_reply'). When the user replies, the active prompt is
+ * marked answered and the next is dispatched.
+ */
+model BrainPromptQueue {
+  id             BigInt    @id @default(autoincrement())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  userId         Int       @map("user_id")
+  question       String
+  openItemId     String?   @map("open_item_id")
+  sideEffect     Json      @default("{}") @map("side_effect")
+  criticality    String    @default("routine") @db.VarChar(10)
+  state          String    @default("queued") @db.VarChar(20)
+  channelUsed    String?   @map("channel_used") @db.VarChar(20)
+  ackMessageId   String?   @map("ack_message_id") @db.VarChar(120)
+  dedupKey       String?   @map("dedup_key") @db.VarChar(120)
+  queuedAt       DateTime  @default(now()) @map("queued_at")
+  sentAt         DateTime? @map("sent_at")
+  answeredAt     DateTime? @map("answered_at")
+  expiresAt      DateTime? @map("expires_at")
+  answerText     String?   @map("answer_text")
+  metadata       Json      @default("{}")
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, userId, state, criticality, queuedAt])
+  @@index([clientNumber, queuedAt(sort: Desc)])
+  @@map("brain_prompt_queue")
 }
 
 /**
