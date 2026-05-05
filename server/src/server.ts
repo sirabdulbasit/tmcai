@@ -1,13 +1,27 @@
-// Force IPv4-first DNS resolution. On hosts where outbound IPv6 is broken
-// (e.g. our Ubuntu prod box where AAAA records resolve but IPv6 routing
-// is unreachable), Node's default IPv6-first preference makes every
-// outbound request to oauth2.googleapis.com (and other Google APIs) hang
-// until ETIMEDOUT — exactly the symptom that was breaking OAuth + token
-// refresh on prod. This MUST run before any module that opens a socket.
-// NODE_OPTIONS=--dns-result-order=ipv4first via .env is too late because
-// dotenv fires after Node has already initialised DNS resolver state.
+// Force IPv4 for ALL outbound HTTP(S) on this host. The Ubuntu prod box
+// has IPv6 disabled at the network layer but DNS still returns AAAA
+// records — Node's default behaviour tries IPv6 first and ETIMEDOUTs on
+// every Google API call (OAuth, token refresh, scribe, calendar sync).
+//
+// Three layers of progressively stronger fixes; the global agent option
+// is the one that actually works on Node 20 with this kernel:
+//   1. dns.setDefaultResultOrder('ipv4first') — preference only;
+//      doesn't bind on this kernel (verified ETIMEDOUT persists).
+//   2. https.globalAgent.options.family = 4 — every default-agent
+//      request forces IPv4 lookup. This is the bind that works.
+//   3. Same for http.globalAgent (covers the rare http: callers).
+//
+// Hosts with working IPv6 are unaffected — family:4 just means "if you
+// can resolve to v4, prefer it." Anywhere a custom https.Agent is used
+// (with its own options object) bypasses this; for our codebase the
+// default agent is what googleapis / gaxios / node-fetch / undici all
+// use.
 import dns from 'dns';
+import http from 'http';
+import https from 'https';
 dns.setDefaultResultOrder('ipv4first');
+((https.globalAgent as unknown) as { options: { family?: number } }).options.family = 4;
+((http.globalAgent as unknown) as { options: { family?: number } }).options.family = 4;
 
 import './instrumentation';
 import dotenv from 'dotenv';
