@@ -217,22 +217,41 @@ router.post('/cleanup-junk', async (req: Request, res: Response) => {
   try {
     const { isLikelyAutomated } = await import('../services/knowledge/senderQualityFilter');
     const prismaClient = (await import('../db/prisma')).default;
-    // Pull all active entity_person rows visible to this caller's tenant.
+    // Caller's own emails — used to flag self-contact rows (a user
+    // shouldn't appear in their own contacts list).
+    const me = await prismaClient.user.findUnique({
+      where: { id: req.user!.id },
+      select: { email: true, integrationEmail: true } as any,
+    }).catch(() => null) as { email?: string | null; integrationEmail?: string | null } | null;
+    const myEmails = new Set(
+      [me?.email, me?.integrationEmail]
+        .map((e) => (e ?? '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    // Pull all active entity_person rows visible to this caller's tenant
+    // and OWNED by this caller (user-private contacts).
     const rows = await prismaClient.$queryRawUnsafe<Array<{
-      id: string; title: string; metadata: any;
+      id: string; title: string; user_id: number; metadata: any;
     }>>(
-      `SELECT id, title, metadata
+      `SELECT id, title, user_id, metadata
          FROM wiki_pages
         WHERE page_type = 'entity_person'
           AND status = 'active'
           AND client_number = $1`,
       req.user!.clientNumber,
     );
-    const flagged: Array<{ id: string; title: string; email: string }> = [];
+    const flagged: Array<{ id: string; title: string; email: string; reason: string }> = [];
     for (const r of rows) {
       const email = String(r.metadata?.email ?? '').trim().toLowerCase();
-      if (email && isLikelyAutomated(email)) {
-        flagged.push({ id: r.id, title: r.title, email });
+      if (!email) continue;
+      // Self: archive when this caller's contact row points to their
+      // own email. Don't archive other users' contact rows for the
+      // caller — those are legit (Asad's contact list might include
+      // basit, that's fine).
+      if (r.user_id === req.user!.id && myEmails.has(email)) {
+        flagged.push({ id: r.id, title: r.title, email, reason: 'self_contact' });
+      } else if (isLikelyAutomated(email)) {
+        flagged.push({ id: r.id, title: r.title, email, reason: 'junk_filter' });
       }
     }
     if (dryRun) {
@@ -256,7 +275,7 @@ router.post('/cleanup-junk', async (req: Request, res: Response) => {
             WHERE id = $3`,
           'contacts_cleanup_user',
           JSON.stringify({
-            archivedReason: 'junk_filter',
+            archivedReason: f.reason,
             archivedAt: new Date().toISOString(),
             archivedBy: req.user!.id,
             archivedEmail: f.email,
@@ -265,7 +284,6 @@ router.post('/cleanup-junk', async (req: Request, res: Response) => {
         );
         archived += 1;
       } catch (err: any) {
-        // continue; report partial below
         void err;
       }
     }

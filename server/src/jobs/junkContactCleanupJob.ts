@@ -39,10 +39,23 @@ export interface JunkCleanupResult {
 export async function runJunkContactCleanup(): Promise<JunkCleanupResult> {
   const out: JunkCleanupResult = { scanned: 0, archived: 0, perTenant: [], errors: 0 };
 
+  // Pre-load every active user's emails so the self-contact archive
+  // (where someone's own email landed in their contacts) can match
+  // without N round trips. Map: lowercased email → userId.
+  const allUsers = await prisma.user.findMany({
+    where: { isActive: true },
+    select: { id: true, email: true, integrationEmail: true } as any,
+  }).catch(() => [] as any[]);
+  const emailToUserId = new Map<string, number>();
+  for (const u of allUsers as any[]) {
+    if (u.email) emailToUserId.set(u.email.toLowerCase(), u.id);
+    if (u.integrationEmail) emailToUserId.set(u.integrationEmail.toLowerCase(), u.id);
+  }
+
   const rows = await prisma.$queryRawUnsafe<Array<{
-    id: string; client_number: string; metadata: any;
+    id: string; client_number: string; user_id: number; metadata: any;
   }>>(
-    `SELECT id, client_number, metadata
+    `SELECT id, client_number, user_id, metadata
        FROM wiki_pages
       WHERE page_type = 'entity_person'
         AND status = 'active'`,
@@ -55,7 +68,13 @@ export async function runJunkContactCleanup(): Promise<JunkCleanupResult> {
   for (const r of rows) {
     const email = String(r.metadata?.email ?? '').trim().toLowerCase();
     if (!email) continue;
-    if (!isLikelyAutomated(email)) continue;
+    // Self-archive: if this contact's email belongs to the SAME user
+    // who owns the contact row, archive it. A user shouldn't be in
+    // their own contacts. Other users' contact rows for the same
+    // person are unaffected.
+    const matchingUserId = emailToUserId.get(email);
+    const isSelf = matchingUserId !== undefined && matchingUserId === r.user_id;
+    if (!isSelf && !isLikelyAutomated(email)) continue;
 
     try {
       await prisma.$executeRawUnsafe(
@@ -66,7 +85,7 @@ export async function runJunkContactCleanup(): Promise<JunkCleanupResult> {
                 metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
           WHERE id = $2 AND status = 'active'`,  // guard against double-archive
         JSON.stringify({
-          archivedReason: 'junk_filter',
+          archivedReason: isSelf ? 'self_contact' : 'junk_filter',
           archivedAt: new Date().toISOString(),
           archivedBy: 'auto_cron',
           archivedEmail: email,

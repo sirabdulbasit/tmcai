@@ -78,6 +78,25 @@ export async function ensureEntityForSender(input: {
   const phone = (input.senderPhone ?? '').trim();
   if (!email && !phone) return null;
 
+  // Self-filter: a user shouldn't appear as their own contact. This
+  // happens when feed ingestion processes an event the user themselves
+  // sent (or where their email shows up in the To/CC). Compare against
+  // both the login email AND the integrationEmail (Gmail OAuth subject).
+  // Always applies — no bypass — because adding yourself as a contact
+  // is never useful regardless of source.
+  if (email) {
+    const me = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { email: true, integrationEmail: true } as any,
+    }).catch(() => null) as { email?: string | null; integrationEmail?: string | null } | null;
+    const myEmails = [me?.email, me?.integrationEmail]
+      .map((e) => (e ?? '').trim().toLowerCase())
+      .filter(Boolean);
+    if (myEmails.includes(email)) {
+      return null;
+    }
+  }
+
   // Junk filter — skip auto-discovery for senders that look like
   // newsletters / no-reply / tracking tokens. Bypassed when caller
   // is a manual add or a Google/Outlook import (explicit user intent).
