@@ -102,7 +102,7 @@ function Header({ onBack }) {
           padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12, marginBottom: 20 }}
       >← Back</button>
       <h1 style={{ margin: '0 0 8px', fontSize: 28, fontWeight: 700, color: COL.text }}>
-        How Brain Works
+        How Nexeo Works
       </h1>
       <p style={{ margin: 0, color: COL.muted, fontSize: 15, lineHeight: 1.55, maxWidth: 720 }}>
         A short visual walkthrough of what Brain is, how it makes sense of your day, where it shows up, how it talks to you, and how it learns from your feedback.
@@ -211,7 +211,7 @@ function InputsDiagram() {
       {/* Brain node */}
       <g>
         <ellipse cx="620" cy="140" rx="80" ry="58" fill="rgba(204,107,74,0.10)" stroke={COL.accent} strokeWidth="2" />
-        <text x="620" y="135" textAnchor="middle" fontSize="18" fill={COL.text} fontWeight="700">Brain</text>
+        <text x="620" y="135" textAnchor="middle" fontSize="18" fill={COL.text} fontWeight="700">Nexeo</text>
         <text x="620" y="158" textAnchor="middle" fontSize="11" fill={COL.muted}>quality gate</text>
       </g>
       {/* Output beam */}

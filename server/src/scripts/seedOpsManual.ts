@@ -27,7 +27,7 @@ import fs from 'fs';
 import path from 'path';
 import prisma from '../db/prisma';
 
-const TITLE = 'MyOS Operations Manual';
+const TITLE = 'Nexeo Operations Manual';
 const PAGE_TYPE = 'org_doc';
 
 /**
@@ -59,11 +59,11 @@ function manualBody(): string {
     const firstSection = raw.indexOf('## 1.');
     const body = firstSection > 0 ? raw.slice(firstSection) : raw;
     return [
-      '# MyOS Operations Manual',
+      '# Nexeo Operations Manual',
       '',
-      'This is Brain\'s own description of how Brain works. Read this when the user asks operational questions like "how do you decide what becomes an open item?" or "when do you call me on the phone?"',
+      'This is Nexeo\'s own description of how Nexeo works. Read this when the user asks operational questions like "how do you decide what becomes an open item?" or "when do you call me on the phone?"',
       '',
-      'When someone asks about Brain\'s behaviour, quote from the relevant numbered section below. When the answer isn\'t here, say "I don\'t have that documented yet" rather than inventing details.',
+      'When someone asks about Nexeo\'s behaviour, quote from the relevant numbered section below. When the answer isn\'t here, say "I don\'t have that documented yet" rather than inventing details.',
       '',
       body,
       '',
@@ -212,7 +212,7 @@ _Last refreshed by seedOpsManual on every deploy._
 `;
 }
 
-async function upsertForTenant(clientNumber: string): Promise<{ tenant: string; action: 'created' | 'updated' | 'skipped'; pageId?: string }> {
+async function upsertForTenant(clientNumber: string): Promise<{ tenant: string; action: 'created' | 'updated' | 'renamed_and_updated' | 'skipped'; pageId?: string }> {
   // Pick a tenant SA user to own the row (ownership is required by the
   // schema; tenant-scoped pages are still visible to every user).
   const owner = await prisma.user.findFirst({
@@ -224,9 +224,14 @@ async function upsertForTenant(clientNumber: string): Promise<{ tenant: string; 
     return { tenant: clientNumber, action: 'skipped' };
   }
 
+  // Find by current title OR the legacy pre-rebrand title — so re-seeding
+  // after the Nexeo rename migrates the existing row in place.
   const existing = await prisma.wikiPage.findFirst({
-    where: { clientNumber, pageType: PAGE_TYPE, title: TITLE },
-    select: { id: true },
+    where: {
+      clientNumber, pageType: PAGE_TYPE,
+      title: { in: [TITLE, 'MyOS Operations Manual'] },
+    },
+    select: { id: true, title: true },
   });
 
   const body = manualBody();
@@ -239,6 +244,7 @@ async function upsertForTenant(clientNumber: string): Promise<{ tenant: string; 
     await prisma.wikiPage.update({
       where: { id: existing.id },
       data: {
+        title: TITLE,  // migrate legacy "MyOS Operations Manual" titles in place
         bodyMarkdown: body,
         scope: 'tenant',
         status: 'active',
@@ -246,7 +252,7 @@ async function upsertForTenant(clientNumber: string): Promise<{ tenant: string; 
         metadata: metadata as any,
       },
     });
-    return { tenant: clientNumber, action: 'updated', pageId: existing.id };
+    return { tenant: clientNumber, action: existing.title === TITLE ? 'updated' : 'renamed_and_updated', pageId: existing.id };
   }
 
   const created = await prisma.wikiPage.create({

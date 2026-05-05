@@ -12,7 +12,10 @@ const router = Router();
 // Public app info — used by login page, welcome screen, etc.
 router.get('/app-info', async (_req, res) => {
   const config = await prisma.systemConfig.findFirst({ where: { key: 'app_name' } }).catch(() => null);
-  res.json({ appName: config?.value || 'TMC AI Intelligence' });
+  // Default fallback updated post-rebrand (2026-05-05): "Nexeo" replaces
+  // "TMC AI Intelligence". Per-tenant system_config rows still win when
+  // present (configurable per client).
+  res.json({ appName: config?.value || 'Nexeo' });
 });
 
 // Public logo — serve logo (system-wide)
@@ -40,17 +43,24 @@ async function serveLogo(cn: string, res: any) {
   }
 
   if (!logo) {
-    // No logo in DB — serve default static logo file
+    // No logo in DB — serve default static logo file. Prefer the
+    // Nexeo brand logo (post-rebrand 2026-05-05). Fall back to the
+    // legacy TMC logo only if the Nexeo asset is missing on disk.
     const path = require('path');
     const fs = require('fs');
-    const defaultLogo = path.resolve(__dirname, '../../../client/public/tmc-logo.png');
-    if (fs.existsSync(defaultLogo)) {
-      res.setHeader('Content-Type', 'image/png');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      res.send(fs.readFileSync(defaultLogo));
-    } else {
-      res.status(404).json({ error: 'No logo found' });
+    const candidates = [
+      { p: path.resolve(__dirname, '../../../client/public/nexeo-logo.jpeg'), type: 'image/jpeg' },
+      { p: path.resolve(__dirname, '../../../client/public/tmc-logo.png'),    type: 'image/png' },
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c.p)) {
+        res.setHeader('Content-Type', c.type);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.send(fs.readFileSync(c.p));
+        return;
+      }
     }
+    res.status(404).json({ error: 'No logo found' });
     return;
   }
 

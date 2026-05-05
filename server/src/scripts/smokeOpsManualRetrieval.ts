@@ -5,7 +5,7 @@
  * Two checks:
  *
  *   1. Tenant index includes the manual: getCompactIndexForPlanner
- *      lists "MyOS Operations Manual" so the planner can SEE it.
+ *      lists "Nexeo Operations Manual" so the planner can SEE it.
  *
  *   2. Planner classifies operational questions as 'introspective' AND
  *      includes the manual in faclTitles. We mock the LLM output to
@@ -51,8 +51,8 @@ async function main() {
   // ── 1. Planner index includes the manual ─────────────────────
   const idx = await getCompactIndexForPlanner(user.clientNumber, user.id);
   assert(
-    idx.includes('MyOS Operations Manual'),
-    '1.1 planner-compact index lists "MyOS Operations Manual"',
+    idx.includes('Nexeo Operations Manual'),
+    '1.1 planner-compact index lists "Nexeo Operations Manual"',
   );
 
   // ── 2. Planner system prompt instructs to surface the manual ─
@@ -74,8 +74,8 @@ async function main() {
     : path.resolve(__dirname, '../services/knowledge/brainRetrievalPlanner.ts');
   const plannerFile = fs.readFileSync(plannerPath, 'utf-8');
   assert(
-    plannerFile.includes('MyOS Operations Manual'),
-    '2.1 planner system prompt mentions "MyOS Operations Manual" by name',
+    plannerFile.includes('Nexeo Operations Manual'),
+    '2.1 planner system prompt mentions "Nexeo Operations Manual" by name',
   );
   assert(
     /how do you decide what becomes an open item|how do you handle deadlines|when do you call me/i.test(plannerFile),

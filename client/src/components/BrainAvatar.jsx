@@ -154,7 +154,7 @@ export default function BrainAvatar() {
            tenant badge + user menu on the top bar to its left. */}
       <button
         type="button"
-        aria-label={isActive ? 'Brain is thinking — open panel' : 'Open Brain panel'}
+        aria-label={isActive ? 'Nexeo is thinking — open panel' : 'Open Nexeo panel'}
         aria-live="polite"
         onClick={togglePanel}
         style={{
@@ -243,7 +243,7 @@ export default function BrainAvatar() {
                 background: '#a855f7',
                 animation: 'brainAvatarPulse 1.2s ease-in-out infinite',
               }} />
-              Brain is thinking
+              Nexeo is thinking
             </div>
             <div
               key={msgIdx}
@@ -315,7 +315,7 @@ export default function BrainAvatar() {
                   fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.14em',
                   color: '#c7d2fe',
                 }}>
-                  {isActive ? 'Brain is thinking' : 'Brain is listening'}
+                  {isActive ? 'Nexeo is thinking' : 'Nexeo is listening'}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                   {latestTickIso
