@@ -207,6 +207,10 @@ export async function classifyFeedItem(raw: RawFeedItem): Promise<ClassifiedFeed
       pass3Intent: pass3?.intent,
       requiresHITL: true,
       idempotencyKey,
+      // Surface for downstream hooks (star cadence in openItemsService
+      // looks these up to schedule WhatsApp notifications).
+      senderEmail: raw.senderEmail ?? null,
+      senderName: raw.senderName ?? null,
       forwarded: parsed.isForwarded ? {
         forwarderEmail: raw.senderEmail ?? null,
         forwarderName: raw.senderName ?? null,

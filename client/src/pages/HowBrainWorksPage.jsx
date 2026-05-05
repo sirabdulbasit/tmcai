@@ -61,6 +61,7 @@ export default function HowBrainWorksPage() {
         <Section2Understanding live={live} />
         <Section3Surfaces live={live} />
         <Section4Conversation live={live} />
+        <SectionStarCadence />
         <Section5Learning live={live} navigate={navigate} />
         <Section6SelfRebuild live={live} />
         <Footer onBack={() => navigate('/day-brief')} />
@@ -448,6 +449,73 @@ function ConversationDiagram() {
       </div>
     </div>
   );
+}
+
+// ─── Section 4.5 — Star cadence (sender-stars-driven proactive notifications)
+
+const STAR_CADENCE_ROWS = [
+  { stars: 0, status: 'Unrated — normal', firstPing: 'never proactive',  channels: '—',                                        cap: 0, quiet: '—' },
+  { stars: 1, status: 'Light',            firstPing: 'after 48h',         channels: 'WhatsApp text',                            cap: 1, quiet: 'respect' },
+  { stars: 2, status: 'Light',            firstPing: 'after 24h',         channels: 'WhatsApp text',                            cap: 1, quiet: 'respect' },
+  { stars: 3, status: 'Important',        firstPing: 'immediate',         channels: 'WhatsApp text every 4h',                   cap: 3, quiet: 'respect' },
+  { stars: 4, status: 'High',             firstPing: 'immediate',         channels: 'WhatsApp voicenote, text follow-up',       cap: 2, quiet: 'respect' },
+  { stars: 5, status: 'Top critical',     firstPing: 'immediate',         channels: 'voice call → voicenote → text',            cap: 3, quiet: 'BYPASS' },
+];
+
+function SectionStarCadence() {
+  return (
+    <SectionCard
+      number="4.5"
+      title="Star cadence — how stars drive proactive nudges"
+      lead="Each contact carries a 0–5 star importance rating. Stars decide how aggressively Brain pings you on WhatsApp when a message arrives from them. Set stars on the Contacts page; change anytime."
+    >
+      <div style={{ overflowX: 'auto', marginTop: 8 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: 'rgba(255,255,255,0.04)', textAlign: 'left' }}>
+              <Th style={{ width: 36 }}>★</Th>
+              <Th>Status</Th>
+              <Th>First ping</Th>
+              <Th>Channel(s)</Th>
+              <Th style={{ width: 70 }}>Cap</Th>
+              <Th>Quiet hours</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {STAR_CADENCE_ROWS.map((r) => (
+              <tr key={r.stars} style={{ borderTop: `1px solid ${COL.border}` }}>
+                <Td><span style={{ color: r.stars >= 4 ? '#f0a574' : COL.text }}>{r.stars > 0 ? '★'.repeat(r.stars) : '—'}</span></Td>
+                <Td>{r.status}</Td>
+                <Td>{r.firstPing}</Td>
+                <Td>{r.channels}</Td>
+                <Td>{r.cap}</Td>
+                <Td><span style={{ color: r.quiet === 'BYPASS' ? '#ef4444' : COL.dim }}>{r.quiet}</span></Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 14, padding: '10px 14px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${COL.border}`, borderRadius: 8, fontSize: 13, color: COL.dim, lineHeight: 1.55 }}>
+        <strong style={{ color: COL.text }}>Content gate</strong> — sender stars never override content. Brain skips notifications for FYI / NOISE / auto-replies / pure thanks / calendar invites / meeting reminders. Pings only fire when the message has a real ask: action verb, question mark, deadline, or actionable intent.
+      </div>
+
+      <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${COL.border}`, borderRadius: 8, fontSize: 13, color: COL.dim, lineHeight: 1.55 }}>
+        <strong style={{ color: COL.text }}>Pause</strong> — once you mark the open item as in-progress, delegated, snoozed, or closed, Brain stops the cadence. You won't be pinged about something you've already handled.
+      </div>
+
+      <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(99,102,241,0.06)', border: `1px solid rgba(99,102,241,0.25)`, borderRadius: 8, fontSize: 13, color: COL.text, lineHeight: 1.55 }}>
+        <strong>Day Brief</strong> shows what Brain did on your behalf — "Brain texted you 2× — no response yet, 1 more queued" / "Brain called you, voicenote follow-up sent" / "Brain stopped pinging — you took action".
+      </div>
+    </SectionCard>
+  );
+}
+
+function Th({ children, style }) {
+  return <th style={{ padding: '8px 10px', fontWeight: 600, color: COL.dim, fontSize: 12, ...(style ?? {}) }}>{children}</th>;
+}
+function Td({ children, style }) {
+  return <td style={{ padding: '10px', verticalAlign: 'top', ...(style ?? {}) }}>{children}</td>;
 }
 
 // ─── Section 5 — Learning (feedback loop) ────────────────────────────

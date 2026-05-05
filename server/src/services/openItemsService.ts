@@ -133,7 +133,47 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
   } catch (err: any) {
     console.warn(`[openItemsService] open-item-events create publish failed ${item.id}: ${err.message}`);
   }
+
+  // Star cadence — sender-stars-driven proactive WhatsApp notification
+  // schedule. Only fires for feed-originated items where we know the
+  // sender. Manual / internal-alert items have no sender so the service
+  // returns 'skipped_no_sender' and bails. Best-effort: failures here
+  // don't block item creation.
+  try {
+    const meta = (input.metadata as Record<string, unknown> | undefined) ?? {};
+    const senderEmail = pickSenderEmail(meta);
+    if (senderEmail) {
+      const { scheduleStarCadence } = await import('./triage/starCadenceService');
+      scheduleStarCadence({
+        clientNumber,
+        userId,
+        openItemId: item.id,
+        itemTitle: item.title,
+        itemBody: item.description ?? null,
+        intent: typeof meta.pass2Intent === 'string' ? (meta.pass2Intent as string) : null,
+        senderEmail,
+        senderName: typeof meta.senderName === 'string' ? (meta.senderName as string) : null,
+      }).catch((err) => {
+        console.warn(`[openItemsService] star cadence schedule failed ${item.id}: ${err?.message}`);
+      });
+    }
+  } catch { /* cadence is optional */ }
+
   return item;
+}
+
+// Extract a normalised sender email from various places callers may have
+// stashed it. Handlers stash it under different keys (senderEmail in
+// feed-intelligence, fromEmail in delegation-tracker, etc.).
+function pickSenderEmail(meta: Record<string, unknown>): string | null {
+  const candidates = [
+    meta.senderEmail, meta.fromEmail, meta.from, meta.sender,
+    (meta.sender as Record<string, unknown> | undefined)?.email,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && /@/.test(c)) return c.trim().toLowerCase();
+  }
+  return null;
 }
 
 export async function getItem(id: string, clientNumber: string) {
@@ -242,6 +282,17 @@ export async function changeStatus(
     const notes = (item.notes as Array<Record<string, unknown>>) || [];
     notes.push({ text: note, at: new Date().toISOString(), action: `status_changed_to_${v15}` });
     await prisma.openItem.update({ where: { id }, data: { notes: notes as any } });
+  }
+  // Pause star cadence — once the item is no longer NEW/TRIAGED, the
+  // user has acknowledged it (closed, in-progress, delegated, snoozed,
+  // informed). Cancel any pending sender-stars-driven WhatsApp pings
+  // so the user isn't pestered about something they've already handled.
+  const PAUSE_STATES = ['CLOSED', 'IN_PROGRESS', 'DELEGATED', 'SNOOZED', 'INFORMED', 'WAITING_INFO', 'closed', 'in_progress', 'delegated', 'snoozed', 'informed', 'waiting_info', 'done'];
+  if (PAUSE_STATES.includes(String(v15))) {
+    try {
+      const { pauseCadenceForItem } = await import('./triage/starCadenceService');
+      await pauseCadenceForItem(id, `status→${v15}`).catch(() => {});
+    } catch { /* non-blocking */ }
   }
   return prisma.openItem.findFirst({ where: { id, clientNumber } });
 }

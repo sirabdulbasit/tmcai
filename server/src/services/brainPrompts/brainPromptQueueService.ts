@@ -204,17 +204,27 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   const candidates = await prisma.brainPromptQueue.findMany({
     where: { userId, state: 'queued' },
     orderBy: [{ queuedAt: 'asc' }],
-    select: { id: true, criticality: true, question: true, clientNumber: true, openItemId: true, dedupKey: true, queuedAt: true },
+    select: { id: true, criticality: true, question: true, clientNumber: true, openItemId: true, dedupKey: true, queuedAt: true, metadata: true },
     take: 50,  // bounded — full queue depth shouldn't ever realistically exceed this per-user
   });
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) => {
+  // Filter out scheduled-future prompts. The star-cadence service stamps
+  // metadata.scheduledAt on deferred pings (e.g. 1★ contact's first ping
+  // is +48h). Don't dispatch until the clock rolls over that timestamp.
+  const now = Date.now();
+  const dueCandidates = candidates.filter((c) => {
+    const meta = (c.metadata as Record<string, unknown> | null) ?? {};
+    const at = typeof meta.scheduledAt === 'string' ? Date.parse(meta.scheduledAt) : NaN;
+    return Number.isNaN(at) || at <= now;
+  });
+  if (dueCandidates.length === 0) return null;
+  dueCandidates.sort((a, b) => {
     const wa = CRIT_WEIGHT[a.criticality] ?? 0;
     const wb = CRIT_WEIGHT[b.criticality] ?? 0;
     if (wa !== wb) return wb - wa;             // higher weight first
     return a.queuedAt.getTime() - b.queuedAt.getTime();  // older first
   });
-  const next = candidates[0];
+  const next = dueCandidates[0]!;
 
   // Promote to awaiting_reply atomically. If the partial unique index
   // rejects (someone else got there first), fall through with null.

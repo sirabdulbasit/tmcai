@@ -66,6 +66,43 @@ and:
 - The user sees who forwarded, what they wrote, and what was originally
   sent
 
+## 3a. Star-driven proactive notifications (sender importance)
+
+Each contact carries a per-user 0–5 star importance rating. Stars drive
+**how aggressively** Nexeo proactively notifies the user about an
+inbound message from that contact.
+
+| ★ | Status | First ping | Channel | Repeat cadence | Hard cap | Quiet hours |
+|---|---|---|---|---|---|---|
+| 0 | Unrated — normal | never proactive | — | — | 0 | — |
+| 1 | Light | after 48h | WhatsApp text | once | 1 | respect |
+| 2 | Light | after 24h | WhatsApp text | once | 1 | respect |
+| 3 | Important | immediate | WhatsApp text | every 4h | 3 | respect |
+| 4 | High | immediate | WhatsApp voicenote | + text follow-up at +2h | 2 | respect |
+| 5 | Top critical | immediate | WhatsApp voice call | + voicenote at +30m, text at +2h | 3 | **bypass** |
+
+**Content gate** (applies at every tier — sender stars never override
+content):
+- Skip if classified intent ∈ {FYI, NOISE, INFORMATION}
+- Skip auto-replies / out-of-office / vacation responders
+- Skip pure thanks / acknowledgements (`thanks`, `noted`, `ok`)
+- Skip calendar invites and meeting reminders (already on the calendar)
+- Only fire when message has actionable signal: action verb, question
+  mark, deadline phrase, or intent ∈ {NEW_TASK, ESCALATION, RISK,
+  OPPORTUNITY}
+
+**Pause rules**: when the open item moves to CLOSED, IN_PROGRESS,
+DELEGATED, SNOOZED, INFORMED, or WAITING_INFO, all unfired cadence
+prompts are marked `state='skipped'`. The user is never pinged about
+something they've already handled.
+
+**Day Brief integration**: every item with cadence activity renders a
+one-line summary in the Day Brief — "Brain texted you 2× — no response
+yet, 1 more queued" / "Brain called you, voicenote follow-up sent" /
+"Brain stopped pinging — you took action".
+
+Implementation: [starCadenceService.ts](../src/services/triage/starCadenceService.ts).
+
 ## 4. Nexeo → user prompts (WhatsApp queue)
 
 Nexeo has at most ONE prompt awaiting reply per user at a time. This is
