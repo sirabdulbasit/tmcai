@@ -574,15 +574,34 @@ export async function getStarsForEntities(entityPageIds: string[], userId: numbe
  */
 export async function getStarsForSender(clientNumber: string, userId: number, senderEmail: string | null): Promise<number> {
   if (!senderEmail) return 0;
-  const id = entityIdForEmail(senderEmail);
-  const row = await prisma.wikiPage.findUnique({
-    where: { id },
-    select: { metadata: true, clientNumber: true },
-  }).catch(() => null);
-  if (!row || row.clientNumber !== clientNumber) return 0;
-  const meta = (row.metadata as Record<string, unknown> | null) ?? {};
-  const stars = (meta.user_stars as Record<string, unknown> | undefined) ?? {};
-  return Math.max(0, Math.min(5, Math.floor(Number(stars[String(userId)] ?? 0))));
+  const normalized = normalizeEmail(senderEmail);
+  // Lookup is defensive: legacy data has multiple entity_person rows
+  // for the same person (canonical id `person:<email>`, plus older
+  // CUID-id'd rows from earlier code paths). The user's 5★ rating may
+  // sit on any of them. Take the MAX star value across all rows
+  // matching this email so a star set on one row protects the contact
+  // regardless of which row a downstream lookup hits.
+  const rows = await prisma.$queryRawUnsafe<Array<{ metadata: any }>>(
+    `SELECT metadata FROM wiki_pages
+      WHERE client_number = $1
+        AND page_type = 'entity_person'
+        AND (
+          id = $2
+          OR lower(metadata->>'email') = $3
+        )`,
+    clientNumber,
+    `person:${normalized}`,
+    normalized,
+  ).catch(() => [] as Array<{ metadata: any }>);
+  if (rows.length === 0) return 0;
+  let max = 0;
+  for (const r of rows) {
+    const m = (r.metadata as Record<string, unknown> | null) ?? {};
+    const userStars = (m.user_stars as Record<string, unknown> | undefined) ?? {};
+    const v = Math.max(0, Math.min(5, Math.floor(Number(userStars[String(userId)] ?? 0))));
+    if (v > max) max = v;
+  }
+  return max;
 }
 
 // ─── Cross-tenant entry point for the cron ───────────────────────
