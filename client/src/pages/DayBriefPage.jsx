@@ -672,6 +672,70 @@ export default function DayBriefPage() {
  * of sections on Day Brief. Light typography so it doesn't compete
  * with the section titles below it.
  */
+/**
+ * CriticalityReasons — collapsible "Why X?" pill that explains how the
+ * criticality engine landed on this band. Reasons come from the engine's
+ * fused signals (timePressure, impact, relationshipRisk, cascade,
+ * patternAnomaly) plus star-floor and superpower notes.
+ *
+ * Closed by default to avoid card-bloat. Click to expand.
+ */
+function CriticalityReasons({ criticality }) {
+  const [open, setOpen] = useState(false);
+  const reasons = (criticality.reasons || []).filter(Boolean);
+  if (reasons.length === 0) return null;
+  const composite = typeof criticality.composite === 'number'
+    ? `${Math.round(criticality.composite * 100)}/100`
+    : null;
+  const bandColor = criticality.band === 'critical' ? '#ef4444'
+    : criticality.band === 'high' ? '#f59e0b'
+    : '#94a3b8';
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          background: 'transparent', border: `1px solid ${bandColor}40`,
+          color: bandColor, padding: '2px 8px', fontSize: 11,
+          borderRadius: 4, cursor: 'pointer', display: 'inline-flex',
+          alignItems: 'center', gap: 4,
+        }}
+        aria-expanded={open}
+      >
+        {open ? '▾' : '▸'} Why {criticality.band}?{composite ? ` · score ${composite}` : ''}
+      </button>
+      {open && (
+        <div style={{
+          marginTop: 6, padding: '8px 10px',
+          background: 'var(--bg-2)', borderLeft: `2px solid ${bandColor}`,
+          borderRadius: 4, fontSize: 12, color: 'var(--text-muted)',
+          lineHeight: 1.6,
+        }}>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {reasons.map((r, i) => (
+              <li key={i} style={{ marginBottom: 2 }}>{r}</li>
+            ))}
+          </ul>
+          {criticality.dimensions && (
+            <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11 }}>
+              <span title="how time-sensitive this is">⏱ time {fmtDim(criticality.dimensions.timePressure)}</span>
+              <span title="size of the consequences">💥 impact {fmtDim(criticality.dimensions.impact)}</span>
+              <span title="who's on the hook with this sender">🤝 relationship {fmtDim(criticality.dimensions.relationshipRisk)}</span>
+              <span title="downstream knock-on effects">🔗 cascade {fmtDim(criticality.dimensions.cascade)}</span>
+              <span title="unusual vs this sender's normal pattern">📊 anomaly {fmtDim(criticality.dimensions.patternAnomaly)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+function fmtDim(v) {
+  if (typeof v !== 'number') return '—';
+  return `${Math.round(v * 100)}%`;
+}
+
 function ZoneHeader({ label, sub }) {
   return (
     <div style={{
@@ -2028,6 +2092,13 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
               🧠 {item.contextBrief}
             </div>
+          )}
+          {/* Why is this critical/high? — surfacing the criticality engine's
+              own reasons so the user can see how Brain decided. Only renders
+              when band is medium+ AND reasons exist. */}
+          {item.criticality && Array.isArray(item.criticality.reasons) && item.criticality.reasons.length > 0
+            && item.criticality.band !== 'low' && (
+            <CriticalityReasons criticality={item.criticality} />
           )}
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 6, display: 'flex', gap: 'var(--s-2)', flexWrap: 'wrap', alignItems: 'center' }}>
             <span>Brain suggests: <strong style={{ color: 'var(--accent)' }}>{actionLabel(suggested)}</strong></span>
