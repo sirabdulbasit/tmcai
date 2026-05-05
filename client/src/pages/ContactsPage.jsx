@@ -95,6 +95,15 @@ export default function ContactsPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Listen for custom 'contacts:reload' event fired by the InactiveButton
+  // after a successful mark-inactive POST. Avoids the need to plumb a
+  // callback through the ContactsTable → row → button hierarchy.
+  useEffect(() => {
+    const onReload = () => load();
+    window.addEventListener('contacts:reload', onReload);
+    return () => window.removeEventListener('contacts:reload', onReload);
+  }, [load]);
+
   const onSetStars = useCallback(async (id, stars) => {
     // Optimistic update
     const prev = entities;
@@ -374,6 +383,7 @@ function ContactsTable({ entities, onSetStars }) {
             <Th align="right">Strength</Th>
             <Th align="right">This week</Th>
             <Th>Last seen</Th>
+            <Th />
           </tr>
         </thead>
         <tbody>
@@ -417,11 +427,56 @@ function ContactsTable({ entities, onSetStars }) {
                   {fmtRelative(e.lastSeen ?? e.lastUpdatedAt)}
                 </span>
               </Td>
+              <Td>
+                <InactiveButton id={e.id} title={e.title} />
+              </Td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+// "Mark inactive" — confirm-then-archive button. Two-step UX so an
+// accidental click can't hide a real contact. After archive, the row
+// disappears from the list (re-fetched by parent on success).
+function InactiveButton({ id, title }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (busy) {
+    return <span style={{ color: 'var(--text-muted, #98a0a8)', fontSize: 11 }}>marking…</span>;
+  }
+  if (confirming) {
+    return (
+      <span style={{ display: 'inline-flex', gap: 4 }}>
+        <button
+          type="button"
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.patch(`/entity-catalog/${id}/inactive`);
+              window.dispatchEvent(new CustomEvent('contacts:reload'));
+            } catch { setBusy(false); setConfirming(false); }
+          }}
+          style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.5)', color: '#fca5a5', padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
+          title={`Mark "${title}" inactive — Brain will not re-create it from feed events`}
+        >Confirm</button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          style={{ background: 'transparent', border: '1px solid var(--border, #28323e)', color: 'var(--text-muted, #98a0a8)', padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
+        >Cancel</button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      style={{ background: 'transparent', border: '1px solid var(--border, #28323e)', color: 'var(--text-muted, #98a0a8)', padding: '2px 8px', fontSize: 11, borderRadius: 4, cursor: 'pointer' }}
+      title="Mark inactive — Brain will not re-create this contact from feed events. Reversible."
+    >Mark inactive</button>
   );
 }
 

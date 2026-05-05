@@ -149,14 +149,22 @@ export async function ensureEntityForSender(input: {
 
   const existing = await prisma.wikiPage.findUnique({
     where: { id },
-    select: { id: true, metadata: true },
+    select: { id: true, metadata: true, status: true },
   });
   if (existing) {
+    // Inactive rows are sticky — never resurrect via feed ingest. The
+    // user explicitly marked this contact inactive; appending
+    // channels/discoverers would feel like the contact "came back".
+    // Return the row id as a no-op signal to callers.
+    const meta0 = (existing.metadata as Record<string, unknown> | null) ?? {};
+    if (existing.status === 'inactive' || existing.status === 'deleted' || meta0.markedInactiveByUser === true) {
+      return { id: existing.id, created: false };
+    }
     // Two updates may need to happen:
     //   · append the source channel (gmail/whatsapp/…) if new
     //   · add this user to discovered_by_users so they can see the
     //     contact in their own list (multi-user visibility)
-    const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    const meta = meta0;
     const channels = Array.isArray(meta.channels) ? (meta.channels as string[]) : [];
     const discoveredBy = Array.isArray(meta.discovered_by_users)
       ? (meta.discovered_by_users as number[])

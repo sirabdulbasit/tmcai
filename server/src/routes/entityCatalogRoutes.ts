@@ -48,16 +48,17 @@ router.get('/', async (req: Request, res: Response) => {
     const args: any[] = [req.user!.clientNumber, req.user!.id, userIdJson];
     if (titleFilter) args.push(`%${q.toLowerCase()}%`);
     const rawRows = await prisma.$queryRawUnsafe<any[]>(
-      // Status filter: hide archived (junk_filter / self_contact) and
-      // deleted/contradicted. Keep active + orphan + stale — the wiki
-      // linter marks contacts as 'orphan' when nothing else links to
-      // them but they're still legitimate contacts.
+      // Status filter: hide archived (junk_filter / self_contact /
+      // duplicate_collapsed), inactive (user-marked), deleted, and
+      // contradicted. Keep active + orphan + stale — the wiki linter
+      // marks contacts as 'orphan' when nothing else links to them
+      // but they're still legitimate contacts.
       `SELECT id, title, last_updated_at AS "lastUpdatedAt", status, confidence,
               metadata, user_id AS "userId"
          FROM wiki_pages
         WHERE client_number = $1
           AND page_type = 'entity_person'
-          AND status NOT IN ('archived', 'deleted', 'contradicted')
+          AND status NOT IN ('archived', 'inactive', 'deleted', 'contradicted')
           AND (
             user_id = $2
             OR metadata->>'scope' = 'tenant'
@@ -84,6 +85,88 @@ router.get('/', async (req: Request, res: Response) => {
     const total = projected.length;
     const paged = projected.slice(offset, offset + limit);
     res.json({ count: paged.length, total, entities: paged });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * PATCH /:id/inactive  →  mark a contact as inactive (soft-delete).
+ *
+ * Sets status='inactive' + stamps metadata.markedInactiveByUser=true.
+ * Sticky: ensureEntityForSender treats inactive rows as no-ops, so
+ * future emails / WhatsApp messages from this address will NOT
+ * resurrect the contact. The row stays in the DB so the entity_id
+ * collision rule (deterministic from normalized email) prevents
+ * recreation; sender_history pages may still link to it.
+ *
+ * Reversible: PATCH /:id/restore flips it back to 'active'.
+ *
+ * Tenant-scoped — caller can only mark contacts in their own tenant
+ * inactive. Owner-scoped: only the owning user OR an admin in the
+ * tenant can mark a contact inactive (a teammate's contact list isn't
+ * yours to clean up).
+ */
+router.patch('/:id/inactive', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can mark inactive' }); return;
+    }
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages
+          SET status = 'inactive',
+              last_updated_at = NOW(),
+              last_updated_by = 'user_marked_inactive',
+              metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+        WHERE id = $2`,
+      JSON.stringify({
+        markedInactiveByUser: true,
+        markedInactiveAt: new Date().toISOString(),
+        markedInactiveBy: req.user!.id,
+      }),
+      id,
+    );
+    res.json({ ok: true, id, status: 'inactive' });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/** PATCH /:id/restore  →  flip an inactive contact back to active. */
+router.patch('/:id/restore', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can restore' }); return;
+    }
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages
+          SET status = 'active',
+              last_updated_at = NOW(),
+              last_updated_by = 'user_restored',
+              metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+        WHERE id = $2`,
+      JSON.stringify({
+        markedInactiveByUser: false,
+        restoredAt: new Date().toISOString(),
+        restoredBy: req.user!.id,
+      }),
+      id,
+    );
+    res.json({ ok: true, id, status: 'active' });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
