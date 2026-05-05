@@ -46,10 +46,25 @@ const PERSONAL_DOMAINS = new Set([
   'aol.com',
 ]);
 
+// Strip RFC2822 wrapping ("Name <addr@x>" / "<addr@x>") + whitespace,
+// then lowercase. Without normalisation, the same person ingested in
+// different formats produces different entity IDs and the contacts list
+// shows them as duplicates.
+//   "Iftikhar Hussain <iftikhar.hussain@tmcltd.ai>"  →  "iftikhar.hussain@tmcltd.ai"
+//   "<irfan.ali@tmcltd.ai>"                         →  "irfan.ali@tmcltd.ai"
+//   "irfan.ali@tmcltd.ai"                           →  "irfan.ali@tmcltd.ai"
+//   "  Basit@TMCLtd.ai  "                           →  "basit@tmcltd.ai"
+export function normalizeEmail(raw: string): string {
+  let s = String(raw ?? '').trim().toLowerCase();
+  const angle = s.match(/<([^>]+@[^>]+)>/);
+  if (angle) s = angle[1]!.trim();
+  return s;
+}
+
 // Stable id format. Email is the canonical identifier when present;
 // otherwise we fall back to phone (whatsapp). Both are normalized.
 function entityIdForEmail(email: string): string {
-  return `person:${email.trim().toLowerCase()}`;
+  return `person:${normalizeEmail(email)}`;
 }
 function entityIdForPhone(phone: string): string {
   return `person:phone:${phone.replace(/[^\d+]/g, '')}`;
@@ -74,7 +89,10 @@ export async function ensureEntityForSender(input: {
    *  Default unset = ingest path = filter applies. */
   importSource?: string;
 }): Promise<{ id: string; created: boolean } | null> {
-  const email = (input.senderEmail ?? '').trim().toLowerCase();
+  // Always normalise to the bare canonical address — strips
+  // "Name <addr@x>" / "<addr@x>" wrapping, lowercases, trims. Single
+  // format ensures one entity_id per person (no duplicates).
+  const email = normalizeEmail(input.senderEmail ?? '');
   const phone = (input.senderPhone ?? '').trim();
   if (!email && !phone) return null;
 
