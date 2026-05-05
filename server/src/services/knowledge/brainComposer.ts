@@ -489,6 +489,14 @@ function renderComposerHistoryBlock(history: ComposerHistoryTurn[]): string {
   return `Recent conversation (most recent last):\n${lines.join('\n')}\n\n`;
 }
 
+export interface ComposeOptions {
+  /** Free-text guidance prepended to the system prompt. Used by the chat
+   *  retry loop to feed in the previous-turn diagnosis ("you cited the
+   *  wrong person — re-scope to Omar") so the LLM corrects course on the
+   *  second attempt. Bounded to 1000 chars by the caller. */
+  steeringHint?: string | null;
+}
+
 export async function compose(
   clientNumber: string,
   userId: number,
@@ -496,6 +504,7 @@ export async function compose(
   plan: RetrievalPlan,
   opened: OpenedPage[],
   history: ComposerHistoryTurn[] = [],
+  opts: ComposeOptions = {},
 ): Promise<ComposeResult> {
   // Read-through cache wraps the four read-heavy envelope blocks. Each
   // changes rarely (persona/capabilities/preferences/instructions are
@@ -548,7 +557,16 @@ ${recentLog || '(no recent activity logged)'}
 
 # Pages opened for this turn (intent=${plan.intent})
 ${openedBlock}
+${opts.steeringHint ? `
+# Retry guidance — your previous answer was downvoted
+The user gave 👎 to your previous attempt at this question. A diagnostic
+LLM pass produced the guidance below. Treat it as the highest-priority
+correction for this turn — adjust scope, tone, source choice, or
+specificity accordingly. Do NOT mention "the previous answer" or apologise;
+just produce a better answer.
 
+${opts.steeringHint.slice(0, 1000)}
+` : ''}
 # Output rules for this turn
 - Respond with ONE JSON object and nothing else. No prose outside the object. No fenced code blocks.
 - Shape: { "answer": string, "cites": [pageId], "gaps": [string] }

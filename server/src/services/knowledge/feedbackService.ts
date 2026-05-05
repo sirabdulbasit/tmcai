@@ -39,11 +39,27 @@ export interface RecordFeedbackInput {
   reason?: string | null;       // optional user-typed reason
   /** Snapshot of what Brain showed — used to reconstruct context on diagnosis. */
   context?: Record<string, unknown>;
+  /** When true (and rating='down'), run diagnosis SYNCHRONOUSLY and return
+   *  it to the caller. Used by the in-the-moment retry loop on chat
+   *  answers — the UI needs the diagnosis category to decide whether to
+   *  offer "Try again". Default false (legacy fire-and-forget). */
+  awaitDiagnosis?: boolean;
+}
+
+export interface DiagnosisSummary {
+  pageId: string;
+  category: string;
+  hypothesis: string;
+  likelyFix: string;
+  confidence: number;
+  affectedSubsystem: string;
 }
 
 export interface RecordFeedbackResult {
   feedbackPageId: string;
   diagnosisPageId?: string;
+  /** Set when awaitDiagnosis=true and diagnosis ran successfully. */
+  diagnosis?: DiagnosisSummary | null;
 }
 
 export async function recordFeedback(input: RecordFeedbackInput): Promise<RecordFeedbackResult> {
@@ -98,21 +114,42 @@ export async function recordFeedback(input: RecordFeedbackInput): Promise<Record
 
   log.info('feedback recorded', { userId, rating, subjectType, subjectId, feedbackPageId: created.id });
 
-  // 👎 → fire diagnosis (fire-and-forget so the UI stays snappy)
+  // 👎 → run diagnosis. Caller chooses sync (await result, used by the
+  // chat retry loop) or async (legacy — UI doesn't wait).
   let diagnosisPageId: string | undefined;
+  let diagnosisSummary: DiagnosisSummary | null = null;
   if (rating === 'down') {
-    try {
-      diagnosisPageId = await diagnoseFailure({
-        clientNumber, userId,
-        feedbackPageId: created.id,
-        subjectType, subjectId, reason, context,
-      }) ?? undefined;
-    } catch (err: any) {
-      log.warn('diagnosis failed', { feedbackPageId: created.id, error: err.message });
+    if (input.awaitDiagnosis) {
+      try {
+        const r = await diagnoseFailure({
+          clientNumber, userId,
+          feedbackPageId: created.id,
+          subjectType, subjectId, reason, context,
+        });
+        if (r) {
+          diagnosisPageId = r.pageId;
+          diagnosisSummary = r;
+        }
+      } catch (err: any) {
+        log.warn('diagnosis (sync) failed', { feedbackPageId: created.id, error: err.message });
+      }
+    } else {
+      // Fire-and-forget — older surfaces (Day Brief, brain_action, etc.)
+      void (async () => {
+        try {
+          await diagnoseFailure({
+            clientNumber, userId,
+            feedbackPageId: created.id,
+            subjectType, subjectId, reason, context,
+          });
+        } catch (err: any) {
+          log.warn('diagnosis (async) failed', { feedbackPageId: created.id, error: err.message });
+        }
+      })();
     }
   }
 
-  return { feedbackPageId: created.id, diagnosisPageId };
+  return { feedbackPageId: created.id, diagnosisPageId, diagnosis: diagnosisSummary };
 }
 
 // ─── Diagnosis ─────────────────────────────────────────────────────
@@ -146,7 +183,7 @@ Rules:
 - For "hallucination", reference the specific claim that's unsupported.
 - For "wrong_person_scope", reference whose context was used vs whose was asked about.`;
 
-async function diagnoseFailure(input: DiagnoseInput): Promise<string | null> {
+async function diagnoseFailure(input: DiagnoseInput): Promise<DiagnosisSummary | null> {
   // Reconstruct a compact context packet for the diagnostic LLM
   const reconstructed = await reconstructContext(input);
   const userMsg = [
@@ -241,7 +278,14 @@ async function diagnoseFailure(input: DiagnoseInput): Promise<string | null> {
       } catch { /* best effort */ }
     })();
 
-    return created.id;
+    return {
+      pageId: created.id,
+      category: String(obj.category ?? 'unclear'),
+      hypothesis: String(obj.hypothesis ?? ''),
+      likelyFix: String(obj.likely_fix ?? ''),
+      confidence: Number(obj.confidence ?? 0),
+      affectedSubsystem: String(obj.affected_subsystem ?? 'other'),
+    };
   } catch (err: any) {
     log.warn('diagnoseFailure LLM failed', { feedbackPageId: input.feedbackPageId, error: err.message });
     return null;

@@ -65,6 +65,7 @@ export async function answerAsBrain(
   userId: number,
   question: string,
   history: BrainHistoryTurn[] = [],
+  opts: { steeringHint?: string | null } = {},
 ): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string }> {
   // Trim history to the last 6 turns so we don't blow up the prompt.
   // Most follow-ups need only the immediately previous Q&A; 6 covers
@@ -72,7 +73,9 @@ export async function answerAsBrain(
   const trimmedHistory = history.slice(-6);
   const plan = await planRetrieval(clientNumber, userId, question, trimmedHistory);
   const opened = await openPagesForPlan(clientNumber, userId, plan, question);
-  const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory);
+  const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
+    steeringHint: opts.steeringHint ?? null,
+  });
 
   // Side effects (fire-and-forget — don't block the response on them)
   Promise.resolve().then(async () => {
@@ -241,6 +244,11 @@ router.post('/feedback', async (req: Request, res: Response) => {
 
   try {
     const { recordFeedback } = await import('../services/knowledge/feedbackService');
+    // For chat_answer downvotes we run diagnosis SYNCHRONOUSLY so the UI
+    // can decide whether to offer "Try again". Other surfaces stay
+    // fire-and-forget (UI already navigated away by the time diagnosis
+    // would finish).
+    const awaitDiagnosis = subjectType === 'chat_answer' && rating === 'down';
     const r = await recordFeedback({
       clientNumber: user.clientNumber,
       userId: user.id,
@@ -249,8 +257,57 @@ router.post('/feedback', async (req: Request, res: Response) => {
       rating,
       reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 800) : null,
       context: typeof context === 'object' && context ? context : undefined,
+      awaitDiagnosis,
     });
     res.json({ ok: true, ...r });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Retry — re-compose a chat answer with diagnosis as steering ─────
+//
+// The chat retry loop. After a 👎 with a high-confidence diagnosis, the
+// UI calls this endpoint with the original question + diagnosis fields.
+// The composer is invoked with the diagnosis as a "Retry guidance" block,
+// the new answer is returned alongside its cited sources. The UI shows
+// it as a fresh message; the user can 👍 or 👎 the retry independently.
+router.post('/retry', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const question = String(req.body?.question ?? '').trim();
+  if (!question) return res.status(400).json({ error: 'question required' });
+  const diagnosis = req.body?.diagnosis ?? {};
+  const category = String(diagnosis.category ?? '').slice(0, 60);
+  const hypothesis = String(diagnosis.hypothesis ?? '').slice(0, 400);
+  const likelyFix = String(diagnosis.likelyFix ?? '').slice(0, 400);
+  if (!category && !hypothesis && !likelyFix) {
+    return res.status(400).json({ error: 'diagnosis with at least category/hypothesis/likelyFix required' });
+  }
+
+  // Compose the steering hint — short structured block the LLM can use
+  // as the highest-priority correction.
+  const steeringHint = [
+    category ? `Failure category: ${category}` : '',
+    hypothesis ? `What went wrong: ${hypothesis}` : '',
+    likelyFix ? `What to do differently: ${likelyFix}` : '',
+  ].filter(Boolean).join('\n');
+
+  // Optional history (so follow-ups still resolve correctly on retry)
+  const rawHistory: any[] = Array.isArray(req.body?.history) ? req.body.history : [];
+  const history: BrainHistoryTurn[] = rawHistory
+    .filter((t) => t && (t.role === 'user' || t.role === 'brain') && typeof t.text === 'string')
+    .map((t) => ({ role: t.role, text: String(t.text).slice(0, 2000) }));
+
+  try {
+    const out = await answerAsBrain(user.clientNumber, user.id, question, history, { steeringHint });
+    res.json({
+      question,
+      answer: out.answer,
+      sources: out.sources,
+      gaps: out.gaps,
+      intent: out.intent,
+      retry: { category, applied: true },
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

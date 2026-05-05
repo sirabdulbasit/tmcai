@@ -74,6 +74,48 @@ export default function BrainChatPanel() {
     }
   };
 
+  // Retry handler — invoked from FeedbackButtons after a 👎 with a
+  // high-confidence diagnosis. POSTs the diagnosis to /brain/retry, which
+  // re-runs the composer with the diagnosis injected as steering. The
+  // retry answer is appended as a fresh brain turn carrying retry=true so
+  // the user can 👍/👎 it independently.
+  const retry = async ({ diagnosis, question }) => {
+    if (!question) return;
+    const history = messages
+      .filter((m) => m.role === 'user' || m.role === 'brain')
+      .slice(-8)
+      .map((m) => ({ role: m.role, text: String(m.text ?? '') }));
+    setBusy(true);
+    try {
+      const { data } = await api.post('/brain/retry', {
+        question,
+        diagnosis: {
+          category: diagnosis?.category,
+          hypothesis: diagnosis?.hypothesis,
+          likelyFix: diagnosis?.likelyFix,
+        },
+        history,
+      });
+      const answerId = `chat:retry:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      setMessages((m) => [
+        ...m,
+        {
+          role: 'brain',
+          id: answerId,
+          question,
+          intent: data?.intent,
+          text: data?.answer ?? '(no retry answer)',
+          sources: data?.sources ?? [],
+          retry: { applied: true, category: data?.retry?.category ?? diagnosis?.category },
+        },
+      ]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: 'brain', text: e?.response?.data?.error ?? e.message, error: true }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Scroll area */}
@@ -89,12 +131,14 @@ export default function BrainChatPanel() {
             intent={m.intent}
             sources={m.sources}
             error={m.error}
+            retry={m.retry}
             onSourceClick={(s) => { if (s.type === 'wiki_page') setWikiPageId(s.id); }}
             feedbackTarget={
               m.role === 'brain' && !m.error && m.id
                 ? { id: m.id, question: m.question, answer: m.text, sources: m.sources }
                 : null
             }
+            onRetry={retry}
           >
             {m.text}
           </Bubble>
@@ -151,7 +195,7 @@ export default function BrainChatPanel() {
   );
 }
 
-function Bubble({ role, intent, sources, error, children, onSourceClick, feedbackTarget = null }) {
+function Bubble({ role, intent, sources, error, children, onSourceClick, feedbackTarget = null, retry = null, onRetry = null }) {
   const isUser = role === 'user';
   const renderBody = () => {
     if (isUser || error || typeof children !== 'string') {
@@ -204,6 +248,19 @@ function Bubble({ role, intent, sources, error, children, onSourceClick, feedbac
           })}
         </div>
       )}
+      {retry?.applied && (
+        <div style={{
+          fontSize: 10, color: '#a5b4fc', fontWeight: 600,
+          marginTop: 6,
+          padding: '2px 6px',
+          background: 'rgba(99,102,241,0.12)',
+          border: '1px solid rgba(99,102,241,0.4)',
+          borderRadius: 4,
+          display: 'inline-block',
+        }}>
+          ↻ retry — corrected for {retry.category ?? 'previous miss'}
+        </div>
+      )}
       {feedbackTarget && (
         <FeedbackButtons
           subjectType="chat_answer"
@@ -213,6 +270,7 @@ function Bubble({ role, intent, sources, error, children, onSourceClick, feedbac
             answer: feedbackTarget.answer,
             sources: feedbackTarget.sources,
           }}
+          onRetry={onRetry}
         />
       )}
     </div>
