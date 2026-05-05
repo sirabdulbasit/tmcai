@@ -37,7 +37,7 @@ const STAR_FILTERS = [
 ];
 
 export default function ContactsPage() {
-  const { user } = useAuth();
+  const { user, tenantName } = useAuth();
   const [entities, setEntities] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -297,7 +297,12 @@ function ContactsTable({ entities, onSetStars }) {
                   {e.title}
                 </Link>
                 {e.scope === 'tenant' && (
-                  <span style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}>Tenant</span>
+                  <span
+                    style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
+                    title="Shared across your company — visible to every user in your tenant."
+                  >
+                    {tenantName || 'Shared'}
+                  </span>
                 )}
               </Td>
               <Td>

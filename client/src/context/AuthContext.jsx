@@ -14,6 +14,10 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [appName, setAppName] = useState('');
   const [aiName, setAiName] = useState('');
+  // Tenant display name (Tenant.name from the DB) — used by Contacts /
+  // Wiki / etc. to label tenant-shared content with a friendly company
+  // name instead of the system word "Tenant" or raw clientNumber.
+  const [tenantName, setTenantName] = useState('');
   const [logoUrl, setLogoUrl] = useState('/api/health/logo');
   const [loading, setLoading] = useState(true);
   const [fontScale, setFontScaleState] = useState(1);
@@ -31,6 +35,10 @@ export function AuthProvider({ children }) {
       api.get('/user/me').then(r => {
         if (r.data?.user) {
           setUser(r.data.user);
+          // tenant.name is the company display name (e.g. "TMC Pvt Ltd").
+          // Falls back to the clientNumber when no name is configured.
+          if (r.data.tenant?.name) setTenantName(r.data.tenant.name);
+          else if (r.data.tenant?.clientNumber) setTenantName(r.data.tenant.clientNumber);
           // Fetch AI name from welcome endpoint
           api.get('/chat/welcome').then(w => {
             if (w.data?.aiName) setAiName(w.data.aiName);
@@ -87,7 +95,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, appName, aiName, logoUrl, loading, login, logout,
+      user, appName, aiName, tenantName, logoUrl, loading, login, logout,
       fontScale, appDefaultFontScale, fontScaleIsOverride,
       setFontScale, resetFontScaleToDefault,
     }}>

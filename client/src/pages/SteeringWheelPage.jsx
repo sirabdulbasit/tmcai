@@ -48,7 +48,7 @@ const TABS = [
 const ADMIN_TAB = { key: 'admin', label: 'Admin / Client Config', icon: 'settings', group: 'ops', render: () => <AdminPage /> };
 
 export default function SteeringWheelPage() {
-  const { user, appName } = useAuth();
+  const { user, appName, tenantName } = useAuth();
   const [active, setActive] = useState(() => {
     if (typeof window === 'undefined') return 'brief';
     return new URLSearchParams(window.location.search).get('tab') ?? 'brief';
@@ -144,7 +144,11 @@ export default function SteeringWheelPage() {
         <TopBar>
           <TopBarTitle>{tab.label}</TopBarTitle>
           <div style={{ flex: 1 }} />
-          {user?.clientNumber && <TopBarTenant>{user.clientNumber}</TopBarTenant>}
+          {user?.clientNumber && (
+            <TopBarTenant title={user.clientNumber}>
+              {tenantName || user.clientNumber}
+            </TopBarTenant>
+          )}
           <TopBarUser name={firstName} initials={userInitials} accent />
         </TopBar>
         {tab.render()}

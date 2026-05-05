@@ -69,8 +69,22 @@ router.post('/logout', requireAuth, async (req: Request, res: Response) => {
 
 // ─── Current User ──────────────────────────────────────────────
 
-router.get('/me', requireAuth, (req: Request, res: Response) => {
-  res.json({ user: req.user });
+router.get('/me', requireAuth, async (req: Request, res: Response) => {
+  // Include the tenant's display name so the UI can render
+  // "Acme Corp" badges instead of system words like "Tenant" or
+  // raw client_numbers like "TMC-0001".
+  let tenantName: string | null = null;
+  try {
+    const t = await (await import('../db/prisma')).default.tenant.findUnique({
+      where: { clientNumber: req.user!.clientNumber },
+      select: { name: true },
+    });
+    tenantName = t?.name ?? null;
+  } catch { /* fall through with null */ }
+  res.json({
+    user: req.user,
+    tenant: { clientNumber: req.user!.clientNumber, name: tenantName },
+  });
 });
 
 // ─── Change Password ───────────────────────────────────────────
