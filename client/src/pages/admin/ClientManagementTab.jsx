@@ -312,10 +312,14 @@ function InviteButton({ userId, onInvite }) {
 function ClientConfigSection({ user, tenants }) {
   const [selectedClient, setSelectedClient] = useState(user?.clientNumber || '');
   const targetClient = user?.isSuperAdmin ? selectedClient : undefined;
-  const effectiveClient = targetClient || user?.clientNumber;
 
   return (
     <>
+      <div style={{ marginBottom: 12, padding: '10px 14px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 6, fontSize: 12, color: 'var(--text)' }}>
+        <strong>What lives here:</strong> SMTP + Foundation Drive folder pointers per tenant.<br />
+        <strong>What used to live here but doesn't anymore:</strong> AI/RAG knobs, response controls, caching TTLs, Google OAuth keys — all either Brain-managed or moved to the platform OAuth client. Less to break, less to tune.
+      </div>
+
       {/* Client selector */}
       <section className="settings-section" style={{ paddingBottom: 12 }}>
         <div className="settings-field">
