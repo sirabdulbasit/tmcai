@@ -779,8 +779,19 @@ router.get('/brain-actions', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   try {
+    // Exclude internal telemetry rows that the preference learner writes
+    // to agent_actions (actionType='user_signal'). Those record YOUR
+    // clicks, not actions Brain took for you — surfacing them in the
+    // Brief mislabels them and pollutes the "20 actions I took" count.
+    // Also exclude diagnostic / scoring rows that aren't user-facing.
+    const INTERNAL_ACTION_TYPES = ['user_signal', 'feedback_diagnosis', 'criticality_calibration'];
     const actions = await prisma.agentAction.findMany({
-      where: { clientNumber: user.clientNumber, userId: user.id, status: 'done', requiresApproval: false, createdAt: { gte: since } } as any,
+      where: {
+        clientNumber: user.clientNumber, userId: user.id,
+        status: 'done', requiresApproval: false,
+        createdAt: { gte: since },
+        actionType: { notIn: INTERNAL_ACTION_TYPES },
+      } as any,
       select: { id: true, actionType: true, input: true, output: true, riskTier: true, createdAt: true, executedByAgent: true },
       orderBy: { createdAt: 'desc' },
       take: 50,

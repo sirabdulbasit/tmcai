@@ -384,7 +384,13 @@ export default function DayBriefPage() {
     : null;
 
   return (
-    <div style={{ padding: 'var(--s-6) var(--s-8)', maxWidth: 1400 }}>
+    // Outer scroll container. The app's global CSS sets html/body/#root to
+    // overflow:hidden so the IconRail can stay fixed; pages that own their
+    // own scroll need to declare it explicitly. Without this, the Day Brief
+    // gets clipped at the viewport bottom and the user can't reach Brief /
+    // Cognitive / Patterns / Setup sections.
+    <div style={{ height: '100%', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <div style={{ padding: 'var(--s-6) var(--s-8)', maxWidth: 1400, paddingBottom: 80 }}>
 
       {/* Thinking feedback is now delivered by the top-right BrainAvatar
           pill (see brain:thinking:start/end events fired by `load()`). */}
@@ -656,6 +662,7 @@ export default function DayBriefPage() {
       />
 
       <BrainLearnedSection learned={learned} />
+    </div>
     </div>
   );
 }
