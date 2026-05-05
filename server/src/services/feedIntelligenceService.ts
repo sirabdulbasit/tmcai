@@ -180,11 +180,25 @@ export async function classifyFeedItem(raw: RawFeedItem): Promise<ClassifiedFeed
     return null;  // dropped silently — not a real ask
   }
 
+  // Priority floor from the sender's user-given stars. Policy: unrated
+  // is normal; criticality starts with stars; 5★ = top critical.
+  // - 0–2★ → no floor (medium default stays)
+  // - 3★ → at least medium (no-op vs default)
+  // - 4★ → at least high
+  // - 5★ → at least critical
+  let priority: 'low' | 'medium' | 'high' | 'critical' = 'medium';
+  try {
+    const { getStarsForSender } = await import('./knowledge/entitySweepService');
+    const stars = await getStarsForSender(raw.clientNumber, raw.userId, raw.senderEmail ?? null);
+    if (stars >= 5) priority = 'critical';
+    else if (stars === 4) priority = 'high';
+  } catch { /* no sender or stars unavailable — keep default */ }
+
   await openItemsService.createItem(raw.userId, raw.clientNumber, {
     title,
     description,
     type: 'alert',
-    priority: 'medium',
+    priority,
     sourceFeed: raw.source,
     sourceRef: raw.sourceRef,
     metadata: {

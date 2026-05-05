@@ -629,10 +629,11 @@ function deterministicDimensions(input: ScoreInput, s: GatheredSignals): Critica
     rel = Math.max(rel, 0.8);
   }
 
-  // User importance stars — explicit signal, stacks on top of all else.
-  // Floor relationshipRisk so star-4/5 senders never silently fall below.
-  if (s.importanceStars > 0) {
-    const starBumps = [0, 0.05, 0.10, 0.20, 0.35, 0.50];
+  // User importance stars — explicit signal. Policy: unrated is normal,
+  // criticality starts with stars, 5★ = top critical. 1–2★ behave like
+  // unrated (no bump); 3+★ progressively add relationship risk.
+  if (s.importanceStars >= 3) {
+    const starBumps = [0, 0, 0, 0.20, 0.35, 0.50];
     rel = Math.min(1, rel + starBumps[s.importanceStars]);
   }
 
