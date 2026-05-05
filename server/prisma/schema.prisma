@@ -149,6 +149,7 @@ model User {
   brainUserMessages  BrainUserMessage[]
   brainPromptQueue   BrainPromptQueue[]
   promptOverlay      UserPromptOverlay[]
+  retrievalFeedback  RetrievalFeedback[]
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -1541,6 +1542,31 @@ model BrainUserMessage {
   @@index([userId, kind, createdAt(sort: Desc)])
   @@index([clientNumber, createdAt(sort: Desc)])
   @@map("brain_user_messages")
+}
+
+/**
+ * RetrievalFeedback — per-(user, wiki_page) cumulative feedback signal
+ * used by the retrieval re-ranker. positive_uses / negative_uses
+ * accumulate via UPDATE; the smoothed boost is computed in code.
+ */
+model RetrievalFeedback {
+  id              BigInt    @id @default(autoincrement())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  userId          Int       @map("user_id")
+  pageId          String    @map("page_id")
+  positiveUses    Int       @default(0) @map("positive_uses")
+  negativeUses    Int       @default(0) @map("negative_uses")
+  lastPositiveAt  DateTime? @map("last_positive_at")
+  lastNegativeAt  DateTime? @map("last_negative_at")
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pageId], map: "uq_rf_user_page")
+  @@index([clientNumber, updatedAt(sort: Desc)])
+  @@map("retrieval_feedback")
 }
 
 /**

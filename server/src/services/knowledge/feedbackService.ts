@@ -112,6 +112,23 @@ export async function recordFeedback(input: RecordFeedbackInput): Promise<Record
     } catch { /* best effort */ }
   })();
 
+  // Retrieval feedback signal — for chat answers, on 👍 the cited pages
+  // were the right ones for the query. Diagnosis gate for 👎 is applied
+  // AFTER diagnosis runs (below) so we only penalise pages when the
+  // failure was actually about retrieval, not composer issues like tone.
+  if (rating === 'up' && subjectType === 'chat_answer') {
+    void (async () => {
+      try {
+        const sources = (context as any)?.sources;
+        const pageIds = extractWikiPageIds(sources);
+        if (pageIds.length) {
+          const { recordPositiveSignal } = await import('./retrievalFeedbackService');
+          await recordPositiveSignal(clientNumber, userId, pageIds);
+        }
+      } catch { /* best effort */ }
+    })();
+  }
+
   log.info('feedback recorded', { userId, rating, subjectType, subjectId, feedbackPageId: created.id });
 
   // 👎 → run diagnosis. Caller chooses sync (await result, used by the
@@ -299,6 +316,25 @@ async function diagnoseFailure(input: DiagnoseInput): Promise<DiagnosisSummary |
         });
       } catch { /* best effort */ }
     })();
+
+    // Retrieval feedback negative signal — only fire when the diagnosis
+    // says the pages were the wrong source (wrong_source / retrieval_miss).
+    // Other categories (wrong_tone, too_verbose, hallucination) don't
+    // mean the pages were wrong; penalising them would tell Brain to
+    // stop retrieving correct pages.
+    const cat = String(obj.category ?? 'unclear');
+    if (cat === 'wrong_source' || cat === 'retrieval_miss') {
+      void (async () => {
+        try {
+          const sources = (input.context as any)?.sources;
+          const pageIds = extractWikiPageIds(sources);
+          if (pageIds.length) {
+            const { recordNegativeSignal } = await import('./retrievalFeedbackService');
+            await recordNegativeSignal(input.clientNumber, input.userId, pageIds);
+          }
+        } catch { /* best effort */ }
+      })();
+    }
 
     return {
       pageId: created.id,
@@ -514,4 +550,22 @@ export async function getFeedbackCounts(clientNumber: string, userId: number) {
     clientNumber, userId,
   ).catch(() => []);
   return rows;
+}
+
+/**
+ * Extract wiki_page IDs from the `sources` snapshot the chat UI sends as
+ * part of the feedback context. Sources entries look like:
+ *   { type: 'wiki_page', id: '<wikiPageId>', snippet: '...' }
+ * Anything that isn't a wiki_page (entities, decisions, open_items) is
+ * skipped — those have separate signal pipelines.
+ */
+function extractWikiPageIds(sources: unknown): string[] {
+  if (!Array.isArray(sources)) return [];
+  const ids: string[] = [];
+  for (const s of sources) {
+    if (s && typeof s === 'object' && (s as any).type === 'wiki_page' && typeof (s as any).id === 'string') {
+      ids.push((s as any).id);
+    }
+  }
+  return ids;
 }

@@ -824,6 +824,14 @@ async function rankAndTrim(
   const metaById = new Map<string, { lastUpdatedAt: Date | null; entityId: string | null }>();
   for (const m of meta) metaById.set(m.id, { lastUpdatedAt: m.lastUpdatedAt, entityId: m.entityId });
 
+  // Per-(user, page) feedback boosts — Phase C re-ranker. A page that's
+  // been 👍'd repeatedly for similar queries gets up to +0.4 added to
+  // its score; one that's been 👎'd as wrong_source gets up to -0.4.
+  // Pages with no signal get 0 (no entry in the map). Bounded
+  // single-trip query.
+  const { getBoosts } = await import('./retrievalFeedbackService');
+  const feedbackBoosts = await getBoosts(userId, ids);
+
   const now = Date.now();
   const weighted = hits.map((h) => {
     const m = metaById.get(h.id);
@@ -848,6 +856,11 @@ async function rankAndTrim(
       const bonus = Math.max(-0.05, 0.10 * Math.max(0, 1 - ageDays / 30));
       score += bonus;
     }
+
+    // Per-user feedback boost — additive ∈ [-0.4, +0.4] from
+    // retrievalFeedbackService.getBoosts. Pages with no row default 0.
+    const fbBoost = feedbackBoosts.get(h.id) ?? 0;
+    score += fbBoost;
 
     return { ...h, finalScore: score, lastUpdatedAt: m?.lastUpdatedAt ?? null, entityId: m?.entityId ?? null };
   });
