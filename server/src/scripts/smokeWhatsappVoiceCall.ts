@@ -162,6 +162,12 @@ async function main() {
   ok(`getStarsForSender(${TEST_SENDER}) → ${resolvedStars}`);
 
   step('Inject feed_event + schedule cadence');
+  // Set BRAIN_SMOKE_LIVE=1 to actually deliver the smoke pings to your
+  // phone. Default: smoke isolation in brainOutboundService suppresses
+  // every send so a developer machine never blasts a real user's number.
+  if (process.env.BRAIN_SMOKE_LIVE !== '1') {
+    info('BRAIN_SMOKE_LIVE not set — smoke pings will be suppressed by smoke isolation. Set BRAIN_SMOKE_LIVE=1 to actually deliver.');
+  }
   const feedEventId = await injectFeedEvent(user.id);
   const { scheduleStarCadence } = await import('../services/triage/starCadenceService');
   const result = await scheduleStarCadence({

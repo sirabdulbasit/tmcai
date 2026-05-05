@@ -100,6 +100,33 @@ export interface BrainContactResult {
 
 const DEFAULT_DEDUP_WINDOW_MS = 20 * 60 * 1000;
 
+// ─── Hard safety caps ──────────────────────────────────────────────────
+// Defensive guardrails so even a future bug or a misconfigured cron
+// can't blast a real user. All three trigger AFTER user-resolution but
+// BEFORE any Meta API / WebJS dispatch — failed-closed by default.
+
+/** Daily cap: max outbound from Brain to any one user per 24h. Above
+ *  this, every send is hard-suppressed and an admin-visible audit row
+ *  is recorded. Override per-user via notificationPreferences.brain_channel.dailyCap. */
+const DEFAULT_DAILY_CAP = 20;
+
+/** Content-fingerprint window: identical body text within this window
+ *  is dropped even if every other dedup key differs. Catches the
+ *  duplicate-bundle class of bug where the same content arrived under
+ *  different fingerprints due to a race / concurrent dispatch. */
+const CONTENT_DEDUP_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+/** Test/smoke isolation: any outbound carrying metadata.smoke=true is
+ *  suppressed unless BRAIN_SMOKE_LIVE=1. Smoke tests can still observe
+ *  the dispatch chain via the audit log without ever hitting a real
+ *  user's WhatsApp. */
+const SMOKE_LIVE = process.env.BRAIN_SMOKE_LIVE === '1';
+
+function contentHash(body: string): string {
+  const crypto = require('crypto') as typeof import('crypto');
+  return crypto.createHash('sha256').update(body).digest('hex').slice(0, 16);
+}
+
 export async function brainContactsUser(req: BrainContactRequest): Promise<BrainContactResult> {
   const urgency: Urgency = req.urgency ?? 'normal';
   const channel = req.channel ?? 'auto';
@@ -119,6 +146,82 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
 
   const prefs = (user.notificationPreferences as any) ?? {};
   const bc = prefs.brain_channel ?? {};
+
+  // ── Smoke isolation ─────────────────────────────────────────────────
+  // Suppress any test-flagged outbound unless explicitly opted in. This
+  // is the FIRST check so a stray smoke test on a developer machine
+  // can't ever reach a real user's phone, regardless of subsequent
+  // logic. bypassRateLimit does NOT bypass this — smoke isolation is
+  // about user safety, not test convenience.
+  const isSmoke = !!(req.metadata && (req.metadata as any).smoke === true);
+  if (isSmoke && !SMOKE_LIVE) {
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, 'smoke_suppressed (set BRAIN_SMOKE_LIVE=1 to allow)');
+  }
+
+  // ── Per-user emergency pause ───────────────────────────────────────
+  // User-controlled kill switch. When true, every outbound from Brain
+  // to this user is suppressed. User can flip this from Settings if
+  // Brain ever gets noisy. Bypasses ARE NOT honored — pause means pause.
+  if (bc.outboundPaused === true) {
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, 'user_paused_outbound');
+  }
+
+  // ── Daily cap ──────────────────────────────────────────────────────
+  // Hard ceiling on per-user outbound volume per 24h. Catches the
+  // worst case of any bug (runaway cron, dispatch loop, content-
+  // fingerprint mismatch) before Brain hammers a real user's phone.
+  const dailyCap = Number.isFinite(bc.dailyCap) && bc.dailyCap >= 1 ? Math.min(bc.dailyCap, 200) : DEFAULT_DAILY_CAP;
+  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const sentToday = await prisma.brainUserMessage.count({
+    where: {
+      userId: user.id,
+      createdAt: { gte: since24h },
+      status: { in: ['sent', 'partial'] },
+    },
+  }).catch(() => 0);
+  if (sentToday >= dailyCap) {
+    log.warn('daily_cap_exceeded', { userId: user.id, sentToday, dailyCap });
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, `daily_cap_exceeded (${sentToday}/${dailyCap} in last 24h)`);
+  }
+
+  // ── Content-fingerprint dedup ──────────────────────────────────────
+  // Dedup by SHA-256 of the body text within the last hour. Catches
+  // identical-content sends that slipped past the dedupKey/race guards.
+  // bypassRateLimit DOES bypass this for admin verify panel; it's the
+  // only legitimate case where the same body should be allowed twice.
+  if (!req.bypassRateLimit && req.body) {
+    const cHash = contentHash(req.body);
+    const sinceContent = new Date(Date.now() - CONTENT_DEDUP_WINDOW_MS);
+    const dup = await prisma.brainUserMessage.findFirst({
+      where: {
+        userId: user.id,
+        createdAt: { gte: sinceContent },
+        status: { in: ['sent', 'partial'] },
+        metadata: { path: ['contentHash'], equals: cHash } as any,
+      },
+      select: { id: true, createdAt: true },
+    }).catch(() => null);
+    if (dup) {
+      const ageMin = Math.round((Date.now() - dup.createdAt.getTime()) / 60000);
+      log.info('content_fp_dup', { userId: user.id, ageMin });
+      return await record({
+        ...req, user, channel: 'text', urgency,
+        status: 'suppressed', summary: req.summary,
+        metadata: { ...(req.metadata ?? {}), contentHash: cHash },
+      }, `content_fingerprint_dup (identical body sent ${ageMin}m ago)`);
+    }
+    // Stamp the hash for future dedup checks
+    req.metadata = { ...(req.metadata ?? {}), contentHash: cHash };
+  }
 
   // Order: cheap suppression checks (dedup, quiet) before phone resolution.
   // Saves a row + a Meta hit when the message wouldn't have gone anyway,

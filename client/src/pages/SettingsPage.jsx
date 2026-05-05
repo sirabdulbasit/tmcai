@@ -222,6 +222,8 @@ function BrainChannelSection({ user }) {
   const [quietStart, setQuietStart] = useState('22:00');
   const [quietEnd, setQuietEnd] = useState('06:00');
   const [minConfidence, setMinConfidence] = useState('0.7');
+  const [outboundPaused, setOutboundPaused] = useState(false);
+  const [dailyCap, setDailyCap] = useState('20');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -234,6 +236,8 @@ function BrainChannelSection({ user }) {
       setQuietStart(d.quietStart || '22:00');
       setQuietEnd(d.quietEnd || '06:00');
       setMinConfidence(String(d.minConfidence ?? 0.7));
+      setOutboundPaused(!!d.outboundPaused);
+      setDailyCap(String(d.dailyCap ?? 20));
     }).catch(() => {
       setWhatsappNumber(user?.contactNumber || '');
     });
@@ -245,6 +249,8 @@ function BrainChannelSection({ user }) {
       await api.put('/profile/brain-channel', {
         channel, whatsappNumber, quietStart, quietEnd,
         minConfidence: parseFloat(minConfidence),
+        outboundPaused,
+        dailyCap: parseInt(dailyCap, 10) || 20,
       });
       setMsg('Saved');
       setTimeout(() => setMsg(''), 2000);
@@ -297,6 +303,30 @@ function BrainChannelSection({ user }) {
         <input type="number" step="0.05" min="0" max="1" value={minConfidence} onChange={(e) => setMinConfidence(e.target.value)} />
         <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
           Below this, Brain saves it for Day Brief instead of messaging you.
+        </div>
+      </div>
+
+      <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+        Safety
+      </h3>
+
+      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundPaused ? 'rgba(239,68,68,0.10)' : '#1f1f1f', border: `1px solid ${outboundPaused ? 'rgba(239,68,68,0.5)' : '#333'}`, borderRadius: 8 }}>
+        <input type="checkbox" id="outboundPaused" checked={outboundPaused} onChange={(e) => setOutboundPaused(e.target.checked)} style={{ width: 18, height: 18 }} />
+        <label htmlFor="outboundPaused" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
+          <div style={{ color: outboundPaused ? '#fca5a5' : '#eee', fontWeight: 600 }}>
+            {outboundPaused ? 'Brain WhatsApp PAUSED' : 'Pause Brain on WhatsApp'}
+          </div>
+          <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+            Hard kill switch — when on, Brain sends no WhatsApp messages to you (text, voicenote, voice call) regardless of priority. Day Brief and email still work. Flip off when you're ready to hear from Brain again.
+          </div>
+        </label>
+      </div>
+
+      <div className="settings-field">
+        <label>Daily message cap</label>
+        <input type="number" min="1" max="200" value={dailyCap} onChange={(e) => setDailyCap(e.target.value)} />
+        <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+          Hard ceiling on outbound from Brain in any 24h window. Even a runaway bug can never exceed this. Default 20.
         </div>
       </div>
 

@@ -242,6 +242,10 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   const channel = channelForCriticality(next.criticality as Criticality);
   const urgency: Urgency = next.criticality === 'high' ? 'high' : 'normal';
 
+  // Propagate the queue row's metadata (smoke flag, starCadence info,
+  // feedEventId) so brainOutboundService's smoke-isolation guard catches
+  // test-flagged rows even when they fire from the deferred dispatcher.
+  const queueMeta = (next.metadata as Record<string, unknown> | null) ?? {};
   const r = await brainContactsUser({
     userId,
     kind: 'brain_prompt',
@@ -252,7 +256,12 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     // We bypass brainOutboundService dedup here — the queue itself is the
     // dedup mechanism. Passing null is sparingly authorised.
     dedupKey: null,
-    metadata: { promptId: String(promoted.id), openItemId: next.openItemId, criticality: next.criticality },
+    metadata: {
+      ...queueMeta,
+      promptId: String(promoted.id),
+      openItemId: next.openItemId,
+      criticality: next.criticality,
+    },
   });
 
   // Record the wa_message_id for reply correlation.

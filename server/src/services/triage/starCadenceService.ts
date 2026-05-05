@@ -185,6 +185,13 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
     const dedupKey = `cadence:${anchor}:${attempt}`;
     const question = buildQuestion(input.itemTitle, senderHint, attempt, plan.length, stars, lang);
 
+    // Smoke test isolation: any sender on the synthetic test domain is
+    // marked as smoke=true so brainOutboundService suppresses delivery
+    // unless BRAIN_SMOKE_LIVE=1 is explicitly set. Belt-and-braces with
+    // the cleanup script — even if a smoke leaves residual state, real
+    // phones never get hit.
+    const isSmokeSender = /@(nexeo-smoke\.test|nexeo-cadence-smoke\.test|smoke\.test)$/i.test(input.senderEmail);
+
     try {
       await enqueueBrainPrompt({
         clientNumber: input.clientNumber,
@@ -202,6 +209,7 @@ export async function scheduleStarCadence(input: ScheduleInput): Promise<Schedul
           starCadence: { stars, attempt, totalAttempts: plan.length, senderEmail: input.senderEmail },
           openItemId: input.openItemId ?? null,
           feedEventId: input.feedEventId ?? null,
+          ...(isSmokeSender ? { smoke: true } : {}),
         },
       });
       scheduled++;
