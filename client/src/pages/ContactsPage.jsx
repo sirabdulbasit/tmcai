@@ -37,7 +37,7 @@ const STAR_FILTERS = [
 ];
 
 export default function ContactsPage() {
-  const { user, tenantName } = useAuth();
+  const { user } = useAuth();
   const [entities, setEntities] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -266,6 +266,12 @@ export default function ContactsPage() {
 }
 
 function ContactsTable({ entities, onSetStars }) {
+  // tenantName lives in AuthContext at the app root; pull it here so the
+  // tenant-shared pill renders the company display name. This nested
+  // component doesn't see ContactsPage's destructured useAuth — different
+  // function scope. Calling useAuth again is cheap (just consumes the
+  // existing context); no extra fetch.
+  const { tenantName } = useAuth();
   return (
     <div style={{
       border: '1px solid var(--border, #28323e)', borderRadius: 10,
