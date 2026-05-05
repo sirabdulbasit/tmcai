@@ -53,14 +53,19 @@ function translateComponent(c) {
 
   switch (c.name) {
     case 'postgres':
+      // Always admin: the user can't restart the database. When it's
+      // down, the whole app is down anyway (no API responds). Surfacing
+      // this in the "For me" view would just confuse the user.
       return status === 'up'
         ? { headline: 'Database is responsive', meaning: 'Brain can read and write — your wiki, queue, and learnings are all reachable.', action: null, audience: 'admin' }
-        : { headline: 'Brain is offline', meaning: 'The database is unreachable. Chat, Day Brief, and Open Items will all fail until this is restored.', action: 'This is a system-side issue — you can\'t fix it from here. Refresh in a few minutes.', audience: 'user' };
+        : { headline: 'Database is unreachable', meaning: 'Brain cannot read or write anything until this is restored. Most pages will fail entirely.', action: null, audience: 'admin' };
 
     case 'redis':
+      // Always admin: cache is system infrastructure. User benefit of
+      // knowing the cache is warm/cold is minor; route through summary.
       return status === 'up'
         ? { headline: 'Cache is responsive', meaning: 'Composer envelope cache + dedup gates are working.', action: null, audience: 'admin' }
-        : { headline: 'Brain is slower than usual', meaning: 'The cache layer is down so every chat answer hits the database fresh. Brain still works — just slightly delayed.', action: 'This is a system-side issue — you can\'t fix it from here. Resolves on its own when the cache is back.', audience: 'user' };
+        : { headline: 'Cache is down', meaning: 'Every request hits the database fresh — Brain still works, just slower.', action: null, audience: 'admin' };
 
     case 'kill_switch':
       return { headline: 'Kill switch is released', meaning: 'Brain is allowed to take actions on your behalf.', action: null, audience: 'admin' };
@@ -74,9 +79,14 @@ function translateComponent(c) {
       return { headline: 'Event bus is configured', meaning: 'Inbox, calendar, and WhatsApp events flow through the background pipeline.', action: null, audience: 'admin' };
 
     case 'agent_worker':
+      // Always admin: the user has no terminal access to restart pm2.
+      // Goes into the "Engineers tracking" summary line in user view.
+      // The user-facing impact (paused prompts) is captured in the
+      // meaning text for admins — visible in Full Diagnostics if they
+      // want detail.
       return status === 'up'
         ? { headline: 'Background workers are running', meaning: 'Producer sweep, followup nudges, expiry, and delegatee emails fire on schedule.', action: null, audience: 'admin' }
-        : { headline: 'Brain may stop asking you questions', meaning: 'A background process that drives proactive prompts is down. You can still use Brain Chat normally — but follow-up nudges and "by when?" prompts are paused.', action: 'This is a system-side issue — you can\'t fix it from here. Resolves once the worker process restarts; refresh later to confirm.', audience: 'user' };
+        : { headline: 'Background workers are down', meaning: 'Brain may stop asking the user proactive questions until the worker process restarts. Chat still works.', action: null, audience: 'admin' };
 
     case 'gemini':
       return { headline: 'LLM provider configured', meaning: 'Gemini API key is present — Brain can plan retrieval, compose answers, and diagnose feedback.', action: null, audience: 'admin' };
@@ -153,31 +163,32 @@ function translateComponent(c) {
     }
 
     case 'token_refresh': {
-      const n = num(/(\d+) user token/) ?? 0;
+      // Server (post-privacy-fix 837485e) now returns either:
+      //   status='up'       detail='your token is valid >10m'
+      //   status='degraded' detail='your token expires within 10m: basit.ahmed@tmcltd.ai (google)'
+      // The old format ("N user token(s) expire within 10m: ...") is
+      // gone. So the source of truth for "is something expiring?" is
+      // the status field, not a regex parse of the count.
+      const isExpiring = status !== 'up';
       const m = detail.match(/within (\w+)/);
       const window = m ? m[1] : 'soon';
-      // Parse user-list tail. Server now returns:
-      //   "2 user token(s) expire within 10m: basit.ahmed@tmcltd.ai (google), asad@tmcltd.ai (google)"
-      const tail = detail.split(/within \w+: /)[1];
-      const affectedUsers = tail
-        ? tail.split(',').map((s) => s.trim()).filter(Boolean)
-        : [];
-      if (n > 0) {
-        const userList = affectedUsers.length
-          ? affectedUsers.join(', ')
-          : null;
+      // Parse the email + provider out of the new detail format.
+      // "your token expires within 10m: basit.ahmed@tmcltd.ai (google)"
+      const after = detail.split(/within \w+: /)[1];
+      const affected = after?.trim() || null;
+      if (isExpiring) {
         return {
-          headline: `${n} of your connector${n === 1 ? '' : 's'} will lose access within ${window}`,
-          meaning: userList
-            ? `Affected: ${userList}. When the token expires, Brain stops receiving new emails / calendar events from these accounts until you reconnect. Google Testing-mode apps expire every 7 days.`
+          headline: `Your connector will lose access within ${window}`,
+          meaning: affected
+            ? `Affected: ${affected}. When the token expires, Brain stops receiving new emails / calendar events from this account until you reconnect. Google Testing-mode apps expire every 7 days.`
             : 'When a connector token expires, Brain stops receiving new emails / calendar events from it until you reconnect. Google Testing-mode apps expire every 7 days.',
-          action: userList
-            ? `Open Connectors → click Reconnect on ${affectedUsers.length === 1 ? affectedUsers[0] : 'each affected user'} before the timer runs out.`
-            : 'Open Connectors → click Reconnect on the affected user before the timer runs out.',
+          action: affected
+            ? `Open Connectors → click Reconnect on ${affected.split(' (')[0]} before the timer runs out.`
+            : 'Open Connectors → click Reconnect before the timer runs out.',
           audience: 'user',
         };
       }
-      return { headline: 'All your connectors are healthy', meaning: 'Every authorised connector has time before its token expires.', action: null, audience: 'user' };
+      return { headline: 'Your connectors are healthy', meaning: 'Your connector tokens have time before expiry.', action: null, audience: 'user' };
     }
 
     case 'cache_hit_rate': {
