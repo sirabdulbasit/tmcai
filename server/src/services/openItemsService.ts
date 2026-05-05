@@ -273,6 +273,14 @@ export async function listItems(
     }
     const uniq = Array.from(new Set(expanded));
     where.status = uniq.length === 1 ? uniq[0] : { in: uniq };
+  } else {
+    // No explicit status filter ("All" tab on the client) — exclude
+    // archived / closed / done items by default. The Action Center
+    // is for items that still need a decision; surfacing rows the user
+    // already disposed of (Done / Wrong / archived) defeats the purpose
+    // and is what produced the "I marked them Wrong but they're still
+    // there" complaint.
+    where.status = { notIn: ['closed', 'CLOSED', 'done', 'DONE', 'archived', 'ARCHIVED'] };
   }
   if (filters?.priority) {
     where.priority = Array.isArray(filters.priority) ? { in: filters.priority } : filters.priority;
@@ -407,7 +415,7 @@ export async function getStats(userId: number, clientNumber: string) {
   // v15 lifecycle uses uppercase CLOSED; legacy callers may still send 'done'.
   // Exclude both so "Total Open" is the live workload, not all-time history.
   const items = await prisma.openItem.findMany({
-    where: { userId, clientNumber, status: { notIn: ['CLOSED', 'done'] as any } },
+    where: { userId, clientNumber, status: { notIn: ['CLOSED', 'closed', 'DONE', 'done', 'ARCHIVED', 'archived'] as any } },
     select: { status: true, priority: true },
   });
 
