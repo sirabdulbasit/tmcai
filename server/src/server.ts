@@ -87,6 +87,21 @@ const server = app.listen(env.port, async () => {
   startIndexEventProcessor();
   // Phase 5: Proactive intelligence — hourly scan
   setInterval(() => runProactiveIntelligence().catch(() => {}), 60 * 60 * 1000);
+  // Open-item follow-up worker — hourly. Scans DELEGATED items that
+  // have been silent past their threshold (3d / 7d / 14d) and pings
+  // the user via brainContactsUser. "Brain runs after you" piece.
+  // First sweep fires 5 minutes after boot so the scheduler isn't
+  // bombarded at startup.
+  setTimeout(() => {
+    import('./services/openItems/followupWorker')
+      .then(({ runFollowupSweep }) => runFollowupSweep())
+      .catch((err) => console.warn('Followup sweep failed:', err.message));
+    setInterval(() => {
+      import('./services/openItems/followupWorker')
+        .then(({ runFollowupSweep }) => runFollowupSweep())
+        .catch((err) => console.warn('Followup sweep failed:', err.message));
+    }, 60 * 60 * 1000);
+  }, 5 * 60 * 1000);
   // Agent scheduler: initialize all scheduled agents
   import('./agents/agentScheduler').then(({ initializeAgentScheduler }) => {
     initializeAgentScheduler().then(() => console.log('[Agents] Scheduler initialized')).catch(() => {});

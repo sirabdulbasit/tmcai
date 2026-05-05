@@ -268,6 +268,23 @@ router.get('/transitions/matrix', requireAuth, async (_req: Request, res: Respon
 });
 
 /**
+ * Manual trigger for the follow-up sweep — useful for admin-driven
+ * testing and as a "run now" button on the Open Items page. Returns
+ * the same shape as the scheduled hourly run.
+ *
+ * Body: { dryRun?: boolean }
+ */
+router.post('/followup-sweep', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { runFollowupSweep } = await import('../services/openItems/followupWorker');
+    const summary = await runFollowupSweep({ dryRun: req.body?.dryRun === true });
+    res.json({ ok: true, ...summary });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Smart triage cleanup. Brain-side janitor that closes items the user
  * objectively no longer cares about, so the page stops being a junk
  * drawer of 2,000+ NEW rows. Two passes:
