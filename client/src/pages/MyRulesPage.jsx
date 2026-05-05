@@ -27,6 +27,7 @@ const ACTION_OPTIONS = [
 // equivalent of Standing Instructions and is being phased out.
 const TABS = [
   { id: 'standing',    label: 'Standing Instructions' },
+  { id: 'overlay',     label: 'Learned Preferences' },
   { id: 'patterns',    label: 'Patterns' },
   { id: 'risk-radar',  label: 'Risk Radar' },
   { id: 'decisions',   label: 'Decisions' },
@@ -102,6 +103,7 @@ export default function MyRulesPage() {
       </div>
 
       {tab === 'standing'    && <StandingInstructionsTab />}
+      {tab === 'overlay'     && <LearnedPreferencesTab />}
       {tab === 'patterns'    && <PatternsTab />}
       {tab === 'risk-radar'  && <RiskRadarTab />}
       {tab === 'decisions'   && <DecisionsTab />}
@@ -627,6 +629,278 @@ const SCOPES = [
   { v: 'draft_reply', l: 'Draft replies' },
   { v: 'delegation',  l: 'Delegations — forward cover notes' },
 ];
+
+// ─── LearnedPreferencesTab ──────────────────────────────────────────
+// Shows the per-user prompt overlay: rules Brain has auto-promoted from
+// repeated 👎 diagnoses + any rules the user added by hand. Each rule is
+// editable, can be toggled off (still stored, just not injected into
+// prompts), and the whole list can be reset. The overlay is what Brain
+// reads on EVERY chat answer / draft after a rule is created — see
+// brainComposer.ts and userPromptOverlayService.ts.
+function LearnedPreferencesTab() {
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const [editing, setEditing] = useState(null); // { id?, ruleText }
+  const [showAdd, setShowAdd] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
+
+  const load = async () => {
+    setLoading(true); setError(null);
+    try {
+      const r = await api.get('/brain/overlay');
+      setRules(r.data?.rules ?? []);
+    } catch (e) {
+      setError(e?.response?.data?.error ?? 'Could not load preferences');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const toggleActive = async (rule) => {
+    setBusyId(rule.id);
+    try {
+      await api.patch(`/brain/overlay/${rule.id}`, { active: !rule.active });
+      await load();
+    } catch (e) { setError(e?.response?.data?.error ?? 'Update failed'); }
+    finally { setBusyId(null); }
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    const text = (editing.ruleText ?? '').trim();
+    if (text.length < 6) { setError('Rule too short (minimum 6 characters)'); return; }
+    setBusyId(editing.id ?? 'new');
+    try {
+      if (editing.id) {
+        await api.patch(`/brain/overlay/${editing.id}`, { ruleText: text });
+      } else {
+        await api.post('/brain/overlay', { ruleText: text, category: 'custom' });
+      }
+      setEditing(null); setShowAdd(false);
+      await load();
+    } catch (e) { setError(e?.response?.data?.error ?? 'Save failed'); }
+    finally { setBusyId(null); }
+  };
+
+  const deleteRule = async (id) => {
+    setBusyId(id);
+    try {
+      await api.delete(`/brain/overlay/${id}`);
+      await load();
+    } catch (e) { setError(e?.response?.data?.error ?? 'Delete failed'); }
+    finally { setBusyId(null); }
+  };
+
+  const resetAll = async () => {
+    setBusyId('reset');
+    try {
+      await api.post('/brain/overlay/reset', {});
+      setResetConfirm(false);
+      await load();
+    } catch (e) { setError(e?.response?.data?.error ?? 'Reset failed'); }
+    finally { setBusyId(null); }
+  };
+
+  const sourceLabel = (s) => s === 'feedback_diagnosis' ? '🤖 Auto from 👎' : s === 'manual' ? '✍️ Manual' : 'Seed';
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+
+  return (
+    <div style={{ padding: '0 4px' }}>
+      <div style={{
+        background: 'rgba(99,102,241,0.08)',
+        border: '1px solid rgba(99,102,241,0.3)',
+        borderRadius: 8, padding: 12, marginBottom: 16,
+        fontSize: 13, color: 'var(--text)', lineHeight: 1.5,
+      }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>What is this?</div>
+        Rules Brain has learned about how you want it to answer. These get
+        prepended to every chat answer and draft. Auto-promoted when 👎
+        feedback shows the same problem twice within 14 days; you can also
+        add rules by hand. Toggle off to silence a rule without losing it,
+        or delete to remove permanently.
+      </div>
+
+      {error && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 12,
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
+          borderRadius: 6, color: '#fca5a5', fontSize: 13,
+        }}>{error}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+        <button
+          type="button"
+          onClick={() => { setShowAdd(true); setEditing({ ruleText: '' }); }}
+          style={{
+            padding: '6px 14px', borderRadius: 6, border: '1px solid var(--accent)',
+            background: 'var(--accent)', color: '#fff',
+            cursor: 'pointer', fontSize: 13, fontWeight: 600,
+          }}
+        >+ Add rule</button>
+        <div style={{ flex: 1 }} />
+        {rules.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setResetConfirm(true)}
+            disabled={busyId === 'reset'}
+            style={{
+              padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)',
+              background: 'transparent', color: 'var(--text-muted)',
+              cursor: 'pointer', fontSize: 13,
+            }}
+          >Reset all</button>
+        )}
+      </div>
+
+      {showAdd && editing && !editing.id && (
+        <div style={{
+          padding: 12, marginBottom: 16,
+          background: 'var(--bg-2)', border: '1px solid var(--border)',
+          borderRadius: 8,
+        }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>New rule (one line directive — what should Brain do differently?)</div>
+          <textarea
+            value={editing.ruleText}
+            onChange={(e) => setEditing({ ...editing, ruleText: e.target.value.slice(0, 240) })}
+            placeholder="e.g. Keep answers tight — prefer 2-3 sentences for casual questions."
+            rows={2}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              fontSize: 13, padding: 8,
+              background: 'var(--bg-1)', border: '1px solid var(--border)',
+              borderRadius: 6, color: 'var(--text)', resize: 'vertical',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <button
+              type="button" onClick={saveEdit}
+              disabled={busyId === 'new'}
+              style={{
+                padding: '6px 14px', borderRadius: 6, border: '1px solid var(--accent)',
+                background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              }}
+            >{busyId === 'new' ? 'Saving…' : 'Save'}</button>
+            <button
+              type="button" onClick={() => { setShowAdd(false); setEditing(null); }}
+              style={{
+                padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13,
+              }}
+            >Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {resetConfirm && (
+        <div style={{
+          padding: 12, marginBottom: 16,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)',
+          borderRadius: 8, fontSize: 13, color: 'var(--text)',
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        }}>
+          <div style={{ flex: 1 }}>
+            Delete all {rules.length} learned preference{rules.length === 1 ? '' : 's'}? Brain will start fresh and re-learn from new feedback.
+          </div>
+          <button
+            type="button" onClick={resetAll} disabled={busyId === 'reset'}
+            style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #f59e0b', background: '#f59e0b', color: '#000', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+          >{busyId === 'reset' ? 'Resetting…' : 'Yes, reset'}</button>
+          <button
+            type="button" onClick={() => setResetConfirm(false)}
+            style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
+          >Cancel</button>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>Loading…</div>
+      ) : rules.length === 0 ? (
+        <div style={{
+          textAlign: 'center', padding: 40,
+          color: 'var(--text-muted)', fontSize: 13,
+          background: 'var(--bg-2)', borderRadius: 8, border: '1px dashed var(--border)',
+        }}>
+          No learned preferences yet. Brain auto-creates these from repeated 👎 feedback, or you can add one above.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rules.map((r) => (
+            <div key={r.id} style={{
+              padding: 12, background: 'var(--bg-2)',
+              border: '1px solid var(--border)', borderRadius: 8,
+              opacity: r.active ? 1 : 0.55,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  {editing?.id === r.id ? (
+                    <textarea
+                      value={editing.ruleText}
+                      onChange={(e) => setEditing({ ...editing, ruleText: e.target.value.slice(0, 240) })}
+                      rows={2}
+                      style={{
+                        width: '100%', boxSizing: 'border-box',
+                        fontSize: 13, padding: 8,
+                        background: 'var(--bg-1)', border: '1px solid var(--border)',
+                        borderRadius: 6, color: 'var(--text)', resize: 'vertical',
+                      }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.4 }}>{r.ruleText}</div>
+                  )}
+                  <div style={{
+                    fontSize: 11, color: 'var(--text-muted)',
+                    marginTop: 6, display: 'flex', gap: 12, flexWrap: 'wrap',
+                  }}>
+                    <span>{sourceLabel(r.source)}</span>
+                    <span>{r.category}</span>
+                    <span>added {fmtDate(r.createdAt)}</span>
+                    {r.hitsCount > 0 && (
+                      <span>used in {r.hitsCount} {r.hitsCount === 1 ? 'turn' : 'turns'}</span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {editing?.id === r.id ? (
+                    <>
+                      <button
+                        type="button" onClick={saveEdit} disabled={busyId === r.id}
+                        style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+                      >Save</button>
+                      <button
+                        type="button" onClick={() => setEditing(null)}
+                        style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11 }}
+                      >Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button" onClick={() => toggleActive(r)} disabled={busyId === r.id}
+                        title={r.active ? 'Click to disable (Brain stops using this rule)' : 'Click to re-enable'}
+                        style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: r.active ? 'rgba(74,222,128,0.15)' : 'transparent', color: r.active ? '#4ade80' : 'var(--text-muted)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+                      >{r.active ? 'Active' : 'Inactive'}</button>
+                      <button
+                        type="button" onClick={() => setEditing({ id: r.id, ruleText: r.ruleText })}
+                        style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11 }}
+                      >Edit</button>
+                      <button
+                        type="button" onClick={() => deleteRule(r.id)} disabled={busyId === r.id}
+                        style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid rgba(239,68,68,0.3)', background: 'transparent', color: '#fca5a5', cursor: 'pointer', fontSize: 11 }}
+                      >Delete</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PromptsTab() {
   const [rows, setRows] = useState([]);

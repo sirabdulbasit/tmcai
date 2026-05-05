@@ -148,6 +148,7 @@ model User {
   whatsappConnection WhatsAppConnection?
   brainUserMessages  BrainUserMessage[]
   brainPromptQueue   BrainPromptQueue[]
+  promptOverlay      UserPromptOverlay[]
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -1540,6 +1541,34 @@ model BrainUserMessage {
   @@index([userId, kind, createdAt(sort: Desc)])
   @@index([clientNumber, createdAt(sort: Desc)])
   @@map("brain_user_messages")
+}
+
+/**
+ * UserPromptOverlay — per-user growing personal directives prepended to
+ * Brain's composer system prompt. Auto-promoted from feedback diagnoses
+ * when the same category recurs; user can also add / edit / disable
+ * rules manually.
+ */
+model UserPromptOverlay {
+  id                 BigInt    @id @default(autoincrement())
+  clientNumber       String    @map("client_number") @db.VarChar(20)
+  userId             Int       @map("user_id")
+  ruleText           String    @map("rule_text")
+  source             String    @default("manual") @db.VarChar(30)
+  sourceDiagnosisId  String?   @map("source_diagnosis_id")
+  category           String    @default("custom") @db.VarChar(40)
+  active             Boolean   @default(true)
+  metadata           Json      @default("{}")
+  hitsCount          Int       @default(0) @map("hits_count")
+  lastHitAt          DateTime? @map("last_hit_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, userId, active, updatedAt(sort: Desc)])
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@map("user_prompt_overlay")
 }
 
 /**

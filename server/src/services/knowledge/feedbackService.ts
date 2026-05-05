@@ -227,7 +227,10 @@ async function diagnoseFailure(input: DiagnoseInput): Promise<DiagnosisSummary |
       data: {
         clientNumber: input.clientNumber, userId: input.userId,
         pageType: 'feedback_diagnosis',
-        title: `Diagnosis · ${String(obj.category ?? 'unclear')} · ${input.subjectType}`.slice(0, 300),
+        // wiki_pages has UNIQUE (client_number, user_id, page_type, title);
+        // include subjectId so two 👎 on different chat answers with the
+        // same category produce distinct titles.
+        title: `Diagnosis · ${String(obj.category ?? 'unclear')} · ${input.subjectType} · ${input.subjectId.slice(0, 24)}`.slice(0, 300),
         bodyMarkdown: body,
         metadata: {
           schemaVersion: BRAIN_SCHEMA_VERSION,
@@ -274,6 +277,25 @@ async function diagnoseFailure(input: DiagnoseInput): Promise<DiagnosisSummary |
           category: String(obj.category ?? 'unclear'),
           affectedSubsystem: String(obj.affected_subsystem ?? 'other'),
           confidence: Number(obj.confidence ?? 0.5),
+        });
+      } catch { /* best effort */ }
+    })();
+
+    // User prompt overlay — auto-promote to a personal rule when the same
+    // category recurs (≥ 2 high-confidence diagnoses in 14 days). The
+    // service handles the recurrence + dedup + category coverage check;
+    // we just hand it the diagnosis fields. Fire-and-forget.
+    void (async () => {
+      try {
+        const { maybePromote } = await import('./userPromptOverlayService');
+        await maybePromote({
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          diagnosisId: created.id,
+          category: String(obj.category ?? 'unclear'),
+          confidence: Number(obj.confidence ?? 0),
+          hypothesis: String(obj.hypothesis ?? ''),
+          likelyFix: String(obj.likely_fix ?? ''),
         });
       } catch { /* best effort */ }
     })();

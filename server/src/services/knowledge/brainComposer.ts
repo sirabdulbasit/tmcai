@@ -513,7 +513,8 @@ export async function compose(
   // this, the codebase had structurally near-zero Redis hit rate
   // because Redis was used only for SETNX writes.
   const { getOrCompute } = await import('../../utils/redisClient');
-  const [schema, persona, recentLog, caps, prefs, instructions, delegationMatrixBlock, latestRadarDoc] = await Promise.all([
+  const { listActiveForPrompt: listOverlayRules, renderOverlayBlock, recordHits: recordOverlayHits } = await import('./userPromptOverlayService');
+  const [schema, persona, recentLog, caps, prefs, instructions, delegationMatrixBlock, latestRadarDoc, overlayRules] = await Promise.all([
     Promise.resolve(getBrainSchemaText()),
     getOrCompute(`persona:${clientNumber}:${userId}`, 60, () => getBrainPersona(userId, clientNumber)),
     getOrCompute(`tenantlog:${clientNumber}:${userId}:15`, 5, () => getRecentTenantLog(clientNumber, userId, 15).catch(() => '')),
@@ -522,11 +523,20 @@ export async function compose(
     getOrCompute(`instructions:${clientNumber}:${userId}`, 30, () => getActiveInstructions(clientNumber, userId, 30).catch(() => [])),
     renderDelegationMatrixBlock(clientNumber).catch(() => ''),
     getOrCompute(`riskradar:${clientNumber}:${userId}`, 300, () => getLatestRiskFlagDoc(clientNumber, userId).catch(() => null)),
+    // Cache 60s — overlay changes only on user edit / new auto-promote.
+    getOrCompute(`overlay:${clientNumber}:${userId}`, 60, () => listOverlayRules(clientNumber, userId)),
   ]);
   const capsBlock = caps ? renderCapabilitiesBlock(caps) : '';
   const prefsBlock = prefs ? renderPreferencesBlock(prefs) : '';
   const instructionsBlock = renderInstructionsBlock(instructions);
   const radarBlock = renderRiskRadarBlock(latestRadarDoc as any);
+  const overlayBlock = renderOverlayBlock(overlayRules ?? []);
+
+  // Telemetry — bump hits_count on the rules used in this prompt. Fire-
+  // and-forget so the user's response is never blocked on this.
+  if (overlayRules?.length) {
+    void recordOverlayHits(overlayRules.map((r: any) => r.id)).catch(() => {});
+  }
 
   // Fetch lastUpdatedAt for every opened page in one query so the
   // composer prompt shows freshness on each page header.
@@ -552,7 +562,7 @@ ${schema}
 # System capabilities (what you can actually access right now — answer questions about yourself from this)
 ${capsBlock}
 
-${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
+${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
 ${recentLog || '(no recent activity logged)'}
 
 # Pages opened for this turn (intent=${plan.intent})

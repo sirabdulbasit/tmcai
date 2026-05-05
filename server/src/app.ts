@@ -18,6 +18,7 @@ import wikiRoutes from './routes/wikiRoutes';
 import draftsRoutes from './routes/draftsRoutes';
 import briefRoutes from './routes/briefRoutes';
 import brainAskRoutes from './routes/brainAskRoutes';
+import userPromptOverlayRoutes from './routes/userPromptOverlayRoutes';
 import authRoutes from './routes/authRoutes';
 import userAuthRoutes from './routes/userAuthRoutes';
 import conversationRoutes from './routes/conversationRoutes';
@@ -214,6 +215,7 @@ v1.use('/entities', entityRoutes);
 // Any new endpoint in either router must verify there's no path collision.
 v1.use('/brain', brainConfigRoutes);
 v1.use('/brain', brainAskRoutes);
+v1.use('/brain', userPromptOverlayRoutes);
 v1.use('/decisions', decisionsRoutes);
 v1.use('/thoughts', thoughtRoutes);
 v1.use('/developer', developerRouter);
