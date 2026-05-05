@@ -79,33 +79,69 @@ export interface ReasonerDecision {
   meetingIntent: boolean;
 }
 
-// ── Cache per dedup_hash ───────────────────────────────────────────
+// ── Cache per (dedupHash + content fingerprint) ────────────────────
+//
+// dedupHash alone is far too coarse — it only encodes
+// (userId, itemType, archetype, senderDomain, actionArchetype). Two
+// completely different emails from the same internal domain with the
+// same archetype (e.g. an L&OD course nudge vs a critical P1 rollout
+// email, both classified `reply_needed`, both `@tmcltd.ai`) would
+// share a cache entry and the second card would render the first
+// card's summary, draft target, and confidence. To preserve the "N
+// identical retries cost 1 LLM call" goal without leaking content
+// across distinct emails, the cache key now combines dedupHash with
+// a sha-256 of the actual email content (sender + subject + preview).
 interface CacheEntry { decision: ReasonerDecision; fetchedAt: number }
 const cache = new Map<string, CacheEntry>();
 const TTL_MS = 60 * 60 * 1000; // 1 hour
 
+function contentFingerprint(ctx: ReasonerContext): string {
+  const crypto = require('crypto') as typeof import('crypto');
+  const blob = [
+    ctx.fromEmail ?? '',
+    (ctx.subject ?? '').slice(0, 200),
+    (ctx.preview ?? '').slice(0, 400),
+  ].join('::');
+  return crypto.createHash('sha256').update(blob).digest('hex').slice(0, 16);
+}
+
+function buildCacheKey(dedupHash: string, ctx: ReasonerContext): string {
+  return `${dedupHash}::${contentFingerprint(ctx)}`;
+}
+
 export function invalidateReasonerCache(dedupHash?: string): void {
-  if (dedupHash) cache.delete(dedupHash);
-  else cache.clear();
+  if (dedupHash) {
+    // Clear every cache entry whose key starts with this dedupHash —
+    // we don't know the content fingerprint of every variant, so a
+    // prefix sweep is the safe move.
+    for (const k of cache.keys()) {
+      if (k.startsWith(`${dedupHash}::`) || k === dedupHash) cache.delete(k);
+    }
+  } else {
+    cache.clear();
+  }
 }
 
 /**
  * Main entry. Returns the full triage decision for one feed event.
- * Caches by dedupHash so N identical attention items cost 1 LLM call.
+ * Caches by (dedupHash + content fingerprint) so N identical retries
+ * of the same email share 1 LLM call, but two distinct emails that
+ * happen to share archetype/domain do not bleed into each other.
  */
 export async function reasonAboutEvent(
   dedupHash: string,
   ctx: ReasonerContext,
 ): Promise<ReasonerDecision> {
-  const cached = cache.get(dedupHash);
+  const cacheKey = buildCacheKey(dedupHash, ctx);
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < TTL_MS) return cached.decision;
 
   try {
     const decision = await llmReason(ctx);
-    cache.set(dedupHash, { decision, fetchedAt: Date.now() });
+    cache.set(cacheKey, { decision, fetchedAt: Date.now() });
     return decision;
   } catch (err: any) {
-    log.warn('LLM reasoning failed, using fallback', { dedupHash, error: err.message });
+    log.warn('LLM reasoning failed, using fallback', { dedupHash, cacheKey, error: err.message });
     return fallback(ctx);
   }
 }
