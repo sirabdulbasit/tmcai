@@ -9,7 +9,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../db/prisma';
 import crypto from 'crypto';
-import { buildAttentionList, buildHandledList, suggestForFeedEvent, computeDedupHash, type SuggestedAction, type ItemType, type Archetype } from '../services/triage/triageSuggester';
+import { buildAttentionList, buildHandledList, suggestForFeedEvent, computeDedupHash, invalidateTriageCache, clearTriageCache, type SuggestedAction, type ItemType, type Archetype } from '../services/triage/triageSuggester';
 
 const router = Router();
 
@@ -984,6 +984,12 @@ router.post('/decide', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'feedEventId, itemType, action required' });
   }
 
+  // Invalidate triage cache for this row — the user's decision shifts
+  // their history, which can change suggestions for similar pending
+  // items. We only invalidate this single row; broader pattern shifts
+  // catch up on the 10-min TTL.
+  invalidateTriageCache(feedEventId);
+
   // Load the feed_event so we can enrich the audit row + re-run the
   // classifier to derive the canonical dedup_hash. This MUST match what the
   // autonomous executor computes — otherwise the MD's decisions and Brain's
@@ -1498,6 +1504,10 @@ router.post('/hide', async (req: Request, res: Response) => {
     update: { reason: reason ?? null } as any,
     create: { userId: user.id, clientNumber: user.clientNumber, source: 'decision', dedupHash, reason: reason ?? null } as any,
   });
+  // Hide affects every event with this dedup_hash; can't invalidate
+  // selectively without scanning. Cheaper to flush the whole cache —
+  // it'll rebuild over the next minute as items get re-triaged.
+  clearTriageCache();
   res.json({ ok: true });
 });
 
@@ -1508,6 +1518,7 @@ router.post('/unhide', async (req: Request, res: Response) => {
   await prisma.patternHidden.deleteMany({
     where: { userId: user.id, source: 'decision', dedupHash },
   });
+  clearTriageCache();
   res.json({ ok: true });
 });
 

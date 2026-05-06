@@ -253,7 +253,67 @@ async function historyDrivenSuggestion(
   return { action: top, confidence, n: total, delegatee };
 }
 
+// In-memory cache for triage results. Keyed by feed_event_id; value is
+// the full AttentionItem the suggester returned. Survives multiple
+// /brief/attention requests within the same Node process. Cleared on
+// boot (restart = warm cache rebuilds).
+//
+// Invalidation strategy:
+//   - TTL: 10 min — caps how stale a cached suggestion can be (history
+//     shifts as user decides on similar items)
+//   - explicit clear when decision_log writes (called from /brief/decide)
+//   - explicit clear when pattern_hidden writes (called from /brief/hide)
+//
+// Cache hit avoids: archetype classify + history lookup + criticality
+// scoring (5 dimension calls) + rule gate eval. Big savings — first
+// page load is ~11s for haseeb's 200 candidates; second load (warm
+// cache) drops to ~1s because almost every row hits.
+const TRIAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const triageCache = new Map<string, { value: AttentionItem; expires: number }>();
+// Bound the cache so a busy tenant doesn't blow heap. LRU-ish — when
+// over limit we drop the oldest 20% in one sweep.
+const TRIAGE_CACHE_MAX = 5000;
+
+export function invalidateTriageCache(feedEventId: string): void {
+  triageCache.delete(feedEventId);
+}
+
+export function clearTriageCache(): void {
+  triageCache.clear();
+}
+
+// Public entrypoint — returns cached result if available, otherwise
+// runs the full pipeline and caches.
 export async function suggestForFeedEvent(row: {
+  id: string;
+  clientNumber: string;
+  userId: number;
+  sourceType: string;
+  senderEmail: string | null;
+  senderName: string | null;
+  rawPayload: Record<string, unknown> | null;
+  createdAt: Date;
+}): Promise<AttentionItem> {
+  const cached = triageCache.get(row.id);
+  if (cached && cached.expires > Date.now()) {
+    return cached.value;
+  }
+  const result = await _doTriage(row);
+  // Cap cache size — drop oldest entries first.
+  if (triageCache.size >= TRIAGE_CACHE_MAX) {
+    const toDelete = Math.floor(TRIAGE_CACHE_MAX * 0.2);
+    let i = 0;
+    for (const key of triageCache.keys()) {
+      if (i >= toDelete) break;
+      triageCache.delete(key);
+      i++;
+    }
+  }
+  triageCache.set(row.id, { value: result, expires: Date.now() + TRIAGE_CACHE_TTL_MS });
+  return result;
+}
+
+async function _doTriage(row: {
   id: string;
   clientNumber: string;
   userId: number;
