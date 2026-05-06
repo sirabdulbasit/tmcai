@@ -77,11 +77,11 @@ async function main() {
   // 4. Hidden patterns
   const hidden = await prisma.patternHidden.findMany({
     where: { clientNumber: user.clientNumber, userId: user.id, source: 'decision' } as any,
-    select: { dedupHash: true, createdAt: true } as any,
+    select: { dedupHash: true, hiddenAt: true, reason: true } as any,
   });
   console.log(`[4] pattern_hidden rows for this user:                    ${hidden.length}`);
   if (hidden.length > 0) {
-    const recent = hidden.slice(-5).map((h: any) => `${h.dedupHash.slice(0, 12)}@${h.createdAt.toISOString()}`);
+    const recent = (hidden as any[]).slice(-5).map((h: any) => `${h.dedupHash.slice(0, 12)}@${new Date(h.hiddenAt).toISOString()} (${h.reason ?? '—'})`);
     console.log(`    most recent: ${recent.join(', ')}`);
   }
 
