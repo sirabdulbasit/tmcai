@@ -255,6 +255,71 @@ function FirstTimeWalkthroughBanner({ navigate }) {
   );
 }
 
+/**
+ * BrokenConnectorBanner — loud red banner for connectors that are
+ * STORED as connected but actually failing (refresh token revoked,
+ * invalid_grant, etc). Without this the user sees "Tasks: 0,
+ * Emails: 17" for days and assumes Brain is doing its job, when in
+ * reality the upstream connection is dead.
+ *
+ * Drives off /brief/connector-gaps `broken` array. Each entry has a
+ * slug + readable error + when-it-broke. One-click reconnect routes
+ * to the Connectors page with the affected slug pre-highlighted so
+ * the user can click "Reconnect" without hunting.
+ */
+function BrokenConnectorBanner({ broken, onReconnect }) {
+  if (!broken || broken.length === 0) return null;
+  return (
+    <div
+      style={{
+        background: 'linear-gradient(90deg, rgba(239,68,68,0.18), rgba(239,68,68,0.04))',
+        border: '1px solid rgba(239,68,68,0.45)',
+        borderRadius: 12,
+        padding: 'var(--s-4)',
+        marginBottom: 'var(--s-5)',
+      }}
+    >
+      <div style={{ display: 'flex', gap: 'var(--s-3)', alignItems: 'flex-start' }}>
+        <div style={{ fontSize: 22, lineHeight: 1 }}>⚠️</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 600, color: '#fca5a5' }}>
+            {broken.length === 1 ? '1 connection is broken.' : `${broken.length} connections are broken.`}
+          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', marginTop: 2 }}>
+            Brain isn't getting fresh data from these channels. Counts you see (Emails / Tasks / Calendar) are stale until you reconnect.
+          </div>
+          <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 'var(--s-2)' }}>
+            {broken.map((b) => (
+              <div key={b.slug} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                gap: 'var(--s-3)', padding: 'var(--s-2) var(--s-3)',
+                background: 'rgba(255,255,255,0.03)', borderRadius: 8,
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 'var(--fs-sm)' }}>{b.name || b.slug}</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', marginTop: 2 }}>
+                    {/invalid_grant/i.test(b.error)
+                      ? 'Token revoked or expired (Google rotates Testing-mode tokens every 7 days). Reconnect to issue a fresh one.'
+                      : b.error}
+                    {b.since && (
+                      <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>
+                        · since {new Date(b.since).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <Button variant="primary" size="sm" onClick={() => onReconnect(b.slug)}>
+                  Reconnect
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConnectorGapBanner({ gaps, onConnect }) {
   if (!gaps || !gaps.gaps || gaps.gaps.length === 0) return null;
   const required = gaps.gaps.filter((g) => g.required);
@@ -605,6 +670,12 @@ export default function DayBriefPage() {
 
       {/* ── First-time walkthrough banner — shown once until visited. ─ */}
       <FirstTimeWalkthroughBanner navigate={navigate} />
+
+      {/* ── Broken connectors (loud red, action required) ───── */}
+      <BrokenConnectorBanner
+        broken={gaps?.broken ?? []}
+        onReconnect={(slug) => navigate(`/connectors?highlight=${encodeURIComponent(slug || '')}&action=reconnect`)}
+      />
 
       {/* ── Connector gaps (Brain-voice onboarding) ─────────── */}
       <ConnectorGapBanner

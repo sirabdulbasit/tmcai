@@ -157,6 +157,25 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
             console.log(`[Integration] UserConnector token refreshed for user ${userId}`);
           } catch (err: any) {
             console.error(`[Integration] UserConnector token refresh failed for user ${userId}:`, err.message);
+            // Mark the connector as broken so the UI can render an
+            // error badge + "Reconnect" CTA. Without this, the user
+            // sees "Connected · Last sync: <date>" forever even
+            // though every API call is failing — which is exactly
+            // the silent-failure mode the user flagged on
+            // 2026-05-07. We also stash the error reason in metadata
+            // so the banner can explain WHY (invalid_grant vs
+            // network etc).
+            await prisma.userConnector.update({
+              where: { id: userConnector.id },
+              data: {
+                status: 'error' as any,
+                metadata: {
+                  ...((userConnector.metadata as Record<string, unknown> | null) ?? {}),
+                  lastRefreshError: String(err?.message ?? 'token refresh failed'),
+                  lastRefreshErrorAt: new Date().toISOString(),
+                } as any,
+              },
+            }).catch(() => { /* keep state best-effort; never throw from auth path */ });
           }
         }
 

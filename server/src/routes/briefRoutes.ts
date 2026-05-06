@@ -796,10 +796,32 @@ router.get('/connector-gaps', async (req: Request, res: Response) => {
       .map((g) => ({ ...g, satisfied: g.options.some((o) => slugs.has(o.slug)) }))
       .filter((g) => !g.satisfied);
 
+    // Broken connectors: status='error' OR a recent token-refresh
+    // failure stamped in metadata. These look "connected" by the
+    // legacy slug check above (they were once valid) but can no
+    // longer call upstream. Surface them so the user has a path
+    // to reconnect — without this, Day Brief silently shows zeros
+    // for the broken channel.
+    const broken = rows
+      .filter((c) => {
+        const m: any = c.metadata ?? {};
+        return c.status === 'error' || !!m?.lastRefreshError;
+      })
+      .map((c) => {
+        const m: any = c.metadata ?? {};
+        return {
+          slug: c.connectorType.slug,
+          name: c.connectorType.name,
+          error: String(m?.lastRefreshError ?? 'connection error'),
+          since: m?.lastRefreshErrorAt ?? null,
+        };
+      });
+
     res.json({
       connectedCount: connected.length,
       totalConnected: slugs.size,
       gaps,
+      broken,
       hasAnyFeed: slugs.size > 0,
     });
   } catch (err: any) {
