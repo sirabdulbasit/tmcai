@@ -157,25 +157,46 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
             console.log(`[Integration] UserConnector token refreshed for user ${userId}`);
           } catch (err: any) {
             console.error(`[Integration] UserConnector token refresh failed for user ${userId}:`, err.message);
-            // Mark the connector as broken so the UI can render an
-            // error badge + "Reconnect" CTA. Without this, the user
-            // sees "Connected · Last sync: <date>" forever even
-            // though every API call is failing — which is exactly
-            // the silent-failure mode the user flagged on
-            // 2026-05-07. We also stash the error reason in metadata
-            // so the banner can explain WHY (invalid_grant vs
-            // network etc).
-            await prisma.userConnector.update({
-              where: { id: userConnector.id },
+            // Mark ALL the user's Google connector rows as broken,
+            // not just the one we happened to look up first. They
+            // all share the same OAuth token (see line 105 — Gmail,
+            // Calendar, Tasks, Chat, Drive read from the same
+            // userConnector row's config). When the refresh fails,
+            // every Google channel is dead, so every row should
+            // reflect that. Without this updateMany, the user sees
+            // ONE channel marked broken (whichever happened to
+            // trigger the refresh first) and the others stuck
+            // showing "Connected" — exactly what the user flagged
+            // on the connectors page.
+            const errorMessage = String(err?.message ?? 'token refresh failed');
+            const erroredAt = new Date().toISOString();
+            const allGoogleTypeIds = googleConnectorTypes.map((ct) => ct.id);
+            await prisma.userConnector.updateMany({
+              where: {
+                userId,
+                connectorTypeId: { in: allGoogleTypeIds },
+              },
               data: {
                 status: 'error' as any,
-                metadata: {
-                  ...((userConnector.metadata as Record<string, unknown> | null) ?? {}),
-                  lastRefreshError: String(err?.message ?? 'token refresh failed'),
-                  lastRefreshErrorAt: new Date().toISOString(),
-                } as any,
               },
-            }).catch(() => { /* keep state best-effort; never throw from auth path */ });
+            }).catch(() => { /* best effort */ });
+            // updateMany can't merge JSON metadata, so loop for that.
+            const allRows = await prisma.userConnector.findMany({
+              where: { userId, connectorTypeId: { in: allGoogleTypeIds } },
+              select: { id: true, metadata: true },
+            }).catch(() => [] as Array<{ id: string; metadata: unknown }>);
+            for (const row of allRows) {
+              await prisma.userConnector.update({
+                where: { id: row.id },
+                data: {
+                  metadata: {
+                    ...((row.metadata as Record<string, unknown> | null) ?? {}),
+                    lastRefreshError: errorMessage,
+                    lastRefreshErrorAt: erroredAt,
+                  } as any,
+                },
+              }).catch(() => { /* best effort */ });
+            }
           }
         }
 
