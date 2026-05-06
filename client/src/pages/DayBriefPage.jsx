@@ -2470,17 +2470,36 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide }) {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <Button
-        variant="ghost"
-        size="sm"
+      <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
-        title="More actions"
+        title="See all actions Brain can take — choose what to do here"
         aria-label="More actions"
         aria-expanded={open}
         disabled={busy}
+        style={{
+          // Was a ghost Button — invisible against the dark card. Made
+          // it a distinct outlined pill so the user sees it as the
+          // "give me other options" affordance, not page chrome.
+          padding: '6px 12px',
+          borderRadius: 'var(--r-md)',
+          border: '1px solid var(--accent)',
+          background: open ? 'var(--accent)' : 'transparent',
+          color: open ? '#fff' : 'var(--accent)',
+          fontSize: 'var(--fs-sm)',
+          fontWeight: 600,
+          cursor: busy ? 'not-allowed' : 'pointer',
+          opacity: busy ? 0.5 : 1,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          whiteSpace: 'nowrap',
+          transition: 'all 0.15s',
+        }}
       >
-        ⋮ More
-      </Button>
+        <span style={{ fontSize: 14, lineHeight: 1 }}>⋮</span>
+        <span>More options</span>
+      </button>
       {open && (
         <div style={{
           position: 'absolute', right: 0, top: 'calc(100% + 4px)',
