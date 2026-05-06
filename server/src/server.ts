@@ -581,6 +581,24 @@ const server = app.listen(env.port, async () => {
     }
   }, 15 * 60 * 1000);
 
+  // MyOS — Google Chat poller every 20 min. Same pattern as gtasks
+  // but using user OAuth (NOT the bot connector). Reads messages from
+  // every space the user can access and ingests into feed_events
+  // (sourceType='gchat'). Lookback 24h per tick. Fails open per-user.
+  setInterval(async () => {
+    try {
+      const { pollAllActiveChatUsers } = await import('./jobs/gchatFeedPoller');
+      const r = await pollAllActiveChatUsers();
+      const ingested = r.reduce((s, x) => s + x.ingested, 0);
+      const errors = r.reduce((s, x) => s + x.errors, 0);
+      if (ingested > 0 || errors > 0) {
+        console.log(`[gchatPoll] users=${r.length} ingested=${ingested} errors=${errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[gchatPoll] error:', err.message);
+    }
+  }, 20 * 60 * 1000);
+
   // MyOS — Notion mirror every 10 min. Pushes postgres-backed wiki pages to
   // Notion for users with a connected Notion connector. Graceful no-op when
   // no connector is present.

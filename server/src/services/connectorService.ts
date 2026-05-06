@@ -623,6 +623,14 @@ export async function getOAuthUrl(
         'https://www.googleapis.com/auth/calendar.events',
         'https://www.googleapis.com/auth/tasks',
         'https://www.googleapis.com/auth/drive.readonly',
+        // Google Chat — read user's spaces + recent messages so the chat
+        // poller can pull DMs/spaces into Day Brief alongside email,
+        // calendar, and tasks. Note: chat.messages.readonly only returns
+        // messages from spaces where the calling app/user is a member;
+        // workspace admin may need to enable the app per space for full
+        // coverage. Fails open if denied.
+        'https://www.googleapis.com/auth/chat.spaces.readonly',
+        'https://www.googleapis.com/auth/chat.messages.readonly',
         // People API — powers the DelegateePicker's search across the user's
         // Google Contacts + Workspace directory. Without this, the picker
         // falls back to DB-only (MyOS users + scribed contacts + history).

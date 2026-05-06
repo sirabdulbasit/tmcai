@@ -862,7 +862,7 @@ router.post('/warm-up-brain', async (req: Request, res: Response) => {
 router.post('/sync-now', async (req: Request, res: Response) => {
   const user = (req as any).user;
   try {
-    const [genericResult, gcalResult, gtasksResult] = await Promise.all([
+    const [genericResult, gcalResult, gtasksResult, gchatResult] = await Promise.all([
       (async () => {
         const { pollAllTenants } = await import('../jobs/genericFeedPoller');
         const all = await pollAllTenants();
@@ -882,12 +882,20 @@ router.post('/sync-now', async (req: Request, res: Response) => {
         const all = await pollAllActiveTasksUsers();
         return all.find((r) => r.userId === user.id) ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 };
       })(),
+      // Google Chat — same idea: pull recent messages from spaces this
+      // user can read.
+      (async () => {
+        const { pollAllActiveChatUsers } = await import('../jobs/gchatFeedPoller');
+        const all = await pollAllActiveChatUsers();
+        return all.find((r) => r.userId === user.id) ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 };
+      })(),
     ]);
     res.json({
       ok: true,
       gmail: genericResult,
       gcal: gcalResult,
       gtasks: gtasksResult,
+      gchat: gchatResult,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

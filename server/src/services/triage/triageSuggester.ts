@@ -266,6 +266,7 @@ export async function suggestForFeedEvent(row: {
   const itemType: ItemType =
     row.sourceType === 'gmail' ? 'email' :
     row.sourceType === 'whatsapp' ? 'whatsapp' :
+    row.sourceType === 'gchat' ? 'whatsapp' :  // Google Chat shares the WhatsApp tab — both are real-time chat
     row.sourceType === 'gcal' ? 'meeting' :
     row.sourceType === 'gtasks' ? 'task' : 'email';
 
@@ -915,7 +916,7 @@ export async function buildAttentionList(
     prisma.feedEvent.findMany({
       where: {
         clientNumber, userId,
-        sourceType: { in: ['gmail', 'whatsapp', 'gtasks'] as any },
+        sourceType: { in: ['gmail', 'whatsapp', 'gchat', 'gtasks'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
@@ -1196,7 +1197,7 @@ export async function buildHandledList(
     prisma.feedEvent.findMany({
       where: {
         clientNumber, userId,
-        sourceType: { in: ['gmail', 'whatsapp', 'gtasks'] as any },
+        sourceType: { in: ['gmail', 'whatsapp', 'gchat', 'gtasks'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
