@@ -137,11 +137,22 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
     : 0;
 
   // ─── v2 aggregates (cheap counters; Brain enriches them over time) ───
-  // Headline Email count = live Gmail unread-in-inbox (matches what Gmail UI
-  // shows the MD in his own account). The total-received-today number stays
-  // available as `emailsReceivedToday` for the subtitle.
+  // Headline Email count = number of Gmail feed_events Brain has ingested
+  // in the last 24h. We deliberately don't call Gmail API live here:
+  //   - DB-first means the page paints consistent numbers regardless of
+  //     OAuth state (token expiry no longer drops the count to 0)
+  //   - Matches the same source as My Attention + Brief sections, so the
+  //     "100% accountability" math always balances
+  //   - feed_events is the single source of truth Brain reasons over;
+  //     surfacing anything else creates the "0 emails but 33 attention
+  //     items" mismatch we hit on 2026-05-07.
+  // Gmail upstream still feeds feed_events via genericFeedPoller every
+  // 2 min — we just stopped reading from Gmail synchronously on every
+  // page load.
   const gmailUnreadLive = hasGmail
-    ? await import('../gmailService').then((m) => m.getUnreadCount(userId)).then((r) => r.count).catch(() => 0)
+    ? await prisma.feedEvent.count({
+        where: { clientNumber, userId, sourceType: 'gmail', createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } as any,
+      }).catch(() => 0)
     : 0;
   const [emailsReceivedToday, emailsNeedYou, whatsappHandled, whatsappNeedYou, drafts, promotions, handledAlone, neededUser, tasksOpen, tasksDueToday] = await Promise.all([
     hasGmail
@@ -195,9 +206,10 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
     riskItems: risks.map((r) => ({ actionId: r.id, actionType: r.actionType, riskTier: r.riskTier ?? 'HIGH' })),
     meetingsToday,
     volume: {
-      // Headline matches Gmail's unread-in-inbox count so the tile lines up
-      // with what the MD sees in his own Gmail. Total received stays below as
-      // context.
+      // Headline now = Gmail feed_events Brain has ingested in the last 24h.
+      // DB-first read (see comment on `gmailUnreadLive` above): always
+      // consistent with what My Attention + Brief draw from. No more
+      // silent-zero when an OAuth token blips.
       emailsHandled: gmailUnreadLive,
       emailsNeedYou,
       emailsUrgent: Math.min(emailsNeedYou, risks.length),

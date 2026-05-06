@@ -493,7 +493,12 @@ export default function DayBriefPage() {
     return { draftsByFeedEventId: byEvent, orphanDrafts: orphans };
   }, [drafts, attention]);
 
-  const emailsUnread = volume?.emailsHandled ?? 0;
+  // emailsToday is the count of Gmail feed_events Brain has ingested in the
+  // last 24h. Renamed from emailsUnread on 2026-05-07 when we switched the
+  // headline source from "live Gmail unread" to "DB ingested" — see
+  // morningBriefService.ts. The number now matches what Brain reasons
+  // over in My Attention + Brief, so the page math always balances.
+  const emailsToday = volume?.emailsHandled ?? 0;
   const emailsRecv = volume?.emailsReceivedToday ?? 0;
   const tasksOpen = volume?.tasksOpen ?? 0;
   const tasksDue = volume?.tasksDueToday ?? 0;
@@ -544,7 +549,7 @@ export default function DayBriefPage() {
 
       {/* ── Volume strip ────────────────────────────────────── */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
-        <MiniStat icon="mail"           label="Emails unread"   big={emailsUnread}        sub={emailsRecv > 0 ? `${emailsRecv} today · live` : 'live'} />
+        <MiniStat icon="mail"           label="Emails today"    big={emailsToday}         sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'in last 24h'} />
         <MiniStat
           icon="message-circle"
           label="WhatsApp today"
