@@ -138,22 +138,23 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
 
   // ─── v2 aggregates (cheap counters; Brain enriches them over time) ───
   // Headline Email count = number of Gmail feed_events Brain has ingested
-  // in the last 24h. We deliberately don't call Gmail API live here:
+  // in the last 7 days. We deliberately don't call Gmail API live here:
   //   - DB-first means the page paints consistent numbers regardless of
   //     OAuth state (token expiry no longer drops the count to 0)
-  //   - Matches the same source as My Attention + Brief sections, so the
-  //     "100% accountability" math always balances
-  //   - feed_events is the single source of truth Brain reasons over;
-  //     surfacing anything else creates the "0 emails but 33 attention
-  //     items" mismatch we hit on 2026-05-07.
-  // Gmail upstream still feeds feed_events via genericFeedPoller every
-  // 2 min — we just stopped reading from Gmail synchronously on every
-  // page load.
-  const gmailUnreadLive = hasGmail
-    ? await prisma.feedEvent.count({
-        where: { clientNumber, userId, sourceType: 'gmail', createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } as any,
-      }).catch(() => 0)
-    : 0;
+  //   - Matches the same window as My Attention + Brief, so the
+  //     "100% accountability" math balances
+  //   - feed_events is the single source of truth Brain reasons over
+  //
+  // Note: NOT gated on hasGmail. Even if the connector is currently
+  // disconnected, the DB still holds whatever Brain ingested before —
+  // showing 0 because of a token blip would defeat the purpose of
+  // moving away from Gmail-API-live. Gmail upstream still feeds
+  // feed_events via genericFeedPoller every 2 min; we just stopped
+  // reading from Gmail synchronously on the page-load path.
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const gmailUnreadLive = await prisma.feedEvent.count({
+    where: { clientNumber, userId, sourceType: 'gmail', createdAt: { gte: sevenDaysAgo } } as any,
+  }).catch(() => 0);
   const [emailsReceivedToday, emailsNeedYou, whatsappHandled, whatsappNeedYou, drafts, promotions, handledAlone, neededUser, tasksOpen, tasksDueToday] = await Promise.all([
     hasGmail
       ? prisma.feedEvent.count({ where: { clientNumber, userId, sourceType: 'gmail', createdAt: { gte: today0 } } as any }).catch(() => 0)
