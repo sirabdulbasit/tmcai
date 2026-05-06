@@ -459,12 +459,44 @@ export default function DayBriefPage() {
   const dateStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-  // Flat, date-sorted attention list. Order:
-  //   1. Critical items (known high-value entities) — always on top
-  //   2. Regular items — newest first
-  //   3. Noise (bulk/newsletter/auto) — bottom, collapsed by default
+  // ─── My Attention tabs ─────────────────────────────────────────────
+  // Segregate by source so the user can focus on one channel at a time.
+  // Tabs: All / Email / WhatsApp / Calendar / Tasks / Risks. Each shows
+  // its count. "Risks" pulls every critical item across types, so a
+  // critical email shows in BOTH the Email tab and the Risks tab. Tasks
+  // currently come from feed_events sourceType='gtasks' (typed 'task'
+  // by triage); when Open Items get surfaced into Attention this tab
+  // will also include those.
+  const [attentionTab, setAttentionTab] = useState('all');
+
+  const attentionCounts = useMemo(() => ({
+    all: attention.length,
+    email: attention.filter((x) => x.itemType === 'email').length,
+    whatsapp: attention.filter((x) => x.itemType === 'whatsapp').length,
+    meeting: attention.filter((x) => x.itemType === 'meeting').length,
+    task: attention.filter((x) => x.itemType === 'task').length,
+    risks: attention.filter((x) => x.critical && !x.noise).length,
+  }), [attention]);
+
+  // Filter the attention list down to the active tab. "All" shows
+  // everything; "Risks" is a cross-cutting view; the rest are itemType
+  // matches.
+  const visibleAttention = useMemo(() => {
+    switch (attentionTab) {
+      case 'email': return attention.filter((x) => x.itemType === 'email');
+      case 'whatsapp': return attention.filter((x) => x.itemType === 'whatsapp');
+      case 'meeting': return attention.filter((x) => x.itemType === 'meeting');
+      case 'task': return attention.filter((x) => x.itemType === 'task');
+      case 'risks': return attention.filter((x) => x.critical && !x.noise);
+      default: return attention;
+    }
+  }, [attention, attentionTab]);
+
+  // Within each tab, keep the existing critical/regular/noise sub-buckets
+  // so high-signal items still float to the top. Risks tab skips the
+  // sub-bucketing since every item is already critical.
   const { critical: attentionCritical, regular: attentionRegular, noise: attentionNoise } = useMemo(() => {
-    const byTime = [...attention].sort((a, b) =>
+    const byTime = [...visibleAttention].sort((a, b) =>
       new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
     );
     return {
@@ -472,7 +504,7 @@ export default function DayBriefPage() {
       regular: byTime.filter((x) => !x.critical && !x.noise),
       noise: byTime.filter((x) => x.noise),
     };
-  }, [attention]);
+  }, [visibleAttention]);
 
   // Drafts keyed by feedEventId — lets each AttentionCard render its own
   // pending drafts inline below. Orphan drafts (no matching attention card,
@@ -604,30 +636,50 @@ export default function DayBriefPage() {
           <Empty title="All clear">Inbox, chat, calendar queue is empty.</Empty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-            {attentionCritical.length > 0 && (
+            {/* Tab bar — segregate Attention by channel, with counts */}
+            <AttentionTabs
+              counts={attentionCounts}
+              active={attentionTab}
+              onChange={setAttentionTab}
+            />
+            {visibleAttention.length === 0 ? (
+              <Empty title={`No ${attentionTab === 'all' ? 'items' : attentionTab} need you`}>
+                {attentionTab === 'risks'
+                  ? 'No critical items right now.'
+                  : 'Switch tabs above to see what does.'}
+              </Empty>
+            ) : (
               <>
-                <div style={{ fontSize: 'var(--fs-xs)', color: '#ef4444', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 'var(--s-2)' }}>
-                  🔴 Critical · {attentionCritical.length}
-                </div>
-                {attentionCritical.map((item) => (
+                {attentionCritical.length > 0 && attentionTab !== 'risks' && (
+                  <>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: '#ef4444', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 'var(--s-2)' }}>
+                      🔴 Critical · {attentionCritical.length}
+                    </div>
+                    {attentionCritical.map((item) => (
+                      <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
+                    ))}
+                  </>
+                )}
+                {/* Risks tab: show ALL critical items flat (no sub-bucketing) */}
+                {attentionTab === 'risks' && attentionCritical.map((item) => (
                   <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
                 ))}
+                {attentionTab !== 'risks' && attentionRegular.map((item) => (
+                  <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
+                ))}
+                {attentionTab !== 'risks' && attentionNoise.length > 0 && (
+                  <details style={{ marginTop: 'var(--s-3)' }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: 'var(--s-2) 0' }}>
+                      Low priority · {attentionNoise.length} (newsletters, notifications)
+                    </summary>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)', marginTop: 'var(--s-2)' }}>
+                      {attentionNoise.map((item) => (
+                        <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
+                      ))}
+                    </div>
+                  </details>
+                )}
               </>
-            )}
-            {attentionRegular.map((item) => (
-              <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
-            ))}
-            {attentionNoise.length > 0 && (
-              <details style={{ marginTop: 'var(--s-3)' }}>
-                <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', padding: 'var(--s-2) 0' }}>
-                  Low priority · {attentionNoise.length} (newsletters, notifications)
-                </summary>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)', marginTop: 'var(--s-2)' }}>
-                  {attentionNoise.map((item) => (
-                    <AttentionCard key={item.feedEventId} item={item} onDecided={load} notify={notify} drafts={draftsByFeedEventId.get(item.feedEventId) || []} />
-                  ))}
-                </div>
-              </details>
             )}
           </div>
         )}
@@ -1013,6 +1065,90 @@ function fmtRelTime(d) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return d.toLocaleString();
+}
+
+/**
+ * AttentionTabs — channel-based filter row above the My Attention list.
+ *
+ * Six tabs: All / Email / WhatsApp / Calendar / Tasks / Risks. Each shows
+ * its count from `counts` (computed once in the parent so we don't
+ * re-derive on every render). The "Risks" tab is cross-cutting — it
+ * shows every critical item across all itemTypes, so a critical email
+ * appears in BOTH the Email tab and the Risks tab.
+ *
+ * Tabs with a count of zero stay visible but greyed out — the user
+ * still sees the channel exists, just empty right now. This is more
+ * useful than collapsing them (no surprises about "where's my Tasks
+ * tab?").
+ */
+function AttentionTabs({ counts, active, onChange }) {
+  const TABS = [
+    { id: 'all',       label: 'All',       icon: '📥' },
+    { id: 'email',     label: 'Email',     icon: '📧' },
+    { id: 'whatsapp',  label: 'WhatsApp',  icon: '💬' },
+    { id: 'meeting',   label: 'Calendar',  icon: '📅' },
+    { id: 'task',      label: 'Tasks',     icon: '✓' },
+    { id: 'risks',     label: 'Risks',     icon: '🔴' },
+  ];
+  return (
+    <div style={{
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap',
+      marginBottom: 'var(--s-2)',
+      paddingBottom: 'var(--s-2)',
+      borderBottom: '1px solid var(--border)',
+    }}>
+      {TABS.map((tab) => {
+        const isActive = active === tab.id;
+        const count = counts[tab.id] ?? 0;
+        const isEmpty = count === 0;
+        const isRisks = tab.id === 'risks';
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => onChange(tab.id)}
+            disabled={isEmpty && !isActive}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 'var(--r-md)',
+              border: '1px solid',
+              borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+              background: isActive
+                ? (isRisks ? 'rgba(239, 68, 68, 0.15)' : 'rgba(214, 109, 60, 0.15)')
+                : 'transparent',
+              color: isEmpty && !isActive
+                ? 'var(--text-muted)'
+                : (isRisks && isActive ? '#ef4444' : 'var(--text)'),
+              fontSize: 'var(--fs-sm)',
+              fontWeight: isActive ? 600 : 400,
+              cursor: isEmpty && !isActive ? 'default' : 'pointer',
+              opacity: isEmpty && !isActive ? 0.5 : 1,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              transition: 'all 0.15s',
+            }}
+          >
+            <span>{tab.icon}</span>
+            <span>{tab.label}</span>
+            <span style={{
+              fontSize: 'var(--fs-xs)',
+              padding: '1px 6px',
+              borderRadius: 999,
+              background: isActive ? 'rgba(0,0,0,0.2)' : 'var(--bg-2, rgba(255,255,255,0.05))',
+              color: 'inherit',
+              minWidth: 18,
+              textAlign: 'center',
+            }}>
+              {count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function MiniStat({ icon, label, big, sub, highlight }) {
