@@ -887,6 +887,13 @@ export async function buildAttentionList(
   // a flood of month-old rows (current behaviour). We over-fetch here
   // and filter on the source-native timestamp in JS below.
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  // Hard ceiling on rows we ever try to triage in one request. With a
+  // wide ATTENTION_WINDOW_DAYS (e.g. 30 on dev) the over-fetch ceiling
+  // can climb into the thousands; running suggestForFeedEvent over
+  // 1000+ rows in parallel exhausts heap (4GB OOM observed on
+  // 2026-05-07). Cap protects steady-state regardless of window
+  // width.
+  const MAX_CANDIDATES = 200;
   const rows = await prisma.feedEvent.findMany({
     where: {
       clientNumber,
@@ -896,7 +903,7 @@ export async function buildAttentionList(
     } as any,
     select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
-    take: limit * 10, // over-fetch — most rows will be filtered out by the 7-day event-date filter
+    take: Math.min(limit * 10, MAX_CANDIDATES * 3),
   });
 
   // Drop events whose dedup_hash has been hidden by this user.
@@ -909,32 +916,39 @@ export async function buildAttentionList(
 
   // Filter:
   //  1. Drop already-decided rows (no point running LLM on them).
-  //  2. Drop rows whose source-native timestamp is older than the 7-day
-  //     attention window. Without this, historical scribe ingests every
-  //     row with createdAt=now() and floods My Attention with month-old
-  //     mail.
-  const candidates = rows.filter((r) => {
+  //  2. Drop rows whose source-native timestamp is older than the
+  //     ATTENTION_WINDOW_DAYS window.
+  //  3. Cap total candidates (keep newest by event date).
+  const eligible = rows.filter((r) => {
     if (decidedSet.has(r.id)) return false;
     const eventDate = extractEventOccurredAt(r);
     return eventDate >= sevenDaysAgo;
   });
+  const candidates = eligible.slice(0, MAX_CANDIDATES);
 
-  // Run suggestForFeedEvent in PARALLEL across candidates. Each call does
-  // 5+ DB reads (entity, decisions, delegations, open items, wiki, org
-  // snapshot) — serializing them meant Day Brief load grew linearly with
-  // attention count. Promise.all cuts that to the slowest single row.
-  const suggestions = await Promise.all(candidates.map((r) =>
-    suggestForFeedEvent({
-      id: r.id,
-      clientNumber: r.clientNumber,
-      userId: r.userId ?? userId,
-      sourceType: r.sourceType,
-      senderEmail: r.senderEmail,
-      senderName: r.senderName,
-      rawPayload: r.rawPayload as Record<string, unknown> | null,
-      createdAt: r.createdAt,
-    }).catch(() => null),
-  ));
+  // Run suggestForFeedEvent in PARALLEL across candidates — but in
+  // batches to keep memory bounded. With wide windows + heavy
+  // payloads, unbounded Promise.all OOMs the V8 heap; batching
+  // 25-at-a-time keeps the working set small while preserving most
+  // of the parallelism benefit.
+  const BATCH_SIZE = 25;
+  const suggestions: Array<AttentionItem | null> = [];
+  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+    const batch = candidates.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map((r) =>
+      suggestForFeedEvent({
+        id: r.id,
+        clientNumber: r.clientNumber,
+        userId: r.userId ?? userId,
+        sourceType: r.sourceType,
+        senderEmail: r.senderEmail,
+        senderName: r.senderName,
+        rawPayload: r.rawPayload as Record<string, unknown> | null,
+        createdAt: r.createdAt,
+      }).catch(() => null as AttentionItem | null),
+    ));
+    suggestions.push(...batchResults);
+  }
 
   const items: AttentionItem[] = [];
   for (const item of suggestions) {
@@ -1138,6 +1152,10 @@ export async function buildHandledList(
   // balances. The 90-day SQL window catches historical-scribe rows that
   // wrote createdAt=now() for old emails; the source-native filter trims
   // them back to a true 7-day attention window.
+  // Hard ceiling on rows triaged in one request — same OOM-protection
+  // as buildAttentionList. Wide ATTENTION_WINDOW_DAYS would otherwise
+  // pull thousands of rows through Promise.all and exhaust V8 heap.
+  const MAX_HANDLED_CANDIDATES = 200;
   const rows = await prisma.feedEvent.findMany({
     where: {
       clientNumber,
@@ -1147,28 +1165,34 @@ export async function buildHandledList(
     } as any,
     select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
-    take: limit * 10,
+    take: Math.min(limit * 10, MAX_HANDLED_CANDIDATES * 3),
   });
 
-  const candidates = rows.filter((r) => {
+  const eligible = rows.filter((r) => {
     const eventDate = extractEventOccurredAt(r);
     return eventDate >= sevenDaysAgo;
   });
+  const candidates = eligible.slice(0, MAX_HANDLED_CANDIDATES);
 
-  // Run the same triage suggestForFeedEvent over each. We KEEP what
-  // buildAttentionList drops; we DROP what it keeps.
-  const suggestions = await Promise.all(candidates.map((r) =>
-    suggestForFeedEvent({
-      id: r.id,
-      clientNumber: r.clientNumber,
-      userId: r.userId ?? userId,
-      sourceType: r.sourceType,
-      senderEmail: r.senderEmail,
-      senderName: r.senderName,
-      rawPayload: r.rawPayload as Record<string, unknown> | null,
-      createdAt: r.createdAt,
-    }).catch(() => null),
-  ));
+  // Batched triage — keeps memory bounded even for wide windows.
+  const HANDLED_BATCH_SIZE = 25;
+  const suggestions: Array<AttentionItem | null> = [];
+  for (let i = 0; i < candidates.length; i += HANDLED_BATCH_SIZE) {
+    const batch = candidates.slice(i, i + HANDLED_BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map((r) =>
+      suggestForFeedEvent({
+        id: r.id,
+        clientNumber: r.clientNumber,
+        userId: r.userId ?? userId,
+        sourceType: r.sourceType,
+        senderEmail: r.senderEmail,
+        senderName: r.senderName,
+        rawPayload: r.rawPayload as Record<string, unknown> | null,
+        createdAt: r.createdAt,
+      }).catch(() => null as AttentionItem | null),
+    ));
+    suggestions.push(...batchResults);
+  }
 
   // Hidden-pattern set — these were already silently dropped by Brain's
   // pattern memory (user clicked "Hide pattern" once, every matching
