@@ -11,7 +11,7 @@
  *   Noticed / Rules    — patterns Brain wants to promote into rules
  *   Ask Brain          — natural-language query bar (Knowledge Center entry)
  */
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { Fragment, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -1573,7 +1573,13 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           );
         })}
         <div style={{ flex: 1 }} />
-        <Button variant="ghost" size="sm" onClick={hide}>Hide pattern</Button>
+        <MoreActionsMenu
+          item={item}
+          busy={busy}
+          decide={decide}
+          openPicker={() => setPickerOpen(true)}
+          hide={hide}
+        />
       </div>
 
       {/* Keep-or-change panel — shown when MD clicks Delegate and Brain has a pick */}
@@ -1670,6 +1676,199 @@ function buildAttentionOptions(item) {
   }
   // Suggested action first so it renders as primary
   return base.sort((a, b) => (a.id === suggested ? -1 : b.id === suggested ? 1 : 0));
+}
+
+/**
+ * MoreActionsMenu — overflow ⋮ button on every Attention card that
+ * exposes the FULL set of actions Brain can take, not just the curated
+ * 1–3 it surfaced as primary buttons. The user is never stuck with
+ * Brain's picks; every choice (matched or override) calls decide()
+ * which posts wasBrainSuggestion=<bool> so the learning loop sees
+ * agreement vs override.
+ *
+ * Rationale per user: "Menu should contain all options that Brain can
+ * suggest — Brain learns how the user is responding."
+ *
+ * Reply uses the existing draft_reply flow (Brain drafts → DraftCard
+ * appears under the card → user edits + sends). Delegate opens the
+ * existing DelegateePicker. Snooze surfaces a duration sub-menu.
+ * "Hide pattern" is the strongest negative signal — it's still in here.
+ */
+function MoreActionsMenu({ item, busy, decide, openPicker, hide }) {
+  const [open, setOpen] = useState(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const ref = useRef(null);
+  const suggested = item.suggestedAction;
+
+  // Close on click-outside
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setSnoozeOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  // Build the full action set Brain knows about. Every entry includes:
+  //   id        — what to fire when clicked
+  //   label     — what the user sees
+  //   handler   — the actual click handler
+  //   aiPicked  — true if this matches Brain's suggestion (for "Brain's pick" badge)
+  const wasSuggested = (id) => id === suggested;
+  const items = [
+    {
+      id: 'draft_reply',
+      label: '✎ Reply (Brain will draft, you edit + send)',
+      handler: () => { decide('draft_reply'); setOpen(false); },
+    },
+    {
+      id: 'delegate',
+      label: '→ Delegate to someone…',
+      handler: () => { openPicker(); setOpen(false); },
+    },
+    {
+      id: 'add_open_item',
+      label: '+ Add to Open Items',
+      handler: () => { decide('add_open_item'); setOpen(false); },
+    },
+    {
+      id: 'snooze',
+      label: '⏸ Snooze for…',
+      handler: () => setSnoozeOpen((s) => !s),
+      hasSubmenu: true,
+    },
+    {
+      id: 'acknowledge',
+      label: '👁 Acknowledge (mark seen, no action)',
+      handler: () => { decide('acknowledge'); setOpen(false); },
+    },
+    {
+      id: 'ignore',
+      label: '✗ Ignore (this once)',
+      handler: () => { decide('ignore'); setOpen(false); },
+    },
+  ];
+
+  // Meeting-only options only when item is a calendar event
+  if (item.itemType === 'meeting') {
+    items.unshift({
+      id: 'schedule_meeting',
+      label: '📅 Accept / RSVP',
+      handler: () => { decide('schedule_meeting'); setOpen(false); },
+    });
+  }
+
+  // Open in Gmail — only when we know the gmail thread
+  const gmailThreadId = item?.meeting?.gmailThreadId
+    ?? (item?.itemType === 'email' ? item.feedEventId : null);
+  if (item.itemType === 'email') {
+    items.push({
+      id: 'open_in_gmail',
+      label: '↗ Open in Gmail',
+      handler: () => {
+        const url = gmailThreadId
+          ? `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(item.subject || '')}`
+          : 'https://mail.google.com';
+        window.open(url, '_blank', 'noopener');
+        setOpen(false);
+      },
+    });
+  }
+
+  // Hide-pattern is destructive — keep it last with a separator
+  items.push({
+    id: 'hide_pattern',
+    label: '✕ Hide pattern (Brain stops surfacing similar items)',
+    handler: () => { hide(); setOpen(false); },
+    danger: true,
+    separator: true,
+  });
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setOpen((o) => !o)}
+        title="More actions"
+        aria-label="More actions"
+        aria-expanded={open}
+        disabled={busy}
+      >
+        ⋮ More
+      </Button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: 'calc(100% + 4px)',
+          minWidth: 280, maxWidth: 360,
+          background: 'var(--bg-2)', border: '1px solid var(--border)',
+          borderRadius: 'var(--r-md)', boxShadow: 'var(--shadow-lg)',
+          zIndex: 100, padding: 4,
+        }}>
+          {items.map((opt) => (
+            <Fragment key={opt.id}>
+              {opt.separator && (
+                <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+              )}
+              <button
+                type="button"
+                onClick={opt.handler}
+                disabled={busy}
+                style={{
+                  width: '100%', textAlign: 'left',
+                  padding: '8px 10px', background: 'transparent',
+                  border: 0, borderRadius: 'var(--r-sm)',
+                  color: opt.danger ? '#fca5a5' : 'var(--text)',
+                  fontSize: 'var(--fs-sm)', cursor: busy ? 'not-allowed' : 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-3, rgba(255,255,255,0.04))'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{ flex: 1 }}>{opt.label}</span>
+                {wasSuggested(opt.id) && (
+                  <span style={{
+                    fontSize: 10, padding: '1px 6px', borderRadius: 999,
+                    background: 'rgba(214,109,60,0.15)', color: 'var(--accent)',
+                  }}>Brain's pick</span>
+                )}
+              </button>
+              {opt.id === 'snooze' && snoozeOpen && (
+                <div style={{ paddingLeft: 18, display: 'flex', flexDirection: 'column' }}>
+                  {[
+                    { label: '1 day',  hours: 24 },
+                    { label: '3 days', hours: 72 },
+                    { label: '1 week', hours: 168 },
+                  ].map((s) => (
+                    <button
+                      key={s.label}
+                      type="button"
+                      onClick={() => { decide('snooze', { snoozeHours: s.hours }); setOpen(false); }}
+                      style={{
+                        width: '100%', textAlign: 'left',
+                        padding: '6px 10px', background: 'transparent',
+                        border: 0, borderRadius: 'var(--r-sm)',
+                        color: 'var(--text-muted)', fontSize: 'var(--fs-sm)',
+                        cursor: 'pointer',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-3, rgba(255,255,255,0.04))'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      Snooze for {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ActionButton({ active, disabled, onClick, children }) {
