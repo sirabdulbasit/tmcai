@@ -463,6 +463,15 @@ export async function suggestForFeedEvent(row: {
   if (!delegatee || !delegatee.userId) {
     try {
       const { suggestOwner } = await import('../knowledge/peopleIntelligenceService');
+      // Look up the delegator's identity so we can exclude them from
+      // candidates by email + name, not just userId. Catches the
+      // "delegate to yourself" bug when duplicate user rows exist or
+      // when the delegator's name fuzzy-matches another user.
+      const me = await prisma.user.findUnique({
+        where: { id: row.userId },
+        select: { email: true, name: true, integrationEmail: true } as any,
+      }).catch(() => null) as { email?: string | null; name?: string | null; integrationEmail?: string | null } | null;
+
       const owners = await suggestOwner({
         clientNumber: row.clientNumber,
         itemType,
@@ -472,6 +481,9 @@ export async function suggestForFeedEvent(row: {
         subject,
         preview,
         excludeUserId: row.userId,
+        excludeEmail: me?.email ?? null,
+        excludeIntegrationEmail: me?.integrationEmail ?? null,
+        excludeName: me?.name ?? null,
         limit: 1,
       });
       const top = owners[0];

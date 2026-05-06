@@ -59,6 +59,17 @@ export interface SuggestOwnerParams {
   preview?: string;
   /** Exclude this userId from ranking (usually the MD doing the delegation) */
   excludeUserId?: number;
+  /** Email + integration email of the delegator. Used to exclude duplicate
+   *  user rows that share the same identity (common when a user has a
+   *  legacy row + a new row from OAuth re-link). Also catches the
+   *  classic "Brain suggested I delegate to myself" bug. */
+  excludeEmail?: string | null;
+  excludeIntegrationEmail?: string | null;
+  /** Display name of the delegator. Used as a final fuzzy guard:
+   *  if a candidate's name normalises to the same string as the
+   *  delegator's name, exclude — even if userId / email don't match.
+   *  Catches the case where two user rows exist for the same person. */
+  excludeName?: string | null;
   /** How many candidates to return */
   limit?: number;
 }
@@ -92,11 +103,17 @@ function overlap(a: Set<string>, b: Set<string>): number {
 }
 
 export async function suggestOwner(params: SuggestOwnerParams): Promise<OwnerSuggestion[]> {
-  const { clientNumber, itemType, archetype, senderDomain, senderEmail, subject, preview, excludeUserId } = params;
+  const { clientNumber, itemType, archetype, senderDomain, senderEmail, subject, preview, excludeUserId, excludeEmail, excludeIntegrationEmail, excludeName } = params;
   const limit = params.limit ?? 5;
 
   // (0) Candidates: active users in the tenant, excluding the delegator.
-  const users = await prisma.user.findMany({
+  // Multi-layer exclusion to prevent the embarrassing "delegate to yourself"
+  // suggestion when there are duplicate user rows or name collisions:
+  //   - userId        → primary key match
+  //   - email         → catches duplicate accounts with the same login email
+  //   - integrationEmail → same person OAuth'd under a different login
+  //   - name (fuzzy)  → catches "Abdul Haseeb" matching "Haseeb" via prefix
+  const rawUsers = await prisma.user.findMany({
     where: {
       clientNumber,
       isActive: true,
@@ -104,8 +121,36 @@ export async function suggestOwner(params: SuggestOwnerParams): Promise<OwnerSug
     },
     select: {
       id: true, name: true, email: true, department: true, jobDescription: true,
-      aboutMe: true, userType: true,
-    },
+      aboutMe: true, userType: true, integrationEmail: true,
+    } as any,
+  }) as any[];
+
+  const norm = (s: string | null | undefined) => String(s ?? '').trim().toLowerCase();
+  const excludeEmails = new Set<string>();
+  if (excludeEmail) excludeEmails.add(norm(excludeEmail));
+  if (excludeIntegrationEmail) excludeEmails.add(norm(excludeIntegrationEmail));
+  const excludeNameNorm = norm(excludeName).replace(/[^a-z0-9 ]/g, '').trim();
+
+  const users = rawUsers.filter((u) => {
+    if (excludeEmails.size > 0) {
+      if (excludeEmails.has(norm(u.email))) return false;
+      if (excludeEmails.has(norm(u.integrationEmail))) return false;
+    }
+    if (excludeNameNorm) {
+      const candName = norm(u.name).replace(/[^a-z0-9 ]/g, '').trim();
+      // Exact normalised match → same person
+      if (candName === excludeNameNorm) return false;
+      // Strong prefix match — "Abdul Haseeb" vs "Haseeb" (one is a substring
+      // of the other AND they share at least one full word). Avoids false
+      // positives like "John Smith" / "Smith Holdings".
+      if (candName && (candName.includes(excludeNameNorm) || excludeNameNorm.includes(candName))) {
+        const candWords = new Set(candName.split(/\s+/).filter(Boolean));
+        const exclWords = excludeNameNorm.split(/\s+/).filter(Boolean);
+        const sharedWords = exclWords.filter((w) => candWords.has(w) && w.length >= 3);
+        if (sharedWords.length >= 1) return false;
+      }
+    }
+    return true;
   });
   if (users.length === 0) return [];
 
