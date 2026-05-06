@@ -301,7 +301,10 @@
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 var(--s-5);
+  /* Right padding leaves room for the fixed BrainAvatar (48px wide,
+     right:18 in BrainAvatar.jsx) so the user pill / tenant pill don't
+     get visually overlapped. Was: var(--s-5) on both sides. */
+  padding: 0 80px 0 var(--s-5);
   gap: var(--s-4);
   position: sticky;
   top: 0;
