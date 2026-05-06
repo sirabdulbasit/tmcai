@@ -28,7 +28,13 @@ import {
 async function main() {
   const args = process.argv.slice(2);
   const apply = args.includes('--apply');
-  const target = args.find((a) => !a.startsWith('--'));
+  // Accept either `--all` (special target) or a userEmail. The earlier
+  // version filtered out anything starting with '--', which incorrectly
+  // rejected '--all'. Now we look for '--all' first, then fall back to
+  // a positional non-flag argument.
+  const target = args.includes('--all')
+    ? '--all'
+    : args.find((a) => !a.startsWith('--'));
 
   if (!target) {
     console.error('usage: npx tsx src/scripts/feedEventsPruner.ts <userEmail | --all> [--apply]');
