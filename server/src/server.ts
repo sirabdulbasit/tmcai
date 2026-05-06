@@ -559,6 +559,28 @@ const server = app.listen(env.port, async () => {
     }
   }, 10 * 60 * 1000);
 
+  // MyOS — Google Tasks poller every 15 min. Pulls every active task
+  // across every list for every user with a Google integration and
+  // pushes them into feed_events (sourceType='gtasks'). Closes the
+  // "122 Google Tasks but Day Brief shows 2" gap the user flagged on
+  // 2026-05-07. Triage already handles itemType='task' so the items
+  // surface in My Attention's Tasks tab without further wiring.
+  // 15 min cadence (vs 2 min for Gmail) because task lists change
+  // less frequently than email; we don't want to slam the API.
+  setInterval(async () => {
+    try {
+      const { pollAllActiveTasksUsers } = await import('./jobs/gtasksFeedPoller');
+      const r = await pollAllActiveTasksUsers();
+      const ingested = r.reduce((s, x) => s + x.ingested, 0);
+      const errors = r.reduce((s, x) => s + x.errors, 0);
+      if (ingested > 0 || errors > 0) {
+        console.log(`[gtasksPoll] users=${r.length} ingested=${ingested} errors=${errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[gtasksPoll] error:', err.message);
+    }
+  }, 15 * 60 * 1000);
+
   // MyOS — Notion mirror every 10 min. Pushes postgres-backed wiki pages to
   // Notion for users with a connected Notion connector. Graceful no-op when
   // no connector is present.

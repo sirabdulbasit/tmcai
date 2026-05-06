@@ -862,11 +862,10 @@ router.post('/warm-up-brain', async (req: Request, res: Response) => {
 router.post('/sync-now', async (req: Request, res: Response) => {
   const user = (req as any).user;
   try {
-    const [genericResult, gcalResult] = await Promise.all([
+    const [genericResult, gcalResult, gtasksResult] = await Promise.all([
       (async () => {
         const { pollAllTenants } = await import('../jobs/genericFeedPoller');
         const all = await pollAllTenants();
-        // Filter to this tenant, summing gmail adapter's work
         const mine = all.filter((r) => r.tenantId === user.clientNumber);
         const gmail = mine.find((r) => r.source === 'gmail') ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 };
         return gmail;
@@ -876,11 +875,19 @@ router.post('/sync-now', async (req: Request, res: Response) => {
         const all = await pollAllActiveCalendarUsers();
         return all.find((r) => r.userId === user.id) ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 };
       })(),
+      // Google Tasks — included so manual Sync pulls in fresh tasks
+      // immediately rather than waiting for the 15-min cron tick.
+      (async () => {
+        const { pollAllActiveTasksUsers } = await import('../jobs/gtasksFeedPoller');
+        const all = await pollAllActiveTasksUsers();
+        return all.find((r) => r.userId === user.id) ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 };
+      })(),
     ]);
     res.json({
       ok: true,
       gmail: genericResult,
       gcal: gcalResult,
+      gtasks: gtasksResult,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

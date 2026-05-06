@@ -194,10 +194,21 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
     // Autonomy: actions handled without approval in last 24h
     prisma.agentAction.count({ where: { clientNumber, userId, status: 'done', requiresApproval: false, createdAt: { gte: today0 } } as any }).catch(() => 0),
     prisma.agentAction.count({ where: { clientNumber, userId, status: 'done', requiresApproval: true, createdAt: { gte: today0 } } as any }).catch(() => 0),
-    // Tasks — open items typed as task, not closed/delegated
-    prisma.openItem.count({ where: { clientNumber, userId, type: 'task', status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'WAITING_INFO'] as any } } as any }).catch(() => 0),
-    // Tasks due today — open task items with dueDate = today
-    prisma.openItem.count({ where: { clientNumber, userId, type: 'task', status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS'] as any }, dueDate: { gte: today0, lt: tomorrow0 } } as any }).catch(() => 0),
+    // Tasks — count of Google Tasks Brain has ingested. Reads from
+    // feed_events sourceType='gtasks' so the tile reflects the real
+    // upstream Google Tasks state (122 across 6 lists for haseeb on
+    // 2026-05-07), not Brain's smaller internal open_items queue.
+    // The ingestion happens via gtasksFeedPoller every 15 min.
+    prisma.feedEvent.count({ where: { clientNumber, userId, sourceType: 'gtasks' } as any }).catch(() => 0),
+    // Tasks due today — gtasks feed_events with payload.due in today.
+    // jsonb path filter; falls back to 0 on schema/index issues.
+    prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT COUNT(*)::bigint AS count FROM feed_events
+        WHERE client_number = $1 AND user_id = $2 AND source_type = 'gtasks'
+          AND (raw_payload->>'due')::timestamptz >= $3
+          AND (raw_payload->>'due')::timestamptz <  $4`,
+      clientNumber, userId, today0, tomorrow0,
+    ).then((r) => Number(r?.[0]?.count ?? 0)).catch(() => 0),
   ]);
 
   const total = handledAlone + neededUser;
