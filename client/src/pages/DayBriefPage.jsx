@@ -650,7 +650,12 @@ export default function DayBriefPage() {
           </div>
         )}
       >
-        {attention.length === 0 ? (
+        {attention.length === 0 && loading ? (
+          <BrainWorking
+            label="Reading your inbox"
+            sub="Triaging emails, meetings, and chats — this can take 10–15 seconds the first time"
+          />
+        ) : attention.length === 0 ? (
           <Empty title="All clear">Inbox, chat, calendar queue is empty.</Empty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
@@ -1083,6 +1088,50 @@ function fmtRelTime(d) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return d.toLocaleString();
+}
+
+/**
+ * BrainWorking — prominent in-page loading indicator.
+ *
+ * The Sync button + BrainAvatar pill both show loading state, but
+ * they're tiny and easy to miss when the body of the page is empty.
+ * This sits inside the section being filled (My Attention, Brief,
+ * etc.) so the user immediately sees Brain is working and roughly
+ * what it's doing — no more "is this broken or just slow?" anxiety.
+ *
+ * Animated dots implemented in CSS so we don't need to setInterval
+ * a React state update every few hundred ms.
+ */
+function BrainWorking({ label, sub }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '40px 20px', gap: 12,
+      background: 'var(--bg-2)',
+      border: '1px dashed var(--border)',
+      borderRadius: 'var(--r-md)',
+    }}>
+      <div style={{
+        width: 28, height: 28, borderRadius: '50%',
+        border: '2px solid var(--border)',
+        borderTopColor: 'var(--accent)',
+        animation: 'brain-spin 0.8s linear infinite',
+      }} />
+      <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>
+        Brain is {label}
+        <span className="brain-dots" style={{ display: 'inline-block', minWidth: 16 }}>...</span>
+      </div>
+      {sub && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 480 }}>
+          {sub}
+        </div>
+      )}
+      <style>{`
+        @keyframes brain-spin { to { transform: rotate(360deg); } }
+        @keyframes brain-dots { 0%,20% { content: '.'; } 40% { content: '..'; } 60%,100% { content: '...'; } }
+      `}</style>
+    </div>
+  );
 }
 
 /**

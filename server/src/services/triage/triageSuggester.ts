@@ -894,17 +894,36 @@ export async function buildAttentionList(
   // 2026-05-07). Cap protects steady-state regardless of window
   // width.
   const MAX_CANDIDATES = 200;
-  const rows = await prisma.feedEvent.findMany({
-    where: {
-      clientNumber,
-      userId,
-      sourceType: { in: ['gmail', 'whatsapp', 'gcal', 'gtasks'] as any },
-      createdAt: { gte: ninetyDaysAgo },
-    } as any,
-    select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
-    orderBy: { createdAt: 'desc' },
-    take: Math.min(limit * 10, MAX_CANDIDATES * 3),
-  });
+  // Two-part fetch so calendar events are never crowded out by emails
+  // when the inbox is busy. gcal/gtasks rows tend to have older
+  // createdAt (they were ingested earlier — meetings get added once,
+  // then sit in the queue until they happen) but a FUTURE eventDate.
+  // A single createdAt-ordered fetch capped at 500 rows can exclude
+  // them entirely if 500 newer email rows exist. Fetching them
+  // separately + merging guarantees they survive.
+  const [emailRows, calRows] = await Promise.all([
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: { in: ['gmail', 'whatsapp', 'gtasks'] as any },
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(limit * 10, MAX_CANDIDATES * 3),
+    }),
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: 'gcal' as any,
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 500,  // typically far less than 500 calendar events in any 90-day window
+    }),
+  ]);
+  const rows = [...emailRows, ...calRows];
 
   // Drop events whose dedup_hash has been hidden by this user.
   const hashes = new Set<string>();
@@ -1160,18 +1179,32 @@ export async function buildHandledList(
   // Hard ceiling on rows triaged in one request — same OOM-protection
   // as buildAttentionList. Wide ATTENTION_WINDOW_DAYS would otherwise
   // pull thousands of rows through Promise.all and exhaust V8 heap.
+  // Split-fetch as in buildAttentionList so gcal events aren't crowded
+  // out by busy email inboxes.
   const MAX_HANDLED_CANDIDATES = 200;
-  const rows = await prisma.feedEvent.findMany({
-    where: {
-      clientNumber,
-      userId,
-      sourceType: { in: ['gmail', 'whatsapp', 'gcal', 'gtasks'] as any },
-      createdAt: { gte: ninetyDaysAgo },
-    } as any,
-    select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
-    orderBy: { createdAt: 'desc' },
-    take: Math.min(limit * 10, MAX_HANDLED_CANDIDATES * 3),
-  });
+  const [emailRows, calRows] = await Promise.all([
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: { in: ['gmail', 'whatsapp', 'gtasks'] as any },
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(limit * 10, MAX_HANDLED_CANDIDATES * 3),
+    }),
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: 'gcal' as any,
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    }),
+  ]);
+  const rows = [...emailRows, ...calRows];
 
   // Sort by event date so future calendar events stay in scope when
   // the cap kicks in (same reason as buildAttentionList — wide
