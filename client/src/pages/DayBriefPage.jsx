@@ -335,22 +335,56 @@ export default function DayBriefPage() {
   // Instructions tab + Learned Preferences tab) — Day Brief stays focused
   // on TODAY (Zone 1) and WHAT BRAIN DID (Zone 2).
   const [loading, setLoading] = useState(true);
+  // briefLoading is the slower phase — /steering/brief is LLM-backed and
+  // can take 10–30s. Tracked separately so the BRIEF section can show its
+  // own shimmer without holding up the rest of the page.
+  const [briefLoading, setBriefLoading] = useState(true);
   const { toasts, notify, dismiss } = useToasts();
 
   // Shared loader. `fullSync` triggers a Gmail+Calendar pull first so very
   // recently arrived emails land in feed before we paint the Brief.
-  // While loading, fire brain:thinking:start/end so the top-right avatar
-  // expands into its "thinking" pill — the user sees Brain working from
-  // a single focal point, not a separate banner.
+  //
+  // Two-phase load:
+  //   Phase 1 — fast DB queries (attention, drafts, brain actions, etc.).
+  //             These finish in ~1s and unblock the page; Brain's "thinking"
+  //             pill closes immediately so the user isn't watching a spinner
+  //             for half a minute.
+  //   Phase 2 — /steering/brief is an LLM-backed narrative + KPI rollup.
+  //             It can take 10–30s. We fire it in parallel and fold the
+  //             result in when it lands; the BRIEF section shows its own
+  //             shimmer until then.
+  //
+  // The user-visible "Thinking…" text on the Sync button is tied to phase 1
+  // only, capped further by a 6s safety timeout in case a fast endpoint
+  // hangs (we'd rather paint stale data than freeze the UI).
   const load = useCallback(async (fullSync = false) => {
     setLoading(true);
+    setBriefLoading(true);
     window.dispatchEvent(new CustomEvent('brain:thinking:start'));
+
+    // Phase 2 — kick off the slow LLM-backed brief immediately, in parallel.
+    // We don't await it here; whoever resolves first wins.
+    api.post('/steering/brief', { userId: user?.id, style: 'morning' })
+      .then((r) => r.data.brief ?? r.data)
+      .catch(() => null)
+      .then((brief) => {
+        if (brief) {
+          setVolume(brief.volume ?? null);
+          setOpenItems(brief.topOpenItems ?? []);
+          setPromotions(brief.rulePromotions ?? []);
+          // Only fall back to brief.patterns if /brief/insights didn't have any.
+          setPatterns((cur) => (cur && cur.length > 0 ? cur : (brief.patterns ?? [])));
+        }
+      })
+      .finally(() => setBriefLoading(false));
+
     try {
       if (fullSync) {
         try { await api.post('/brief/sync-now'); } catch { /* non-fatal */ }
       }
-      const [brief, atten, brain, ds, ins, gap, cog] = await Promise.all([
-        api.post('/steering/brief', { userId: user?.id, style: 'morning' }).then((r) => r.data.brief ?? r.data).catch(() => null),
+      // Phase 1 — fast queries. Cap the whole batch at 6s so a single hung
+      // endpoint can't strand the UI in "Thinking…" forever.
+      const fast = Promise.all([
         api.get('/brief/attention?limit=50').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
         api.get('/brief/drafts').then((r) => r.data.drafts ?? []).catch(() => []),
@@ -358,15 +392,29 @@ export default function DayBriefPage() {
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
       ]);
-      setVolume(brief?.volume ?? null);
-      setOpenItems(brief?.topOpenItems ?? []);
-      setPromotions(brief?.rulePromotions ?? []);
-      setPatterns(ins.length > 0 ? ins : (brief?.patterns ?? []));
-      setAttention(atten);
-      setBrainActions(brain);
-      setDrafts(ds);
-      setGaps(gap);
-      setCognitive(cog);
+      const safety = new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 6000));
+      const result = await Promise.race([fast, safety]);
+      if (result !== 'TIMEOUT') {
+        const [atten, brain, ds, ins, gap, cog] = result;
+        setAttention(atten);
+        setBrainActions(brain);
+        setDrafts(ds);
+        setGaps(gap);
+        setCognitive(cog);
+        setPatterns(ins);
+      }
+      // If we hit the 6s timeout, the fast promise keeps running; let it
+      // update state when it eventually resolves so the user gets data.
+      if (result === 'TIMEOUT') {
+        fast.then(([atten, brain, ds, ins, gap, cog]) => {
+          setAttention(atten);
+          setBrainActions(brain);
+          setDrafts(ds);
+          setGaps(gap);
+          setCognitive(cog);
+          setPatterns((cur) => (cur && cur.length > 0 ? cur : ins));
+        }).catch(() => {});
+      }
     } finally {
       setLoading(false);
       window.dispatchEvent(new CustomEvent('brain:thinking:end'));
