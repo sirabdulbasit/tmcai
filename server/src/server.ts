@@ -466,9 +466,12 @@ const server = app.listen(env.port, async () => {
     }
   }, 2 * 60 * 1000);
 
-  // HaseebOS v15 L1 — generic feed poller every 5 min (drives all adapters with
-  // receive capability via adapterRegistry). The legacy gmailFeedPoller still
-  // exports enrichBody() for VIP pull, but no longer runs on its own schedule.
+  // HaseebOS v15 L1 — generic feed poller every 2 min (drives all adapters
+  // with receive capability via adapterRegistry). Worst-case latency for a
+  // new email landing in My Attention is therefore ~2 min server-side plus
+  // the client's 2-min auto-refresh on Day Brief. The legacy gmailFeedPoller
+  // still exports enrichBody() for VIP pull, but no longer runs on its own
+  // schedule.
   setInterval(async () => {
     try {
       const { pollAllTenants } = await import('./jobs/genericFeedPoller');
@@ -485,7 +488,7 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[genericPoll] error:', err.message);
     }
-  }, 5 * 60 * 1000);
+  }, 2 * 60 * 1000);
 
   // MyOS — Google Calendar poller every 10 min. Pulls next 48h of events
   // for every user with an active Google integration so the Meetings tile

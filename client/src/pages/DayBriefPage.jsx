@@ -423,6 +423,27 @@ export default function DayBriefPage() {
 
   useEffect(() => { if (user?.id) load(); }, [user?.id, load]);
 
+  // Auto-refresh every 2 min while the tab is visible. Pairs with the
+  // server's 2-min Gmail poll cadence — worst case from inbox-arrival to
+  // visible-on-Day-Brief is ~4 min (poll lag + refresh lag). We skip
+  // refresh while the tab is hidden so background tabs don't hammer the
+  // API, and immediately re-load when it comes back to the foreground in
+  // case multiple cycles were missed.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    const REFRESH_MS = 2 * 60 * 1000;
+    const tick = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+    const handle = setInterval(tick, REFRESH_MS);
+    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      clearInterval(handle);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [user?.id, load]);
+
   const displayName = (user?.name && user.name.trim()) || 'there';
   const dateStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
