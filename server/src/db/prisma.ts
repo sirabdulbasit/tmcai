@@ -74,11 +74,37 @@ const prisma = base.$extends({
             // a non-unique field. Strategy: for findUnique we do the
             // single-row query as-is, then verify clientNumber on the
             // returned row (post-filter). Same for findUniqueOrThrow.
+            //
+            // Subtlety: if the caller's `select` clause doesn't include
+            // `clientNumber`, the returned row has `row.clientNumber ===
+            // undefined`. A naive `row.clientNumber !== cn` check would
+            // be falsy and silently drop a row that actually belongs to
+            // the right tenant — see the "entity not found" bug from
+            // setStars (which selected only `metadata`). Fix: when the
+            // caller's select omits clientNumber, we add it ourselves,
+            // do the verification, then strip it from the result before
+            // returning.
             if (operation === 'findUnique' || operation === 'findUniqueOrThrow') {
-              const row: any = await query(args);
-              if (row && row.clientNumber !== cn && row.client_number !== cn) {
+              const a: any = args ?? {};
+              const userSelect = a.select;
+              const callerOmittedClientNumber =
+                userSelect && typeof userSelect === 'object'
+                  && userSelect.clientNumber !== true
+                  && userSelect.client_number !== true;
+              const patched = callerOmittedClientNumber
+                ? { ...a, select: { ...userSelect, clientNumber: true } }
+                : args;
+              const row: any = await query(patched);
+              if (!row) return row;
+              if (row.clientNumber !== cn && row.client_number !== cn) {
                 if (operation === 'findUniqueOrThrow') throw new Error('Tenant scope mismatch');
                 return null as any;
+              }
+              if (callerOmittedClientNumber) {
+                // Strip the field we added so the caller's projection
+                // is exactly what they asked for.
+                const { clientNumber: _strip, ...rest } = row;
+                return rest;
               }
               return row;
             }
