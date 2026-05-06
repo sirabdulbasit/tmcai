@@ -74,10 +74,15 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
   const tomorrow0 = new Date(today0.getTime() + 24 * 60 * 60 * 1000);
 
   const [kpis, items, risks] = await Promise.all([
+    // KPI rollup — schema uses computedAt / metricType / metricValue
+    // (the older recordedAt / kpiKey / value names were renamed in the
+    // L4 KPI refactor but this caller never updated). Wrapped in catch
+    // because the kpi_values table may be empty / not seeded yet on a
+    // fresh tenant.
     (prisma as any).kpiValue?.findMany?.({
-      where: { clientNumber, recordedAt: { gte: today0 } } as any,
-      select: { kpiKey: true, value: true },
-      orderBy: { recordedAt: 'desc' },
+      where: { clientNumber, computedAt: { gte: today0 } } as any,
+      select: { metricType: true, metricValue: true },
+      orderBy: { computedAt: 'desc' },
       take: 10,
     }).catch(() => []) ?? [],
     prisma.openItem.findMany({
@@ -199,7 +204,7 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
     clientNumber,
     userId,
     generatedAt: new Date().toISOString(),
-    kpis: (kpis as any[]).map((k) => ({ key: k.kpiKey, value: k.value })),
+    kpis: (kpis as any[]).map((k) => ({ key: k.metricType, value: k.metricValue })),
     topOpenItems: items as any,
     riskItems: risks.map((r) => ({ actionId: r.id, actionType: r.actionType, riskTier: r.riskTier ?? 'HIGH' })),
     meetingsToday,
