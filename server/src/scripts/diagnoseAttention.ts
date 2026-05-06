@@ -137,6 +137,49 @@ async function main() {
   });
   console.log(`\n[6] Autonomous actions in last 24h (BRIEF section):      ${autonomous}`);
 
+  // 7. Run a SAMPLE through suggestForFeedEvent to see why they're being dropped
+  console.log(`\n[7] Sampling 5 candidate rows through suggestForFeedEvent...`);
+  const { suggestForFeedEvent } = await import('../services/triage/triageSuggester');
+  const sample = rows.slice(0, 5);
+  for (const r of sample) {
+    try {
+      const item = await suggestForFeedEvent({
+        id: r.id,
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        sourceType: r.sourceType as any,
+        senderEmail: r.senderEmail as any,
+        senderName: null,
+        rawPayload: r.rawPayload as any,
+        createdAt: r.createdAt,
+      } as any);
+      if (!item) {
+        console.log(`    ${r.id.slice(0,8)} → NULL (triage returned nothing)`);
+      } else {
+        console.log(`    ${r.id.slice(0,8)} → handledByRule=${(item as any).handledByRule} archetype=${(item as any).archetype} noise=${(item as any).noise} subj="${String((item as any).subject ?? '').slice(0, 50)}"`);
+      }
+    } catch (err: any) {
+      console.log(`    ${r.id.slice(0,8)} → ERROR: ${err?.message ?? err}`);
+    }
+  }
+
+  // 8. Direct call to buildAttentionList to see what it returns
+  console.log(`\n[8] Calling buildAttentionList directly (this may take a few seconds)...`);
+  try {
+    const { buildAttentionList } = await import('../services/triage/triageSuggester');
+    const list = await buildAttentionList(user.clientNumber, user.id, 50);
+    console.log(`    buildAttentionList returned ${list.length} items.`);
+    if (list.length > 0) {
+      console.log('    First 3:');
+      for (const it of list.slice(0, 3)) {
+        console.log(`      ${(it as any).feedEventId?.slice(0,8)} archetype=${(it as any).archetype} noise=${(it as any).noise} crit=${(it as any).critical} subj="${String((it as any).subject ?? '').slice(0,60)}"`);
+      }
+    }
+  } catch (err: any) {
+    console.log(`    ERROR calling buildAttentionList: ${err?.message ?? err}`);
+    console.log(err?.stack);
+  }
+
   console.log('\n--- Diagnosis ---');
   if (kept === 0 && hidden.length > 50) {
     console.log('CAUSE: pattern_hidden is suppressing items. User clicked Hide pattern recently, fanning out.');
