@@ -586,9 +586,9 @@ export default function DayBriefPage() {
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
         <MiniStat
           icon="mail"
-          label="Emails Brain saw"
-          big={emailsToday}
-          sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'all-time, ingested'}
+          label="Emails need you"
+          big={attention.filter((a) => a.itemType === 'email').length}
+          sub={`${emailsToday.toLocaleString()} total · click to browse`}
           onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
         />
         <MiniStat
