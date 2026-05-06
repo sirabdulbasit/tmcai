@@ -854,12 +854,16 @@ export async function buildAttentionList(
   userId: number,
   limit = 30,
 ): Promise<AttentionItem[]> {
-  // 7-day rolling window of items MD hasn't decided on yet. We no longer
-  // gate on feed_events.status — that column is sometimes flipped to
-  // 'processed' by legacy code paths even when the user hasn't touched
-  // anything. Instead we exclude rows that have a matching decision_log
-  // (the authoritative signal that MD acted on this specific event).
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  // Rolling window of items MD hasn't decided on yet. Default 7 days,
+  // overridable via ATTENTION_WINDOW_DAYS env (e.g. 30 for dev/staging
+  // where the DB dump is older and 7 days would exclude everything).
+  // We no longer gate on feed_events.status — that column is
+  // sometimes flipped to 'processed' by legacy code paths even when
+  // the user hasn't touched anything. Instead we exclude rows that
+  // have a matching decision_log (the authoritative signal that MD
+  // acted on this specific event).
+  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '7', 10) || 7));
+  const sevenDaysAgo = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
   // Only TERMINAL decisions hide the card. 'drafted' is pending — MD
   // started drafting but hasn't sent, so we keep showing the card with
@@ -1107,7 +1111,10 @@ export async function buildHandledList(
   userId: number,
   limit = 50,
 ): Promise<HandledItem[]> {
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  // Match buildAttentionList's window so the My Attention + Brief
+  // counts always sum cleanly. Override via ATTENTION_WINDOW_DAYS.
+  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '7', 10) || 7));
+  const sevenDaysAgo = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
   // Pull terminal decisions so we can show them under their own bucket
