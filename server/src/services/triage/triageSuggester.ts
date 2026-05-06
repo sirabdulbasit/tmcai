@@ -1034,3 +1034,257 @@ export async function buildAttentionList(
 
   return items;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Day Brief — "100% accountability" model
+// ─────────────────────────────────────────────────────────────────
+//
+// The user's principle: every inbox item (email, WhatsApp, task, calendar,
+// chat) within the Day Brief window must be visible somewhere — either in
+// "My Attention" (Brain wants the user to decide) OR in "Brief" (Brain
+// handled it autonomously). No silent drops.
+//
+// buildAttentionList already returns the "My Attention" half. This pair —
+// HandledItem + buildHandledList — returns the "Brief" half: items that
+// Brain triaged but chose NOT to surface. Each is tagged with a bucket so
+// the UI can render a one-line summary explaining what Brain decided and
+// why.
+//
+// Bucket meanings:
+//   'auto_rule'           — A user-defined action rule fired (handledByRule=true).
+//                           Reason: "Rule '<name>' fired".
+//   'auto_noise'          — Triage classified as bulk/newsletter/marketing.
+//                           Reason: "Bulk / no-reply / newsletter — auto-ignored".
+//   'auto_self'           — Sender is the user themselves (own outbound).
+//                           Reason: "You sent this — not surfaced".
+//   'auto_high_confidence'— Brain saw a strong delegation history pattern and
+//                           the autonomy gate suppressed it. Reason mentions
+//                           the delegate count + delegatee name.
+//   'auto_decided'        — User already terminally decided on this item.
+//                           Reason: "You've already <decided>".
+//
+// User-scoped: every query filters by clientNumber + userId, identical to
+// buildAttentionList. No tenant or per-user data crosses this boundary.
+
+export interface HandledItem {
+  feedEventId: string;
+  bucket: 'auto_rule' | 'auto_noise' | 'auto_self' | 'auto_high_confidence' | 'auto_decided';
+  reason: string;
+  itemType: ItemType;
+  sourceType: string;
+  from: string;
+  fromDisplay: string;
+  fromEmail: string | null;
+  subject: string;
+  preview: string;
+  receivedAt: string;
+  archetype: Archetype;
+  /** What Brain WOULD have suggested if it had to ask the user. Empty for
+   *  rule-handled items (the rule defines the action). */
+  intendedAction?: SuggestedAction;
+  /** Filled when bucket = 'auto_high_confidence' so the UI can show the
+   *  delegate name. */
+  delegateeName?: string;
+  delegateeEmail?: string;
+  /** Filled when bucket = 'auto_rule' so the UI can show which rule fired. */
+  ruleName?: string;
+}
+
+/**
+ * Return all items Brain handled without bothering the user, within the
+ * Day Brief window (last 7 days, source-native timestamp). Mirrors the
+ * buildAttentionList query so the math accounts for every feed event:
+ *
+ *   buildAttentionList(...).length + buildHandledList(...).length
+ *     = (items in window not yet aged out)
+ *
+ * Same per-event triage cost as buildAttentionList — we share nothing
+ * today. If the duplication shows up as a perf cost, we'll merge into a
+ * single buildDayBriefSlate() that returns both lists.
+ */
+export async function buildHandledList(
+  clientNumber: string,
+  userId: number,
+  limit = 50,
+): Promise<HandledItem[]> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+  // Pull terminal decisions so we can show them under their own bucket
+  // ('auto_decided'). Same set buildAttentionList uses to suppress.
+  const TERMINAL_DECISIONS = ['approved', 'delegated', 'snoozed', 'dismissed', 'overrode'];
+  const decisionRows = await prisma.decisionLog.findMany({
+    where: {
+      clientNumber, userId,
+      createdAt: { gte: sevenDaysAgo },
+      entityId: { not: null } as any,
+      userDecision: { in: TERMINAL_DECISIONS } as any,
+    } as any,
+    select: { entityId: true, userDecision: true },
+  }).catch(() => [] as Array<{ entityId: string | null; userDecision: string }>);
+  const decidedMap = new Map<string, string>();
+  for (const r of decisionRows) {
+    if (r.entityId) decidedMap.set(r.entityId, r.userDecision);
+  }
+
+  // Same SQL window + per-event filter as buildAttentionList so the math
+  // balances. The 90-day SQL window catches historical-scribe rows that
+  // wrote createdAt=now() for old emails; the source-native filter trims
+  // them back to a true 7-day attention window.
+  const rows = await prisma.feedEvent.findMany({
+    where: {
+      clientNumber,
+      userId,
+      sourceType: { in: ['gmail', 'whatsapp', 'gcal', 'gtasks'] as any },
+      createdAt: { gte: ninetyDaysAgo },
+    } as any,
+    select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+    take: limit * 10,
+  });
+
+  const candidates = rows.filter((r) => {
+    const eventDate = extractEventOccurredAt(r);
+    return eventDate >= sevenDaysAgo;
+  });
+
+  // Run the same triage suggestForFeedEvent over each. We KEEP what
+  // buildAttentionList drops; we DROP what it keeps.
+  const suggestions = await Promise.all(candidates.map((r) =>
+    suggestForFeedEvent({
+      id: r.id,
+      clientNumber: r.clientNumber,
+      userId: r.userId ?? userId,
+      sourceType: r.sourceType,
+      senderEmail: r.senderEmail,
+      senderName: r.senderName,
+      rawPayload: r.rawPayload as Record<string, unknown> | null,
+      createdAt: r.createdAt,
+    }).catch(() => null),
+  ));
+
+  // Hidden-pattern set — these were already silently dropped by Brain's
+  // pattern memory (user clicked "Hide pattern" once, every matching
+  // item is suppressed). Surfacing them in Brief honours the "no silent
+  // drops" rule: user sees Brain is hiding 12 newsletters from sender X
+  // instead of those just disappearing.
+  const hiddenHashes = new Set<string>();
+  const hidden = await prisma.patternHidden.findMany({
+    where: { clientNumber, userId, source: 'decision' },
+    select: { dedupHash: true },
+  }).catch(() => [] as Array<{ dedupHash: string }>);
+  hidden.forEach((h) => hiddenHashes.add(h.dedupHash));
+
+  const out: HandledItem[] = [];
+  const AUTONOMY_THRESHOLD = 0.85;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const r = candidates[i];
+    const item = suggestions[i];
+    const decided = decidedMap.get(r.id);
+
+    // Common projection — keep this aligned with the AttentionItem shape
+    // so the client can render either bucket from one component.
+    const base = (it: any) => ({
+      feedEventId: r.id,
+      itemType: (it?.itemType as ItemType) ?? (r.sourceType === 'gmail' ? 'email' : r.sourceType === 'gcal' ? 'meeting' : r.sourceType === 'whatsapp' ? 'whatsapp' : 'task') as ItemType,
+      sourceType: r.sourceType,
+      from: it?.from ?? r.senderName ?? r.senderEmail ?? '',
+      fromDisplay: it?.fromDisplay ?? r.senderName ?? r.senderEmail ?? '',
+      fromEmail: r.senderEmail ?? null,
+      subject: it?.subject ?? '',
+      preview: it?.preview ?? '',
+      receivedAt: r.createdAt.toISOString(),
+      archetype: (it?.archetype as Archetype) ?? 'inform_only',
+    });
+
+    // Order matters — first match wins so a single item lands in exactly
+    // one bucket. 'auto_decided' takes precedence (user-driven), then
+    // rule, self, noise, autonomy.
+    if (decided) {
+      out.push({
+        ...base(item),
+        bucket: 'auto_decided',
+        reason: `You've already ${decided} this`,
+      });
+      continue;
+    }
+
+    if (!item) continue; // triage threw — leave for the diagnostic, not Brief
+
+    if (hiddenHashes.has(item.dedupHash)) {
+      out.push({
+        ...base(item),
+        bucket: 'auto_noise',
+        reason: 'Pattern you hid — auto-suppressed',
+        intendedAction: item.suggestedAction,
+      });
+      continue;
+    }
+
+    if (item.handledByRule) {
+      const rule = item.suggestedRules?.[0];
+      out.push({
+        ...base(item),
+        bucket: 'auto_rule',
+        reason: rule ? `Rule '${rule.name}' fired` : 'Auto-handled by a rule',
+        intendedAction: item.suggestedAction,
+        ruleName: rule?.name,
+      });
+      continue;
+    }
+
+    if (item.noise) {
+      out.push({
+        ...base(item),
+        bucket: 'auto_noise',
+        reason: 'Bulk / no-reply / newsletter — auto-ignored',
+        intendedAction: item.suggestedAction,
+      });
+      continue;
+    }
+
+    // Self-message gate — sender = user. The triage suggester returns
+    // these with noise=true already, so the noise branch above usually
+    // catches them. Keep this branch as a safety net for non-noise
+    // self-messages (e.g. you @-mentioned yourself in WhatsApp).
+    const isSelf = !!item.fromEmail && (item as any).senderIsSelf === true;
+    if (isSelf) {
+      out.push({
+        ...base(item),
+        bucket: 'auto_self',
+        reason: 'You sent this — not surfaced',
+        intendedAction: item.suggestedAction,
+      });
+      continue;
+    }
+
+    // Autonomy gate — high-confidence delegations. Mirrors the filter in
+    // buildAttentionList so an item caught there is accounted for here.
+    const isAutonomyReady =
+      (item.confidence ?? 0) >= AUTONOMY_THRESHOLD
+      && item.suggestedAction === 'delegate'
+      && !!item.suggestedDelegateeUserId
+      && !item.critical;
+    if (isAutonomyReady) {
+      const dn = item.suggestedDelegateeName ?? item.suggestedDelegateeEmail ?? 'a teammate';
+      out.push({
+        ...base(item),
+        bucket: 'auto_high_confidence',
+        reason: `Brain knows to delegate this to ${dn} — based on your past pattern`,
+        intendedAction: 'delegate',
+        delegateeName: item.suggestedDelegateeName,
+        delegateeEmail: item.suggestedDelegateeEmail,
+      });
+      continue;
+    }
+
+    // Anything else — this item DID make it to My Attention. Don't
+    // double-count by including it here.
+  }
+
+  // Newest first, capped at the limit. Bucketed counts are computed
+  // client-side from this array.
+  out.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+  return out.slice(0, limit);
+}

@@ -9,7 +9,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../db/prisma';
 import crypto from 'crypto';
-import { buildAttentionList, suggestForFeedEvent, computeDedupHash, type SuggestedAction, type ItemType, type Archetype } from '../services/triage/triageSuggester';
+import { buildAttentionList, buildHandledList, suggestForFeedEvent, computeDedupHash, type SuggestedAction, type ItemType, type Archetype } from '../services/triage/triageSuggester';
 
 const router = Router();
 
@@ -32,6 +32,33 @@ router.get('/attention', async (req: Request, res: Response) => {
     // The push now runs from a per-tenant cron tick (criticalityBundleSweep)
     // so it fires once per minute regardless of how often the page polls.
     res.json({ items, count: items.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /brief/handled — items Brain handled WITHOUT bothering the user.
+ *
+ * Sister endpoint to /attention. Together they implement the "100%
+ * accountability" rule — every inbox item in the Day Brief window must
+ * appear in exactly one of {attention, handled}.
+ *
+ * Returns HandledItem[]; each has a `bucket` enum so the client can
+ * group: auto_rule | auto_noise | auto_self | auto_high_confidence |
+ * auto_decided. Newest first. User-scoped via req.user (no tenant or
+ * per-user data leaks).
+ */
+router.get('/handled', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
+  try {
+    const items = await buildHandledList(user.clientNumber, user.id, limit);
+    // Pre-compute per-bucket counts so the client doesn't have to filter
+    // for the header tally.
+    const byBucket: Record<string, number> = {};
+    for (const it of items) byBucket[it.bucket] = (byBucket[it.bucket] ?? 0) + 1;
+    res.json({ items, count: items.length, byBucket });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -321,6 +321,12 @@ export default function DayBriefPage() {
   const [volume, setVolume] = useState(null);
   const [attention, setAttention] = useState([]);
   const [brainActions, setBrainActions] = useState([]);
+  // 100% accountability — items Brain handled WITHOUT bothering the user.
+  // Bucketed: auto_rule | auto_noise | auto_self | auto_high_confidence | auto_decided.
+  // Fed by /brief/handled. Together with `attention` they cover every
+  // feed event in the 7-day window — no silent drops.
+  const [handled, setHandled] = useState([]);
+  const [handledByBucket, setHandledByBucket] = useState({});
   const [openItems, setOpenItems] = useState([]);
   const [promotions, setPromotions] = useState([]);
   const [patterns, setPatterns] = useState([]);
@@ -391,28 +397,33 @@ export default function DayBriefPage() {
         api.get('/brief/insights').then((r) => r.data.insights ?? []).catch(() => []),
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
+        api.get('/brief/handled?limit=100').then((r) => ({ items: r.data.items ?? [], byBucket: r.data.byBucket ?? {} })).catch(() => ({ items: [], byBucket: {} })),
       ]);
       const safety = new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 6000));
       const result = await Promise.race([fast, safety]);
       if (result !== 'TIMEOUT') {
-        const [atten, brain, ds, ins, gap, cog] = result;
+        const [atten, brain, ds, ins, gap, cog, hndl] = result;
         setAttention(atten);
         setBrainActions(brain);
         setDrafts(ds);
         setGaps(gap);
         setCognitive(cog);
         setPatterns(ins);
+        setHandled(hndl.items);
+        setHandledByBucket(hndl.byBucket);
       }
       // If we hit the 6s timeout, the fast promise keeps running; let it
       // update state when it eventually resolves so the user gets data.
       if (result === 'TIMEOUT') {
-        fast.then(([atten, brain, ds, ins, gap, cog]) => {
+        fast.then(([atten, brain, ds, ins, gap, cog, hndl]) => {
           setAttention(atten);
           setBrainActions(brain);
           setDrafts(ds);
           setGaps(gap);
           setCognitive(cog);
           setPatterns((cur) => (cur && cur.length > 0 ? cur : ins));
+          setHandled(hndl.items);
+          setHandledByBucket(hndl.byBucket);
         }).catch(() => {});
       }
     } finally {
@@ -652,29 +663,44 @@ export default function DayBriefPage() {
       <Section
         id="brief"
         title="Brief"
-        sub={brainActions.length > 0 ? `${brainActions.length} actions I took for you` : 'What I handled without you'}
+        sub={(() => {
+          // 100% accountability — show the running tally:
+          //   "Brain handled X of Y today; Z need you"
+          // X = brainActions (executed) + handled (suppressed)
+          // Y = total items in scope = X + attention.length
+          // Z = attention.length
+          const handledTotal = brainActions.length + handled.length;
+          const total = handledTotal + attention.length;
+          if (total === 0) return 'What I handled without you';
+          return `Brain handled ${handledTotal} of ${total}; ${attention.length} need you`;
+        })()}
         icon="check-circle"
         help={(
           <div>
-            <strong>What this is.</strong> A summary of actions Brain took for you autonomously since your last sign-in — drafts saved, items archived, follow-ups scheduled, replies sent (when within your auto-action rules).<br /><br />
-            <strong>How it works.</strong> Each click you make on My Attention teaches Brain. When a pattern hits your learning threshold (Settings → Learning threshold), Brain starts handling matching items on its own and lists each one here so you can audit it.<br /><br />
-            <strong>How it helps.</strong> You see exactly what Brain did — no surprises. Click any row to override or undo.<br /><br />
+            <strong>What this is.</strong> Every inbox item Brain handled for you — actions Brain executed (drafts, replies, archives) AND items Brain triaged as not needing your attention (rule fires, noise, self-messages, high-confidence delegations).<br /><br />
+            <strong>How the math works.</strong> The header shows "Brain handled X of Y; Z need you". Y = total items in your 7-day window. Z = items in My Attention. X = everything else — what Brain decided you didn't need to see. The two should always sum to your full inbox.<br /><br />
+            <strong>How it helps.</strong> No silent drops. Every email, WhatsApp, task, calendar invite, and chat is accounted for in exactly one of two places — My Attention (you decide) or here (Brain decided).<br /><br />
             <strong>Make it more useful for you:</strong>
             <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-              <li><em>Approve rule promotions</em> when they show up — that's how Brain moves work from <em>My Attention</em> into <em>Brief</em>.</li>
-              <li><em>Lower your learning threshold</em> in Settings → Learning if Brain is too cautious; raise it if Brain is acting too aggressively.</li>
+              <li><em>Skim the bucket badges</em> — if Brain's auto-suppressing too much, the counts will catch it.</li>
               <li><em>Click 👎</em> on any auto-action you didn't want — Brain demotes that pattern.</li>
-              <li><strong>Example:</strong> You delegate Raazia's emails to Asad three times in a row. Brain shows a rule promotion ("delegate Raazia → Asad"). You approve. Next time her email arrives, Brain delegates automatically and you see the action listed here under <em>Brief</em> — not <em>My Attention</em>.</li>
+              <li><strong>Example:</strong> You delegate Raazia's emails to Asad three times. Brain promotes that to a rule. Next time her email arrives, Brain delegates automatically; you see it under <em>Brief → Auto-rule</em> instead of <em>My Attention</em>.</li>
             </ul>
           </div>
         )}
       >
-        {brainActions.length === 0 ? (
-          <Empty title="Nothing autonomous yet">
-            I'll learn from your clicks below. Once a pattern hits your threshold (Settings → Learning threshold), I'll start handling it on my own and list it here.
+        {brainActions.length === 0 && handled.length === 0 ? (
+          <Empty title="Nothing handled yet">
+            When new items arrive, anything Brain handles autonomously (rule fires, noise filters, high-confidence delegations) lands here. Items needing your decision go to <em>My Attention</em>.
           </Empty>
         ) : (
-          <GroupedByType actions={brainActions} onOverride={load} notify={notify} />
+          <BriefAccountability
+            brainActions={brainActions}
+            handled={handled}
+            byBucket={handledByBucket}
+            onOverride={load}
+            notify={notify}
+          />
         )}
       </Section>
 
@@ -1054,6 +1080,113 @@ function AskBrain() {
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * BriefAccountability — renders the BRIEF section with two stacked
+ * sub-sections so every inbox item Brain handled is accounted for:
+ *
+ *   1. Auto-actions Brain executed (existing GroupedByType)
+ *   2. Auto-handled (NEW) — items Brain triaged but didn't bother the
+ *      user about, grouped by bucket (rule / noise / self / autonomy /
+ *      already-decided)
+ *
+ * The component is intentionally read-mostly. Every row exposes who the
+ * sender was, the subject, and Brain's reason — the user can audit at a
+ * glance. No per-row override yet; that lives on the GroupedByType
+ * subsection. (We can add an override on handled-rows in a follow-up.)
+ *
+ * User-scoped — the data has already been filtered by clientNumber +
+ * userId on the server; this component is a pure presenter.
+ */
+function BriefAccountability({ brainActions, handled, byBucket, onOverride, notify }) {
+  const BUCKET_META = {
+    auto_rule: { label: 'Auto-rule fired',         color: '#7dd3fc' },
+    auto_noise: { label: 'Bulk / newsletter',      color: '#a3a3a3' },
+    auto_self: { label: 'You sent this',           color: '#a3a3a3' },
+    auto_high_confidence: { label: 'Brain knew what to do', color: '#fbbf24' },
+    auto_decided: { label: 'You already decided',  color: '#86efac' },
+  };
+
+  const grouped = useMemo(() => {
+    const g = {};
+    for (const it of handled ?? []) {
+      const k = it.bucket || 'auto_noise';
+      if (!g[k]) g[k] = [];
+      g[k].push(it);
+    }
+    return g;
+  }, [handled]);
+
+  // Order buckets by usefulness — rules first (most "Brain learned!"),
+  // then high-confidence delegations, then already-decided, then noise.
+  const ORDER = ['auto_rule', 'auto_high_confidence', 'auto_decided', 'auto_self', 'auto_noise'];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-4)' }}>
+      {brainActions.length > 0 && (
+        <div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
+            Actions Brain executed · {brainActions.length}
+          </div>
+          <GroupedByType actions={brainActions} onOverride={onOverride} notify={notify} />
+        </div>
+      )}
+
+      {handled.length > 0 && (
+        <div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
+            Auto-handled (not surfaced) · {handled.length}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+            {ORDER.filter((b) => grouped[b]?.length).map((b) => {
+              const items = grouped[b];
+              const meta = BUCKET_META[b] ?? { label: b, color: 'var(--text-muted)' };
+              return (
+                <details key={b} style={{
+                  background: 'var(--bg-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--r-md)',
+                  padding: 'var(--s-3)',
+                }}>
+                  <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: meta.color,
+                    }} />
+                    <strong style={{ fontSize: 'var(--fs-sm)' }}>{meta.label}</strong>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>· {items.length}</span>
+                  </summary>
+                  <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {items.map((it) => (
+                      <div key={it.feedEventId} style={{
+                        padding: '6px 8px',
+                        background: 'var(--bg-1, transparent)',
+                        borderRadius: 'var(--r-sm)',
+                        fontSize: 'var(--fs-sm)',
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'baseline',
+                      }}>
+                        <span style={{ color: 'var(--text-muted)', minWidth: 110, fontSize: 'var(--fs-xs)' }}>
+                          {it.fromDisplay || it.from || '—'}
+                        </span>
+                        <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {it.subject || '(no subject)'}
+                        </span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}>
+                          {it.reason}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
