@@ -549,7 +549,7 @@ export default function DayBriefPage() {
 
       {/* ── Volume strip ────────────────────────────────────── */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
-        <MiniStat icon="mail"           label="Emails this week" big={emailsToday}         sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'last 7 days'} />
+        <MiniStat icon="mail"           label="Emails Brain saw"  big={emailsToday}         sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'all-time, ingested'} />
         <MiniStat
           icon="message-circle"
           label="WhatsApp today"

@@ -137,23 +137,20 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
     : 0;
 
   // ─── v2 aggregates (cheap counters; Brain enriches them over time) ───
-  // Headline Email count = number of Gmail feed_events Brain has ingested
-  // in the last 7 days. We deliberately don't call Gmail API live here:
-  //   - DB-first means the page paints consistent numbers regardless of
-  //     OAuth state (token expiry no longer drops the count to 0)
-  //   - Matches the same window as My Attention + Brief, so the
-  //     "100% accountability" math balances
-  //   - feed_events is the single source of truth Brain reasons over
+  // Headline Email count = total Gmail feed_events Brain has ingested for
+  // this user. DB-first read — no Gmail API call. We deliberately do NOT:
+  //   - call Gmail API live (token expiry would drop count to 0)
+  //   - gate on hasGmail (DB still holds prior ingests when OAuth dies)
+  //   - bound to a tight window (local dumps + tenants with stale polling
+  //     would always show 0 — defeats the point of going DB-first)
   //
-  // Note: NOT gated on hasGmail. Even if the connector is currently
-  // disconnected, the DB still holds whatever Brain ingested before —
-  // showing 0 because of a token blip would defeat the purpose of
-  // moving away from Gmail-API-live. Gmail upstream still feeds
-  // feed_events via genericFeedPoller every 2 min; we just stopped
-  // reading from Gmail synchronously on the page-load path.
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  // The number reflects "what Brain knows about" — total emails it has
+  // seen for this user. Matches the source My Attention + Brief draw
+  // from, so the 100% accountability math balances. Gmail upstream
+  // still feeds feed_events via genericFeedPoller every 2 min; we just
+  // stopped reading from Gmail synchronously on every page load.
   const gmailUnreadLive = await prisma.feedEvent.count({
-    where: { clientNumber, userId, sourceType: 'gmail', createdAt: { gte: sevenDaysAgo } } as any,
+    where: { clientNumber, userId, sourceType: 'gmail' } as any,
   }).catch(() => 0);
   const [emailsReceivedToday, emailsNeedYou, whatsappHandled, whatsappNeedYou, drafts, promotions, handledAlone, neededUser, tasksOpen, tasksDueToday] = await Promise.all([
     hasGmail
