@@ -38,71 +38,85 @@ router.get('/attention', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /brief/inbox — drill-down list of every feed_event Brain has
- * ingested for this user, paginated.
+ * GET /brief/inbox — drill-down list of every email Brain has scribed
+ * for this user, paginated.
+ *
+ * Reads from `wiki_pages` (pageType='email_message') — the full
+ * permanent archive. NOT from feed_events, which is the transient
+ * queue (last 30d + still-active items only). The two-store split
+ * means:
+ *
+ *   feed_events  → small, fast queue for active triage
+ *   wiki_pages   → permanent archive, used here + for knowledge lookups
+ *
+ * When the pruner trims feed_events, browse + search remain unaffected
+ * because scribe holds the truth.
  *
  * Query params:
- *   source — 'gmail' | 'whatsapp' | 'gcal' | 'gtasks' | 'all' (default 'all')
+ *   source — 'gmail' for now (only emails are scribed today; calendar
+ *            / WhatsApp / tasks have their own scribe pipelines). Other
+ *            values are ignored gracefully.
  *   limit  — page size (default 50, max 200)
  *   offset — for pagination
  *   q      — substring filter against sender + subject (optional)
  *
- * Returns: { items, total, hasMore }
- *
- * User-scoped via req.user; no cross-tenant leakage. Same shape the
- * volume tile drills into when clicked.
+ * Returns: { items, total, hasMore }. User-scoped via req.user.
  */
 router.get('/inbox', async (req: Request, res: Response) => {
   const user = (req as any).user;
-  const source = String(req.query.source ?? 'all');
   const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
   const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
   const q = String(req.query.q ?? '').trim();
 
-  const VALID_SOURCES = new Set(['gmail', 'whatsapp', 'gcal', 'gtasks']);
-  const sourceFilter = source !== 'all' && VALID_SOURCES.has(source) ? source : null;
-
   try {
+    // wiki_pages with pageType='email_message' = scribe's per-email row.
+    // Sender info lives under metadata.{senderEmail,senderName,subject}
+    // so we filter via JSON path operators and surface those fields.
     const where: any = {
       clientNumber: user.clientNumber,
       userId: user.id,
+      pageType: 'email_message',
+      status: { not: 'deleted' as any },
     };
-    if (sourceFilter) where.sourceType = sourceFilter;
     if (q) {
+      // Search: title (which embeds subject) + senderEmail/senderName in metadata
       where.OR = [
-        { senderName: { contains: q, mode: 'insensitive' } },
-        { senderEmail: { contains: q, mode: 'insensitive' } },
+        { title: { contains: q, mode: 'insensitive' } },
+        { metadata: { path: ['senderEmail'], string_contains: q.toLowerCase() } as any },
+        { metadata: { path: ['senderName'], string_contains: q.toLowerCase() } as any },
       ];
     }
 
     const [rows, total] = await Promise.all([
-      prisma.feedEvent.findMany({
+      prisma.wikiPage.findMany({
         where,
         select: {
           id: true,
-          sourceType: true,
-          senderEmail: true,
-          senderName: true,
-          rawPayload: true,
+          title: true,
+          metadata: true,
+          lastUpdatedAt: true,
           createdAt: true,
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { lastUpdatedAt: 'desc' },
         skip: offset,
         take: limit,
       }),
-      prisma.feedEvent.count({ where }),
+      prisma.wikiPage.count({ where }),
     ]);
 
     const items = rows.map((r) => {
-      const p: any = r.rawPayload ?? {};
+      const meta: any = r.metadata ?? {};
+      // Title format: "YYYY-MM-DD · subject" — split for display.
+      const titleStr = String(r.title ?? '');
+      const subject = titleStr.includes(' · ') ? titleStr.split(' · ').slice(1).join(' · ') : titleStr;
       return {
         id: r.id,
-        sourceType: r.sourceType,
-        senderName: r.senderName,
-        senderEmail: r.senderEmail,
-        subject: String(p.subject ?? p.summary ?? p.title ?? p.eventName ?? '').slice(0, 240),
-        snippet: String(p.snippet ?? p.body ?? p.description ?? '').slice(0, 200),
-        receivedAt: r.createdAt.toISOString(),
+        sourceType: 'gmail' as const,
+        senderName: meta.senderName ?? null,
+        senderEmail: meta.senderEmail ?? null,
+        subject: String(subject ?? '').slice(0, 240),
+        snippet: '',  // body lives in bodyMarkdown but we don't ship it in list view to keep payload small
+        receivedAt: (r.lastUpdatedAt ?? r.createdAt).toISOString(),
       };
     });
 

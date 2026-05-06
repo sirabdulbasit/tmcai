@@ -141,21 +141,24 @@ export async function composeBriefFor(clientNumber: string, userId: number): Pro
       ).then((r) => Number(r?.[0]?.count ?? 0)).catch(() => 0)
     : 0;
 
-  // ─── v2 aggregates (cheap counters; Brain enriches them over time) ───
-  // Headline Email count = total Gmail feed_events Brain has ingested for
-  // this user. DB-first read — no Gmail API call. We deliberately do NOT:
-  //   - call Gmail API live (token expiry would drop count to 0)
-  //   - gate on hasGmail (DB still holds prior ingests when OAuth dies)
-  //   - bound to a tight window (local dumps + tenants with stale polling
-  //     would always show 0 — defeats the point of going DB-first)
+  // ─── v2 aggregates ───
+  // "Total emails Brain has ever seen for this user" — used as the
+  // sub-line on the Day Brief volume tile ("X total · click to browse").
   //
-  // The number reflects "what Brain knows about" — total emails it has
-  // seen for this user. Matches the source My Attention + Brief draw
-  // from, so the 100% accountability math balances. Gmail upstream
-  // still feeds feed_events via genericFeedPoller every 2 min; we just
-  // stopped reading from Gmail synchronously on every page load.
-  const gmailUnreadLive = await prisma.feedEvent.count({
-    where: { clientNumber, userId, sourceType: 'gmail' } as any,
+  // Read from the permanent archive (wiki_pages email_message rows),
+  // NOT from feed_events. feed_events is the transient queue (last
+  // 30 days + still-active items); scribe holds the all-time history.
+  // After the pruner trims feed_events on a 30-day rolling window,
+  // this count keeps growing — it reflects Brain's full knowledge.
+  //
+  // No Gmail API call: DB-first read keeps the page paint stable
+  // regardless of OAuth state.
+  const gmailUnreadLive = await prisma.wikiPage.count({
+    where: {
+      clientNumber, userId,
+      pageType: 'email_message',
+      status: { not: 'deleted' as any },
+    } as any,
   }).catch(() => 0);
   const [emailsReceivedToday, emailsNeedYou, whatsappHandled, whatsappNeedYou, drafts, promotions, handledAlone, neededUser, tasksOpen, tasksDueToday] = await Promise.all([
     hasGmail
