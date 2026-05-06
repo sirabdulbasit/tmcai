@@ -73,10 +73,8 @@ async function backfillForUser(clientNumber: string, userId: number, userEmail: 
         continue;
       }
 
-      // Existence check: any wiki_page (clientNumber + pageType +
-      // metadata.gmailMessageId) marks this email as already scribed.
-      // We use $queryRawUnsafe because metadata is jsonb and Prisma's
-      // findFirst lacks a clean path operator for it.
+      // Existence check #1: any wiki_page with the same gmailMessageId
+      // marks this email as already scribed.
       const exists = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
         `SELECT id FROM wiki_pages
           WHERE client_number = $1
@@ -104,7 +102,27 @@ async function backfillForUser(clientNumber: string, userId: number, userEmail: 
         const references = p.headers?.References ?? null;
 
         const dateIso = ev.createdAt.toISOString().slice(0, 10);
-        const title = `${dateIso} · ${subject}`.slice(0, 300);
+        // Make title unique by appending the last 8 chars of the
+        // gmailMessageId. The unique constraint on (clientNumber, user_id,
+        // pageType, title) blows up otherwise when two different emails
+        // share the same date + subject (very common: "Re: <x>" replies
+        // back-and-forth on the same day, or multi-recipient blasts).
+        const idSuffix = gmailMessageId.slice(-8);
+        const baseTitle = `${dateIso} · ${subject}`;
+        const title = `${baseTitle} · ${idSuffix}`.slice(0, 300);
+
+        // Existence check #2: title collision. If something already
+        // exists at this exact title (rare with the suffix above, but
+        // possible if the same email was scribed via a different code
+        // path), skip rather than throwing the unique-constraint error.
+        const titleClash = await prisma.wikiPage.findFirst({
+          where: { clientNumber, userId, pageType: 'email_message', title } as any,
+          select: { id: true },
+        }).catch(() => null);
+        if (titleClash) {
+          stats.alreadyScribed += 1;
+          continue;
+        }
 
         const bodyParts: string[] = [];
         bodyParts.push(`# ${subject}`);
