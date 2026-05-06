@@ -3,25 +3,52 @@
 // records — Node's default behaviour tries IPv6 first and ETIMEDOUTs on
 // every Google API call (OAuth, token refresh, scribe, calendar sync).
 //
-// Three layers of progressively stronger fixes; the global agent option
-// is the one that actually works on Node 20 with this kernel:
-//   1. dns.setDefaultResultOrder('ipv4first') — preference only;
-//      doesn't bind on this kernel (verified ETIMEDOUT persists).
-//   2. https.globalAgent.options.family = 4 — every default-agent
-//      request forces IPv4 lookup. This is the bind that works.
-//   3. Same for http.globalAgent (covers the rare http: callers).
+// Layered progressively stronger fixes — empirically the dns.lookup
+// monkey-patch is the one that actually catches gaxios / googleapis,
+// which create their own https.Agent and bypass globalAgent.options:
+//   1. dns.setDefaultResultOrder('ipv4first') — preference only.
+//   2. https/http.globalAgent.options.family = 4 — covers default-agent
+//      callers (node-fetch, undici-via-fetch, our own callers).
+//   3. dns.lookup monkey-patch — force family: 4 on EVERY DNS lookup.
+//      Catches libraries (gaxios used by googleapis) that build their
+//      own Agent instances and don't see globalAgent.options.
 //
 // Hosts with working IPv6 are unaffected — family:4 just means "if you
-// can resolve to v4, prefer it." Anywhere a custom https.Agent is used
-// (with its own options object) bypasses this; for our codebase the
-// default agent is what googleapis / gaxios / node-fetch / undici all
-// use.
+// can resolve to v4, prefer it." On a dual-stack host this is
+// indistinguishable from default behaviour.
 import dns from 'dns';
 import http from 'http';
 import https from 'https';
 dns.setDefaultResultOrder('ipv4first');
 ((https.globalAgent as unknown) as { options: { family?: number } }).options.family = 4;
 ((http.globalAgent as unknown) as { options: { family?: number } }).options.family = 4;
+
+// dns.lookup monkey-patch — last line of defence so libraries that bring
+// their own https.Agent (gaxios → googleapis) still resolve to IPv4.
+const originalLookup = dns.lookup;
+(dns as unknown as { lookup: typeof dns.lookup }).lookup = function patchedLookup(
+  hostname: string,
+  options: unknown,
+  callback?: unknown,
+): unknown {
+  // The original signature is ((host, opts?, cb) | (host, cb)). Force
+  // family: 4 regardless of how the caller invokes it.
+  let actualOpts: dns.LookupOptions;
+  let actualCb: (...args: unknown[]) => void;
+  if (typeof options === 'function') {
+    actualCb = options as (...args: unknown[]) => void;
+    actualOpts = { family: 4 };
+  } else if (typeof options === 'number') {
+    actualCb = callback as (...args: unknown[]) => void;
+    actualOpts = { family: 4 };
+  } else {
+    actualCb = callback as (...args: unknown[]) => void;
+    actualOpts = { ...((options as object) ?? {}), family: 4 } as dns.LookupOptions;
+  }
+  return (originalLookup as unknown as (
+    h: string, o: dns.LookupOptions, cb: (...args: unknown[]) => void,
+  ) => unknown)(hostname, actualOpts, actualCb);
+} as typeof dns.lookup;
 
 import './instrumentation';
 import dotenv from 'dotenv';

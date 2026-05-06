@@ -13,7 +13,17 @@ function ClientManagementTab({ user, msg, setMsg }) {
   const [prices, setPrices] = useState([]);
   const [showCreateTenant, setShowCreateTenant] = useState(false);
   const [showCreateUser, setShowCreateUser] = useState(false);
-  const [subTab, setSubTab] = useState(user?.isSuperAdmin ? 'tenants' : 'users');
+  // Initial sub-tab honours ?subtab=... in the URL when present (used
+  // by the OAuth round-trip flow to land back on the Client Connectors
+  // sub-tab after Google consent). Falls back to the role default.
+  const [subTab, setSubTab] = useState(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get('subtab');
+      const valid = ['tenants', 'users', 'clientconfig', 'connectors'];
+      if (fromUrl && valid.includes(fromUrl)) return fromUrl;
+    } catch { /* ignore — fall through to default */ }
+    return user?.isSuperAdmin ? 'tenants' : 'users';
+  });
 
   // ─── New Client form (info + license + config all-in-one) ────
   const [nc, setNc] = useState({
