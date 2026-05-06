@@ -490,6 +490,58 @@ const server = app.listen(env.port, async () => {
     }
   }, 2 * 60 * 1000);
 
+  // ── Queue/archive maintenance ─────────────────────────────────
+  // Two scheduled jobs that keep feed_events trimmed to a 30-day
+  // rolling active queue while ensuring scribe (wiki_pages
+  // email_message) holds the permanent archive. Both run for every
+  // active user automatically — new users get picked up on the next
+  // tick without any manual intervention. Per user instruction
+  // (2026-05-07): "who will run these scripts? and when?" — answer:
+  // the server, on this schedule, for everyone.
+
+  // 1. Scribe backfill — every 6 hours. Catches any feed_events that
+  //    didn't get a scribe sibling at ingest time (Gmail OAuth was
+  //    invalid_grant when ingestEmailBody ran, etc.). Idempotent;
+  //    the cost is one count + one find per row that already has a
+  //    scribe sibling. Sequential across users so we don't DoS the DB.
+  setInterval(async () => {
+    try {
+      const { backfillUserScribe, forEachActiveUser } =
+        await import('./services/maintenance/queueArchiveMaintenanceService');
+      const results = await forEachActiveUser((cn, uid) => backfillUserScribe(cn, uid));
+      const totalCreated = results.reduce((s, r) => s + (r.result?.created ?? 0), 0);
+      const totalErrors = results.reduce((s, r) => s + (r.result?.errors ?? 0), 0) +
+        results.filter((r) => r.error).length;
+      if (totalCreated > 0 || totalErrors > 0) {
+        console.log(`[scribe-backfill] users=${results.length} created=${totalCreated} errors=${totalErrors}`);
+      }
+    } catch (err: any) {
+      console.warn('[scribe-backfill] error:', err.message);
+    }
+  }, 6 * 60 * 60 * 1000);
+
+  // 2. feed_events pruner — every 24 hours. Removes rows that are
+  //    older than 30 days OR have a terminal decision_log entry,
+  //    PROVIDED a scribe sibling exists (no data loss). Runs in
+  //    --apply mode unattended; the safety check is the scribe
+  //    sibling + the dry-run period the operator already validated.
+  setInterval(async () => {
+    try {
+      const { pruneUserFeedEvents, forEachActiveUser } =
+        await import('./services/maintenance/queueArchiveMaintenanceService');
+      const results = await forEachActiveUser((cn, uid) =>
+        pruneUserFeedEvents(cn, uid, { apply: true }),
+      );
+      const totalDeleted = results.reduce((s, r) => s + (r.result?.deleted ?? 0), 0);
+      const totalBlocked = results.reduce((s, r) => s + (r.result?.blockedNoScribe ?? 0), 0);
+      if (totalDeleted > 0 || totalBlocked > 0) {
+        console.log(`[feed-pruner] users=${results.length} deleted=${totalDeleted} blocked-no-scribe=${totalBlocked}`);
+      }
+    } catch (err: any) {
+      console.warn('[feed-pruner] error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000);
+
   // MyOS — Google Calendar poller every 10 min. Pulls next 48h of events
   // for every user with an active Google integration so the Meetings tile
   // and the triage pipeline see fresh calendar data.
