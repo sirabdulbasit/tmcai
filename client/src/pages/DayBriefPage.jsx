@@ -1949,6 +1949,23 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
                   pre-`fromDisplay` items still in cache. */}
               {(item.fromDisplay || (item.from ?? '').replace(/<[^>]*>/g, '').replace(/^["']|["']$/g, '').trim() || item.fromEmail || '').slice(0, 60)}
             </strong>
+            {/* Importance stars next to the sender. Only show for ≥1★
+                 (unrated senders aren't a meaningful signal). 4–5★ get
+                 highlighted color since they bypass the auto-archive
+                 filters and floor the criticality band. */}
+            {(item.senderStars ?? 0) > 0 && (
+              <span
+                title={`You rated this sender ${item.senderStars}/5 — ${item.senderStars >= 4 ? 'never auto-archived; band floored at high+' : item.senderStars >= 3 ? 'criticality band floored at medium+' : 'tracked but no auto-prioritisation'}`}
+                style={{
+                  fontSize: 'var(--fs-xs)',
+                  color: item.senderStars >= 4 ? '#fbbf24' : 'var(--text-muted)',
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {'★'.repeat(item.senderStars)}{'☆'.repeat(5 - item.senderStars)}
+              </span>
+            )}
             {/*
               For meetings, show the MEETING START time, not when Brain
               ingested the calendar invite. For everything else, the

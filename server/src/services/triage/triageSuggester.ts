@@ -50,6 +50,12 @@ export interface AttentionItem {
   fromDisplay?: string;
   fromEmail?: string;
   senderDomain?: string;
+  /** Importance stars (0..5) the user assigned to this sender in
+   *  Contacts. UI surfaces ★ next to the name on the card so the user
+   *  can see WHY a routine-looking message is being treated as
+   *  critical. 0 means unrated; we still send the field so the
+   *  client can render absence consistently. */
+  senderStars?: number;
   subject: string;
   preview: string;
   receivedAt: string;
@@ -786,6 +792,10 @@ export async function suggestForFeedEvent(row: {
     suggestedDelegateeName: delegatee?.name,
     handledByRule: !!activeRule,
     critical: isCritical,
+    // Sender's importance stars (0..5). Sourced from the criticality
+    // engine's signals so we never disagree with it. UI shows ★ next
+    // to the sender name on the card.
+    senderStars: (criticality as any)?.signals?.importanceStars ?? 0,
     noise: decision.noise,
     actions: decision.actions as any,
     suggestedRules,
