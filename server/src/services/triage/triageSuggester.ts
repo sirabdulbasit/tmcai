@@ -918,13 +918,18 @@ export async function buildAttentionList(
   //  1. Drop already-decided rows (no point running LLM on them).
   //  2. Drop rows whose source-native timestamp is older than the
   //     ATTENTION_WINDOW_DAYS window.
-  //  3. Cap total candidates (keep newest by event date).
-  const eligible = rows.filter((r) => {
-    if (decidedSet.has(r.id)) return false;
-    const eventDate = extractEventOccurredAt(r);
-    return eventDate >= sevenDaysAgo;
-  });
-  const candidates = eligible.slice(0, MAX_CANDIDATES);
+  //  3. Sort by EVENT DATE (not createdAt) so future calendar events
+  //     float alongside recent emails. With a wide window the top
+  //     N by createdAt would be all emails — calendar events would
+  //     be excluded because they were ingested earlier even though
+  //     they're upcoming.
+  //  4. Cap to MAX_CANDIDATES to keep memory bounded.
+  const withDates = rows
+    .filter((r) => !decidedSet.has(r.id))
+    .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
+    .filter((x) => x.eventDate >= sevenDaysAgo);
+  withDates.sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime());
+  const candidates = withDates.slice(0, MAX_CANDIDATES).map((x) => x.row);
 
   // Run suggestForFeedEvent in PARALLEL across candidates — but in
   // batches to keep memory bounded. With wide windows + heavy
@@ -1168,11 +1173,15 @@ export async function buildHandledList(
     take: Math.min(limit * 10, MAX_HANDLED_CANDIDATES * 3),
   });
 
-  const eligible = rows.filter((r) => {
-    const eventDate = extractEventOccurredAt(r);
-    return eventDate >= sevenDaysAgo;
-  });
-  const candidates = eligible.slice(0, MAX_HANDLED_CANDIDATES);
+  // Sort by event date so future calendar events stay in scope when
+  // the cap kicks in (same reason as buildAttentionList — wide
+  // windows + createdAt sort would otherwise exclude upcoming events
+  // because their ingest timestamp predates recent emails).
+  const withDates = rows
+    .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
+    .filter((x) => x.eventDate >= sevenDaysAgo);
+  withDates.sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime());
+  const candidates = withDates.slice(0, MAX_HANDLED_CANDIDATES).map((x) => x.row);
 
   // Batched triage — keeps memory bounded even for wide windows.
   const HANDLED_BATCH_SIZE = 25;
