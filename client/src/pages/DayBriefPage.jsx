@@ -345,6 +345,9 @@ export default function DayBriefPage() {
   // can take 10–30s. Tracked separately so the BRIEF section can show its
   // own shimmer without holding up the rest of the page.
   const [briefLoading, setBriefLoading] = useState(true);
+  // Drill-down modal: when set, opens the InboxBrowser scoped to this source.
+  // Set by clicking a volume tile (e.g. "Emails Brain saw" → 'gmail').
+  const [inboxBrowser, setInboxBrowser] = useState(null);
   const { toasts, notify, dismiss } = useToasts();
 
   // Shared loader. `fullSync` triggers a Gmail+Calendar pull first so very
@@ -581,7 +584,13 @@ export default function DayBriefPage() {
 
       {/* ── Volume strip ────────────────────────────────────── */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
-        <MiniStat icon="mail"           label="Emails Brain saw"  big={emailsToday}         sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'all-time, ingested'} />
+        <MiniStat
+          icon="mail"
+          label="Emails Brain saw"
+          big={emailsToday}
+          sub={attention.filter((a) => a.itemType === 'email').length > 0 ? `${attention.filter((a) => a.itemType === 'email').length} need you` : 'all-time, ingested'}
+          onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
+        />
         <MiniStat
           icon="message-circle"
           label="WhatsApp today"
@@ -600,6 +609,15 @@ export default function DayBriefPage() {
       </section>
 
       <ToastStack toasts={toasts} onDismiss={dismiss} />
+
+      {/* Drill-down modal — opens when a clickable MiniStat is tapped */}
+      {inboxBrowser && (
+        <InboxBrowser
+          source={inboxBrowser.source}
+          label={inboxBrowser.label}
+          onClose={() => setInboxBrowser(null)}
+        />
+      )}
 
       {/* ═══════════════════════════════════════════════════════════
           ZONE 1 — TODAY  (urgent, action-needed)
@@ -1151,15 +1169,21 @@ function AttentionTabs({ counts, active, onChange }) {
   );
 }
 
-function MiniStat({ icon, label, big, sub, highlight }) {
+function MiniStat({ icon, label, big, sub, highlight, onClick }) {
+  const clickable = typeof onClick === 'function';
   return (
     <Card
       size="sm"
+      onClick={clickable ? onClick : undefined}
       style={{
         padding: 'var(--s-3)',
         background: highlight ? 'var(--accent-dim)' : undefined,
         borderColor: highlight ? 'var(--accent)' : undefined,
+        cursor: clickable ? 'pointer' : undefined,
+        transition: clickable ? 'transform 0.1s, border-color 0.1s' : undefined,
       }}
+      onMouseEnter={clickable ? (e) => { e.currentTarget.style.borderColor = 'var(--accent)'; } : undefined}
+      onMouseLeave={clickable ? (e) => { e.currentTarget.style.borderColor = highlight ? 'var(--accent)' : ''; } : undefined}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>{label}</div>
@@ -1167,7 +1191,153 @@ function MiniStat({ icon, label, big, sub, highlight }) {
       </div>
       <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 'var(--fw-semibold)', marginTop: 2, color: highlight ? 'var(--accent)' : 'var(--text)' }}>{big}</div>
       {sub && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>}
+      {clickable && (
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Click to browse →
+        </div>
+      )}
     </Card>
+  );
+}
+
+/**
+ * InboxBrowser — modal drill-down opened from a clickable MiniStat.
+ *
+ * Shows every feed_event the logged-in user has ingested for a given
+ * source (email / whatsapp / calendar / tasks / all). Paginated 50 at
+ * a time via /brief/inbox. Read-only — no triage actions yet (decide
+ * still flows through the My Attention card for in-window items).
+ *
+ * The list is scoped to req.user on the server, so this can never
+ * surface another user's mail. We pass `source` so the same component
+ * can power "Emails Brain saw", "WhatsApp Brain saw", etc.
+ */
+function InboxBrowser({ source, label, onClose }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
+  const PAGE = 50;
+
+  const fetchPage = useCallback(async (newOffset, query) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        source,
+        limit: String(PAGE),
+        offset: String(newOffset),
+      });
+      if (query) params.set('q', query);
+      const { data } = await api.get(`/brief/inbox?${params.toString()}`);
+      if (newOffset === 0) setItems(data.items ?? []);
+      else setItems((prev) => [...prev, ...(data.items ?? [])]);
+      setTotal(data.total ?? 0);
+      setHasMore(!!data.hasMore);
+    } catch {
+      /* keep what we have */
+    } finally {
+      setLoading(false);
+    }
+  }, [source]);
+
+  useEffect(() => { fetchPage(0, q); /* initial */ /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [source]);
+
+  const onSearch = (e) => {
+    e.preventDefault();
+    setOffset(0);
+    fetchPage(0, q);
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
+        paddingTop: 60,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+          width: 'min(900px, 92vw)',
+          maxHeight: '85vh',
+          display: 'flex', flexDirection: 'column',
+          boxShadow: 'var(--shadow-lg)',
+        }}
+      >
+        <div style={{ padding: 'var(--s-4)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 'var(--s-3)' }}>
+          <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', flex: 1 }}>{label} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({total})</span></h3>
+          <form onSubmit={onSearch} style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="text"
+              placeholder="Filter by sender…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              style={{
+                background: 'var(--bg-2)', border: '1px solid var(--border)',
+                borderRadius: 'var(--r-sm)', padding: '6px 10px', color: 'var(--text)',
+                fontSize: 'var(--fs-sm)', minWidth: 200,
+              }}
+            />
+          </form>
+          <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+        </div>
+        <div style={{ overflowY: 'auto', flex: 1, padding: 'var(--s-3)' }}>
+          {items.length === 0 && !loading && (
+            <Empty title="Nothing here">No items match your filter.</Empty>
+          )}
+          {items.map((it) => (
+            <div key={it.id} style={{
+              padding: '10px 12px', borderBottom: '1px solid var(--border)',
+              display: 'flex', gap: 12, alignItems: 'baseline',
+            }}>
+              <div style={{ minWidth: 160, color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {it.senderName || it.senderEmail || '—'}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {it.subject || '(no subject)'}
+                </div>
+                {it.snippet && (
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {it.snippet}
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                {new Date(it.receivedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: 'var(--s-3)', borderTop: '1px solid var(--border)', textAlign: 'center' }}>
+          {hasMore ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={loading}
+              onClick={() => {
+                const next = offset + PAGE;
+                setOffset(next);
+                fetchPage(next, q);
+              }}
+            >
+              {loading ? 'Loading…' : `Load next ${PAGE}`}
+            </Button>
+          ) : (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              {loading ? 'Loading…' : `End of list — ${total} items`}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

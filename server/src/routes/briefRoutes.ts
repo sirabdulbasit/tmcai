@@ -38,6 +38,81 @@ router.get('/attention', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /brief/inbox — drill-down list of every feed_event Brain has
+ * ingested for this user, paginated.
+ *
+ * Query params:
+ *   source — 'gmail' | 'whatsapp' | 'gcal' | 'gtasks' | 'all' (default 'all')
+ *   limit  — page size (default 50, max 200)
+ *   offset — for pagination
+ *   q      — substring filter against sender + subject (optional)
+ *
+ * Returns: { items, total, hasMore }
+ *
+ * User-scoped via req.user; no cross-tenant leakage. Same shape the
+ * volume tile drills into when clicked.
+ */
+router.get('/inbox', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const source = String(req.query.source ?? 'all');
+  const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
+  const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+  const q = String(req.query.q ?? '').trim();
+
+  const VALID_SOURCES = new Set(['gmail', 'whatsapp', 'gcal', 'gtasks']);
+  const sourceFilter = source !== 'all' && VALID_SOURCES.has(source) ? source : null;
+
+  try {
+    const where: any = {
+      clientNumber: user.clientNumber,
+      userId: user.id,
+    };
+    if (sourceFilter) where.sourceType = sourceFilter;
+    if (q) {
+      where.OR = [
+        { senderName: { contains: q, mode: 'insensitive' } },
+        { senderEmail: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.feedEvent.findMany({
+        where,
+        select: {
+          id: true,
+          sourceType: true,
+          senderEmail: true,
+          senderName: true,
+          rawPayload: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.feedEvent.count({ where }),
+    ]);
+
+    const items = rows.map((r) => {
+      const p: any = r.rawPayload ?? {};
+      return {
+        id: r.id,
+        sourceType: r.sourceType,
+        senderName: r.senderName,
+        senderEmail: r.senderEmail,
+        subject: String(p.subject ?? p.summary ?? p.title ?? p.eventName ?? '').slice(0, 240),
+        snippet: String(p.snippet ?? p.body ?? p.description ?? '').slice(0, 200),
+        receivedAt: r.createdAt.toISOString(),
+      };
+    });
+
+    res.json({ items, total, hasMore: offset + items.length < total });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /brief/handled — items Brain handled WITHOUT bothering the user.
  *
  * Sister endpoint to /attention. Together they implement the "100%
