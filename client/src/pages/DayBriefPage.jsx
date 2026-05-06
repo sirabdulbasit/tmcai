@@ -12,6 +12,17 @@
  *   Ask Brain          — natural-language query bar (Knowledge Center entry)
  */
 import { Fragment, useEffect, useState, useCallback, useMemo, useRef } from 'react';
+
+// Module-level cache keyed by userId. Survives navigation between
+// routes (Day Brief → Contacts → Day Brief) so coming back doesn't
+// trigger a fresh 11-second load. The cache is written on every
+// successful load() and read on mount; if it's hit, the page paints
+// instantly from cached data and refreshes in the background.
+//
+// Invalidated when the user changes (login/logout). Cleared on full
+// page reload (it's an in-memory Map, not localStorage). Acceptable
+// trade — the user can always click Sync if they suspect staleness.
+const dayBriefCache = new Map();
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -318,29 +329,31 @@ function ConnectorGapBanner({ gaps, onConnect }) {
 export default function DayBriefPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [volume, setVolume] = useState(null);
-  const [attention, setAttention] = useState([]);
-  const [brainActions, setBrainActions] = useState([]);
+  // Hydrate from module cache so route-back navigation paints
+  // instantly. The cache is populated by the previous load(); if it's
+  // hit, the component renders with last-known data while a fresh
+  // background load() refreshes it. If it's empty, state defaults
+  // apply and we show the BrainWorking spinner as before.
+  const cached = user?.id ? dayBriefCache.get(user.id) : null;
+  const [volume, setVolume] = useState(cached?.volume ?? null);
+  const [attention, setAttention] = useState(cached?.attention ?? []);
+  const [brainActions, setBrainActions] = useState(cached?.brainActions ?? []);
   // 100% accountability — items Brain handled WITHOUT bothering the user.
   // Bucketed: auto_rule | auto_noise | auto_self | auto_high_confidence | auto_decided.
   // Fed by /brief/handled. Together with `attention` they cover every
   // feed event in the 7-day window — no silent drops.
-  const [handled, setHandled] = useState([]);
-  const [handledByBucket, setHandledByBucket] = useState({});
-  const [openItems, setOpenItems] = useState([]);
-  const [promotions, setPromotions] = useState([]);
-  const [patterns, setPatterns] = useState([]);
-  const [drafts, setDrafts] = useState([]);
-  const [gaps, setGaps] = useState(null); // { gaps: [...], hasAnyFeed: bool }
-  // Risk Radar lives full-time on My Rules → Risk Radar (rules + flags).
-  // Day Brief no longer mirrors it.
+  const [handled, setHandled] = useState(cached?.handled ?? []);
+  const [handledByBucket, setHandledByBucket] = useState(cached?.handledByBucket ?? {});
+  const [openItems, setOpenItems] = useState(cached?.openItems ?? []);
+  const [promotions, setPromotions] = useState(cached?.promotions ?? []);
+  const [patterns, setPatterns] = useState(cached?.patterns ?? []);
+  const [drafts, setDrafts] = useState(cached?.drafts ?? []);
+  const [gaps, setGaps] = useState(cached?.gaps ?? null);
   // Brain Cognitive Engine output — mind state + surfaced observations.
-  const [cognitive, setCognitive] = useState({ mindState: null, observations: [] });
-  // Standing instructions and "What Brain learned this week" used to live
-  // on Day Brief. Both are now managed full-time on My Rules (Standing
-  // Instructions tab + Learned Preferences tab) — Day Brief stays focused
-  // on TODAY (Zone 1) and WHAT BRAIN DID (Zone 2).
-  const [loading, setLoading] = useState(true);
+  const [cognitive, setCognitive] = useState(cached?.cognitive ?? { mindState: null, observations: [] });
+  // If cache is hit, skip the full-screen "Brain is reading..." indicator —
+  // the user is looking at real data and the refresh happens silently.
+  const [loading, setLoading] = useState(!cached);
   // briefLoading is the slower phase — /steering/brief is LLM-backed and
   // can take 10–30s. Tracked separately so the BRIEF section can show its
   // own shimmer without holding up the rest of the page.
@@ -348,6 +361,11 @@ export default function DayBriefPage() {
   // Drill-down modal: when set, opens the InboxBrowser scoped to this source.
   // Set by clicking a volume tile (e.g. "Emails Brain saw" → 'gmail').
   const [inboxBrowser, setInboxBrowser] = useState(null);
+  // Guard against React 18 strict-mode useEffect double-fire and against
+  // overlapping auto-refresh ticks. If a load is already in flight, skip
+  // queuing another one — that's what caused the "thinking → stop →
+  // thinking → stop" flicker the user saw at 02:08-02:09.
+  const loadInFlight = useRef(false);
   const { toasts, notify, dismiss } = useToasts();
 
   // Shared loader. `fullSync` triggers a Gmail+Calendar pull first so very
@@ -367,6 +385,12 @@ export default function DayBriefPage() {
   // only, capped further by a 6s safety timeout in case a fast endpoint
   // hangs (we'd rather paint stale data than freeze the UI).
   const load = useCallback(async (fullSync = false) => {
+    // Skip overlapping calls — React 18 strict-mode useEffect double-fire
+    // and 2-min auto-refresh ticks can both queue a load while one is
+    // already in flight. Without this guard the user sees the brain pill
+    // start/stop/start/stop in rapid succession.
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     setLoading(true);
     setBriefLoading(true);
     window.dispatchEvent(new CustomEvent('brain:thinking:start'));
@@ -391,9 +415,17 @@ export default function DayBriefPage() {
       if (fullSync) {
         try { await api.post('/brief/sync-now'); } catch { /* non-fatal */ }
       }
-      // Phase 1 — fast queries. Cap the whole batch at 6s so a single hung
-      // endpoint can't strand the UI in "Thinking…" forever.
-      const fast = Promise.all([
+      // Phase 1 — fast queries. Await directly. Earlier we raced this
+      // against a 6s "safety" timer that flipped loading=false to keep
+      // the UI from feeling stuck — but with the wider attention
+      // window and per-event triage, fast queries take ~11s. The 6s
+      // race fired BEFORE data arrived, so the loading indicator
+      // closed, the page painted "All clear" empty state, then 5s
+      // later the real data replaced it. The flicker the user saw at
+      // 02:08→02:09 was exactly this. Better to wait the real time
+      // with a continuous loading indicator than fake an early
+      // resolution.
+      const [atten, brain, ds, ins, gap, cog, hndl] = await Promise.all([
         api.get('/brief/attention?limit=50').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
         api.get('/brief/drafts').then((r) => r.data.drafts ?? []).catch(() => []),
@@ -402,36 +434,34 @@ export default function DayBriefPage() {
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
         api.get('/brief/handled?limit=100').then((r) => ({ items: r.data.items ?? [], byBucket: r.data.byBucket ?? {} })).catch(() => ({ items: [], byBucket: {} })),
       ]);
-      const safety = new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 6000));
-      const result = await Promise.race([fast, safety]);
-      if (result !== 'TIMEOUT') {
-        const [atten, brain, ds, ins, gap, cog, hndl] = result;
-        setAttention(atten);
-        setBrainActions(brain);
-        setDrafts(ds);
-        setGaps(gap);
-        setCognitive(cog);
-        setPatterns(ins);
-        setHandled(hndl.items);
-        setHandledByBucket(hndl.byBucket);
-      }
-      // If we hit the 6s timeout, the fast promise keeps running; let it
-      // update state when it eventually resolves so the user gets data.
-      if (result === 'TIMEOUT') {
-        fast.then(([atten, brain, ds, ins, gap, cog, hndl]) => {
-          setAttention(atten);
-          setBrainActions(brain);
-          setDrafts(ds);
-          setGaps(gap);
-          setCognitive(cog);
-          setPatterns((cur) => (cur && cur.length > 0 ? cur : ins));
-          setHandled(hndl.items);
-          setHandledByBucket(hndl.byBucket);
-        }).catch(() => {});
+      setAttention(atten);
+      setBrainActions(brain);
+      setDrafts(ds);
+      setGaps(gap);
+      setCognitive(cog);
+      setPatterns(ins);
+      setHandled(hndl.items);
+      setHandledByBucket(hndl.byBucket);
+      // Write to module cache so navigation back to Day Brief is
+      // instant (next mount reads from here instead of waiting on
+      // a fresh load). volume + openItems + promotions are filled
+      // separately by the briefPromise.then() callback above; we
+      // snapshot whatever is in those state vars at write time via
+      // a small timeout so they settle first.
+      if (user?.id) {
+        setTimeout(() => {
+          dayBriefCache.set(user.id, {
+            volume, attention: atten, brainActions: brain,
+            handled: hndl.items, handledByBucket: hndl.byBucket,
+            openItems, promotions, patterns: ins, drafts: ds,
+            gaps: gap, cognitive: cog,
+          });
+        }, 0);
       }
     } finally {
       setLoading(false);
       window.dispatchEvent(new CustomEvent('brain:thinking:end'));
+      loadInFlight.current = false;
     }
   }, [user?.id]);
 
