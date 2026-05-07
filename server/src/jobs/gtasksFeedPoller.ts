@@ -17,6 +17,7 @@
 import prisma from '../db/prisma';
 import * as gtasks from '../services/adapters/googleTasksAdapter';
 import { ingest } from '../services/feed/feedIngestionService';
+import { stampConnectorSync } from '../services/connectorSyncTracker';
 
 export interface GtasksPollResult {
   userId: number;
@@ -87,5 +88,6 @@ async function pollUser(userId: number, clientNumber: string): Promise<GtasksPol
     }
   }
 
+  await stampConnectorSync(userId, ['google_tasks']);
   return { userId, clientNumber, fetched: tasks.length, ingested, duplicates, errors };
 }

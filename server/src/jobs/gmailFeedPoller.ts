@@ -2,6 +2,7 @@ import prisma from '../db/prisma';
 import { getInbox, readEmail } from '../services/adapters/gmailAdapter';
 import { ingest } from '../services/feed/feedIngestionService';
 import { isFeatureEnabled } from '../services/featureFlagService';
+import { stampConnectorSync } from '../services/connectorSyncTracker';
 
 /**
  * HaseebOS v15 — Gmail polling bridge.
@@ -90,6 +91,11 @@ async function pollUser(userId: number, clientNumber: string): Promise<PollResul
       console.warn(`[gmailPoll] ingest failed user=${userId} msg=${e.id}: ${err.message}`);
     }
   }
+
+  // Surface freshness to the UI — Day Brief reads userConnector.lastSyncAt
+  // for "Last synced X ago". Stamp regardless of whether new mail arrived
+  // so an idle poll still proves the channel is alive.
+  await stampConnectorSync(userId, ['gmail']);
 
   return { userId, clientNumber, fetched: emails.length, ingested, duplicates, errors };
 }

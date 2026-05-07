@@ -8,6 +8,7 @@
  */
 import prisma from '../db/prisma';
 import { getEvents } from '../services/calendarService';
+import { stampConnectorSync } from '../services/connectorSyncTracker';
 import { ingest } from '../services/feed/feedIngestionService';
 import { isFeatureEnabled } from '../services/featureFlagService';
 
@@ -89,5 +90,6 @@ async function pollUser(userId: number, clientNumber: string): Promise<GcalPollR
     }
   }
 
+  await stampConnectorSync(userId, ['google_calendar']);
   return { userId, clientNumber, fetched: events.length, ingested, duplicates, errors };
 }

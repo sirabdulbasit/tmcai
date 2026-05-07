@@ -14,6 +14,7 @@
 import prisma from '../db/prisma';
 import { getAllRecentMessages } from '../services/googleChatPersonalService';
 import { ingest } from '../services/feed/feedIngestionService';
+import { stampConnectorSync } from '../services/connectorSyncTracker';
 
 export interface GchatPollResult {
   userId: number;
@@ -95,5 +96,6 @@ async function pollUser(userId: number, clientNumber: string): Promise<GchatPoll
     }
   }
 
+  await stampConnectorSync(userId, ['google_chat']);
   return { userId, clientNumber, fetched: messages.length, ingested, duplicates, errors };
 }
