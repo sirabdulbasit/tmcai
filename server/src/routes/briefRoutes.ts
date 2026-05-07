@@ -1525,13 +1525,55 @@ router.post('/voice-instruction', voiceUpload.single('audio'), async (req: Reque
       triggerFeedEventId: feedEventId,
     });
 
-    // If the card-context (feedEventId) was given but the LLM didn't
-    // attach a target, fold it in — "this email" obviously means the
-    // card the user tapped the mic on.
-    if (feedEventId && !ix.targetFeedEventId
+    // When the user tapped 🎤 Dictate ON A SPECIFIC CARD, that card is
+    // their explicit context — overriding any other target the LLM
+    // may have hallucinated from recent feed_events. The card-tap is
+    // deliberate; the LLM's recent-feed match is a guess. Only the
+    // global mic button (no feedEventId) leaves target resolution
+    // entirely to the LLM's reading of the transcript.
+    if (feedEventId
         && (ix.intent === 'draft_reply' || ix.intent === 'delegate'
             || ix.intent === 'schedule_meeting' || ix.intent === 'add_open_item')) {
+      const overriding = ix.targetFeedEventId !== feedEventId;
       ix.targetFeedEventId = feedEventId;
+
+      // Re-anchor the preview summary on this card's sender. Without
+      // this rewrite the user sees "Drafting reply to 'My Business'"
+      // even though Brain will actually draft to whoever sent the
+      // card they're on. Only rebuild when we overrode the LLM's pick
+      // — if the LLM already had the right target, its summary is fine.
+      if (overriding) {
+        try {
+          const fe = await prisma.feedEvent.findFirst({
+            where: { id: feedEventId, clientNumber: user.clientNumber, userId: user.id },
+            select: { senderName: true, senderEmail: true, senderPhone: true, sourceType: true, rawPayload: true },
+          });
+          if (fe) {
+            const senderLabel = fe.senderName
+              ?? fe.senderEmail
+              ?? fe.senderPhone
+              ?? (fe.rawPayload as any)?.from
+              ?? 'this card';
+            const intentVerb: Record<string, string> = {
+              draft_reply: `Drafting a reply to ${senderLabel}`,
+              delegate: `Delegating ${senderLabel}'s message`,
+              schedule_meeting: `Scheduling a meeting about ${senderLabel}'s thread`,
+              add_open_item: `Adding an open item from ${senderLabel}`,
+            };
+            const verb = intentVerb[ix.intent];
+            if (verb) {
+              const detail = ix.params?.replyIntent
+                ? ` saying: ${ix.params.replyIntent}`
+                : ix.params?.delegateeName
+                ? ` to ${ix.params.delegateeName}${ix.params.delegateeNote ? ` — ${ix.params.delegateeNote}` : ''}`
+                : ix.params?.itemTitle
+                ? `: ${ix.params.itemTitle}`
+                : '';
+              ix.summary = `${verb}${detail}.`;
+            }
+          }
+        } catch { /* keep the LLM summary if rewrite failed */ }
+      }
     }
 
     // Threshold: 0.45 gives the LLM a bit more leeway than 0.55. The

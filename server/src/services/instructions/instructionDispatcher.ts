@@ -91,48 +91,93 @@ export async function dispatchInstruction(args: {
 
     // ─── draft_reply ─────────────────────────────────────────────
     case 'draft_reply': {
-      if (!ix.targetFeedEventId) return { ok: false, message: 'I need to know which email you want me to reply to. Mention the sender or subject in your instruction.' };
+      if (!ix.targetFeedEventId) return { ok: false, message: 'I need to know which message you want me to reply to. Mention the sender or subject in your instruction.' };
       const replyIntent = ix.params.replyIntent ?? '';
       try {
+        // No sourceType filter — accept any feed_event so voice
+        // dictation works on Gmail, WhatsApp, Google Chat, etc.
         const fe = await prisma.feedEvent.findFirst({
-          where: { id: ix.targetFeedEventId, clientNumber, userId, sourceType: 'gmail' },
-          select: { sourceId: true, senderEmail: true, senderName: true, rawPayload: true },
+          where: { id: ix.targetFeedEventId, clientNumber, userId },
+          select: { sourceType: true, sourceId: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true },
         });
-        if (!fe) return { ok: false, message: 'Couldn\'t find that email in your recent feed.' };
+        if (!fe) return { ok: false, message: 'Couldn\'t find that message in your recent feed.' };
         const payload: any = fe.rawPayload ?? {};
         const subject = String(payload.subject ?? '');
-        const recipient = fe.senderEmail ?? '';
-        if (!recipient) return { ok: false, message: 'No sender address on that email — can\'t draft a reply.' };
+        const senderLabel = fe.senderName ?? fe.senderEmail ?? fe.senderPhone ?? 'them';
 
-        // Use the same tone-matched composer the manual draft flow uses.
-        const { composeForwardNote } = await import('../knowledge/toneService');
-        const polished = await composeForwardNote({
-          userId,
-          delegateeName: fe.senderName ?? undefined,
-          originalSender: payload.from ?? recipient,
-          originalSubject: subject,
-          originalSnippet: String(payload.snippet ?? ''),
-          mdNote: replyIntent,
-        });
+        // Channel-specific handling.
+        if (fe.sourceType === 'gmail') {
+          const recipient = fe.senderEmail ?? '';
+          if (!recipient) return { ok: false, message: 'No sender email on that thread — can\'t draft a reply.' };
+          const { composeForwardNote } = await import('../knowledge/toneService');
+          const polished = await composeForwardNote({
+            userId,
+            delegateeName: fe.senderName ?? undefined,
+            originalSender: payload.from ?? recipient,
+            originalSubject: subject,
+            originalSnippet: String(payload.snippet ?? ''),
+            mdNote: replyIntent,
+          });
+          const action = await prisma.agentAction.create({
+            data: {
+              clientNumber, userId,
+              actionType: 'draft_reply',
+              status: 'pending_approval',
+              requiresApproval: true,
+              executedByAgent: 'voice_instruction',
+              input: { feedEventId: ix.targetFeedEventId, replyIntent } as any,
+              output: { to: recipient, subject: `Re: ${subject}`, body: polished, channel: 'email' } as any,
+            } as any,
+          });
+          return {
+            ok: true,
+            artifactId: String(action.id),
+            message: `Drafted email reply to ${senderLabel}. Open Day Brief to review and Send.`,
+          };
+        }
 
-        // Stage a draft_reply agent_action so it appears under the card
-        // for review/edit/send rather than firing instantly. Mirrors what
-        // the More menu's Draft Reply action does.
-        const action = await prisma.agentAction.create({
-          data: {
-            clientNumber, userId,
-            actionType: 'draft_reply',
-            status: 'pending_approval',
-            requiresApproval: true,
-            executedByAgent: 'voice_instruction',
-            input: { feedEventId: ix.targetFeedEventId, replyIntent } as any,
-            output: { to: recipient, subject: `Re: ${subject}`, body: polished, channel: 'email' } as any,
-          } as any,
-        });
+        if (fe.sourceType === 'whatsapp' || fe.sourceType === 'gchat') {
+          // WhatsApp / Chat replies don't go through Gmail. Use the
+          // tone-matched WA composer (mirrors what the manual reply
+          // flow on a chat card uses) so the message reads in the
+          // user's voice in the chat itself.
+          const chatId = payload.chatId ?? null;
+          if (fe.sourceType === 'whatsapp' && !chatId) {
+            return { ok: false, message: 'No chat reference on that WhatsApp message — can\'t draft a reply.' };
+          }
+          const { composeWhatsAppReply } = await import('../knowledge/toneService').catch(() => ({} as any));
+          let polished = replyIntent || 'Thanks.';
+          if (typeof composeWhatsAppReply === 'function') {
+            try {
+              polished = await composeWhatsAppReply({
+                userId, chatId,
+                inboundText: String(payload.body ?? payload.snippet ?? ''),
+                mdNote: replyIntent,
+              });
+            } catch { /* fall back to replyIntent */ }
+          }
+          const action = await prisma.agentAction.create({
+            data: {
+              clientNumber, userId,
+              actionType: 'draft_reply',
+              status: 'pending_approval',
+              requiresApproval: true,
+              executedByAgent: 'voice_instruction',
+              input: { feedEventId: ix.targetFeedEventId, replyIntent } as any,
+              output: { to: chatId, subject: '', body: polished, channel: fe.sourceType } as any,
+            } as any,
+          });
+          return {
+            ok: true,
+            artifactId: String(action.id),
+            message: `Drafted ${fe.sourceType === 'whatsapp' ? 'WhatsApp' : 'Chat'} reply to ${senderLabel}. Open Day Brief to review and Send.`,
+          };
+        }
+
+        // Calendar / Tasks don't have a "reply" semantic — bail clearly.
         return {
-          ok: true,
-          artifactId: String(action.id),
-          message: `Drafted a reply to ${fe.senderName ?? recipient}. Open Day Brief to review and Send.`,
+          ok: false,
+          message: `${fe.sourceType} items don\'t have a "reply" action. Try delegate, schedule, or add to open items instead.`,
         };
       } catch (err: any) {
         return { ok: false, message: `Draft reply failed: ${err.message}` };
