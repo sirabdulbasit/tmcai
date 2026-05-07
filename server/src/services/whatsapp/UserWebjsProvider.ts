@@ -443,6 +443,57 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       if (result.feedEventId) {
         waMessageIndex.set(result.feedEventId, { userId, chatId: rawFrom });
       }
+
+      // ── Voice / text instruction extraction ──
+      // If the user sent a voice note or text that looks like an
+      // instruction to Brain (mute X, reply to email Y saying Z,
+      // delegate to A with note B, schedule meeting tomorrow 3pm,
+      // etc.), extract intent and dispatch automatically. Trigger
+      // heuristics:
+      //   - voice notes always run through (low friction; these are
+      //     dictation by definition)
+      //   - text messages run through only when "brain" / "nexeo"
+      //     appears anywhere, OR when the message starts with an
+      //     imperative pattern (mute / draft / delegate / schedule)
+      const transcriptText = voiceTranscript?.english || voiceTranscript?.original || message.body || '';
+      const looksLikeInstruction =
+        isVoice ||
+        /\b(brain|nexeo)\b/i.test(transcriptText) ||
+        /^\s*(mute|unmute|draft|reply to|delegate|schedule|set a meeting|set window|add to open items?|note that)\b/i.test(transcriptText);
+
+      if (looksLikeInstruction && transcriptText.trim().length >= 8 && result.feedEventId) {
+        void (async () => {
+          try {
+            const { extractInstruction } = await import('../instructions/instructionExtractor');
+            const ix = await extractInstruction({
+              text: transcriptText,
+              clientNumber,
+              userId,
+              triggerFeedEventId: result.feedEventId,
+            });
+            if (ix.intent === 'none' || ix.confidence < 0.6) return;
+
+            const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+            const out = await dispatchInstruction({
+              instruction: ix,
+              clientNumber,
+              userId,
+            });
+            if (!out.message) return;
+
+            // Reply via WhatsApp on the same chat so the user gets
+            // immediate confirmation. Fire-and-forget; don't fail the
+            // ingest path if the reply send breaks.
+            try {
+              await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`);
+            } catch (e: any) {
+              log.warn('instruction confirmation reply failed', { userId, error: e.message });
+            }
+          } catch (err: any) {
+            log.warn('instruction pipeline failed', { userId, error: err.message });
+          }
+        })();
+      }
     } catch (e: any) {
       log.error('message handler error', { userId, error: e.message });
     }
