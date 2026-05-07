@@ -463,8 +463,9 @@ export async function startPairing(userId: number, clientNumber: string): Promis
  *  Runs every 2 min from server.ts so Day Brief reflects "channel is
  *  alive" even when no new messages have arrived. Skips disconnected
  *  clients so a dead pairing doesn't look fresh. */
-export async function heartbeatAllConnected(): Promise<{ stamped: number }> {
+export async function heartbeatAllConnected(): Promise<{ stamped: number; flippedDead: number }> {
   let stamped = 0;
+  let flippedDead = 0;
   for (const [userId, client] of clients.entries()) {
     try {
       // wwebjs Client exposes getState() async; CONNECTED is the only
@@ -477,7 +478,54 @@ export async function heartbeatAllConnected(): Promise<{ stamped: number }> {
       }
     } catch { /* skip this user, don't break the loop */ }
   }
-  return { stamped };
+
+  // Silent-dead-pairing detector. The earlier zombie-detect logic only
+  // catches sessions that reach the QR-issued event after death —
+  // multiple successive server restarts can fail authentication BEFORE
+  // QR fires, leaving the DB at status='connected' with no live client.
+  // Sweep: any whatsapp_personal row whose last_sync_at is more than 15
+  // minutes old AND has no entry in our in-memory clients Map → flip
+  // status to 'disconnected' so the broken-connector banner fires and
+  // the user is prompted to re-pair.
+  try {
+    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const candidates = await prisma.userConnector.findMany({
+      where: {
+        connectorType: { slug: 'whatsapp_personal' },
+        status: 'connected',
+        OR: [
+          { lastSyncAt: { lt: fifteenMinAgo } },
+          { lastSyncAt: null },
+        ],
+      } as any,
+      select: { id: true, userId: true, metadata: true },
+    });
+    for (const c of candidates) {
+      // If we still have a live in-memory client for this user, the
+      // heartbeat above would have stamped — leave it alone. Only flip
+      // when there's no client at all (boot-time orphan).
+      if (clients.has(c.userId)) continue;
+      const meta: any = c.metadata ?? {};
+      await prisma.userConnector.update({
+        where: { id: c.id },
+        data: {
+          status: 'disconnected',
+          metadata: {
+            ...meta,
+            status: 'disconnected',
+            lastError: 'No live WhatsApp client after server restart — please re-pair',
+            lastErrorAt: new Date().toISOString(),
+          } as any,
+        },
+      });
+      flippedDead += 1;
+      log.warn('Silent-dead pairing flipped to disconnected', { userId: c.userId });
+    }
+  } catch (e: any) {
+    log.warn('Silent-dead sweep failed', { error: e.message });
+  }
+
+  return { stamped, flippedDead };
 }
 
 export async function getStatus(userId: number): Promise<{ status: Status; qrDataUrl: string | null; connectedNumber: string | null; error?: string }> {
