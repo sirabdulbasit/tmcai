@@ -3345,7 +3345,7 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecid
         <span>More options</span>
       </button>
       {open && (
-        <div style={{
+        <div className="more-options-menu" style={{
           position: 'absolute', right: 0, top: 'calc(100% + 4px)',
           minWidth: 280, maxWidth: 360,
           background: 'var(--bg-2)', border: '1px solid var(--border)',

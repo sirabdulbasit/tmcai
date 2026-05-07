@@ -307,6 +307,72 @@
   }
 }
 
+/* ─── More options menu — bottom sheet on phone (Phase 2 fix) ──────────
+   On desktop the menu opens to the right of the More button. On a
+   ~390px phone the same dropdown overflows the left edge of the
+   viewport. Switch to a full-width sheet anchored above the bottom
+   safe-area so it always stays on-screen. */
+@media (max-width: 640px) {
+  .more-options-menu {
+    position: fixed !important;
+    left: var(--s-3) !important;
+    right: var(--s-3) !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--s-3)) !important;
+    top: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+}
+
+/* ─── Card density on mobile — every Card feels less wasteful ──────── */
+@media (max-width: 640px) {
+  /* Compress Card's vertical padding so 4 cards fit on a 390px screen
+     without the user feeling like every card is its own page. */
+  .card,
+  [class*="ui-card"] {
+    padding: var(--s-3) !important;
+  }
+
+  /* Stat-tile big numbers were 28-36px; on a phone we want quick scan,
+     not headline-sized. Brings the volume strip into a compact stripe. */
+  .stat-grid .ui-card,
+  .stat-grid .card,
+  div[style*="grid-template-columns"][style*="auto-fit"] > .ui-card {
+    padding: var(--s-3) !important;
+  }
+}
+
+/* ─── Tables in legacy pages (Contacts, Licenses) auto-wrap ─────────── */
+@media (max-width: 640px) {
+  /* Many list tables use grid-style headers via `<table>` or fixed
+     min-widths. Wrap their parent in horizontal scroll so cells don't
+     overlap or clip. The `.responsive-table` opt-in above handles this
+     for opt-in callers; this is a generic catch for legacy <table>. */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+  table tbody, table thead, table tr {
+    display: revert;
+  }
+}
+
+/* ─── Headers + page paddings on phones ─────────────────────────────── */
+@media (max-width: 640px) {
+  /* Page-level h1 in headers shouldn't push other widgets off-screen. */
+  header h1 {
+    font-size: var(--fs-2xl);
+  }
+  /* Tighten the standard page wrapper padding the few pages use. */
+  .page, .ui-page {
+    padding: var(--s-3) !important;
+  }
+}
+
 /* Light mode scaffold — switch body.light-mode to activate. Not wired yet. */
 body.light-mode {
   --bg-0: #ffffff;

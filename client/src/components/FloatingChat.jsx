@@ -115,16 +115,25 @@ export default function FloatingChat() {
             type="button"
             onClick={() => setOpen(false)}
             style={{
+              // Beefed up so the close action is visible at a glance on
+              // mobile where the keyboard hint isn't useful — "Esc to
+              // close" doesn't help on a phone that has no Esc key.
               background: 'transparent',
-              border: 0,
-              color: 'var(--text-muted)',
-              padding: 'var(--s-1)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              padding: '6px 12px',
               borderRadius: 'var(--r-sm)',
               cursor: 'pointer',
+              fontSize: 'var(--fs-sm)',
+              fontWeight: 'var(--fw-medium)',
+              minHeight: 36,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
             }}
-            aria-label="Close"
+            aria-label="Close chat"
           >
-            <Icon name="close" size={18} />
+            ✕ Close
           </button>
         </header>
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
