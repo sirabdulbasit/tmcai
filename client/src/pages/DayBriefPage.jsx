@@ -2566,6 +2566,236 @@ function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
   );
 }
 
+/**
+ * InlineVoiceStrip — WhatsApp-style inline recording bar that lives
+ * INSIDE the card. No modal, no overlay. Same backend pipeline as
+ * VoiceCommandModal (transcribe → extract → confirm gate).
+ *
+ * States:
+ *   recording  → 🔴 ●●● 0:05 [Stop]
+ *   processing → ⏳ Transcribing…
+ *   preview    → 📝 "transcript" → I'll <plan>  [✓ Confirm] [✗ Cancel]
+ *   unparsed   → 📝 "transcript"  Couldn't parse  [💾 Save] [🎤 Retry] [✗ Close]
+ *   done       → ✓ Done.  (auto-dismisses after 2s)
+ *
+ * Tap mic on the card → strip mounts and immediately starts recording.
+ * No extra "tap to start" step — the user already committed by tapping
+ * the mic button.
+ */
+function InlineVoiceStrip({ feedEventId, onClose, onDone, notify }) {
+  const [phase, setPhase] = useState('recording');
+  const [secs, setSecs] = useState(0);
+  const [error, setError] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const recorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const tickRef = useRef(null);
+
+  // Auto-start recording on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', ''];
+        let chosen = '';
+        for (const c of mimeCandidates) {
+          if (!c || (window.MediaRecorder && MediaRecorder.isTypeSupported(c))) { chosen = c; break; }
+        }
+        const recorder = chosen ? new MediaRecorder(stream, { mimeType: chosen }) : new MediaRecorder(stream);
+        recorderRef.current = recorder;
+        chunksRef.current = [];
+        recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunksRef.current.push(e.data); };
+        recorder.onstop = async () => {
+          if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+          try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+          if (chunksRef.current.length === 0) { onClose?.(); return; }
+          const blob = new Blob(chunksRef.current, { type: chosen || 'audio/webm' });
+          await upload(blob);
+        };
+        recorder.start();
+        tickRef.current = setInterval(() => setSecs((s) => s + 1), 1000);
+      } catch (err) {
+        const name = err?.name || '';
+        if (name === 'NotAllowedError') setError('Mic blocked. Click 🔒 in the URL bar → Site settings → Microphone → Allow.');
+        else if (name === 'NotFoundError') setError('No mic found. On Mac: System Settings → Privacy → Microphone → enable Chrome.');
+        else if (name === 'NotReadableError') setError('Mic busy with another app (Zoom, FaceTime). Close it and try again.');
+        else setError(err?.message || 'Could not access microphone.');
+        setPhase('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (tickRef.current) clearInterval(tickRef.current);
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        try { recorderRef.current.stop(); } catch {}
+      }
+      if (streamRef.current) { try { streamRef.current.getTracks().forEach((t) => t.stop()); } catch {} }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stop = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      setPhase('processing');
+      try { recorderRef.current.stop(); } catch {}
+    }
+  };
+
+  const upload = async (blob) => {
+    try {
+      const fd = new FormData();
+      fd.append('audio', blob, 'voice.webm');
+      if (feedEventId) fd.append('feedEventId', feedEventId);
+      const res = await fetch('/api/brief/voice-instruction', {
+        method: 'POST', body: fd, credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data?.error || 'Server error'); setPhase('error'); return; }
+      setPreview(data);
+      setPhase(data.intent === 'none' || !data.actionId ? 'unparsed' : 'preview');
+    } catch (err) {
+      setError(err?.message || 'Upload failed');
+      setPhase('error');
+    }
+  };
+
+  const confirm = async () => {
+    if (!preview?.actionId) return;
+    setConfirming(true);
+    try {
+      const { data } = await api.post(`/brief/voice-instruction/${preview.actionId}/confirm`);
+      if (data?.ok) {
+        notify?.(data.message || 'Done.', 'success');
+        setPhase('done');
+        setTimeout(() => { onClose?.(); onDone?.(); }, 1500);
+      } else {
+        notify?.(data?.message || 'Action failed', 'error');
+        setConfirming(false);
+      }
+    } catch (err) {
+      notify?.(err?.response?.data?.error || 'Confirm failed', 'error');
+      setConfirming(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (preview?.actionId) {
+      try { await api.post(`/brief/voice-instruction/${preview.actionId}/cancel`); } catch {}
+    }
+    onClose?.();
+  };
+
+  const fmtSec = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  // Compact strip styling.
+  const strip = {
+    marginTop: 'var(--s-3)',
+    padding: 'var(--s-3)',
+    background: 'var(--bg-2)',
+    border: '1px solid var(--accent-dim)',
+    borderRadius: 'var(--r-md)',
+    display: 'flex', alignItems: 'center', gap: 'var(--s-2)', flexWrap: 'wrap',
+    fontSize: 'var(--fs-sm)',
+  };
+
+  return (
+    <div style={strip}>
+      {phase === 'recording' && (
+        <>
+          <span style={{
+            display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
+            background: '#dc2626', animation: 'pulse 1.2s ease-in-out infinite',
+          }} />
+          <span style={{ color: '#dc2626', fontWeight: 600 }}>Recording</span>
+          <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{fmtSec(secs)}</span>
+          <span style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)' }}>· speak in any language</span>
+          <div style={{ flex: 1 }} />
+          <Button size="sm" variant="primary" onClick={stop}>⏹ Stop & send</Button>
+          <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+        </>
+      )}
+
+      {phase === 'processing' && (
+        <>
+          <span>⏳</span>
+          <span style={{ color: 'var(--text-muted)' }}>Transcribing & understanding…</span>
+        </>
+      )}
+
+      {phase === 'preview' && preview && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+            📝 You said: <span style={{ color: 'var(--text)' }}>"{preview.transcript}"</span>
+            {preview.english && preview.english !== preview.transcript && (
+              <> · <span style={{ color: 'var(--text-dim)' }}>{preview.english}</span></>
+            )}
+          </div>
+          <div style={{ color: 'var(--text)' }}>
+            ⚡ <strong>{preview.summary}</strong>
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end' }}>
+            <Button size="sm" variant="ghost" disabled={confirming} onClick={cancel}>Cancel</Button>
+            <Button size="sm" variant="primary" disabled={confirming} onClick={confirm}>
+              {confirming ? 'Working…' : '✓ Confirm'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'unparsed' && preview && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+            📝 I heard: <span style={{ color: 'var(--text)' }}>"{preview.transcript}"</span>
+          </div>
+          <div style={{ color: '#fbbf24', fontSize: 'var(--fs-xs)' }}>
+            Couldn't pick out a specific action. Save as a note, or re-record with: "reply saying X" / "delegate to Y" / "schedule meeting".
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end' }}>
+            <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={async () => {
+                try {
+                  await api.post('/open-items', {
+                    title: (preview.english || preview.transcript || 'Voice note').slice(0, 140),
+                    description: preview.transcript + (preview.english && preview.english !== preview.transcript ? `\n\n(English: ${preview.english})` : ''),
+                    type: 'manual', priority: 'medium',
+                  });
+                  notify?.('Saved as an open item.', 'success');
+                  onClose?.(); onDone?.();
+                } catch (err) {
+                  notify?.(err?.response?.data?.error || 'Save failed', 'error');
+                }
+              }}
+            >💾 Save as note</Button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'error' && (
+        <>
+          <span style={{ color: '#f87171' }}>✗</span>
+          <span style={{ color: '#f87171', flex: 1 }}>{error}</span>
+          <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
+        </>
+      )}
+
+      {phase === 'done' && (
+        <>
+          <span style={{ color: '#4ade80', fontSize: 18 }}>✓</span>
+          <span style={{ color: '#4ade80' }}>Done.</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AskBrain() {
   const [q, setQ] = useState('');
   const [answer, setAnswer] = useState(null);
@@ -3148,6 +3378,10 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
   //   'thread'  (View thread button) → full chronological message list
   // null = closed.
   const [threadModalMode, setThreadModalMode] = useState(null);
+  // Inline voice dictation — WhatsApp-style strip below the action row.
+  // No modal, no overlay; the strip mounts in place and starts
+  // recording immediately. Same backend pipeline as the global modal.
+  const [voiceActive, setVoiceActive] = useState(false);
   // Delegate-prep panel state. Once a delegatee is chosen (either Brain's
   // suggestion via "Keep", a fresh pick from the picker, or a one-click
   // delegate_to_known), we hold here so the MD can optionally add a note
@@ -3397,28 +3631,28 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         >
           🔍 View thread
         </Button>
-        {/* Voice dictate — first-class inline button. Tap → modal opens
-            with this card's feedEventId attached so "this email" /
-            "this meeting" resolve correctly. Same pipeline as WhatsApp
-            self-dictation; same confirm-before-execute gate. */}
+        {/* Voice dictate — first-class inline button. Tap → recording
+            starts INLINE on this card (no modal). The strip mounts
+            below the action row, captures audio, transcribes, and
+            previews Brain's plan inline before executing. Same
+            confirm-before-execute pipeline as elsewhere. */}
         <button
           type="button"
-          onClick={() => {
-            const ev = new CustomEvent('nexeo-open-voice-modal', { detail: { feedEventId: item.feedEventId } });
-            window.dispatchEvent(ev);
-          }}
+          onClick={() => setVoiceActive(true)}
           title="Dictate an instruction about this card (any language)"
           aria-label="Dictate"
+          disabled={voiceActive}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '6px 10px',
-            background: 'transparent',
-            color: 'var(--accent)',
+            background: voiceActive ? 'var(--accent)' : 'transparent',
+            color: voiceActive ? '#fff' : 'var(--accent)',
             border: '1px solid var(--accent)',
             borderRadius: 'var(--r-sm)',
-            cursor: 'pointer',
+            cursor: voiceActive ? 'default' : 'pointer',
             fontSize: 'var(--fs-sm)',
             fontWeight: 'var(--fw-medium)',
+            opacity: voiceActive ? 0.7 : 1,
           }}
         >
           🎤 Dictate
@@ -3628,6 +3862,15 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           feedEventId={item.feedEventId}
           mode={threadModalMode}
           onClose={() => setThreadModalMode(null)}
+          notify={notify}
+        />
+      )}
+
+      {voiceActive && (
+        <InlineVoiceStrip
+          feedEventId={item.feedEventId}
+          onClose={() => setVoiceActive(false)}
+          onDone={() => { setVoiceActive(false); onDecided?.(); }}
           notify={notify}
         />
       )}
