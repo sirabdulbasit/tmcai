@@ -174,6 +174,57 @@ export async function checkInboundForDelegationUpdate(params: {
     } as any,
   });
 
+  // Mirror update on the delegatee's parallel open_item (created
+  // when MD delegated). Without this, the delegatee's Action Center
+  // still shows the task as open even though Brain has confirmed
+  // it's done from the sender side. Match by sourceFeedEventId
+  // (the original delegation stamps it on both rows) AND owner =
+  // the delegatee. Quietly skip if no such row exists (delegation
+  // was external, not to a Nexeo user).
+  try {
+    const delegateeOpenItem = await prisma.openItem.findFirst({
+      where: {
+        clientNumber: params.clientNumber,
+        sourceFeedEventId: best.sourceFeedEventId,
+        ownerId: best.delegateeId ?? undefined,
+        // Don't accidentally re-close a row already CLOSED on a prior pass
+        status: { not: 'CLOSED' } as any,
+      } as any,
+      select: { id: true, description: true, notes: true, ownerId: true },
+    });
+    if (delegateeOpenItem && best.delegateeId) {
+      const delNotes: any[] = Array.isArray(delegateeOpenItem.notes)
+        ? (delegateeOpenItem.notes as any[]) : [];
+      const mirrorNote = {
+        at: now.toISOString(),
+        by: 'delegation_tracker',
+        outcome: classification.outcome,
+        summary: `Sender-side mirror: ${classification.summary}`,
+        sourceFeedEventId: params.feedEventId,
+      };
+      const mirrorDescAddon =
+        classification.outcome === 'done' ? `\n\n✓ Closed (sender confirmed: ${classification.summary})`
+        : classification.outcome === 'blocked' ? `\n\n⚠ Blocked (sender side flag): ${classification.summary}`
+        : `\n\n• Update: ${classification.summary}`;
+      await prisma.openItem.update({
+        where: { id: delegateeOpenItem.id },
+        data: {
+          status: classification.outcome === 'done' ? 'CLOSED' : undefined,
+          priority: classification.outcome === 'blocked' ? 'high' : undefined,
+          description: `${delegateeOpenItem.description ?? ''}${mirrorDescAddon}`.trim(),
+          notes: [...delNotes, mirrorNote] as any,
+          updatedAt: now,
+        } as any,
+      });
+      log.info('mirror-updated delegatee open item', {
+        delegateeOpenItemId: delegateeOpenItem.id,
+        outcome: classification.outcome,
+      });
+    }
+  } catch (err: any) {
+    log.warn('delegatee mirror update failed', { error: err.message });
+  }
+
   // Write an agent_action so the BRIEF section shows what Brain did
   await prisma.agentAction.create({
     data: {
