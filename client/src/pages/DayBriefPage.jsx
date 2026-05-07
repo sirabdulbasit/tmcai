@@ -2465,7 +2465,7 @@ function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
               <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end', marginTop: 'var(--s-2)' }}>
                 <Button variant="ghost" size="sm" disabled={confirming} onClick={cancelStaged}>Cancel</Button>
                 <Button variant="primary" size="sm" disabled={confirming} onClick={confirm}>
-                  {confirming ? 'Working…' : '✓ Confirm & do it'}
+                  {confirming ? 'Sending…' : '➤ Send'}
                 </Button>
               </div>
             </div>
@@ -2715,7 +2715,7 @@ function InlineVoiceStrip({ feedEventId, onClose, onDone, notify }) {
           <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{fmtSec(secs)}</span>
           <span style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)' }}>· speak in any language</span>
           <div style={{ flex: 1 }} />
-          <Button size="sm" variant="primary" onClick={stop}>⏹ Stop & send</Button>
+          <Button size="sm" variant="primary" onClick={stop}>⏹ Stop</Button>
           <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
         </>
       )}
@@ -2741,7 +2741,7 @@ function InlineVoiceStrip({ feedEventId, onClose, onDone, notify }) {
           <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end' }}>
             <Button size="sm" variant="ghost" disabled={confirming} onClick={cancel}>Cancel</Button>
             <Button size="sm" variant="primary" disabled={confirming} onClick={confirm}>
-              {confirming ? 'Working…' : '✓ Confirm'}
+              {confirming ? 'Sending…' : '➤ Send'}
             </Button>
           </div>
         </div>
