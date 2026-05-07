@@ -2226,7 +2226,22 @@ function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
       setRecSeconds(0);
       tickRef.current = setInterval(() => setRecSeconds((s) => s + 1), 1000);
     } catch (err) {
-      setError(`Microphone access denied. ${err?.message ?? ''}`);
+      // Distinguish the three common failure modes so the message
+      // tells the user what to do, not just "denied".
+      const name = err?.name || '';
+      let friendly = '';
+      if (name === 'NotAllowedError') {
+        friendly = 'You denied microphone access. Click the 🔒 lock icon in the address bar → Site settings → Microphone → Allow, then reload.';
+      } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+        friendly = 'No microphone found. On Mac: System Settings → Privacy & Security → Microphone → enable Chrome, then reload. Most users only see this if they previously blocked Chrome.';
+      } else if (name === 'NotReadableError') {
+        friendly = 'Your microphone is busy with another app (Zoom, FaceTime, etc.). Close that app and try again.';
+      } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+        friendly = 'Voice recording needs HTTPS. The site must be loaded over a secure connection.';
+      } else {
+        friendly = err?.message ? `Microphone error: ${err.message}` : 'Could not access the microphone.';
+      }
+      setError(friendly);
       setPhase('idle');
     }
   };
@@ -3297,6 +3312,32 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         >
           🔍 View thread
         </Button>
+        {/* Voice dictate — first-class inline button. Tap → modal opens
+            with this card's feedEventId attached so "this email" /
+            "this meeting" resolve correctly. Same pipeline as WhatsApp
+            self-dictation; same confirm-before-execute gate. */}
+        <button
+          type="button"
+          onClick={() => {
+            const ev = new CustomEvent('nexeo-open-voice-modal', { detail: { feedEventId: item.feedEventId } });
+            window.dispatchEvent(ev);
+          }}
+          title="Dictate an instruction about this card (any language)"
+          aria-label="Dictate"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '6px 10px',
+            background: 'transparent',
+            color: 'var(--accent)',
+            border: '1px solid var(--accent)',
+            borderRadius: 'var(--r-sm)',
+            cursor: 'pointer',
+            fontSize: 'var(--fs-sm)',
+            fontWeight: 'var(--fw-medium)',
+          }}
+        >
+          🎤 Dictate
+        </button>
         {/* Dynamic action buttons — if server sent context-aware actions,
             render those. Otherwise fall back to the static 4. */}
         {(item.actions && item.actions.length > 0 ? item.actions : buildAttentionOptions(item)).map((opt, optIdx) => {
@@ -3643,22 +3684,9 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecid
     });
   }
 
-  // Voice command — record an instruction in any language. Same
-  // pipeline as WhatsApp self-dictation. Optional card context lets
-  // "this email" / "this meeting" resolve to this specific feed_event.
-  items.push({
-    id: 'voice_command',
-    label: '🎤 Dictate instruction (voice)',
-    handler: () => {
-      // Set a state on the parent card via a custom event — the
-      // AttentionCard listens and opens the modal with this card's
-      // feedEventId. Simpler to use a window event than to thread
-      // another prop through.
-      const ev = new CustomEvent('nexeo-open-voice-modal', { detail: { feedEventId: item.feedEventId } });
-      window.dispatchEvent(ev);
-      setOpen(false);
-    },
-  });
+  // (Voice dictation is now a first-class inline button on each
+  // AttentionCard — see the action row in the card render. Removed
+  // from More options so it's discoverable in one tap.)
 
   // Mute sender — explicit per-sender opt-out. Future items from this
   // sender drop from BOTH My Attention and Brief; archive still has
