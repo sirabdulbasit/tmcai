@@ -7,11 +7,20 @@
  *   GET  /brief/brain-actions      → past 24h of autonomous Brain actions (the "Brief" section)
  */
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
 import prisma from '../db/prisma';
 import crypto from 'crypto';
 import { buildAttentionList, buildHandledList, suggestForFeedEvent, computeDedupHash, invalidateTriageCache, clearTriageCache, type SuggestedAction, type ItemType, type Archetype } from '../services/triage/triageSuggester';
 
 const router = Router();
+
+// Multer in-memory upload for the voice-instruction endpoint. 10 MB
+// cap is plenty for any reasonable WhatsApp-style voice note (mostly
+// 30s-2min webm/opus blobs at <2 MB each).
+const voiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 // Every route requires authenticated user
 router.use((req: Request, res: Response, next) => {
@@ -1447,6 +1456,173 @@ router.get('/brain-actions', async (req: Request, res: Response) => {
  * Writes append-only decision_log; if action=delegate, also writes delegation_log.
  * Both rows share the same dedup_hash so the scoring aggregation lines up.
  */
+/**
+ * Voice instruction over the browser — same pipeline as WhatsApp self-
+ * dictation, different audio source.
+ *
+ *   POST /brief/voice-instruction
+ *     multipart/form-data
+ *       audio: Blob (webm/opus from MediaRecorder, or any audio Gemini
+ *              accepts — mp3, wav, ogg, m4a)
+ *       feedEventId: string (optional — the card the user was on; helps
+ *                    "this email" / "this meeting" resolve correctly)
+ *     →  { actionId, transcript, language, summary, intent }
+ *
+ *   POST /brief/voice-instruction/:id/confirm
+ *     → dispatches the staged instruction, returns { ok, message }
+ *
+ *   POST /brief/voice-instruction/:id/cancel
+ *     → marks staged action cancelled, returns { ok }
+ *
+ * Brain stays consistent across surfaces: WhatsApp self-dictation,
+ * browser dictation, and inbound voice notes all flow through the
+ * same instructionExtractor + dispatcher with the same confirmation
+ * gate. Only the audio source differs.
+ */
+router.post('/voice-instruction', voiceUpload.single('audio'), async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const file = (req as any).file as Express.Multer.File | undefined;
+  const feedEventId = String(req.body?.feedEventId ?? '').trim() || null;
+
+  if (!file || !file.buffer || file.buffer.length === 0) {
+    return res.status(400).json({ error: 'audio file required' });
+  }
+
+  try {
+    const { transcribeVoiceNote } = await import('../services/voiceService');
+    const tx = await transcribeVoiceNote(file.buffer, file.mimetype);
+    if (!tx.text) {
+      return res.status(422).json({ error: 'Could not transcribe — try recording in a quieter environment, or speak a bit louder.' });
+    }
+
+    let english = '';
+    if (!(tx.language || '').toLowerCase().startsWith('en')) {
+      try {
+        const { callLLM } = await import('../services/llmRouter');
+        const r = await callLLM(
+          'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+          tx.text,
+          {
+            maxTokens: 400,
+            providers: ['gemini-flash', 'gemini', 'claude'],
+            userId: user.id,
+            clientNumber: user.clientNumber,
+            purpose: 'voice_translate',
+            timeoutMs: 12_000,
+          },
+        );
+        english = r.text.trim();
+      } catch { /* keep original only */ }
+    }
+
+    const transcriptText = english || tx.text;
+
+    const { extractInstruction } = await import('../services/instructions/instructionExtractor');
+    const ix = await extractInstruction({
+      text: transcriptText,
+      clientNumber: user.clientNumber,
+      userId: user.id,
+      triggerFeedEventId: feedEventId,
+    });
+
+    // If the card-context (feedEventId) was given but the LLM didn't
+    // attach a target, fold it in — "this email" obviously means the
+    // card the user tapped the mic on.
+    if (feedEventId && !ix.targetFeedEventId
+        && (ix.intent === 'draft_reply' || ix.intent === 'delegate'
+            || ix.intent === 'schedule_meeting' || ix.intent === 'add_open_item')) {
+      ix.targetFeedEventId = feedEventId;
+    }
+
+    if (ix.intent === 'none' || ix.confidence < 0.55) {
+      return res.json({
+        actionId: null,
+        transcript: tx.text,
+        language: tx.language,
+        english,
+        intent: 'none',
+        summary: 'I couldn\'t pick out an instruction from that. Try again — be specific about who or what it\'s about.',
+      });
+    }
+
+    // Stage as pending — user confirms before dispatch.
+    const action = await prisma.agentAction.create({
+      data: {
+        clientNumber: user.clientNumber, userId: user.id,
+        actionType: 'voice_instruction',
+        status: 'pending_voice_confirmation',
+        requiresApproval: true,
+        executedByAgent: 'voice_instruction',
+        input: {
+          instruction: ix,
+          transcript: tx.text,
+          english,
+          language: tx.language,
+          source: 'browser',
+          feedEventId,
+        } as any,
+        output: { stagedAt: new Date().toISOString() } as any,
+      } as any,
+    });
+
+    res.json({
+      actionId: action.id,
+      transcript: tx.text,
+      language: tx.language,
+      english,
+      intent: ix.intent,
+      summary: ix.summary,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'voice instruction failed' });
+  }
+});
+
+router.post('/voice-instruction/:id/confirm', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const action = await prisma.agentAction.findFirst({
+      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'pending_voice_confirmation' } as any,
+    });
+    if (!action) return res.status(404).json({ error: 'no pending instruction with this id' });
+    const stored: any = action.input ?? {};
+    const ix = stored.instruction;
+    if (!ix) return res.status(400).json({ error: 'staged instruction is malformed' });
+
+    const { dispatchInstruction } = await import('../services/instructions/instructionDispatcher');
+    const out = await dispatchInstruction({ instruction: ix, clientNumber: user.clientNumber, userId: user.id });
+
+    await prisma.agentAction.update({
+      where: { id: action.id },
+      data: {
+        status: out.ok ? 'done' : 'failed',
+        output: { ...(action.output as any ?? {}), dispatchResult: out } as any,
+      } as any,
+    });
+
+    res.json({ ok: out.ok, message: out.message, artifactId: out.artifactId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'confirm failed' });
+  }
+});
+
+router.post('/voice-instruction/:id/cancel', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    await prisma.agentAction.updateMany({
+      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'pending_voice_confirmation' } as any,
+      data: { status: 'cancelled' } as any,
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'cancel failed' });
+  }
+});
+
 router.post('/decide', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const body = req.body ?? {};

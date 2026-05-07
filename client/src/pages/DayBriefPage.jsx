@@ -573,6 +573,16 @@ export default function DayBriefPage() {
   // Drill-down modal: when set, opens the InboxBrowser scoped to this source.
   // Set by clicking a volume tile (e.g. "Emails Brain saw" → 'gmail').
   const [inboxBrowser, setInboxBrowser] = useState(null);
+  // Voice instruction modal — null = closed, { feedEventId } = open
+  // with optional card context. Opened via CustomEvent so the
+  // MoreActionsMenu deep inside cards can trigger it without prop
+  // threading; also opens via the global floating mic button.
+  const [voiceModal, setVoiceModal] = useState(null);
+  useEffect(() => {
+    const onEvt = (e) => setVoiceModal({ feedEventId: e?.detail?.feedEventId ?? null });
+    window.addEventListener('nexeo-open-voice-modal', onEvt);
+    return () => window.removeEventListener('nexeo-open-voice-modal', onEvt);
+  }, []);
   // Guard against React 18 strict-mode useEffect double-fire and against
   // overlapping auto-refresh ticks. If a load is already in flight, skip
   // queuing another one — that's what caused the "thinking → stop →
@@ -973,6 +983,33 @@ export default function DayBriefPage() {
           onClose={() => setInboxBrowser(null)}
         />
       )}
+
+      {/* Voice instruction modal — opened from per-card More menu OR
+          the global floating mic. Goes to the same server pipeline as
+          WhatsApp self-dictation. */}
+      {voiceModal && (
+        <VoiceCommandModal
+          feedEventId={voiceModal.feedEventId}
+          onClose={() => setVoiceModal(null)}
+          onDone={() => { setVoiceModal(null); load(false); }}
+          notify={notify}
+        />
+      )}
+
+      {/* Floating mic — global voice instruction (no card context). */}
+      <button
+        onClick={() => setVoiceModal({ feedEventId: null })}
+        title="Dictate an instruction to Brain"
+        aria-label="Voice instruction"
+        style={{
+          position: 'fixed', right: 'var(--s-6)', bottom: 'calc(var(--s-6) + env(safe-area-inset-bottom, 0px) + 64px)',
+          width: 52, height: 52, borderRadius: '50%',
+          background: 'linear-gradient(135deg, var(--accent), #8b3a1e)',
+          color: '#fff', border: 0, cursor: 'pointer',
+          display: 'grid', placeItems: 'center', fontSize: 22,
+          boxShadow: 'var(--shadow-lg)', zIndex: 90,
+        }}
+      >🎤</button>
 
       {/* ═══════════════════════════════════════════════════════════
           ZONE 1 — TODAY  (urgent, action-needed)
@@ -2105,6 +2142,323 @@ function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
                 </div>
               ))}
             </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * VoiceCommandModal — record a voice instruction in the browser, see
+ * the transcript + Brain's planned action, confirm or cancel before
+ * Brain executes. Same gate as WhatsApp self-dictation.
+ *
+ * Phases:
+ *   idle       → big mic button, "Hold to record"
+ *   recording  → timer + "release to stop"
+ *   processing → "Transcribing…" while server runs voice→text→intent
+ *   preview    → transcript + plan + Confirm / Cancel
+ *   done       → success message + auto-close
+ */
+function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
+  const [phase, setPhase] = useState('idle'); // idle | recording | processing | preview | done
+  const [error, setError] = useState(null);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [preview, setPreview] = useState(null); // { actionId, transcript, english, language, intent, summary }
+  const [confirming, setConfirming] = useState(false);
+  const recorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const tickRef = useRef(null);
+
+  // Esc closes
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') closeAndCleanup(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const closeAndCleanup = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      try { recorderRef.current.stop(); } catch {}
+    }
+    if (streamRef.current) {
+      try { streamRef.current.getTracks().forEach((t) => t.stop()); } catch {}
+    }
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    onClose?.();
+  };
+
+  const startRecording = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mimeCandidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        '',
+      ];
+      let chosen = '';
+      for (const c of mimeCandidates) {
+        if (!c || (window.MediaRecorder && MediaRecorder.isTypeSupported(c))) { chosen = c; break; }
+      }
+      const recorder = chosen ? new MediaRecorder(stream, { mimeType: chosen }) : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+        try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+        if (chunksRef.current.length === 0) {
+          setError('Nothing recorded — try again.');
+          setPhase('idle');
+          return;
+        }
+        const blob = new Blob(chunksRef.current, { type: chosen || 'audio/webm' });
+        await uploadAndPreview(blob);
+      };
+      recorder.start();
+      setPhase('recording');
+      setRecSeconds(0);
+      tickRef.current = setInterval(() => setRecSeconds((s) => s + 1), 1000);
+    } catch (err) {
+      setError(`Microphone access denied. ${err?.message ?? ''}`);
+      setPhase('idle');
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      setPhase('processing');
+      try { recorderRef.current.stop(); } catch {}
+    }
+  };
+
+  const uploadAndPreview = async (blob) => {
+    try {
+      const fd = new FormData();
+      fd.append('audio', blob, 'voice.webm');
+      if (feedEventId) fd.append('feedEventId', feedEventId);
+      const res = await fetch('/api/brief/voice-instruction', {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data?.error ?? 'Server rejected the recording.');
+        setPhase('idle');
+        return;
+      }
+      if (data.intent === 'none' || !data.actionId) {
+        setError(data?.summary ?? 'Couldn\'t pick out an instruction.');
+        setPreview(data);
+        setPhase('idle');
+        return;
+      }
+      setPreview(data);
+      setPhase('preview');
+    } catch (err) {
+      setError(err?.message ?? 'Upload failed');
+      setPhase('idle');
+    }
+  };
+
+  const confirm = async () => {
+    if (!preview?.actionId) return;
+    setConfirming(true);
+    try {
+      const { data } = await api.post(`/brief/voice-instruction/${preview.actionId}/confirm`);
+      if (data?.ok) {
+        notify?.(data.message || 'Done.', 'success');
+        setPhase('done');
+        setTimeout(() => { closeAndCleanup(); onDone?.(); }, 800);
+      } else {
+        notify?.(data?.message || 'Action failed', 'error');
+        setConfirming(false);
+      }
+    } catch (err) {
+      notify?.(err?.response?.data?.error || 'Confirm failed', 'error');
+      setConfirming(false);
+    }
+  };
+
+  const cancelStaged = async () => {
+    if (!preview?.actionId) { closeAndCleanup(); return; }
+    try { await api.post(`/brief/voice-instruction/${preview.actionId}/cancel`); } catch {}
+    closeAndCleanup();
+  };
+
+  const fmtSec = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  return (
+    <div
+      className="modal-overlay"
+      onClick={closeAndCleanup}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+        zIndex: 220, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 'var(--s-3)',
+      }}
+    >
+      <div
+        className="modal-shell"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-1)', border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+          width: 'min(540px, 100%)', maxHeight: '90vh',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        }}
+      >
+        <div style={{
+          padding: 'var(--s-4)', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <div style={{ fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-semibold)' }}>
+            🎤 Dictate to Brain
+          </div>
+          <button onClick={closeAndCleanup} aria-label="Close" style={{
+            background: 'transparent', border: '1px solid var(--border)',
+            color: 'var(--text)', padding: '4px 10px', borderRadius: 'var(--r-sm)',
+            cursor: 'pointer', fontSize: 'var(--fs-sm)',
+          }}>✕ Close</button>
+        </div>
+
+        <div style={{ padding: 'var(--s-5)', flex: 1, overflowY: 'auto' }}>
+          {error && (
+            <div style={{
+              padding: 'var(--s-3)', marginBottom: 'var(--s-3)',
+              background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.55)',
+              borderRadius: 'var(--r-md)', color: '#f87171', fontSize: 'var(--fs-sm)',
+            }}>{error}</div>
+          )}
+
+          {phase === 'idle' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--s-3)' }}>
+              <button
+                onClick={startRecording}
+                style={{
+                  width: 96, height: 96, borderRadius: '50%',
+                  background: 'var(--accent)', color: '#fff',
+                  border: 0, fontSize: 36, cursor: 'pointer',
+                  boxShadow: 'var(--shadow-md)',
+                }}
+                aria-label="Start recording"
+              >
+                🎤
+              </button>
+              <div style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: 'var(--fs-sm)' }}>
+                Tap the mic, speak your instruction in any language,<br/>then tap Stop. Brain will show what it heard before acting.
+              </div>
+              {feedEventId && (
+                <div style={{
+                  fontSize: 'var(--fs-xs)', color: 'var(--accent)',
+                  padding: '4px 10px', border: '1px solid var(--accent-dim)',
+                  borderRadius: 999,
+                }}>
+                  Card context attached — say "this email" / "this meeting"
+                </div>
+              )}
+            </div>
+          )}
+
+          {phase === 'recording' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--s-3)' }}>
+              <button
+                onClick={stopRecording}
+                style={{
+                  width: 96, height: 96, borderRadius: '50%',
+                  background: '#dc2626', color: '#fff',
+                  border: 0, fontSize: 28, cursor: 'pointer',
+                  boxShadow: '0 0 0 8px rgba(220,38,38,0.2)',
+                  animation: 'pulse 1.2s ease-in-out infinite',
+                }}
+                aria-label="Stop recording"
+              >
+                ⏹
+              </button>
+              <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)', color: '#dc2626' }}>
+                {fmtSec(recSeconds)}
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+                Listening… tap to stop and send
+              </div>
+            </div>
+          )}
+
+          {phase === 'processing' && (
+            <div style={{ textAlign: 'center', padding: 'var(--s-6)' }}>
+              <div style={{ fontSize: 'var(--fs-2xl)' }}>⏳</div>
+              <div style={{ marginTop: 'var(--s-3)', color: 'var(--text-muted)' }}>
+                Transcribing and understanding…
+              </div>
+            </div>
+          )}
+
+          {phase === 'preview' && preview && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+              <div style={{
+                padding: 'var(--s-3) var(--s-4)',
+                background: 'rgba(214,109,60,0.08)',
+                border: '1px solid rgba(214,109,60,0.35)',
+                borderRadius: 'var(--r-md)',
+              }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '.14em',
+                  textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 6,
+                }}>
+                  📝 What Brain heard
+                </div>
+                <div style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                  {preview.transcript}
+                </div>
+                {preview.english && preview.english !== preview.transcript && (
+                  <div style={{
+                    marginTop: 'var(--s-2)', paddingTop: 'var(--s-2)',
+                    borderTop: '1px dashed rgba(214,109,60,0.35)',
+                    fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                  }}>
+                    English: {preview.english}
+                  </div>
+                )}
+              </div>
+
+              <div style={{
+                padding: 'var(--s-3) var(--s-4)',
+                background: 'var(--bg-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-md)',
+              }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '.14em',
+                  textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6,
+                }}>
+                  ⚡ Brain will
+                </div>
+                <div style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.6 }}>
+                  {preview.summary}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end', marginTop: 'var(--s-2)' }}>
+                <Button variant="ghost" size="sm" disabled={confirming} onClick={cancelStaged}>Cancel</Button>
+                <Button variant="primary" size="sm" disabled={confirming} onClick={confirm}>
+                  {confirming ? 'Working…' : '✓ Confirm & do it'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {phase === 'done' && (
+            <div style={{ textAlign: 'center', padding: 'var(--s-6)', color: '#4ade80' }}>
+              <div style={{ fontSize: 'var(--fs-2xl)' }}>✓</div>
+              <div style={{ marginTop: 'var(--s-2)' }}>Done.</div>
+            </div>
           )}
         </div>
       </div>
@@ -3288,6 +3642,23 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecid
       },
     });
   }
+
+  // Voice command — record an instruction in any language. Same
+  // pipeline as WhatsApp self-dictation. Optional card context lets
+  // "this email" / "this meeting" resolve to this specific feed_event.
+  items.push({
+    id: 'voice_command',
+    label: '🎤 Dictate instruction (voice)',
+    handler: () => {
+      // Set a state on the parent card via a custom event — the
+      // AttentionCard listens and opens the modal with this card's
+      // feedEventId. Simpler to use a window event than to thread
+      // another prop through.
+      const ev = new CustomEvent('nexeo-open-voice-modal', { detail: { feedEventId: item.feedEventId } });
+      window.dispatchEvent(ev);
+      setOpen(false);
+    },
+  });
 
   // Mute sender — explicit per-sender opt-out. Future items from this
   // sender drop from BOTH My Attention and Brief; archive still has
