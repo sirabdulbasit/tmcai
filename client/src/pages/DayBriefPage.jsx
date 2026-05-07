@@ -491,7 +491,7 @@ export default function DayBriefPage() {
       // with a continuous loading indicator than fake an early
       // resolution.
       const [atten, brain, ds, ins, gap, cog, hndl] = await Promise.all([
-        api.get('/brief/attention?limit=50').then((r) => r.data.items ?? []).catch(() => []),
+        api.get('/brief/attention?limit=200').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
         api.get('/brief/drafts').then((r) => r.data.drafts ?? []).catch(() => []),
         api.get('/brief/insights').then((r) => r.data.insights ?? []).catch(() => []),

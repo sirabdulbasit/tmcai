@@ -22,7 +22,11 @@ router.use((req: Request, res: Response, next) => {
 /** Section 2 — My Attention */
 router.get('/attention', async (req: Request, res: Response) => {
   const user = (req as any).user;
-  const limit = Math.min(parseInt(String(req.query.limit ?? '30'), 10) || 30, 100);
+  // Per-page max bumped from 100 → 300 so users with busy inboxes
+  // see more than the previous artificial 50/100 ceiling. Combined
+  // with the per-channel quotas below, the practical max is around
+  // 250-300 items in My Attention before the cards become unwieldy.
+  const limit = Math.min(parseInt(String(req.query.limit ?? '30'), 10) || 30, 300);
   try {
     const items = await buildAttentionList(user.clientNumber, user.id, limit);
     // NOTE: WhatsApp push for critical items is NOT fired here anymore.

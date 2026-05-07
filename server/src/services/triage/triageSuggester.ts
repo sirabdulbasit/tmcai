@@ -1025,14 +1025,16 @@ export async function buildAttentionList(
   // Each channel runs its own SQL fetch so per-channel ordering
   // (newest createdAt for each) decides what survives. Then we
   // merge and triage.
-  // Tighter quotas to bring first-load time down. Was 100/50/50 = 200
-  // candidates × ~50ms triage each = 10s. New 60/30/30 = 120 candidates
-  // × ~50ms = 6s. Loses some breadth but typical inboxes have far
-  // fewer than 60 *new* emails per attention window — and the cache
-  // makes repeats free.
-  const QUOTA_EMAIL_LIKE = 60;
-  const QUOTA_CALENDAR = 30;
-  const QUOTA_TASKS = 30;
+  // Quotas raised again per user feedback ("still seeing many emails
+  // not reflecting at Day Brief"). Was 60/30/30 = 120 candidates;
+  // user has 70+ unread emails this week so the quota was capping
+  // visibility before triage even ran. New 200/50/50 = 300 total.
+  // First-load cost climbs from ~6s back toward ~12s, but the
+  // triage cache makes repeats free, and Day Brief now reflects the
+  // user's actual inbox volume instead of an artificial ceiling.
+  const QUOTA_EMAIL_LIKE = 200;
+  const QUOTA_CALENDAR = 50;
+  const QUOTA_TASKS = 50;
   const [emailRows, calRows, taskRows] = await Promise.all([
     prisma.feedEvent.findMany({
       where: {
@@ -1327,7 +1329,7 @@ export async function buildHandledList(
 
   // Per-channel quotas matching buildAttentionList — keeps the
   // handled list balanced across channels for the same reason.
-  const QUOTA_EMAIL_LIKE = 100;
+  const QUOTA_EMAIL_LIKE = 200;
   const QUOTA_CALENDAR = 50;
   const QUOTA_TASKS = 50;
   const [emailRows, calRows, taskRows] = await Promise.all([
