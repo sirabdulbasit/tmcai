@@ -2195,11 +2195,16 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
   const [score, setScore] = useState(null);
   const [actedAction, setActedAction] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Shown under the Delegate button when Brain has a suggested delegatee.
-  // Gives MD explicit keep-or-change choice instead of committing on first
-  // click. Only matters when Brain's confidence is below the autonomous
-  // threshold (which is always the case when an item is in Attention).
-  const [delegateConfirmOpen, setDelegateConfirmOpen] = useState(false);
+  // Delegate-prep panel state. Once a delegatee is chosen (either Brain's
+  // suggestion via "Keep", a fresh pick from the picker, or a one-click
+  // delegate_to_known), we hold here so the MD can optionally add a note
+  // / instructions for the delegatee BEFORE the email is forwarded. The
+  // server weaves `note` into the cover note and the OpenItem
+  // description; leaving it blank keeps the old one-click feel.
+  //   delegatePrep === null   → no panel
+  //   delegatePrep === { ... } → panel open, shows delegatee + note input
+  const [delegatePrep, setDelegatePrep] = useState(null);
+  const [delegateNote, setDelegateNote] = useState('');
 
   const decide = async (action, extra = {}) => {
     setBusy(true);
@@ -2432,8 +2437,17 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
                 active={opt.primary || suggested === opt.id}
                 disabled={busy}
                 onClick={() => {
-                  if (hasPick) setDelegateConfirmOpen((x) => !x);
-                  else setPickerOpen(true);
+                  if (hasPick) {
+                    setDelegatePrep({
+                      email: item.suggestedDelegateeEmail,
+                      name: item.suggestedDelegateeName,
+                      userId: item.suggestedDelegateeUserId,
+                      source: 'suggested',
+                    });
+                    setDelegateNote('');
+                  } else {
+                    setPickerOpen(true);
+                  }
                 }}
               >
                 {opt.label || delegateLabel}
@@ -2441,13 +2455,18 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
             );
           }
           if (opt.id === 'delegate_to_known') {
-            // One-click delegate to the historically-dominant delegatee
+            // Open the prep panel preloaded with the historically-dominant
+            // delegatee so MD can still add a note. One click → prep, two
+            // clicks → sent.
             return (
               <ActionButton
                 key={optKey}
                 active={opt.primary}
                 disabled={busy}
-                onClick={() => decide('delegate', { delegatee: opt.delegatee })}
+                onClick={() => {
+                  setDelegatePrep({ ...opt.delegatee, source: 'known' });
+                  setDelegateNote('');
+                }}
               >
                 {opt.label}
               </ActionButton>
@@ -2513,37 +2532,59 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         />
       </div>
 
-      {/* Keep-or-change panel — shown when MD clicks Delegate and Brain has a pick */}
-      {delegateConfirmOpen && (item.suggestedDelegateeEmail || item.suggestedDelegateeUserId) && (
+      {/* Delegate-prep panel — universal: shown whenever a delegatee has
+          been chosen (suggested, picked, or known). MD can optionally
+          add a note / instructions before the email is actually sent.
+          Note text flows to the server's composeForwardNote (so the
+          cover note reflects MD's intent) and to the delegatee's
+          OpenItem description. Leaving it blank keeps the legacy
+          one-click feel — the prep panel is a single confirm tap. */}
+      {delegatePrep && (
         <div style={{
           marginTop: 'var(--s-3)', padding: 'var(--s-3)',
           background: 'var(--bg-2)', border: '1px solid var(--accent-dim)',
           borderRadius: 'var(--r-sm)',
         }}>
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
-            Brain suggests <strong style={{ color: 'var(--accent)' }}>{item.suggestedDelegateeName ?? item.suggestedDelegateeEmail}</strong>
-            {item.rationale && <> — {item.rationale.toLowerCase().replace(/^md chose this /, '')}</>}. Keep or pick someone else?
+            {delegatePrep.source === 'suggested' ? 'Brain suggests' : 'Sending to'}{' '}
+            <strong style={{ color: 'var(--accent)' }}>{delegatePrep.name ?? delegatePrep.email}</strong>
+            {delegatePrep.source === 'suggested' && item.rationale && (
+              <> — {item.rationale.toLowerCase().replace(/^md chose this /, '')}</>
+            )}
+            {'. '}Add instructions, or send as-is.
           </div>
-          <div style={{ display: 'flex', gap: 'var(--s-2)', flexWrap: 'wrap' }}>
+          <textarea
+            value={delegateNote}
+            onChange={(e) => setDelegateNote(e.target.value)}
+            rows={3}
+            placeholder="Optional — what should they do? (e.g. 'Please reply by Friday with the renewal terms; loop me in if pricing changes.')"
+            style={{
+              width: '100%', padding: 'var(--s-2) var(--s-3)',
+              background: 'var(--bg-1)', border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)', color: 'var(--text)',
+              fontSize: 'var(--fs-sm)', fontFamily: 'inherit', lineHeight: 1.5,
+              resize: 'vertical', boxSizing: 'border-box',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 'var(--s-2)', flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
             <Button
               variant="primary" size="sm" disabled={busy}
               onClick={() => {
-                setDelegateConfirmOpen(false);
-                decide('delegate', {
-                  delegatee: {
-                    email: item.suggestedDelegateeEmail,
-                    name: item.suggestedDelegateeName,
-                    userId: item.suggestedDelegateeUserId,
-                  },
-                });
+                const { source, ...delegatee } = delegatePrep;
+                const extra = { delegatee };
+                if (delegateNote.trim()) extra.note = delegateNote.trim();
+                setDelegatePrep(null);
+                setDelegateNote('');
+                decide('delegate', extra);
               }}
             >
-              Keep — send to {item.suggestedDelegateeName ?? 'them'}
+              {delegateNote.trim() ? `Send with instructions to ${delegatePrep.name ?? 'them'}` : `Send to ${delegatePrep.name ?? 'them'}`}
             </Button>
             <Button
               variant="secondary" size="sm" disabled={busy}
               onClick={() => {
-                setDelegateConfirmOpen(false);
+                setDelegatePrep(null);
+                setDelegateNote('');
                 setPickerOpen(true);
               }}
             >
@@ -2551,7 +2592,10 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
             </Button>
             <Button
               variant="ghost" size="sm" disabled={busy}
-              onClick={() => setDelegateConfirmOpen(false)}
+              onClick={() => {
+                setDelegatePrep(null);
+                setDelegateNote('');
+              }}
             >
               Cancel
             </Button>
@@ -2569,7 +2613,11 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         onCancel={() => setPickerOpen(false)}
         onPick={(who) => {
           setPickerOpen(false);
-          decide('delegate', { delegatee: who });
+          // Open the prep panel so MD can add an instruction note
+          // before the email goes out. Skipping the note still works —
+          // the panel's primary button sends with no note.
+          setDelegatePrep({ ...who, source: 'picked' });
+          setDelegateNote('');
         }}
       />
 
