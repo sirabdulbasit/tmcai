@@ -50,28 +50,47 @@ export async function runDelegateeEmailSweep(): Promise<DelegateeEmailResult> {
   const out: DelegateeEmailResult = { scanned: 0, sent: 0, skipped: 0, errors: 0 };
   const since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
 
-  // Candidates: DELEGATED, has delegateeEmail, no dueDate, came from a
-  // connector signal, recent, no prior inquiry.
-  // metadata?'deadlineInquiry' returns true ONLY when the key exists, so
-  // NOT(metadata ? 'deadlineInquiry') filters out items already asked.
+  // ── Atomic claim ──
+  // Two server restarts within ~6 min could each kick off the boot-time
+  // sweep before either had stamped metadata.deadlineInquiry — both
+  // sweeps' candidate queries returned the same row, both sent, the
+  // delegatee got the email twice (observed on prod 2026-05-07).
+  //
+  // Fix: claim candidates in a single UPDATE...RETURNING with FOR UPDATE
+  // SKIP LOCKED. The metadata flag becomes visible AS PART OF the same
+  // transaction that returns the row, so any concurrent sweep — same
+  // process or another — sees the row already claimed and skips it.
+  // Status starts as 'sending' and is upgraded to 'sent' once the email
+  // actually goes out; on send failure we leave it at 'sending' so the
+  // row isn't re-claimed (we'd rather lose a retry than send twice).
   const candidates = await prisma.$queryRawUnsafe<Array<{
     id: string; user_id: number; client_number: string; title: string;
     description: string | null; delegatee_email: string;
     delegatee_name: string | null;
   }>>(
-    `SELECT id, user_id, client_number, title, description,
-            delegatee_email, delegatee_name
-       FROM open_items
-      WHERE status = 'DELEGATED'
-        AND delegatee_email IS NOT NULL
-        AND due_date IS NULL
-        AND source_feed IS NOT NULL
-        AND created_at >= $1
-        AND NOT (metadata ? 'deadlineInquiry')
-      ORDER BY created_at ASC
-      LIMIT 200`,
+    `UPDATE open_items
+        SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{deadlineInquiry}',
+          jsonb_build_object('status', 'sending', 'claimedAt', NOW()::text),
+          true
+        )
+      WHERE id IN (
+        SELECT id FROM open_items
+         WHERE status = 'DELEGATED'
+           AND delegatee_email IS NOT NULL
+           AND due_date IS NULL
+           AND source_feed IS NOT NULL
+           AND created_at >= $1
+           AND NOT (metadata ? 'deadlineInquiry')
+         ORDER BY created_at ASC
+         LIMIT 200
+         FOR UPDATE SKIP LOCKED
+      )
+      RETURNING id, user_id, client_number, title, description,
+                delegatee_email, delegatee_name`,
     since,
-  ).catch((err) => { log.warn('candidate query failed', { err: err.message }); return [] as any[]; });
+  ).catch((err) => { log.warn('candidate claim failed', { err: err.message }); return [] as any[]; });
   out.scanned = candidates.length;
 
   // Per-user budget so a flood of new delegations doesn't fire 30 emails
@@ -92,11 +111,24 @@ export async function runDelegateeEmailSweep(): Promise<DelegateeEmailResult> {
       });
       const myEmail = user?.integrationEmail ?? user?.email ?? null;
 
-      const subject = `Quick question: when can you have this back?`;
-      const body = composeDelegateeEmail({
-        toName: c.delegatee_name,
-        fromUserName: user?.name ?? null,
+      // Contextual subject — names the actual task instead of the
+      // identical "Quick question" header that was going out to every
+      // delegate. A short truncation keeps the line readable.
+      const titleShort = (c.title ?? '').trim().slice(0, 70);
+      const subject = titleShort
+        ? `Quick check on "${titleShort}" — target date?`
+        : `Quick question: when can you have this back?`;
+
+      // Body drafted by the LLM in the user's voice, referencing this
+      // specific item. Falls back to a templated form only when no sent
+      // samples are available (new users, or Gmail not yet scribed).
+      const { composeDeadlineInquiry } = await import('../knowledge/toneService');
+      const body = await composeDeadlineInquiry({
+        userId: c.user_id,
+        userName: user?.name ?? null,
+        delegateeName: c.delegatee_name,
         itemTitle: c.title,
+        itemDescription: c.description,
       });
 
       const cc = myEmail && myEmail !== c.delegatee_email ? myEmail : undefined;
@@ -104,12 +136,14 @@ export async function runDelegateeEmailSweep(): Promise<DelegateeEmailResult> {
       if (!r.success) {
         out.errors += 1;
         log.warn('send failed', { itemId: c.id, error: r.error });
+        // Leave the row at status='sending' on send failure — better
+        // than re-claiming and risking a duplicate when SMTP recovers.
         continue;
       }
 
-      // Stamp the inquiry on the open item. Atomic update — concurrent
-      // sweep calls wouldn't double-send because the metadata flag becomes
-      // visible to the next candidate query.
+      // Upgrade the claim from 'sending' → 'sent' with messageId +
+      // threadId so the inbound reply matcher can correlate the
+      // delegatee's response back to this open_item.
       await prisma.$executeRawUnsafe(
         `UPDATE open_items
             SET metadata = jsonb_set(

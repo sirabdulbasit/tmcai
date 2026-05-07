@@ -108,6 +108,100 @@ Cover-note (in the user's voice):`;
   }
 }
 
+/**
+ * Compose a short, contextual deadline-inquiry email in the user's voice
+ * for a delegatee. Replaces the old static "Quick question: when can you
+ * have this back?" template that read identically across every delegate
+ * and every item — felt like a program, not a brain.
+ *
+ * Inputs:
+ *  - userId: for tone samples
+ *  - userName: signoff
+ *  - delegateeName: greeting personalisation
+ *  - itemTitle: WHAT we're asking about (the brain should reference this)
+ *  - itemDescription: optional context the user may have left when delegating
+ *
+ * Output: HTML body (greeting + 1–2 sentences + signoff). Subject is
+ * computed by the caller so it can match the original thread.
+ */
+export async function composeDeadlineInquiry(params: {
+  userId: number;
+  userName?: string | null;
+  delegateeName?: string | null;
+  itemTitle: string;
+  itemDescription?: string | null;
+}): Promise<string> {
+  const { userId, userName, delegateeName, itemTitle, itemDescription } = params;
+
+  const samples = await samplesFor(userId).catch(() => []);
+
+  const escapeHtml = (s: string): string => s
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const fallback = (): string => {
+    const greet = delegateeName ? `Hi ${delegateeName.split(' ')[0]},` : 'Hi,';
+    const sign = userName ? userName.split(' ')[0] : '';
+    return [
+      `<p>${greet}</p>`,
+      `<p>Quick one — for "${escapeHtml(itemTitle)}", when can you have it back? A target date helps me plan around it.</p>`,
+      `<p>Reply with a date or a phrase ("next Friday", "in 5 days") and I'll work to it.</p>`,
+      sign ? `<p>Thanks,<br/>${escapeHtml(sign)}</p>` : `<p>Thanks!</p>`,
+    ].join('\n');
+  };
+
+  if (samples.length < 2) return fallback();
+
+  const toneSamples = samples
+    .slice(0, 4)
+    .map((s, i) => `Sample ${i + 1}\nTo: ${s.to}\nSubject: ${s.subject}\n---\n${s.body}`)
+    .join('\n\n────\n\n');
+
+  const basePrompt = `You write short emails in a specific person's voice.
+You'll be given 2-6 of the user's own sent emails as tone samples. Mirror
+their style: formality, openings, signoff. Then write a brief deadline
+inquiry to a colleague who has been delegated something but hasn't given
+a target date yet.
+
+RULES:
+- Reference the specific item being asked about — do NOT use a generic
+  "Quick question" that fits any context. The colleague should feel
+  like the user wrote a personal note about THIS task.
+- Keep it short: greeting, one or two sentences asking for a target
+  date, signoff. Two short paragraphs max.
+- Match the user's tone (warm vs terse, formal vs casual).
+- NEVER mention "MyOS", "Brain", "AI", or any tool. It must read like
+  the user wrote it themselves.
+- Output HTML body only. Use <p> for paragraphs. No <html>/<body>
+  wrappers, no Subject line, no JSON.`;
+
+  const userPrompt = `User's voice samples:
+
+${toneSamples}
+
+────────────────
+
+Now write a deadline-inquiry email for THIS task:
+
+Recipient: ${delegateeName ?? 'colleague'}
+Task title: ${itemTitle}
+${itemDescription ? `Context: ${itemDescription.slice(0, 400)}` : ''}
+
+Write the email body in HTML (<p> paragraphs):`;
+
+  const { withUserPrompts } = await import('./userPromptService');
+  const system = await withUserPrompts(basePrompt, userId, 'delegation');
+
+  try {
+    const r = await callLLM(system, userPrompt, { maxTokens: 220, userId, purpose: 'tone_deadline_inquiry' });
+    const text = r.text.trim();
+    // If the model returned plain text (no <p>), wrap it.
+    const html = /<p[\s>]/i.test(text) ? text : text.split(/\n\n+/).map((p) => `<p>${escapeHtml(p)}</p>`).join('\n');
+    return html || fallback();
+  } catch {
+    return fallback();
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  WhatsApp reply tone — different style, different sample pool
 // ═══════════════════════════════════════════════════════════════════════════
