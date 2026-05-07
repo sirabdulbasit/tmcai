@@ -523,6 +523,94 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /brief/drafts/:id/rewrite
+ * Body: { body: string, tone?: 'formal' | 'concise' | 'friendly' }
+ *
+ * The user has typed their own reply but wants Brain to polish it —
+ * rewrite in a chosen tone while preserving the substance. Falls back
+ * to the user's recent Sent samples for voice matching when available.
+ */
+router.post('/drafts/:id/rewrite', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  const body = String(req.body?.body ?? '').trim();
+  const tone = String(req.body?.tone ?? 'formal') as 'formal' | 'concise' | 'friendly';
+  if (!body) return res.status(400).json({ error: 'body required' });
+  if (!['formal', 'concise', 'friendly'].includes(tone)) {
+    return res.status(400).json({ error: 'tone must be formal | concise | friendly' });
+  }
+
+  const draft = await prisma.agentAction.findFirst({
+    where: { id, clientNumber: user.clientNumber, userId: user.id, actionType: 'draft_reply' } as any,
+  });
+  if (!draft) return res.status(404).json({ error: 'draft not found' });
+
+  // Pull a few of the user's recent sent emails as voice samples — same
+  // pipeline composeForwardNote uses. Lets the rewrite read like the
+  // user wrote it, not generic AI prose. Best-effort; we still polish
+  // without samples (new users / no scribed Sent folder).
+  let samples: Array<{ subject: string; body: string; to: string }> = [];
+  try {
+    const { getSentSamples } = await import('../services/gmailService');
+    const r = await getSentSamples(user.id, 4);
+    samples = r.samples ?? [];
+  } catch { /* fall back to no samples */ }
+
+  const out: any = draft.output ?? {};
+  const sub = String(out.subject ?? '');
+  const recipient = String(out.to ?? '');
+
+  const toneInstruction =
+    tone === 'formal'
+      ? 'Polish to a professional, formal tone. Clear, direct, no slang. Keep paragraph structure.'
+      : tone === 'concise'
+      ? 'Tighten and shorten the message. Remove filler. Keep all substantive points.'
+      : 'Polish to a warm, friendly tone. Conversational but professional.';
+
+  const sampleBlock = samples.length >= 2
+    ? `Here are recent emails the user sent so you can match their voice:\n\n${samples
+        .slice(0, 4)
+        .map((s, i) => `Sample ${i + 1}\nTo: ${s.to}\nSubject: ${s.subject}\n---\n${s.body}`)
+        .join('\n\n────\n\n')}\n\n────────────────\n\n`
+    : '';
+
+  const systemPrompt = `You polish email drafts for a busy executive. Rewrite the user's draft text in the requested tone, preserving every substantive fact, name, date, number, and commitment. Do not add new information the user didn't include. Do not add greetings, signoffs, or subject lines unless the user already had them. Output ONLY the rewritten body — no preamble, no labels, no JSON, no quotes wrapping the response.`;
+
+  const userMessage = `${sampleBlock}Tone: ${tone.toUpperCase()}
+Instruction: ${toneInstruction}
+
+Subject: ${sub}
+To: ${recipient}
+
+User's draft:
+"""
+${body}
+"""
+
+Rewritten body:`;
+
+  try {
+    const { callLLM } = await import('../services/llmRouter');
+    const result = await callLLM(systemPrompt, userMessage, {
+      maxTokens: 600,
+      providers: ['gemini-flash', 'gemini', 'claude'],
+      userId: user.id,
+      clientNumber: user.clientNumber,
+      purpose: 'draft_rewrite',
+      timeoutMs: 15_000,
+    });
+    let rewritten = result.text.trim();
+    // Strip leading "Rewritten body:" / surrounding quotes a model might add.
+    rewritten = rewritten.replace(/^(rewritten body:|polished body:)/i, '').trim();
+    rewritten = rewritten.replace(/^["']|["']$/g, '').trim();
+    res.json({ ok: true, body: rewritten, tone });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'rewrite failed' });
+  }
+});
+
 /** Reject a draft → mark so it disappears from the queue but stays in audit. */
 router.post('/drafts/:id/reject', async (req: Request, res: Response) => {
   const user = (req as any).user;

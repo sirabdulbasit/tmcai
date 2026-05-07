@@ -3275,13 +3275,17 @@ function DraftCard({ draft, onAction, notify }) {
   const [editing, setEditing] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
-  // Reply All toggle — server fetches the original email's To+Cc and
-  // builds the recipient list when this is on. Off by default so a
-  // single click stays a single-recipient reply.
-  const [replyAll, setReplyAll] = useState(false);
+  // Polish-menu state — three-tone rewrite picker (formal / concise /
+  // friendly). Closed by default; opens inline when MD clicks Polish.
+  const [polishOpen, setPolishOpen] = useState(false);
+  const [polishing, setPolishing] = useState(false);
   const isWhatsApp = draft.channel === 'whatsapp';
 
-  const send = async () => {
+  // Two send paths now — Send (just to original sender) and Send to All
+  // (sender + everyone on original To/Cc minus you). Replaces the
+  // earlier "Reply All" checkbox; two distinct buttons read clearer
+  // and remove the toggle-then-click-the-right-thing footgun.
+  const send = async (replyAll = false) => {
     setBusy(true);
     try {
       const payload = {
@@ -3298,6 +3302,33 @@ function DraftCard({ draft, onAction, notify }) {
       notify?.(msg, 'error');
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Ask Brain to rewrite the user's typed body in the chosen tone.
+  // Uses the user's recent Sent samples for voice matching when the
+  // server can fetch them. Replaces the textarea content on success.
+  const polish = async (tone) => {
+    if (!editing || !edit.body?.trim()) {
+      notify?.('Click Edit and type your reply first, then Polish.', 'info');
+      setPolishOpen(false);
+      return;
+    }
+    setPolishing(true);
+    try {
+      const { data } = await api.post(`/brief/drafts/${draft.id}/rewrite`, { body: edit.body, tone });
+      if (data?.body) {
+        setEdit((e) => ({ ...e, body: data.body }));
+        notify?.(`Polished (${tone}) — review and Send when ready.`, 'success');
+      } else {
+        notify?.('Polish returned nothing — try again.', 'warning');
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.error || err?.message || 'Polish failed';
+      notify?.(msg, 'error');
+    } finally {
+      setPolishing(false);
+      setPolishOpen(false);
     }
   };
   const openReject = () => { setRejecting(true); setRejectReason(''); };
@@ -3417,31 +3448,75 @@ function DraftCard({ draft, onAction, notify }) {
       )}
       <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-3)', flexWrap: 'wrap', alignItems: 'center' }}>
         <Button variant="ghost" size="sm" onClick={() => setEditing((e) => !e)}>{editing ? 'Done editing' : 'Edit'}</Button>
-        {!isWhatsApp && (
-          <label
-            title="Send to the original sender plus everyone on the original To/Cc (excluding you)."
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontSize: 'var(--fs-xs)', color: replyAll ? 'var(--accent)' : 'var(--text-muted)',
-              padding: '4px 8px', borderRadius: 'var(--r-sm)',
-              background: replyAll ? 'rgba(204,107,74,0.10)' : 'transparent',
-              border: `1px solid ${replyAll ? 'var(--accent)' : 'var(--border)'}`,
-              cursor: 'pointer',
-              userSelect: 'none',
-            }}
+        {/* Polish — opens an inline menu with three tone options. Only
+            useful when the user has typed something (editing mode); we
+            still show the button always so the affordance is discoverable. */}
+        <div style={{ position: 'relative' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || polishing}
+            onClick={() => setPolishOpen((o) => !o)}
+            title="Ask Brain to rewrite your draft in a chosen tone"
           >
-            <input
-              type="checkbox"
-              checked={replyAll}
-              onChange={(e) => setReplyAll(e.target.checked)}
-              style={{ margin: 0 }}
-            />
-            Reply All
-          </label>
-        )}
+            {polishing ? '…polishing' : '✨ Polish'}
+          </Button>
+          {polishOpen && (
+            <div
+              style={{
+                position: 'absolute', top: 'calc(100% + 4px)', left: 0,
+                background: 'var(--bg-2)', border: '1px solid var(--border)',
+                borderRadius: 'var(--r-sm)', boxShadow: 'var(--shadow-md)',
+                padding: 4, zIndex: 50, minWidth: 200,
+              }}
+            >
+              {[
+                { id: 'formal', label: 'Formal — professional polish' },
+                { id: 'concise', label: 'Concise — tighter, no filler' },
+                { id: 'friendly', label: 'Friendly — warm, conversational' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => polish(t.id)}
+                  disabled={polishing}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    background: 'transparent', border: 'none',
+                    padding: '8px 10px', borderRadius: 'var(--r-sm)',
+                    color: 'var(--text)', fontSize: 'var(--fs-sm)',
+                    cursor: 'pointer',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-1)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1 }} />
         <Button variant="secondary" size="sm" disabled={busy || rejecting} onClick={openReject} title="Delete this draft — it will not be sent">Discard</Button>
-        <Button variant="primary" size="sm" disabled={busy || rejecting} onClick={send}>{busy ? '…' : (replyAll ? 'Send (Reply All)' : 'Send')}</Button>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={busy || rejecting}
+          onClick={() => send(false)}
+          title="Send to the original sender only"
+        >
+          {busy ? '…' : 'Send'}
+        </Button>
+        {!isWhatsApp && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy || rejecting}
+            onClick={() => send(true)}
+            title="Send to the original sender plus everyone on the original To/Cc (excluding you)"
+          >
+            Send to All
+          </Button>
+        )}
       </div>
       <FeedbackButtons
         subjectType="draft"
