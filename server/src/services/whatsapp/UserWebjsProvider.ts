@@ -235,12 +235,30 @@ export async function startPairing(userId: number, clientNumber: string): Promis
   client.on('qr', async (qr: string) => {
     try {
       const qrDataUrl = await QRCode.toDataURL(qr);
+      // Detect "zombie pairing": a row that was previously paired
+      // (connectedNumber set) but the underlying webjs session has died
+      // and is now stuck issuing QRs for re-pair. Without this, the DB
+      // keeps lying that status='connected' while the channel is broken.
+      // First QR after a successful pair stamps qrLoopSinceAt; subsequent
+      // QRs check if we've been looping > 2 min and flip to disconnected
+      // so the broken-connector banner fires.
+      const existing = await getUserConnector(userId);
+      const meta: any = existing?.metadata ?? {};
+      const wasPaired = !!meta.connectedNumber;
+      const loopSinceAt: string | null = meta.qrLoopSinceAt ?? null;
+      const loopForMs = loopSinceAt ? Date.now() - new Date(loopSinceAt).getTime() : 0;
+      const looksDead = wasPaired && loopForMs > 2 * 60 * 1000;
+
       await writeMeta(userId, {
         status: 'qr',
         qrDataUrl,
         qrExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-      log.info('QR issued', { userId });
+        qrLoopSinceAt: loopSinceAt ?? new Date().toISOString(),
+        ...(looksDead ? { lastError: 'pairing died — please scan the new QR to reconnect' } : {}),
+      } as any, looksDead ? 'disconnected' : undefined);
+
+      if (looksDead) log.warn('Zombie pairing detected — flipped to disconnected', { userId });
+      else log.info('QR issued', { userId });
     } catch (e: any) { log.error('QR save failed', { userId, error: e.message }); }
   });
 
@@ -250,10 +268,11 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       status: 'connected',
       qrDataUrl: null,
       qrExpiresAt: null,
+      qrLoopSinceAt: null,
       connectedNumber: number,
       lastError: null,
       pairedAt: new Date().toISOString(),
-    }, 'connected');
+    } as any, 'connected');
     await stampWhatsAppSync(userId);
     log.info('Paired', { userId, number });
   });
