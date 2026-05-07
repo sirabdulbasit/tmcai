@@ -1896,6 +1896,23 @@ function ThreadPreviewModal({ feedEventId, onClose, notify }) {
                     </span>
                     <span>{m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span>
                   </div>
+                  {/* Recipient lines — surfaces who else was on this
+                      message so the user can decide if they're the
+                      one expected to act, or just one of many. */}
+                  {(m.to || m.cc) && (
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.5 }}>
+                      {m.to && (
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <strong style={{ color: 'var(--text-dim)' }}>To:</strong> {m.to}
+                        </div>
+                      )}
+                      {m.cc && (
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <strong style={{ color: 'var(--text-dim)' }}>Cc:</strong> {m.cc}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {m.subject && i === 0 && (
                     <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-medium)', marginBottom: 6 }}>
                       {m.subject}
@@ -2639,6 +2656,17 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
                 collapsed from N occurrences into this representative card. */}
             {item.seriesCount > 1 && (
               <Pill variant="info">↻ {item.seriesCount}-occurrence series</Pill>
+            )}
+            {/* Thread collapse badge — when N messages on the same Gmail
+                thread were folded into one card. Tooltip lists the senders
+                so you can see at a glance who's in the conversation. */}
+            {item.threadCount > 1 && (
+              <Pill
+                variant="info"
+                title={item.threadSenders ? `Senders: ${item.threadSenders.join(', ')}` : undefined}
+              >
+                💬 {item.threadCount} messages from {(item.threadSenders ?? []).length} {(item.threadSenders ?? []).length === 1 ? 'person' : 'people'}
+              </Pill>
             )}
           </div>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', marginTop: 4 }}>

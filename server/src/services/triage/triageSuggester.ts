@@ -41,6 +41,20 @@ export type SuggestedAction = 'draft_reply' | 'delegate' | 'add_open_item' | 'ig
 export interface AttentionItem {
   feedEventId: string;
   itemType: ItemType;
+  /** Gmail threadId for emails, null otherwise. Used by the same-
+   *  thread collapse step (multiple new messages on one conversation
+   *  fold into one card) and the View thread modal. */
+  threadId?: string | null;
+  /** Number of messages on the thread that triggered cards (post-
+   *  collapse). UI shows "X messages from Y people in this thread"
+   *  when > 1. */
+  threadCount?: number;
+  /** Distinct sender display strings across the collapsed thread. */
+  threadSenders?: string[];
+  /** All feedEventIds folded into this representative — needed when
+   *  the user takes an action (e.g. ignore) and we need to mark them
+   *  all as decided. */
+  threadFeedEventIds?: string[];
   /** Raw RFC2822 form ("Name <addr@x>") — kept for pattern matching
    *  inside the engine. Don't render this to the user. */
   from: string;
@@ -865,6 +879,9 @@ async function _doTriage(row: {
   return {
     feedEventId: row.id,
     itemType,
+    // Surfaced for downstream Gmail thread collapse + the View thread
+    // modal. Null for non-email items.
+    threadId: itemType === 'email' ? threadId : null,
     from: fromFull,
       fromDisplay,
     fromEmail,
@@ -1235,6 +1252,59 @@ export async function buildAttentionList(
   }
   items.length = 0;
   items.push(...collapsedItems);
+
+  // ── Gmail thread collapse ──
+  // Multiple new messages on the same Gmail thread used to surface as
+  // separate cards — observed on prod 2026-05-07 with "Re: Increase
+  // memory" / "RE: Increase memory" creating two cards (Umair asking
+  // + Arshad following up) for what is one conversation. Collapse by
+  // threadId; pick the LATEST message as the representative (most
+  // recent state of the conversation), attach threadCount + senders so
+  // the card can show "3 messages from 2 people in this thread".
+  // The strongest archetype across the group wins (reply_needed beats
+  // inform_only) so a follow-up question doesn't get hidden behind an
+  // FYI re-send.
+  const threadMap = new Map<string, AttentionItem[]>();
+  const nonThreaded: AttentionItem[] = [];
+  for (const it of items) {
+    if (it.itemType !== 'email') { nonThreaded.push(it); continue; }
+    const tid = (it as any).threadId ?? null;
+    if (!tid) { nonThreaded.push(it); continue; }
+    if (!threadMap.has(tid)) threadMap.set(tid, []);
+    threadMap.get(tid)!.push(it);
+  }
+  const ARCHETYPE_PRIORITY: Record<string, number> = {
+    review_risk: 5,
+    reply_needed: 4,
+    schedule_meeting: 3,
+    delegate: 2,
+    acknowledge: 1,
+    inform_only: 0,
+  };
+  const threadCollapsed: AttentionItem[] = [...nonThreaded];
+  for (const group of threadMap.values()) {
+    if (group.length === 1) { threadCollapsed.push(group[0]); continue; }
+    // Most recent message first.
+    group.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+    const representative = { ...group[0] } as AttentionItem;
+    // Highest-priority archetype wins.
+    const winning = group
+      .map((g) => ({ g, p: ARCHETYPE_PRIORITY[g.archetype] ?? 0 }))
+      .sort((a, b) => b.p - a.p)[0]!.g;
+    representative.archetype = winning.archetype;
+    representative.suggestedAction = winning.suggestedAction;
+    representative.confidence = winning.confidence;
+    representative.rationale = winning.rationale;
+    // Distinct senders + count for the UI strip.
+    const senders = [...new Set(group.map((g) => g.from || g.fromEmail || ''))].filter(Boolean);
+    (representative as any).threadCount = group.length;
+    (representative as any).threadSenders = senders;
+    (representative as any).threadFeedEventIds = group.map((g) => g.feedEventId);
+    representative.rationale = `${representative.rationale}\n${group.length} messages on this thread from ${senders.slice(0, 3).join(', ')}${senders.length > 3 ? `, +${senders.length - 3} more` : ''} — acting here resolves them all.`;
+    threadCollapsed.push(representative);
+  }
+  items.length = 0;
+  items.push(...threadCollapsed);
 
   // ── CC suppression ──
   // Emails where the user is on CC (not To/Bcc) drop OFF My Attention by

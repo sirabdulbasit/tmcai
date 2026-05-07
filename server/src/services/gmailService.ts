@@ -327,7 +327,15 @@ export async function fetchEmailThreadContext(
   userId: number,
   threadId: string,
   limit = 6,
-): Promise<Array<{ from: 'me' | 'them'; subject: string; text: string; timestamp: number }>> {
+): Promise<Array<{
+  from: 'me' | 'them';
+  fromName?: string;
+  to?: string;
+  cc?: string;
+  subject: string;
+  text: string;
+  timestamp: number;
+}>> {
   const { client, error } = await getAuthenticatedClient(userId);
   if (!client || !threadId) return [];
   try {
@@ -339,8 +347,15 @@ export async function fetchEmailThreadContext(
       const h = (name: string) => headers.find((x: any) => (x.name || '').toLowerCase() === name)?.value ?? '';
       const body = extractPlainPart(m.payload) || String(m.snippet ?? '').slice(0, 800);
       const fromMe = (m.labelIds ?? []).includes('SENT');
+      const fromHeader = String(h('from'));
+      // Pull display name out of "Name <addr@x>" if present.
+      const nameMatch = fromHeader.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>/);
+      const fromName = nameMatch ? nameMatch[1].trim() : fromHeader.trim();
       return {
         from: fromMe ? ('me' as const) : ('them' as const),
+        fromName,
+        to: String(h('to')),
+        cc: String(h('cc')),
         subject: String(h('subject')),
         text: body.slice(0, 800),
         timestamp: Number(m.internalDate ?? 0),

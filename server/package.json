@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
