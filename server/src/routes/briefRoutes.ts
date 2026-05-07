@@ -962,12 +962,29 @@ router.get('/connector-gaps', async (req: Request, res: Response) => {
         };
       });
 
+    // Last-sync surfacing — the user wants to know how fresh the data
+    // is. We expose the most-recent lastSyncAt across non-broken
+    // connectors as `lastSyncAt`, plus a per-slug breakdown so the UI
+    // can render a tooltip ("Gmail 2m, Calendar 5m, Tasks 12m").
+    const perSlugSyncs = rows
+      .filter((c) => c.status !== 'error')
+      .map((c) => ({
+        slug: c.connectorType.slug,
+        name: c.connectorType.name,
+        lastSyncAt: c.lastSyncAt ? c.lastSyncAt.toISOString() : null,
+      }))
+      .filter((x) => x.lastSyncAt);
+    const sortedSyncs = perSlugSyncs.map((x) => x.lastSyncAt!).sort();
+    const lastSyncAt = sortedSyncs.length > 0 ? sortedSyncs[sortedSyncs.length - 1] : null;
+
     res.json({
       connectedCount: connected.length,
       totalConnected: slugs.size,
       gaps,
       broken,
       hasAnyFeed: slugs.size > 0,
+      lastSyncAt,
+      connectorSyncs: perSlugSyncs,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

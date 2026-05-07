@@ -691,11 +691,27 @@ export default function DayBriefPage() {
         <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: 'var(--fs-sm)' }}>
           Here's what I handled, what needs you, and what I'm watching.
         </p>
-        <div style={{ marginTop: 'var(--s-3)', display: 'flex', gap: 'var(--s-2)', alignItems: 'center' }}>
+        <div style={{ marginTop: 'var(--s-3)', display: 'flex', gap: 'var(--s-2)', alignItems: 'center', flexWrap: 'wrap' }}>
           <Button variant="ghost" size="sm" onClick={() => load(true)} disabled={loading}>
             <Icon name="refresh" size={14} className={loading ? 'spin' : undefined} />
             {loading ? 'Thinking…' : 'Sync'}
           </Button>
+          {/* Last-sync indicator. Aggregated from /brief/connector-gaps —
+              the most recent lastSyncAt across non-broken connectors.
+              Tooltip lists per-connector freshness so the user can spot
+              "Tasks 2 hours" vs "Email 3 min" at a glance. */}
+          {gaps?.lastSyncAt && (
+            <span
+              style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}
+              title={
+                (gaps.connectorSyncs ?? [])
+                  .map((s) => `${s.name}: ${timeAgo(s.lastSyncAt)}`)
+                  .join('\n') || ''
+              }
+            >
+              Last synced {timeAgo(gaps.lastSyncAt)}
+            </span>
+          )}
         </div>
       </header>
 
