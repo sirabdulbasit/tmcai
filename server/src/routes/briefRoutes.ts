@@ -140,10 +140,87 @@ router.get('/inbox', async (req: Request, res: Response) => {
         rows = rowsResult as any;
         total = countResult;
       }
+      // Action enrichment per row. The user's question was: "if I
+      // search any old email, will it tell me what action was taken?"
+      // For each Gmail result, look up:
+      //   - decision_log entries on any feed_event in this thread →
+      //     "you delegated on Tue 6 May", "you replied on Mon 5 May"
+      //   - userRepliedThread flag (from in:sent sync) → fallback
+      //     "you already replied on this thread"
+      // Batched: one query per shape, no N+1.
+      const threadIds = [...new Set(
+        rows.map((r) => (r.metadata as any)?.threadId).filter((t): t is string => typeof t === 'string' && !!t),
+      )];
+
+      type FeedEventRow = { id: string; threadId: string | null; replied: string | null };
+      const feedEvents: FeedEventRow[] = threadIds.length === 0 ? [] : await prisma.$queryRawUnsafe<FeedEventRow[]>(
+        `SELECT id,
+                raw_payload->>'threadId'           AS "threadId",
+                raw_payload->>'userRepliedThread'  AS "replied"
+           FROM feed_events
+          WHERE client_number = $1 AND user_id = $2 AND source_type = 'gmail'
+            AND raw_payload->>'threadId' = ANY($3::text[])`,
+        user.clientNumber, user.id, threadIds,
+      ).catch(() => [] as FeedEventRow[]);
+
+      const feIdsByThread = new Map<string, string[]>();
+      const repliedThreadSet = new Set<string>();
+      for (const fe of feedEvents) {
+        if (!fe.threadId) continue;
+        if (!feIdsByThread.has(fe.threadId)) feIdsByThread.set(fe.threadId, []);
+        feIdsByThread.get(fe.threadId)!.push(fe.id);
+        if (fe.replied === 'true') repliedThreadSet.add(fe.threadId);
+      }
+
+      const allFeIds = [...feIdsByThread.values()].flat();
+      type DecisionRow = { entityId: string; userDecision: string; actionTaken: string | null; createdAt: Date };
+      const decisions: DecisionRow[] = allFeIds.length === 0 ? [] : await prisma.decisionLog.findMany({
+        where: {
+          clientNumber: user.clientNumber, userId: user.id,
+          entityId: { in: allFeIds } as any,
+        } as any,
+        select: { entityId: true, userDecision: true, actionTaken: true, createdAt: true } as any,
+        orderBy: { createdAt: 'desc' },
+      }).catch(() => [] as any[]) as any;
+
+      // Map feedEventId → its threadId so we can roll decisions up to thread.
+      const threadByFeId = new Map<string, string>();
+      for (const [tid, ids] of feIdsByThread.entries()) for (const id of ids) threadByFeId.set(id, tid);
+
+      // Most-recent decision per thread.
+      const threadDecision = new Map<string, DecisionRow>();
+      for (const d of decisions) {
+        const tid = threadByFeId.get(d.entityId);
+        if (tid && !threadDecision.has(tid)) threadDecision.set(tid, d);
+      }
+
       const items = rows.map((r) => {
         const meta: any = r.metadata ?? {};
         const titleStr = String(r.title ?? '');
         const subject = titleStr.includes(' · ') ? titleStr.split(' · ').slice(1).join(' · ') : titleStr;
+        const tid: string | null = meta.threadId ?? null;
+
+        // Pick the strongest signal we have, in order:
+        //   1. explicit decision_log row → user-driven action
+        //   2. userRepliedThread flag → user replied (any client)
+        //   3. nothing → never acted on
+        let action: { who: 'you' | 'nexeo'; verb: string; at: string | null } | null = null;
+        if (tid) {
+          const dec = threadDecision.get(tid);
+          if (dec) {
+            const verb = dec.actionTaken === 'reply_sent' ? 'replied'
+              : dec.userDecision === 'delegated' ? 'delegated'
+              : dec.userDecision === 'snoozed' ? 'snoozed'
+              : dec.userDecision === 'dismissed' ? 'dismissed'
+              : dec.userDecision === 'approved' ? 'approved'
+              : dec.userDecision === 'overrode' ? 'overrode'
+              : dec.userDecision;
+            action = { who: 'you', verb, at: dec.createdAt.toISOString() };
+          } else if (repliedThreadSet.has(tid)) {
+            action = { who: 'you', verb: 'replied', at: null };
+          }
+        }
+
         return {
           id: r.id,
           sourceType: 'gmail' as const,
@@ -152,6 +229,8 @@ router.get('/inbox', async (req: Request, res: Response) => {
           subject: String(subject ?? '').slice(0, 240),
           snippet: '',
           receivedAt: (r.lastUpdatedAt ?? r.createdAt).toISOString(),
+          threadId: tid,
+          action,
         };
       });
       return res.json({ items, total, hasMore: offset + items.length < total });

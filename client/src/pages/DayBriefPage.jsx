@@ -1656,29 +1656,59 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
           {items.length === 0 && !loading && (
             <Empty title="Nothing here">No items match your filter.</Empty>
           )}
-          {items.map((it) => (
-            <div key={it.id} style={{
-              padding: '10px 12px', borderBottom: '1px solid var(--border)',
-              display: 'flex', gap: 12, alignItems: 'baseline',
-            }}>
-              <div style={{ minWidth: 160, color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {it.senderName || it.senderEmail || '—'}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {it.subject || '(no subject)'}
+          {items.map((it) => {
+            // Action pill — answers the user's question: "if I search any
+            // old email, will it tell me what action was taken?". The
+            // server stamps `action` on each Gmail row when there's a
+            // matching decision_log or userRepliedThread flag.
+            const actionPill = it.action ? (() => {
+              const verbColor = it.action.who === 'you' ? '#7dd3fc' : 'var(--accent)';
+              const stampLabel = it.action.at ? formatDateTime(it.action.at) : '';
+              return (
+                <span
+                  title={it.action.at ? new Date(it.action.at).toLocaleString() : 'When unknown'}
+                  style={{
+                    fontSize: 10, fontWeight: 700,
+                    color: verbColor,
+                    border: `1px solid ${verbColor}`,
+                    background: `${verbColor}1a`,
+                    padding: '2px 6px', borderRadius: 999,
+                    whiteSpace: 'nowrap',
+                    textTransform: 'uppercase', letterSpacing: '.04em',
+                  }}
+                >
+                  {it.action.who} {it.action.verb}{stampLabel ? ` · ${stampLabel}` : ''}
+                </span>
+              );
+            })() : null;
+
+            return (
+              <div key={it.id} style={{
+                padding: '10px 12px', borderBottom: '1px solid var(--border)',
+                display: 'flex', gap: 12, alignItems: 'baseline',
+              }}>
+                <div style={{ minWidth: 160, color: 'var(--text-muted)', fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {it.senderName || it.senderEmail || '—'}
                 </div>
-                {it.snippet && (
-                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {it.snippet}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 500, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {it.subject || '(no subject)'}
+                    </span>
+                    {actionPill}
                   </div>
-                )}
+                  {it.snippet && (
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {it.snippet}
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                  {new Date(it.receivedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </div>
               </div>
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-                {new Date(it.receivedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div style={{ padding: 'var(--s-3)', borderTop: '1px solid var(--border)', textAlign: 'center' }}>
           {hasMore ? (
