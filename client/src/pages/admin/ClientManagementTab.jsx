@@ -360,6 +360,7 @@ function InviteButton({ userId, onInvite }) {
 function ClientConfigSection({ user, tenants }) {
   const [selectedClient, setSelectedClient] = useState(user?.clientNumber || '');
   const targetClient = user?.isSuperAdmin ? selectedClient : undefined;
+  const effectiveClient = user?.isSuperAdmin ? selectedClient : user?.clientNumber;
 
   return (
     <>
@@ -384,10 +385,60 @@ function ClientConfigSection({ user, tenants }) {
 
       <ConfigEditor key={selectedClient} sections={CLIENT_SECTIONS} apiPath="/config" clientNumber={targetClient} />
 
+      <SmtpHealthCheck clientNumber={effectiveClient} />
+
       <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(136,136,136,0.08)', border: '1px dashed rgba(136,136,136,0.3)', borderRadius: 6, fontSize: 12, color: 'var(--text-muted)' }}>
         Looking for FACL folder setup + scribe? That moved to the <strong>Client Connectors</strong> tab.
       </div>
     </>
+  );
+}
+
+/** Test SMTP — verifies the tenant's SMTP credentials by performing an
+ *  SMTP handshake. Does NOT deliver a message. Surfaces the real error
+ *  string from nodemailer so admins can fix forgot-password / invite
+ *  delivery without trawling pm2 logs. */
+function SmtpHealthCheck({ clientNumber }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // { ok: bool, msg: string }
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await api.post('/user/smtp-test', clientNumber ? { clientNumber } : {});
+      const data = res.data || {};
+      setResult(data.ok
+        ? { ok: true, msg: data.fromAddr ? `Connected. Will send from ${data.fromAddr}.` : 'Connected.' }
+        : { ok: false, msg: data.error || 'SMTP test failed' });
+    } catch (err) {
+      setResult({ ok: false, msg: err?.response?.data?.error || err?.message || 'Request failed' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const colour = !result ? 'var(--text-muted)' : result.ok ? '#4ade80' : '#f87171';
+  const bg = !result ? 'rgba(136,136,136,0.06)' : result.ok ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.10)';
+  const border = !result ? 'rgba(136,136,136,0.3)' : result.ok ? 'rgba(74,222,128,0.45)' : 'rgba(248,113,113,0.55)';
+
+  return (
+    <div style={{ marginTop: 12, padding: '12px 14px', background: bg, border: `1px solid ${border}`, borderRadius: 6, fontSize: 13, color: 'var(--text)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <strong style={{ color: 'var(--text)' }}>SMTP health check</strong>
+        <button className="admin-action" onClick={run} disabled={busy} style={busy ? { opacity: 0.5 } : {}}>
+          {busy ? 'Testing…' : 'Test SMTP'}
+        </button>
+        {result && (
+          <span style={{ color: colour, fontSize: 12 }}>
+            {result.ok ? '✓' : '✗'} {result.msg}
+          </span>
+        )}
+      </div>
+      <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+        Performs an SMTP handshake using the credentials above. No email is sent. Run this after editing SMTP settings — and any time forgot-password or invite emails go missing.
+      </div>
+    </div>
   );
 }
 

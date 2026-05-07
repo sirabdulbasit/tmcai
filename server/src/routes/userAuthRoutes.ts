@@ -8,7 +8,7 @@ import { loginSchema, changePasswordSchema, createUserSchema, setupPasswordSchem
 import { validateSeatAvailability } from '../services/licenseService';
 import { isValidUserType } from '../config/userTypes';
 import { getConfig } from '../services/configService';
-import { sendInvitation, setupPassword, validateInviteToken, sendPasswordReset } from '../services/inviteService';
+import { sendInvitation, setupPassword, validateInviteToken, sendPasswordReset, getClientTransporter } from '../services/inviteService';
 import prisma from '../db/prisma';
 
 const router = Router();
@@ -135,6 +135,27 @@ router.post('/users/:empcode/reset-password', requireAuth, requireAdmin, async (
   const result = await resetPassword(req.user!.clientNumber, req.params.empcode as string);
   if (!result.success) { res.status(400).json({ error: result.error }); return; }
   res.json({ success: true, tempPassword: result.tempPassword });
+});
+
+// ─── Admin: SMTP Health / Test ─────────────────────────────────
+// Verifies the tenant's SMTP transport via SMTP handshake (does NOT
+// send a real message). Used by Client Config → Email/SMTP to surface
+// misconfiguration that the public forgot-password flow swallows on
+// purpose. Admin-only so we can return real error text without enabling
+// public email-enumeration probes.
+router.post('/smtp-test', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  const requestedClient = (req.body?.clientNumber as string | undefined)?.trim();
+  const clientNumber = req.user!.isSuperAdmin && requestedClient
+    ? requestedClient
+    : req.user!.clientNumber;
+  try {
+    const transporter = await getClientTransporter(clientNumber);
+    await transporter.verify();
+    const fromAddr = await getConfig(clientNumber, 'smtp_from') || process.env.SMTP_FROM || '';
+    res.json({ ok: true, clientNumber, fromAddr, message: 'SMTP handshake succeeded.' });
+  } catch (err: any) {
+    res.json({ ok: false, clientNumber, error: err?.message || 'SMTP test failed' });
+  }
 });
 
 // ─── Send Invitation Email ─────────────────────────────────────

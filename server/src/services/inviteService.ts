@@ -21,7 +21,7 @@ const INVITE_EXPIRY_DAYS = 7;
 /**
  * Get SMTP transporter for a specific client (reads from their system_config).
  */
-async function getClientTransporter(clientNumber: string): Promise<nodemailer.Transporter> {
+export async function getClientTransporter(clientNumber: string): Promise<nodemailer.Transporter> {
   const host = await getConfig(clientNumber, 'smtp_host') || process.env.SMTP_HOST || '';
   const port = parseInt(await getConfig(clientNumber, 'smtp_port') || process.env.SMTP_PORT || '587');
   const user = await getConfig(clientNumber, 'smtp_user') || process.env.SMTP_USER || '';
