@@ -719,9 +719,22 @@ export default function DayBriefPage() {
               ? `${volume?.whatsappNeedYou ?? 0} need you`
               : 'via Brain connector'
           }
+          onClick={() => setInboxBrowser({ source: 'whatsapp', label: 'WhatsApp messages Brain has seen' })}
         />
-        <MiniStat icon="check-square"   label="Tasks"          big={tasksOpen}           sub={tasksDue > 0 ? `${tasksDue} due today` : 'open items'} />
-        <MiniStat icon="calendar"       label="Meetings today" big={meetings}            sub={meetings > 0 ? 'in your calendar' : 'nothing scheduled'} />
+        <MiniStat
+          icon="check-square"
+          label="Tasks"
+          big={tasksOpen}
+          sub={tasksDue > 0 ? `${tasksDue} due today` : 'open items'}
+          onClick={() => setInboxBrowser({ source: 'gtasks', label: 'Tasks Brain has seen' })}
+        />
+        <MiniStat
+          icon="calendar"
+          label="Meetings today"
+          big={meetings}
+          sub={meetings > 0 ? 'in your calendar' : 'nothing scheduled'}
+          onClick={() => setInboxBrowser({ source: 'gcal', label: 'Meetings Brain has seen' })}
+        />
         {autonomyPct !== null && (
           <MiniStat icon="zap" label="Autonomy" big={`${autonomyPct}%`} sub="handled for you" highlight />
         )}

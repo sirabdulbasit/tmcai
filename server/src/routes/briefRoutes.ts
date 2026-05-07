@@ -38,88 +38,121 @@ router.get('/attention', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /brief/inbox — drill-down list of every email Brain has scribed
- * for this user, paginated.
+ * GET /brief/inbox — drill-down list of items Brain has seen for this
+ * user across any channel, paginated. Powers the "click any volume
+ * tile to browse" experience on Day Brief.
  *
- * Reads from `wiki_pages` (pageType='email_message') — the full
- * permanent archive. NOT from feed_events, which is the transient
- * queue (last 30d + still-active items only). The two-store split
- * means:
- *
- *   feed_events  → small, fast queue for active triage
- *   wiki_pages   → permanent archive, used here + for knowledge lookups
- *
- * When the pruner trims feed_events, browse + search remain unaffected
- * because scribe holds the truth.
+ * Source routing:
+ *   gmail        → wiki_pages email_message (permanent scribe archive,
+ *                  survives feed_events pruning)
+ *   whatsapp     → feed_events sourceType='whatsapp'
+ *   gchat        → feed_events sourceType='gchat'
+ *   gcal         → feed_events sourceType='gcal'
+ *   gtasks       → feed_events sourceType='gtasks'
+ *   all          → mix of all of the above (less efficient — for now
+ *                  client should pick a specific source)
  *
  * Query params:
- *   source — 'gmail' for now (only emails are scribed today; calendar
- *            / WhatsApp / tasks have their own scribe pipelines). Other
- *            values are ignored gracefully.
+ *   source — see above (default 'gmail')
  *   limit  — page size (default 50, max 200)
  *   offset — for pagination
- *   q      — substring filter against sender + subject (optional)
+ *   q      — substring filter against sender + subject/title
  *
  * Returns: { items, total, hasMore }. User-scoped via req.user.
  */
 router.get('/inbox', async (req: Request, res: Response) => {
   const user = (req as any).user;
+  const source = String(req.query.source ?? 'gmail');
   const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
   const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
   const q = String(req.query.q ?? '').trim();
 
   try {
-    // wiki_pages with pageType='email_message' = scribe's per-email row.
-    // Sender info lives under metadata.{senderEmail,senderName,subject}
-    // so we filter via JSON path operators and surface those fields.
+    if (source === 'gmail') {
+      // Email path: read from scribe (permanent archive). Survives
+      // feed_events pruning.
+      const where: any = {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        pageType: 'email_message',
+        status: { not: 'deleted' as any },
+      };
+      if (q) {
+        where.OR = [
+          { title: { contains: q, mode: 'insensitive' } },
+          { metadata: { path: ['senderEmail'], string_contains: q.toLowerCase() } as any },
+          { metadata: { path: ['senderName'], string_contains: q.toLowerCase() } as any },
+        ];
+      }
+      const [rows, total] = await Promise.all([
+        prisma.wikiPage.findMany({
+          where,
+          select: { id: true, title: true, metadata: true, lastUpdatedAt: true, createdAt: true },
+          orderBy: { lastUpdatedAt: 'desc' },
+          skip: offset, take: limit,
+        }),
+        prisma.wikiPage.count({ where }),
+      ]);
+      const items = rows.map((r) => {
+        const meta: any = r.metadata ?? {};
+        const titleStr = String(r.title ?? '');
+        const subject = titleStr.includes(' · ') ? titleStr.split(' · ').slice(1).join(' · ') : titleStr;
+        return {
+          id: r.id,
+          sourceType: 'gmail' as const,
+          senderName: meta.senderName ?? null,
+          senderEmail: meta.senderEmail ?? null,
+          subject: String(subject ?? '').slice(0, 240),
+          snippet: '',
+          receivedAt: (r.lastUpdatedAt ?? r.createdAt).toISOString(),
+        };
+      });
+      return res.json({ items, total, hasMore: offset + items.length < total });
+    }
+
+    // Non-email channels: read from feed_events directly. These
+    // channels don't have a scribe archive yet, so we hit the queue
+    // table. Limited to ~last 30 days because of the pruner — but
+    // that's a reasonable browsing window for chat/cal/tasks.
+    const VALID_SOURCES = new Set(['whatsapp', 'gchat', 'gcal', 'gtasks']);
+    if (!VALID_SOURCES.has(source)) {
+      return res.status(400).json({ error: `unsupported source: ${source}` });
+    }
     const where: any = {
       clientNumber: user.clientNumber,
       userId: user.id,
-      pageType: 'email_message',
-      status: { not: 'deleted' as any },
+      sourceType: source,
     };
     if (q) {
-      // Search: title (which embeds subject) + senderEmail/senderName in metadata
       where.OR = [
-        { title: { contains: q, mode: 'insensitive' } },
-        { metadata: { path: ['senderEmail'], string_contains: q.toLowerCase() } as any },
-        { metadata: { path: ['senderName'], string_contains: q.toLowerCase() } as any },
+        { senderName: { contains: q, mode: 'insensitive' } },
+        { senderEmail: { contains: q, mode: 'insensitive' } },
       ];
     }
-
     const [rows, total] = await Promise.all([
-      prisma.wikiPage.findMany({
+      prisma.feedEvent.findMany({
         where,
-        select: {
-          id: true,
-          title: true,
-          metadata: true,
-          lastUpdatedAt: true,
-          createdAt: true,
-        },
-        orderBy: { lastUpdatedAt: 'desc' },
-        skip: offset,
-        take: limit,
+        select: { id: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+        skip: offset, take: limit,
       }),
-      prisma.wikiPage.count({ where }),
+      prisma.feedEvent.count({ where }),
     ]);
-
     const items = rows.map((r) => {
-      const meta: any = r.metadata ?? {};
-      // Title format: "YYYY-MM-DD · subject" — split for display.
-      const titleStr = String(r.title ?? '');
-      const subject = titleStr.includes(' · ') ? titleStr.split(' · ').slice(1).join(' · ') : titleStr;
+      const p: any = r.rawPayload ?? {};
+      // Subject varies per channel — fall through known field names.
+      const subject = String(p.subject ?? p.summary ?? p.title ?? p.eventName ?? p.text ?? '').slice(0, 240);
+      const snippet = String(p.snippet ?? p.body ?? p.description ?? p.text ?? '').slice(0, 200);
       return {
         id: r.id,
-        sourceType: 'gmail' as const,
-        senderName: meta.senderName ?? null,
-        senderEmail: meta.senderEmail ?? null,
-        subject: String(subject ?? '').slice(0, 240),
-        snippet: '',  // body lives in bodyMarkdown but we don't ship it in list view to keep payload small
-        receivedAt: (r.lastUpdatedAt ?? r.createdAt).toISOString(),
+        sourceType: r.sourceType,
+        senderName: r.senderName ?? null,
+        senderEmail: r.senderEmail ?? null,
+        subject,
+        snippet,
+        receivedAt: r.createdAt.toISOString(),
       };
     });
-
     res.json({ items, total, hasMore: offset + items.length < total });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
