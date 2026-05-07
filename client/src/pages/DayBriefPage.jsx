@@ -2062,6 +2062,24 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'center', flexWrap: 'wrap' }}>
             {item.critical && <Pill variant="danger">🔴 critical</Pill>}
             {item.archetype && <Pill variant={item.archetype === 'review_risk' ? 'warning' : item.archetype === 'inform_only' ? undefined : 'info'}>{item.archetype.replace('_', ' ')}</Pill>}
+            {/* Addressing pill — visible cue for whether you were
+                directly addressed (action expected) or CC'd (FYI).
+                Only renders for emails; null/undefined hides it. */}
+            {item.itemType === 'email' && item.addressing === 'to' && (
+              <Pill variant="info" title="You were in the To header — sender expects action from you">
+                ✉ to you
+              </Pill>
+            )}
+            {item.itemType === 'email' && item.addressing === 'cc' && (
+              <Pill title="You were CC'd — usually informational, not direct action">
+                📋 cc only
+              </Pill>
+            )}
+            {item.itemType === 'email' && item.addressing === 'bcc' && (
+              <Pill title="You were BCC'd — silent recipient">
+                🤫 bcc
+              </Pill>
+            )}
             <strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 'var(--fs-sm)' }}>
               {/* Prefer the server-side normalised display name. Falls
                   back to a quote-stripped, RFC2822-truncated form for

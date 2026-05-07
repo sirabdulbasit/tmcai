@@ -11,6 +11,13 @@ export interface EmailSummary {
   threadId: string;
   from: string;
   to: string;
+  /** CC header (raw, multiple addresses comma-separated). Empty when
+   *  the message has no Cc. Critical for triage — emails where the
+   *  user is CC-only are usually informational, not action items. */
+  cc: string;
+  /** BCC won't show in the user's view of inbox messages — only when
+   *  they sent it. Kept for completeness. */
+  bcc: string;
   subject: string;
   snippet: string;
   date: string;
@@ -20,7 +27,6 @@ export interface EmailSummary {
 
 export interface EmailDetail extends EmailSummary {
   body: string;        // Plain text or stripped HTML
-  cc?: string;
   attachments: { filename: string; mimeType: string; size: number }[];
 }
 
@@ -40,7 +46,7 @@ export async function getInbox(userId: number, maxResults = 10, query?: string):
     const emails: EmailSummary[] = [];
     for (const msg of response.data.messages.slice(0, maxResults)) {
       try {
-        const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Subject', 'Date'] });
+        const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date'] });
         const headers = detail.data.payload?.headers || [];
         const getHeader = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
 
@@ -49,6 +55,8 @@ export async function getInbox(userId: number, maxResults = 10, query?: string):
           threadId: msg.threadId!,
           from: getHeader('From'),
           to: getHeader('To'),
+          cc: getHeader('Cc'),
+          bcc: getHeader('Bcc'),
           subject: getHeader('Subject'),
           snippet: detail.data.snippet || '',
           date: getHeader('Date'),
@@ -103,7 +111,8 @@ export async function readEmail(userId: number, messageId: string): Promise<{ em
         threadId: detail.data.threadId!,
         from: getHeader('From'),
         to: getHeader('To'),
-        cc: getHeader('Cc') || undefined,
+        cc: getHeader('Cc'),
+        bcc: getHeader('Bcc'),
         subject: getHeader('Subject'),
         snippet: detail.data.snippet || '',
         date: getHeader('Date'),

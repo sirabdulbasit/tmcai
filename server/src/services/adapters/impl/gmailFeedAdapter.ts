@@ -31,7 +31,15 @@ export class GmailFeedAdapter extends FeedAdapter {
   }
 
   normalise(raw: unknown): NormalizedEvent {
-    const e = raw as { id: string; threadId?: string; subject?: string; from?: string; fromName?: string; snippet?: string; date?: string; __userId?: number };
+    const e = raw as {
+      id: string; threadId?: string;
+      subject?: string;
+      from?: string; fromName?: string;
+      to?: string; cc?: string; bcc?: string;
+      snippet?: string; date?: string;
+      isUnread?: boolean; labels?: string[];
+      __userId?: number;
+    };
     return {
       sourceId: e.id,
       eventType: e.threadId ? 'thread_updated' : 'message_received',
@@ -42,8 +50,19 @@ export class GmailFeedAdapter extends FeedAdapter {
         subject: e.subject,
         from: e.from,
         fromName: e.fromName,
+        // Recipient headers — critical for triage so CC-only emails
+        // can be auto-classified as inform_only without bothering
+        // the user. Without these, every email looks "directly
+        // addressed" to triage and clutters My Attention.
+        to: e.to ?? '',
+        cc: e.cc ?? '',
+        bcc: e.bcc ?? '',
         snippet: e.snippet,
         date: e.date,
+        // Read state — populated by gmailReadStateSyncJob even for
+        // existing rows so Brain has live read context.
+        isUnread: e.isUnread,
+        labels: e.labels ?? [],
       },
       receivedAt: e.date ? new Date(e.date) : new Date(),
     };

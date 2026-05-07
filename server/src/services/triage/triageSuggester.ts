@@ -56,6 +56,15 @@ export interface AttentionItem {
    *  critical. 0 means unrated; we still send the field so the
    *  client can render absence consistently. */
   senderStars?: number;
+  /** Addressing classification for emails:
+   *    'to'    — user's email is in the To header (action expected)
+   *    'cc'    — user is CC-only (informational)
+   *    'bcc'   — user is BCC (rare, similar to To/CC depending on intent)
+   *    'none'  — user not in any header (mailing list, fwd, etc.)
+   *    null    — non-email or info missing
+   *  UI surfaces a small pill on the card so the user sees why an
+   *  email is in inform_only vs reply_needed. */
+  addressing?: 'to' | 'cc' | 'bcc' | 'none' | null;
   subject: string;
   preview: string;
   receivedAt: string;
@@ -396,7 +405,28 @@ async function _doTriage(row: {
     } as AttentionItem;
   }
 
-  const archetype = classifyArchetype(itemType, fromFull, subject, preview);
+  // Addressing-aware archetype. The bare classifyArchetype only sees
+  // sender + subject + preview — it can't tell whether the user is
+  // CC-only (informational) or in the To header (action expected).
+  // Apply a deterministic override BEFORE the LLM path so CC-only
+  // emails consistently land as inform_only without needing the
+  // criticality engine to figure it out from prose.
+  let archetype = classifyArchetype(itemType, fromFull, subject, preview);
+  if (itemType === 'email') {
+    const toRaw = String((payload as any).to ?? '').toLowerCase();
+    const ccRaw = String((payload as any).cc ?? '').toLowerCase();
+    const meEmails = userEmails;  // already computed for self-message gate
+    const userInTo = [...meEmails].some((e) => toRaw.includes(e));
+    const userInCc = [...meEmails].some((e) => ccRaw.includes(e));
+    if (userInCc && !userInTo) {
+      // CC-only → almost always informational. Override unless the
+      // base classifier flagged it as schedule_meeting or review_risk
+      // (those are still action-relevant even when CC'd).
+      if (archetype !== 'schedule_meeting' && archetype !== 'review_risk') {
+        archetype = 'inform_only';
+      }
+    }
+  }
   const dedupHash = computeDedupHash({ userId: row.userId, itemType, archetype, senderDomain });
 
   // ── Rule-Engine Gate ─────────────────────────────────────
@@ -857,6 +887,21 @@ async function _doTriage(row: {
     // engine's signals so we never disagree with it. UI shows ★ next
     // to the sender name on the card.
     senderStars: (criticality as any)?.signals?.importanceStars ?? 0,
+    // Addressing classification — compute once, surface on the card.
+    addressing: (() => {
+      if (itemType !== 'email') return null;
+      const toRaw = String((payload as any).to ?? '').toLowerCase();
+      const ccRaw = String((payload as any).cc ?? '').toLowerCase();
+      const bccRaw = String((payload as any).bcc ?? '').toLowerCase();
+      const meEmails = userEmails;
+      const inTo = [...meEmails].some((e) => toRaw.includes(e));
+      const inCc = [...meEmails].some((e) => ccRaw.includes(e));
+      const inBcc = [...meEmails].some((e) => bccRaw.includes(e));
+      if (inTo) return 'to' as const;
+      if (inCc) return 'cc' as const;
+      if (inBcc) return 'bcc' as const;
+      return 'none' as const;
+    })(),
     noise: decision.noise,
     actions: decision.actions as any,
     suggestedRules,
