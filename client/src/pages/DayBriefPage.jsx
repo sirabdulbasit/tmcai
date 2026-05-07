@@ -1747,6 +1747,7 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
     auto_self: { label: 'You sent this',           color: '#a3a3a3' },
     auto_high_confidence: { label: 'Brain knew what to do', color: '#fbbf24' },
     auto_decided: { label: 'You already decided',  color: '#86efac' },
+    auto_cc_only: { label: 'CC only — FYI',        color: '#94a3b8' },
   };
 
   // Apply the My Attention search to Brief items too — same haystack
@@ -1792,7 +1793,7 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
 
   // Order buckets by usefulness — rules first (most "Brain learned!"),
   // then high-confidence delegations, then already-decided, then noise.
-  const ORDER = ['auto_rule', 'auto_high_confidence', 'auto_decided', 'auto_self', 'auto_noise'];
+  const ORDER = ['auto_rule', 'auto_high_confidence', 'auto_decided', 'auto_cc_only', 'auto_self', 'auto_noise'];
 
   const isSearching = !!String(searchQuery ?? '').trim();
   const totalFiltered = filteredActions.length + filteredHandled.length;

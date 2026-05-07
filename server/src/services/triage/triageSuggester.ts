@@ -1176,6 +1176,37 @@ export async function buildAttentionList(
   items.length = 0;
   items.push(...collapsedItems);
 
+  // ── CC suppression ──
+  // Emails where the user is on CC (not To/Bcc) drop OFF My Attention by
+  // default. Most CC mail is FYI/informational and crowds the actionable
+  // list. They still live in the archive — Brief accountability + search
+  // surface them — but we don't ask the user to decide on them.
+  //
+  // Override (keep on My Attention): the criticality engine already
+  // factors sentiment, urgency, escalation keywords, owner/escalation
+  // matrix matches, and tempo anomalies. If those signals are loud
+  // enough to push band → 'high' or 'critical', or fire any of the three
+  // superpowers (absence / cross-source / decay), the CC is meaningful
+  // and stays. Senders the user has explicitly starred (3+) also stay —
+  // user has flagged the relationship as worth the interruption.
+  //
+  // This implements the rule: "User receives only To-addressed emails in
+  // My Attention; CC emails only when something critical (escalation,
+  // sentiment, resignation, etc.) — Brain decides."
+  const ccFiltered = items.filter((it) => {
+    if (it.itemType !== 'email') return true;
+    if (it.addressing !== 'cc') return true;
+    if (it.critical) return true;
+    const band = it.criticality?.band;
+    if (band === 'high' || band === 'critical') return true;
+    const sp = it.criticality?.superpowers;
+    if (sp?.absence || sp?.crossSource || sp?.decay) return true;
+    if ((it.senderStars ?? 0) >= 3) return true;
+    return false;
+  });
+  items.length = 0;
+  items.push(...ccFiltered);
+
   // ── Autonomy gate ──
   // Brain's historyDrivenSuggestion can return ≥0.85 confidence with N
   // prior matching delegations. At that point, surfacing the card again
@@ -1259,13 +1290,17 @@ export async function buildAttentionList(
 //                           the delegate count + delegatee name.
 //   'auto_decided'        — User already terminally decided on this item.
 //                           Reason: "You've already <decided>".
+//   'auto_cc_only'        — Email where you're on CC, not To. Suppressed
+//                           from My Attention as FYI; criticality engine
+//                           did not flag it as escalation/sentiment/
+//                           pattern-anomaly. Still searchable in Brief.
 //
 // User-scoped: every query filters by clientNumber + userId, identical to
 // buildAttentionList. No tenant or per-user data crosses this boundary.
 
 export interface HandledItem {
   feedEventId: string;
-  bucket: 'auto_rule' | 'auto_noise' | 'auto_self' | 'auto_high_confidence' | 'auto_decided';
+  bucket: 'auto_rule' | 'auto_noise' | 'auto_self' | 'auto_high_confidence' | 'auto_decided' | 'auto_cc_only';
   reason: string;
   itemType: ItemType;
   sourceType: string;
@@ -1493,6 +1528,28 @@ export async function buildHandledList(
         intendedAction: item.suggestedAction,
       });
       continue;
+    }
+
+    // CC suppression — mirrors the filter in buildAttentionList so an
+    // item dropped there is still accounted for here. Same override
+    // conditions: criticality band high/critical, any superpower
+    // triggered, ★3+ sender, or LLM-flagged critical → not suppressed.
+    if (item.itemType === 'email' && item.addressing === 'cc' && !item.critical) {
+      const band = item.criticality?.band;
+      const sp = item.criticality?.superpowers;
+      const overridden =
+        band === 'high' || band === 'critical'
+        || sp?.absence || sp?.crossSource || sp?.decay
+        || (item.senderStars ?? 0) >= 3;
+      if (!overridden) {
+        out.push({
+          ...base(item),
+          bucket: 'auto_cc_only',
+          reason: 'You were on CC — Brain didn’t see escalation, sentiment, or pattern anomaly worth surfacing',
+          intendedAction: item.suggestedAction,
+        });
+        continue;
+      }
     }
 
     // Autonomy gate — high-confidence delegations. Mirrors the filter in
