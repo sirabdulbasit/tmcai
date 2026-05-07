@@ -1752,6 +1752,7 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
 
   return (
     <div
+      className="modal-overlay"
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
@@ -1760,6 +1761,7 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
       }}
     >
       <div
+        className="modal-shell"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--bg-1)',
@@ -1924,6 +1926,7 @@ function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
 
   return (
     <div
+      className="modal-overlay"
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
@@ -1932,6 +1935,7 @@ function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
       }}
     >
       <div
+        className="modal-shell"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--bg-1)',

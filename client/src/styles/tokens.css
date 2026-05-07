@@ -112,6 +112,103 @@
   --z-topbar: 50;
   --z-modal: 100;
   --z-toast: 200;
+
+  /* ─── Breakpoints (informational; queries below) ─── */
+  /* mobile: ≤ 640px · tablet: 641–1024px · desktop: > 1024px */
+}
+
+/* ─── Tablet (≤1024px) ────────────────────────────────────────────────
+   Drop the heaviest type sizes a little so headlines fit two-up; tighten
+   spacing so the side rail + content fit a 768-wide viewport without
+   horizontal scroll. Dropdown/popover widths stay responsive via min(). */
+@media (max-width: 1024px) {
+  :root {
+    --fs-3xl: calc(28px * var(--fs-scale));
+    --fs-2xl: calc(22px * var(--fs-scale));
+    --fs-xl:  calc(20px * var(--fs-scale));
+    --rail-width: 56px;
+    --content-max: 100%;
+    --s-6: 20px;
+    --s-8: 24px;
+  }
+}
+
+/* ─── Mobile (≤640px) ─────────────────────────────────────────────────
+   Phone form factor. Headlines compress further, rail collapses to a
+   thinner column (icons-only), modals go full-screen via the .modal-
+   overlay rule below, and 4-column stat grids fall to 1-up. */
+@media (max-width: 640px) {
+  :root {
+    --fs-3xl: calc(22px * var(--fs-scale));
+    --fs-2xl: calc(20px * var(--fs-scale));
+    --fs-xl:  calc(17px * var(--fs-scale));
+    --fs-lg:  calc(16px * var(--fs-scale));
+    --rail-width: 48px;
+    --topbar-height: 48px;
+    --s-4: 12px;
+    --s-5: 14px;
+    --s-6: 16px;
+    --s-8: 20px;
+  }
+
+  /* Tap targets — Apple HIG floor is 44×44pt. The default Button comes
+     out around 30px; bump padding so anything that's interactive is at
+     least finger-friendly. */
+  button, [role="button"], a.button,
+  input[type="checkbox"], input[type="radio"] {
+    min-height: 38px;
+  }
+}
+
+/* ─── Stat tiles grid — auto-collapse 4 → 2 → 1 ──────────────────────── */
+.stat-grid {
+  display: grid;
+  gap: var(--s-3);
+  grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 1024px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+  .stat-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── Modal overlay — full-screen on mobile so dialogs aren't cropped ─ */
+.modal-overlay > .modal-shell {
+  width: min(820px, 100%);
+  max-height: 90vh;
+}
+@media (max-width: 640px) {
+  .modal-overlay {
+    padding: 0 !important;
+    align-items: stretch !important;
+  }
+  .modal-overlay > .modal-shell {
+    width: 100% !important;
+    max-height: 100vh !important;
+    height: 100vh;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+}
+
+/* ─── Action rows — wrap then stack at the smallest sizes ─────────── */
+.action-row {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+@media (max-width: 480px) {
+  .action-row {
+    gap: 6px;
+  }
+  .action-row > .action-row-spacer { display: none; }
+}
+
+/* ─── Card padding tightens on mobile ───────────────────────────────── */
+@media (max-width: 640px) {
+  .card { padding: var(--s-3); }
 }
 
 /* Light mode scaffold — switch body.light-mode to activate. Not wired yet. */
