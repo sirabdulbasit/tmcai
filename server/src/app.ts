@@ -21,6 +21,7 @@ import brainAskRoutes from './routes/brainAskRoutes';
 import userPromptOverlayRoutes from './routes/userPromptOverlayRoutes';
 import authRoutes from './routes/authRoutes';
 import userAuthRoutes from './routes/userAuthRoutes';
+import mutedSendersRoutes from './routes/mutedSendersRoutes';
 import conversationRoutes from './routes/conversationRoutes';
 import profileRoutes from './routes/profileRoutes';
 import schedulerRoutes from './routes/schedulerRoutes';
@@ -163,6 +164,7 @@ v1.use(optionalAuth);
 
 v1.use('/health', healthRoutes);
 v1.use('/user', userAuthRoutes);
+v1.use('/user/muted-senders', mutedSendersRoutes);
 v1.use('/profile', profileRoutes);
 v1.use('/conversations', conversationRoutes);
 v1.use('/schedules', schedulerRoutes);

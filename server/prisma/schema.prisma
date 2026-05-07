@@ -1430,6 +1430,36 @@ model FeedEvent {
   @@map("feed_events")
 }
 
+/**
+ * MutedSender — per-user list of senders the user has explicitly opted
+ * out of seeing on My Attention or Brief. Items from these senders
+ * still land in feed_events and the Wiki archive (so search works) but
+ * are filtered out of the active surfaces.
+ *
+ * Identifier semantics by channel:
+ *   email     — exact email address (case-insensitive)
+ *   whatsapp  — phone number (E.164, +XXXXX)
+ *   gchat     — google chat user id
+ *   other     — free-form
+ *
+ * No tenant-wide muting on purpose: muting is a personal preference,
+ * not a policy. Each user manages their own list.
+ */
+model MutedSender {
+  id           String   @id @default(cuid())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  channel      String   @db.VarChar(20) // email | whatsapp | gchat | other
+  identifier   String   @db.VarChar(255) // email / phone / id
+  displayName  String?  @map("display_name") @db.VarChar(200)
+  reason       String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, channel, identifier])
+  @@index([clientNumber, userId])
+  @@map("muted_senders")
+}
+
 // ─── M2: Agent Memory (cross-session state for ADK agents) ──────
 model AgentMemory {
   id           String   @id @default(cuid())

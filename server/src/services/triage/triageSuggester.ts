@@ -1027,6 +1027,20 @@ export async function buildAttentionList(
   }).catch(() => [] as Array<{ entityId: string | null }>);
   const decidedSet = new Set(decidedIds.map((d) => d.entityId).filter(Boolean) as string[]);
 
+  // Muted senders — user has explicitly opted out of seeing items from
+  // these senders on My Attention or Brief. Build two normalised sets
+  // (email vs phone) so the filter can match feed_events directly.
+  const mutedRows = await prisma.mutedSender.findMany({
+    where: { userId, clientNumber },
+    select: { channel: true, identifier: true },
+  }).catch(() => [] as Array<{ channel: string; identifier: string }>);
+  const mutedEmails = new Set<string>();
+  const mutedPhones = new Set<string>();
+  for (const m of mutedRows) {
+    if (m.channel === 'email' && m.identifier) mutedEmails.add(m.identifier.toLowerCase());
+    else if (m.channel === 'whatsapp' && m.identifier) mutedPhones.add(m.identifier);
+  }
+
   // Thread-replied set: any Gmail thread the user has already sent a
   // reply on (via Brain's draft system) within the last 30 days. New
   // feed_events for the SAME thread create new feedEventIds, so the
@@ -1104,7 +1118,7 @@ export async function buildAttentionList(
         sourceType: { in: ['gmail', 'whatsapp', 'gchat'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_EMAIL_LIKE * 3,  // over-fetch, post-filter trims
     }),
@@ -1114,7 +1128,7 @@ export async function buildAttentionList(
         sourceType: 'gcal' as any,
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_CALENDAR * 3,
     }),
@@ -1124,7 +1138,7 @@ export async function buildAttentionList(
         sourceType: 'gtasks' as any,
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_TASKS * 3,
     }),
@@ -1156,6 +1170,16 @@ export async function buildAttentionList(
   function pickFromBucket(bucket: typeof emailRows, quota: number) {
     return bucket
       .filter((r) => !decidedSet.has(r.id))
+      // Muted senders — explicit user opt-out. Drops from My Attention
+      // entirely (and from Brief; see buildHandledList for the mirror).
+      // Items still live in feed_events + Wiki archive so search works.
+      .filter((r) => {
+        const senderEmail = (r.senderEmail ?? '').toLowerCase();
+        if (senderEmail && mutedEmails.has(senderEmail)) return false;
+        const senderPhone = (r.senderPhone ?? '').replace(/[^\d+]/g, '');
+        if (senderPhone && mutedPhones.has(senderPhone)) return false;
+        return true;
+      })
       // Suppress feed_events for Gmail threads the user has already
       // replied on, by ANY means — Brain's draft button OR Gmail compose
       // directly OR mobile app. The userRepliedThread flag is stamped
@@ -1517,6 +1541,21 @@ export async function buildHandledList(
     if (r.entityId) decidedMap.set(r.entityId, { decision: r.userDecision, at: r.createdAt });
   }
 
+  // Mirror buildAttentionList's muted-senders set. Items from muted
+  // senders are filtered out before bucketing so Brief never shows
+  // them — user explicitly asked: "never want to be part of My
+  // Attention or brief." They remain searchable in Wiki.
+  const mutedRows = await prisma.mutedSender.findMany({
+    where: { userId, clientNumber },
+    select: { channel: true, identifier: true },
+  }).catch(() => [] as Array<{ channel: string; identifier: string }>);
+  const mutedEmails = new Set<string>();
+  const mutedPhones = new Set<string>();
+  for (const m of mutedRows) {
+    if (m.channel === 'email' && m.identifier) mutedEmails.add(m.identifier.toLowerCase());
+    else if (m.channel === 'whatsapp' && m.identifier) mutedPhones.add(m.identifier);
+  }
+
   // Mirror buildAttentionList's thread-replied set so a feed_event
   // for a thread the user has already replied on lands in Brief
   // 'auto_decided' bucket instead of vanishing entirely. Keeps the
@@ -1556,7 +1595,7 @@ export async function buildHandledList(
         sourceType: { in: ['gmail', 'whatsapp', 'gchat'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_EMAIL_LIKE * 3,
     }),
@@ -1566,7 +1605,7 @@ export async function buildHandledList(
         sourceType: 'gcal' as any,
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_CALENDAR * 3,
     }),
@@ -1576,7 +1615,7 @@ export async function buildHandledList(
         sourceType: 'gtasks' as any,
         createdAt: { gte: ninetyDaysAgo },
       } as any,
-      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, senderPhone: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
       take: QUOTA_TASKS * 3,
     }),
@@ -1635,6 +1674,16 @@ export async function buildHandledList(
     const r = candidates[i];
     const item = suggestions[i];
     const decided = decidedMap.get(r.id);
+
+    // Muted-sender skip — drop entirely (no bucket). User opted out;
+    // the item lives in feed_events + Wiki and is searchable, but it
+    // never shows in Brief either.
+    {
+      const senderEmail = (r.senderEmail ?? '').toLowerCase();
+      if (senderEmail && mutedEmails.has(senderEmail)) continue;
+      const senderPhone = (r.senderPhone ?? '').replace(/[^\d+]/g, '');
+      if (senderPhone && mutedPhones.has(senderPhone)) continue;
+    }
 
     // Common projection — keep this aligned with the AttentionItem shape
     // so the client can render either bucket from one component.

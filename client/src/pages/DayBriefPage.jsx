@@ -2889,6 +2889,8 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           decide={decide}
           openPicker={() => setPickerOpen(true)}
           hide={hide}
+          notify={notify}
+          onDecided={onDecided}
         />
       </div>
 
@@ -3042,7 +3044,7 @@ function buildAttentionOptions(item) {
  * existing DelegateePicker. Snooze surfaces a duration sub-menu.
  * "Hide pattern" is the strongest negative signal — it's still in here.
  */
-function MoreActionsMenu({ item, busy, decide, openPicker, hide }) {
+function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecided }) {
   const [open, setOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const ref = useRef(null);
@@ -3127,13 +3129,47 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide }) {
     });
   }
 
+  // Mute sender — explicit per-sender opt-out. Future items from this
+  // sender drop from BOTH My Attention and Brief; archive still has
+  // them. Manage / unmute from Settings → Muted senders.
+  const muteIdentifier =
+    item.itemType === 'email' ? (item.fromEmail || '') :
+    item.itemType === 'whatsapp' ? (item.fromEmail || item.from || '') :
+    '';
+  const muteChannel =
+    item.itemType === 'email' ? 'email' :
+    item.itemType === 'whatsapp' ? 'whatsapp' :
+    null;
+  if (muteChannel && muteIdentifier) {
+    const muteSender = async () => {
+      try {
+        await api.post('/user/muted-senders', {
+          channel: muteChannel,
+          identifier: muteIdentifier,
+          displayName: item.fromDisplay || item.from || null,
+        });
+        notify?.(`${item.fromDisplay || muteIdentifier} muted. Manage in Settings → Muted senders.`, 'success');
+        setOpen(false);
+        // Refresh so the muted item drops off immediately.
+        setTimeout(() => onDecided?.(), 400);
+      } catch (err) {
+        notify?.(err?.response?.data?.error || 'Mute failed', 'error');
+      }
+    };
+    items.push({
+      id: 'mute_sender',
+      label: `🔇 Mute ${item.fromDisplay || muteIdentifier} (never surface again)`,
+      handler: muteSender,
+      separator: true,
+    });
+  }
+
   // Hide-pattern is destructive — keep it last with a separator
   items.push({
     id: 'hide_pattern',
     label: '✕ Hide pattern (Brain stops surfacing similar items)',
     handler: () => { hide(); setOpen(false); },
     danger: true,
-    separator: true,
   });
 
   return (
