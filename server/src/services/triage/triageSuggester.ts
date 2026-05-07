@@ -965,23 +965,34 @@ export async function buildAttentionList(
   // 2026-05-07). Cap protects steady-state regardless of window
   // width.
   const MAX_CANDIDATES = 200;
-  // Two-part fetch so calendar events are never crowded out by emails
-  // when the inbox is busy. gcal/gtasks rows tend to have older
-  // createdAt (they were ingested earlier — meetings get added once,
-  // then sit in the queue until they happen) but a FUTURE eventDate.
-  // A single createdAt-ordered fetch capped at 500 rows can exclude
-  // them entirely if 500 newer email rows exist. Fetching them
-  // separately + merging guarantees they survive.
-  const [emailRows, calRows] = await Promise.all([
+  // Per-channel quotas — without this, a busy channel (166 Google
+  // Tasks, observed on prod 2026-05-07) crowds out everything else
+  // because eventDate-DESC sort puts far-future task due dates above
+  // this-week's meetings. The user's My Attention then becomes 100%
+  // tasks while emails and calendar items fall past position 200 and
+  // never reach triage.
+  //
+  // Quotas (must sum to MAX_CANDIDATES):
+  //   email + whatsapp + chat   = 100  (priority lane)
+  //   calendar                  =  50
+  //   tasks                     =  50
+  //
+  // Each channel runs its own SQL fetch so per-channel ordering
+  // (newest createdAt for each) decides what survives. Then we
+  // merge and triage.
+  const QUOTA_EMAIL_LIKE = 100;
+  const QUOTA_CALENDAR = 50;
+  const QUOTA_TASKS = 50;
+  const [emailRows, calRows, taskRows] = await Promise.all([
     prisma.feedEvent.findMany({
       where: {
         clientNumber, userId,
-        sourceType: { in: ['gmail', 'whatsapp', 'gchat', 'gtasks'] as any },
+        sourceType: { in: ['gmail', 'whatsapp', 'gchat'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-      take: Math.min(limit * 10, MAX_CANDIDATES * 3),
+      take: QUOTA_EMAIL_LIKE * 3,  // over-fetch, post-filter trims
     }),
     prisma.feedEvent.findMany({
       where: {
@@ -991,10 +1002,19 @@ export async function buildAttentionList(
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-      take: 500,  // typically far less than 500 calendar events in any 90-day window
+      take: QUOTA_CALENDAR * 3,
+    }),
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: 'gtasks' as any,
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: QUOTA_TASKS * 3,
     }),
   ]);
-  const rows = [...emailRows, ...calRows];
 
   // Drop events whose dedup_hash has been hidden by this user.
   const hashes = new Set<string>();
@@ -1004,22 +1024,22 @@ export async function buildAttentionList(
   });
   hidden.forEach((h) => hashes.add(h.dedupHash));
 
-  // Filter:
-  //  1. Drop already-decided rows (no point running LLM on them).
-  //  2. Drop rows whose source-native timestamp is older than the
-  //     ATTENTION_WINDOW_DAYS window.
-  //  3. Sort by EVENT DATE (not createdAt) so future calendar events
-  //     float alongside recent emails. With a wide window the top
-  //     N by createdAt would be all emails — calendar events would
-  //     be excluded because they were ingested earlier even though
-  //     they're upcoming.
-  //  4. Cap to MAX_CANDIDATES to keep memory bounded.
-  const withDates = rows
-    .filter((r) => !decidedSet.has(r.id))
-    .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
-    .filter((x) => x.eventDate >= sevenDaysAgo);
-  withDates.sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime());
-  const candidates = withDates.slice(0, MAX_CANDIDATES).map((x) => x.row);
+  // Per-channel filter+sort+slice. Each channel applies the same
+  // rules but to its own bucket so a busy channel can't crowd out
+  // the others.
+  function pickFromBucket(bucket: typeof emailRows, quota: number) {
+    return bucket
+      .filter((r) => !decidedSet.has(r.id))
+      .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
+      .filter((x) => x.eventDate >= sevenDaysAgo)
+      .sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime())
+      .slice(0, quota)
+      .map((x) => x.row);
+  }
+  const emailCandidates = pickFromBucket(emailRows, QUOTA_EMAIL_LIKE);
+  const calCandidates = pickFromBucket(calRows, QUOTA_CALENDAR);
+  const taskCandidates = pickFromBucket(taskRows, QUOTA_TASKS);
+  const candidates = [...emailCandidates, ...calCandidates, ...taskCandidates];
 
   // Run suggestForFeedEvent in PARALLEL across candidates — but in
   // batches to keep memory bounded. With wide windows + heavy
@@ -1243,26 +1263,21 @@ export async function buildHandledList(
     if (r.entityId) decidedMap.set(r.entityId, r.userDecision);
   }
 
-  // Same SQL window + per-event filter as buildAttentionList so the math
-  // balances. The 90-day SQL window catches historical-scribe rows that
-  // wrote createdAt=now() for old emails; the source-native filter trims
-  // them back to a true 7-day attention window.
-  // Hard ceiling on rows triaged in one request — same OOM-protection
-  // as buildAttentionList. Wide ATTENTION_WINDOW_DAYS would otherwise
-  // pull thousands of rows through Promise.all and exhaust V8 heap.
-  // Split-fetch as in buildAttentionList so gcal events aren't crowded
-  // out by busy email inboxes.
-  const MAX_HANDLED_CANDIDATES = 200;
-  const [emailRows, calRows] = await Promise.all([
+  // Per-channel quotas matching buildAttentionList — keeps the
+  // handled list balanced across channels for the same reason.
+  const QUOTA_EMAIL_LIKE = 100;
+  const QUOTA_CALENDAR = 50;
+  const QUOTA_TASKS = 50;
+  const [emailRows, calRows, taskRows] = await Promise.all([
     prisma.feedEvent.findMany({
       where: {
         clientNumber, userId,
-        sourceType: { in: ['gmail', 'whatsapp', 'gchat', 'gtasks'] as any },
+        sourceType: { in: ['gmail', 'whatsapp', 'gchat'] as any },
         createdAt: { gte: ninetyDaysAgo },
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-      take: Math.min(limit * 10, MAX_HANDLED_CANDIDATES * 3),
+      take: QUOTA_EMAIL_LIKE * 3,
     }),
     prisma.feedEvent.findMany({
       where: {
@@ -1272,20 +1287,33 @@ export async function buildHandledList(
       } as any,
       select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
       orderBy: { createdAt: 'desc' },
-      take: 500,
+      take: QUOTA_CALENDAR * 3,
+    }),
+    prisma.feedEvent.findMany({
+      where: {
+        clientNumber, userId,
+        sourceType: 'gtasks' as any,
+        createdAt: { gte: ninetyDaysAgo },
+      } as any,
+      select: { id: true, clientNumber: true, userId: true, sourceType: true, senderEmail: true, senderName: true, rawPayload: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: QUOTA_TASKS * 3,
     }),
   ]);
-  const rows = [...emailRows, ...calRows];
 
-  // Sort by event date so future calendar events stay in scope when
-  // the cap kicks in (same reason as buildAttentionList — wide
-  // windows + createdAt sort would otherwise exclude upcoming events
-  // because their ingest timestamp predates recent emails).
-  const withDates = rows
-    .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
-    .filter((x) => x.eventDate >= sevenDaysAgo);
-  withDates.sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime());
-  const candidates = withDates.slice(0, MAX_HANDLED_CANDIDATES).map((x) => x.row);
+  function pickFromBucket(bucket: typeof emailRows, quota: number) {
+    return bucket
+      .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
+      .filter((x) => x.eventDate >= sevenDaysAgo)
+      .sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime())
+      .slice(0, quota)
+      .map((x) => x.row);
+  }
+  const candidates = [
+    ...pickFromBucket(emailRows, QUOTA_EMAIL_LIKE),
+    ...pickFromBucket(calRows, QUOTA_CALENDAR),
+    ...pickFromBucket(taskRows, QUOTA_TASKS),
+  ];
 
   // Batched triage — keeps memory bounded even for wide windows.
   const HANDLED_BATCH_SIZE = 25;
