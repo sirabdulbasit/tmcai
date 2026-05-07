@@ -332,6 +332,141 @@ function BrokenConnectorBanner({ broken, onReconnect }) {
   );
 }
 
+/**
+ * WindowPrefs — small inline control next to the Sync button. Lets the
+ * user pick how far back My Attention surfaces unattended items
+ * (7..90 days, default 30) and how long Brief's audit trail goes
+ * (1..30 days, default 7). Saves to /user/preferences and refreshes
+ * the brief so the new windows take effect immediately.
+ */
+function WindowPrefs({ onSaved, notify }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [att, setAtt] = useState(30);
+  const [brief, setBrief] = useState(7);
+  const [loaded, setLoaded] = useState(false);
+  const ref = useRef(null);
+
+  // Lazy-load current values the first time the popover opens.
+  useEffect(() => {
+    if (!open || loaded) return;
+    (async () => {
+      try {
+        const { data } = await api.get('/user/preferences');
+        if (data?.attentionWindowDays) setAtt(data.attentionWindowDays);
+        if (data?.briefWindowDays) setBrief(data.briefWindowDays);
+        setLoaded(true);
+      } catch { /* falls back to defaults */ }
+    })();
+  }, [open, loaded]);
+
+  // Click-outside close.
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.patch('/user/preferences', {
+        attentionWindowDays: Number(att),
+        briefWindowDays: Number(brief),
+      });
+      notify?.(`Window updated: My Attention ${att}d · Brief ${brief}d`, 'success');
+      setOpen(false);
+      onSaved?.();
+    } catch (err) {
+      notify?.(err?.response?.data?.error || 'Save failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ATT_OPTIONS = [7, 14, 30, 60, 90];
+  const BRIEF_OPTIONS = [1, 3, 7, 14, 30];
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="How far back to surface items"
+        style={{
+          padding: '4px 10px',
+          background: open ? 'var(--bg-2)' : 'transparent',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-sm)',
+          color: 'var(--text-muted)',
+          fontSize: 'var(--fs-xs)',
+          cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        ⚙ Window
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0,
+            background: 'var(--bg-2)', border: '1px solid var(--border)',
+            borderRadius: 'var(--r-md)', boxShadow: 'var(--shadow-lg)',
+            zIndex: 80, padding: 'var(--s-3)', minWidth: 280,
+            display: 'flex', flexDirection: 'column', gap: 10,
+          }}
+        >
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            How far back should I look?
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              My Attention — unattended items
+            </span>
+            <select
+              value={att}
+              onChange={(e) => setAtt(Number(e.target.value))}
+              style={{
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                color: 'var(--text)', padding: '6px 8px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-sm)',
+              }}
+            >
+              {ATT_OPTIONS.map((d) => <option key={d} value={d}>{d} days</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+              Brief — audit trail
+            </span>
+            <select
+              value={brief}
+              onChange={(e) => setBrief(Number(e.target.value))}
+              style={{
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                color: 'var(--text)', padding: '6px 8px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-sm)',
+              }}
+            >
+              {BRIEF_OPTIONS.map((d) => <option key={d} value={d}>{d} days</option>)}
+            </select>
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+            Anything older lives in Wiki, searchable.
+          </div>
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="primary" size="sm" disabled={busy} onClick={save}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConnectorGapBanner({ gaps, onConnect }) {
   if (!gaps || !gaps.gaps || gaps.gaps.length === 0) return null;
   const required = gaps.gaps.filter((g) => g.required);
@@ -724,6 +859,7 @@ export default function DayBriefPage() {
               Last synced {timeAgo(gaps.lastSyncAt)}
             </span>
           )}
+          <WindowPrefs onSaved={() => load(false)} notify={notify} />
         </div>
       </header>
 

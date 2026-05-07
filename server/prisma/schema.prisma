@@ -134,6 +134,11 @@ model User {
   riskTolerance          String? @map("risk_tolerance") @db.VarChar(10) // conservative | balanced | aggressive
   agentConfigOverrides   Json?   @map("agent_config_overrides") // per-user agent tweaks
   notificationPreferences Json?  @map("notification_preferences") // channel prefs, quiet hours
+  // App-level preferences the user controls from Settings. Currently:
+  //   attentionWindowDays — how far back My Attention surfaces unattended items (7..90, default 30)
+  //   briefWindowDays      — Brief audit trail window (1..30, default 7)
+  // Future flags for narrator voice, autonomy thresholds etc. live here.
+  preferences            Json?   @map("preferences")
   killSwitchEnabled      Boolean @default(false) @map("kill_switch_enabled") // allow this user to trigger tenant kill switch
 
   createdAt DateTime @default(now()) @map("created_at")

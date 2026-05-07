@@ -1006,10 +1006,13 @@ export async function buildAttentionList(
   // have a matching decision_log (the authoritative signal that MD
   // acted on this specific event).
   // Window split per user spec (2026-05-07): My Attention surfaces up
-  // to 30 days of unattended items so nothing falls through. Brief
-  // (buildHandledList) keeps the tighter 7-day audit window. Anything
-  // older lives in Wiki, searchable.
-  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '30', 10) || 30));
+  // to N days of unattended items so nothing falls through. Brief
+  // (buildHandledList) keeps the tighter audit window. Anything older
+  // lives in Wiki, searchable. The user can adjust both windows from
+  // Settings; per-user value wins over env, which wins over default.
+  const { getUserPreferences } = await import('../userPreferencesService');
+  const userPrefs = await getUserPreferences(userId);
+  const ATTENTION_WINDOW_DAYS = userPrefs.attentionWindowDays;
   const sevenDaysAgo = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
   // Only TERMINAL decisions hide the card. 'drafted' is pending — MD
@@ -1512,11 +1515,14 @@ export async function buildHandledList(
   userId: number,
   limit = 50,
 ): Promise<HandledItem[]> {
-  // Brief shows the audit trail of the last 7 days — what Nexeo handled
+  // Brief shows the audit trail of the last N days — what Nexeo handled
   // and what you handled, with timestamps. Older handled work lives in
-  // Wiki, searchable. Tighter than My Attention's 30-day unattended
-  // window so the audit feels current without drowning in old activity.
-  const BRIEF_WINDOW_DAYS = Math.max(1, Math.min(30, parseInt(process.env.BRIEF_WINDOW_DAYS ?? '7', 10) || 7));
+  // Wiki, searchable. Tighter than My Attention's window so the audit
+  // feels current without drowning in old activity. Per-user setting
+  // overrides env / default.
+  const { getUserPreferences } = await import('../userPreferencesService');
+  const userPrefs = await getUserPreferences(userId);
+  const BRIEF_WINDOW_DAYS = userPrefs.briefWindowDays;
   const sevenDaysAgo = new Date(Date.now() - BRIEF_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
