@@ -743,15 +743,22 @@ export default function DayBriefPage() {
           const emailsAttention = attention.filter((a) => a.itemType === 'email').length;
           const emailsHandled = handled.filter((h) => /email|gmail/i.test(h.sourceType ?? '')).length;
           const recentEmails = emailsAttention + emailsHandled;
+          // While loading, attention + handled are empty so recentEmails
+          // is 0 — falling back to emailsToday (full archive count) made
+          // the headline jump from e.g. "472" → "14" the moment phase-2
+          // settled. Show "…" during loading instead so the number only
+          // appears once it's the *final* answer.
           return (
             <MiniStat
               icon="mail"
               label="Emails this week"
-              big={recentEmails || emailsToday}
+              big={loading ? '…' : recentEmails}
               sub={
-                emailsAttention > 0 || emailsHandled > 0
-                  ? `${emailsAttention} need decision · ${emailsHandled} auto-handled`
-                  : `${emailsToday.toLocaleString()} total · click to browse`
+                loading
+                  ? 'reading…'
+                  : (emailsAttention > 0 || emailsHandled > 0
+                      ? `${emailsAttention} need decision · ${emailsHandled} auto-handled`
+                      : `${emailsToday.toLocaleString()} total · click to browse`)
               }
               onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
             />
