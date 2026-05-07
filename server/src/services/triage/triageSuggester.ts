@@ -980,9 +980,14 @@ export async function buildAttentionList(
   // Each channel runs its own SQL fetch so per-channel ordering
   // (newest createdAt for each) decides what survives. Then we
   // merge and triage.
-  const QUOTA_EMAIL_LIKE = 100;
-  const QUOTA_CALENDAR = 50;
-  const QUOTA_TASKS = 50;
+  // Tighter quotas to bring first-load time down. Was 100/50/50 = 200
+  // candidates × ~50ms triage each = 10s. New 60/30/30 = 120 candidates
+  // × ~50ms = 6s. Loses some breadth but typical inboxes have far
+  // fewer than 60 *new* emails per attention window — and the cache
+  // makes repeats free.
+  const QUOTA_EMAIL_LIKE = 60;
+  const QUOTA_CALENDAR = 30;
+  const QUOTA_TASKS = 30;
   const [emailRows, calRows, taskRows] = await Promise.all([
     prisma.feedEvent.findMany({
       where: {

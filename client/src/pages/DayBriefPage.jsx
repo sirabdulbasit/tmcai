@@ -685,13 +685,31 @@ export default function DayBriefPage() {
 
       {/* ── Volume strip ────────────────────────────────────── */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: 'var(--s-3)', marginBottom: 'var(--s-6)' }}>
-        <MiniStat
-          icon="mail"
-          label="Emails need you"
-          big={attention.filter((a) => a.itemType === 'email').length}
-          sub={`${emailsToday.toLocaleString()} total · click to browse`}
-          onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
-        />
+        {/* Emails tile — three honest numbers stacked so the user
+             sees Brain's curation alongside the total in scribe.
+             Big: count Brain has ingested in the last 7 days (matches
+             the "how busy is my inbox" feeling).
+             Sub: "X need decision · Y auto-handled" — exposes
+             Brain's filtering so it doesn't look like data is missing.
+             Mini: "Z total · click to browse" — full archive count. */}
+        {(() => {
+          const emailsAttention = attention.filter((a) => a.itemType === 'email').length;
+          const emailsHandled = handled.filter((h) => /email|gmail/i.test(h.sourceType ?? '')).length;
+          const recentEmails = emailsAttention + emailsHandled;
+          return (
+            <MiniStat
+              icon="mail"
+              label="Emails this week"
+              big={recentEmails || emailsToday}
+              sub={
+                emailsAttention > 0 || emailsHandled > 0
+                  ? `${emailsAttention} need decision · ${emailsHandled} auto-handled`
+                  : `${emailsToday.toLocaleString()} total · click to browse`
+              }
+              onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
+            />
+          );
+        })()}
         <MiniStat
           icon="message-circle"
           label="WhatsApp today"
