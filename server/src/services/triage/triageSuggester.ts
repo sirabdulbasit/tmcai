@@ -996,6 +996,37 @@ export async function buildAttentionList(
   }).catch(() => [] as Array<{ entityId: string | null }>);
   const decidedSet = new Set(decidedIds.map((d) => d.entityId).filter(Boolean) as string[]);
 
+  // Thread-replied set: any Gmail thread the user has already sent a
+  // reply on (via Brain's draft system) within the last 30 days. New
+  // feed_events for the SAME thread create new feedEventIds, so the
+  // decidedSet above (keyed by feedEventId) doesn't catch follow-on
+  // pulls of the same conversation. Without this, "Looking for
+  // Opportunity" surfaces a 3rd time after MD has already replied
+  // twice — observed on prod 2026-05-07. Resolve by mapping recent
+  // 'reply_sent' decisions back to their threadIds via feed_events.
+  const replyWindowAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const repliedRows = await prisma.decisionLog.findMany({
+    where: {
+      clientNumber, userId,
+      createdAt: { gte: replyWindowAgo },
+      actionTaken: 'reply_sent',
+      entityId: { not: null } as any,
+    } as any,
+    select: { entityId: true },
+  }).catch(() => [] as Array<{ entityId: string | null }>);
+  const repliedFeIds = repliedRows.map((r) => r.entityId).filter(Boolean) as string[];
+  const repliedThreadIds = new Set<string>();
+  if (repliedFeIds.length > 0) {
+    const repliedFeeds = await prisma.feedEvent.findMany({
+      where: { id: { in: repliedFeIds }, clientNumber, sourceType: 'gmail' },
+      select: { rawPayload: true },
+    }).catch(() => [] as Array<{ rawPayload: any }>);
+    for (const f of repliedFeeds) {
+      const tid = (f.rawPayload as any)?.threadId;
+      if (typeof tid === 'string' && tid) repliedThreadIds.add(tid);
+    }
+  }
+
   // Widen the SQL window to 90 days. The historical scribe writes
   // createdAt=now() for month-old emails, so a tight 7-day SQL window
   // would either miss legitimately fresh items (if it strictly used the
@@ -1094,6 +1125,14 @@ export async function buildAttentionList(
   function pickFromBucket(bucket: typeof emailRows, quota: number) {
     return bucket
       .filter((r) => !decidedSet.has(r.id))
+      // Suppress feed_events whose threadId matches a thread the user
+      // has already replied on. This kills "duplicate ask" cards for
+      // Gmail conversations after MD has sent a draft reply.
+      .filter((r) => {
+        if (r.sourceType !== 'gmail') return true;
+        const tid = (r.rawPayload as any)?.threadId;
+        return !tid || !repliedThreadIds.has(tid);
+      })
       .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
       .filter((x) => x.eventDate >= sevenDaysAgo)
       .sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime())
@@ -1362,6 +1401,33 @@ export async function buildHandledList(
     if (r.entityId) decidedMap.set(r.entityId, r.userDecision);
   }
 
+  // Mirror buildAttentionList's thread-replied set so a feed_event
+  // for a thread the user has already replied on lands in Brief
+  // 'auto_decided' bucket instead of vanishing entirely. Keeps the
+  // attention.length + handled.length accounting honest.
+  const replyWindowAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const repliedRows = await prisma.decisionLog.findMany({
+    where: {
+      clientNumber, userId,
+      createdAt: { gte: replyWindowAgo },
+      actionTaken: 'reply_sent',
+      entityId: { not: null } as any,
+    } as any,
+    select: { entityId: true },
+  }).catch(() => [] as Array<{ entityId: string | null }>);
+  const repliedFeIds = repliedRows.map((r) => r.entityId).filter(Boolean) as string[];
+  const repliedThreadIds = new Set<string>();
+  if (repliedFeIds.length > 0) {
+    const repliedFeeds = await prisma.feedEvent.findMany({
+      where: { id: { in: repliedFeIds }, clientNumber, sourceType: 'gmail' },
+      select: { rawPayload: true },
+    }).catch(() => [] as Array<{ rawPayload: any }>);
+    for (const f of repliedFeeds) {
+      const tid = (f.rawPayload as any)?.threadId;
+      if (typeof tid === 'string' && tid) repliedThreadIds.add(tid);
+    }
+  }
+
   // Per-channel quotas matching buildAttentionList — keeps the
   // handled list balanced across channels for the same reason.
   const QUOTA_EMAIL_LIKE = 200;
@@ -1479,6 +1545,22 @@ export async function buildHandledList(
         reason: `You've already ${decided} this`,
       });
       continue;
+    }
+
+    // Same-thread-replied: a different feed_event but the same Gmail
+    // thread the user has already responded to. Bucket as auto_decided
+    // so the user sees "Brain knew you'd already replied" instead of a
+    // re-ask card or silent disappearance.
+    if (r.sourceType === 'gmail') {
+      const tid = (r.rawPayload as any)?.threadId;
+      if (tid && repliedThreadIds.has(tid)) {
+        out.push({
+          ...base(item),
+          bucket: 'auto_decided',
+          reason: 'You already replied on this thread',
+        });
+        continue;
+      }
     }
 
     if (!item) continue; // triage threw — leave for the diagnostic, not Brief

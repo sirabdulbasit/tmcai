@@ -1693,6 +1693,188 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
   );
 }
 
+/**
+ * ThreadPreviewModal — full-thread reader with a Gemini-style AI
+ * summary at the top. Triggered from the Preview button on an
+ * AttentionCard. For email items, fetches the full Gmail thread via
+ * /brief/attention/:feedEventId/thread and renders the LLM summary
+ * card above a chronological list of every message in the thread.
+ * For non-email items, the same endpoint returns a single-message
+ * payload — the modal still works, just without summary.
+ */
+function ThreadPreviewModal({ feedEventId, onClose, notify }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get(`/brief/attention/${feedEventId}/thread`);
+        if (!cancelled) setData(res.data);
+      } catch (e) {
+        if (!cancelled) setErr(e?.response?.data?.error ?? e?.message ?? 'Could not load thread');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [feedEventId]);
+
+  // Esc closes
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const messages = data?.messages ?? [];
+  const summary = data?.summary ?? '';
+  const provider = data?.summaryProvider ?? '';
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+        zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 'var(--s-3)',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r-lg)',
+          width: 'min(820px, 100%)',
+          maxHeight: '90vh',
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          padding: 'var(--s-4)',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--s-3)',
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
+              Thread preview
+            </div>
+            <div style={{ fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-semibold)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {messages[0]?.subject || (loading ? 'Loading…' : '(no subject)')}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: 'transparent', border: '1px solid var(--border)',
+              color: 'var(--text)', padding: '4px 10px', borderRadius: 'var(--r-sm)',
+              cursor: 'pointer', fontSize: 'var(--fs-sm)',
+            }}
+          >
+            ✕ Close
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: 'var(--s-4)' }}>
+          {loading && (
+            <div style={{ padding: 'var(--s-4)', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Loading thread + summary…
+            </div>
+          )}
+
+          {err && !loading && (
+            <div style={{
+              padding: 'var(--s-3)',
+              background: 'rgba(248,113,113,0.10)',
+              border: '1px solid rgba(248,113,113,0.55)',
+              borderRadius: 'var(--r-md)',
+              color: '#f87171', fontSize: 'var(--fs-sm)',
+            }}>
+              {err}
+            </div>
+          )}
+
+          {!loading && !err && (
+            <>
+              {/* Summary card — only shown when LLM produced one */}
+              {summary && (
+                <div style={{
+                  padding: 'var(--s-3) var(--s-4)',
+                  background: 'rgba(214,109,60,0.08)',
+                  border: '1px solid rgba(214,109,60,0.35)',
+                  borderRadius: 'var(--r-md)',
+                  marginBottom: 'var(--s-4)',
+                }}>
+                  <div style={{
+                    fontSize: 10, fontWeight: 700, letterSpacing: '.14em',
+                    textTransform: 'uppercase', color: 'var(--accent)',
+                    marginBottom: 6,
+                  }}>
+                    ⚡ Brain summary {provider && provider !== 'none' && provider !== 'failed' ? `· ${provider}` : ''}
+                  </div>
+                  <div style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.6, color: 'var(--text)' }}>
+                    {summary}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty thread fallback */}
+              {messages.length === 0 && !summary && (
+                <div style={{ padding: 'var(--s-4)', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  No thread content available.
+                </div>
+              )}
+
+              {/* Chronological message list */}
+              {messages.map((m, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: 'var(--s-3)',
+                    background: m.from === 'me' ? 'rgba(125,211,252,0.06)' : 'var(--bg-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--r-md)',
+                    marginBottom: 'var(--s-3)',
+                  }}
+                >
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6,
+                    gap: 'var(--s-2)', flexWrap: 'wrap',
+                  }}>
+                    <span style={{ fontWeight: 'var(--fw-semibold)', color: m.from === 'me' ? '#7dd3fc' : 'var(--text)' }}>
+                      {m.from === 'me' ? 'You' : (m.fromName || 'Sender')}
+                    </span>
+                    <span>{m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}</span>
+                  </div>
+                  {m.subject && i === 0 && (
+                    <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-medium)', marginBottom: 6 }}>
+                      {m.subject}
+                    </div>
+                  )}
+                  <div style={{
+                    fontSize: 'var(--fs-sm)', lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                    color: 'var(--text)',
+                  }}>
+                    {m.text || '(empty body)'}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AskBrain() {
   const [q, setQ] = useState('');
   const [answer, setAnswer] = useState(null);
@@ -2218,6 +2400,8 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
   const [score, setScore] = useState(null);
   const [actedAction, setActedAction] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Thread preview modal — shows full Gmail thread + LLM summary on top.
+  const [threadPreviewOpen, setThreadPreviewOpen] = useState(false);
   // Delegate-prep panel state. Once a delegatee is chosen (either Brain's
   // suggestion via "Keep", a fresh pick from the picker, or a one-click
   // delegate_to_known), we hold here so the MD can optionally add a note
@@ -2446,6 +2630,17 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         <Button variant="ghost" size="sm" onClick={() => setExpanded((x) => !x)}>
           {expanded ? 'Hide' : 'Preview'}
         </Button>
+        {/* Open the full-thread modal with LLM summary on top. Available
+            for every channel; the server returns single-message payloads
+            for non-email items so the modal still renders cleanly. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setThreadPreviewOpen(true)}
+          title="Open the full conversation with a Brain summary on top"
+        >
+          🔍 View thread
+        </Button>
         {/* Dynamic action buttons — if server sent context-aware actions,
             render those. Otherwise fall back to the static 4. */}
         {(item.actions && item.actions.length > 0 ? item.actions : buildAttentionOptions(item)).map((opt, optIdx) => {
@@ -2643,6 +2838,14 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           setDelegateNote('');
         }}
       />
+
+      {threadPreviewOpen && (
+        <ThreadPreviewModal
+          feedEventId={item.feedEventId}
+          onClose={() => setThreadPreviewOpen(false)}
+          notify={notify}
+        />
+      )}
 
       {/* Inline drafts — any pending draft tied to this feed event lands
           right under its source card, so the MD reads → reviews → sends

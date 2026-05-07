@@ -507,6 +507,124 @@ router.post('/cognitive/run', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /brief/attention/:feedEventId/thread
+ *
+ * Returns the full Gmail thread for an email attention card, plus a
+ * Gemini-style 2–4 sentence LLM summary on top so the user can grasp
+ * the conversation in 5 seconds without reading every message.
+ *
+ * Response shape:
+ *   {
+ *     itemType: 'email' | ...,
+ *     messages: Array<{ from: 'me'|'them', subject: string, text: string, timestamp: number }>,
+ *     summary: string,        // 2-4 sentence narrative
+ *     summaryProvider: string,// which LLM produced it
+ *     cached: boolean,        // true if served from in-memory cache
+ *   }
+ *
+ * Caching: summary is cached in-memory by threadId for 1 hour. Messages
+ * are fetched fresh every call (cheap Gmail API call). For non-email
+ * items, returns the source's existing preview without an LLM call.
+ */
+const threadSummaryCache = new Map<string, { summary: string; provider: string; expires: number }>();
+const THREAD_SUMMARY_TTL_MS = 60 * 60 * 1000;
+
+router.get('/attention/:feedEventId/thread', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const feedEventId = String(req.params.feedEventId);
+  try {
+    const event = await prisma.feedEvent.findFirst({
+      where: { id: feedEventId, clientNumber: user.clientNumber, userId: user.id },
+      select: { sourceType: true, sourceId: true, rawPayload: true, senderEmail: true, senderName: true },
+    });
+    if (!event) return res.status(404).json({ error: 'feed event not found' });
+
+    // Non-email channels: render the single message we already have.
+    // No LLM call — there's no thread to summarise.
+    if (event.sourceType !== 'gmail') {
+      const p: any = event.rawPayload ?? {};
+      return res.json({
+        itemType: event.sourceType,
+        messages: [{
+          from: 'them' as const,
+          subject: p.subject ?? p.title ?? '',
+          text: p.snippet ?? p.body ?? p.text ?? '',
+          timestamp: p.timestamp ? Number(p.timestamp) * 1000 : (p.date ? new Date(p.date).getTime() : Date.now()),
+          fromName: event.senderName ?? p.from ?? '',
+        }],
+        summary: '',
+        summaryProvider: 'none',
+        cached: false,
+      });
+    }
+
+    // Gmail: pull the thread and summarise.
+    const threadId = (event.rawPayload as any)?.threadId as string | undefined;
+    if (!threadId) {
+      return res.status(400).json({ error: 'this email has no threadId — likely from before adapter captured it' });
+    }
+
+    const { fetchEmailThreadContext } = await import('../services/gmailService');
+    const messages = await fetchEmailThreadContext(user.id, threadId, 10);
+
+    // Summary cache check.
+    const now = Date.now();
+    const cacheKey = `${user.id}:${threadId}`;
+    const cached = threadSummaryCache.get(cacheKey);
+    if (cached && cached.expires > now) {
+      return res.json({
+        itemType: 'email',
+        messages,
+        summary: cached.summary,
+        summaryProvider: cached.provider,
+        cached: true,
+      });
+    }
+
+    // Build the LLM prompt. Each message's first 800 chars are already
+    // truncated by fetchEmailThreadContext; we feed the chronological
+    // turn list and ask for a tight narrative summary.
+    let summary = '';
+    let provider = 'none';
+    if (messages.length > 0) {
+      try {
+        const turns = messages
+          .map((m, i) => `[${i + 1}] ${m.from === 'me' ? 'You' : 'Them'} — ${m.subject || '(no subject)'}\n${m.text}`)
+          .join('\n\n');
+        const systemPrompt = 'You summarise email threads for a busy executive. Output 2–4 short sentences in plain prose. Lead with what is being asked or decided. Mention concrete commitments, dates, and amounts. Do not list senders or use bullet points. Do not use the user\'s name. Address the user as "you".';
+        const userMessage = `Summarise this thread:\n\n${turns}`;
+        const { callLLM } = await import('../services/llmRouter');
+        const result = await callLLM(systemPrompt, userMessage, {
+          maxTokens: 220,
+          providers: ['gemini-flash', 'gemini', 'claude'],
+          userId: user.id,
+          clientNumber: user.clientNumber,
+          purpose: 'thread_summary',
+          timeoutMs: 12_000,
+        });
+        summary = result.text.trim();
+        provider = result.provider;
+        threadSummaryCache.set(cacheKey, { summary, provider, expires: now + THREAD_SUMMARY_TTL_MS });
+      } catch (err: any) {
+        console.warn(`[thread-preview] summary failed for ${threadId}: ${err.message}`);
+        summary = '';
+        provider = 'failed';
+      }
+    }
+
+    res.json({
+      itemType: 'email',
+      messages,
+      summary,
+      summaryProvider: provider,
+      cached: false,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /brief/attention/:feedEventId/apply-rule
  * Body: { ruleId }
  *
