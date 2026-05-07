@@ -321,6 +321,81 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       let senderName: string | undefined;
       try { const c = await message.getContact(); senderName = c?.pushname || c?.name || c?.verifiedName; } catch {}
 
+      // ── Voice note handling ──
+      // Voice notes (ptt) and audio messages used to ingest with an
+      // empty body — Brain saw they arrived but had no idea what was
+      // said. Now: download the audio, transcribe via voiceService
+      // (Gemini → Google Speech fallback, Urdu/English/mixed), and if
+      // the original wasn't English, translate to English via the LLM.
+      // The body becomes a clearly-labelled formatted block so triage,
+      // search, and the View thread modal all read it as text.
+      const isVoice = message.type === 'ptt' || message.type === 'audio';
+      let voiceTranscript: { language: string; original: string; english: string; confidence: number } | null = null;
+      if (isVoice && message.hasMedia) {
+        try {
+          const media = await message.downloadMedia();
+          if (media?.data) {
+            const buffer = Buffer.from(media.data, 'base64');
+            const { transcribeVoiceNote } = await import('../voiceService');
+            const tx = await transcribeVoiceNote(buffer, media.mimetype);
+            if (tx.text) {
+              let english = '';
+              const isEnglishish = (tx.language || '').toLowerCase().startsWith('en');
+              if (!isEnglishish) {
+                try {
+                  const { callLLM } = await import('../llmRouter');
+                  const r = await callLLM(
+                    'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+                    tx.text,
+                    {
+                      maxTokens: 400,
+                      providers: ['gemini-flash', 'gemini', 'claude'],
+                      userId,
+                      clientNumber,
+                      purpose: 'voice_translate',
+                      timeoutMs: 12_000,
+                    },
+                  );
+                  english = r.text.trim();
+                } catch (e: any) {
+                  log.warn('voice translation failed', { userId, error: e.message });
+                }
+              }
+              voiceTranscript = {
+                language: tx.language || 'unknown',
+                original: tx.text,
+                english,
+                confidence: tx.confidence || 0,
+              };
+            }
+          }
+        } catch (e: any) {
+          log.warn('voice transcription failed', { userId, error: e.message });
+        }
+      }
+
+      // Build the body Brain sees. For voice notes we synthesise a
+      // clearly-labelled block so triage prompts read sensible text
+      // instead of '[voice note]'. Fallback when transcription fails.
+      const humanLang = (code: string): string => {
+        const c = (code || '').toLowerCase();
+        if (c.startsWith('ur')) return 'Urdu';
+        if (c.startsWith('en')) return 'English';
+        if (c.startsWith('hi')) return 'Hindi';
+        if (c.startsWith('ar')) return 'Arabic';
+        return code || 'unknown language';
+      };
+      const formattedBody = isVoice
+        ? voiceTranscript && voiceTranscript.original
+          ? [
+              `🎤 Voice note in ${humanLang(voiceTranscript.language)} (auto-transcribed)`,
+              ``,
+              `Original: ${voiceTranscript.original}`,
+              voiceTranscript.english ? `\nEnglish: ${voiceTranscript.english}` : '',
+            ].filter(Boolean).join('\n')
+          : `🎤 Voice note (transcription unavailable — open WhatsApp to listen)`
+        : (message.body || '');
+
       // Pull last ~10 turns of this chat so Brain can reason about context
       // — "On it" / "sure" / "yes" mean nothing without the preceding ask.
       let threadContext: ThreadTurn[] = [];
@@ -344,11 +419,15 @@ export async function startPairing(userId: number, clientNumber: string): Promis
         chatId: rawFrom,
         phoneNumber: phone,
         senderName: senderName || null,
-        body: message.body || '',
+        body: formattedBody,
         type: message.type || 'chat',
         hasMedia: !!message.hasMedia,
         timestamp: message.timestamp ? message.timestamp * 1000 : Date.now(),
         threadContext,
+        // Structured voice metadata so the triage prompts and the View
+        // thread modal can render the transcript distinctly. null when
+        // the message wasn't a voice note or when transcription failed.
+        voiceTranscript,
       };
 
       const result = await ingestFeedEvent({

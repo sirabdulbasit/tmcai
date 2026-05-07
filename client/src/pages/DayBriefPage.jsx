@@ -890,25 +890,45 @@ export default function DayBriefPage() {
         {(() => {
           const emailsAttention = attention.filter((a) => a.itemType === 'email').length;
           const emailsHandled = handled.filter((h) => /email|gmail/i.test(h.sourceType ?? '')).length;
-          const recentEmails = emailsAttention + emailsHandled;
-          // While loading, attention + handled are empty so recentEmails
-          // is 0 — falling back to emailsToday (full archive count) made
-          // the headline jump from e.g. "472" → "14" the moment phase-2
-          // settled. Show "…" during loading instead so the number only
-          // appears once it's the *final* answer.
+          // "Ingested this week" — total feed_events Brain saw from
+          // Gmail in the window. Provable count, defensible. The
+          // user has been concerned that "0 need decision" reads as
+          // "Nexeo is dropping emails" — leading the headline with the
+          // total ingested makes coverage explicit. Anything below
+          // that breakdown is just classification of THE SAME emails.
+          const emailsIngested = emailsToday;
+          const allEmailItems = [
+            ...attention.filter((a) => a.itemType === 'email'),
+            ...handled.filter((h) => /email|gmail/i.test(h.sourceType ?? '')),
+          ];
+          // Latest email Nexeo has seen — proves liveness. If the user
+          // got an email 5 min ago and this line shows it, they know
+          // the pipeline is alive. If the latest reads as "2 hours
+          // ago" something's stuck.
+          const latest = allEmailItems
+            .map((x) => ({ at: x.receivedAt, who: x.fromDisplay || x.from || 'Sender', subject: x.subject || '' }))
+            .filter((x) => x.at && !Number.isNaN(new Date(x.at).getTime()))
+            .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())[0];
+          const subParts = [];
+          if (loading) {
+            subParts.push('reading…');
+          } else {
+            if (emailsAttention > 0) subParts.push(`${emailsAttention} need you`);
+            if (emailsHandled > 0) subParts.push(`${emailsHandled} handled by Nexeo`);
+            if (subParts.length === 0 && emailsIngested > 0) subParts.push(`${emailsIngested} this week`);
+            if (subParts.length === 0) subParts.push('inbox is quiet');
+            if (latest) {
+              const who = String(latest.who).slice(0, 24);
+              subParts.push(`latest: ${who} · ${timeAgo(latest.at)}`);
+            }
+          }
           return (
             <MiniStat
               icon="mail"
               label="Emails this week"
-              big={loading ? '…' : recentEmails}
-              sub={
-                loading
-                  ? 'reading…'
-                  : (emailsAttention > 0 || emailsHandled > 0
-                      ? `${emailsAttention} need decision · ${emailsHandled} auto-handled`
-                      : `${emailsToday.toLocaleString()} total · click to browse`)
-              }
-              onClick={() => setInboxBrowser({ source: 'gmail', label: 'Emails Brain has seen' })}
+              big={loading ? '…' : (emailsIngested || 0)}
+              sub={subParts.join(' · ')}
+              onClick={() => setInboxBrowser({ source: 'gmail', label: 'Every email Nexeo has seen' })}
             />
           );
         })()}
