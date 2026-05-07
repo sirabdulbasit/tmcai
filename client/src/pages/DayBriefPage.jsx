@@ -605,6 +605,22 @@ export default function DayBriefPage() {
     });
   }, [attention, attentionTab, attentionSearch]);
 
+  // Search also looks at Brief (auto-handled items). When a user
+  // searches "basit" and gets 0 in Attention, this surfaces a hint
+  // that there are matches in Brief — exactly the gap the user
+  // flagged on 2026-05-07. Items here aren't rendered as cards;
+  // they're listed compactly under the search hint with a click
+  // through to scroll/expand the Brief section.
+  const searchHitsInBrief = useMemo(() => {
+    const q = attentionSearch.trim().toLowerCase();
+    if (!q) return [];
+    return (handled ?? []).filter((h) => {
+      const hay = [h.fromDisplay, h.from, h.fromEmail, h.subject, h.preview, h.reason]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }, [handled, attentionSearch]);
+
   // Within each tab, keep the existing critical/regular/noise sub-buckets
   // so high-signal items still float to the top. Risks tab skips the
   // sub-bucketing since every item is already critical.
@@ -852,6 +868,40 @@ export default function DayBriefPage() {
                 </span>
               )}
             </div>
+
+            {/* Cross-reference hint when search has matches in Brief
+                that AREN'T in My Attention. Helps the user find items
+                Brain auto-handled (otherwise invisible from the
+                Attention search). Click "View in Brief" scrolls to the
+                Brief section. */}
+            {attentionSearch && searchHitsInBrief.length > 0 && (
+              <div style={{
+                padding: '8px 12px',
+                background: 'rgba(214,109,60,0.08)',
+                border: '1px dashed var(--accent)',
+                borderRadius: 'var(--r-md)',
+                fontSize: 'var(--fs-sm)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span>
+                  <strong>{searchHitsInBrief.length}</strong> match{searchHitsInBrief.length === 1 ? '' : 'es'} also in <strong>Brief</strong> (Brain auto-handled). Sample:{' '}
+                  <em style={{ color: 'var(--text-muted)' }}>
+                    {searchHitsInBrief.slice(0, 2).map((h) => h.subject || h.fromDisplay).join(' · ')}
+                    {searchHitsInBrief.length > 2 && ` · +${searchHitsInBrief.length - 2} more`}
+                  </em>
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const el = document.getElementById('brief');
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                >
+                  View in Brief →
+                </Button>
+              </div>
+            )}
 
             {/* Tab bar — segregate Attention by channel, with counts */}
             <AttentionTabs
