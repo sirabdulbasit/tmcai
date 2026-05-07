@@ -109,6 +109,18 @@ function timeAgo(dateStr) {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
+/** Absolute date+time for the Brief audit trail. The user explicitly
+ *  asked: "Brief should also inform what Nexeo did by itself or what
+ *  user did and when (date & time)." Format: "Tue 6 May · 14:32". */
+function formatDateTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '';
+  const day = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${day} · ${hh}:${mm}`;
+}
 /**
  * Format a meeting start time as a forward-looking pointer: "in 3d",
  * "tomorrow 14:00", "Fri 4 May 16:00". Used on attention cards instead
@@ -2000,6 +2012,24 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
   // then high-confidence delegations, then already-decided, then noise.
   const ORDER = ['auto_rule', 'auto_high_confidence', 'auto_decided', 'auto_cc_only', 'auto_self', 'auto_noise'];
 
+  // Top-level grouping per user spec: split into "Nexeo handled" vs
+  // "You handled" so the audit trail is unambiguous about who did what.
+  // Server stamps `category` on every HandledItem. Fallback derives from
+  // bucket so older cached data still groups correctly.
+  const categoryOf = (it) => {
+    if (it.category) return it.category;
+    if (it.bucket === 'auto_decided' || it.bucket === 'auto_self') return 'you_handled';
+    return 'nexeo_handled';
+  };
+  const byCategory = useMemo(() => {
+    const out = { you_handled: [], nexeo_handled: [] };
+    for (const it of filteredHandled) {
+      const cat = categoryOf(it);
+      out[cat].push(it);
+    }
+    return out;
+  }, [filteredHandled]);
+
   const isSearching = !!String(searchQuery ?? '').trim();
   const totalFiltered = filteredActions.length + filteredHandled.length;
   const totalUnfiltered = (brainActions?.length ?? 0) + (handled?.length ?? 0);
@@ -2034,55 +2064,90 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
       )}
 
       {filteredHandled.length > 0 && (
-        <div>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
-            Auto-handled (not surfaced) · {filteredHandled.length}{isSearching && ` of ${handled.length}`}
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
-            {ORDER.filter((b) => grouped[b]?.length).map((b) => {
-              const items = grouped[b];
-              const meta = BUCKET_META[b] ?? { label: b, color: 'var(--text-muted)' };
-              return (
-                <details key={b} style={{
-                  background: 'var(--bg-2)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--r-md)',
-                  padding: 'var(--s-3)',
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-4)' }}>
+          {/* Two top-level categories per user spec (2026-05-07):
+                - "You handled" = your own decisions / replies / dismissals
+                - "Nexeo handled" = Brain auto-handled (rules, noise, CC, etc.)
+              Each shows the absolute date+time so the audit trail is
+              unambiguous: "Tue 6 May · 14:32 — you delegated to Asad". */}
+          {[
+            { id: 'you_handled', label: 'You handled', accent: '#7dd3fc' },
+            { id: 'nexeo_handled', label: 'Nexeo handled', accent: 'var(--accent)' },
+          ].map((cat) => {
+            const items = byCategory[cat.id] ?? [];
+            if (items.length === 0) return null;
+            const subBuckets = {};
+            for (const it of items) {
+              const k = it.bucket || 'auto_noise';
+              (subBuckets[k] ?? (subBuckets[k] = [])).push(it);
+            }
+            return (
+              <div key={cat.id}>
+                <div style={{
+                  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                  textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)',
+                  display: 'flex', alignItems: 'center', gap: 8,
                 }}>
-                  <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{
-                      display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: meta.color,
-                    }} />
-                    <strong style={{ fontSize: 'var(--fs-sm)' }}>{meta.label}</strong>
-                    <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>· {items.length}</span>
-                  </summary>
-                  <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {items.map((it) => (
-                      <div key={it.feedEventId} style={{
-                        padding: '6px 8px',
-                        background: 'var(--bg-1, transparent)',
-                        borderRadius: 'var(--r-sm)',
-                        fontSize: 'var(--fs-sm)',
-                        display: 'flex',
-                        gap: 8,
-                        alignItems: 'baseline',
+                  <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 999, background: cat.accent }} />
+                  {cat.label} · {items.length}{isSearching && ` of ${handled.length}`}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+                  {ORDER.filter((b) => subBuckets[b]?.length).map((b) => {
+                    const bucketItems = subBuckets[b];
+                    const meta = BUCKET_META[b] ?? { label: b, color: 'var(--text-muted)' };
+                    return (
+                      <details key={b} style={{
+                        background: 'var(--bg-2)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--r-md)',
+                        padding: 'var(--s-3)',
                       }}>
-                        <span style={{ color: 'var(--text-muted)', minWidth: 110, fontSize: 'var(--fs-xs)' }}>
-                          {it.fromDisplay || it.from || '—'}
-                        </span>
-                        <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {it.subject || '(no subject)'}
-                        </span>
-                        <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}>
-                          {it.reason}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              );
-            })}
-          </div>
+                        <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{
+                            display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: meta.color,
+                          }} />
+                          <strong style={{ fontSize: 'var(--fs-sm)' }}>{meta.label}</strong>
+                          <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>· {bucketItems.length}</span>
+                        </summary>
+                        <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {bucketItems.map((it) => {
+                            const stamp = it.decidedAt || it.receivedAt;
+                            return (
+                              <div key={it.feedEventId} style={{
+                                padding: '8px 10px',
+                                background: 'var(--bg-1, transparent)',
+                                borderRadius: 'var(--r-sm)',
+                                fontSize: 'var(--fs-sm)',
+                                display: 'flex', flexDirection: 'column', gap: 4,
+                              }}>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                                  <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', minWidth: 130 }}>
+                                    {it.fromDisplay || it.from || '—'}
+                                  </span>
+                                  <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {it.subject || '(no subject)'}
+                                  </span>
+                                  <span
+                                    title={new Date(stamp).toLocaleString()}
+                                    style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
+                                  >
+                                    {formatDateTime(stamp)}
+                                  </span>
+                                </div>
+                                <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+                                  {it.reason}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

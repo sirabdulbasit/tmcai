@@ -978,7 +978,11 @@ export async function buildAttentionList(
   // the user hasn't touched anything. Instead we exclude rows that
   // have a matching decision_log (the authoritative signal that MD
   // acted on this specific event).
-  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '7', 10) || 7));
+  // Window split per user spec (2026-05-07): My Attention surfaces up
+  // to 30 days of unattended items so nothing falls through. Brief
+  // (buildHandledList) keeps the tighter 7-day audit window. Anything
+  // older lives in Wiki, searchable.
+  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '30', 10) || 30));
   const sevenDaysAgo = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
   // Only TERMINAL decisions hide the card. 'drafted' is pending — MD
@@ -1344,9 +1348,23 @@ export async function buildAttentionList(
 // User-scoped: every query filters by clientNumber + userId, identical to
 // buildAttentionList. No tenant or per-user data crosses this boundary.
 
+/**
+ * Top-level grouping of buckets per the user's 2026-05-07 spec:
+ *   "Brief should inform what Nexeo did by itself or what user did and when."
+ *
+ * - 'nexeo_handled' = Brain or rule chose the disposition without you
+ *   touching it (auto_rule, auto_high_confidence, auto_noise,
+ *   auto_cc_only, auto_self).
+ * - 'you_handled'   = you took the action on this item (auto_decided —
+ *   replied / delegated / snoozed / dismissed).
+ */
+export type HandledCategory = 'nexeo_handled' | 'you_handled';
+
 export interface HandledItem {
   feedEventId: string;
   bucket: 'auto_rule' | 'auto_noise' | 'auto_self' | 'auto_high_confidence' | 'auto_decided' | 'auto_cc_only';
+  /** Two-way roll-up so the UI can show "Nexeo handled" vs "You handled" tabs. */
+  category: HandledCategory;
   reason: string;
   itemType: ItemType;
   sourceType: string;
@@ -1356,6 +1374,11 @@ export interface HandledItem {
   subject: string;
   preview: string;
   receivedAt: string;
+  /** When the disposition was made (decision_log.createdAt for user
+   *  actions; falls back to receivedAt when Brain made a passive call
+   *  like noise/cc-only). The UI shows this as the "when" timestamp
+   *  on the audit trail. */
+  decidedAt: string;
   archetype: Archetype;
   /** What Brain WOULD have suggested if it had to ask the user. Empty for
    *  rule-handled items (the rule defines the action). */
@@ -1385,14 +1408,20 @@ export async function buildHandledList(
   userId: number,
   limit = 50,
 ): Promise<HandledItem[]> {
-  // Match buildAttentionList's window so the My Attention + Brief
-  // counts always sum cleanly. Override via ATTENTION_WINDOW_DAYS.
-  const ATTENTION_WINDOW_DAYS = Math.max(1, Math.min(90, parseInt(process.env.ATTENTION_WINDOW_DAYS ?? '7', 10) || 7));
-  const sevenDaysAgo = new Date(Date.now() - ATTENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  // Brief shows the audit trail of the last 7 days — what Nexeo handled
+  // and what you handled, with timestamps. Older handled work lives in
+  // Wiki, searchable. Tighter than My Attention's 30-day unattended
+  // window so the audit feels current without drowning in old activity.
+  const BRIEF_WINDOW_DAYS = Math.max(1, Math.min(30, parseInt(process.env.BRIEF_WINDOW_DAYS ?? '7', 10) || 7));
+  const sevenDaysAgo = new Date(Date.now() - BRIEF_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
   // Pull terminal decisions so we can show them under their own bucket
   // ('auto_decided'). Same set buildAttentionList uses to suppress.
+  // We also capture the decision timestamp so Brief can show "you
+  // delegated this on Mon 5 May, 2:30 PM" — the audit trail the user
+  // explicitly asked for: "Brief should also inform what Nexeo did by
+  // itself or what user did and when (date & time)."
   const TERMINAL_DECISIONS = ['approved', 'delegated', 'snoozed', 'dismissed', 'overrode'];
   const decisionRows = await prisma.decisionLog.findMany({
     where: {
@@ -1401,11 +1430,11 @@ export async function buildHandledList(
       entityId: { not: null } as any,
       userDecision: { in: TERMINAL_DECISIONS } as any,
     } as any,
-    select: { entityId: true, userDecision: true },
-  }).catch(() => [] as Array<{ entityId: string | null; userDecision: string }>);
-  const decidedMap = new Map<string, string>();
+    select: { entityId: true, userDecision: true, createdAt: true },
+  }).catch(() => [] as Array<{ entityId: string | null; userDecision: string; createdAt: Date }>);
+  const decidedMap = new Map<string, { decision: string; at: Date }>();
   for (const r of decisionRows) {
-    if (r.entityId) decidedMap.set(r.entityId, r.userDecision);
+    if (r.entityId) decidedMap.set(r.entityId, { decision: r.userDecision, at: r.createdAt });
   }
 
   // Mirror buildAttentionList's thread-replied set so a feed_event
@@ -1549,7 +1578,9 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_decided',
-        reason: `You've already ${decided} this`,
+        category: 'you_handled',
+        decidedAt: decided.at.toISOString(),
+        reason: `You ${decided.decision} this`,
       });
       continue;
     }
@@ -1567,6 +1598,12 @@ export async function buildHandledList(
         out.push({
           ...base(item),
           bucket: 'auto_decided',
+          category: 'you_handled',
+          // No precise decidedAt for off-Brain replies — fall back to
+          // when the inbound arrived (the message we're suppressing).
+          // The Sent-folder sync that set userRepliedThread doesn't
+          // capture per-thread reply timestamps yet.
+          decidedAt: r.createdAt.toISOString(),
           reason: 'You already replied on this thread',
         });
         continue;
@@ -1579,6 +1616,8 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_noise',
+        category: 'nexeo_handled',
+        decidedAt: r.createdAt.toISOString(),
         reason: 'Pattern you hid — auto-suppressed',
         intendedAction: item.suggestedAction,
       });
@@ -1590,6 +1629,8 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_rule',
+        category: 'nexeo_handled',
+        decidedAt: r.createdAt.toISOString(),
         reason: rule ? `Rule '${rule.name}' fired` : 'Auto-handled by a rule',
         intendedAction: item.suggestedAction,
         ruleName: rule?.name,
@@ -1601,6 +1642,8 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_noise',
+        category: 'nexeo_handled',
+        decidedAt: r.createdAt.toISOString(),
         reason: 'Bulk / no-reply / newsletter — auto-ignored',
         intendedAction: item.suggestedAction,
       });
@@ -1616,6 +1659,9 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_self',
+        // You did this — outbound from your account.
+        category: 'you_handled',
+        decidedAt: r.createdAt.toISOString(),
         reason: 'You sent this — not surfaced',
         intendedAction: item.suggestedAction,
       });
@@ -1637,6 +1683,8 @@ export async function buildHandledList(
         out.push({
           ...base(item),
           bucket: 'auto_cc_only',
+          category: 'nexeo_handled',
+          decidedAt: r.createdAt.toISOString(),
           reason: 'You were on CC — Brain didn’t see escalation, sentiment, or pattern anomaly worth surfacing',
           intendedAction: item.suggestedAction,
         });
@@ -1656,6 +1704,8 @@ export async function buildHandledList(
       out.push({
         ...base(item),
         bucket: 'auto_high_confidence',
+        category: 'nexeo_handled',
+        decidedAt: r.createdAt.toISOString(),
         reason: `Brain knows to delegate this to ${dn} — based on your past pattern`,
         intendedAction: 'delegate',
         delegateeName: item.suggestedDelegateeName,
