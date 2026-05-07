@@ -470,6 +470,133 @@ export function __getInternalClient(userId: number): any | null {
   return clients.get(userId) ?? null;
 }
 
+/**
+ * Backfill transcripts for old voice-note feed_events that arrived
+ * before the inline transcription path shipped. Must run IN the
+ * server process — relies on the live in-memory clients Map. CLI
+ * scripts spawn their own Node process and don't share memory, so
+ * they always see "no live client". An HTTP endpoint calls this
+ * directly inside the server.
+ *
+ * Optional userId narrows to one user; otherwise covers all paired.
+ */
+export async function backfillVoiceTranscriptsInProcess(opts?: {
+  apply?: boolean;
+  userId?: number;
+  limit?: number;
+}): Promise<{
+  scanned: number;
+  transcribed: number;
+  skippedNoClient: number;
+  skippedNotFound: number;
+  errors: number;
+}> {
+  const apply = !!opts?.apply;
+  const limit = Math.max(1, Math.min(500, opts?.limit ?? 200));
+
+  let scanned = 0;
+  let transcribed = 0;
+  let skippedNoClient = 0;
+  let skippedNotFound = 0;
+  let errors = 0;
+
+  const userFilter = opts?.userId ? `AND user_id = ${opts.userId}` : '';
+  const rows: Array<{
+    id: string; clientNumber: string; userId: number; rawPayload: any;
+  }> = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT id, client_number AS "clientNumber", user_id AS "userId",
+            raw_payload AS "rawPayload"
+       FROM feed_events
+      WHERE source_type = 'whatsapp'
+        AND user_id IS NOT NULL
+        ${userFilter}
+        AND (raw_payload->>'type' IN ('ptt', 'audio'))
+        AND (raw_payload->>'body' = '' OR raw_payload->>'body' IS NULL
+             OR raw_payload->>'body' ILIKE '%[voice note]%'
+             OR raw_payload->>'body' ILIKE '%(voice note)%')
+        AND raw_payload->'voiceTranscript' IS NULL
+      ORDER BY id DESC
+      LIMIT ${limit}`,
+  ).catch(() => [] as any[]);
+
+  const humanLang = (code: string): string => {
+    const c = (code || '').toLowerCase();
+    if (c.startsWith('ur')) return 'Urdu';
+    if (c.startsWith('en')) return 'English';
+    if (c.startsWith('hi')) return 'Hindi';
+    if (c.startsWith('ar')) return 'Arabic';
+    return code || 'unknown language';
+  };
+
+  for (const row of rows) {
+    scanned += 1;
+    const payload = row.rawPayload ?? {};
+    const waMessageId = payload.waMessageId;
+    if (!waMessageId) { skippedNotFound += 1; continue; }
+
+    const client = clients.get(row.userId);
+    if (!client) { skippedNoClient += 1; continue; }
+
+    try {
+      const message = await client.getMessageById?.(waMessageId).catch(() => null);
+      if (!message || !message.hasMedia) { skippedNotFound += 1; continue; }
+      const media = await message.downloadMedia();
+      if (!media?.data) { skippedNotFound += 1; continue; }
+
+      const { transcribeVoiceNote } = await import('../voiceService');
+      const tx = await transcribeVoiceNote(Buffer.from(media.data, 'base64'), media.mimetype);
+      if (!tx.text) { skippedNotFound += 1; continue; }
+
+      let english = '';
+      if (!(tx.language || '').toLowerCase().startsWith('en')) {
+        try {
+          const { callLLM } = await import('../llmRouter');
+          const r = await callLLM(
+            'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+            tx.text,
+            {
+              maxTokens: 400,
+              providers: ['gemini-flash', 'gemini', 'claude'],
+              userId: row.userId,
+              clientNumber: row.clientNumber,
+              purpose: 'voice_translate',
+              timeoutMs: 12_000,
+            },
+          );
+          english = r.text.trim();
+        } catch { /* skip translation */ }
+      }
+
+      const voiceTranscript = {
+        language: tx.language || 'unknown',
+        original: tx.text,
+        english,
+        confidence: tx.confidence || 0,
+      };
+      const formattedBody = [
+        `🎤 Voice note in ${humanLang(voiceTranscript.language)} (auto-transcribed)`,
+        ``,
+        `Original: ${voiceTranscript.original}`,
+        english ? `\nEnglish: ${english}` : '',
+      ].filter(Boolean).join('\n');
+
+      if (apply) {
+        await prisma.feedEvent.update({
+          where: { id: row.id },
+          data: { rawPayload: { ...payload, body: formattedBody, voiceTranscript } as any },
+        });
+      }
+      transcribed += 1;
+      log.info('voice transcript backfilled', { id: row.id, lang: voiceTranscript.language, applied: apply });
+    } catch (err: any) {
+      errors += 1;
+      log.warn('backfill row failed', { id: row.id, error: err.message });
+    }
+  }
+
+  return { scanned, transcribed, skippedNoClient, skippedNotFound, errors };
+}
+
 export async function heartbeatAllConnected(): Promise<{ stamped: number; flippedDead: number }> {
   let stamped = 0;
   let flippedDead = 0;

@@ -137,6 +137,25 @@ router.post('/users/:empcode/reset-password', requireAuth, requireAdmin, async (
   res.json({ success: true, tempPassword: result.tempPassword });
 });
 
+// ─── Admin: Voice transcript backfill for the calling user ────
+// Runs the backfill IN this server process (where the in-memory
+// webjs clients live). CLI scripts spawn a fresh Node process and
+// see an empty clients Map — that's why running ts-node returned
+// skipped(no-client)=N for every row.
+router.post('/voice-backfill', requireAuth, async (req: Request, res: Response) => {
+  const apply = !!req.body?.apply;
+  const userId = req.body?.userId ? Number(req.body.userId) : (req as any).user.id;
+  const limit = req.body?.limit ? Math.max(1, Math.min(500, Number(req.body.limit))) : 200;
+  try {
+    const { backfillVoiceTranscriptsInProcess } =
+      await import('../services/whatsapp/UserWebjsProvider');
+    const result = await backfillVoiceTranscriptsInProcess({ apply, userId, limit });
+    res.json({ ok: true, mode: apply ? 'apply' : 'dry-run', userId, limit, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'backfill failed' });
+  }
+});
+
 // ─── Admin: SMTP Health / Test ─────────────────────────────────
 // Verifies the tenant's SMTP transport via SMTP handshake (does NOT
 // send a real message). Used by Client Config → Email/SMTP to surface
