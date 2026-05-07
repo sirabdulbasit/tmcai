@@ -1555,7 +1555,7 @@ router.post('/voice-instruction', voiceUpload.single('audio'), async (req: Reque
       data: {
         clientNumber: user.clientNumber, userId: user.id,
         actionType: 'voice_instruction',
-        status: 'pending_voice_confirmation',
+        status: 'voice_pending',
         requiresApproval: true,
         executedByAgent: 'voice_instruction',
         input: {
@@ -1589,7 +1589,7 @@ router.post('/voice-instruction/:id/confirm', async (req: Request, res: Response
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
   try {
     const action = await prisma.agentAction.findFirst({
-      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'pending_voice_confirmation' } as any,
+      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'voice_pending' } as any,
     });
     if (!action) return res.status(404).json({ error: 'no pending instruction with this id' });
     const stored: any = action.input ?? {};
@@ -1619,7 +1619,7 @@ router.post('/voice-instruction/:id/cancel', async (req: Request, res: Response)
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
   try {
     await prisma.agentAction.updateMany({
-      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'pending_voice_confirmation' } as any,
+      where: { id, clientNumber: user.clientNumber, userId: user.id, status: 'voice_pending' } as any,
       data: { status: 'cancelled' } as any,
     });
     res.json({ ok: true });

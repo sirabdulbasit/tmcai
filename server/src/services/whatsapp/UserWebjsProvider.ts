@@ -112,7 +112,7 @@ async function stampWhatsAppSync(userId: number): Promise<void> {
  *     else if msg is a voice note OR Brain-addressed text:
  *       transcribe (if voice)
  *       extract intent
- *       stage as agent_action.pending_voice_confirmation
+ *       stage as agent_action.status='voice_pending'
  *       reply with transcript + plan + "Reply YES to confirm"
  *
  *  The reply goes back to the same self-chat so the user sees the
@@ -176,7 +176,7 @@ async function handleSelfDictation(args: {
   const pending = await prisma.agentAction.findFirst({
     where: {
       clientNumber, userId,
-      status: 'pending_voice_confirmation',
+      status: 'voice_pending',
       createdAt: { gte: fiveMinAgo },
     } as any,
     orderBy: { createdAt: 'desc' } as any,
@@ -234,7 +234,7 @@ async function handleSelfDictation(args: {
     data: {
       clientNumber, userId,
       actionType: 'voice_instruction',
-      status: 'pending_voice_confirmation',
+      status: 'voice_pending',
       requiresApproval: true,
       executedByAgent: 'voice_instruction',
       input: { instruction: ix, transcript: transcriptText, chatId: rawFrom, source: 'self_dictation' } as any,
@@ -652,12 +652,12 @@ export async function startPairing(userId: number, clientNumber: string): Promis
           try {
             // 1. Look for a pending voice instruction from this chat in
             //    the last 5 min. We stage these as agent_action rows with
-            //    status='pending_voice_confirmation'.
+            //    status='voice_pending'.
             const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
             const pending = await prisma.agentAction.findFirst({
               where: {
                 clientNumber, userId,
-                status: 'pending_voice_confirmation',
+                status: 'voice_pending',
                 createdAt: { gte: fiveMinAgo },
               } as any,
               orderBy: { createdAt: 'desc' } as any,
@@ -725,7 +725,7 @@ export async function startPairing(userId: number, clientNumber: string): Promis
               data: {
                 clientNumber, userId,
                 actionType: 'voice_instruction',
-                status: 'pending_voice_confirmation',
+                status: 'voice_pending',
                 requiresApproval: true,
                 executedByAgent: 'voice_instruction',
                 input: { instruction: ix, transcript: transcriptText, chatId: rawFrom } as any,
