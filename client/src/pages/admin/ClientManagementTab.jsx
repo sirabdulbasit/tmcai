@@ -99,10 +99,13 @@ function ClientManagementTab({ user, msg, setMsg }) {
     try {
       // When inviting, send a random throwaway password — the server
       // accepts it as the bcrypt seed but the invitation flow
-      // overwrites it as soon as the user picks their own.
-      const password = newUser.password || (shouldInvite
-        ? `tmp-${Math.random().toString(36).slice(2, 12)}`
-        : '');
+      // overwrites it as soon as the user picks their own. Must satisfy
+      // the password policy (length≥8, upper, digit, special).
+      const makeThrowaway = () => {
+        const rand = Math.random().toString(36).slice(2, 10);
+        return `Tmp-${rand}9!`;
+      };
+      const password = newUser.password || (shouldInvite ? makeThrowaway() : '');
       const res = await api.post('/user/users', { ...newUser, password, clientNumber: targetClient });
       if (shouldInvite && res.data.user?.id) {
         await api.post(`/user/users/${res.data.user.id}/invite`, { baseUrl: window.location.origin }).catch(() => {});
