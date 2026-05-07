@@ -391,7 +391,7 @@ async function _doTriage(row: {
       fromEmail: fromEmail ?? null,
       subject,
       preview,
-      receivedAt: row.createdAt.toISOString(),
+      receivedAt: extractEventOccurredAt(row).toISOString(),
       sourceType: row.sourceType,
       suggestedAction: 'ignore',
       confidence: 1,
@@ -460,7 +460,7 @@ async function _doTriage(row: {
         isCcOnly: !!(payload as any)?.ccOnly,
         hasAttachment: !!(payload as any)?.hasAttachment,
         subject, bodyPreview: preview,
-        receivedAt: row.createdAt,
+        receivedAt: extractEventOccurredAt(row),
         importanceStars,
       },
     });
@@ -499,7 +499,7 @@ async function _doTriage(row: {
           senderDomain,
           subject,
           preview,
-          receivedAt: row.createdAt.toISOString(),
+          receivedAt: extractEventOccurredAt(row).toISOString(),
           dedupHash,
           archetype: 'inform_only',
           suggestedAction: 'ignore',
@@ -525,7 +525,7 @@ async function _doTriage(row: {
       senderDomain,
       subject,
       preview,
-      receivedAt: row.createdAt.toISOString(),
+      receivedAt: extractEventOccurredAt(row).toISOString(),
       dedupHash,
       archetype,
       suggestedAction: a.openItemAction === 'tag_and_close' ? 'ignore'
@@ -816,7 +816,7 @@ async function _doTriage(row: {
         ccHeader: typeof p.cc === 'string' ? p.cc : null,
         userEmail: sameTenant ? userEmail : null,
         subject, preview,
-        receivedAt: row.createdAt,
+        receivedAt: extractEventOccurredAt(row),
         entityId: (senderEntity as any)?.id ?? null,
         senderDomain: senderDomain ?? null,
         relationshipStrength: (senderEntity as any)?.relationshipStrength ?? null,
@@ -871,7 +871,7 @@ async function _doTriage(row: {
     senderDomain,
     subject,
     preview,
-    receivedAt: row.createdAt.toISOString(),
+    receivedAt: extractEventOccurredAt(row).toISOString(),
     dedupHash,
     archetype: decision.archetype,
     suggestedAction: decision.suggestedAction,
@@ -1567,7 +1567,11 @@ export async function buildHandledList(
       fromEmail: r.senderEmail ?? null,
       subject: it?.subject ?? '',
       preview: it?.preview ?? '',
-      receivedAt: r.createdAt.toISOString(),
+      // Use the source-native event date, not feed_events.createdAt
+      // (which is ingestion time and lies for backfilled/scribed
+      // historical pulls — the user saw a 14 April email tagged "4d
+      // ago" because the row was inserted 4 days ago).
+      receivedAt: extractEventOccurredAt(r).toISOString(),
       archetype: (it?.archetype as Archetype) ?? 'inform_only',
     });
 
@@ -1603,7 +1607,7 @@ export async function buildHandledList(
           // when the inbound arrived (the message we're suppressing).
           // The Sent-folder sync that set userRepliedThread doesn't
           // capture per-thread reply timestamps yet.
-          decidedAt: r.createdAt.toISOString(),
+          decidedAt: extractEventOccurredAt(r).toISOString(),
           reason: 'You already replied on this thread',
         });
         continue;
@@ -1617,7 +1621,7 @@ export async function buildHandledList(
         ...base(item),
         bucket: 'auto_noise',
         category: 'nexeo_handled',
-        decidedAt: r.createdAt.toISOString(),
+        decidedAt: extractEventOccurredAt(r).toISOString(),
         reason: 'Pattern you hid — auto-suppressed',
         intendedAction: item.suggestedAction,
       });
@@ -1630,7 +1634,7 @@ export async function buildHandledList(
         ...base(item),
         bucket: 'auto_rule',
         category: 'nexeo_handled',
-        decidedAt: r.createdAt.toISOString(),
+        decidedAt: extractEventOccurredAt(r).toISOString(),
         reason: rule ? `Rule '${rule.name}' fired` : 'Auto-handled by a rule',
         intendedAction: item.suggestedAction,
         ruleName: rule?.name,
@@ -1643,7 +1647,7 @@ export async function buildHandledList(
         ...base(item),
         bucket: 'auto_noise',
         category: 'nexeo_handled',
-        decidedAt: r.createdAt.toISOString(),
+        decidedAt: extractEventOccurredAt(r).toISOString(),
         reason: 'Bulk / no-reply / newsletter — auto-ignored',
         intendedAction: item.suggestedAction,
       });
@@ -1661,7 +1665,7 @@ export async function buildHandledList(
         bucket: 'auto_self',
         // You did this — outbound from your account.
         category: 'you_handled',
-        decidedAt: r.createdAt.toISOString(),
+        decidedAt: extractEventOccurredAt(r).toISOString(),
         reason: 'You sent this — not surfaced',
         intendedAction: item.suggestedAction,
       });
@@ -1684,7 +1688,7 @@ export async function buildHandledList(
           ...base(item),
           bucket: 'auto_cc_only',
           category: 'nexeo_handled',
-          decidedAt: r.createdAt.toISOString(),
+          decidedAt: extractEventOccurredAt(r).toISOString(),
           reason: 'You were on CC — Brain didn’t see escalation, sentiment, or pattern anomaly worth surfacing',
           intendedAction: item.suggestedAction,
         });
@@ -1705,7 +1709,7 @@ export async function buildHandledList(
         ...base(item),
         bucket: 'auto_high_confidence',
         category: 'nexeo_handled',
-        decidedAt: r.createdAt.toISOString(),
+        decidedAt: extractEventOccurredAt(r).toISOString(),
         reason: `Brain knows to delegate this to ${dn} — based on your past pattern`,
         intendedAction: 'delegate',
         delegateeName: item.suggestedDelegateeName,
