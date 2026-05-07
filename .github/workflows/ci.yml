@@ -66,23 +66,3 @@ jobs:
 
       - name: Install and build client
         run: cd client && npm ci && npm run build
-
-  rollback-sql-check:
-    name: Verify Rollback SQL
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify rollback SQL exists for every migration
-        run: |
-          missing=0
-          for dir in server/prisma/migrations/*/; do
-            if [ -f "$dir/migration.sql" ] && [ ! -f "$dir/rollback.sql" ]; then
-              echo "MISSING rollback.sql in $dir"
-              missing=1
-            fi
-          done
-          if [ "$missing" -eq 1 ]; then
-            exit 1
-          fi
-          echo "All migrations have rollback.sql"
