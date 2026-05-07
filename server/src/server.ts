@@ -542,9 +542,10 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000);
 
-  // MyOS — Google Calendar poller every 10 min. Pulls next 48h of events
-  // for every user with an active Google integration so the Meetings tile
-  // and the triage pipeline see fresh calendar data.
+  // MyOS — Google Calendar poller every 2 min (was 10 min). Tightened
+  // for near-realtime Day Brief freshness; Calendar API quota is
+  // generous and we only pull a 48h window. True realtime needs
+  // events.watch() push — a separate feature.
   setInterval(async () => {
     try {
       const { pollAllActiveCalendarUsers } = await import('./jobs/gcalFeedPoller');
@@ -557,13 +558,11 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[gcalPoll] error:', err.message);
     }
-  }, 10 * 60 * 1000);
+  }, 2 * 60 * 1000);
 
-  // MyOS — Gmail read-state sync every 5 min. Updates feed_events
-  // rawPayload.isUnread by querying Gmail's current `is:unread`
-  // list. This is what stops Day Brief from surfacing emails the
-  // user already read directly in Gmail. Cheap call (just IDs);
-  // bounded to last-30-days feed_events so cost is small.
+  // MyOS — Gmail read-state sync every 2 min (was 5 min). Tightened
+  // so Day Brief reflects "I just read this in Gmail" within a couple
+  // minutes. Cheap — pulls IDs only.
   setInterval(async () => {
     try {
       const { syncAllActiveGmailUsers } = await import('./jobs/gmailReadStateSyncJob');
@@ -576,16 +575,11 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[gmailReadSync] error:', err.message);
     }
-  }, 5 * 60 * 1000);
+  }, 2 * 60 * 1000);
 
-  // MyOS — Google Tasks poller every 15 min. Pulls every active task
-  // across every list for every user with a Google integration and
-  // pushes them into feed_events (sourceType='gtasks'). Closes the
-  // "122 Google Tasks but Day Brief shows 2" gap the user flagged on
-  // 2026-05-07. Triage already handles itemType='task' so the items
-  // surface in My Attention's Tasks tab without further wiring.
-  // 15 min cadence (vs 2 min for Gmail) because task lists change
-  // less frequently than email; we don't want to slam the API.
+  // MyOS — Google Tasks poller every 5 min (was 15 min). Tasks have no
+  // push API at all — poll is the only path — so we pull more often.
+  // Quota is tiny per call; well within Tasks API limits.
   setInterval(async () => {
     try {
       const { pollAllActiveTasksUsers } = await import('./jobs/gtasksFeedPoller');
@@ -598,12 +592,12 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[gtasksPoll] error:', err.message);
     }
-  }, 15 * 60 * 1000);
+  }, 5 * 60 * 1000);
 
-  // MyOS — Google Chat poller every 20 min. Same pattern as gtasks
-  // but using user OAuth (NOT the bot connector). Reads messages from
-  // every space the user can access and ingests into feed_events
-  // (sourceType='gchat'). Lookback 24h per tick. Fails open per-user.
+  // MyOS — Google Chat poller every 5 min (was 20 min). Same poll-only
+  // constraint as Tasks for the user-OAuth scope (no push notifications
+  // for personal chat). 5 min keeps the conversation feel without
+  // hammering the API.
   setInterval(async () => {
     try {
       const { pollAllActiveChatUsers } = await import('./jobs/gchatFeedPoller');
@@ -616,7 +610,7 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[gchatPoll] error:', err.message);
     }
-  }, 20 * 60 * 1000);
+  }, 5 * 60 * 1000);
 
   // MyOS — Notion mirror every 10 min. Pushes postgres-backed wiki pages to
   // Notion for users with a connected Notion connector. Graceful no-op when

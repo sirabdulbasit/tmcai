@@ -20,12 +20,17 @@ export class GmailFeedAdapter extends FeedAdapter {
       where: { clientNumber: tenantId, isActive: true, integrationProvider: 'google', integrationStatus: 'active' },
       select: { id: true },
     });
+    const { stampConnectorSync } = await import('../../connectorSyncTracker');
     const all: unknown[] = [];
     for (const u of users) {
       const r = await getInbox(u.id, limit);
       for (const e of r.emails ?? []) {
         all.push({ ...e, __userId: u.id });
       }
+      // Stamp regardless of whether new mail arrived — an idle pull
+      // still proves the channel is alive, which is what the Day Brief
+      // freshness indicator should reflect.
+      await stampConnectorSync(u.id, ['gmail']);
     }
     return all;
   }
