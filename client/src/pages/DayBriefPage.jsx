@@ -778,6 +778,7 @@ export default function DayBriefPage() {
         <InboxBrowser
           source={inboxBrowser.source}
           label={inboxBrowser.label}
+          initialQuery={inboxBrowser.initialQuery}
           onClose={() => setInboxBrowser(null)}
         />
       )}
@@ -899,6 +900,37 @@ export default function DayBriefPage() {
                   }}
                 >
                   View in Brief →
+                </Button>
+              </div>
+            )}
+
+            {/* When search returns 0 results in Attention AND nothing
+                in Brief either, the item is likely in the full scribe
+                archive (older than 7 days, or auto-classified into a
+                bucket not loaded). Offer a one-click jump to the full
+                archive search via InboxBrowser. */}
+            {attentionSearch && visibleAttention.length === 0 && searchHitsInBrief.length === 0 && (
+              <div style={{
+                padding: '8px 12px',
+                background: 'rgba(125,211,252,0.08)',
+                border: '1px dashed var(--text-muted)',
+                borderRadius: 'var(--r-md)',
+                fontSize: 'var(--fs-sm)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span>
+                  No matches in My Attention or Brief. The full email archive (all-time) might have it.
+                </span>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setInboxBrowser({
+                    source: 'gmail',
+                    label: `Searching emails for "${attentionSearch}"`,
+                    initialQuery: attentionSearch,
+                  })}
+                >
+                  Search archive →
                 </Button>
               </div>
             )}
@@ -1505,12 +1537,15 @@ function MiniStat({ icon, label, big, sub, highlight, onClick }) {
  * surface another user's mail. We pass `source` so the same component
  * can power "Emails Brain saw", "WhatsApp Brain saw", etc.
  */
-function InboxBrowser({ source, label, onClose }) {
+function InboxBrowser({ source, label, onClose, initialQuery }) {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [q, setQ] = useState('');
+  // initialQuery lets a caller pre-fill search (e.g. when launched
+  // from "Search archive →" in the My Attention search row, the
+  // user's existing search term carries through).
+  const [q, setQ] = useState(initialQuery ?? '');
   const [loading, setLoading] = useState(true);
   const PAGE = 50;
 
