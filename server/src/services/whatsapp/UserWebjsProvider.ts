@@ -83,6 +83,21 @@ async function getUserConnector(userId: number) {
   });
 }
 
+/** Stamp lastSyncAt for the user's whatsapp_personal row so the
+ *  Day Brief + Connectors page show fresh "last sync" times for an
+ *  event-driven channel that has no poll cycle of its own. Called
+ *  on ready, on every inbound message, and from the heartbeat tick. */
+async function stampWhatsAppSync(userId: number): Promise<void> {
+  try {
+    const row = await getUserConnector(userId);
+    if (!row) return;
+    await prisma.userConnector.update({
+      where: { id: row.id },
+      data: { lastSyncAt: new Date() },
+    });
+  } catch { /* best-effort; never block the message path */ }
+}
+
 /** Ensure the user has a whatsapp_personal row — lazy-creates on first pair.
  *  Avoids a seed migration per new user. */
 async function ensureUserConnector(userId: number, clientNumber: string) {
@@ -239,6 +254,7 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       lastError: null,
       pairedAt: new Date().toISOString(),
     }, 'connected');
+    await stampWhatsAppSync(userId);
     log.info('Paired', { userId, number });
   });
 
@@ -255,6 +271,11 @@ export async function startPairing(userId: number, clientNumber: string): Promis
 
   client.on('message', async (message: any) => {
     try {
+      // Stamp freshness regardless of whether the message survives the
+      // filters below (groups / status / empty body). Channel is alive,
+      // and that's what "last sync" should reflect.
+      stampWhatsAppSync(userId).catch(() => {});
+
       if (message.fromMe) return;
       const rawFrom = message.from || '';
       if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
@@ -338,6 +359,27 @@ export async function startPairing(userId: number, clientNumber: string): Promis
   }
 
   return getStatus(userId);
+}
+
+/** Heartbeat — stamp lastSyncAt for every user with a live webjs client.
+ *  Runs every 2 min from server.ts so Day Brief reflects "channel is
+ *  alive" even when no new messages have arrived. Skips disconnected
+ *  clients so a dead pairing doesn't look fresh. */
+export async function heartbeatAllConnected(): Promise<{ stamped: number }> {
+  let stamped = 0;
+  for (const [userId, client] of clients.entries()) {
+    try {
+      // wwebjs Client exposes getState() async; CONNECTED is the only
+      // state where we can claim freshness. Cast to any — types from
+      // whatsapp-web.js aren't exported through a single union here.
+      const state = await client.getState?.().catch(() => null);
+      if (state === 'CONNECTED') {
+        await stampWhatsAppSync(userId);
+        stamped += 1;
+      }
+    } catch { /* skip this user, don't break the loop */ }
+  }
+  return { stamped };
 }
 
 export async function getStatus(userId: number): Promise<{ status: Status; qrDataUrl: string | null; connectedNumber: string | null; error?: string }> {

@@ -594,6 +594,22 @@ const server = app.listen(env.port, async () => {
     }
   }, 5 * 60 * 1000);
 
+  // MyOS — WhatsApp freshness heartbeat every 2 min. WebJS is event-
+  // driven (no poll cycle), so without this the userConnector.lastSyncAt
+  // for whatsapp_personal stayed at the last incoming message — could
+  // be days stale even on a healthy connection. The heartbeat stamps
+  // lastSyncAt for every user whose live webjs client is in the
+  // CONNECTED state, so Day Brief's "Last synced X ago" reflects
+  // channel liveness, not last-message-arrival.
+  setInterval(async () => {
+    try {
+      const { heartbeatAllConnected } = await import('./services/whatsapp/UserWebjsProvider');
+      await heartbeatAllConnected();
+    } catch (err: any) {
+      console.warn('[wa-heartbeat] error:', err.message);
+    }
+  }, 2 * 60 * 1000);
+
   // MyOS — Google Chat poller every 5 min (was 20 min). Same poll-only
   // constraint as Tasks for the user-OAuth scope (no push notifications
   // for personal chat). 5 min keeps the conversation feel without
