@@ -463,6 +463,13 @@ export async function startPairing(userId: number, clientNumber: string): Promis
  *  Runs every 2 min from server.ts so Day Brief reflects "channel is
  *  alive" even when no new messages have arrived. Skips disconnected
  *  clients so a dead pairing doesn't look fresh. */
+/** Internal accessor used by maintenance scripts (e.g. voice transcript
+ *  backfill) that need to reach the live webjs client to fetch a
+ *  message by id. Returns null when no live client is paired. */
+export function __getInternalClient(userId: number): any | null {
+  return clients.get(userId) ?? null;
+}
+
 export async function heartbeatAllConnected(): Promise<{ stamped: number; flippedDead: number }> {
   let stamped = 0;
   let flippedDead = 0;
