@@ -190,6 +190,22 @@
     border-radius: 0 !important;
     border: none !important;
   }
+
+  /* Generic catch-all for legacy inline modal overlays that don't yet
+     use the .modal-overlay class. Pattern: `position: fixed; inset: 0`
+     with an rgba dark background. Full-screen the immediate dialog
+     child on phone — covers OpenItemsPage, ConnectorsPage,
+     MyRulesPage, ClientManagementTab admin dialogs, etc. without per-
+     file edits. Excludes FloatingChat (its backdrop has no child
+     content; the actual drawer is a sibling <aside>). */
+  div[style*="position: fixed"][style*="inset: 0"][style*="rgba(0,0,0,"] > div:first-child {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    border: 0 !important;
+    margin: 0 !important;
+  }
 }
 
 /* ─── Action rows — wrap then stack at the smallest sizes ─────────── */
@@ -209,6 +225,86 @@
 /* ─── Card padding tightens on mobile ───────────────────────────────── */
 @media (max-width: 640px) {
   .card { padding: var(--s-3); }
+}
+
+/* ─── Inline-style grids collapse on mobile (Phase 2) ───────────────────
+   The codebase has dozens of `style={{ display: 'grid', gridTemplateColumns:
+   '1fr 1fr' }}` inline grids across SettingsPage, admin tabs, TenantPage,
+   LicensesTab, ClientManagementTab, etc. Patching each call site would be
+   churn. Attribute-selector targeting catches them all in one place: any
+   inline grid with 2+ columns collapses on phone, 3+ columns drops to 2
+   on tablet. !important needed to override inline style. */
+@media (max-width: 640px) {
+  div[style*="grid-template-columns"][style*="1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="repeat(2"],
+  div[style*="grid-template-columns"][style*="repeat(3"],
+  div[style*="grid-template-columns"][style*="repeat(4"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (min-width: 641px) and (max-width: 1024px) {
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="repeat(3"],
+  div[style*="grid-template-columns"][style*="repeat(4"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+
+/* ─── Tables — horizontal scroll wrapper for cramped phones ──────────
+   Wraps a table in <div class="responsive-table">. Tables that are
+   already pure cards (most of ours) don't need this. */
+.responsive-table {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.responsive-table > table { min-width: 100%; }
+
+/* ─── Tab strips that overflow on phones (admin sub-tabs etc.) ─────── */
+@media (max-width: 640px) {
+  .tab-strip,
+  [role="tablist"] {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    flex-wrap: nowrap !important;
+  }
+  .tab-strip > *,
+  [role="tablist"] > * {
+    flex-shrink: 0;
+  }
+}
+
+/* ─── Safe-area insets for iPhone notches ──────────────────────────── */
+@supports (padding: env(safe-area-inset-bottom)) {
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .modal-overlay > .modal-shell {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* ─── Settings sections + admin form inputs tighten on phones ───────── */
+@media (max-width: 640px) {
+  .settings-section { padding: var(--s-3) !important; }
+  .settings-field input,
+  .settings-field select,
+  .settings-field textarea {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+/* ─── Long horizontal labels in settings/admin go full-width on phone ─ */
+@media (max-width: 640px) {
+  /* React-style label/value rows commonly use flex with min-widths that
+     break on narrow screens. Force-stack when the parent is a "row". */
+  div[style*="display: flex"][style*="alignItems: center"][style*="gap"] {
+    flex-wrap: wrap;
+  }
 }
 
 /* Light mode scaffold — switch body.light-mode to activate. Not wired yet. */
