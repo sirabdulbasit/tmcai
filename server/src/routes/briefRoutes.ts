@@ -293,10 +293,75 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
       const { sendReply } = await import('../services/whatsapp/UserWebjsProvider');
       r = await sendReply(user.id, chatId, body);
     } else {
-      const to = req.body?.to ?? out.to;
+      // Build a proper threaded reply. The send path used to drop
+      // threadId, In-Reply-To, and References — every reply showed up
+      // as a brand-new message in the recipient's inbox, breaking the
+      // thread. Now: look up the original Gmail message via the linked
+      // feed_event, pull its Message-ID + recipient headers, and pass
+      // them through. Also handles Reply All when the client opts in.
+      let to: string = req.body?.to ?? out.to;
       const subject = req.body?.subject ?? out.subject;
+      const replyAll: boolean = !!req.body?.replyAll;
+      let cc: string | undefined = req.body?.cc;
+
+      let threadId: string | undefined;
+      let inReplyTo: string | undefined;
+      let references: string | undefined;
+
+      try {
+        const inp: any = draft.input ?? {};
+        if (inp.feedEventId) {
+          const fe = await prisma.feedEvent.findFirst({
+            where: { id: String(inp.feedEventId), clientNumber: user.clientNumber },
+            select: { sourceId: true, sourceType: true, rawPayload: true },
+          });
+          if (fe?.sourceType === 'gmail' && fe.sourceId) {
+            const { getEmailHeadersForReply } = await import('../services/gmailService');
+            const headers = await getEmailHeadersForReply(user.id, fe.sourceId);
+            if ('error' in headers) {
+              // Non-fatal — fall back to the legacy non-threaded send so
+              // we never block the user's reply on a header lookup.
+              console.warn(`[drafts/send] header fetch failed for ${fe.sourceId}: ${headers.error}`);
+            } else {
+              threadId = headers.threadId ?? undefined;
+              inReplyTo = headers.rfcMessageId ?? undefined;
+              references = headers.references
+                ? `${headers.references} ${headers.rfcMessageId ?? ''}`.trim()
+                : (headers.rfcMessageId ?? undefined);
+
+              if (replyAll) {
+                // Reply All recipients: original sender goes to To,
+                // everyone else (original To + Cc) goes to Cc, with the
+                // current user's own email filtered out so they don't
+                // get a copy of their own reply.
+                const userRow = await prisma.user.findUnique({
+                  where: { id: user.id },
+                  select: { email: true },
+                });
+                const myEmail = (userRow?.email ?? '').toLowerCase();
+                const splitAddrs = (s: string) => s
+                  .split(/,\s*(?![^<]*>)/)
+                  .map((x) => x.trim())
+                  .filter(Boolean);
+                const extractEmail = (s: string) => {
+                  const m = s.match(/<([^>]+)>/);
+                  return (m ? m[1] : s).toLowerCase();
+                };
+                const original = [...splitAddrs(headers.to), ...splitAddrs(headers.cc)]
+                  .filter((a) => extractEmail(a) !== myEmail && extractEmail(a) !== extractEmail(to));
+                if (original.length > 0) {
+                  cc = original.join(', ');
+                }
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn('[drafts/send] reply context lookup failed:', e?.message);
+      }
+
       const { sendUserEmail } = await import('../services/gmailService');
-      r = await sendUserEmail(user.id, to, subject, body);
+      r = await sendUserEmail(user.id, to, subject, body, cc, { threadId, inReplyTo, references });
     }
 
     if (!r.success) return res.status(500).json({ error: r.error ?? 'send failed' });

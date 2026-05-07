@@ -129,18 +129,33 @@ export async function readEmail(userId: number, messageId: string): Promise<{ em
 
 // ─── Send email ───────────────────────────────────────────────
 
-export async function sendUserEmail(userId: number, to: string, subject: string, body: string, cc?: string): Promise<{ success: boolean; messageId?: string; threadId?: string; error?: string }> {
+export async function sendUserEmail(
+  userId: number,
+  to: string,
+  subject: string,
+  body: string,
+  cc?: string,
+  opts?: { threadId?: string; inReplyTo?: string; references?: string },
+): Promise<{ success: boolean; messageId?: string; threadId?: string; error?: string }> {
   const { client, error } = await getAuthenticatedClient(userId);
   if (!client) return { success: false, error };
 
   try {
     const gmail = google.gmail({ version: 'v1', auth: client });
 
-    // Build RFC 2822 message
+    // When sending into a thread, ensure subject starts with "Re: " so
+    // mail clients that fall back to subject-matching for threading
+    // group correctly. Gmail itself uses threadId, but other readers do not.
+    const finalSubject = opts?.threadId && !/^re:/i.test(subject) ? `Re: ${subject}` : subject;
+
+    // Build RFC 2822 message. In-Reply-To and References give external
+    // mail readers proper threading; threadId on the API call covers Gmail.
     const headers = [
       `To: ${to}`,
       cc ? `Cc: ${cc}` : '',
-      `Subject: ${subject}`,
+      `Subject: ${finalSubject}`,
+      opts?.inReplyTo ? `In-Reply-To: ${opts.inReplyTo}` : '',
+      opts?.references ? `References: ${opts.references}` : '',
       'Content-Type: text/html; charset=utf-8',
       'MIME-Version: 1.0',
     ].filter(Boolean).join('\r\n');
@@ -148,9 +163,12 @@ export async function sendUserEmail(userId: number, to: string, subject: string,
     const message = `${headers}\r\n\r\n${body}`;
     const encodedMessage = Buffer.from(message).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
+    const requestBody: { raw: string; threadId?: string } = { raw: encodedMessage };
+    if (opts?.threadId) requestBody.threadId = opts.threadId;
+
     const response = await gmail.users.messages.send({
       userId: 'me',
-      requestBody: { raw: encodedMessage },
+      requestBody,
     });
 
     // Fire-and-forget commitment extraction. Outbound emails often
@@ -255,6 +273,49 @@ export async function markAsRead(userId: number, messageId: string): Promise<{ s
 
 export async function searchEmails(userId: number, query: string, maxResults = 10): Promise<{ emails: EmailSummary[]; error?: string }> {
   return getInbox(userId, maxResults, query);
+}
+
+// ─── Fetch message headers for reply context ─────────────────
+// Pulls the canonical Message-ID, From/To/Cc, and References from a
+// single message. Used by the /drafts/:id/send route to build a proper
+// in-thread reply (Reply or Reply All) with correct RFC headers.
+
+export async function getEmailHeadersForReply(
+  userId: number,
+  messageId: string,
+): Promise<{
+  rfcMessageId: string | null;  // <CABc...@mail.gmail.com> — for In-Reply-To
+  references: string | null;    // existing References chain (if any)
+  from: string;
+  to: string;
+  cc: string;
+  subject: string;
+  threadId: string | null;
+} | { error: string }> {
+  const { client, error } = await getAuthenticatedClient(userId);
+  if (!client) return { error: error ?? 'no auth client' };
+  try {
+    const gmail = google.gmail({ version: 'v1', auth: client });
+    const m = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'metadata',
+      metadataHeaders: ['Message-ID', 'References', 'From', 'To', 'Cc', 'Subject'],
+    });
+    const headers = m.data.payload?.headers ?? [];
+    const h = (name: string) => headers.find((x: any) => (x.name || '').toLowerCase() === name.toLowerCase())?.value ?? '';
+    return {
+      rfcMessageId: h('Message-ID') || null,
+      references: h('References') || null,
+      from: h('From'),
+      to: h('To'),
+      cc: h('Cc'),
+      subject: h('Subject'),
+      threadId: m.data.threadId ?? null,
+    };
+  } catch (err: any) {
+    return { error: `Header fetch failed: ${err.message}` };
+  }
 }
 
 // ─── Fetch thread context ─────────────────────────────────────

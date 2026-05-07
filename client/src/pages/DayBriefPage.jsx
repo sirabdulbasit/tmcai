@@ -2858,14 +2858,23 @@ function DraftCard({ draft, onAction, notify }) {
   const [editing, setEditing] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // Reply All toggle — server fetches the original email's To+Cc and
+  // builds the recipient list when this is on. Off by default so a
+  // single click stays a single-recipient reply.
+  const [replyAll, setReplyAll] = useState(false);
   const isWhatsApp = draft.channel === 'whatsapp';
 
   const send = async () => {
     setBusy(true);
     try {
-      const payload = editing ? { body: edit.body, ...(isWhatsApp ? {} : { subject: edit.subject, to: draft.to }) } : {};
+      const payload = {
+        ...(editing ? { body: edit.body } : {}),
+        ...(editing && !isWhatsApp ? { subject: edit.subject, to: draft.to } : {}),
+        ...(isWhatsApp ? {} : { replyAll }),
+      };
       const r = await api.post(`/brief/drafts/${draft.id}/send`, payload);
-      notify?.(isWhatsApp ? `WhatsApp sent to ${draft.to}` : `Email sent to ${draft.to}`, 'success');
+      const recipientLabel = !isWhatsApp && replyAll ? `${draft.to} + everyone on the original` : draft.to;
+      notify?.(isWhatsApp ? `WhatsApp sent to ${draft.to}` : `Email sent to ${recipientLabel}`, 'success');
       onAction?.();
     } catch (err) {
       const msg = err?.response?.data?.error || err?.message || 'Send failed';
@@ -2989,11 +2998,33 @@ function DraftCard({ draft, onAction, notify }) {
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-3)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-3)', flexWrap: 'wrap', alignItems: 'center' }}>
         <Button variant="ghost" size="sm" onClick={() => setEditing((e) => !e)}>{editing ? 'Done editing' : 'Edit'}</Button>
+        {!isWhatsApp && (
+          <label
+            title="Send to the original sender plus everyone on the original To/Cc (excluding you)."
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 'var(--fs-xs)', color: replyAll ? 'var(--accent)' : 'var(--text-muted)',
+              padding: '4px 8px', borderRadius: 'var(--r-sm)',
+              background: replyAll ? 'rgba(204,107,74,0.10)' : 'transparent',
+              border: `1px solid ${replyAll ? 'var(--accent)' : 'var(--border)'}`,
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={replyAll}
+              onChange={(e) => setReplyAll(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            Reply All
+          </label>
+        )}
         <div style={{ flex: 1 }} />
         <Button variant="secondary" size="sm" disabled={busy || rejecting} onClick={openReject} title="Delete this draft — it will not be sent">Discard</Button>
-        <Button variant="primary" size="sm" disabled={busy || rejecting} onClick={send}>{busy ? '…' : 'Send'}</Button>
+        <Button variant="primary" size="sm" disabled={busy || rejecting} onClick={send}>{busy ? '…' : (replyAll ? 'Send (Reply All)' : 'Send')}</Button>
       </div>
       <FeedbackButtons
         subjectType="draft"
