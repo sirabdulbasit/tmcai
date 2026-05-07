@@ -326,7 +326,7 @@ export async function getEmailHeadersForReply(
 export async function fetchEmailThreadContext(
   userId: number,
   threadId: string,
-  limit = 6,
+  limit = 200,
 ): Promise<Array<{
   from: 'me' | 'them';
   fromName?: string;
@@ -341,7 +341,14 @@ export async function fetchEmailThreadContext(
   try {
     const gmail = google.gmail({ version: 'v1', auth: client });
     const t = await gmail.users.threads.get({ userId: 'me', id: threadId, format: 'full' }).catch(() => null);
-    const msgs = (t?.data?.messages ?? []).slice(-limit);
+    // Return the FULL thread (oldest → newest) like a regular email
+    // client. The cap is only there as a safety floor for pathological
+    // mailing-list threads with hundreds of replies. For Brain's
+    // tone/context callers that pass a small limit (e.g. ambiguous-
+    // reply parsing), they get the LAST N — the most recent messages,
+    // which is what those callers actually want.
+    const all = t?.data?.messages ?? [];
+    const msgs = limit < all.length ? all.slice(-limit) : all;
     return msgs.map((m: any) => {
       const headers = m.payload?.headers ?? [];
       const h = (name: string) => headers.find((x: any) => (x.name || '').toLowerCase() === name)?.value ?? '';

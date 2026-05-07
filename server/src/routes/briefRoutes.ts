@@ -644,7 +644,11 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
     }
 
     const { fetchEmailThreadContext } = await import('../services/gmailService');
-    const messages = await fetchEmailThreadContext(user.id, threadId, 10);
+    // Pass 200 — the helper will return the full thread (oldest →
+    // newest) up to that cap, which is what a normal email client
+    // shows. Brain's other callers pass a tighter limit when they
+    // only need the latest few turns.
+    const messages = await fetchEmailThreadContext(user.id, threadId, 200);
 
     // Summary cache check.
     const now = Date.now();
