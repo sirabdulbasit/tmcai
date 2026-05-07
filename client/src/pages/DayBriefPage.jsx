@@ -566,6 +566,11 @@ export default function DayBriefPage() {
   // by triage); when Open Items get surfaced into Attention this tab
   // will also include those.
   const [attentionTab, setAttentionTab] = useState('all');
+  // Search query inside My Attention — pure client-side filter on
+  // sender name/email + subject + preview. Layered ON TOP of the
+  // active tab, so user can e.g. search "raazia" within the Email tab
+  // and see only emails from her.
+  const [attentionSearch, setAttentionSearch] = useState('');
 
   const attentionCounts = useMemo(() => ({
     all: attention.length,
@@ -580,15 +585,25 @@ export default function DayBriefPage() {
   // everything; "Risks" is a cross-cutting view; the rest are itemType
   // matches.
   const visibleAttention = useMemo(() => {
+    let list;
     switch (attentionTab) {
-      case 'email': return attention.filter((x) => x.itemType === 'email');
-      case 'whatsapp': return attention.filter((x) => x.itemType === 'whatsapp');
-      case 'meeting': return attention.filter((x) => x.itemType === 'meeting');
-      case 'task': return attention.filter((x) => x.itemType === 'task');
-      case 'risks': return attention.filter((x) => x.critical && !x.noise);
-      default: return attention;
+      case 'email':    list = attention.filter((x) => x.itemType === 'email'); break;
+      case 'whatsapp': list = attention.filter((x) => x.itemType === 'whatsapp'); break;
+      case 'meeting':  list = attention.filter((x) => x.itemType === 'meeting'); break;
+      case 'task':     list = attention.filter((x) => x.itemType === 'task'); break;
+      case 'risks':    list = attention.filter((x) => x.critical && !x.noise); break;
+      default:         list = attention;
     }
-  }, [attention, attentionTab]);
+    const q = attentionSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((x) => {
+      const haystack = [
+        x.fromDisplay, x.from, x.fromEmail,
+        x.subject, x.preview, x.rationale,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [attention, attentionTab, attentionSearch]);
 
   // Within each tab, keep the existing critical/regular/noise sub-buckets
   // so high-signal items still float to the top. Risks tab skips the
@@ -791,6 +806,53 @@ export default function DayBriefPage() {
           <Empty title="All clear">Inbox, chat, calendar queue is empty.</Empty>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+            {/* Search row — pure client-side filter over the loaded
+                attention array. Combines with tab selection: type
+                "raazia" while in the Email tab to see only emails
+                from her. Cleared by Esc or the X button. */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ position: 'relative', flex: 1, maxWidth: 480 }}>
+                <input
+                  type="text"
+                  value={attentionSearch}
+                  onChange={(e) => setAttentionSearch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') setAttentionSearch(''); }}
+                  placeholder="Search My Attention by sender, subject, or content…"
+                  style={{
+                    width: '100%',
+                    padding: '8px 32px 8px 12px',
+                    background: 'var(--bg-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--r-md)',
+                    color: 'var(--text)',
+                    fontSize: 'var(--fs-sm)',
+                  }}
+                />
+                {attentionSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setAttentionSearch('')}
+                    title="Clear search"
+                    aria-label="Clear search"
+                    style={{
+                      position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                      background: 'transparent', border: 0, color: 'var(--text-muted)',
+                      cursor: 'pointer', padding: 4, fontSize: 14,
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {attentionSearch && (
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+                  {visibleAttention.length} of {
+                    attentionTab === 'all' ? attention.length : (attentionCounts[attentionTab] ?? 0)
+                  }
+                </span>
+              )}
+            </div>
+
             {/* Tab bar — segregate Attention by channel, with counts */}
             <AttentionTabs
               counts={attentionCounts}
