@@ -1054,6 +1054,7 @@ export default function DayBriefPage() {
             brainActions={brainActions}
             handled={handled}
             byBucket={handledByBucket}
+            searchQuery={attentionSearch}
             onOverride={load}
             notify={notify}
           />
@@ -1739,7 +1740,7 @@ function AskBrain() {
  * User-scoped — the data has already been filtered by clientNumber +
  * userId on the server; this component is a pure presenter.
  */
-function BriefAccountability({ brainActions, handled, byBucket, onOverride, notify }) {
+function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onOverride, notify }) {
   const BUCKET_META = {
     auto_rule: { label: 'Auto-rule fired',         color: '#7dd3fc' },
     auto_noise: { label: 'Bulk / newsletter',      color: '#a3a3a3' },
@@ -1748,35 +1749,88 @@ function BriefAccountability({ brainActions, handled, byBucket, onOverride, noti
     auto_decided: { label: 'You already decided',  color: '#86efac' },
   };
 
+  // Apply the My Attention search to Brief items too — same haystack
+  // (sender, subject, preview, reason), case-insensitive substring.
+  // When a search is active, buckets show their FILTERED counts so the
+  // user immediately sees how matches are distributed across auto-
+  // handled categories.
+  const filteredHandled = useMemo(() => {
+    const q = String(searchQuery ?? '').trim().toLowerCase();
+    if (!q) return handled ?? [];
+    return (handled ?? []).filter((h) => {
+      const hay = [h.fromDisplay, h.from, h.fromEmail, h.subject, h.preview, h.reason]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }, [handled, searchQuery]);
+
+  const filteredActions = useMemo(() => {
+    const q = String(searchQuery ?? '').trim().toLowerCase();
+    if (!q) return brainActions ?? [];
+    return (brainActions ?? []).filter((a) => {
+      const input = a.input ?? {};
+      const output = a.output ?? {};
+      const hay = [
+        a.actionType,
+        input.subject, input.body, input.summary, input.title,
+        input.to, input.recipient, input.email, input.phone,
+        output.summary, output.draft, output.text,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }, [brainActions, searchQuery]);
+
   const grouped = useMemo(() => {
     const g = {};
-    for (const it of handled ?? []) {
+    for (const it of filteredHandled) {
       const k = it.bucket || 'auto_noise';
       if (!g[k]) g[k] = [];
       g[k].push(it);
     }
     return g;
-  }, [handled]);
+  }, [filteredHandled]);
 
   // Order buckets by usefulness — rules first (most "Brain learned!"),
   // then high-confidence delegations, then already-decided, then noise.
   const ORDER = ['auto_rule', 'auto_high_confidence', 'auto_decided', 'auto_self', 'auto_noise'];
 
+  const isSearching = !!String(searchQuery ?? '').trim();
+  const totalFiltered = filteredActions.length + filteredHandled.length;
+  const totalUnfiltered = (brainActions?.length ?? 0) + (handled?.length ?? 0);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-4)' }}>
-      {brainActions.length > 0 && (
-        <div>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
-            Actions Brain executed · {brainActions.length}
-          </div>
-          <GroupedByType actions={brainActions} onOverride={onOverride} notify={notify} />
+      {/* Search-active banner — gives the user a count of how many
+          Brief items match across both subsections. Mirrors the
+          "N of M" chip on the My Attention search row. */}
+      {isSearching && (
+        <div style={{
+          padding: '6px 10px',
+          background: 'rgba(214,109,60,0.08)',
+          border: '1px solid rgba(214,109,60,0.25)',
+          borderRadius: 'var(--r-md)',
+          fontSize: 'var(--fs-sm)',
+          color: 'var(--text-muted)',
+        }}>
+          {totalFiltered === 0
+            ? <>No matches in Brief for <strong>"{searchQuery}"</strong>.</>
+            : <>{totalFiltered} of {totalUnfiltered} match <strong>"{searchQuery}"</strong> in Brief.</>}
         </div>
       )}
 
-      {handled.length > 0 && (
+      {filteredActions.length > 0 && (
         <div>
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
-            Auto-handled (not surfaced) · {handled.length}
+            Actions Brain executed · {filteredActions.length}{isSearching && ` of ${brainActions.length}`}
+          </div>
+          <GroupedByType actions={filteredActions} onOverride={onOverride} notify={notify} />
+        </div>
+      )}
+
+      {filteredHandled.length > 0 && (
+        <div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 'var(--s-2)' }}>
+            Auto-handled (not surfaced) · {filteredHandled.length}{isSearching && ` of ${handled.length}`}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
             {ORDER.filter((b) => grouped[b]?.length).map((b) => {
