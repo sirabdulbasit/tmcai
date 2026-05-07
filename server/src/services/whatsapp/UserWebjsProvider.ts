@@ -98,6 +98,162 @@ async function stampWhatsAppSync(userId: number): Promise<void> {
   } catch { /* best-effort; never block the message path */ }
 }
 
+/**
+ * Process a self-dictation WhatsApp message — voice note or text the
+ * user sent to themselves on their "Message yourself" chat. Runs the
+ * voice-instruction pipeline without ingesting a feed_event (this is
+ * the user's own dictation, not external work to triage):
+ *
+ *   inbound msg →
+ *     if pending voice instruction (last 5 min):
+ *       msg is yes/ok/haan/bilkul/1   → dispatch
+ *       msg is no/cancel/nahi/2/3     → cancel
+ *       anything else                  → cancel pending + treat as new
+ *     else if msg is a voice note OR Brain-addressed text:
+ *       transcribe (if voice)
+ *       extract intent
+ *       stage as agent_action.pending_voice_confirmation
+ *       reply with transcript + plan + "Reply YES to confirm"
+ *
+ *  The reply goes back to the same self-chat so the user sees the
+ *  preview where they sent it.
+ */
+async function handleSelfDictation(args: {
+  userId: number;
+  clientNumber: string;
+  rawFrom: string;     // self jid
+  message: any;
+}): Promise<void> {
+  const { userId, clientNumber, rawFrom, message } = args;
+  const isVoice = message.type === 'ptt' || message.type === 'audio';
+
+  // 1. Transcribe voice if needed.
+  let transcriptText = (message.body || '').trim();
+  let voiceTranscript: { language: string; original: string; english: string; confidence: number } | null = null;
+  if (isVoice && message.hasMedia) {
+    try {
+      const media = await message.downloadMedia();
+      if (media?.data) {
+        const buffer = Buffer.from(media.data, 'base64');
+        const { transcribeVoiceNote } = await import('../voiceService');
+        const tx = await transcribeVoiceNote(buffer, media.mimetype);
+        if (tx.text) {
+          let english = '';
+          if (!(tx.language || '').toLowerCase().startsWith('en')) {
+            try {
+              const { callLLM } = await import('../llmRouter');
+              const r = await callLLM(
+                'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+                tx.text,
+                {
+                  maxTokens: 400,
+                  providers: ['gemini-flash', 'gemini', 'claude'],
+                  userId, clientNumber, purpose: 'voice_translate', timeoutMs: 12_000,
+                },
+              );
+              english = r.text.trim();
+            } catch { /* keep original only */ }
+          }
+          voiceTranscript = {
+            language: tx.language || 'unknown',
+            original: tx.text,
+            english,
+            confidence: tx.confidence || 0,
+          };
+          transcriptText = voiceTranscript.english || voiceTranscript.original;
+        }
+      }
+    } catch { /* fall back to body */ }
+  }
+
+  if (!transcriptText || transcriptText.length < 2) return;
+
+  const looksLikeConfirm = /^\s*(yes|ok|confirm|do it|go ahead|haan|theek hai|bilkul|1)\s*$/i.test(transcriptText);
+  const looksLikeCancel = /^\s*(no|cancel|stop|nahi|drop|2|3)\s*$/i.test(transcriptText);
+
+  // 2. Pending instruction handling.
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const pending = await prisma.agentAction.findFirst({
+    where: {
+      clientNumber, userId,
+      status: 'pending_voice_confirmation',
+      createdAt: { gte: fiveMinAgo },
+    } as any,
+    orderBy: { createdAt: 'desc' } as any,
+  });
+
+  if (pending && looksLikeCancel) {
+    await prisma.agentAction.update({ where: { id: pending.id }, data: { status: 'cancelled' } as any });
+    await sendReply(userId, rawFrom, '✗ Cancelled. Nothing happened. Send a new instruction whenever you want.');
+    return;
+  }
+  if (pending && looksLikeConfirm) {
+    const stored: any = pending.input ?? {};
+    const ix = stored.instruction;
+    if (!ix) {
+      await sendReply(userId, rawFrom, 'Could not read the staged instruction. Please re-record.');
+      return;
+    }
+    const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+    const out = await dispatchInstruction({ instruction: ix, clientNumber, userId });
+    await prisma.agentAction.update({
+      where: { id: pending.id },
+      data: { status: out.ok ? 'done' : 'failed', output: { dispatchResult: out } as any } as any,
+    });
+    await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`);
+    return;
+  }
+  if (pending && !looksLikeConfirm && !looksLikeCancel) {
+    // User sent something new while a pending instruction was open;
+    // cancel the old one and treat the new one as fresh dictation.
+    await prisma.agentAction.update({
+      where: { id: pending.id }, data: { status: 'cancelled' } as any,
+    }).catch(() => {});
+  }
+
+  // 3. New instruction extraction. Voice always runs; text only when
+  //    addressed to Brain or starts with an imperative — otherwise the
+  //    user's casual self-notes shouldn't trigger anything.
+  const looksLikeInstruction =
+    isVoice ||
+    /\b(brain|nexeo)\b/i.test(transcriptText) ||
+    /^\s*(mute|unmute|draft|reply to|delegate|schedule|set a meeting|set window|add to open items?|note that)\b/i.test(transcriptText);
+  if (!looksLikeInstruction || transcriptText.length < 8) return;
+
+  const { extractInstruction } = await import('../instructions/instructionExtractor');
+  const ix = await extractInstruction({
+    text: transcriptText,
+    clientNumber,
+    userId,
+    triggerFeedEventId: null,
+  });
+  if (ix.intent === 'none' || ix.confidence < 0.6) return;
+
+  // 4. Stage as pending; user confirms before dispatch.
+  await prisma.agentAction.create({
+    data: {
+      clientNumber, userId,
+      actionType: 'voice_instruction',
+      status: 'pending_voice_confirmation',
+      requiresApproval: true,
+      executedByAgent: 'voice_instruction',
+      input: { instruction: ix, transcript: transcriptText, chatId: rawFrom, source: 'self_dictation' } as any,
+      output: { stagedAt: new Date().toISOString() } as any,
+    } as any,
+  });
+
+  const heardLine = isVoice
+    ? `📝 I heard:\n"${(voiceTranscript?.original || transcriptText).slice(0, 400)}"`
+    : `📝 You said:\n"${transcriptText.slice(0, 400)}"`;
+  const englishLine = isVoice && voiceTranscript?.english && voiceTranscript.original !== voiceTranscript.english
+    ? `\n\n(English: ${voiceTranscript.english.slice(0, 400)})`
+    : '';
+  const planLine = `\n\n→ ${ix.summary || 'I will act on this.'}`;
+  const promptLine = `\n\nReply YES to confirm, anything else to cancel.`;
+
+  await sendReply(userId, rawFrom, `${heardLine}${englishLine}${planLine}${promptLine}`);
+}
+
 /** Ensure the user has a whatsapp_personal row — lazy-creates on first pair.
  *  Avoids a seed migration per new user. */
 async function ensureUserConnector(userId: number, clientNumber: string) {
@@ -295,10 +451,35 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       // and that's what "last sync" should reflect.
       stampWhatsAppSync(userId).catch(() => {});
 
-      if (message.fromMe) return;
       const rawFrom = message.from || '';
       if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
       if (!message.body?.trim() && !message.hasMedia) return;
+
+      // ── Self-dictation path ──
+      // The user's own messages on the "Message yourself" WhatsApp
+      // chat are treated as instructions to Brain — voice or text.
+      // Detect by comparing the from jid to the client's own WID.
+      // Any other fromMe=true message (replies to colleagues, etc.)
+      // is ignored: dictation is a deliberate self-message.
+      const ownWid: string = client.info?.wid?._serialized || '';
+      const isSelfChat = !!ownWid && message.from === ownWid;
+      if (message.fromMe && !isSelfChat) return;
+
+      // For self-dictation, run a slim instruction-only pipeline:
+      // transcribe (if voice) → check for pending confirmation → if
+      // none, extract intent and stage with a confirmation prompt.
+      // No feed_event ingest — this is the user's own dictation, not
+      // external work to triage.
+      if (message.fromMe && isSelfChat) {
+        try {
+          await handleSelfDictation({
+            userId, clientNumber, rawFrom, message,
+          });
+        } catch (e: any) {
+          log.warn('self-dictation handler failed', { userId, error: e.message });
+        }
+        return;
+      }
 
       let phone = '';
       if (rawFrom.includes('@c.us')) phone = '+' + rawFrom.replace('@c.us', '');
