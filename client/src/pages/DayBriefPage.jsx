@@ -1736,15 +1736,23 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
 }
 
 /**
- * ThreadPreviewModal — full-thread reader with a Gemini-style AI
- * summary at the top. Triggered from the Preview button on an
- * AttentionCard. For email items, fetches the full Gmail thread via
- * /brief/attention/:feedEventId/thread and renders the LLM summary
- * card above a chronological list of every message in the thread.
- * For non-email items, the same endpoint returns a single-message
- * payload — the modal still works, just without summary.
+ * ThreadPreviewModal — two modes for one component:
+ *
+ *   mode='preview'  → SUMMARY ONLY. The chronological narrative the
+ *                     LLM produced — opening, middle, where things
+ *                     stand. Lets the user grasp the conversation in
+ *                     one read without scrolling. Triggered by the
+ *                     "Preview" button.
+ *   mode='thread'   → FULL CHRONOLOGICAL THREAD with To/Cc per message.
+ *                     No summary card on top. Triggered by "View thread".
+ *
+ * Both modes hit the same /brief/attention/:feedEventId/thread endpoint
+ * — server returns summary + messages and the modal shows whichever
+ * fits the current mode. For non-email items the endpoint returns a
+ * single-message payload; mode='preview' falls back to "thread" view
+ * automatically since there's no real summary.
  */
-function ThreadPreviewModal({ feedEventId, onClose, notify }) {
+function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -1773,7 +1781,10 @@ function ThreadPreviewModal({ feedEventId, onClose, notify }) {
 
   const messages = data?.messages ?? [];
   const summary = data?.summary ?? '';
-  const provider = data?.summaryProvider ?? '';
+  // Mode resolution: 'preview' shows summary only. If we somehow opened
+  // 'preview' on an item with no summary (non-email or LLM failed),
+  // fall back to 'thread' so the modal still has something to render.
+  const effectiveMode = mode === 'preview' && summary ? 'preview' : 'thread';
 
   return (
     <div
@@ -1804,7 +1815,7 @@ function ThreadPreviewModal({ feedEventId, onClose, notify }) {
         }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
-              Thread preview
+              {effectiveMode === 'preview' ? 'Preview · what this thread is about' : 'Thread · all messages'}
             </div>
             <div style={{ fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-semibold)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {messages[0]?.subject || (loading ? 'Loading…' : '(no subject)')}
@@ -1845,37 +1856,44 @@ function ThreadPreviewModal({ feedEventId, onClose, notify }) {
 
           {!loading && !err && (
             <>
-              {/* Summary card — only shown when LLM produced one */}
-              {summary && (
+              {/* Preview mode — narrative summary only. The full
+                  message list is hidden so the reader can focus on
+                  the picture without scrolling. */}
+              {effectiveMode === 'preview' && (
                 <div style={{
-                  padding: 'var(--s-3) var(--s-4)',
+                  padding: 'var(--s-4) var(--s-5)',
                   background: 'rgba(214,109,60,0.08)',
                   border: '1px solid rgba(214,109,60,0.35)',
                   borderRadius: 'var(--r-md)',
-                  marginBottom: 'var(--s-4)',
                 }}>
                   <div style={{
                     fontSize: 10, fontWeight: 700, letterSpacing: '.14em',
                     textTransform: 'uppercase', color: 'var(--accent)',
-                    marginBottom: 6,
+                    marginBottom: 8,
                   }}>
-                    ⚡ Brain summary {provider && provider !== 'none' && provider !== 'failed' ? `· ${provider}` : ''}
+                    ⚡ Brain summary
                   </div>
-                  <div style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.6, color: 'var(--text)' }}>
+                  <div style={{
+                    fontSize: 'var(--fs-base)',
+                    lineHeight: 1.7,
+                    color: 'var(--text)',
+                    whiteSpace: 'pre-wrap',
+                  }}>
                     {summary}
                   </div>
                 </div>
               )}
 
-              {/* Empty thread fallback */}
-              {messages.length === 0 && !summary && (
+              {/* Empty thread fallback for thread mode */}
+              {effectiveMode === 'thread' && messages.length === 0 && (
                 <div style={{ padding: 'var(--s-4)', color: 'var(--text-muted)', textAlign: 'center' }}>
                   No thread content available.
                 </div>
               )}
 
-              {/* Chronological message list */}
-              {messages.map((m, i) => (
+              {/* Thread mode — chronological message list, no summary
+                  on top so the user reads the raw thread directly. */}
+              {effectiveMode === 'thread' && messages.map((m, i) => (
                 <div
                   key={i}
                   style={{
@@ -2508,12 +2526,14 @@ function SuggestedRulesRow({ feedEventId, rules, busy, setBusy, setActedAction, 
 
 function AttentionCard({ item, onDecided, notify, drafts = [] }) {
   const [busy, setBusy] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [score, setScore] = useState(null);
   const [actedAction, setActedAction] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Thread preview modal — shows full Gmail thread + LLM summary on top.
-  const [threadPreviewOpen, setThreadPreviewOpen] = useState(false);
+  // Thread preview modal. Two modes:
+  //   'preview' (Preview button) → narrative summary only
+  //   'thread'  (View thread button) → full chronological message list
+  // null = closed.
+  const [threadModalMode, setThreadModalMode] = useState(null);
   // Delegate-prep panel state. Once a delegatee is chosen (either Brain's
   // suggestion via "Keep", a fresh pick from the picker, or a one-click
   // delegate_to_known), we hold here so the MD can optionally add a note
@@ -2706,15 +2726,9 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
               )}
             </div>
           )}
-          {expanded && item.preview && (
-            <div style={{
-              fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 6,
-              padding: 'var(--s-2)', background: 'var(--bg-2)',
-              borderRadius: 'var(--r-sm)', whiteSpace: 'pre-wrap',
-            }}>
-              {item.preview}
-            </div>
-          )}
+          {/* Inline snippet expand removed: Preview now opens the
+              ThreadPreviewModal in summary mode (chronological
+              narrative across the full thread, not just this turn). */}
           {item.contextBrief && (
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
               🧠 {item.contextBrief}
@@ -2750,17 +2764,22 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
 
       {/* Action row */}
       <div style={{ display: 'flex', gap: 'var(--s-2)', marginTop: 'var(--s-3)', flexWrap: 'wrap' }}>
-        <Button variant="ghost" size="sm" onClick={() => setExpanded((x) => !x)}>
-          {expanded ? 'Hide' : 'Preview'}
-        </Button>
-        {/* Open the full-thread modal with LLM summary on top. Available
-            for every channel; the server returns single-message payloads
-            for non-email items so the modal still renders cleanly. */}
+        {/* Preview = the LLM-narrated summary modal (oldest → newest
+            chronological picture of the conversation). */}
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => setThreadPreviewOpen(true)}
-          title="Open the full conversation with a Brain summary on top"
+          onClick={() => setThreadModalMode('preview')}
+          title="Open a chronological narrative summary of this thread"
+        >
+          Preview
+        </Button>
+        {/* View thread = the raw message list, no summary on top. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setThreadModalMode('thread')}
+          title="Open every message in the thread in order"
         >
           🔍 View thread
         </Button>
@@ -2962,10 +2981,11 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
         }}
       />
 
-      {threadPreviewOpen && (
+      {threadModalMode && (
         <ThreadPreviewModal
           feedEventId={item.feedEventId}
-          onClose={() => setThreadPreviewOpen(false)}
+          mode={threadModalMode}
+          onClose={() => setThreadModalMode(null)}
           notify={notify}
         />
       )}

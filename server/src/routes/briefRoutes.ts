@@ -667,19 +667,40 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
     let provider = 'none';
     if (messages.length > 0) {
       try {
-        const turns = messages
-          .map((m, i) => `[${i + 1}] ${m.from === 'me' ? 'You' : 'Them'} — ${m.subject || '(no subject)'}\n${m.text}`)
+        // Feed messages oldest-first so the LLM sees the conversation
+        // arc and can narrate it that way.
+        const ordered = [...messages].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+        const turns = ordered
+          .map((m, i) => {
+            const when = m.timestamp ? new Date(m.timestamp).toISOString() : '(unknown)';
+            const who = m.from === 'me' ? 'You' : (m.fromName || 'Sender');
+            return `[${i + 1}] ${when} · ${who}${m.subject ? ` — ${m.subject}` : ''}\n${m.text}`;
+          })
           .join('\n\n');
-        const systemPrompt = 'You summarise email threads for a busy executive. Output 2–4 short sentences in plain prose. Lead with what is being asked or decided. Mention concrete commitments, dates, and amounts. Do not list senders or use bullet points. Do not use the user\'s name. Address the user as "you".';
-        const userMessage = `Summarise this thread:\n\n${turns}`;
+        const systemPrompt = `You summarise email threads for a busy executive so the reader gets the full picture without reading every message.
+
+Narrate CHRONOLOGICALLY — start with the earliest message and walk forward to the latest, so the reader can follow how the conversation evolved. The point isn't brevity; it's a complete picture in plain prose.
+
+Structure:
+  • Opening sentence: what kicked the thread off (who reached out and what they wanted).
+  • Middle: how it developed — what was asked, what was answered, any commitments or numbers exchanged.
+  • Closing sentence: where things stand now and what (if anything) the reader needs to do next.
+
+Rules:
+  • Plain prose paragraphs. No bullet points, no headings, no lists.
+  • Use "you" when referring to the reader. Don't use the reader's name.
+  • Mention concrete commitments, dates, amounts, and named decisions explicitly.
+  • Don't mention any model name, "AI", "Brain", or that this is a summary.
+  • Length: as long as needed for completeness. Short threads → short summary. Long, multi-turn threads can take a paragraph or two.`;
+        const userMessage = `Thread (oldest first):\n\n${turns}`;
         const { callLLM } = await import('../services/llmRouter');
         const result = await callLLM(systemPrompt, userMessage, {
-          maxTokens: 220,
+          maxTokens: 600,
           providers: ['gemini-flash', 'gemini', 'claude'],
           userId: user.id,
           clientNumber: user.clientNumber,
           purpose: 'thread_summary',
-          timeoutMs: 12_000,
+          timeoutMs: 15_000,
         });
         summary = result.text.trim();
         provider = result.provider;
