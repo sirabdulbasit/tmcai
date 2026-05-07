@@ -137,14 +137,26 @@ router.post('/users/:empcode/reset-password', requireAuth, requireAdmin, async (
   res.json({ success: true, tempPassword: result.tempPassword });
 });
 
-// ─── Admin: Voice transcript backfill for the calling user ────
+// ─── Voice transcript backfill ─────────────────────────────────
 // Runs the backfill IN this server process (where the in-memory
 // webjs clients live). CLI scripts spawn a fresh Node process and
 // see an empty clients Map — that's why running ts-node returned
 // skipped(no-client)=N for every row.
+//
+// Default scope: caller's own user. Passing userId in the body to
+// backfill someone else's data is gated to admins/super-admins so a
+// regular user can't read another user's voice notes.
 router.post('/voice-backfill', requireAuth, async (req: Request, res: Response) => {
+  const caller = (req as any).user;
   const apply = !!req.body?.apply;
-  const userId = req.body?.userId ? Number(req.body.userId) : (req as any).user.id;
+  const requestedUserId = req.body?.userId ? Number(req.body.userId) : null;
+  let userId = caller.id;
+  if (requestedUserId && requestedUserId !== caller.id) {
+    if (!caller.isAdmin && !caller.isSuperAdmin) {
+      return res.status(403).json({ error: 'admin required to backfill another user' });
+    }
+    userId = requestedUserId;
+  }
   const limit = req.body?.limit ? Math.max(1, Math.min(500, Number(req.body.limit))) : 200;
   try {
     const { backfillVoiceTranscriptsInProcess } =

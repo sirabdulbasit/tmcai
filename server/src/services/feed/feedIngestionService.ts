@@ -329,6 +329,37 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
       })();
     }
 
+    // MyOS Knowledge — whatsapp_message page per inbound WhatsApp.
+    // Mirrors the email_message scribe so voice transcripts and chat
+    // history persist past the 30-day feed_events pruner. Without
+    // this, today's voice note would vanish from the wiki archive
+    // when the queue rolls over.
+    if (input.userId && input.sourceType === 'whatsapp') {
+      void (async () => {
+        try {
+          const p: any = input.payload ?? {};
+          const waMessageId: string = p.waMessageId || input.sourceId;
+          if (!waMessageId) return;
+          const { ingestWhatsAppBody } = await import('../knowledge/whatsappBodyIngestService');
+          await ingestWhatsAppBody({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            feedEventId: row.id,
+            waMessageId,
+            chatId: p.chatId ?? null,
+            senderName: p.senderName ?? sender?.name ?? null,
+            senderPhone: p.phoneNumber ?? sender?.phone ?? null,
+            body: p.body ?? '',
+            type: p.type ?? 'chat',
+            voiceTranscript: p.voiceTranscript ?? null,
+            receivedAt: row.createdAt,
+          });
+        } catch (err: any) {
+          console.warn(`[whatsappBody] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
     // MyOS Knowledge — email_message page per Gmail message. Captures
     // the full body (HTML → plaintext) so Brain has "the actual content",
     // not just the 280-char snippet. Fire-and-forget from the ingest path.
