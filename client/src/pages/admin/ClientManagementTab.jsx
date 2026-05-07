@@ -37,6 +37,11 @@ function ClientManagementTab({ user, msg, setMsg }) {
 
   // ─── New User form ───────────────────────────────────────────
   const [newUser, setNewUser] = useState({ empcode: '', name: '', email: '', password: '', userType: 'ST', department: '', clientNumber: '' });
+  // Invitation toggle — true (default) means user sets own password
+  // via emailed link, so the password input is hidden + skipped.
+  // (Named with "Toggle" suffix to avoid colliding with the existing
+  // sendInvite() function defined further down for resending invites.)
+  const [sendInviteToggle, setSendInviteToggle] = useState(true);
 
   // ─── Edit User + Integration ────────────────────────────────
   const [editUser, setEditUser] = useState(null);
@@ -83,12 +88,22 @@ function ClientManagementTab({ user, msg, setMsg }) {
 
   // ─── Create User ─────────────────────────────────────────────
   const createUser = async () => {
-    if (!newUser.empcode || !newUser.name || !newUser.email || !newUser.password) { setMsg('All fields required'); return; }
+    // Required fields. Password is conditionally required: when the
+    // admin checks "Send invitation email", the new user sets their
+    // own password via the link, so we don't ask the admin for it.
+    const shouldInvite = sendInviteToggle;
+    if (!newUser.empcode || !newUser.name || !newUser.email) { setMsg('Employee code, name, and email are required'); return; }
+    if (!shouldInvite && !newUser.password) { setMsg('Password required when not sending an invitation email'); return; }
     const targetClient = user?.isSuperAdmin ? newUser.clientNumber : user?.clientNumber;
     if (!targetClient) { setMsg('Please select a client'); return; }
     try {
-      const res = await api.post('/user/users', { ...newUser, clientNumber: targetClient });
-      const shouldInvite = document.getElementById('sendInvite')?.checked;
+      // When inviting, send a random throwaway password — the server
+      // accepts it as the bcrypt seed but the invitation flow
+      // overwrites it as soon as the user picks their own.
+      const password = newUser.password || (shouldInvite
+        ? `tmp-${Math.random().toString(36).slice(2, 12)}`
+        : '');
+      const res = await api.post('/user/users', { ...newUser, password, clientNumber: targetClient });
       if (shouldInvite && res.data.user?.id) {
         await api.post(`/user/users/${res.data.user.id}/invite`, { baseUrl: window.location.origin }).catch(() => {});
         setMsg('User created and invitation sent');
@@ -228,16 +243,30 @@ function ClientManagementTab({ user, msg, setMsg }) {
                 <div className="settings-field"><label>Employee Code *</label><input value={newUser.empcode} onChange={e => setNewUser(u => ({ ...u, empcode: e.target.value }))} placeholder="EMP-001" /></div>
                 <div className="settings-field"><label>Full Name *</label><input value={newUser.name} onChange={e => setNewUser(u => ({ ...u, name: e.target.value }))} placeholder="Ahmed Khan" /></div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: sendInviteToggle ? '1fr' : '1fr 1fr', gap: 10 }}>
                 <div className="settings-field"><label>Email *</label><input value={newUser.email} onChange={e => setNewUser(u => ({ ...u, email: e.target.value }))} placeholder="ahmed@company.com" /></div>
-                <div className="settings-field"><label>Password *</label><input type="password" value={newUser.password} onChange={e => setNewUser(u => ({ ...u, password: e.target.value }))} placeholder="Min 6 chars" /></div>
+                {/* Password input hides when "Send invitation email" is on
+                     — the user picks their own password via the email
+                     link, so asking the admin to invent one was confusing
+                     and contradicted the invitation flow. */}
+                {!sendInviteToggle && (
+                  <div className="settings-field">
+                    <label>Password *</label>
+                    <input type="password" value={newUser.password} onChange={e => setNewUser(u => ({ ...u, password: e.target.value }))} placeholder="Min 6 chars" />
+                  </div>
+                )}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="settings-field"><label>User Type</label>
                   <select value={newUser.userType} onChange={e => setNewUser(u => ({ ...u, userType: e.target.value }))}>
+                    {/* Fallback options always available so the dropdown
+                         is never empty. SA only visible to super-admins;
+                         AD + ST always visible. Tier-based options layer
+                         on top when a tier admin has configured them. */}
                     {user?.isSuperAdmin && <option value="SA">SA — SuperAdmin</option>}
-                    {user?.isSuperAdmin && <option value="AD">AD — Admin</option>}
-                    {availableTiers.filter(t => t.is_active).map(t => (
+                    <option value="AD">AD — Admin</option>
+                    <option value="ST">ST — Standard</option>
+                    {availableTiers.filter(t => t.is_active && !['SA', 'AD', 'ST'].includes(t.tier_code)).map(t => (
                       <option key={t.tier_code} value={t.tier_code}>{t.tier_code} — {t.tier_name} (${Number(t.price_per_seat).toFixed(0)}/seat)</option>
                     ))}
                   </select>
@@ -245,7 +274,13 @@ function ClientManagementTab({ user, msg, setMsg }) {
                 <div className="settings-field"><label>Department</label><input value={newUser.department} onChange={e => setNewUser(u => ({ ...u, department: e.target.value }))} placeholder="Optional" /></div>
               </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#bbb', marginTop: 8 }}>
-                <input type="checkbox" id="sendInvite" defaultChecked style={{ accentColor: 'var(--accent)' }} />
+                <input
+                  type="checkbox"
+                  id="sendInvite"
+                  checked={sendInviteToggle}
+                  onChange={(e) => setSendInviteToggle(e.target.checked)}
+                  style={{ accentColor: 'var(--accent)' }}
+                />
                 Send invitation email (user sets their own password)
               </label>
               <button className="settings-btn" onClick={async () => { await createUser(); }} style={{ width: '100%', marginTop: 8 }}>Create User</button>
