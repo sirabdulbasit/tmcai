@@ -1534,7 +1534,12 @@ router.post('/voice-instruction', voiceUpload.single('audio'), async (req: Reque
       ix.targetFeedEventId = feedEventId;
     }
 
-    if (ix.intent === 'none' || ix.confidence < 0.55) {
+    // Threshold: 0.45 gives the LLM a bit more leeway than 0.55. The
+    // confirm gate downstream catches misreads anyway — user always
+    // reviews the plan before Brain executes. Better to surface what
+    // Brain inferred (and let user reject) than over-rejecting valid
+    // instructions.
+    if (ix.intent === 'none' || ix.confidence < 0.45) {
       return res.json({
         actionId: null,
         transcript: tx.text,

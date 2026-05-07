@@ -2270,9 +2270,11 @@ function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
         return;
       }
       if (data.intent === 'none' || !data.actionId) {
-        setError(data?.summary ?? 'Couldn\'t pick out an instruction.');
+        // Show the transcript so the user sees what Brain heard and
+        // can decide whether to rephrase or save as a note. Hiding it
+        // (the old behaviour) left people guessing.
         setPreview(data);
-        setPhase('idle');
+        setPhase('unparsed');
         return;
       }
       setPreview(data);
@@ -2464,6 +2466,89 @@ function VoiceCommandModal({ feedEventId, onClose, onDone, notify }) {
                 <Button variant="ghost" size="sm" disabled={confirming} onClick={cancelStaged}>Cancel</Button>
                 <Button variant="primary" size="sm" disabled={confirming} onClick={confirm}>
                   {confirming ? 'Working…' : '✓ Confirm & do it'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {phase === 'unparsed' && preview && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-3)' }}>
+              <div style={{
+                padding: 'var(--s-3) var(--s-4)',
+                background: 'var(--bg-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--r-md)',
+              }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '.14em',
+                  textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6,
+                }}>
+                  📝 What Brain heard
+                </div>
+                <div style={{ fontSize: 'var(--fs-sm)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                  {preview.transcript || '(empty)'}
+                </div>
+                {preview.english && preview.english !== preview.transcript && (
+                  <div style={{
+                    marginTop: 'var(--s-2)', paddingTop: 'var(--s-2)',
+                    borderTop: '1px dashed var(--border)',
+                    fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                  }}>
+                    English: {preview.english}
+                  </div>
+                )}
+              </div>
+
+              <div style={{
+                padding: 'var(--s-3)',
+                background: 'rgba(251,191,36,0.08)',
+                border: '1px solid rgba(251,191,36,0.35)',
+                borderRadius: 'var(--r-md)',
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--text)',
+                lineHeight: 1.5,
+              }}>
+                I couldn't pick out an action from that. Try being specific, e.g.:
+                <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18, color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+                  <li>"Reply to Yousuf and say we'll confirm by tomorrow"</li>
+                  <li>"Delegate this to Basit and ask him to check with Shahid first"</li>
+                  <li>"Schedule a meeting tomorrow at 3pm to discuss this"</li>
+                  <li>"Mute newsletter@example.com"</li>
+                  <li>"Add this to open items, due Friday"</li>
+                </ul>
+              </div>
+
+              <div style={{ display: 'flex', gap: 'var(--s-2)', justifyContent: 'flex-end', marginTop: 'var(--s-2)', flexWrap: 'wrap' }}>
+                <Button variant="ghost" size="sm" onClick={closeAndCleanup}>Close</Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={async () => {
+                    // Fallback: save the transcript as an open item
+                    // so the dictation isn't wasted.
+                    try {
+                      await api.post('/open-items', {
+                        title: (preview.english || preview.transcript || '').slice(0, 140) || 'Voice note',
+                        description: preview.transcript + (preview.english && preview.english !== preview.transcript ? `\n\n(English: ${preview.english})` : ''),
+                        type: 'manual',
+                        priority: 'medium',
+                      });
+                      notify?.('Saved as an open item.', 'success');
+                      closeAndCleanup();
+                      onDone?.();
+                    } catch (err) {
+                      notify?.(err?.response?.data?.error || 'Save failed', 'error');
+                    }
+                  }}
+                >
+                  💾 Save as note
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => { setPreview(null); setError(null); setPhase('idle'); }}
+                >
+                  🎤 Try again
                 </Button>
               </div>
             </div>
