@@ -1032,16 +1032,29 @@ export async function buildAttentionList(
   // Per-channel filter+sort+slice. Each channel applies the same
   // rules but to its own bucket so a busy channel can't crowd out
   // the others.
-  function pickFromBucket(bucket: typeof emailRows, quota: number) {
+  function pickFromBucket(bucket: typeof emailRows, quota: number, opts: { skipReadEmails?: boolean } = {}) {
     return bucket
       .filter((r) => !decidedSet.has(r.id))
+      // Drop emails the user has already read in Gmail. The Gmail
+      // read-state sync (gmailReadStateSyncJob) sets isUnread=false
+      // on rawPayload when the user reads in Gmail directly. Without
+      // this filter, Day Brief keeps surfacing read emails as
+      // "needs you" — the exact mismatch the user flagged on
+      // 2026-05-07 ("emails are marking read etc"). Only applies to
+      // gmail rows; legacy rows missing isUnread are kept (treated
+      // as unread by default to avoid hiding pre-sync data).
+      .filter((r) => {
+        if (!opts.skipReadEmails) return true;
+        const p: any = r.rawPayload ?? {};
+        return p.isUnread !== false;
+      })
       .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
       .filter((x) => x.eventDate >= sevenDaysAgo)
       .sort((a, b) => b.eventDate.getTime() - a.eventDate.getTime())
       .slice(0, quota)
       .map((x) => x.row);
   }
-  const emailCandidates = pickFromBucket(emailRows, QUOTA_EMAIL_LIKE);
+  const emailCandidates = pickFromBucket(emailRows, QUOTA_EMAIL_LIKE, { skipReadEmails: true });
   const calCandidates = pickFromBucket(calRows, QUOTA_CALENDAR);
   const taskCandidates = pickFromBucket(taskRows, QUOTA_TASKS);
   const candidates = [...emailCandidates, ...calCandidates, ...taskCandidates];

@@ -559,6 +559,25 @@ const server = app.listen(env.port, async () => {
     }
   }, 10 * 60 * 1000);
 
+  // MyOS — Gmail read-state sync every 5 min. Updates feed_events
+  // rawPayload.isUnread by querying Gmail's current `is:unread`
+  // list. This is what stops Day Brief from surfacing emails the
+  // user already read directly in Gmail. Cheap call (just IDs);
+  // bounded to last-30-days feed_events so cost is small.
+  setInterval(async () => {
+    try {
+      const { syncAllActiveGmailUsers } = await import('./jobs/gmailReadStateSyncJob');
+      const r = await syncAllActiveGmailUsers();
+      const updated = r.reduce((s, x) => s + x.updated, 0);
+      const errors = r.reduce((s, x) => s + x.errors, 0);
+      if (updated > 0 || errors > 0) {
+        console.log(`[gmailReadSync] users=${r.length} updated=${updated} errors=${errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[gmailReadSync] error:', err.message);
+    }
+  }, 5 * 60 * 1000);
+
   // MyOS — Google Tasks poller every 15 min. Pulls every active task
   // across every list for every user with a Google integration and
   // pushes them into feed_events (sourceType='gtasks'). Closes the
