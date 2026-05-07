@@ -75,28 +75,71 @@ router.get('/inbox', async (req: Request, res: Response) => {
     if (source === 'gmail') {
       // Email path: read from scribe (permanent archive). Survives
       // feed_events pruning.
-      const where: any = {
-        clientNumber: user.clientNumber,
-        userId: user.id,
-        pageType: 'email_message',
-        status: { not: 'deleted' as any },
-      };
+      //
+      // Search query uses raw SQL with ILIKE on jsonb fields. The
+      // earlier Prisma `metadata: { path, string_contains }` syntax
+      // is case-SENSITIVE, which silently dropped matches like
+      // "Basit Ahmed" when the user searched "basit". Switching to
+      // raw SQL gives us ILIKE everywhere — title, senderName,
+      // senderEmail, AND bodyMarkdown — so search hits subject,
+      // sender info, AND content. Closes the search gap the user
+      // hit on 2026-05-07.
+      let rows: Array<{ id: string; title: string | null; metadata: any; lastUpdatedAt: Date | null; createdAt: Date }>;
+      let total: number;
       if (q) {
-        where.OR = [
-          { title: { contains: q, mode: 'insensitive' } },
-          { metadata: { path: ['senderEmail'], string_contains: q.toLowerCase() } as any },
-          { metadata: { path: ['senderName'], string_contains: q.toLowerCase() } as any },
-        ];
+        const pattern = `%${q.replace(/[%_]/g, '\\$&')}%`;  // escape SQL wildcards
+        const [rowsResult, countResult] = await Promise.all([
+          prisma.$queryRawUnsafe<typeof rows>(
+            `SELECT id, title, metadata, last_updated_at AS "lastUpdatedAt", created_at AS "createdAt"
+             FROM wiki_pages
+             WHERE client_number = $1 AND user_id = $2
+               AND page_type = 'email_message'
+               AND status != 'deleted'
+               AND (
+                 title ILIKE $3
+                 OR metadata->>'senderEmail' ILIKE $3
+                 OR metadata->>'senderName' ILIKE $3
+                 OR body_markdown ILIKE $3
+               )
+             ORDER BY last_updated_at DESC NULLS LAST
+             LIMIT $4 OFFSET $5`,
+            user.clientNumber, user.id, pattern, limit, offset,
+          ),
+          prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+            `SELECT COUNT(*)::bigint AS count FROM wiki_pages
+             WHERE client_number = $1 AND user_id = $2
+               AND page_type = 'email_message'
+               AND status != 'deleted'
+               AND (
+                 title ILIKE $3
+                 OR metadata->>'senderEmail' ILIKE $3
+                 OR metadata->>'senderName' ILIKE $3
+                 OR body_markdown ILIKE $3
+               )`,
+            user.clientNumber, user.id, pattern,
+          ).then((r) => Number(r?.[0]?.count ?? 0)),
+        ]);
+        rows = rowsResult;
+        total = countResult;
+      } else {
+        const where: any = {
+          clientNumber: user.clientNumber,
+          userId: user.id,
+          pageType: 'email_message',
+          status: { not: 'deleted' as any },
+        };
+        const [rowsResult, countResult] = await Promise.all([
+          prisma.wikiPage.findMany({
+            where,
+            select: { id: true, title: true, metadata: true, lastUpdatedAt: true, createdAt: true },
+            orderBy: { lastUpdatedAt: 'desc' },
+            skip: offset, take: limit,
+          }),
+          prisma.wikiPage.count({ where }),
+        ]);
+        rows = rowsResult as any;
+        total = countResult;
       }
-      const [rows, total] = await Promise.all([
-        prisma.wikiPage.findMany({
-          where,
-          select: { id: true, title: true, metadata: true, lastUpdatedAt: true, createdAt: true },
-          orderBy: { lastUpdatedAt: 'desc' },
-          skip: offset, take: limit,
-        }),
-        prisma.wikiPage.count({ where }),
-      ]);
       const items = rows.map((r) => {
         const meta: any = r.metadata ?? {};
         const titleStr = String(r.title ?? '');
