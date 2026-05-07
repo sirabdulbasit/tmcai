@@ -1411,11 +1411,19 @@ model FeedEvent {
   userId             Int?    @map("user_id")
   processedAt        DateTime? @map("processed_at")
   createdAt          DateTime  @default(now()) @map("created_at")
+  // Source-native event time — Gmail Date header / Calendar event start /
+  // WhatsApp timestamp / Tasks updated. Distinct from createdAt (DB
+  // insert / ingest time) so a 14 April email scribed today still reads
+  // as "14 April" everywhere — My Attention, Brief audit, archive search.
+  // Nullable for legacy rows written before this column existed; the
+  // backfill script populates them from rawPayload.
+  eventAt            DateTime? @map("event_at")
 
   @@unique([clientNumber, contentHash])
   @@index([clientNumber, status])
   @@index([clientNumber, sourceType, createdAt])
   @@index([clientNumber, userId, sourceType, createdAt])
+  @@index([clientNumber, userId, sourceType, eventAt])
   @@index([clientNumber, eventType])
   @@index([clientNumber, senderEmail])
   @@index([clientNumber, publishedMessageId])

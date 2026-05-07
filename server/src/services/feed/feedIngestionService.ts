@@ -4,6 +4,7 @@ import { publish } from '../infra/pubsubPublisher';
 import { PUBSUB_TOPICS } from '../../config/pubsub';
 import { getRedis } from '../../utils/redisClient';
 import { REDIS_KEY_PATTERNS, REDIS_TTL } from '../../config/redis';
+import { extractSourceEventTime } from './feedEventTime';
 
 export type FeedSourceType = 'gmail' | 'whatsapp' | 'gchat' | 'gcal' | 'gtasks' | 'slack' | 'crm'
   | 'outlook' | 'outlook_calendar' | 'ms_teams' | 'onedrive_personal' | 'manual';
@@ -84,6 +85,14 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
 
   // Dedup check via unique constraint — try to insert, catch PGE 23505
   try {
+    // Source-native event time (Gmail Date / Calendar start /
+    // WhatsApp ts / Tasks updated). Lets every consumer query "when
+    // did this happen in the world" without having to re-parse the
+    // raw payload at read time. Falls back to null when the source
+    // didn't carry a parseable timestamp — display layer falls back
+    // to createdAt in that case.
+    const eventAt = extractSourceEventTime(input.payload);
+
     const row = await prisma.feedEvent.create({
       data: {
         clientNumber: input.clientNumber,
@@ -100,6 +109,7 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
         senderPhone: sender?.phone,
         sourceIntegrity,
         userId: input.userId,
+        eventAt,
       } as any,
     });
 

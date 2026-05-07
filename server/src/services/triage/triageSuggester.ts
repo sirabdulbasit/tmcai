@@ -933,19 +933,29 @@ async function _doTriage(row: {
  *   - WhatsApp: rawPayload.timestamp (Unix seconds)
  *   - Calendar: rawPayload.start (ISO date or { dateTime })
  */
-function extractEventOccurredAt(row: { rawPayload: any; createdAt: Date }): Date {
+function extractEventOccurredAt(row: { rawPayload: any; createdAt: Date; eventAt?: Date | null }): Date {
+  // Prefer the persisted event_at column populated at ingest from the
+  // source-native timestamp. Falls back to the live payload extractor
+  // for legacy rows where event_at hasn't been backfilled yet, then to
+  // createdAt as a last resort.
+  if (row.eventAt instanceof Date) return row.eventAt;
+  if (row.eventAt && typeof row.eventAt === 'string') {
+    const t = Date.parse(row.eventAt as any);
+    if (Number.isFinite(t)) return new Date(t);
+  }
+  // Inline fallback identical to extractSourceEventTime — kept here
+  // for legacy rows so we don't have to touch every read site again
+  // once the backfill completes. Once event_at is universally non-null
+  // this branch becomes dead.
   const p = row.rawPayload || {};
-  // Gmail
   if (typeof p.date === 'string' && p.date) {
     const t = Date.parse(p.date);
     if (Number.isFinite(t)) return new Date(t);
   }
-  // WhatsApp — webjs gives Unix seconds; tolerate ms.
   if (typeof p.timestamp === 'number' && p.timestamp > 0) {
     const ms = p.timestamp < 1e12 ? p.timestamp * 1000 : p.timestamp;
     return new Date(ms);
   }
-  // Calendar — start is either ISO string or { dateTime, date }
   if (p.start) {
     if (typeof p.start === 'string') {
       const t = Date.parse(p.start);
