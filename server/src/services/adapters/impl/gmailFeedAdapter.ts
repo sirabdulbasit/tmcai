@@ -14,7 +14,7 @@ export class GmailFeedAdapter extends FeedAdapter {
   readonly sourceType = 'gmail' as const;
   readonly displayName = 'Gmail';
 
-  async receive(tenantId: string, _since?: Date, limit = 25): Promise<unknown[]> {
+  async receive(tenantId: string, _since?: Date, limit = 500): Promise<unknown[]> {
     // Pull recent inbox for every active Google-integrated user in this tenant.
     const users = await prisma.user.findMany({
       where: { clientNumber: tenantId, isActive: true, integrationProvider: 'google', integrationStatus: 'active' },

@@ -19,7 +19,15 @@ import { isFeatureEnabled } from '../services/featureFlagService';
  * off, the generic poller is a no-op.
  */
 
-const MAX_EVENTS_PER_ADAPTER = 25;
+// Per-tick cap on rows the adapter is allowed to pull. Was 25 — too
+// small for any active inbox: a user getting 50+ emails / day with
+// occasional bursts of 10+ in a couple of minutes (notifications,
+// list traffic, alerts) would have anything past position 25 silently
+// dropped from the candidate set every cycle. Confirmed on prod 2026-
+// 05-08 — "Re: Dedicated Availability Required" never reached
+// feed_events. 500 is Gmail's per-call message-list ceiling and gives
+// real headroom; the 2-min poll cadence still keeps each tick light.
+const MAX_EVENTS_PER_ADAPTER = 500;
 
 export interface PollSummary {
   tenantId: string;
