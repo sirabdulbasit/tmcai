@@ -89,6 +89,31 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
     if (!pageToken) break;
   }
 
+  // Pull threadIds where the user has SENT at least one message in the
+  // last 30 days. This is the "have I replied on this conversation?"
+  // signal regardless of how the reply was sent (Brain draft, Gmail
+  // compose, mobile app, anywhere). The list response already includes
+  // threadId per row — no per-message fetch needed.
+  // Without this, threads the user replied to directly in Gmail kept
+  // surfacing on My Attention because Brain's internal decision_log
+  // had no record of those replies.
+  const repliedThreadSet = new Set<string>();
+  pageToken = undefined;
+  for (let page = 0; page < 4; page++) {  // up to 4 pages = 2000 sent
+    const res: any = await gmail.users.messages.list({
+      userId: 'me',
+      q: 'in:sent newer_than:30d',
+      maxResults: 500,
+      pageToken,
+    } as any).catch(() => null);
+    if (!res || !res.data) break;
+    for (const m of res.data.messages ?? []) {
+      if (m.threadId) repliedThreadSet.add(m.threadId);
+    }
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
+
   // Fetch this user's gmail feed_events from the last 30 days.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const events = await prisma.feedEvent.findMany({
@@ -104,12 +129,14 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
   for (const ev of events) {
     const cur: any = ev.rawPayload ?? {};
     const nowUnread = unreadSet.has(ev.sourceId);
-    // Skip if state already matches (avoid pointless writes).
-    if (cur.isUnread === nowUnread) continue;
+    const tid = cur?.threadId as string | undefined;
+    const nowReplied = !!(tid && repliedThreadSet.has(tid));
+    // Skip if both states already match (avoid pointless writes).
+    if (cur.isUnread === nowUnread && cur.userRepliedThread === nowReplied) continue;
     try {
       await prisma.feedEvent.update({
         where: { id: ev.id },
-        data: { rawPayload: { ...cur, isUnread: nowUnread } },
+        data: { rawPayload: { ...cur, isUnread: nowUnread, userRepliedThread: nowReplied } },
       });
       updated += 1;
     } catch {
@@ -117,8 +144,8 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
     }
   }
 
-  // Read-state changed → invalidate triage cache for this user's
-  // affected events so the next /brief/attention reflects it.
+  // State changed → invalidate triage cache so /brief/attention
+  // reflects the new userRepliedThread / isUnread values.
   if (updated > 0) {
     const { clearTriageCache } = await import('../services/triage/triageSuggester');
     clearTriageCache();

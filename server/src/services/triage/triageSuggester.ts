@@ -1125,12 +1125,19 @@ export async function buildAttentionList(
   function pickFromBucket(bucket: typeof emailRows, quota: number) {
     return bucket
       .filter((r) => !decidedSet.has(r.id))
-      // Suppress feed_events whose threadId matches a thread the user
-      // has already replied on. This kills "duplicate ask" cards for
-      // Gmail conversations after MD has sent a draft reply.
+      // Suppress feed_events for Gmail threads the user has already
+      // replied on, by ANY means — Brain's draft button OR Gmail compose
+      // directly OR mobile app. The userRepliedThread flag is stamped
+      // by gmailReadStateSyncJob from `q=in:sent` results, which is the
+      // ground truth regardless of which client sent the reply.
+      // The legacy repliedThreadIds Set (built from decision_logs) is
+      // kept as a redundant secondary check in case the read-state sync
+      // hasn't run yet for a brand-new draft.
       .filter((r) => {
         if (r.sourceType !== 'gmail') return true;
-        const tid = (r.rawPayload as any)?.threadId;
+        const payload = r.rawPayload as any;
+        if (payload?.userRepliedThread === true) return false;
+        const tid = payload?.threadId;
         return !tid || !repliedThreadIds.has(tid);
       })
       .map((r) => ({ row: r, eventDate: extractEventOccurredAt(r) }))
@@ -1550,10 +1557,13 @@ export async function buildHandledList(
     // Same-thread-replied: a different feed_event but the same Gmail
     // thread the user has already responded to. Bucket as auto_decided
     // so the user sees "Brain knew you'd already replied" instead of a
-    // re-ask card or silent disappearance.
+    // re-ask card or silent disappearance. Two signals — userRepliedThread
+    // flag (from in:sent sync, the ground truth) and decision_log lookup
+    // (legacy fallback for very fresh drafts).
     if (r.sourceType === 'gmail') {
-      const tid = (r.rawPayload as any)?.threadId;
-      if (tid && repliedThreadIds.has(tid)) {
+      const payload = r.rawPayload as any;
+      const tid = payload?.threadId;
+      if (payload?.userRepliedThread === true || (tid && repliedThreadIds.has(tid))) {
         out.push({
           ...base(item),
           bucket: 'auto_decided',
