@@ -3046,59 +3046,14 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
                           <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>· {bucketItems.length}</span>
                         </summary>
                         <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {bucketItems.map((it) => {
-                            const stamp = it.decidedAt || it.receivedAt;
-                            // Channel emoji from itemType / sourceType so the
-                            // user can scan email vs WhatsApp at a glance.
-                            const ch = (it.itemType || it.sourceType || '').toLowerCase();
-                            const channelEmoji = ch === 'whatsapp' ? '💬'
-                              : ch === 'gchat' ? '💭'
-                              : ch === 'meeting' || ch === 'gcal' ? '📅'
-                              : ch === 'task' || ch === 'gtasks' ? '☑️'
-                              : '📧';
-                            const sender = it.fromDisplay || it.from || it.fromEmail || '—';
-                            const subject = (it.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim() || '(no subject)';
-                            const previewText = (it.preview || '').replace(/\s+/g, ' ').trim();
-                            return (
-                              <div key={it.feedEventId} style={{
-                                padding: '8px 10px',
-                                background: 'var(--bg-1, transparent)',
-                                borderRadius: 'var(--r-sm)',
-                                fontSize: 'var(--fs-sm)',
-                                display: 'flex', flexDirection: 'column', gap: 4,
-                              }}>
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: 'var(--fs-xs)' }}>{channelEmoji}</span>
-                                  <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', minWidth: 120, fontWeight: 'var(--fw-medium)' }}>
-                                    {sender}
-                                  </span>
-                                  <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {subject}
-                                  </span>
-                                  <span
-                                    title={stamp ? new Date(stamp).toLocaleString() : ''}
-                                    style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
-                                  >
-                                    {formatDateTime(stamp)}
-                                  </span>
-                                </div>
-                                {previewText && (
-                                  <div style={{
-                                    color: 'var(--text-muted)', fontSize: 'var(--fs-xs)',
-                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    fontStyle: 'italic',
-                                  }}>
-                                    "{previewText.slice(0, 120)}{previewText.length > 120 ? '…' : ''}"
-                                  </div>
-                                )}
-                                {it.reason && (
-                                  <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)' }}>
-                                    ↪ {it.reason}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                          {bucketItems.map((it) => (
+                            <HandledItemRow
+                              key={it.feedEventId}
+                              item={it}
+                              onOverride={onOverride}
+                              notify={notify}
+                            />
+                          ))}
                         </div>
                       </details>
                     );
@@ -3231,6 +3186,182 @@ function describeBrainAction(action) {
     snippet,
     isWA, isEmail,
   };
+}
+
+/**
+ * HandledItemRow — single row in a Brief bucket (Auto-rule fired,
+ * Bulk/newsletter, etc). Brain decided this didn't need the user;
+ * the user can disagree per-row with thumbs, or use Fix to teach
+ * Brain the right action AND apply the same correction to siblings.
+ */
+function HandledItemRow({ item, onOverride, notify }) {
+  const [fixOpen, setFixOpen] = useState(false);
+  const [pendingOpt, setPendingOpt] = useState(null);
+  const [reasonNote, setReasonNote] = useState('');
+  const [applyToSimilar, setApplyToSimilar] = useState(true);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const stamp = item.decidedAt || item.receivedAt;
+  const ch = (item.itemType || item.sourceType || '').toLowerCase();
+  const channelEmoji = ch === 'whatsapp' ? '💬'
+    : ch === 'gchat' ? '💭'
+    : ch === 'meeting' || ch === 'gcal' ? '📅'
+    : ch === 'task' || ch === 'gtasks' ? '☑️'
+    : '📧';
+  const sender = item.fromDisplay || item.from || item.fromEmail || '—';
+  const subject = (item.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim() || '(no subject)';
+  const previewText = (item.preview || '').replace(/\s+/g, ' ').trim();
+
+  const onFixClick = (opt) => {
+    if (opt.needsDelegatee) { setPickerOpen(true); return; }
+    setPendingOpt({ ...opt, extra: {} });
+    setReasonNote(`Should have been ${opt.id.replace('_', ' ')}`);
+  };
+
+  const confirmFix = async () => {
+    if (!pendingOpt) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/brief/handled/${item.feedEventId}/override`, {
+        replacementAction: pendingOpt.id,
+        reason: reasonNote,
+        applyToSimilar,
+        ...(pendingOpt.extra || {}),
+      });
+      notify?.(data.message ?? 'Noted — Brain will adjust.', 'success');
+      onOverride?.();
+    } catch (e) {
+      notify?.(e?.response?.data?.error ?? 'Failed to override', 'error');
+    } finally {
+      setBusy(false);
+      setPendingOpt(null);
+      setReasonNote('');
+      setFixOpen(false);
+      setPickerOpen(false);
+    }
+  };
+
+  return (
+    <div style={{
+      padding: '8px 10px',
+      background: 'var(--bg-1, transparent)',
+      borderRadius: 'var(--r-sm)',
+      fontSize: 'var(--fs-sm)',
+      display: 'flex', flexDirection: 'column', gap: 4,
+    }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 'var(--fs-xs)' }}>{channelEmoji}</span>
+        <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', minWidth: 120, fontWeight: 'var(--fw-medium)' }}>
+          {sender}
+        </span>
+        <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {subject}
+        </span>
+        <span
+          title={stamp ? new Date(stamp).toLocaleString() : ''}
+          style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
+        >
+          {formatDateTime(stamp)}{stamp ? ` · ${timeAgo(stamp)}` : ''}
+        </span>
+      </div>
+      {previewText && (
+        <div style={{
+          color: 'var(--text-muted)', fontSize: 'var(--fs-xs)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontStyle: 'italic',
+        }}>
+          "{previewText.slice(0, 120)}{previewText.length > 120 ? '…' : ''}"
+        </div>
+      )}
+      {item.reason && (
+        <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)' }}>
+          ↪ {item.reason}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+        <FeedbackButtons
+          subjectType="handled_item"
+          subjectId={String(item.feedEventId)}
+          context={{ bucket: item.bucket, sender, subject }}
+          compact
+        />
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setFixOpen((x) => !x)}>
+          {fixOpen ? 'Cancel' : 'Fix'}
+        </Button>
+      </div>
+      {fixOpen && (
+        <div style={{ marginTop: 6, padding: 8, background: 'var(--bg-2)', borderRadius: 'var(--r-sm)' }}>
+          {pendingOpt ? (
+            <>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
+                Brain will treat similar items as <strong>{pendingOpt.label}</strong>. Why was this wrong?
+              </div>
+              <textarea
+                autoFocus
+                value={reasonNote}
+                onChange={(e) => setReasonNote(e.target.value)}
+                rows={2}
+                placeholder="e.g. This sender's invoices always need delegation, not auto-archive"
+                style={{
+                  width: '100%', padding: 'var(--s-2) var(--s-3)',
+                  background: 'var(--bg-1)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--r-sm)', color: 'var(--text)',
+                  fontSize: 'var(--fs-sm)', fontFamily: 'inherit', lineHeight: 1.5,
+                  resize: 'vertical', boxSizing: 'border-box',
+                }}
+              />
+              <label style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)',
+                cursor: 'pointer', userSelect: 'none',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={applyToSimilar}
+                  onChange={(e) => setApplyToSimilar(e.target.checked)}
+                />
+                Apply this fix to every similar item Brain has auto-handled. Recommended.
+              </label>
+              <div style={{ display: 'flex', gap: 6, marginTop: 6, justifyContent: 'flex-end' }}>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setPendingOpt(null); setReasonNote(''); }}>Cancel</Button>
+                <Button size="sm" variant="primary" disabled={busy || !reasonNote.trim()} onClick={confirmFix}>
+                  {busy ? 'Saving…' : 'Save & Apply'}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
+                Brain handled this autonomously. What should it have done instead?
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {ALL_FIX_OPTIONS.map((opt) => (
+                  <Button
+                    key={opt.id}
+                    size="sm" variant="secondary" disabled={busy}
+                    onClick={() => onFixClick(opt)}
+                  >
+                    {opt.label}
+                  </Button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      <DelegateePicker
+        open={pickerOpen}
+        context={{ itemType: item.itemType || 'email', archetype: item.archetype || 'reply_needed' }}
+        onCancel={() => setPickerOpen(false)}
+        onPick={(who) => {
+          setPickerOpen(false);
+          setPendingOpt({ id: 'delegate', label: `→ Delegate to ${who.name ?? who.email}`, extra: { delegatee: who } });
+          setReasonNote(`Should have been delegated to ${who.name ?? who.email}`);
+        }}
+      />
+    </div>
+  );
 }
 
 function BrainActionRow({ action, onOverride, notify }) {

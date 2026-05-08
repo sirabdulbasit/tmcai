@@ -2204,6 +2204,136 @@ router.post('/insights/:id/dismiss', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+/**
+ * POST /brief/handled/:feedEventId/override
+ * Body: { reason, replacementAction, applyToSimilar?, delegatee? }
+ *
+ * Override a Brain auto-handled item that didn't fire an agent_action
+ * (auto-rule, bulk/newsletter, cc-only, high-confidence). The user is
+ * saying "you suppressed this, but it should have been X". We:
+ *
+ *   1. Bring the feed_event back to Attention so the user can act now.
+ *   2. Write a decision_log row carrying the REPLACEMENT action so the
+ *      rule miner gets the corrective signal on the next tick.
+ *   3. If applyToSimilar, apply the same correction to every open
+ *      auto-handled feed_event with the same dedup_hash.
+ *
+ * Mirrors /brain-actions/:id/override but keyed on feedEventId instead
+ * of agent_action.id.
+ */
+router.post('/handled/:feedEventId/override', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const feedEventId = String(req.params.feedEventId || '').trim();
+  const reason = String(req.body?.reason ?? '').trim() || 'Brain handled this wrong';
+  const replacementAction = String(req.body?.replacementAction ?? '').trim();
+  const applyToSimilar = req.body?.applyToSimilar === true;
+  const replacementDelegatee = req.body?.delegatee ?? null;
+  if (!feedEventId) return res.status(400).json({ error: 'feedEventId required' });
+  if (!replacementAction) return res.status(400).json({ error: 'replacementAction required — tell Brain what to do instead' });
+
+  const fe = await prisma.feedEvent.findFirst({
+    where: { id: feedEventId, clientNumber: user.clientNumber },
+    select: { id: true, sourceType: true, senderEmail: true, rawPayload: true, status: true },
+  });
+  if (!fe) return res.status(404).json({ error: 'feed_event not found' });
+
+  // 1. Bring back to Attention so the user can act on it now.
+  await prisma.feedEvent.updateMany({
+    where: { id: feedEventId, clientNumber: user.clientNumber },
+    data: { status: 'new', processedAt: null } as any,
+  }).catch(() => {});
+
+  // 2. Write the corrective decision_log row.
+  const { computeDedupHash } = await import('../services/triage/triageSuggester');
+  const { classifyArchetypeFromPayload } = await import('../services/triage/executorHelpers');
+  const payload = (fe.rawPayload as any) ?? {};
+  const senderDomain = fe.senderEmail ? fe.senderEmail.split('@')[1]?.toLowerCase().replace(/[>]/g, '') : undefined;
+  const itemType: any =
+    fe.sourceType === 'gmail' ? 'email' :
+    fe.sourceType === 'whatsapp' ? 'whatsapp' :
+    fe.sourceType === 'gcal' ? 'meeting' : 'email';
+  const archetype = classifyArchetypeFromPayload(
+    String(payload.subject ?? ''),
+    String(payload.snippet ?? payload.body ?? ''),
+    String(payload.from ?? fe.senderEmail ?? ''),
+  );
+  const dedupHash = computeDedupHash({ userId: user.id, itemType, archetype, senderDomain });
+
+  await prisma.decisionLog.create({
+    data: {
+      id: `dl_handled_override_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      clientNumber: user.clientNumber,
+      userId: user.id,
+      sessionType: 'override',
+      itemType,
+      entityId: feedEventId,
+      userDecision: mapActionToDecision(replacementAction as any),
+      actionTaken: replacementAction,
+      isMatch: false,
+      overrideReason: reason,
+      dedupHash,
+    } as any,
+  }).catch(() => {});
+
+  if (replacementAction === 'delegate' && replacementDelegatee) {
+    await prisma.delegationLog.create({
+      data: {
+        id: `dg_handled_override_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        delegateeUserId: replacementDelegatee.userId ?? null,
+        delegateeEmail: replacementDelegatee.email ?? null,
+        delegateeName: replacementDelegatee.name ?? null,
+        itemType, taskArchetype: null,
+        entityId: feedEventId, sourceRef: feedEventId,
+        delegatedBy: 'user',
+        dedupHash,
+      } as any,
+    }).catch(() => {});
+  }
+
+  // 3. Apply same correction to siblings with the same dedup_hash.
+  let siblingsFixed = 0;
+  if (applyToSimilar) {
+    const siblings = await prisma.feedEvent.findMany({
+      where: {
+        clientNumber: user.clientNumber, userId: user.id,
+        id: { not: feedEventId },
+        status: 'processed',
+      } as any,
+      select: { id: true, sourceType: true, senderEmail: true, rawPayload: true },
+      take: 200,
+    }).catch(() => []);
+    for (const s of siblings) {
+      const sp: any = s.rawPayload ?? {};
+      const sd = s.senderEmail ? s.senderEmail.split('@')[1]?.toLowerCase().replace(/[>]/g, '') : undefined;
+      const sit: any =
+        s.sourceType === 'gmail' ? 'email' :
+        s.sourceType === 'whatsapp' ? 'whatsapp' :
+        s.sourceType === 'gcal' ? 'meeting' : 'email';
+      const sa = classifyArchetypeFromPayload(
+        String(sp.subject ?? ''), String(sp.snippet ?? sp.body ?? ''),
+        String(sp.from ?? s.senderEmail ?? ''),
+      );
+      const sh = computeDedupHash({ userId: user.id, itemType: sit, archetype: sa, senderDomain: sd });
+      if (sh !== dedupHash) continue;
+      await prisma.feedEvent.updateMany({
+        where: { id: s.id, clientNumber: user.clientNumber },
+        data: { status: 'new', processedAt: null } as any,
+      }).catch(() => {});
+      siblingsFixed++;
+    }
+  }
+
+  res.json({
+    ok: true,
+    feedEventId,
+    replacementAction,
+    siblingsFixed,
+    message: `Got it. Returned to Attention${siblingsFixed > 0 ? ` (+ ${siblingsFixed} similar)` : ''}. Brain will treat this pattern as "${replacementAction}" going forward.`,
+  });
+});
+
 /** Hide a pattern from My Attention going forward (soft — audit intact). */
 router.post('/hide', async (req: Request, res: Response) => {
   const user = (req as any).user;
