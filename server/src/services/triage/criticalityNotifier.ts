@@ -53,48 +53,30 @@ export async function maybePushCriticalBundle(
   let criticals = items.filter((i) => i.critical && !snoozed.has(i.feedEventId));
   if (criticals.length === 0) return { sent: false, reason: 'no criticals' };
 
-  // ── Substance check on the rationale ──
-  // Brain must think, not just classify. The critical band can fire
-  // on a thin LLM rationale ("Direct greeting", "Today is end of Q3,
-  // increasing urgency for any related communication"). Don't push
-  // to WhatsApp on a thin rationale — require at least one CONCRETE
-  // signal to back the criticality before interrupting the user.
+  // ── Substantive gate (Brain decides, not regex) ──
+  // The criticality engine's fusion LLM has already answered the
+  // question "would a competent EA interrupt the MD's day to flag
+  // this?" with the `substantive` boolean — grounded in the actual
+  // thread/sender/deadline/open-item context it saw. Trust that
+  // answer here. No keyword lists, no hedge regex — Brain's
+  // contextual judgement is the decision boundary.
   //
-  // Concrete signals (any one is enough):
-  //   - At least one reason mentions a specific deadline, dollar amount,
-  //     percentage, named project, or contract reference
-  //   - A superpower fired (absence / crossSource / decay)
-  //   - The item carries an explicit ask ("can you", "please confirm",
-  //     "need by", "approve", "by EOD")
-  //   - Sender is ★3+ on the importance scale
-  //
-  // Hedge-only rationales (no concrete signal): demote silently. They
-  // still appear in My Attention, but Brain won't push them.
-  const HEDGE_ONLY = /^(\s*(potential for|could imply|may indicate|increases urgency for any|direct greeting|inbound event|signal:.*preview))/i;
-  const CONCRETE_SIGNAL = /\b(\$\d|\d+\s*(usd|pkr|aed|eur|gbp|k|m|million|crore|lac|lakh)\b|\d+\s*%|\d+\s*hour|\d+\s*day|\d+\s*month|tomorrow|today|tonight|by eod|end of day|deadline|overdue|escalat|approve|sign[ -]?off|please confirm|please approve|please review|need by|require[ds]?|action required|kindly confirm)\b/i;
-  const NAMED_REF = /['"][A-Z][\w\s-]{2,40}['"]/; // "Project Phoenix", "Vendor Acme"
-
-  const substantive = (it: any) => {
-    const reasons: string[] = it.criticality?.reasons ?? [];
-    if (reasons.length === 0) return false;
-    if (it.criticality?.superpowers?.absence?.triggered) return true;
-    if (it.criticality?.superpowers?.crossSource?.triggered) return true;
-    if (it.criticality?.superpowers?.decay?.triggered) return true;
-    if ((it.senderStars ?? 0) >= 3) return true;
-    // At least one reason must contain a concrete signal AND not just a hedge.
-    return reasons.some((r) => {
-      if (HEDGE_ONLY.test(r) && !CONCRETE_SIGNAL.test(r) && !NAMED_REF.test(r)) return false;
-      return CONCRETE_SIGNAL.test(r) || NAMED_REF.test(r);
-    });
-  };
-
+  // An item that scores critical but substantive=false stays in
+  // My Attention (so the MD still sees it on Day Brief) but does
+  // NOT trigger a WhatsApp push. The user explicitly told Brain
+  // (2026-05-09): "don't work like a program, think like a brain."
   const beforeCount = criticals.length;
-  criticals = criticals.filter(substantive);
+  criticals = criticals.filter((it) => {
+    const c = (it as any).criticality;
+    // Default to NOT pushing when the engine couldn't render a
+    // judgement — better to under-ping than spam.
+    return c?.substantive === true;
+  });
   const droppedThin = beforeCount - criticals.length;
   if (droppedThin > 0) {
-    log.info('substance check dropped thin-rationale criticals', { userId, dropped: droppedThin, kept: criticals.length });
+    log.info('substantive gate dropped non-substantive criticals', { userId, dropped: droppedThin, kept: criticals.length });
   }
-  if (criticals.length === 0) return { sent: false, reason: 'no criticals after substance check' };
+  if (criticals.length === 0) return { sent: false, reason: 'no substantive criticals' };
 
   // Race guard: only one bundle dispatch in flight per user at a time.
   if (inFlight.has(userId)) {

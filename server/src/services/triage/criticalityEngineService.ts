@@ -68,6 +68,16 @@ export interface CriticalityResult {
   signals: GatheredSignals;                // what the engine saw
   confidence: number;                      // how sure the LLM was
   scoredAt: string;                        // ISO
+  /** Brain's binary judgment on whether this message warrants a
+   *  push to the user RIGHT NOW. Decoupled from band: a message can
+   *  be band='critical' but substantive=false (the criticality
+   *  lives in the surrounding thread, not in this one event) — in
+   *  which case it appears in My Attention but Brain doesn't ping
+   *  the user's phone. Fed by the fusion LLM with full context. */
+  substantive: boolean;
+  /** One-sentence justification for substantive — useful for audit
+   *  and for the WhatsApp push gate's logging. */
+  substantiveWhy: string;
 }
 
 // ─── Phase 1 — Signal Gathering ────────────────────────────────
@@ -446,8 +456,18 @@ Shape:
     "patternAnomaly":   0..1
   },
   "reasons": ["<3-6 short bullets citing concrete signals>"],
-  "confidence": 0..1
+  "confidence": 0..1,
+  "substantive":     <true|false>,
+  "substantiveWhy":  "<one short sentence: WHY this is/isn't substantive enough to interrupt the MD's day right now>"
 }
+
+The substantive flag answers ONE question: would a competent human EA interrupt the MD's day to flag THIS message specifically?
+
+  - substantive=true: the MESSAGE itself carries enough signal to warrant a push notification right now. Examples: explicit ask the MD must answer, deadline mentioned, dollar amount, contract reference, escalation language, sender ★3+ raising a concern, an absence/decay/cross-source superpower fired with concrete grounding.
+
+  - substantive=false: the message is conversational, ambiguous, or its weight lives in the surrounding thread rather than this single event. Examples: "Ok", "Yes", "AOA Basit", "Thanks", "On my way", "👍", a generic acknowledgment, an end-of-thread close, an FYI with no ask. The criticality (if any) is in the thread context, not this event — let the MD see it in My Attention; don't ping their phone.
+
+Default to substantive=false unless you can name a specific concrete signal in the actual provided context. "Could imply", "potential for", "increases urgency for any related communication" are NOT concrete signals — those are hedges.
 
 Rules for scoring:
 - timePressure: 1 when action must happen within hours; 0.5 within a week; near 0 when nothing explicit.
@@ -461,7 +481,7 @@ Critical lives in the RELATIONSHIP between signals, not in any single signal. Kn
 async function fuseAndScore(
   input: ScoreInput,
   signals: GatheredSignals,
-): Promise<{ dimensions: CriticalityDimensions; reasons: string[]; story: string; confidence: number }> {
+): Promise<{ dimensions: CriticalityDimensions; reasons: string[]; story: string; confidence: number; substantive: boolean; substantiveWhy: string }> {
   const userMsg = buildUserPrompt(input, signals);
 
   try {
@@ -487,10 +507,23 @@ async function fuseAndScore(
       reasons: Array.isArray(obj.reasons) ? obj.reasons.slice(0, 6).map(String) : [],
       story: String(obj.story ?? '').slice(0, 400),
       confidence: clamp01(Number(obj.confidence ?? 0.6)),
+      substantive: obj.substantive === true,
+      substantiveWhy: String(obj.substantiveWhy ?? '').slice(0, 240),
     };
   } catch (err: any) {
     log.warn('fuseAndScore LLM failed — falling back', { error: err.message });
-    return { dimensions: deterministicDimensions(input, signals), reasons: ['llm unavailable — deterministic signals only'], story: '', confidence: 0.3 };
+    // Fallback path: LLM unavailable. Don't push to WhatsApp on a
+    // deterministic fallback — without Brain's reasoning we can't
+    // tell if this is substantive. Default substantive=false; the
+    // item still appears in My Attention via deterministic dims.
+    return {
+      dimensions: deterministicDimensions(input, signals),
+      reasons: ['llm unavailable — deterministic signals only'],
+      story: '',
+      confidence: 0.3,
+      substantive: false,
+      substantiveWhy: 'LLM fusion unavailable — Brain cannot judge substantiveness without context',
+    };
   }
 }
 
@@ -735,79 +768,8 @@ function clamp01(x: number): number {
 
 // ─── Public API ────────────────────────────────────────────────
 
-/**
- * Trivial-message guard — short conversational acks ("Ok", "Yes", "AOA",
- * "Salam", "Thanks", "On my way", "Im joining") are NEVER critical on
- * their own. The criticality is in the THREAD, not in the ack.
- *
- * Rationale: 2026-05-09 user reported Brain pushing "🔴 Brain: 1
- * critical thread needs you · Asad — AOA Basit" and similar. A
- * one-greeting message can't be critical. Brain has to think, not
- * classify on a thin LLM rationale like "Direct greeting (signal:
- * Inbound event - preview)".
- *
- * Returns true if the message body is essentially a short ack and no
- * concrete signal in the gathered context elevates it. Concrete
- * signals that DO escalate even a short ack: an active watchpoint on
- * this thread, a deadline in <24h on this sender's open item, or
- * star ≥4 on the sender (explicit user importance flag).
- */
-function isTrivialAck(input: ScoreInput, signals: GatheredSignals): boolean {
-  const body = String(input.preview ?? '').replace(/\s+/g, ' ').trim();
-  if (!body) return false;
-
-  // Word count: 5 or fewer words and the body matches a known ack
-  // pattern. Permissive on script (English / Roman Urdu / Urdu).
-  const wordCount = body.split(/\s+/).length;
-  if (wordCount > 5) return false;
-
-  const trivialPatterns = [
-    /^(ok|okay|k|kk|sure|done|noted|got it|copy that|roger)\.?$/i,
-    /^(yes|yeah|yep|haan|han|ji|ji haan|jee)\.?$/i,
-    /^(no|nope|nah|nahi|nai)\.?$/i,
-    /^(thanks|thank you|thx|ty|shukria|shukriya|jazakallah)\.?!?$/i,
-    /^(welcome|you'?re welcome|np|no problem|koi baat nahi)\.?$/i,
-    /^(aoa|salam|salaam|salam alaikum|assalam[u]? alaikum|wa[ ']?alaikum|hi|hello|hey)([\s,!.]+\w+)?$/i,
-    /^(good morning|good afternoon|good evening|gm|gn|good night)([\s,!.]+\w+)?$/i,
-    /^(on (my|the) way|otw|coming|i'?m? coming|im joining|joining|on it|will do)\.?$/i,
-    /^(👍|👌|🙏|❤️|✅|⭐|👏|🎉|❤|😊|☺️|🙂|🤝)+$/u,
-  ];
-  const looksTrivial = trivialPatterns.some((re) => re.test(body));
-  if (!looksTrivial) return false;
-
-  // Concrete-signal overrides: even a one-word "Ok" matters if it's
-  // closing out a deal or it's from a starred client mid-deadline.
-  const hasNearDeadline = signals.deadlines.some((d) => d.hoursUntil <= 24 && d.hoursUntil >= -24);
-  const hasOpenCriticalItem = signals.openItems.some((o) => o.priority === 'critical');
-  const hasActiveWatchpoint = !!input.hints?.hasActiveWatchpoint;
-  const isStarredSender = signals.importanceStars >= 4;
-  if (hasNearDeadline || hasOpenCriticalItem || hasActiveWatchpoint || isStarredSender) {
-    return false;
-  }
-
-  return true;
-}
-
 export async function scoreCriticality(input: ScoreInput): Promise<CriticalityResult> {
   const signals = await gatherSignals(input);
-
-  // Pre-LLM guard — if this is a 1-5 word ack with no concrete
-  // contextual signal, short-circuit to band 'low'. Saves an LLM call
-  // AND prevents thin-rationale criticality ("Direct greeting" / "Could
-  // imply unstated urgency"). Brain isn't a postman.
-  if (isTrivialAck(input, signals)) {
-    return {
-      composite: 0.1,
-      band: 'low',
-      dimensions: { timePressure: 0.1, impact: 0.05, relationshipRisk: 0.1, cascade: 0, patternAnomaly: 0 },
-      superpowers: { absence: { triggered: false, note: null }, crossSource: { triggered: false, note: null }, decay: { triggered: false, note: null } },
-      reasons: ['Short conversational acknowledgment — not a standalone action item'],
-      signals,
-      confidence: 0.95,
-      scoredAt: new Date().toISOString(),
-    };
-  }
-
   const fused = await fuseAndScore(input, signals);
   const superpowers: CriticalitySuperpowers = {
     absence: detectAbsence(signals),
@@ -854,6 +816,8 @@ export async function scoreCriticality(input: ScoreInput): Promise<CriticalityRe
     signals,
     confidence: fused.confidence,
     scoredAt: new Date().toISOString(),
+    substantive: fused.substantive,
+    substantiveWhy: fused.substantiveWhy,
   };
 }
 
