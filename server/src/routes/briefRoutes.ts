@@ -457,76 +457,81 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
       where: { id },
       data: { status: 'approved', output: { ...out, sentAt: new Date().toISOString(), messageId: r.messageId } as any },
     });
-    // Write the TERMINAL decision_log now — MD actually sent the reply.
-    // The earlier 'drafted' decision kept the card visible while the
-    // draft was pending; 'approved' drops it from Attention permanently
-    // and feeds the rule miner the real signal (MD actually replied).
-    try {
-      const inp: any = draft.input ?? {};
-      if (inp.feedEventId) {
-        const { computeDedupHash } = await import('../services/triage/triageSuggester');
-        const { classifyArchetypeFromPayload } = await import('../services/triage/executorHelpers');
-        const fe = await prisma.feedEvent.findUnique({
-          where: { id: String(inp.feedEventId) },
-          select: { senderEmail: true, sourceType: true, rawPayload: true },
-        }).catch(() => null);
-        const payload = (fe?.rawPayload as any) ?? {};
-        const senderDomain = fe?.senderEmail ? fe.senderEmail.split('@')[1]?.toLowerCase().replace(/[>]/g, '') : undefined;
-        const itemType =
-          fe?.sourceType === 'gmail' ? 'email' :
-          fe?.sourceType === 'whatsapp' ? 'whatsapp' :
-          fe?.sourceType === 'gcal' ? 'meeting' : 'email';
-        const archetype = classifyArchetypeFromPayload(
-          String(payload.subject ?? ''),
-          String(payload.snippet ?? payload.body ?? ''),
-          String(payload.from ?? fe?.senderEmail ?? ''),
-        );
-        const dedupHash = computeDedupHash({ userId: user.id, itemType: itemType as any, archetype: archetype as any, senderDomain });
-        await prisma.decisionLog.create({
-          data: {
-            id: `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            clientNumber: user.clientNumber,
-            userId: user.id,
-            sessionType: 'decide',
-            itemType: itemType as string,
-            entityId: String(inp.feedEventId),
-            connectorSlug: fe?.sourceType ?? null,
-            userDecision: 'approved',
-            actionTaken: 'reply_sent',
-            dedupHash,
-          } as any,
-        }).catch(() => {});
-      }
-    } catch { /* decision_log best-effort */ }
-    // Now that the reply has been sent, mark the ORIGINAL incoming email
-    // as read (the one Brain drafted a reply to). The feed_event linked via
-    // draft.input.feedEventId carries the Gmail message id as sourceId.
-    try {
-      const inp: any = draft.input ?? {};
-      if (inp.feedEventId) {
+    // ── Respond NOW, audit asynchronously ────────────────────────────
+    // Reply is sent — that's all the user needs to know. The remaining
+    // bookkeeping (decision_log write, mark-as-read on Gmail/WhatsApp,
+    // feed_event status flip) is independent of the user's success
+    // signal. Previously these ran sequentially before res.json() and
+    // added ~600-1500ms of perceived send latency. Move them off the
+    // hot path so the user sees "Sent" the moment Gmail confirms.
+    res.json({ ok: true, messageId: r.messageId });
+
+    void (async () => {
+      try {
+        const inp: any = draft.input ?? {};
+        if (!inp.feedEventId) return;
+
         const fe = await prisma.feedEvent.findFirst({
           where: { id: String(inp.feedEventId), clientNumber: user.clientNumber },
-          select: { sourceId: true, sourceType: true, rawPayload: true },
+          select: { senderEmail: true, sourceId: true, sourceType: true, rawPayload: true },
         });
-        if (fe?.sourceType === 'gmail' && fe.sourceId) {
-          const { markAsRead } = await import('../services/gmailService');
-          await markAsRead(user.id, fe.sourceId);
-        } else if (fe?.sourceType === 'whatsapp') {
-          const rp: any = fe.rawPayload ?? {};
-          const target = rp.chatId || rp.waMessageId;
-          if (target) {
-            const { markAsRead } = await import('../services/whatsapp/UserWebjsProvider');
-            await markAsRead(user.id, target);
+
+        // 1. decision_log — terminal 'reply_sent' outcome for the rule miner.
+        try {
+          const { computeDedupHash } = await import('../services/triage/triageSuggester');
+          const { classifyArchetypeFromPayload } = await import('../services/triage/executorHelpers');
+          const payload = (fe?.rawPayload as any) ?? {};
+          const senderDomain = fe?.senderEmail ? fe.senderEmail.split('@')[1]?.toLowerCase().replace(/[>]/g, '') : undefined;
+          const itemType =
+            fe?.sourceType === 'gmail' ? 'email' :
+            fe?.sourceType === 'whatsapp' ? 'whatsapp' :
+            fe?.sourceType === 'gcal' ? 'meeting' : 'email';
+          const archetype = classifyArchetypeFromPayload(
+            String(payload.subject ?? ''),
+            String(payload.snippet ?? payload.body ?? ''),
+            String(payload.from ?? fe?.senderEmail ?? ''),
+          );
+          const dedupHash = computeDedupHash({ userId: user.id, itemType: itemType as any, archetype: archetype as any, senderDomain });
+          await prisma.decisionLog.create({
+            data: {
+              id: `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              clientNumber: user.clientNumber,
+              userId: user.id,
+              sessionType: 'decide',
+              itemType: itemType as string,
+              entityId: String(inp.feedEventId),
+              connectorSlug: fe?.sourceType ?? null,
+              userDecision: 'approved',
+              actionTaken: 'reply_sent',
+              dedupHash,
+            } as any,
+          }).catch(() => {});
+        } catch { /* decision_log best-effort */ }
+
+        // 2. mark-as-read on the source channel (Gmail/WhatsApp) and
+        //    flip feed_event status so the card stops resurfacing.
+        try {
+          if (fe?.sourceType === 'gmail' && fe.sourceId) {
+            const { markAsRead } = await import('../services/gmailService');
+            await markAsRead(user.id, fe.sourceId);
+          } else if (fe?.sourceType === 'whatsapp') {
+            const rp: any = fe.rawPayload ?? {};
+            const target = rp.chatId || rp.waMessageId;
+            if (target) {
+              const { markAsRead } = await import('../services/whatsapp/UserWebjsProvider');
+              await markAsRead(user.id, target);
+            }
           }
-        }
-        // Also flip feed_event status so it disappears from Attention if still there
-        await prisma.feedEvent.updateMany({
-          where: { id: String(inp.feedEventId), clientNumber: user.clientNumber },
-          data: { status: 'processed', processedAt: new Date() },
-        });
+          await prisma.feedEvent.updateMany({
+            where: { id: String(inp.feedEventId), clientNumber: user.clientNumber },
+            data: { status: 'processed', processedAt: new Date() },
+          });
+        } catch { /* best effort */ }
+      } catch (bgErr: any) {
+        console.warn(`[drafts/send] post-send audit failed for draft ${id}: ${bgErr?.message}`);
       }
-    } catch { /* best effort */ }
-    res.json({ ok: true, messageId: r.messageId });
+    })();
+    return;
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1774,7 +1779,12 @@ router.post('/decide', async (req: Request, res: Response) => {
         const baseSys = `You are drafting a concise, professional reply on behalf of the user. 2-4 sentences. Match the MD's tone — polite, direct, no filler. Do NOT fabricate facts; if more info is needed, ask one clear question. NEVER mention MyOS, Brain, AI, or automation.`;
         const sys = await withUserPrompts(baseSys, user.id, 'draft_reply');
         const userMsg = `Incoming email:\nFrom: ${(event.rawPayload as any)?.from ?? event.senderEmail ?? ''}\nSubject: ${(event.rawPayload as any)?.subject ?? ''}\nPreview: ${String((event.rawPayload as any)?.snippet ?? '').slice(0, 600)}\n${body.note ? `\nWhat the user wants to say: ${body.note}` : ''}\n\nWrite only the reply body. No salutation or signature.`;
-        const r = await callLLM(sys, userMsg, { maxTokens: 280, userId: user.id, clientNumber: user.clientNumber, purpose: 'manual_draft_reply' });
+        const r = await callLLM(sys, userMsg, {
+          maxTokens: 280, userId: user.id, clientNumber: user.clientNumber,
+          purpose: 'manual_draft_reply',
+          providers: ['gemini-flash', 'gemini', 'claude'],
+          timeoutMs: 6000,
+        });
         draftBody = r.text;
         provider = r.provider;
       }

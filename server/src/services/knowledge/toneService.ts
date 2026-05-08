@@ -99,7 +99,14 @@ ${mdNote ? `MD wants to say: ${mdNote}` : ''}
 Cover-note (in the user's voice):`;
 
   try {
-    const r = await callLLM(system, user, { maxTokens: 200, userId, purpose: 'tone_email_forward' });
+    // Flash first, 6s per-provider timeout: this is interactive UI
+    // (user is staring at a spinner). 200 tokens is well within
+    // flash's quality envelope for tone-matched cover notes.
+    const r = await callLLM(system, user, {
+      maxTokens: 200, userId, purpose: 'tone_email_forward',
+      providers: ['gemini-flash', 'gemini', 'claude'],
+      timeoutMs: 6000,
+    });
     const text = r.text.trim();
     // Strip accidental "Subject:" or labels the model might emit
     return text.replace(/^(Cover[- ]?note:|Subject:).*$/gim, '').trim() || fallback();
@@ -254,16 +261,19 @@ export async function composeWhatsAppReply(params: {
 }): Promise<string> {
   const { userId, chatId, incomingText, senderName, mdNote, threadContext } = params;
 
-  const samples = await waSamplesFor(userId, chatId).catch(() => []);
-
-  // Read context from whatever the caller supplied, or pull it now
-  let thread = threadContext;
-  if (!thread || thread.length === 0) {
-    try {
-      const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
-      thread = await fetchThreadContext(userId, chatId, 10);
-    } catch { thread = []; }
-  }
+  // Run the two pre-LLM lookups in parallel — they're independent and
+  // each adds ~100-300ms of network latency. Sequential was ~500ms on
+  // a slow link; parallel cuts to ~250ms.
+  const samplesPromise = waSamplesFor(userId, chatId).catch(() => [] as string[]);
+  const threadPromise = (threadContext && threadContext.length > 0)
+    ? Promise.resolve(threadContext)
+    : (async () => {
+        try {
+          const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+          return await fetchThreadContext(userId, chatId, 10);
+        } catch { return [] as Array<{ from: 'me' | 'them'; text: string; timestamp: number }>; }
+      })();
+  const [samples, thread] = await Promise.all([samplesPromise, threadPromise]);
 
   // Meeting intent detection — if incoming looks like a scheduling ask,
   // fetch next few free calendar slots so we can propose concrete times.
@@ -331,7 +341,13 @@ ${mdNote ? `\nMD wants to say: ${mdNote}` : ''}${calendarBlock}
 Write the reply (one line, MD's voice):`;
 
   try {
-    const r = await callLLM(system, user, { maxTokens: 100, userId, purpose: 'tone_whatsapp_reply' });
+    // Flash first + tight timeout for interactive draft UX. WA replies
+    // are 1-2 lines; flash quality is more than enough.
+    const r = await callLLM(system, user, {
+      maxTokens: 100, userId, purpose: 'tone_whatsapp_reply',
+      providers: ['gemini-flash', 'gemini', 'claude'],
+      timeoutMs: 6000,
+    });
     const text = r.text.trim().replace(/^["'`]|["'`]$/g, '');
     return text || fallback();
   } catch {
