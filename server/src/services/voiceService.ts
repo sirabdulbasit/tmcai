@@ -18,9 +18,11 @@ export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string
   language: string;
   confidence: number;
 }> {
-  // Try Gemini first (always available, supports Urdu + English + mixed)
+  // Try Gemini first (always available, supports Urdu + English + mixed).
+  // Pass the actual upload mime through — browser MediaRecorder usually
+  // sends webm/opus, not ogg/opus, and Gemini rejects mime mismatches.
   try {
-    const geminiResult = await transcribeWithGemini(audioBuffer);
+    const geminiResult = await transcribeWithGemini(audioBuffer, mimeType);
     if (geminiResult.text) return geminiResult;
   } catch (e: any) {
     log.error('Gemini transcription failed, trying Google Speech', { error: e.message });
@@ -70,7 +72,52 @@ export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string
 
 // ─── Fallback: Gemini audio transcription ─────────────────────────────────────
 
-async function transcribeWithGemini(audioBuffer: Buffer): Promise<{ text: string; language: string; confidence: number }> {
+// Map a browser-supplied mimetype to one Gemini's audio input accepts.
+// MediaRecorder on Chrome emits "audio/webm;codecs=opus" by default; on
+// Safari it's "audio/mp4". We strip codec params and whitelist a known
+// set \u2014 anything else falls back to ogg/opus.
+function geminiAudioMime(input?: string): string {
+  const base = (input ?? '').split(';')[0]!.trim().toLowerCase();
+  switch (base) {
+    case 'audio/webm':
+    case 'audio/ogg':
+    case 'audio/mp4':
+    case 'audio/m4a':
+    case 'audio/mpeg':
+    case 'audio/mp3':
+    case 'audio/wav':
+    case 'audio/x-wav':
+    case 'audio/aac':
+    case 'audio/flac':
+      return base === 'audio/x-wav' ? 'audio/wav' : base === 'audio/m4a' ? 'audio/mp4' : base;
+    default:
+      return 'audio/ogg';
+  }
+}
+
+// Boilerplate Gemini emits when there's no clear speech. Treat these as
+// empty so the caller routes the user to "speak louder" rather than
+// passing a meaningless string into the instruction extractor.
+const SILENCE_BOILERPLATE = [
+  'i cannot', "i can't",
+  'cannot hear', "can't hear",
+  'no audio', 'no speech', 'no discernible',
+  'inaudible', 'unintelligible', 'silence',
+  'audio is empty', 'audio is silent',
+  'unable to transcribe', "couldn't transcribe",
+];
+
+function looksLikeSilence(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  if (!t) return true;
+  if (t.length < 2) return true;
+  // Pure punctuation or bracketed placeholder \u2192 silence
+  if (/^[\[\(].*[\]\)]$/.test(t)) return true;
+  if (/^[\s.,!?\-\u2014]+$/.test(t)) return true;
+  return SILENCE_BOILERPLATE.some((needle) => t.includes(needle));
+}
+
+async function transcribeWithGemini(audioBuffer: Buffer, mimeType?: string): Promise<{ text: string; language: string; confidence: number }> {
   const { getGenAI } = await import('./genaiClient');
   const ai = getGenAI();
 
@@ -80,17 +127,21 @@ async function transcribeWithGemini(audioBuffer: Buffer): Promise<{ text: string
       {
         role: 'user',
         parts: [
-          { text: 'Transcribe this audio. Return ONLY the text, nothing else. If Urdu, write in Urdu script. If English, write in English. If mixed, keep both.' },
-          { inlineData: { mimeType: 'audio/ogg', data: audioBuffer.toString('base64') } },
+          { text: 'Transcribe this audio. Return ONLY the spoken words verbatim \u2014 no commentary, no labels, no quotes, no brackets. If Urdu, write in Urdu script. If English, write in English. If mixed, keep both. If the audio has no clear speech, return an empty response.' },
+          { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
         ],
       },
     ],
     config: { maxOutputTokens: 500 },
   });
 
-  const text = (result.text ?? '').trim();
-  const isUrdu = /[\u0600-\u06FF]/.test(text);
-  return { text, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
+  const raw = (result.text ?? '').trim();
+  if (looksLikeSilence(raw)) {
+    log.info('Gemini transcript looks like silence/boilerplate; returning empty', { raw: raw.slice(0, 80) });
+    return { text: '', language: 'unknown', confidence: 0 };
+  }
+  const isUrdu = /[\u0600-\u06FF]/.test(raw);
+  return { text: raw, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
 }
 
 // ─── Text-to-Speech: convert text to voice note ───────────────────────────────
