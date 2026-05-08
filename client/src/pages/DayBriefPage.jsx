@@ -3045,6 +3045,17 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
                         <div style={{ marginTop: 'var(--s-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
                           {bucketItems.map((it) => {
                             const stamp = it.decidedAt || it.receivedAt;
+                            // Channel emoji from itemType / sourceType so the
+                            // user can scan email vs WhatsApp at a glance.
+                            const ch = (it.itemType || it.sourceType || '').toLowerCase();
+                            const channelEmoji = ch === 'whatsapp' ? '💬'
+                              : ch === 'gchat' ? '💭'
+                              : ch === 'meeting' || ch === 'gcal' ? '📅'
+                              : ch === 'task' || ch === 'gtasks' ? '☑️'
+                              : '📧';
+                            const sender = it.fromDisplay || it.from || it.fromEmail || '—';
+                            const subject = (it.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim() || '(no subject)';
+                            const previewText = (it.preview || '').replace(/\s+/g, ' ').trim();
                             return (
                               <div key={it.feedEventId} style={{
                                 padding: '8px 10px',
@@ -3054,22 +3065,34 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
                                 display: 'flex', flexDirection: 'column', gap: 4,
                               }}>
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                                  <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', minWidth: 130 }}>
-                                    {it.fromDisplay || it.from || '—'}
+                                  <span style={{ fontSize: 'var(--fs-xs)' }}>{channelEmoji}</span>
+                                  <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', minWidth: 120, fontWeight: 'var(--fw-medium)' }}>
+                                    {sender}
                                   </span>
                                   <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {it.subject || '(no subject)'}
+                                    {subject}
                                   </span>
                                   <span
-                                    title={new Date(stamp).toLocaleString()}
+                                    title={stamp ? new Date(stamp).toLocaleString() : ''}
                                     style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
                                   >
                                     {formatDateTime(stamp)}
                                   </span>
                                 </div>
-                                <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
-                                  {it.reason}
-                                </div>
+                                {previewText && (
+                                  <div style={{
+                                    color: 'var(--text-muted)', fontSize: 'var(--fs-xs)',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    fontStyle: 'italic',
+                                  }}>
+                                    "{previewText.slice(0, 120)}{previewText.length > 120 ? '…' : ''}"
+                                  </div>
+                                )}
+                                {it.reason && (
+                                  <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)' }}>
+                                    ↪ {it.reason}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -3143,6 +3166,57 @@ const ALL_FIX_OPTIONS = [
   { id: 'schedule_meeting', label: '📅 Schedule instead' },
 ];
 
+// Build a complete "Brain did X to Y about Z" sentence from a brain_action
+// row. The previous render fell back to the bare actionType ("draft_reply")
+// when input lacked a subject — so the user saw "· draft_reply — 2h ago"
+// with no context. This composes:
+//   {channel-emoji} {verb} {recipient} {topic} {snippet?} {when}
+function describeBrainAction(action) {
+  const input = action?.input ?? {};
+  const output = action?.output ?? {};
+  const t = String(action?.actionType ?? '');
+  const isWA = output.channel === 'whatsapp' || output.chatId
+    || (input.channel === 'whatsapp');
+  const isEmail = output.channel === 'email' || (!isWA && (output.to || input.to || input.recipient));
+  const channelEmoji = isWA ? '💬' : isEmail ? '📧' : '•';
+
+  // Pick the recipient label from whichever field actually has a person in it.
+  const recipientLabel =
+    output.toName || input.delegateeName || input.recipientName || output.toDisplay
+    || (output.to || input.to || input.recipient || output.chatId || '').toString().split('@')[0]
+    || '';
+
+  // Topic — for emails, the subject; for WA replies, the inbound text we're
+  // replying to (truncated). Never fall back to actionType.
+  const cleanSubject = String(input.subject || output.subject || '')
+    .replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim();
+  const topic = cleanSubject || (input.inboundText
+    ? `"${String(input.inboundText).slice(0, 50)}"`
+    : (input.itemTitle || ''));
+
+  // What Brain wrote / decided — first line of body (for replies) or note.
+  const snippet = String(output.body || input.body || input.replyIntent || input.note || '')
+    .replace(/\s+/g, ' ').trim().slice(0, 80);
+
+  let verb = 'Acted on';
+  if (t.includes('reply'))         verb = 'Replied to';
+  else if (t.includes('delegate')) verb = 'Delegated to';
+  else if (t.includes('open_item'))verb = 'Added open item from';
+  else if (t.includes('acknowledge')) verb = 'Acknowledged';
+  else if (t.includes('archive') || t.includes('ignore')) verb = 'Archived';
+  else if (t.includes('schedule_meeting')) verb = 'Scheduled a meeting with';
+
+  const head = recipientLabel
+    ? `${verb} ${recipientLabel}`
+    : verb;
+  const tail = topic ? ` — ${topic}` : '';
+  return {
+    text: `${channelEmoji}  ${head}${tail}`,
+    snippet,
+    isWA, isEmail,
+  };
+}
+
 function BrainActionRow({ action, onOverride, notify }) {
   const [fixOpen, setFixOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -3156,6 +3230,7 @@ function BrainActionRow({ action, onOverride, notify }) {
   const input = action.input ?? {};
   const subj = input.subject || input.title || input.to || action.actionType;
   const brainDid = BRAIN_ACTION_TO_REPLACEMENT[action.actionType];
+  const story = describeBrainAction(action);
 
   const fixOptions = ALL_FIX_OPTIONS.filter((o) => o.id !== brainDid);
 
@@ -3199,10 +3274,32 @@ function BrainActionRow({ action, onOverride, notify }) {
       fontSize: 'var(--fs-sm)', color: 'var(--text-muted)',
       padding: '4px 0', borderBottom: '1px solid var(--border)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s-2)' }}>
-        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          · {String(subj).slice(0, 90)}
-          <span style={{ color: 'var(--text-dim)', marginLeft: 4 }}>— {timeAgo(action.at)}</span>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s-2)' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            color: 'var(--text)', fontSize: 'var(--fs-sm)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {story.text}
+          </div>
+          {story.snippet && (
+            <div
+              title={story.snippet.length >= 80 ? story.snippet : undefined}
+              style={{
+                color: 'var(--text-muted)', fontSize: 'var(--fs-xs)',
+                marginTop: 2, fontStyle: 'italic',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+            >
+              "{story.snippet}{story.snippet.length >= 80 ? '…' : ''}"
+            </div>
+          )}
+          <div
+            title={action.at ? new Date(action.at).toLocaleString() : ''}
+            style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', marginTop: 2 }}
+          >
+            {formatDateTime(action.at)} · {timeAgo(action.at)}
+          </div>
         </div>
         <FeedbackButtons
           subjectType="brain_action"
