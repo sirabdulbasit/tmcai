@@ -164,7 +164,14 @@ export async function dispatchInstruction(args: {
               requiresApproval: true,
               executedByAgent: 'voice_instruction',
               input: { feedEventId: ix.targetFeedEventId, replyIntent } as any,
-              output: { to: chatId, subject: '', body: polished, channel: fe.sourceType } as any,
+              // Stamp toName so the Brief row reads "Replied to {name}"
+              // instead of the raw chatId. senderLabel is already
+              // computed above from senderName/senderEmail/senderPhone.
+              output: {
+                to: chatId, subject: '', body: polished,
+                channel: fe.sourceType,
+                toName: senderLabel,
+              } as any,
             } as any,
           });
           return {

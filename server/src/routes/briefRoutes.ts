@@ -1804,12 +1804,17 @@ router.post('/decide', async (req: Request, res: Response) => {
             phoneNumber: rp.phoneNumber,
             body: draftBody,
             provider,
+            // Display name for Brief render. senderName is the WA
+            // contact name (pushname/verifiedName); fall back to
+            // rawPayload from-fields, then phoneNumber.
+            toName: event.senderName || rp.senderName || rp.phoneNumber || null,
           } as any : {
             channel: 'email',
             to: event.senderEmail,
             subject: subjectLine ? `Re: ${subjectLine}` : '(no subject)',
             body: draftBody,
             provider,
+            toName: event.senderName || rp.fromName || null,
           } as any,
         } as any,
         select: { id: true },

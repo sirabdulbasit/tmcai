@@ -1272,12 +1272,15 @@ export default function DayBriefPage() {
         id="brief"
         title="Brief"
         sub={(() => {
-          // 100% accountability — show the running tally:
-          //   "Brain handled X of Y today; Z need you"
-          // X = brainActions (executed) + handled (suppressed)
-          // Y = total items in scope = X + attention.length
-          // Z = attention.length
-          const handledTotal = brainActions.length + handled.length;
+          // Brief tally — counts only items Brain handled WITHOUT the
+          // user. User-handled items (replies you sent, drafts you
+          // approved) are NOT counted here — they're audit trail and
+          // live in the Wiki, not in Brief. Per user 2026-05-08.
+          const brainOnly = (handled ?? []).filter((h) => {
+            if (h.category) return h.category === 'nexeo_handled';
+            return !(h.bucket === 'auto_decided' || h.bucket === 'auto_self');
+          });
+          const handledTotal = brainActions.length + brainOnly.length;
           const total = handledTotal + attention.length;
           if (total === 0) return 'What I handled without you';
           return `Brain handled ${handledTotal} of ${total}; ${attention.length} need you`;
@@ -2998,13 +3001,13 @@ function BriefAccountability({ brainActions, handled, byBucket, searchQuery, onO
 
       {filteredHandled.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s-4)' }}>
-          {/* Two top-level categories per user spec (2026-05-07):
-                - "You handled" = your own decisions / replies / dismissals
-                - "Nexeo handled" = Brain auto-handled (rules, noise, CC, etc.)
-              Each shows the absolute date+time so the audit trail is
-              unambiguous: "Tue 6 May · 14:32 — you delegated to Asad". */}
+          {/* Brief shows ONLY items Brain handled 100% on its own —
+              auto-rules, bulk/newsletter suppression, high-confidence
+              auto-decisions, etc. User-handled items are NOT shown
+              here; they live in the Wiki audit trail instead.
+              Per user 2026-05-08: "Brief should contain only those
+              items which are 100% performed by brain without user". */}
           {[
-            { id: 'you_handled', label: 'You handled', accent: '#7dd3fc' },
             { id: 'nexeo_handled', label: 'Nexeo handled', accent: 'var(--accent)' },
           ].map((cat) => {
             const items = byCategory[cat.id] ?? [];
@@ -3180,11 +3183,24 @@ function describeBrainAction(action) {
   const isEmail = output.channel === 'email' || (!isWA && (output.to || input.to || input.recipient));
   const channelEmoji = isWA ? '💬' : isEmail ? '📧' : '•';
 
-  // Pick the recipient label from whichever field actually has a person in it.
-  const recipientLabel =
-    output.toName || input.delegateeName || input.recipientName || output.toDisplay
-    || (output.to || input.to || input.recipient || output.chatId || '').toString().split('@')[0]
-    || '';
+  // Pick the recipient label from whichever field actually has a real
+  // person in it. For WhatsApp drafts the chatId is the only pointer
+  // and arrives as "923001234567@c.us" — strip the @c.us suffix and
+  // prefix with "+" so the user reads it as a phone number, not a
+  // raw ID. Prefer any name-shaped field if present.
+  const namey = output.toName || input.delegateeName || input.recipientName
+    || output.toDisplay || input.senderName || output.senderName;
+  let recipientLabel = '';
+  if (namey) {
+    recipientLabel = String(namey);
+  } else {
+    const raw = (output.to || input.to || input.recipient || output.chatId || '').toString();
+    const stripped = raw.split('@')[0];
+    // Pure-digit chat IDs → render as phone "+923001234567" so it's at
+    // least readable, not a 12-digit blob.
+    if (/^\d{7,15}$/.test(stripped)) recipientLabel = `+${stripped}`;
+    else recipientLabel = stripped;
+  }
 
   // Topic — for emails, the subject; for WA replies, the inbound text we're
   // replying to (truncated). Never fall back to actionType.
