@@ -34,6 +34,44 @@ interface ExcludedCache { numbers: Set<string>; fetchedAt: number }
 const excludedCache = new Map<number, ExcludedCache>();
 const EXCLUDED_TTL = 60_000;
 
+// Tenant brain-notifier number cache. The TenantWhatsappNotifier row
+// holds the Meta Business number Brain uses to message users. When
+// Brain sends "🔴 critical bundle" to the user's personal WhatsApp,
+// the user's webjs client SEES that message arriving on their phone
+// and would otherwise ingest it as an inbound feed_event — which
+// triages back as critical, generates another bundle, and so on. The
+// loop the user reported. Filter at ingest by comparing senderPhone
+// to this number. Cached 5 min — number rarely changes.
+interface BrainNumberCache { numbers: Set<string>; fetchedAt: number }
+const brainNumberCache = new Map<string, BrainNumberCache>();
+const BRAIN_NUMBER_TTL = 5 * 60_000;
+
+async function brainNumbersFor(clientNumber: string): Promise<Set<string>> {
+  const cached = brainNumberCache.get(clientNumber);
+  if (cached && Date.now() - cached.fetchedAt < BRAIN_NUMBER_TTL) return cached.numbers;
+  const set = new Set<string>();
+  try {
+    const n = await prisma.tenantWhatsappNotifier.findUnique({
+      where: { clientNumber },
+      select: { displayNumber: true, isActive: true },
+    });
+    if (n?.displayNumber) {
+      // Add a few common normalisations so we match regardless of
+      // what format the inbound webjs message carries (with/without +,
+      // spaces, dashes, parens).
+      const raw = String(n.displayNumber).trim();
+      const stripped = raw.replace(/[^\d]/g, '');
+      if (raw) set.add(normalizePhone(raw));
+      if (stripped) {
+        set.add(`+${stripped}`);
+        set.add(stripped);
+      }
+    }
+  } catch { /* tolerate — empty set means no filter */ }
+  brainNumberCache.set(clientNumber, { numbers: set, fetchedAt: Date.now() });
+  return set;
+}
+
 function normalizePhone(p: string): string {
   return (p || '').replace(/[^+\d]/g, '');
 }
@@ -496,6 +534,20 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       const excluded = await excludedFor(userId);
       if (excluded.has(normalizePhone(phone))) {
         log.info('Skipped excluded contact', { userId, phone });
+        return;
+      }
+
+      // Self-loop guard — drop messages whose sender matches THIS
+      // tenant's Brain notifier number. When Brain sends a critical
+      // bundle to the user's personal WhatsApp, the user's webjs
+      // client sees that arrive and would otherwise ingest it as a
+      // feed_event from "Brain" → triage scores it critical (the body
+      // literally contains "critical") → next sweep includes itself
+      // in the next bundle → infinite escalation. Filter here before
+      // anything downstream sees it.
+      const brainNums = await brainNumbersFor(clientNumber);
+      if (brainNums.size > 0 && brainNums.has(normalizePhone(phone))) {
+        log.info('Skipped self-loop (brain notifier number)', { userId, phone });
         return;
       }
 

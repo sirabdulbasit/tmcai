@@ -31,7 +31,13 @@ const log = createLogger('critical-notifier');
 // item set hasn't changed.
 const inFlight = new Set<number>();
 const lastSentByUser = new Map<number, { fp: string; at: number }>();
-const RESEND_GUARD_MS = 5 * 60 * 1000; // 5 min
+// User reported the same 5-thread bundle reposting every 6 mins for
+// 3+ hours straight (2026-05-08 12:33 → 1:16). 5 min was way too short
+// for "you've already seen this set; nothing new". Bump to 4h: only
+// re-ping if the fingerprint actually changes (new criticals appear).
+// Genuinely new criticals still resend immediately because their fp
+// differs.
+const RESEND_GUARD_MS = 4 * 60 * 60 * 1000; // 4 h
 
 export async function maybePushCriticalBundle(
   clientNumber: string,
@@ -150,7 +156,15 @@ function composeBundle(items: AttentionItem[], userName: string): string {
   const header = `🔴 Brain: ${count} critical ${noun} need${count === 1 ? 's' : ''} you, ${first}`;
   const bullets = collapsed.slice(0, 5).map((it) => {
     const senderName = (it.fromDisplay || it.from.split('<')[0].trim() || it.fromEmail || 'sender').slice(0, 40);
-    const subject = (it.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').slice(0, 60);
+    // Subject fallback chain: clean subject → first line of preview →
+    // generic "(no subject)". User saw "My Business — " with nothing
+    // after the dash because the email had no Subject header AND the
+    // preview wasn't being read. Shows nothing readable.
+    const cleanSubject = (it.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim();
+    const previewSnippet = (it.preview || '').replace(/\s+/g, ' ').trim();
+    const subject = cleanSubject
+      ? cleanSubject.slice(0, 60)
+      : (previewSnippet ? previewSnippet.slice(0, 60) : '(no subject)');
     const why = firstReason(it);
     return `• ${senderName} — ${subject}${why ? `\n   ↪ ${why}` : ''}`;
   });
