@@ -3212,6 +3212,17 @@ function HandledItemRow({ item, onOverride, notify }) {
   const sender = item.fromDisplay || item.from || item.fromEmail || '—';
   const subject = (item.subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '').trim() || '(no subject)';
   const previewText = (item.preview || '').replace(/\s+/g, ' ').trim();
+  // Series-collapse badge — when N feed_events from a recurring
+  // calendar series or thread were folded into this one row.
+  const seriesCount = Number(item.seriesCount) > 1 ? Number(item.seriesCount) : 0;
+  const seriesRange = (() => {
+    if (!seriesCount) return null;
+    const a = item.seriesEarliestAt ? new Date(item.seriesEarliestAt) : null;
+    const b = item.seriesLatestAt ? new Date(item.seriesLatestAt) : null;
+    if (!a || !b) return null;
+    const fmt = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return a.toDateString() === b.toDateString() ? fmt(a) : `${fmt(a)} → ${fmt(b)}`;
+  })();
 
   const onFixClick = (opt) => {
     if (opt.needsDelegatee) { setPickerOpen(true); return; }
@@ -3258,6 +3269,11 @@ function HandledItemRow({ item, onOverride, notify }) {
         <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {subject}
         </span>
+        {seriesCount > 0 && (
+          <Pill variant="info" title={seriesRange ? `${seriesRange} · ${seriesCount} occurrences` : undefined}>
+            ↻ {seriesCount} occurrences
+          </Pill>
+        )}
         <span
           title={stamp ? new Date(stamp).toLocaleString() : ''}
           style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}

@@ -1496,6 +1496,16 @@ export interface HandledItem {
   delegateeEmail?: string;
   /** Filled when bucket = 'auto_rule' so the UI can show which rule fired. */
   ruleName?: string;
+  /** When N feed_events were collapsed into one row (recurring calendar
+   *  series, etc), this is the count. UI renders an "↻ N occurrences"
+   *  badge and exposes a single Fix that applies to all members. */
+  seriesCount?: number;
+  /** All feed_event ids that were folded under this representative. */
+  seriesOccurrenceIds?: string[];
+  /** Earliest / latest receivedAt across the series — useful for the
+   *  UI to render "Jun 9 → Jun 12 · 4 occurrences". */
+  seriesEarliestAt?: string;
+  seriesLatestAt?: string;
 }
 
 /**
@@ -1857,8 +1867,55 @@ export async function buildHandledList(
     // double-count by including it here.
   }
 
+  // ── Series collapse (Brief) ──
+  // User reported four separate "Office · 05:00" rows on Jun 9/10/11/12
+  // — a recurring calendar event the user created on their own
+  // calendar, ingested as 4 distinct feed_events and shown as 4
+  // separate Brief rows. Collapse by (sender + normalised subject +
+  // bucket + itemType): keep the EARLIEST occurrence as
+  // representative, attach seriesCount + seriesOccurrenceIds for the
+  // UI badge. Only collapses within the SAME bucket — don't fold an
+  // auto_rule item with an auto_noise item even if subjects match.
+  const collapsed: HandledItem[] = [];
+  const seriesMap = new Map<string, HandledItem[]>();
+  for (const it of out) {
+    // Only collapse meeting-like items (recurring calendar invites)
+    // and email items that share an exact normalised subject. Other
+    // item types (whatsapp, tasks) rarely produce true series.
+    if (it.itemType !== 'meeting' && it.itemType !== 'email') {
+      collapsed.push(it);
+      continue;
+    }
+    const subjectKey = (it.subject || '').toLowerCase()
+      .replace(/^(\s*(re|fwd|fw)\s*:\s*)+/gi, '')
+      .replace(/[\s\-_/.]+/g, ' ')
+      .replace(/\b(weekly|biweekly|bi-weekly|monthly|daily)\b/g, '')
+      .trim();
+    if (!subjectKey) {
+      collapsed.push(it);
+      continue;
+    }
+    const senderKey = (it.fromEmail || it.from || '').toLowerCase();
+    const seriesKey = `${it.bucket}::${it.itemType}::${senderKey}::${subjectKey}`;
+    if (!seriesMap.has(seriesKey)) seriesMap.set(seriesKey, []);
+    seriesMap.get(seriesKey)!.push(it);
+  }
+  for (const occurrences of seriesMap.values()) {
+    if (occurrences.length === 1) {
+      collapsed.push(occurrences[0]);
+      continue;
+    }
+    occurrences.sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime());
+    const representative = { ...occurrences[0] };
+    (representative as any).seriesCount = occurrences.length;
+    (representative as any).seriesOccurrenceIds = occurrences.map((o) => o.feedEventId);
+    (representative as any).seriesEarliestAt = occurrences[0].receivedAt;
+    (representative as any).seriesLatestAt = occurrences[occurrences.length - 1].receivedAt;
+    collapsed.push(representative);
+  }
+
   // Newest first, capped at the limit. Bucketed counts are computed
   // client-side from this array.
-  out.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
-  return out.slice(0, limit);
+  collapsed.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+  return collapsed.slice(0, limit);
 }
