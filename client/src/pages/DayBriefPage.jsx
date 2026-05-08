@@ -109,6 +109,30 @@ function timeAgo(dateStr) {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
+/** Compact source-of-truth timestamp shown next to relative time on
+ *  feed cards. Today → "14:32", yesterday → "Mon 14:32", older →
+ *  "8 May 14:32". The user wants to see when it actually landed, not
+ *  just a fuzzy bucket. */
+function exactTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `${hh}:${mm}`;
+  const ymd = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const yest = new Date(now); yest.setDate(yest.getDate() - 1);
+  if (ymd(d) === ymd(yest)) return `Yesterday ${hh}:${mm}`;
+  const dayDiff = Math.round((now.getTime() - d.getTime()) / 86_400_000);
+  if (dayDiff < 7) {
+    const wd = d.toLocaleDateString(undefined, { weekday: 'short' });
+    return `${wd} ${hh}:${mm}`;
+  }
+  const md = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  return `${md} ${hh}:${mm}`;
+}
 /** Absolute date+time for the Brief audit trail. The user explicitly
  *  asked: "Brief should also inform what Nexeo did by itself or what
  *  user did and when (date & time)." Format: "Tue 6 May · 14:32". */
@@ -3515,10 +3539,22 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
               ingested the calendar invite. For everything else, the
               relative time of receipt is the right reference.
             */}
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+            <span
+              style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}
+              title={item.receivedAt ? new Date(item.receivedAt).toLocaleString() : ''}
+            >
               {item.itemType === 'meeting' && item.meeting?.start
                 ? meetingWhen(item.meeting.start)
-                : timeAgo(item.receivedAt)}
+                : (
+                  <>
+                    {timeAgo(item.receivedAt)}
+                    {item.receivedAt && (
+                      <span style={{ marginLeft: 6, opacity: 0.7 }}>
+                        · {exactTime(item.receivedAt)}
+                      </span>
+                    )}
+                  </>
+                )}
             </span>
             {/* Series collapse badge — shown when a recurring meeting was
                 collapsed from N occurrences into this representative card. */}
