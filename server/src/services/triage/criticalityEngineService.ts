@@ -735,8 +735,79 @@ function clamp01(x: number): number {
 
 // ─── Public API ────────────────────────────────────────────────
 
+/**
+ * Trivial-message guard — short conversational acks ("Ok", "Yes", "AOA",
+ * "Salam", "Thanks", "On my way", "Im joining") are NEVER critical on
+ * their own. The criticality is in the THREAD, not in the ack.
+ *
+ * Rationale: 2026-05-09 user reported Brain pushing "🔴 Brain: 1
+ * critical thread needs you · Asad — AOA Basit" and similar. A
+ * one-greeting message can't be critical. Brain has to think, not
+ * classify on a thin LLM rationale like "Direct greeting (signal:
+ * Inbound event - preview)".
+ *
+ * Returns true if the message body is essentially a short ack and no
+ * concrete signal in the gathered context elevates it. Concrete
+ * signals that DO escalate even a short ack: an active watchpoint on
+ * this thread, a deadline in <24h on this sender's open item, or
+ * star ≥4 on the sender (explicit user importance flag).
+ */
+function isTrivialAck(input: ScoreInput, signals: GatheredSignals): boolean {
+  const body = String(input.preview ?? '').replace(/\s+/g, ' ').trim();
+  if (!body) return false;
+
+  // Word count: 5 or fewer words and the body matches a known ack
+  // pattern. Permissive on script (English / Roman Urdu / Urdu).
+  const wordCount = body.split(/\s+/).length;
+  if (wordCount > 5) return false;
+
+  const trivialPatterns = [
+    /^(ok|okay|k|kk|sure|done|noted|got it|copy that|roger)\.?$/i,
+    /^(yes|yeah|yep|haan|han|ji|ji haan|jee)\.?$/i,
+    /^(no|nope|nah|nahi|nai)\.?$/i,
+    /^(thanks|thank you|thx|ty|shukria|shukriya|jazakallah)\.?!?$/i,
+    /^(welcome|you'?re welcome|np|no problem|koi baat nahi)\.?$/i,
+    /^(aoa|salam|salaam|salam alaikum|assalam[u]? alaikum|wa[ ']?alaikum|hi|hello|hey)([\s,!.]+\w+)?$/i,
+    /^(good morning|good afternoon|good evening|gm|gn|good night)([\s,!.]+\w+)?$/i,
+    /^(on (my|the) way|otw|coming|i'?m? coming|im joining|joining|on it|will do)\.?$/i,
+    /^(👍|👌|🙏|❤️|✅|⭐|👏|🎉|❤|😊|☺️|🙂|🤝)+$/u,
+  ];
+  const looksTrivial = trivialPatterns.some((re) => re.test(body));
+  if (!looksTrivial) return false;
+
+  // Concrete-signal overrides: even a one-word "Ok" matters if it's
+  // closing out a deal or it's from a starred client mid-deadline.
+  const hasNearDeadline = signals.deadlines.some((d) => d.hoursUntil <= 24 && d.hoursUntil >= -24);
+  const hasOpenCriticalItem = signals.openItems.some((o) => o.priority === 'critical');
+  const hasActiveWatchpoint = !!input.hints?.hasActiveWatchpoint;
+  const isStarredSender = signals.importanceStars >= 4;
+  if (hasNearDeadline || hasOpenCriticalItem || hasActiveWatchpoint || isStarredSender) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function scoreCriticality(input: ScoreInput): Promise<CriticalityResult> {
   const signals = await gatherSignals(input);
+
+  // Pre-LLM guard — if this is a 1-5 word ack with no concrete
+  // contextual signal, short-circuit to band 'low'. Saves an LLM call
+  // AND prevents thin-rationale criticality ("Direct greeting" / "Could
+  // imply unstated urgency"). Brain isn't a postman.
+  if (isTrivialAck(input, signals)) {
+    return {
+      composite: 0.1,
+      band: 'low',
+      dimensions: { timePressure: 0.1, impact: 0.05, relationshipRisk: 0.1, cascade: 0, patternAnomaly: 0 },
+      superpowers: { absence: { triggered: false, note: null }, crossSource: { triggered: false, note: null }, decay: { triggered: false, note: null } },
+      reasons: ['Short conversational acknowledgment — not a standalone action item'],
+      signals,
+      confidence: 0.95,
+      scoredAt: new Date().toISOString(),
+    };
+  }
+
   const fused = await fuseAndScore(input, signals);
   const superpowers: CriticalitySuperpowers = {
     absence: detectAbsence(signals),
