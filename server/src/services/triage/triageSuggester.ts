@@ -1373,14 +1373,28 @@ export async function buildAttentionList(
   // bothering the user with a decision they've made dozens of times.
   // Delegation needs an actual delegate (no point auto-handling if we
   // don't know who to send it to).
+  // Autonomy gate (My Attention).
+  // Brain auto-handles three kinds of high-confidence decisions so they
+  // don't waste the user's attention:
+  //   - delegate (≥0.85 confidence + a known delegatee)
+  //   - ignore   (≥0.85 confidence) — bulk noise, vCards, "Ok"/"Ma Sha
+  //              Allah", rejection boilerplate Brain has correctly tagged
+  //              for ignore but was still surfacing
+  //   - acknowledge (≥0.85 confidence) — read-only FYIs, calendar
+  //              reminders, system notifications
+  // These items still appear in Brief under "Brain knew what to do".
+  // The user sees the decision; they just don't have to make it again.
+  // Criticals are NEVER auto-hidden, regardless of confidence.
   const AUTONOMY_THRESHOLD = 0.85;
   const autonomousFiltered = items.filter((it) => {
     if (it.critical) return true; // never auto-hide criticals
-    const isAutonomyReady =
-      (it.confidence ?? 0) >= AUTONOMY_THRESHOLD
-      && it.suggestedAction === 'delegate'
-      && !!it.suggestedDelegateeUserId;
-    return !isAutonomyReady;
+    const conf = it.confidence ?? 0;
+    if (conf < AUTONOMY_THRESHOLD) return true;
+    const sa = it.suggestedAction;
+    if (sa === 'delegate' && !!it.suggestedDelegateeUserId) return false;
+    if (sa === 'ignore') return false;
+    if (sa === 'acknowledge') return false;
+    return true;
   });
   items.length = 0;
   items.push(...autonomousFiltered);
@@ -1841,14 +1855,16 @@ export async function buildHandledList(
       }
     }
 
-    // Autonomy gate — high-confidence delegations. Mirrors the filter in
-    // buildAttentionList so an item caught there is accounted for here.
-    const isAutonomyReady =
-      (item.confidence ?? 0) >= AUTONOMY_THRESHOLD
-      && item.suggestedAction === 'delegate'
-      && !!item.suggestedDelegateeUserId
-      && !item.critical;
-    if (isAutonomyReady) {
+    // Autonomy gate — mirrors buildAttentionList so any item filtered
+    // out of My Attention by the autonomy gate is accounted for in Brief.
+    // Three high-confidence verdicts auto-handle: delegate (with known
+    // delegatee), ignore, and acknowledge. Each gets its own reason
+    // string so the user can audit Brain's call.
+    const conf = item.confidence ?? 0;
+    const sa = item.suggestedAction;
+    const passesAutonomy = !item.critical && conf >= AUTONOMY_THRESHOLD;
+
+    if (passesAutonomy && sa === 'delegate' && !!item.suggestedDelegateeUserId) {
       const dn = item.suggestedDelegateeName ?? item.suggestedDelegateeEmail ?? 'a teammate';
       out.push({
         ...base(item),
@@ -1859,6 +1875,30 @@ export async function buildHandledList(
         intendedAction: 'delegate',
         delegateeName: item.suggestedDelegateeName,
         delegateeEmail: item.suggestedDelegateeEmail,
+      });
+      continue;
+    }
+
+    if (passesAutonomy && sa === 'ignore') {
+      out.push({
+        ...base(item),
+        bucket: 'auto_high_confidence',
+        category: 'nexeo_handled',
+        decidedAt: extractEventOccurredAt(r).toISOString(),
+        reason: `Brain auto-ignored — ${Math.round(conf * 100)}% confident this needs no action`,
+        intendedAction: 'ignore',
+      });
+      continue;
+    }
+
+    if (passesAutonomy && sa === 'acknowledge') {
+      out.push({
+        ...base(item),
+        bucket: 'auto_high_confidence',
+        category: 'nexeo_handled',
+        decidedAt: extractEventOccurredAt(r).toISOString(),
+        reason: `Brain auto-acknowledged — read-only FYI, ${Math.round(conf * 100)}% confident no reply needed`,
+        intendedAction: 'acknowledge',
       });
       continue;
     }
