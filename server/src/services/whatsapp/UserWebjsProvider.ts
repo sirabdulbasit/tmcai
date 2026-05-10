@@ -677,132 +677,29 @@ export async function startPairing(userId: number, clientNumber: string): Promis
         waMessageIndex.set(result.feedEventId, { userId, chatId: rawFrom });
       }
 
-      // ── Voice / text instruction pipeline ──
-      // Two-step flow per user spec (2026-05-08): transcribe first,
-      // SHOW the transcript + planned action to the user, only act
-      // after they confirm. Voice transcription can mishear,
-      // especially across Urdu/English code-switching, so silent
-      // execution is risky. Confirmation gate prevents Brain from
-      // acting on a misread.
+      // ── Instruction pipeline removed from inbound (non-self) path ──
+      // CRITICAL: this block previously ran the voice/text instruction
+      // pipeline on every inbound feed_event, including messages from
+      // OTHER PEOPLE. When a contact sent the user a voice note OR a
+      // text containing imperative verbs (draft/reply to/delegate/
+      // schedule/mute/set window/...) OR the word "brain"/"nexeo",
+      // Brain would:
+      //   1. Stage a voice_instruction on the user's account
+      //   2. Auto-send a reply FROM the user's WhatsApp TO the contact:
+      //      "📝 I heard: '...' → I will act on this. Reply YES to confirm"
       //
-      // Flow:
-      //   inbound msg →
-      //     if user has a PENDING voice instruction (last 5 min):
-      //       if msg is yes/ok/confirm/1 → dispatch it
-      //       if msg is no/cancel/2     → cancel it
-      //       else                        → cancel + treat as new instr
-      //     else if msg looks like an instruction:
-      //       extract intent → stage (don't dispatch) → reply with
-      //       transcript + planned action + "Reply YES to confirm"
-      const transcriptText = voiceTranscript?.english || voiceTranscript?.original || message.body || '';
-      const cleanLower = transcriptText.trim().toLowerCase();
-      const looksLikeConfirm = /^\s*(yes|ok|confirm|do it|go ahead|haan|theek hai|bilkul|1)\s*$/i.test(transcriptText.trim());
-      const looksLikeCancel = /^\s*(no|cancel|stop|nahi|drop|2|3)\s*$/i.test(transcriptText.trim());
-
-      if (result.feedEventId) {
-        void (async () => {
-          try {
-            // 1. Look for a pending voice instruction from this chat in
-            //    the last 5 min. We stage these as agent_action rows with
-            //    status='voice_pending'.
-            const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-            const pending = await prisma.agentAction.findFirst({
-              where: {
-                clientNumber, userId,
-                status: 'voice_pending',
-                createdAt: { gte: fiveMinAgo },
-              } as any,
-              orderBy: { createdAt: 'desc' } as any,
-            });
-
-            if (pending && (looksLikeConfirm || looksLikeCancel)) {
-              if (looksLikeCancel) {
-                await prisma.agentAction.update({
-                  where: { id: pending.id },
-                  data: { status: 'cancelled' } as any,
-                });
-                await sendReply(userId, rawFrom, '✗ Cancelled. Nothing happened. Send a new instruction whenever you want.');
-                return;
-              }
-              // Confirm path: read the staged instruction back, dispatch.
-              const stored: any = pending.input ?? {};
-              const ix = stored.instruction;
-              if (!ix) {
-                await sendReply(userId, rawFrom, 'Could not read the staged instruction. Please re-record.');
-                return;
-              }
-              const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
-              const out = await dispatchInstruction({ instruction: ix, clientNumber, userId });
-              await prisma.agentAction.update({
-                where: { id: pending.id },
-                data: {
-                  status: out.ok ? 'done' : 'failed',
-                  output: { dispatchResult: out } as any,
-                } as any,
-              });
-              await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`);
-              return;
-            }
-
-            // If a pending instruction exists but this message doesn't
-            // look like a confirm/cancel, mark the old one as cancelled
-            // so it doesn't sit forever — the user has effectively moved
-            // on. Then fall through to normal extraction on the new msg.
-            if (pending && !looksLikeConfirm && !looksLikeCancel) {
-              await prisma.agentAction.update({
-                where: { id: pending.id },
-                data: { status: 'cancelled' } as any,
-              }).catch(() => {});
-            }
-
-            // 2. Normal trigger heuristics for new instructions.
-            const looksLikeInstruction =
-              isVoice ||
-              /\b(brain|nexeo)\b/i.test(transcriptText) ||
-              /^\s*(mute|unmute|draft|reply to|delegate|schedule|set a meeting|set window|add to open items?|note that)\b/i.test(transcriptText);
-
-            if (!looksLikeInstruction || transcriptText.trim().length < 8) return;
-
-            const { extractInstruction } = await import('../instructions/instructionExtractor');
-            const ix = await extractInstruction({
-              text: transcriptText,
-              clientNumber,
-              userId,
-              triggerFeedEventId: result.feedEventId,
-            });
-            if (ix.intent === 'none' || ix.confidence < 0.6) return;
-
-            // Stage the action — DO NOT dispatch yet. User confirms first.
-            await prisma.agentAction.create({
-              data: {
-                clientNumber, userId,
-                actionType: 'voice_instruction',
-                status: 'voice_pending',
-                requiresApproval: true,
-                executedByAgent: 'voice_instruction',
-                input: { instruction: ix, transcript: transcriptText, chatId: rawFrom } as any,
-                output: { stagedAt: new Date().toISOString() } as any,
-              } as any,
-            });
-
-            // Build the confirmation message — show the transcript
-            // (what Brain heard) and the planned action so the user can
-            // catch a misread before acting on it.
-            const heardLine = isVoice
-              ? `📝 I heard:\n"${(voiceTranscript?.original || transcriptText).slice(0, 400)}"`
-              : `📝 You said:\n"${transcriptText.slice(0, 400)}"`;
-            const englishLine = isVoice && voiceTranscript?.english && voiceTranscript.original !== voiceTranscript.english
-              ? `\n\n(English: ${voiceTranscript.english.slice(0, 400)})`
-              : '';
-            const planLine = `\n\n→ ${ix.summary || 'I will act on this.'}`;
-            const promptLine = `\n\nReply YES to confirm, anything else to cancel.`;
-
-            await sendReply(userId, rawFrom, `${heardLine}${englishLine}${planLine}${promptLine}`);
-          } catch (err: any) {
-            log.warn('instruction pipeline failed', { userId, error: err.message });
-          }
-        })();
-      }
+      // From the contact's view, the user's WhatsApp had just texted
+      // them an unsolicited Brain prompt — Brain speaking as the user
+      // without authorization. Reported by the user 2026-05-10 after
+      // they messaged a colleague and got a Brain-authored response
+      // back from the colleague's number.
+      //
+      // Self-dictation is correctly and exclusively handled by
+      // handleSelfDictation() above (gated on fromMe && isSelfChat).
+      // The browser inline voice strip on each card (DayBriefPage)
+      // covers per-card dictation. There is no legitimate case where
+      // a contact's inbound message should trigger an automatic
+      // reply from the user's WhatsApp.
     } catch (e: any) {
       log.error('message handler error', { userId, error: e.message });
     }
