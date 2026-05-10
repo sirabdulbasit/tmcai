@@ -55,6 +55,12 @@ export interface AttentionItem {
    *  the user takes an action (e.g. ignore) and we need to mark them
    *  all as decided. */
   threadFeedEventIds?: string[];
+  /** WhatsApp conversation collapse — N messages from the same sender
+   *  within a 24h window folded into one card. UI renders ↻ N badge. */
+  conversationCount?: number;
+  conversationFeedEventIds?: string[];
+  conversationEarliestAt?: string;
+  conversationLatestAt?: string;
   /** Raw RFC2822 form ("Name <addr@x>") — kept for pattern matching
    *  inside the engine. Don't render this to the user. */
   from: string;
@@ -1333,6 +1339,85 @@ export async function buildAttentionList(
   items.length = 0;
   items.push(...threadCollapsed);
 
+  // ── WhatsApp conversation collapse ──
+  // Per user 2026-05-10: WA messages don't make sense as individual cards.
+  // "Coming" / "On it" / "Doing" only mean something with their referent.
+  // Treat the unit of attention as a CONVERSATION, not a message: group
+  // feed_events from the same sender within a rolling 24h window into
+  // one representative card. The card shows the latest state with a
+  // ↻ N-message badge; user acts on the conversation as a whole.
+  //
+  // 24h gap rule: if two consecutive messages from the same sender are
+  // > 24h apart, that's a topic restart — they get separate cards. Most
+  // chat threads are intra-day, so this preserves "yesterday's chat" vs
+  // "today's chat" without false-merging.
+  //
+  // The strongest archetype across the conversation wins (reply_needed
+  // beats inform_only) so a follow-up question doesn't get hidden behind
+  // a casual ack. The most-recent message is the representative — its
+  // body is what the user reads in the card preview.
+  //
+  // Phase 2 (next commit) will extend this with topic-cluster + open-loop
+  // extraction so a conversation that mixes "Project Phoenix" with "vendor
+  // call scheduling" surfaces both loops as bullets on the same card.
+  // For now: one card per conversation with the most recent state.
+  const WA_GAP_MS = 24 * 60 * 60 * 1000;
+  const waBuckets = new Map<string, AttentionItem[]>();
+  const nonWa: AttentionItem[] = [];
+  for (const it of items) {
+    if (it.itemType !== 'whatsapp') { nonWa.push(it); continue; }
+    // Conversation key: senderPhone takes priority (canonical), fall
+    // back to fromEmail/from for chat-style sources where we have email
+    // identity. If neither, the message can't be reliably grouped — leave
+    // it as its own card.
+    const key = ((it as any).senderPhone || it.fromEmail || it.from || '').toLowerCase().trim();
+    if (!key) { nonWa.push(it); continue; }
+    if (!waBuckets.has(key)) waBuckets.set(key, []);
+    waBuckets.get(key)!.push(it);
+  }
+  const waCollapsed: AttentionItem[] = [];
+  for (const [, group] of waBuckets) {
+    if (group.length === 1) { waCollapsed.push(group[0]); continue; }
+    // Sort newest first.
+    group.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+    // Walk newest → oldest, splitting on 24h+ gaps. Each split is a
+    // distinct conversation card.
+    const segments: AttentionItem[][] = [];
+    let current: AttentionItem[] = [group[0]];
+    for (let i = 1; i < group.length; i++) {
+      const gap = new Date(current[current.length - 1].receivedAt).getTime()
+                - new Date(group[i].receivedAt).getTime();
+      if (gap > WA_GAP_MS) {
+        segments.push(current);
+        current = [group[i]];
+      } else {
+        current.push(group[i]);
+      }
+    }
+    segments.push(current);
+    for (const seg of segments) {
+      if (seg.length === 1) { waCollapsed.push(seg[0]); continue; }
+      const representative = { ...seg[0] } as AttentionItem;
+      // Pick the strongest archetype across the conversation.
+      const winning = seg
+        .map((g) => ({ g, p: ARCHETYPE_PRIORITY[g.archetype] ?? 0 }))
+        .sort((a, b) => b.p - a.p)[0]!.g;
+      representative.archetype = winning.archetype;
+      representative.suggestedAction = winning.suggestedAction;
+      representative.confidence = winning.confidence;
+      representative.rationale = winning.rationale;
+      // Annotate the card with conversation metadata for the UI.
+      (representative as any).conversationCount = seg.length;
+      (representative as any).conversationFeedEventIds = seg.map((g) => g.feedEventId);
+      (representative as any).conversationEarliestAt = seg[seg.length - 1].receivedAt;
+      (representative as any).conversationLatestAt = seg[0].receivedAt;
+      representative.rationale = `${representative.rationale}\n${seg.length} messages today on this chat — acting here resolves the conversation.`;
+      waCollapsed.push(representative);
+    }
+  }
+  items.length = 0;
+  items.push(...nonWa, ...waCollapsed);
+
   // ── CC suppression ──
   // Emails where the user is on CC (not To/Bcc) drop OFF My Attention by
   // default. Most CC mail is FYI/informational and crowds the actionable
@@ -1520,6 +1605,12 @@ export interface HandledItem {
    *  UI to render "Jun 9 → Jun 12 · 4 occurrences". */
   seriesEarliestAt?: string;
   seriesLatestAt?: string;
+  /** WhatsApp conversation collapse — see AttentionItem. Mirrored on
+   *  HandledItem so the Brief side shows ↻ N for collapsed convos. */
+  conversationCount?: number;
+  conversationFeedEventIds?: string[];
+  conversationEarliestAt?: string;
+  conversationLatestAt?: string;
 }
 
 /**
@@ -1954,8 +2045,56 @@ export async function buildHandledList(
     collapsed.push(representative);
   }
 
+  // ── WhatsApp conversation collapse (Brief) ──
+  // Mirrors the My Attention collapse: WA messages already auto-handled
+  // by Brain (auto_high_confidence ignore/ack, etc) collapse by
+  // (senderPhone, 24h-gap) into one Brief row per conversation. So
+  // "Hunain: 7 acks today" shows as one row with ↻ 7, not 7 rows.
+  const WA_GAP_MS_BRIEF = 24 * 60 * 60 * 1000;
+  const waConvBucketsBrief = new Map<string, HandledItem[]>();
+  const nonWaCollapsed: HandledItem[] = [];
+  for (const it of collapsed) {
+    if (it.itemType !== 'whatsapp') { nonWaCollapsed.push(it); continue; }
+    const senderKey = ((it.fromEmail || it.from || '') as string).toLowerCase().trim();
+    if (!senderKey) { nonWaCollapsed.push(it); continue; }
+    // Bucket per conversation (and per Brief bucket — auto_decided rows
+    // shouldn't merge with auto_high_confidence rows even from same sender).
+    const bucketKey = `${it.bucket}::${senderKey}`;
+    if (!waConvBucketsBrief.has(bucketKey)) waConvBucketsBrief.set(bucketKey, []);
+    waConvBucketsBrief.get(bucketKey)!.push(it);
+  }
+  const waCollapsedBrief: HandledItem[] = [];
+  for (const [, group] of waConvBucketsBrief) {
+    if (group.length === 1) { waCollapsedBrief.push(group[0]); continue; }
+    group.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+    const segments: HandledItem[][] = [];
+    let current: HandledItem[] = [group[0]];
+    for (let i = 1; i < group.length; i++) {
+      const gap = new Date(current[current.length - 1].receivedAt).getTime()
+                - new Date(group[i].receivedAt).getTime();
+      if (gap > WA_GAP_MS_BRIEF) {
+        segments.push(current);
+        current = [group[i]];
+      } else {
+        current.push(group[i]);
+      }
+    }
+    segments.push(current);
+    for (const seg of segments) {
+      if (seg.length === 1) { waCollapsedBrief.push(seg[0]); continue; }
+      const representative = { ...seg[0] };
+      (representative as any).conversationCount = seg.length;
+      (representative as any).conversationFeedEventIds = seg.map((g) => g.feedEventId);
+      (representative as any).conversationEarliestAt = seg[seg.length - 1].receivedAt;
+      (representative as any).conversationLatestAt = seg[0].receivedAt;
+      waCollapsedBrief.push(representative);
+    }
+  }
+
+  const finalCollapsed = [...nonWaCollapsed, ...waCollapsedBrief];
+
   // Newest first, capped at the limit. Bucketed counts are computed
   // client-side from this array.
-  collapsed.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
-  return collapsed.slice(0, limit);
+  finalCollapsed.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+  return finalCollapsed.slice(0, limit);
 }

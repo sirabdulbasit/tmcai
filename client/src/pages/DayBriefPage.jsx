@@ -3274,6 +3274,18 @@ function HandledItemRow({ item, onOverride, notify }) {
             ↻ {seriesCount} occurrences
           </Pill>
         )}
+        {/* WA conversation collapse badge — mirrored from My Attention. */}
+        {Number(item.conversationCount) > 1 && (() => {
+          const earliest = item.conversationEarliestAt ? new Date(item.conversationEarliestAt) : null;
+          const latest = item.conversationLatestAt ? new Date(item.conversationLatestAt) : null;
+          const fmtTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          const tooltip = earliest && latest
+            ? `${fmtTime(earliest)} → ${fmtTime(latest)} · ${item.conversationCount} messages`
+            : undefined;
+          return (
+            <Pill variant="info" title={tooltip}>↻ {item.conversationCount} msgs</Pill>
+          );
+        })()}
         <span
           title={stamp ? new Date(stamp).toLocaleString() : ''}
           style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}
@@ -3832,6 +3844,23 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
                 💬 {item.threadCount} messages from {(item.threadSenders ?? []).length} {(item.threadSenders ?? []).length === 1 ? 'person' : 'people'}
               </Pill>
             )}
+            {/* WhatsApp conversation collapse badge — N messages from the
+                same contact within a 24h window. Tooltip shows the time
+                span so the user sees at a glance whether this is "all of
+                today's chat" or "a tight burst this hour". */}
+            {item.conversationCount > 1 && (() => {
+              const earliest = item.conversationEarliestAt ? new Date(item.conversationEarliestAt) : null;
+              const latest = item.conversationLatestAt ? new Date(item.conversationLatestAt) : null;
+              const fmtTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+              const tooltip = earliest && latest
+                ? `${fmtTime(earliest)} → ${fmtTime(latest)} · ${item.conversationCount} messages`
+                : undefined;
+              return (
+                <Pill variant="info" title={tooltip}>
+                  ↻ {item.conversationCount} messages in this conversation
+                </Pill>
+              );
+            })()}
           </div>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', marginTop: 4 }}>
             {/* WhatsApp has no subject — show the message body inline.
