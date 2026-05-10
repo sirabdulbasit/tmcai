@@ -2046,7 +2046,16 @@ function ThreadPreviewModal({
               {effectiveMode === 'preview' ? 'Preview · what this thread is about' : 'Thread · all messages'}
             </div>
             <div style={{ fontSize: 'var(--fs-base)', fontWeight: 'var(--fw-semibold)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {messages[0]?.subject || (loading ? 'Loading…' : '(no subject)')}
+              {(() => {
+                if (loading) return 'Loading…';
+                // For WhatsApp/chat there's no subject — title with the
+                // contact name instead. For email use the subject.
+                const dataType = data?.itemType ?? '';
+                if (dataType === 'whatsapp' || dataType === 'gchat') {
+                  return senderName ? `Conversation with ${senderName}` : 'Conversation';
+                }
+                return messages[0]?.subject || '(no subject)';
+              })()}
             </div>
           </div>
           <button

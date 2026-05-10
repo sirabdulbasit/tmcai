@@ -720,12 +720,99 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
   try {
     const event = await prisma.feedEvent.findFirst({
       where: { id: feedEventId, clientNumber: user.clientNumber, userId: user.id },
-      select: { sourceType: true, sourceId: true, rawPayload: true, senderEmail: true, senderName: true },
+      select: { id: true, sourceType: true, sourceId: true, rawPayload: true, senderEmail: true, senderName: true, senderPhone: true, eventAt: true, createdAt: true },
     });
     if (!event) return res.status(404).json({ error: 'feed event not found' });
 
-    // Non-email channels: render the single message we already have.
-    // No LLM call — there's no thread to summarise.
+    // Normalize a possibly-seconds-or-ms timestamp to milliseconds.
+    // Webjs gives seconds; some ingest paths already convert to ms.
+    // Anything < 1e12 is seconds; multiply. Anything ≥ 1e12 is ms; pass.
+    const toMs = (v: any): number | null => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return n < 1e12 ? n * 1000 : n;
+    };
+
+    // ── WhatsApp: return the FULL conversation, not just one message ──
+    // For a collapsed WA card, the user wants to see the whole thread,
+    // not the single representative event. Look up sibling feed_events
+    // by senderPhone within a rolling 24h window (matching the
+    // conversation collapse rule in triageSuggester) and return them
+    // chronologically. Plus pull live thread context from the webjs
+    // client when available — that's how we get messages the user has
+    // sent (which aren't in feed_events) so the conversation reads
+    // bidirectionally like a real chat.
+    if (event.sourceType === 'whatsapp') {
+      const senderPhone = event.senderPhone;
+      const baseAt = (event.eventAt ?? event.createdAt).getTime();
+      const windowStart = new Date(baseAt - 24 * 60 * 60 * 1000);
+      const windowEnd = new Date(baseAt + 24 * 60 * 60 * 1000);
+
+      const siblings = senderPhone
+        ? await prisma.feedEvent.findMany({
+            where: {
+              clientNumber: user.clientNumber,
+              userId: user.id,
+              sourceType: 'whatsapp',
+              senderPhone,
+              OR: [
+                { eventAt: { gte: windowStart, lte: windowEnd } },
+                { createdAt: { gte: windowStart, lte: windowEnd } },
+              ],
+            } as any,
+            select: { id: true, rawPayload: true, senderName: true, senderEmail: true, eventAt: true, createdAt: true },
+            orderBy: [{ eventAt: 'asc' as any }, { createdAt: 'asc' as any }],
+            take: 200,
+          }).catch(() => [event] as any[])
+        : [event];
+
+      const inboundMsgs = siblings.map((e: any) => {
+        const p: any = e.rawPayload ?? {};
+        const ts = toMs(p.timestamp) ?? (e.eventAt ?? e.createdAt).getTime();
+        return {
+          from: 'them' as const,
+          subject: '',
+          text: String(p.body ?? p.snippet ?? p.text ?? '').slice(0, 4000),
+          timestamp: ts,
+          fromName: e.senderName ?? p.senderName ?? p.from ?? '',
+        };
+      });
+
+      // Try to enrich with the user's own outbound messages from the
+      // live webjs thread. fetchThreadContext returns both sides — we
+      // already have the inbound side from feed_events, but webjs is
+      // the only place 'me' messages live (we don't ingest outbound).
+      let outboundMsgs: any[] = [];
+      try {
+        const chatId = (event.rawPayload as any)?.chatId;
+        if (chatId) {
+          const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
+          const turns = await fetchThreadContext(user.id, String(chatId), 50);
+          outboundMsgs = turns
+            .filter((t) => t.from === 'me')
+            .map((t) => ({
+              from: 'me' as const,
+              subject: '',
+              text: t.text,
+              timestamp: toMs(t.timestamp) ?? t.timestamp,
+              fromName: 'You',
+            }));
+        }
+      } catch { /* webjs unavailable — inbound-only thread is still useful */ }
+
+      // Merge + sort chronologically.
+      const allMsgs = [...inboundMsgs, ...outboundMsgs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+
+      return res.json({
+        itemType: 'whatsapp',
+        messages: allMsgs,
+        summary: '',
+        summaryProvider: 'none',
+        cached: false,
+      });
+    }
+
+    // Other non-email channels: single-message fallback.
     if (event.sourceType !== 'gmail') {
       const p: any = event.rawPayload ?? {};
       return res.json({
@@ -734,7 +821,8 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
           from: 'them' as const,
           subject: p.subject ?? p.title ?? '',
           text: p.snippet ?? p.body ?? p.text ?? '',
-          timestamp: p.timestamp ? Number(p.timestamp) * 1000 : (p.date ? new Date(p.date).getTime() : Date.now()),
+          timestamp: toMs(p.timestamp)
+            ?? (p.date ? new Date(p.date).getTime() : (event.eventAt ?? event.createdAt).getTime()),
           fromName: event.senderName ?? p.from ?? '',
         }],
         summary: '',
