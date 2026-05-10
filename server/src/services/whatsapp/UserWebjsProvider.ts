@@ -493,6 +493,19 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
       if (!message.body?.trim() && !message.hasMedia) return;
 
+      // Bot/automation message filter — drop messages that are clearly
+      // output from another AI assistant or chatbot leaking into the
+      // user's chat. Pattern: body starts with "[AI]", "[BOT]",
+      // "[ASSISTANT]" or similar bracketed markers used by agentic
+      // systems for prefix tagging. These are debug/automation traffic,
+      // not real human interaction with the user. Reported 2026-05-10
+      // when [AI] iPhone-troubleshooting prompts surfaced as cards.
+      const botBodyPrefix = /^\s*\[(ai|bot|assistant|gpt|claude|chatbot)\]/i;
+      if (typeof message.body === 'string' && botBodyPrefix.test(message.body)) {
+        log.info('Skipped automation/bot body', { userId, prefix: message.body.slice(0, 20) });
+        return;
+      }
+
       // ── Self-dictation path ──
       // The user's own messages on the "Message yourself" WhatsApp
       // chat are treated as instructions to Brain — voice or text.

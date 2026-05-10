@@ -1257,11 +1257,33 @@ export async function buildAttentionList(
     suggestions.push(...batchResults);
   }
 
+  // Map feed_event id → (chatId, senderPhone) so WA-side enrichment
+  // (conversation collapse + loop extraction) has the canonical chat
+  // pointer to fetch thread context. AttentionItem doesn't carry these
+  // fields by default; we inject them per-row from the candidate's
+  // rawPayload + senderPhone column.
+  const chatPointers = new Map<string, { chatId: string | null; senderPhone: string | null }>();
+  for (const r of candidates) {
+    const rp = (r.rawPayload as any) ?? {};
+    chatPointers.set(r.id, {
+      chatId: rp.chatId ?? null,
+      senderPhone: r.senderPhone ?? null,
+    });
+  }
+
   const items: AttentionItem[] = [];
   for (const item of suggestions) {
     if (!item) continue;
     if (hashes.has(item.dedupHash)) continue;
     if (item.handledByRule) continue;  // autonomous — lives in Section 1, not Attention
+    // Attach WA chat pointer so Phase 2 loop extraction can fetch the
+    // thread context (fetchThreadContext needs the @c.us-suffixed
+    // chatId, not just the phone number).
+    const ptr = chatPointers.get(item.feedEventId);
+    if (ptr) {
+      (item as any).chatId = ptr.chatId;
+      (item as any).senderPhone = ptr.senderPhone;
+    }
     items.push(item);
   }
 
@@ -1416,25 +1438,53 @@ export async function buildAttentionList(
     for (const seg of segments) {
       if (seg.length === 1) { waCollapsed.push(seg[0]); continue; }
       const representative = { ...seg[0] } as AttentionItem;
-      // Pick the strongest archetype across the conversation.
+      // Use the strongest archetype across the conversation to drive
+      // suggestedAction (so a follow-up question doesn't get hidden
+      // behind an FYI), but KEEP the representative's own rationale —
+      // the rationale should describe THIS message (the latest one,
+      // which is what the card body shows). Mixing the latest body
+      // with an older message's rationale produced cards where the
+      // body said "Tahir Farooqi joining Lucid" but the reason text
+      // referenced an unrelated earlier topic. Phase 2 loops are the
+      // place to surface multi-topic context.
       const winning = seg
         .map((g) => ({ g, p: ARCHETYPE_PRIORITY[g.archetype] ?? 0 }))
         .sort((a, b) => b.p - a.p)[0]!.g;
       representative.archetype = winning.archetype;
       representative.suggestedAction = winning.suggestedAction;
       representative.confidence = winning.confidence;
-      representative.rationale = winning.rationale;
       // Annotate the card with conversation metadata for the UI.
       (representative as any).conversationCount = seg.length;
       (representative as any).conversationFeedEventIds = seg.map((g) => g.feedEventId);
       (representative as any).conversationEarliestAt = seg[seg.length - 1].receivedAt;
       (representative as any).conversationLatestAt = seg[0].receivedAt;
-      representative.rationale = `${representative.rationale}\n${seg.length} messages today on this chat — acting here resolves the conversation.`;
       waCollapsed.push(representative);
     }
   }
   items.length = 0;
   items.push(...nonWa, ...waCollapsed);
+
+  // ── Defensive empty-preview WA filter ──
+  // WhatsApp media messages where attachment extraction failed (vCards,
+  // unsupported media, expired media references) leave feed_events with
+  // an empty body and no useful preview. They surface as "(empty
+  // message)" cards. The ingest filter at UserWebjsProvider catches
+  // future ones; this drops historical rows already in the DB.
+  const nonEmptyWa = items.filter((it) => {
+    if (it.itemType !== 'whatsapp') return true;
+    const hasContent = (it.preview && it.preview.trim().length > 0)
+      || (it.subject && it.subject.trim().length > 0);
+    if (!hasContent) {
+      // Don't surface a card with no readable text. Phase 1 collapse
+      // means a meaningful conversation isn't lost; the collapsed card
+      // will still represent the conversation if there are non-empty
+      // messages. Standalone empty messages drop entirely.
+      return false;
+    }
+    return true;
+  });
+  items.length = 0;
+  items.push(...nonEmptyWa);
 
   // ── WhatsApp loop extraction (Phase 2) ──
   // For each collapsed WA conversation card, ask Brain to read the
