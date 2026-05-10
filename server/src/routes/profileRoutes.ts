@@ -206,13 +206,16 @@ router.get('/brain-channel', async (req: Request, res: Response) => {
     quietStart: bc.quietStart ?? '22:00',
     quietEnd: bc.quietEnd ?? '06:00',
     minConfidence: bc.minConfidence ?? 0.7,
+    // Opt-in: defaults to false. User must explicitly enable Brain
+    // outbound on WhatsApp from Settings before any push fires.
+    outboundEnabled: bc.outboundEnabled === true,
     outboundPaused: !!bc.outboundPaused,
     dailyCap: typeof bc.dailyCap === 'number' && bc.dailyCap >= 1 ? bc.dailyCap : 20,
   });
 });
 
 router.put('/brain-channel', async (req: Request, res: Response) => {
-  const { channel, whatsappNumber, quietStart, quietEnd, minConfidence, outboundPaused, dailyCap } = req.body ?? {};
+  const { channel, whatsappNumber, quietStart, quietEnd, minConfidence, outboundEnabled, outboundPaused, dailyCap } = req.body ?? {};
   const prisma = (await import('../db/prisma')).default;
   const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { notificationPreferences: true } });
   const prefs = ((u?.notificationPreferences as any) || {}) as Record<string, any>;
@@ -226,6 +229,9 @@ router.put('/brain-channel', async (req: Request, res: Response) => {
     quietStart: quietStart ?? '22:00',
     quietEnd: quietEnd ?? '06:00',
     minConfidence: typeof minConfidence === 'number' ? minConfidence : 0.7,
+    // outboundEnabled is the opt-in. Strict boolean — if undefined,
+    // preserve existing (don't silently turn it on).
+    outboundEnabled: typeof outboundEnabled === 'boolean' ? outboundEnabled : existing.outboundEnabled === true,
     outboundPaused: !!outboundPaused,
     dailyCap: typeof dailyCap === 'number' && dailyCap >= 1 ? Math.min(dailyCap, 200) : 20,
     updatedAt: new Date().toISOString(),

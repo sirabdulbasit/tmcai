@@ -222,14 +222,14 @@ async function handleSelfDictation(args: {
 
   if (pending && looksLikeCancel) {
     await prisma.agentAction.update({ where: { id: pending.id }, data: { status: 'cancelled' } as any });
-    await sendReply(userId, rawFrom, '✗ Cancelled. Nothing happened. Send a new instruction whenever you want.');
+    await sendReply(userId, rawFrom, '✗ Cancelled. Nothing happened. Send a new instruction whenever you want.', 'self_dictation_cancel_ack');
     return;
   }
   if (pending && looksLikeConfirm) {
     const stored: any = pending.input ?? {};
     const ix = stored.instruction;
     if (!ix) {
-      await sendReply(userId, rawFrom, 'Could not read the staged instruction. Please re-record.');
+      await sendReply(userId, rawFrom, 'Could not read the staged instruction. Please re-record.', 'self_dictation_confirm_ack');
       return;
     }
     const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
@@ -238,7 +238,7 @@ async function handleSelfDictation(args: {
       where: { id: pending.id },
       data: { status: out.ok ? 'done' : 'failed', output: { dispatchResult: out } as any } as any,
     });
-    await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`);
+    await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`, 'self_dictation_confirm_dispatch');
     return;
   }
   if (pending && !looksLikeConfirm && !looksLikeCancel) {
@@ -289,7 +289,7 @@ async function handleSelfDictation(args: {
   const planLine = `\n\n→ ${ix.summary || 'I will act on this.'}`;
   const promptLine = `\n\nReply YES to confirm, anything else to cancel.`;
 
-  await sendReply(userId, rawFrom, `${heardLine}${englishLine}${planLine}${promptLine}`);
+  await sendReply(userId, rawFrom, `${heardLine}${englishLine}${planLine}${promptLine}`, 'self_dictation_confirm_ack');
 }
 
 /** Ensure the user has a whatsapp_personal row — lazy-creates on first pair.
@@ -940,7 +940,37 @@ export async function disconnect(userId: number): Promise<void> {
   await writeMeta(userId, { status: 'disconnected', qrDataUrl: null, qrExpiresAt: null, connectedNumber: null }, 'disconnected' as any);
 }
 
-export async function sendReply(userId: number, toChatId: string, text: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+/**
+ * SendProvenance — every legitimate caller of sendReply must declare WHY
+ * it is sending a message from the user's paired WhatsApp client.
+ *
+ * Hard rule (see memory: feedback_brain_never_speaks_as_user.md):
+ * the only acceptable values describe a user-initiated chain — a UI
+ * button, the user's own self-dictation confirmation, or a tested
+ * admin verify path. No "inbound looked like an instruction" path is
+ * acceptable. If you find yourself wanting to add a new value here
+ * because of a heuristic on incoming messages from contacts, STOP —
+ * that's the trust-shattering bug class we already paid for.
+ */
+export type SendProvenance =
+  | 'ui_user_send_draft'                  // User clicked Send on a Day Brief draft
+  | 'ui_user_send_voice_note'             // User clicked Send Voice Note
+  | 'self_dictation_confirm_dispatch'     // User confirmed their own self-chat dictation
+  | 'self_dictation_confirm_ack'          // Brain acks the user's own self-dictation
+  | 'self_dictation_cancel_ack'           // Brain acks the user's own dictation cancel
+  | 'admin_verify_test';                  // Admin verify panel test send (dev only)
+
+export async function sendReply(
+  userId: number,
+  toChatId: string,
+  text: string,
+  provenance: SendProvenance,
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  // Runtime audit: every send writes its provenance + caller info to
+  // the log so any unexpected value (or future bug) is immediately
+  // visible in operational logs. We can grep for SEND_AUDIT in pm2
+  // logs and verify only the whitelisted values appear.
+  log.info('SEND_AUDIT', { userId, toChatId, provenance, textLen: text.length });
   const client = clients.get(userId);
   if (!client) {
     return { success: false, error: 'WhatsApp session not active — open Connectors and re-scan the QR to re-pair.' };

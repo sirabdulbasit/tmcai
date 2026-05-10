@@ -379,7 +379,11 @@ router.post('/drafts/:id/send', async (req: Request, res: Response) => {
       const chatId = out.chatId;
       if (!chatId) return res.status(400).json({ error: 'draft is missing chatId' });
       const { sendReply } = await import('../services/whatsapp/UserWebjsProvider');
-      r = await sendReply(user.id, chatId, body);
+      // Provenance: this endpoint is only reachable via the user
+      // clicking Send on a draft they've reviewed in Day Brief.
+      // Authentication is verified via requireAuth middleware on the
+      // route. This is the canonical user-initiated send.
+      r = await sendReply(user.id, chatId, body, 'ui_user_send_draft');
     } else {
       // Build a proper threaded reply. The send path used to drop
       // threadId, In-Reply-To, and References — every reply showed up

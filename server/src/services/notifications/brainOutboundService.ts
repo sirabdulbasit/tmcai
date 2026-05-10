@@ -161,10 +161,26 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }, 'smoke_suppressed (set BRAIN_SMOKE_LIVE=1 to allow)');
   }
 
-  // ── Per-user emergency pause ───────────────────────────────────────
-  // User-controlled kill switch. When true, every outbound from Brain
-  // to this user is suppressed. User can flip this from Settings if
-  // Brain ever gets noisy. Bypasses ARE NOT honored — pause means pause.
+  // ── Opt-in gate ─────────────────────────────────────────────────────
+  // Brain → user WhatsApp is OFF by default. The user must explicitly
+  // enable it from Settings → Brain notifications. Until they do, every
+  // outbound is suppressed regardless of urgency.
+  //
+  // Per user 2026-05-10: "we need to provide option to user if he wants
+  // brain to communicate him on whatsapp ... brain never response from
+  // user". The tenant Brain notifier number exists only to inform the
+  // user when something genuinely needs them — and only when the user
+  // has chosen to receive those pings.
+  //
+  // outboundPaused is preserved as a hard kill switch on top of the
+  // opt-in: if the user enabled outbound but later wants silence, they
+  // flip pause and even legitimate-looking sends are blocked.
+  if (bc.outboundEnabled !== true) {
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, 'opt_in_required (Settings → Brain notifications → Enable WhatsApp)');
+  }
   if (bc.outboundPaused === true) {
     return await record({
       ...req, user, channel: 'text', urgency,

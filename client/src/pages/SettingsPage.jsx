@@ -234,6 +234,7 @@ function BrainChannelSection({ user }) {
   const [quietStart, setQuietStart] = useState('22:00');
   const [quietEnd, setQuietEnd] = useState('06:00');
   const [minConfidence, setMinConfidence] = useState('0.7');
+  const [outboundEnabled, setOutboundEnabled] = useState(false);  // opt-in default off
   const [outboundPaused, setOutboundPaused] = useState(false);
   const [dailyCap, setDailyCap] = useState('20');
   const [saving, setSaving] = useState(false);
@@ -248,6 +249,7 @@ function BrainChannelSection({ user }) {
       setQuietStart(d.quietStart || '22:00');
       setQuietEnd(d.quietEnd || '06:00');
       setMinConfidence(String(d.minConfidence ?? 0.7));
+      setOutboundEnabled(d.outboundEnabled === true);
       setOutboundPaused(!!d.outboundPaused);
       setDailyCap(String(d.dailyCap ?? 20));
     }).catch(() => {
@@ -261,6 +263,7 @@ function BrainChannelSection({ user }) {
       await api.put('/profile/brain-channel', {
         channel, whatsappNumber, quietStart, quietEnd,
         minConfidence: parseFloat(minConfidence),
+        outboundEnabled,
         outboundPaused,
         dailyCap: parseInt(dailyCap, 10) || 20,
       });
@@ -319,17 +322,31 @@ function BrainChannelSection({ user }) {
       </div>
 
       <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
-        Safety
+        Brain → you on WhatsApp (opt-in)
       </h3>
 
-      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundPaused ? 'rgba(239,68,68,0.10)' : '#1f1f1f', border: `1px solid ${outboundPaused ? 'rgba(239,68,68,0.5)' : '#333'}`, borderRadius: 8 }}>
+      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundEnabled ? 'rgba(34,197,94,0.10)' : '#1f1f1f', border: `1px solid ${outboundEnabled ? 'rgba(34,197,94,0.5)' : '#444'}`, borderRadius: 8 }}>
+        <input type="checkbox" id="outboundEnabled" checked={outboundEnabled} onChange={(e) => setOutboundEnabled(e.target.checked)} style={{ width: 18, height: 18 }} />
+        <label htmlFor="outboundEnabled" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
+          <div style={{ color: outboundEnabled ? '#86efac' : '#eee', fontWeight: 600 }}>
+            {outboundEnabled ? 'Brain may message me on WhatsApp' : 'Enable Brain to message me on WhatsApp'}
+          </div>
+          <div style={{ fontSize: 11, color: '#888', marginTop: 2, lineHeight: 1.5 }}>
+            When enabled, Brain pings you from the company's WhatsApp Business number for items it judges substantive enough to interrupt your day. Default: <strong>off</strong> — Brain stays in Day Brief / email.
+            <br /><br />
+            <strong style={{ color: '#86efac' }}>Brain never replies as you.</strong> Brain has no path to send messages from your personal WhatsApp number to anyone — not your colleagues, not your contacts, not on heuristic, not ever. Your contacts only ever hear from you when you explicitly send.
+          </div>
+        </label>
+      </div>
+
+      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundPaused ? 'rgba(239,68,68,0.10)' : '#1f1f1f', border: `1px solid ${outboundPaused ? 'rgba(239,68,68,0.5)' : '#333'}`, borderRadius: 8, marginTop: 8 }}>
         <input type="checkbox" id="outboundPaused" checked={outboundPaused} onChange={(e) => setOutboundPaused(e.target.checked)} style={{ width: 18, height: 18 }} />
         <label htmlFor="outboundPaused" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
           <div style={{ color: outboundPaused ? '#fca5a5' : '#eee', fontWeight: 600 }}>
-            {outboundPaused ? 'Brain WhatsApp PAUSED' : 'Pause Brain on WhatsApp'}
+            {outboundPaused ? 'Pause active — Brain is silent' : 'Temporarily pause (kill switch)'}
           </div>
           <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
-            Hard kill switch — when on, Brain sends no WhatsApp messages to you (text, voicenote, voice call) regardless of priority. Day Brief and email still work. Flip off when you're ready to hear from Brain again.
+            On top of the opt-in: a hard kill switch. When checked, Brain sends nothing to your WhatsApp regardless of the toggle above. Use during meetings, evenings, weekends — flip off when you want Brain back.
           </div>
         </label>
       </div>
