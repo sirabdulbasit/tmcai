@@ -1974,7 +1974,11 @@ function InboxBrowser({ source, label, onClose, initialQuery }) {
  * single-message payload; mode='preview' falls back to "thread" view
  * automatically since there's no real summary.
  */
-function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
+function ThreadPreviewModal({
+  feedEventId, mode = 'thread', onClose, notify,
+  conversationCount, conversationEarliestAt, conversationLatestAt,
+  loops, conversationSummary, senderName,
+}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -2060,6 +2064,60 @@ function ThreadPreviewModal({ feedEventId, mode = 'thread', onClose, notify }) {
 
         {/* Body */}
         <div style={{ overflowY: 'auto', flex: 1, padding: 'var(--s-4)' }}>
+          {/* Conversation header — when this is a collapsed WA
+              conversation card, show the count + time-span here in
+              the modal where the user can see them alongside the
+              actual messages. The card-side badge stays compact
+              (just "↻ N") so the card remains scannable. */}
+          {conversationCount > 1 && (() => {
+            const earliest = conversationEarliestAt ? new Date(conversationEarliestAt) : null;
+            const latest = conversationLatestAt ? new Date(conversationLatestAt) : null;
+            const fmtDateTime = (d) => {
+              const dd = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+              const hh = String(d.getHours()).padStart(2, '0');
+              const mm = String(d.getMinutes()).padStart(2, '0');
+              return `${dd} · ${hh}:${mm}`;
+            };
+            const range = earliest && latest
+              ? (earliest.toDateString() === latest.toDateString()
+                  ? `${fmtDateTime(earliest)} → ${String(latest.getHours()).padStart(2,'0')}:${String(latest.getMinutes()).padStart(2,'0')}`
+                  : `${fmtDateTime(earliest)} → ${fmtDateTime(latest)}`)
+              : '';
+            return (
+              <div style={{
+                padding: 'var(--s-3) var(--s-4)',
+                background: 'rgba(125,211,252,0.08)',
+                border: '1px solid rgba(125,211,252,0.30)',
+                borderRadius: 'var(--r-md)',
+                marginBottom: 'var(--s-4)',
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--text)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 'var(--fs-base)' }}>↻</span>
+                  <strong>{conversationCount} messages{senderName ? ` with ${senderName}` : ''}</strong>
+                  {range && <span style={{ color: 'var(--text-muted)' }}>· {range}</span>}
+                </div>
+                {conversationSummary && (
+                  <div style={{ marginTop: 6, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    {conversationSummary}
+                  </div>
+                )}
+                {Array.isArray(loops) && loops.length > 0 && (() => {
+                  const open = loops.filter((l) => l.openWith === 'user');
+                  const waiting = loops.filter((l) => l.openWith === 'them');
+                  const closed = loops.filter((l) => l.openWith === null && l.closedAt);
+                  return (
+                    <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      {open.length > 0 && <span style={{ color: 'var(--accent)' }}>{open.length} open with you</span>}
+                      {waiting.length > 0 && <span style={{ color: 'var(--text-muted)' }}>{waiting.length} waiting on them</span>}
+                      {closed.length > 0 && <span style={{ color: 'var(--text-dim)' }}>✓ {closed.length} closed</span>}
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })()}
           {loading && (
             <div style={{ padding: 'var(--s-4)', color: 'var(--text-muted)', textAlign: 'center' }}>
               Loading thread + summary…
@@ -3844,21 +3902,33 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
                 💬 {item.threadCount} messages from {(item.threadSenders ?? []).length} {(item.threadSenders ?? []).length === 1 ? 'person' : 'people'}
               </Pill>
             )}
-            {/* WhatsApp conversation collapse badge — N messages from the
-                same contact within a 24h window. Tooltip shows the time
-                span so the user sees at a glance whether this is "all of
-                today's chat" or "a tight burst this hour". */}
+            {/* WhatsApp conversation collapse — compact badge. Per user
+                2026-05-10: the full "N messages in this conversation"
+                pill was redundant on the card; the messages live in
+                the View thread modal where the count + time-span are
+                rendered alongside the actual messages. Keep a small
+                "↻ N" indicator on the card so the user can tell at a
+                glance this is a multi-message conversation, not a
+                single fragment, and tap through for the full thread. */}
             {item.conversationCount > 1 && (() => {
               const earliest = item.conversationEarliestAt ? new Date(item.conversationEarliestAt) : null;
               const latest = item.conversationLatestAt ? new Date(item.conversationLatestAt) : null;
               const fmtTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
               const tooltip = earliest && latest
-                ? `${fmtTime(earliest)} → ${fmtTime(latest)} · ${item.conversationCount} messages`
-                : undefined;
+                ? `${fmtTime(earliest)} → ${fmtTime(latest)} · ${item.conversationCount} messages — tap View thread for full conversation`
+                : `${item.conversationCount} messages — tap View thread for full conversation`;
               return (
-                <Pill variant="info" title={tooltip}>
-                  ↻ {item.conversationCount} messages in this conversation
-                </Pill>
+                <span
+                  title={tooltip}
+                  style={{
+                    fontSize: 'var(--fs-xs)',
+                    color: 'var(--text-muted)',
+                    fontWeight: 'var(--fw-medium)',
+                    padding: '0 4px',
+                  }}
+                >
+                  ↻ {item.conversationCount}
+                </span>
               );
             })()}
           </div>
@@ -4258,6 +4328,12 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
           mode={threadModalMode}
           onClose={() => setThreadModalMode(null)}
           notify={notify}
+          conversationCount={item.conversationCount}
+          conversationEarliestAt={item.conversationEarliestAt}
+          conversationLatestAt={item.conversationLatestAt}
+          loops={item.loops}
+          conversationSummary={item.conversationSummary}
+          senderName={item.fromDisplay || item.from}
         />
       )}
 
