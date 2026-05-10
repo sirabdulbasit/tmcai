@@ -61,6 +61,24 @@ export interface AttentionItem {
   conversationFeedEventIds?: string[];
   conversationEarliestAt?: string;
   conversationLatestAt?: string;
+  /** Brain's loop-extraction over the full conversation thread. Filled
+   *  for collapsed WA conversations. Each loop is a topic-scoped
+   *  exchange — open with user (MD must respond), open with them (MD
+   *  is waiting on them), closed (already resolved), or casual. UI
+   *  renders these as bullets so a single card surfaces multiple
+   *  distinct asks when topics shift mid-conversation. */
+  loops?: Array<{
+    topic: string;
+    ask: string | null;
+    openWith: 'user' | 'them' | null;
+    askedAt: string | null;
+    resolution: string | null;
+    closedAt: string | null;
+    type: 'decision_required' | 'scheduling' | 'info_request' | 'task_handoff' | 'casual';
+  }>;
+  /** One-sentence summary of the whole conversation, also from the
+   *  loop analyzer. Useful as the card subhead when loops are present. */
+  conversationSummary?: string;
   /** Raw RFC2822 form ("Name <addr@x>") — kept for pattern matching
    *  inside the engine. Don't render this to the user. */
   from: string;
@@ -1417,6 +1435,66 @@ export async function buildAttentionList(
   }
   items.length = 0;
   items.push(...nonWa, ...waCollapsed);
+
+  // ── WhatsApp loop extraction (Phase 2) ──
+  // For each collapsed WA conversation card, ask Brain to read the
+  // full thread and extract the discrete OPEN LOOPS by topic. Cards
+  // that have no openWith=user loops route to auto-handle (Brief);
+  // cards with one or more open loops surface as multi-bullet cards
+  // in My Attention. Cached per latest-message-id so a quiet
+  // conversation doesn't burn an LLM call every triage cycle.
+  //
+  // Runs only on WA cards that actually carry conversationCount > 1
+  // — single messages don't benefit from loop extraction. Best-effort:
+  // failure leaves the card without loops (Phase 1 single-decision
+  // behaviour applies).
+  const waCardsForLoops = items.filter(
+    (it) => it.itemType === 'whatsapp' && Number((it as any).conversationCount) > 1,
+  );
+  if (waCardsForLoops.length > 0) {
+    const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+    const { analyzeConversation } = await import('./conversationAnalyzer');
+    await Promise.all(waCardsForLoops.map(async (it) => {
+      try {
+        const chatId = (it as any).chatId
+          || (it as any).senderPhone
+          || it.fromEmail
+          || it.from;
+        if (!chatId) return;
+        const senderKey = ((it as any).senderPhone || it.fromEmail || it.from || '').toLowerCase().trim();
+        // Use the most recent feed_event id in the conversation as the
+        // cache key — it changes when new messages arrive, invalidating
+        // the cached loops naturally.
+        const latestEventId = ((it as any).conversationFeedEventIds ?? [it.feedEventId])[0];
+        const thread = await fetchThreadContext(userId, String(chatId), 20).catch(() => []);
+        if (thread.length === 0) return;
+        const analysis = await analyzeConversation({
+          userId, clientNumber,
+          senderName: it.fromDisplay || it.from || senderKey,
+          senderKey,
+          thread,
+          latestEventId,
+        });
+        (it as any).loops = analysis.loops;
+        (it as any).conversationSummary = analysis.summary;
+        // If the analyzer found NO open user-facing loop, the card
+        // doesn't need to bother the user. Demote to non-critical so
+        // the autonomy gate / handled list can route it correctly.
+        // We don't auto-route here — the existing autonomy gate
+        // downstream uses this signal. We just nullify the critical
+        // flag and downgrade band when no user-facing loop exists.
+        if (!analysis.hasOpenLoopWithUser && analysis.loops.length > 0) {
+          // Loops exist but none point at the user — closed/casual.
+          if (it.criticality) {
+            it.criticality.band = it.criticality.band === 'critical' ? 'medium' : it.criticality.band;
+          }
+          it.critical = false;
+        }
+      } catch (err: any) {
+        console.warn('[triage] loop extraction failed for WA card', it.feedEventId, err.message);
+      }
+    }));
+  }
 
   // ── CC suppression ──
   // Emails where the user is on CC (not To/Bcc) drop OFF My Attention by

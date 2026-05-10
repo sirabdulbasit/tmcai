@@ -3869,6 +3869,76 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
               ? (item.preview || item.subject || '(empty message)')
               : (item.subject || '(no subject)')}
           </div>
+          {/* WhatsApp loop extraction (Phase 2) — when Brain has read
+              the full conversation thread and identified discrete open
+              loops by topic, render each as a bullet so the user sees
+              ALL the asks in one card without re-reading the chat. */}
+          {item.itemType === 'whatsapp' && Array.isArray(item.loops) && item.loops.length > 0 && (() => {
+            const open = item.loops.filter((l) => l.openWith === 'user');
+            const waiting = item.loops.filter((l) => l.openWith === 'them');
+            const closed = item.loops.filter((l) => l.openWith === null && l.closedAt);
+            return (
+              <div style={{
+                marginTop: 8,
+                padding: 'var(--s-2) var(--s-3)',
+                background: 'var(--bg-1, rgba(255,255,255,0.03))',
+                borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-xs)',
+                display: 'flex', flexDirection: 'column', gap: 6,
+              }}>
+                {item.conversationSummary && (
+                  <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    {item.conversationSummary}
+                  </div>
+                )}
+                {open.length > 0 && (
+                  <div>
+                    <div style={{ color: 'var(--accent)', fontWeight: 'var(--fw-medium)', marginBottom: 4 }}>
+                      {open.length === 1 ? '1 open with you:' : `${open.length} open with you:`}
+                    </div>
+                    {open.map((l, i) => (
+                      <div key={`o-${i}`} style={{ paddingLeft: 12, color: 'var(--text)', marginBottom: 4 }}>
+                        <strong>{i + 1}. {l.topic}</strong>
+                        {l.ask && <div style={{ color: 'var(--text-muted)', marginTop: 1, fontStyle: 'italic' }}>"{l.ask}"</div>}
+                        {l.askedAt && <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', marginTop: 1 }}>asked {l.askedAt}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {waiting.length > 0 && (
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontWeight: 'var(--fw-medium)', marginBottom: 4 }}>
+                      Waiting on them:
+                    </div>
+                    {waiting.map((l, i) => (
+                      <div key={`w-${i}`} style={{ paddingLeft: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                        <strong>{l.topic}</strong>
+                        {l.ask && <span style={{ marginLeft: 6, fontStyle: 'italic' }}>— "{l.ask}"</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {closed.length > 0 && (
+                  <div>
+                    <div style={{ color: 'var(--text-dim)', fontWeight: 'var(--fw-medium)', marginBottom: 4 }}>
+                      {closed.length === 1 ? '1 already closed:' : `${closed.length} already closed:`}
+                    </div>
+                    {closed.map((l, i) => (
+                      <div key={`c-${i}`} style={{ paddingLeft: 12, color: 'var(--text-dim)' }}>
+                        ✓ <strong>{l.topic}</strong>
+                        {l.resolution && <span style={{ marginLeft: 6 }}>— {l.resolution}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {open.length === 0 && waiting.length === 0 && closed.length === 0 && (
+                  <div style={{ color: 'var(--text-dim)' }}>
+                    No actionable loops in this conversation.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {/* Meeting details + conflict badge. Only rendered for calendar
               items; nothing shows when meeting is absent. */}
           {item.itemType === 'meeting' && item.meeting && (
