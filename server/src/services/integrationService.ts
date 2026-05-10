@@ -197,6 +197,27 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
                 },
               }).catch(() => { /* best effort */ });
             }
+            // Fire one Brain alert so the user knows immediately their
+            // Google connectors went dead — instead of discovering it
+            // 4 days later when My Attention is empty. Deduped on the
+            // userId so a stuck refresh doesn't spam (brainContactsUser
+            // dedupKey + dedupWindow handles this).
+            try {
+              const { brainContactsUser } = await import('./notifications/brainOutboundService');
+              const isExpiry = /invalid_grant|token has been expired|expired or revoked/i.test(errorMessage);
+              await brainContactsUser({
+                userId,
+                kind: 'connector_stale',
+                summary: isExpiry ? 'Google token expired — reconnect needed' : 'Google connector failed',
+                body: isExpiry
+                  ? `⚠️ Your Google sign-in expired. Gmail, Calendar, Drive, Tasks, and Chat have all stopped syncing.\n\nOpen Connectors and reconnect to restore Day Brief.`
+                  : `⚠️ Google connector hit an error: ${errorMessage.slice(0, 120)}\n\nOpen Connectors to investigate.`,
+                urgency: 'high',
+                dedupKey: `google_oauth_failure:${userId}`,
+                dedupWindowMs: 4 * 60 * 60 * 1000,
+                metadata: { errorMessage, isExpiry } as any,
+              }).catch(() => { /* best effort */ });
+            } catch { /* notifications service optional */ }
           }
         }
 

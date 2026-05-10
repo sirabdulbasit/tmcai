@@ -422,6 +422,25 @@ const server = app.listen(env.port, async () => {
     }
   }, 90 * 1000);
 
+  // MyOS — connector health sweep every 5 min. Catches the OAuth-
+  // Testing-mode 7-day expiry case (Gmail/Calendar/Drive go silent
+  // simultaneously, status='connected' lies, no error logged) before
+  // it costs the user days of empty Day Brief. Flips status to
+  // sync_stale on connectors past their cadence threshold and fires
+  // one Brain WhatsApp ping per occurrence (deduped). See memory:
+  // project_oauth_stale_sync_failure.md.
+  setInterval(async () => {
+    try {
+      const { detectStaleConnectors } = await import('./services/connectorHealthService');
+      const r = await detectStaleConnectors();
+      if (r.flipped > 0) {
+        console.log(`[connectorHealth] scanned=${r.scanned} flipped_to_stale=${r.flipped}`);
+      }
+    } catch (err: any) {
+      console.warn('[connectorHealth] error:', err.message);
+    }
+  }, 5 * 60 * 1000);
+
   // MyOS — open-items backlog cleanup every 60min. Walks the backlog and
   // applies the same quality gate that gates auto-creates, plus a
   // stale-no-engagement sweep and duplicate collapse. Critical items

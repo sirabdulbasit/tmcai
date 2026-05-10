@@ -2426,6 +2426,27 @@ router.post('/handled/:feedEventId/override', async (req: Request, res: Response
   });
 });
 
+/**
+ * GET /brief/connector-health
+ * Read-only snapshot for the Day Brief banner — returns the list of
+ * unhealthy connectors so the UI can render a clickable warning when
+ * Gmail/Calendar/Drive are stale.
+ *
+ * Response: { healthy: number, unhealthy: ConnectorHealth[] }
+ *   ConnectorHealth = { connectorId, connectorTypeId, label, status,
+ *                       lastSyncAt, lastError, staleMin }
+ */
+router.get('/connector-health', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  try {
+    const { getConnectorHealthSnapshot } = await import('../services/connectorHealthService');
+    const snap = await getConnectorHealthSnapshot(user.id);
+    res.json(snap);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Hide a pattern from My Attention going forward (soft — audit intact). */
 router.post('/hide', async (req: Request, res: Response) => {
   const user = (req as any).user;

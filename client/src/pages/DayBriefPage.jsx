@@ -574,6 +574,16 @@ export default function DayBriefPage() {
   const [volume, setVolume] = useState(cached?.volume ?? null);
   const [attention, setAttention] = useState(cached?.attention ?? []);
   const [brainActions, setBrainActions] = useState(cached?.brainActions ?? []);
+  // Connector health snapshot — drives the "Reconnect Gmail" banner
+  // at the top of Day Brief when any of the user's connectors are
+  // stale / token-expired / errored. Polls every 5 min so a freshly-
+  // detected stall surfaces within one tick, and on user click on
+  // [Dismiss] we hide for 6h via sessionStorage.
+  const [connectorHealth, setConnectorHealth] = useState({ healthy: 0, unhealthy: [] });
+  const [connectorBannerDismissed, setConnectorBannerDismissed] = useState(() => {
+    const until = Number(sessionStorage.getItem('connectorBannerDismissedUntil') || 0);
+    return until > Date.now();
+  });
   // 100% accountability — items Brain handled WITHOUT bothering the user.
   // Bucketed: auto_rule | auto_noise | auto_self | auto_high_confidence | auto_decided.
   // Fed by /brief/handled. Together with `attention` they cover every
@@ -671,7 +681,7 @@ export default function DayBriefPage() {
       // 02:08→02:09 was exactly this. Better to wait the real time
       // with a continuous loading indicator than fake an early
       // resolution.
-      const [atten, brain, ds, ins, gap, cog, hndl] = await Promise.all([
+      const [atten, brain, ds, ins, gap, cog, hndl, connHealth] = await Promise.all([
         api.get('/brief/attention?limit=200').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
         api.get('/brief/drafts').then((r) => r.data.drafts ?? []).catch(() => []),
@@ -679,7 +689,9 @@ export default function DayBriefPage() {
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
         api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
         api.get('/brief/handled?limit=100').then((r) => ({ items: r.data.items ?? [], byBucket: r.data.byBucket ?? {} })).catch(() => ({ items: [], byBucket: {} })),
+        api.get('/brief/connector-health').then((r) => r.data ?? { healthy: 0, unhealthy: [] }).catch(() => ({ healthy: 0, unhealthy: [] })),
       ]);
+      setConnectorHealth(connHealth);
       setAttention(atten);
       setBrainActions(brain);
       setDrafts(ds);
@@ -1034,6 +1046,81 @@ export default function DayBriefPage() {
           boxShadow: 'var(--shadow-lg)', zIndex: 90,
         }}
       >🎤</button>
+
+      {/* Connector health banner — surfaces stale or token-expired
+          connectors at the top of Day Brief so the user discovers
+          ingest stalls in 5 min, not 4 days. Fed by /brief/connector-
+          health (which reads user_connectors.status set by both the
+          stale-sync detector and the OAuth refresh-failure path).
+          Dismissible for 6h via sessionStorage so the user can mute
+          it during a known-broken interval, then it auto-resurfaces.
+          See memory: project_oauth_stale_sync_failure.md. */}
+      {!connectorBannerDismissed && (connectorHealth.unhealthy?.length ?? 0) > 0 && (
+        <div style={{
+          margin: '0 0 var(--s-4)',
+          padding: 'var(--s-3) var(--s-4)',
+          background: 'rgba(248,113,113,0.08)',
+          border: '1px solid rgba(248,113,113,0.4)',
+          borderRadius: 'var(--r-md)',
+          display: 'flex', alignItems: 'flex-start', gap: 'var(--s-3)',
+          flexWrap: 'wrap',
+        }}>
+          <div style={{ fontSize: 22, lineHeight: 1, paddingTop: 2 }}>⚠️</div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ color: '#fca5a5', fontWeight: 'var(--fw-semibold)', fontSize: 'var(--fs-sm)' }}>
+              {connectorHealth.unhealthy.length === 1
+                ? `${connectorHealth.unhealthy[0].label} not syncing`
+                : `${connectorHealth.unhealthy.length} connectors not syncing`}
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', marginTop: 4, lineHeight: 1.5 }}>
+              {connectorHealth.unhealthy.map((u, i) => {
+                const last = u.lastSyncAt ? new Date(u.lastSyncAt) : null;
+                const ageMin = last ? Math.round((Date.now() - last.getTime()) / 60000) : null;
+                const ageStr = ageMin == null ? 'never'
+                  : ageMin >= 1440 ? `${Math.floor(ageMin / 1440)}d`
+                  : ageMin >= 60 ? `${Math.floor(ageMin / 60)}h`
+                  : `${ageMin}m`;
+                return (
+                  <div key={u.connectorId}>
+                    <strong>{u.label}</strong> · last sync {ageStr} ago
+                    {u.lastError && <span style={{ color: 'var(--text-dim)' }}> — {String(u.lastError).slice(0, 100)}</span>}
+                  </div>
+                );
+              })}
+              <div style={{ marginTop: 6, color: 'var(--text-dim)' }}>
+                Day Brief is missing items from these sources. Reconnect to restore.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'flex-start' }}>
+            <a
+              href="/connectors"
+              style={{
+                background: 'var(--accent)', color: '#fff',
+                padding: '6px 14px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)',
+                textDecoration: 'none',
+              }}
+            >
+              Reconnect
+            </a>
+            <button
+              onClick={() => {
+                sessionStorage.setItem('connectorBannerDismissedUntil', String(Date.now() + 6 * 60 * 60 * 1000));
+                setConnectorBannerDismissed(true);
+              }}
+              style={{
+                background: 'transparent', border: '1px solid var(--border)',
+                color: 'var(--text-muted)', padding: '6px 12px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-xs)', cursor: 'pointer',
+              }}
+              title="Hide for 6h. Banner re-appears if still broken after that."
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════════════════
           ZONE 1 — TODAY  (urgent, action-needed)
