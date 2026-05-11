@@ -810,12 +810,40 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
       };
       const encryptedConfig = await encryptConnectorConfig(configToSave);
 
+      // Helper: strip stale-error metadata that survives a refresh
+      // failure. Without this, the BrokenConnectorBanner keeps showing
+      // the connector as broken indefinitely (it reads
+      // metadata.lastRefreshError, not just status). Observed 2026-05-12:
+      // Drive reconnected fine via markAllGoogle, status='connected',
+      // but stale lastRefreshError from yesterday's cascade kept the
+      // banner red for >24h. Now any successful OAuth save clears the
+      // relevant metadata so the banner reflects current reality.
+      const clearStaleErrorMeta = async (ucId: string) => {
+        const existing = await prisma.userConnector.findUnique({
+          where: { id: ucId }, select: { metadata: true },
+        }).catch(() => null);
+        if (!existing) return;
+        const m = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) };
+        delete m.lastError;
+        delete m.staleSince;
+        delete m.staleMin;
+        delete m.lastRefreshError;
+        delete m.lastRefreshErrorAt;
+        delete m.tokenExpiredAt;
+        m.recoveredAt = new Date().toISOString();
+        m.recoveredVia = 'oauth_callback';
+        await prisma.userConnector.update({
+          where: { id: ucId }, data: { metadata: m as any },
+        }).catch(() => { /* best-effort */ });
+      };
+
       // Save for the triggering connector
-      await prisma.userConnector.upsert({
+      const triggerUc = await prisma.userConnector.upsert({
         where: { userId_connectorTypeId: { userId, connectorTypeId } },
         create: { userId, clientNumber: user.clientNumber, connectorTypeId, config: encryptedConfig as any, status: 'connected' },
         update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
       });
+      await clearStaleErrorMeta(triggerUc.id);
 
       // If markAllGoogle: save same token for ALL Google connectors (one auth covers all scopes)
       if (markAllGoogle) {
@@ -828,11 +856,12 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
             where: { clientNumber_connectorTypeId: { clientNumber: user.clientNumber, connectorTypeId: gt.id } },
           });
           if (tenantConfig?.isEnabled) {
-            await prisma.userConnector.upsert({
+            const sibling = await prisma.userConnector.upsert({
               where: { userId_connectorTypeId: { userId, connectorTypeId: gt.id } },
               create: { userId, clientNumber: user.clientNumber, connectorTypeId: gt.id, config: encryptedConfig as any, status: 'connected' },
               update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
             });
+            await clearStaleErrorMeta(sibling.id);
           }
         }
         console.log(`[Connector] Google OAuth: marked all enabled Google connectors as connected for user ${userId}`);

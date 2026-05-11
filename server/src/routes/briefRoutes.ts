@@ -1357,24 +1357,42 @@ router.get('/connector-gaps', async (req: Request, res: Response) => {
       .map((g) => ({ ...g, satisfied: g.options.some((o) => slugs.has(o.slug)) }))
       .filter((g) => !g.satisfied);
 
-    // Broken connectors: status='error' OR a recent token-refresh
-    // failure stamped in metadata. These look "connected" by the
-    // legacy slug check above (they were once valid) but can no
-    // longer call upstream. Surface them so the user has a path
-    // to reconnect — without this, Day Brief silently shows zeros
-    // for the broken channel.
+    // Broken connectors: surface anything that's actually broken
+    // right now. The rule is: `status` is the source of truth. If
+    // the row's status is 'connected' or 'pending', the connector
+    // is healthy regardless of any stale metadata.lastRefreshError
+    // from a long-ago failure.
+    //
+    // Bug fixed 2026-05-12: previously the filter was
+    //   c.status === 'error' || !!m?.lastRefreshError
+    // which kept Drive flagged as broken for >24h after a successful
+    // reconnect because the OAuth callback writes status='connected'
+    // + errorMessage=null but doesn't clear metadata.lastRefreshError.
+    // The sibling-heal in connectorSyncTracker.stampConnectorSync
+    // does strip those metadata fields, but only on a successful
+    // poll — Drive never polled, so metadata.lastRefreshError
+    // persisted from yesterday's cascade. Result: the BrokenConnector
+    // Banner showed Drive as broken indefinitely.
+    //
+    // New rule: status is authoritative. lastRefreshError still
+    // contributes to the displayed message (so the user sees WHY it
+    // broke), but only when status is itself non-healthy.
     const broken = rows
       .filter((c) => {
+        if (c.status === 'connected' || c.status === 'pending') return false;
         const m: any = c.metadata ?? {};
-        return c.status === 'error' || !!m?.lastRefreshError;
+        return c.status === 'error'
+            || c.status === 'sync_stale'
+            || c.status === 'token_expired'
+            || !!m?.lastRefreshError;
       })
       .map((c) => {
         const m: any = c.metadata ?? {};
         return {
           slug: c.connectorType.slug,
           name: c.connectorType.name,
-          error: String(m?.lastRefreshError ?? 'connection error'),
-          since: m?.lastRefreshErrorAt ?? null,
+          error: String(m?.lastRefreshError ?? m?.lastError ?? 'connection error'),
+          since: m?.lastRefreshErrorAt ?? m?.staleSince ?? null,
         };
       });
 
