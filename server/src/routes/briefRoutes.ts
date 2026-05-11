@@ -1377,9 +1377,13 @@ router.get('/connector-gaps', async (req: Request, res: Response) => {
     // New rule: status is authoritative. lastRefreshError still
     // contributes to the displayed message (so the user sees WHY it
     // broke), but only when status is itself non-healthy.
+    const { isConnectorHealthy } = await import('../services/connectorHealthService');
     const broken = rows
       .filter((c) => {
-        if (c.status === 'connected' || c.status === 'pending') return false;
+        // SINGLE blessed predicate — see memory:
+        // feedback_connector_status_is_truth.md. status is the source
+        // of truth; metadata is historical breadcrumbs.
+        if (isConnectorHealthy(c)) return false;
         const m: any = c.metadata ?? {};
         return c.status === 'error'
             || c.status === 'sync_stale'

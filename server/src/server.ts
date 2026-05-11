@@ -431,10 +431,19 @@ const server = app.listen(env.port, async () => {
   // project_oauth_stale_sync_failure.md.
   setInterval(async () => {
     try {
-      const { detectStaleConnectors } = await import('./services/connectorHealthService');
-      const r = await detectStaleConnectors();
-      if (r.flipped > 0) {
-        console.log(`[connectorHealth] scanned=${r.scanned} flipped_to_stale=${r.flipped}`);
+      const { detectStaleConnectors, sweepStaleErrorMetadata } = await import('./services/connectorHealthService');
+      const [staleResult, metaResult] = await Promise.all([
+        detectStaleConnectors(),
+        // Belt-and-suspenders: scrub stale-error metadata from any
+        // status='connected' row that still carries old lastRefreshError
+        // breadcrumbs. Without this, a buggy caller (or manual SQL) that
+        // flips status without clearing metadata leaves the BrokenConnector
+        // banner showing the row as broken. See memory:
+        // feedback_connector_status_is_truth.md.
+        sweepStaleErrorMetadata(),
+      ]);
+      if (staleResult.flipped > 0 || metaResult.cleaned > 0) {
+        console.log(`[connectorHealth] stale: scanned=${staleResult.scanned} flipped=${staleResult.flipped} | meta-sweep: scanned=${metaResult.scanned} cleaned=${metaResult.cleaned}`);
       }
     } catch (err: any) {
       console.warn('[connectorHealth] error:', err.message);

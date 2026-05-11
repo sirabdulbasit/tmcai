@@ -40,6 +40,119 @@ import createLogger from '../utils/logger';
 const log = createLogger('connector-health');
 
 /**
+ * The SINGLE blessed predicate for "is this connector healthy right now".
+ * Every consumer that needs to decide "should the broken banner show
+ * this row" / "should we skip this row in some heath UI" / etc MUST go
+ * through this helper, not read `metadata.lastRefreshError` directly.
+ *
+ * Rationale (memory: feedback_connector_status_is_truth.md):
+ * status is the single source of truth. metadata.lastRefreshError /
+ * staleSince / etc are historical breadcrumbs. A row CAN legitimately
+ * be status='connected' with stale lastRefreshError from a past
+ * incident — that just means the row recovered. Reading the metadata
+ * as if it were current state is the bug pattern that bit us 2026-05-12
+ * (Drive showed broken in the banner for 24+ hours after being healthy).
+ */
+const HEALTHY_STATUSES = new Set(['connected', 'pending']);
+export function isConnectorHealthy(row: { status: string }): boolean {
+  return HEALTHY_STATUSES.has(row.status);
+}
+
+/**
+ * The SINGLE blessed mutation for "this connector is now healthy".
+ * Sets status='connected', clears errorMessage, AND strips all
+ * stale-error metadata in one transaction. Use this instead of raw
+ * `prisma.userConnector.update({ data: { status: 'connected' } })`
+ * anywhere that needs to flip a row to healthy. Anywhere that uses
+ * the raw update pattern is liable to reintroduce the 2026-05-12 bug.
+ *
+ * If you have ONLY the userId+connectorTypeId (not the row id), use
+ * markConnectorConnectedByType().
+ */
+const STALE_ERROR_META_KEYS = [
+  'lastError',
+  'staleSince',
+  'staleMin',
+  'lastRefreshError',
+  'lastRefreshErrorAt',
+  'tokenExpiredAt',
+] as const;
+
+export async function markConnectorConnected(
+  connectorId: string,
+  recoveredVia: string = 'unknown',
+): Promise<void> {
+  const existing = await prisma.userConnector.findUnique({
+    where: { id: connectorId },
+    select: { metadata: true },
+  }).catch(() => null);
+  if (!existing) return;
+  const m: Record<string, unknown> = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) };
+  for (const k of STALE_ERROR_META_KEYS) delete m[k];
+  m.recoveredAt = new Date().toISOString();
+  m.recoveredVia = recoveredVia;
+  await prisma.userConnector.update({
+    where: { id: connectorId },
+    data: {
+      status: 'connected',
+      errorMessage: null,
+      metadata: m as any,
+    },
+  }).catch((e: any) => {
+    log.warn('markConnectorConnected failed', { connectorId, error: e.message });
+  });
+}
+
+export async function markConnectorConnectedByType(
+  userId: number,
+  connectorTypeId: string,
+  recoveredVia: string = 'unknown',
+): Promise<void> {
+  const row = await prisma.userConnector.findFirst({
+    where: { userId, connectorTypeId },
+    select: { id: true },
+  }).catch(() => null);
+  if (row) await markConnectorConnected(row.id, recoveredVia);
+}
+
+/**
+ * Belt-and-suspenders invariant sweep. Finds rows where status is
+ * healthy but stale-error metadata still exists, and strips the
+ * metadata. Catches drift from any code path (manual SQL, third-party
+ * tools, a future buggy caller) that flips status to connected
+ * without using markConnectorConnected().
+ *
+ * Runs every 5 min from server.ts alongside detectStaleConnectors.
+ */
+export async function sweepStaleErrorMetadata(): Promise<{ scanned: number; cleaned: number }> {
+  let scanned = 0;
+  let cleaned = 0;
+  // Pull only connected rows — they're the candidates for drift.
+  // Filter in-memory because the metadata-has-stale-keys check is
+  // awkward to express in Prisma's where clause.
+  const rows = await prisma.userConnector.findMany({
+    where: { status: 'connected' } as any,
+    select: { id: true, metadata: true },
+  }).catch(() => [] as any[]);
+  scanned = rows.length;
+  for (const r of rows) {
+    const m = (r.metadata as Record<string, unknown> | null) ?? {};
+    const hasStale = STALE_ERROR_META_KEYS.some((k) => k in m && m[k] != null);
+    if (!hasStale) continue;
+    const next: Record<string, unknown> = { ...m };
+    for (const k of STALE_ERROR_META_KEYS) delete next[k];
+    next.recoveredAt = new Date().toISOString();
+    next.recoveredVia = 'invariant_sweep';
+    await prisma.userConnector.update({
+      where: { id: r.id }, data: { metadata: next as any },
+    }).catch(() => { /* best-effort */ });
+    cleaned++;
+  }
+  if (cleaned > 0) log.info('stale-metadata sweep cleaned', { scanned, cleaned });
+  return { scanned, cleaned };
+}
+
+/**
  * How long is "too long" without a sync, per connector type.
  *
  * Numbers are 2-3× the expected polling cadence — generous enough that
@@ -268,8 +381,7 @@ export async function getConnectorHealthSnapshot(userId: number): Promise<{
   const unhealthy: ConnectorHealth[] = [];
   let healthy = 0;
   for (const r of rows) {
-    const isHealthy = r.status === 'connected' || r.status === 'pending';
-    if (isHealthy) {
+    if (isConnectorHealthy(r)) {
       healthy++;
       continue;
     }
