@@ -401,9 +401,9 @@ function ContactsTable({ entities, onSetStars }) {
                 {e.scope === 'tenant' && (
                   <span
                     style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
-                    title="Shared across your company — visible to every user in your tenant."
+                    title="Public — visible to every user in your tenant"
                   >
-                    {tenantName || 'Shared'}
+                    Public
                   </span>
                 )}
               </Td>
@@ -427,13 +427,80 @@ function ContactsTable({ entities, onSetStars }) {
                 </span>
               </Td>
               <Td>
-                <InactiveButton id={e.id} title={e.title} />
+                <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {/* Public/Private toggle — owner-only. Default for
+                      every auto-discovered contact is private (user
+                      scope). User explicitly publishes a contact to
+                      make it visible across the tenant. */}
+                  {e.isOwner && (
+                    <PublishButton
+                      id={e.id}
+                      isPublic={e.scope === 'tenant'}
+                    />
+                  )}
+                  <InactiveButton id={e.id} title={e.title} />
+                </div>
               </Td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * PublishButton — owner-only toggle between private and tenant-public
+ * scope on a single contact. Default for all auto-discovered contacts
+ * is private; the owner clicks "Make Public" to share with their
+ * tenant. Click again ("Make Private") to revoke.
+ *
+ * Per user 2026-05-11: contacts default to private. Public is
+ * always an explicit user action.
+ */
+function PublishButton({ id, isPublic }) {
+  const [busy, setBusy] = useState(false);
+  if (busy) {
+    return <span style={{ color: 'var(--text-muted, #98a0a8)', fontSize: 11 }}>…</span>;
+  }
+  const flip = async () => {
+    setBusy(true);
+    try {
+      const path = isPublic ? 'unpublish' : 'publish';
+      const res = await fetch(`/api/v1/entity-catalog/${id}/${path}`, {
+        method: 'PATCH', credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || `Failed to ${path}`);
+      } else {
+        // Tell the parent to refetch the list. Simplest: dispatch a
+        // custom event the ContactsPage useEffect listens to. If the
+        // parent doesn't listen, the row will update on next natural
+        // refresh.
+        window.dispatchEvent(new CustomEvent('contacts:reload'));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={flip}
+      title={isPublic
+        ? 'This contact is visible to your whole tenant. Click to make it private again.'
+        : 'Make this contact visible to every user in your tenant.'}
+      style={{
+        background: isPublic ? 'rgba(79,169,255,0.10)' : 'transparent',
+        border: `1px solid ${isPublic ? 'rgba(79,169,255,0.45)' : 'var(--border, #444)'}`,
+        color: isPublic ? '#4fa9ff' : 'var(--text-muted, #98a0a8)',
+        padding: '3px 9px', borderRadius: 4, cursor: 'pointer',
+        fontSize: 11, whiteSpace: 'nowrap',
+      }}
+    >
+      {isPublic ? 'Make Private' : 'Make Public'}
+    </button>
   );
 }
 

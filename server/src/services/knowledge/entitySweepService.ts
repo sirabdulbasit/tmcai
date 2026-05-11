@@ -826,26 +826,29 @@ function composeEntityBody(c: ComposeInput): string {
 
 // ─── Scope + system-user resolution ──────────────────────────────
 
-async function classifyScope(clientNumber: string, email: string): Promise<'tenant' | 'user'> {
-  // Default policy: USER-PRIVATE.
+async function classifyScope(_clientNumber: string, _email: string): Promise<'tenant' | 'user'> {
+  // Default policy: USER-PRIVATE — ALWAYS, for every auto-discovered
+  // contact regardless of email domain or phone.
   //
-  // Auto-discovered contacts belong only to the user whose feed surfaced
-  // them. Tenant-sharing requires explicit opt-in by admin via the
-  // `entity_tenant_domains` system_config key (comma-separated domain
-  // allowlist) — only senders on that list become tenant-shared. This
-  // prevents user A's auto-replies + vendor newsletters from appearing
-  // in user B's contacts list.
-  if (!email) return 'user';
-  const domain = email.includes('@') ? email.split('@')[1] : '';
-  if (!domain) return 'user';
-  if (PERSONAL_DOMAINS.has(domain)) return 'user';
-  // Admin allowlist: only domains on this list are tenant-shared.
-  const extra = await getConfig(clientNumber, 'entity_tenant_domains').catch(() => null);
-  if (extra) {
-    const allow = new Set(extra.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean));
-    if (allow.has(domain)) return 'tenant';
-  }
-  // Everything else: user-private.
+  // Per user 2026-05-11: "by default no contacts will be shared across
+  // the tenant unless user itself marked it as public, so we need an
+  // option of 'Public' in contact list only public contacts will be
+  // visible across the tenant".
+  //
+  // Previously phone-only contacts (e.g. WhatsApp pushname "Eye Spy
+  // Cctv") could become tenant-shared via legacy paths; the
+  // `entity_tenant_domains` allowlist could auto-share email contacts
+  // on company domains. Both removed. The contact's owner now MUST
+  // explicitly click "Make Public" on the row before any other user
+  // in the tenant can see it. This eliminates the trust-shattering
+  // case where one user's random WhatsApp sender shows up in every
+  // teammate's contacts.
+  //
+  // Manual add can still set scope='tenant' at create time via the
+  // admin-only `forceTenantShared` flag in createManualContact — that
+  // remains an explicit user choice. Google Workspace directory
+  // contacts also stay tenant-shared since they ARE the company
+  // directory — that path doesn't go through classifyScope.
   return 'user';
 }
 

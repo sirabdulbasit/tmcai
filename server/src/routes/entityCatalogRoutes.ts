@@ -216,6 +216,80 @@ router.patch('/:id/rename', async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+/**
+ * PATCH /:id/publish   →  make a contact visible to the whole tenant.
+ * PATCH /:id/unpublish →  flip it back to private (owner-only).
+ *
+ * Per user 2026-05-11: contacts default to private. The owner (or a
+ * tenant admin) explicitly opts a contact into Public via this
+ * endpoint, after which every teammate sees it in their Contacts
+ * list. Unpublish restores private scope.
+ *
+ * Ownership rule: only the contact's owner OR a tenant admin can
+ * flip scope. A teammate who happens to see a Public contact can't
+ * unpublish it from under the owner.
+ *
+ * Audit fields: metadata.scope, metadata.publicSince,
+ * metadata.publicSetBy (userId) — so we can later answer "who shared
+ * this and when".
+ */
+router.patch('/:id/publish', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true, metadata: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can publish' }); return;
+    }
+    const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
+    const next = {
+      ...meta,
+      scope: 'tenant',
+      publicSince: new Date().toISOString(),
+      publicSetBy: req.user!.id,
+    };
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(next), id,
+    );
+    res.json({ id, scope: 'tenant' });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+router.patch('/:id/unpublish', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true, metadata: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can unpublish' }); return;
+    }
+    const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
+    const next: Record<string, unknown> = { ...meta, scope: 'user' };
+    delete next.publicSince;
+    delete next.publicSetBy;
+    next.unpublishedAt = new Date().toISOString();
+    next.unpublishedBy = req.user!.id;
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(next), id,
+    );
+    res.json({ id, scope: 'user' });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
 router.patch('/:id/stars', async (req: Request, res: Response) => {
   // Per-user star rating. Returns the new effective stars value.
   // Caller doesn't need admin — every user manages their own stars.
@@ -449,6 +523,10 @@ function projectListItem(row: any, userId: number) {
     email: meta.email ?? null,
     phone: meta.phone ?? null,
     scope: meta.scope ?? 'user',
+    // Ownership signal so the UI can render Make Public / Make
+    // Private only on contacts the current user owns.
+    ownerUserId: row.userId ?? null,
+    isOwner: row.userId === userId,
     importedFrom: meta.imported_from ?? meta.source ?? 'auto_discovered',
     // Channels this sender has appeared on (gmail / whatsapp / gcal /
     // outlook / slack …). Drives the source pill rendering — for an
