@@ -1092,7 +1092,7 @@ export default function DayBriefPage() {
               </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <a
               href="/connectors"
               style={{
@@ -1104,6 +1104,34 @@ export default function DayBriefPage() {
             >
               Reconnect
             </a>
+            {/* Force-heal: for the cascade-deadlock case where you've
+                already reconnected upstream (e.g. Gmail) and the
+                sibling connectors should be healthy but are stuck in
+                'error'. Resets their status to 'connected' without
+                going through OAuth. Next poll validates for real —
+                if the grant is genuinely broken the banner returns. */}
+            <button
+              onClick={async () => {
+                try {
+                  const { data } = await api.post('/brief/connector-health/force-heal');
+                  notify(data.message || `Healed ${data.healed} connectors.`, 'success');
+                  load();
+                } catch (e) {
+                  notify(e?.response?.data?.error || 'Heal failed', 'error');
+                }
+              }}
+              style={{
+                background: 'transparent',
+                border: '1px solid rgba(125,211,252,0.5)',
+                color: '#7dd3fc',
+                padding: '6px 12px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-xs)', cursor: 'pointer',
+                fontWeight: 'var(--fw-medium)',
+              }}
+              title="Already reconnected upstream? Click to reset stuck sibling connectors without going through OAuth again."
+            >
+              Force heal
+            </button>
             <button
               onClick={() => {
                 sessionStorage.setItem('connectorBannerDismissedUntil', String(Date.now() + 6 * 60 * 60 * 1000));

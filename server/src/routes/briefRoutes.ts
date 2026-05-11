@@ -2447,6 +2447,75 @@ router.get('/connector-health', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /brief/connector-health/force-heal
+ *
+ * Manual heal for stuck connectors. Designed for the cascade-failure
+ * deadlock case: Gmail's failed refresh flips all 5 Google rows to
+ * 'error', so none of the pollers fire (they skip non-connected
+ * rows), so the sibling-heal never gets a chance to trigger. This
+ * endpoint breaks the deadlock by force-flipping the user's stuck
+ * Google connectors to 'connected'. The next poll attempt validates
+ * the OAuth grant for real — if Gmail's still genuinely broken, the
+ * cascade will re-fire and the user knows they need to truly
+ * reconnect. If the tokens are valid (which they usually are after a
+ * Reconnect button click), polls succeed and the state stays clean.
+ *
+ * Scoped to req.user.id; no admin requirement. The user can only
+ * heal their own connectors.
+ */
+router.post('/connector-health/force-heal', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  try {
+    // Find all the user's Google connectors in a degraded state.
+    const stuck = await prisma.userConnector.findMany({
+      where: {
+        userId: user.id,
+        status: { in: ['sync_stale', 'error', 'token_expired'] as any },
+        connectorTypeId: {
+          in: ['ct_gmail', 'ct_google_calendar', 'ct_google_tasks', 'ct_google_chat', 'ct_google_drive_personal'],
+        },
+      },
+      select: { id: true, connectorTypeId: true, metadata: true },
+    });
+
+    if (stuck.length === 0) {
+      return res.json({ healed: 0, message: 'Nothing to heal — all connectors already healthy.' });
+    }
+
+    // Bulk-flip to connected.
+    await prisma.userConnector.updateMany({
+      where: { id: { in: stuck.map((s) => s.id) } },
+      data: { status: 'connected', errorMessage: null } as any,
+    });
+
+    // Per-row metadata cleanup — strip the stale-error fields so the
+    // banner reads clean.
+    for (const row of stuck) {
+      const m = { ...((row.metadata as Record<string, unknown> | null) ?? {}) };
+      delete m.lastError;
+      delete m.staleSince;
+      delete m.staleMin;
+      delete m.lastRefreshError;
+      delete m.lastRefreshErrorAt;
+      delete m.tokenExpiredAt;
+      m.recoveredAt = new Date().toISOString();
+      m.recoveredVia = 'user_force_heal';
+      await prisma.userConnector.update({
+        where: { id: row.id }, data: { metadata: m as any },
+      }).catch(() => { /* best effort */ });
+    }
+
+    res.json({
+      healed: stuck.length,
+      healedTypes: stuck.map((s) => s.connectorTypeId),
+      message: `Reset ${stuck.length} stuck connectors to 'connected'. Next poll will validate the OAuth grant — if tokens are valid the state stays clean; if not, the banner will return.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Hide a pattern from My Attention going forward (soft — audit intact). */
 router.post('/hide', async (req: Request, res: Response) => {
   const user = (req as any).user;
