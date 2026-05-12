@@ -1486,6 +1486,65 @@ export async function buildAttentionList(
   items.length = 0;
   items.push(...nonEmptyWa);
 
+  // ── WhatsApp "you already replied" filter ──
+  // Per user 2026-05-12: Kashif HR TMC sent "Old HRA portal not
+  // accessible" with a screenshot. MD replied directly on WhatsApp
+  // ("Ok let me check"). The Kashif card stayed in My Attention
+  // anyway, because Brain only ingests INBOUND messages — the
+  // outbound reply never becomes a feed_event, so triage thinks the
+  // conversation is still unanswered.
+  //
+  // Fix: for every WA item still in the candidate list, query the
+  // live webjs thread. If the most recent message is from MD ('me')
+  // and it's newer than the latest inbound, MD has already
+  // responded — drop from My Attention. The conversation is
+  // accounted for in Brief via buildHandledList (auto_decided
+  // bucket: "You replied on WhatsApp").
+  //
+  // Mirrors the existing Gmail userRepliedThread filter at line
+  // ~1186 of this file. Best-effort: any failure leaves the card
+  // alone (better to surface a doubt than silently swallow).
+  const waCandidatesForReplyCheck = items.filter((it) => it.itemType === 'whatsapp');
+  if (waCandidatesForReplyCheck.length > 0) {
+    const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+    const userRepliedFeedEventIds = new Set<string>();
+    await Promise.all(waCandidatesForReplyCheck.map(async (it) => {
+      try {
+        const chatId = (it as any).chatId
+          || (it as any).senderPhone
+          || it.fromEmail
+          || it.from;
+        if (!chatId) return;
+        const thread = await fetchThreadContext(userId, String(chatId), 10);
+        if (!thread || thread.length === 0) return;
+        // Sort newest→oldest by timestamp so we can read the latest
+        // message and the latest inbound separately.
+        const sorted = [...thread].sort((a, b) => b.timestamp - a.timestamp);
+        const latest = sorted[0];
+        const latestInbound = sorted.find((t) => t.from === 'them');
+        if (!latest || !latestInbound) return;
+        // MD replied AFTER the latest inbound → drop from Attention.
+        if (latest.from === 'me' && latest.timestamp > latestInbound.timestamp) {
+          userRepliedFeedEventIds.add(it.feedEventId);
+          // Also flag every collapsed feed_event id under this card so
+          // the buildHandledList side can bucket them as auto_decided.
+          const fids = (it as any).conversationFeedEventIds ?? [it.feedEventId];
+          for (const fid of fids) userRepliedFeedEventIds.add(fid);
+        }
+      } catch { /* best-effort */ }
+    }));
+    if (userRepliedFeedEventIds.size > 0) {
+      const before = items.length;
+      const filtered = items.filter((it) => !userRepliedFeedEventIds.has(it.feedEventId));
+      items.length = 0;
+      items.push(...filtered);
+      // Surface the set on the function-scoped closure so the caller
+      // (buildHandledList runs separately) can mirror — for now we
+      // log and rely on the same fetchThreadContext call there.
+      console.log(`[triage] WA user-replied filter dropped ${before - items.length} cards`);
+    }
+  }
+
   // ── WhatsApp loop extraction (Phase 2) ──
   // For each collapsed WA conversation card, ask Brain to read the
   // full thread and extract the discrete OPEN LOOPS by topic. Cards
@@ -1916,6 +1975,42 @@ export async function buildHandledList(
   }).catch(() => [] as Array<{ dedupHash: string }>);
   hidden.forEach((h) => hiddenHashes.add(h.dedupHash));
 
+  // WhatsApp "you already replied" lookup — mirror of the
+  // buildAttentionList filter so any WA conversation MD has answered
+  // on-device lands in Brief 'auto_decided' bucket instead of either
+  // surfacing in My Attention or vanishing entirely (per user
+  // 2026-05-12: Kashif HR HRA portal thread — MD replied "Ok let me
+  // check" directly on WhatsApp, Brain never ingested the outbound
+  // and kept re-asking). We ask webjs for each unique chat once and
+  // record the latest 'me' timestamp; the bucketing loop below
+  // compares per-event. Best-effort: any failure leaves the row to
+  // fall through normal bucketing — better to surface a doubt than
+  // silently swallow.
+  const waReplyAtMsByChatId = new Map<string, number>();
+  const waChatIds = new Set<string>();
+  for (const r of candidates) {
+    if (r.sourceType !== 'whatsapp') continue;
+    const cid = (r.rawPayload as any)?.chatId
+      || (r.senderPhone ? `${String(r.senderPhone).replace(/[^\d]/g, '')}@c.us` : '');
+    if (cid) waChatIds.add(String(cid));
+  }
+  if (waChatIds.size > 0) {
+    try {
+      const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+      await Promise.all(Array.from(waChatIds).map(async (cid) => {
+        try {
+          const thread = await fetchThreadContext(userId, cid, 50);
+          if (!thread || thread.length === 0) return;
+          let lastMeMs = 0;
+          for (const t of thread) {
+            if (t.from === 'me' && t.timestamp > lastMeMs) lastMeMs = t.timestamp;
+          }
+          if (lastMeMs > 0) waReplyAtMsByChatId.set(cid, lastMeMs);
+        } catch { /* best-effort per-chat */ }
+      }));
+    } catch { /* best-effort: module load / batch-level */ }
+  }
+
   const out: HandledItem[] = [];
   const AUTONOMY_THRESHOLD = 0.85;
 
@@ -1987,6 +2082,27 @@ export async function buildHandledList(
           // capture per-thread reply timestamps yet.
           decidedAt: extractEventOccurredAt(r).toISOString(),
           reason: 'You already replied on this thread',
+        });
+        continue;
+      }
+    }
+
+    // WhatsApp analog of userRepliedThread: if MD has sent a 'me'
+    // message in this chat AFTER this inbound, the loop is closed
+    // from MD's side. Bucket as auto_decided so the count is honest
+    // and the audit row shows the actual reply timestamp from webjs.
+    if (r.sourceType === 'whatsapp') {
+      const payload = r.rawPayload as any;
+      const cid = payload?.chatId
+        || (r.senderPhone ? `${String(r.senderPhone).replace(/[^\d]/g, '')}@c.us` : '');
+      const lastMeMs = cid ? waReplyAtMsByChatId.get(String(cid)) : undefined;
+      if (lastMeMs && lastMeMs > extractEventOccurredAt(r).getTime()) {
+        out.push({
+          ...base(item),
+          bucket: 'auto_decided',
+          category: 'you_handled',
+          decidedAt: new Date(lastMeMs).toISOString(),
+          reason: 'You replied on WhatsApp',
         });
         continue;
       }
