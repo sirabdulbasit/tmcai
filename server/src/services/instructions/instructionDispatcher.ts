@@ -331,17 +331,54 @@ export async function dispatchInstruction(args: {
     case 'add_open_item': {
       const title = ix.params.itemTitle ?? 'Follow-up';
       const note = ix.params.itemNote ?? '';
-      // itemDueDate comes in as either an ISO date string or a date-time
-      // string. Brain Chat is instructed to emit ISO (today's date is in
-      // the system prompt so the LLM can resolve "tomorrow"/"Friday").
-      // Anything that doesn't parse cleanly is silently dropped — the
-      // item still gets created without a due date rather than the call
-      // failing on a slightly-wrong string.
       let dueDate: Date | null = null;
       if (ix.params.itemDueDate) {
         const parsed = new Date(ix.params.itemDueDate);
         if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
       }
+
+      // Dedup-on-create. Per MD 2026-05-12: "why we have redundant or
+      // duplicate open items?" Previously every add_open_item call
+      // produced a new row — so saying "add it to open items" twice
+      // (or the regression battery seeding twice, or Brain re-emitting
+      // the same action across slot-fill turns) created duplicate
+      // entries with the same title. Now: case-insensitive title match
+      // on this user's ACTIVE items first; if found, return that
+      // existing id instead of creating a duplicate.
+      try {
+        const existing = await prisma.openItem.findFirst({
+          where: {
+            clientNumber, userId,
+            ownerId: userId,
+            status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
+            title: { equals: title, mode: 'insensitive' as any },
+          },
+          select: { id: true, title: true, status: true, dueDate: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (existing) {
+          // Optionally update dueDate if the new request specifies one
+          // and the existing row doesn't have one yet — accommodates
+          // "add X" (no due) followed by "make it due tomorrow".
+          if (dueDate && !existing.dueDate) {
+            await prisma.openItem.update({
+              where: { id: existing.id },
+              data: { dueDate } as any,
+            }).catch(() => null);
+            return {
+              ok: true,
+              artifactId: existing.id,
+              message: `"${existing.title}" was already on your list — set its due date to ${dueDate.toISOString().slice(0, 10)}.`,
+            };
+          }
+          return {
+            ok: true,
+            artifactId: existing.id,
+            message: `"${existing.title}" is already on your open items (status: ${existing.status.toLowerCase()}). Not adding a duplicate.`,
+          };
+        }
+      } catch { /* fall through to create */ }
+
       try {
         const op = await prisma.openItem.create({
           data: {

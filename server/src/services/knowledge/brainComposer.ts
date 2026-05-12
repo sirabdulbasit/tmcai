@@ -791,7 +791,15 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent
   // which layer to lead with. Defaults to "mixed" if the planner
   // omitted it (older plans / fallback path).
   const lean = (plan as any).scopeLean ?? 'mixed';
-  const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}\nPlanner scopeLean: ${lean}`;
+
+  // Detect the language of MD's CURRENT message and inject as explicit
+  // instruction. Per MD 2026-05-12: "why is it changing language if I
+  // am not?" The persona has a "mirror language" rule, but Gemini
+  // drifts (especially across long threads). Giving the LLM a hard
+  // typed signal — "REPLY LANGUAGE = English" — is more reliable than
+  // hoping it infers correctly from the user's message text.
+  const detectedLanguage = detectMessageLanguage(question);
+  const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}\nPlanner scopeLean: ${lean}\n\n# CRITICAL — Reply language\nMD's current message is in: **${detectedLanguage}**.\nYour reply MUST be entirely in this language. Do NOT switch languages mid-reply. Do NOT pick a different language than the user. The full conversation history may show language drift in earlier turns; ignore that and match THIS message's language.`;
 
   let raw = '';
   try {
@@ -1016,6 +1024,30 @@ function renderOpenedPage(p: OpenedPage): string {
  * to know "what should I worry about today" without re-running the radar.
  * Returns '' when the doc is missing/empty/stale (>36h since generation).
  */
+/** Detect the language of a user's message so we can give the LLM a
+ *  hard signal instead of relying on it to mirror correctly.
+ *
+ *  Three buckets:
+ *    - Urdu script  — contains Arabic/Urdu unicode chars
+ *    - Roman-Urdu  — contains any of a closed list of Roman-Urdu tokens
+ *                    ("aap", "kya", "hai", "mein", "ko", "ki", "kal", etc.)
+ *    - English     — everything else (default; lowest-confidence bucket)
+ *
+ *  Designed to be precise rather than recall — we don't want to falsely
+ *  flag Roman-Urdu in an English message that happens to contain "ok"
+ *  or "kal" as someone's name. The trigger list is curated to be
+ *  high-precision: tokens that almost never appear in normal English. */
+function detectMessageLanguage(text: string): 'Urdu (script)' | 'Roman-Urdu' | 'English' {
+  if (!text) return 'English';
+  if (/[؀-ۿ]/.test(text)) return 'Urdu (script)';
+  // Roman-Urdu requires at least one strongly Roman-Urdu token.
+  // List tuned to avoid false positives on English ("ok", "tak", "kar"
+  // alone wouldn't trigger — "ko", "mein", "krna", etc. are reliable).
+  const romanUrduTokens = /\b(aap|kya|hai|hain|nahi|nahin|han|jee|theek|batao|batain|batayein|chahiye|abhi|kal|ki|ko|mein|mei|mere|mera|meri|hum|krna|krne|krdo|krdiya|raha|rahi|rha|rhi|aaj|kyun|kyon|kahan|kaise|kitne|kitna|sakte|sakta|sakti|lagta|lagti|delegate\s+kr|kar\s+(diya|do|den|rha|rahi)|ho\s+(gaya|gai|raha|rahi)|wala|wali|waly)\b/i;
+  if (romanUrduTokens.test(text)) return 'Roman-Urdu';
+  return 'English';
+}
+
 /** Extract candidate person-name tokens from the user's current question
  *  + their last two utterances. Heuristic: capitalised tokens of length
  *  ≥3 that look like names ("Asad", "Phoenix") plus a few imperative-
