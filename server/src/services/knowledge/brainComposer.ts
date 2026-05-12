@@ -984,15 +984,26 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
     const allItems = await buildAttentionList(clientNumber, userId, 80);
     if (allItems.length === 0) return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
 
-    // Recency + criticality filter. "Today" is last 24h from now in UTC,
-    // which is the natural Brain anchor across timezones (PKT is +5h, so
-    // an email at 11pm PKT is still in the last 24h come morning).
+    // Per MD 2026-05-12: "Sobia, Taiba seem to be missed." Earlier
+    // version filtered to last 24h + high-band carryover, which
+    // dropped medium-priority items >24h old. But buildAttentionList
+    // ALREADY filters items MD has replied to (WA user-replied filter)
+    // and items auto-handled by triage. So anything still in the
+    // attention surface is by definition unhandled — and the brief
+    // should surface ALL of it, not re-filter by age. We only mark
+    // older items as "(carryover)" so MD knows what's new vs what's
+    // been waiting; everything stays in the brief.
+    //
+    // The per-channel cap below + total char cap in H15 still bound
+    // the brief size for phone readability — we just stop pre-dropping
+    // items the user genuinely cares about.
     const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
     const isFreshToday = (it: any) => {
       const ts = it.receivedAt ? new Date(it.receivedAt).getTime() : 0;
       return ts >= twentyFourHoursAgo;
     };
-    const isStillUrgent = (it: any) => {
+    // Kept for telemetry / tagging only — no longer used to filter.
+    const _isStillUrgent = (it: any) => {
       const band = it.criticality?.band;
       return band === 'critical' || band === 'high';
     };
@@ -1015,7 +1026,12 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       return false;
     };
 
-    const filteredForFreshness = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
+    // Include ALL attention items — buildAttentionList has already
+    // filtered out muted senders, items MD has replied to, and items
+    // auto-handled by triage. Anything still here genuinely needs MD's
+    // eyes. We just tag older items as (carryover) so MD can scan
+    // freshness at a glance.
+    const filteredForFreshness = allItems;
 
     // For each WA item with a short/non-substantive body, read the
     // whole chat thread and run it through the conversation analyzer
@@ -1089,13 +1105,12 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       }));
     }
 
-    const items = filteredForFreshness;  // no drops — short messages stay, just enriched
-    const droppedCount = allItems.length - filteredForFreshness.length;
+    const items = filteredForFreshness;
 
     // Diagnostic log. Per MD 2026-05-12 ("my email attachment not
     // reflecting on Brief"): need to know what reached buildAttentionList
-    // and what got filtered. Counts by channel + a list of short items
-    // that got enrichment so we can verify the context-fetch worked.
+    // and what got filtered. Counts by channel + enrichment counter so
+    // we can verify analyzeConversation fired on short messages.
     const byChannelRaw: Record<string, number> = {};
     for (const it of allItems) {
       byChannelRaw[it.itemType] = (byChannelRaw[it.itemType] ?? 0) + 1;
@@ -1103,12 +1118,11 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
     const enrichedCount = wantsContext.filter((it: any) => it.contextPrefix).length;
     console.log(
       `[day-brief] attention pipeline: total=${allItems.length} byChannel=${JSON.stringify(byChannelRaw)} `
-      + `freshOrUrgent=${filteredForFreshness.length} droppedStale=${droppedCount} `
       + `wantsContext=${wantsContext.length} enriched=${enrichedCount}`,
     );
 
     if (items.length === 0) {
-      return `# My Attention surface (day window)\n(nothing fresh today; ${droppedCount} older medium/low item${droppedCount === 1 ? '' : 's'} live in My Attention but are not in the day brief)`;
+      return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
     }
 
     // Group by channel for compact rendering. Within each group, sort
@@ -1169,13 +1183,17 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       return `  - ${band}${from}: ${substance}${archetype}${ageTag}`;
     };
 
+    // Per-channel cap raised from 6 → 10 so more senders are visible.
+    // The total-brief char cap (in H15) still bounds size, but the
+    // LLM picks which lines to keep within that cap — cap-by-channel
+    // was hiding senders like Sobia/Taiba in "+N more" even when they
+    // had today's activity. The LLM gets more to pick from now.
     for (const [ch, list] of Object.entries(byChannel)) {
       if (list.length === 0) continue;
-      const top = list.slice(0, 6);
-      sections.push(`${ch} (${list.length} fresh/urgent):\n${top.map(renderItem).join('\n')}${list.length > 6 ? `\n  - … +${list.length - 6} more ${ch}` : ''}`);
+      const top = list.slice(0, 10);
+      sections.push(`${ch} (${list.length} pending):\n${top.map(renderItem).join('\n')}${list.length > 10 ? `\n  - … +${list.length - 10} more ${ch}` : ''}`);
     }
-    const note = droppedCount > 0 ? `\n\n_(${droppedCount} older medium/low items not in this brief — live in My Attention.)_` : '';
-    return `# My Attention surface (day brief — last 24h + still-urgent carryover; ${items.length} of ${allItems.length})\n${sections.join('\n\n')}${note}`;
+    return `# My Attention surface (${items.length} pending across channels — same source as the Day Brief UI)\n${sections.join('\n\n')}`;
   } catch {
     return '';
   }
