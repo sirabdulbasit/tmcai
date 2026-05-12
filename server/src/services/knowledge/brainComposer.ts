@@ -617,6 +617,17 @@ export async function compose(
     ? await buildTodayCalendarBlock(clientNumber, userId)
     : '';
 
+  // ── My Attention snapshot ──
+  // Per MD 2026-05-12: "Day brief should cover all which brain seeks
+  // my attention." The day_brief digest is now anchored to the same
+  // surface MD sees in the Day Brief UI — buildAttentionList. Same
+  // collapse rules, same muted-sender filter, same auto-handled
+  // suppression. Composer formats it compactly for WhatsApp instead
+  // of as cards.
+  const attentionBlock = plan.intent === 'day_brief'
+    ? await buildAttentionBlockForDayBrief(clientNumber, userId)
+    : '';
+
   const systemPrompt = `${persona.systemPreamble}
 
 # Brain schema (v${BRAIN_SCHEMA_VERSION})
@@ -625,7 +636,7 @@ ${schema}
 # System capabilities (what you can actually access right now — answer questions about yourself from this)
 ${capsBlock}
 
-${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}${openItemsBlock ? `${openItemsBlock}\n\n` : ''}${todayCalendarBlock ? `${todayCalendarBlock}\n\n` : ''}${candidatesBlock ? `${candidatesBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
+${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}${openItemsBlock ? `${openItemsBlock}\n\n` : ''}${todayCalendarBlock ? `${todayCalendarBlock}\n\n` : ''}${attentionBlock ? `${attentionBlock}\n\n` : ''}${candidatesBlock ? `${candidatesBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
 ${recentLog || '(no recent activity logged)'}
 
 # Pages opened for this turn (intent=${plan.intent})
@@ -730,17 +741,30 @@ H13. **Annotate scope on every citation — but only for REAL pages you opened.*
 
 H14. **Your previous reply is an authoritative source.** When the user references content you just produced — a name, an item title, a number, a fact from your immediately-previous reply visible in the history block above — treat that reply as a valid source. Don't re-derive it from scratch; don't deny content you just provided. If you listed "Revisit pricing for Phoenix Systems" as an open item one turn ago and the user now says "delegate the phoenix one", the open_item exists and the reference is unambiguous. Look it up in the snapshot above and act. Falsely denying ("I don't see any item with that name") is worse than any other failure mode.
 
-H15. **Day-brief asks get a structured digest, NOT meta-commentary.** When intent=day_brief, your job is to read the user's actual day from the live blocks above and produce a brief digest of substance. NEVER reply with reflective summaries like "you seem to be focused on managing your open items today" — that describes your observations of Brain's own activity, not the user's day. Pull from these EXACT sources, in this order, skipping any that are empty:
+H15. **Day-brief = full attention coverage, compactly delivered.** When intent=day_brief, your reply must COVER EVERYTHING in the "My Attention surface" block above — same scope as the Day Brief UI — but rendered for a phone screen, not a dashboard. Brief is a noun and a constraint.
 
-  1. **Today's calendar** block above — list each meeting with HH:MM + title + 1–3 attendee names. Lead the brief with this if anything's scheduled.
-  2. **Open items snapshot** above — surface the items with priority=high or critical, OR with dueDate today/tomorrow. Don't list everything; pick what NEEDS attention. Quote real titles. If none qualify, say "nothing urgent on the open list".
-  3. **Risk Radar** flags above — if today's radar is in the prompt, lead each flag in 1 short line.
-  4. **Recent inbound from sender wikis** — the 1–3 most substantive new messages today that haven't been handled. Quote the sender's real name and one phrase that says what it's about.
-  5. End with ONE short sentence on what would matter most to look at first.
+**What to cover (skip a section only if its count is 0):**
+  1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. One line each: HH:MM + title + 1–2 attendee first names if interesting.
+  2. 📬 **Email** — top 3 from the My Attention surface's email bucket by criticality. If more, end with "+N more in inbox" (use the real count from the bucket header).
+  3. 💬 **WhatsApp** — same pattern: top 3 conversations, "+N more" if exceeded.
+  4. 📋 **Open items** — top 3 needing your attention from the open-items snapshot (priority high/critical OR no owner yet OR due today/tomorrow). "+N more" if exceeded.
+  5. ⚠️ **Watching** — risk radar flags, one short line each (max 2).
+  6. **Closing line** — one sentence: which single thing would you start with, and why. No fluff like "let me know if you need anything".
 
-Format: WhatsApp-friendly. Use short emoji section headers (📅 calendar, 📋 items, 📬 inbox, ⚠️ watch) ONLY if at least one item exists for that section. Bullets within sections. Hard cap: 600 chars total — this is for a phone screen, not a dashboard. If you exceed, drop the lowest-priority section first.
+**Compactness rules — non-negotiable:**
+  - Hard cap: 800 characters total. Brain Chat on WhatsApp is one phone screen, not a memo.
+  - One line per item. Sender name + one phrase = enough. No full subject lines, no previews, no quoting full sentences from emails.
+  - Use "+N more in <channel>" instead of listing items 4-onwards. Counts are coverage; enumeration is detail.
+  - Drop sections that are empty. Do NOT write "📬 Email: nothing" — just skip that section.
+  - If the attention surface block says "(nothing pending)" overall, reply with one short line ("You're clear — nothing on your plate right now.") and stop.
 
-The brief is FACTS from the user's day, surfaced compactly. Not a description of Brain. Not a commentary on what Brain has been doing. Not a list of Brain's own test/regression activity. If the open-items snapshot above contains rows clearly created by automated battery / smoke testing (titles like "Test regression task", "Test Urdu item"), SKIP those — they're not real work.`;
+**Forbidden — these failed in MD's earlier tests:**
+  - Meta-commentary about Brain's own activity ("you seem to be managing your items...", "I'm seeing recent activity with...").
+  - Listing every contact Brain has noticed. The user wants THEIR work, not your observations.
+  - Long previews or full subject lines. The card has it; the brief points to it.
+  - Test/smoke fixture items in the open-items list (titles like "Test regression task", "Test Urdu item"). Skip those — they're battery rows, not real work.
+
+**Comprehensive coverage + compact delivery.** Coverage means: every attention channel that has at least one item gets a section. Compact means: counts plus the top 3 per section. Together — a brief that's honest about scope and quick to read.`;
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
   // "what kind?" or "and that one?" against the previous turn instead
@@ -935,6 +959,54 @@ const STOPWORD_TOKENS = new Set([
   'open', 'items', 'item', 'brief', 'attention', 'day', 'reply',
   'mr', 'mrs', 'ms', 'dr',
 ]);
+
+/** Pull the FULL My Attention list and render as a structured prompt
+ *  block grouped by channel. The composer then digests it compactly
+ *  for WhatsApp — coverage of everything Brain wants MD to look at,
+ *  surfaced as counts + top items per channel rather than enumerated
+ *  in full. Same source-of-truth as the Day Brief UI's /brief/attention
+ *  endpoint; same auto-handled / muted / replied filters. */
+async function buildAttentionBlockForDayBrief(clientNumber: string, userId: number): Promise<string> {
+  try {
+    const { buildAttentionList } = await import('../triage/triageSuggester');
+    const items = await buildAttentionList(clientNumber, userId, 60);
+    if (items.length === 0) return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
+
+    // Group by channel for compact rendering. Within each group, sort
+    // by criticality band first (critical → high → medium → low), then
+    // most recent. Brain reads this once and picks the top 3-5 per
+    // group to surface, summarising the rest as "+N more".
+    const bandRank = (b?: string) => (b === 'critical' ? 0 : b === 'high' ? 1 : b === 'medium' ? 2 : 3);
+    const byChannel: Record<string, any[]> = { email: [], whatsapp: [], meeting: [], task: [], other: [] };
+    for (const it of items) {
+      const ch = (it.itemType === 'email' || it.itemType === 'whatsapp' || it.itemType === 'meeting' || it.itemType === 'task')
+        ? it.itemType
+        : 'other';
+      byChannel[ch].push(it);
+    }
+    for (const k of Object.keys(byChannel)) {
+      byChannel[k].sort((a, b) => bandRank(a.criticality?.band) - bandRank(b.criticality?.band));
+    }
+
+    const sections: string[] = [];
+    const renderItem = (it: any): string => {
+      const band = it.criticality?.band ? `[${it.criticality.band}] ` : '';
+      const from = it.fromDisplay ?? it.from ?? '';
+      const subj = (it.subject || it.preview || '').slice(0, 80);
+      const archetype = it.archetype ? ` (${it.archetype})` : '';
+      return `  - ${band}${from}: ${subj}${archetype}`;
+    };
+
+    for (const [ch, list] of Object.entries(byChannel)) {
+      if (list.length === 0) continue;
+      const top = list.slice(0, 6);
+      sections.push(`${ch} (${list.length} total):\n${top.map(renderItem).join('\n')}${list.length > 6 ? `\n  - … +${list.length - 6} more ${ch}` : ''}`);
+    }
+    return `# My Attention surface (${items.length} item${items.length === 1 ? '' : 's'} pending across channels)\n${sections.join('\n\n')}`;
+  } catch {
+    return '';
+  }
+}
 
 /** Pull today's calendar events (gcal feed) for this user and render
  *  as a structured block. Only the day-brief intent path uses this —

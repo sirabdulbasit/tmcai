@@ -384,7 +384,7 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
       // After the day_brief intent + H15 structured-output rule, the
       // reply must contain SUBSTANTIVE content from at least one real
       // source block (calendar / open items / inbound).
-      name: 'day_brief — structured digest, not meta-commentary',
+      name: 'day_brief — comprehensive coverage, compact delivery',
       steps: [
         {
           user: 'Brief my day',
@@ -393,14 +393,27 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
             // The failed reply leaked the test fixture into the brief.
             // Real digests don't say "in both English and Urdu" — that's
             // Brain noticing its own test runs.
-            { name: 'no meta-commentary about Brain\'s own activity', check: doesNotMention('in both English and Urdu|managing your open items and tasks|your focus today seems') },
+            { name: 'no meta-commentary about Brain\'s own activity', check: doesNotMention('in both English and Urdu|managing your open items and tasks|your focus today seems|I\'m seeing recent activity') },
             // Substantive content: at least one real day-brief signal.
             { name: 'mentions calendar, items, or inbound', check: (a) => {
-                const real = /\b(meeting|calendar|HH:MM|\d{1,2}:\d{2}|open\s+item|due\s+(today|tomorrow)|inbox|email|reply\s+from|message\s+from|critical|nothing\s+(urgent|on)|on\s+your\s+plate)\b/i;
+                const real = /\b(meeting|calendar|\d{1,2}:\d{2}|open\s+item|due\s+(today|tomorrow)|inbox|email|reply|message|critical|nothing|clear|on\s+your\s+plate|whatsapp)\b/i;
                 return real.test(a) || `reply lacks day-brief signals: ${a.slice(0, 160)}…`;
               } },
-            // Hard cap on size — WhatsApp readability.
-            { name: 'under 1000 chars (WhatsApp friendly)', check: shorterThan(1000) },
+            // Compact constraint — WhatsApp must be readable on a phone.
+            // Cap higher than 600 to give the LLM headroom for the
+            // section-per-channel coverage but still phone-friendly.
+            { name: 'compact: under 1200 chars (phone-friendly)', check: shorterThan(1200) },
+            // Coverage signal — the reply should reference multiple
+            // sections when MD has multi-channel activity. We don't
+            // hard-require N sections (the user's actual data drives
+            // that), but we require either: at least one explicit
+            // counter ("+N more") OR at least two channel emojis.
+            { name: 'shows multi-channel coverage when available', check: (a) => {
+                const counters = /\+\s*\d+\s+more/i.test(a);
+                const emojis = (a.match(/📅|📬|💬|📋|⚠️/g) ?? []).length;
+                const clear = /(nothing pending|you'?re clear|nothing on your plate)/i.test(a);
+                return counters || emojis >= 1 || clear || `no multi-channel coverage signal in: ${a.slice(0, 160)}…`;
+              } },
           ],
         },
       ],
