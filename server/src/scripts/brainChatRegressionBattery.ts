@@ -464,6 +464,21 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
                 const clear = /(nothing pending|you'?re clear|nothing on your plate)/i.test(a);
                 return counters || emojis >= 1 || clear || `no multi-channel coverage signal in: ${a.slice(0, 160)}…`;
               } },
+            // Freshness — the brief should NOT mention dates >2 days
+            // old in raw subject form. MD called this out on 2026-05-12
+            // when "Updated Exit list as of 8 may 2026" appeared in the
+            // brief 4 days later. We accept "carryover" tagged items
+            // (high/critical) but reject naked old-date references in
+            // medium-priority items.
+            { name: 'no stale dated subjects without carryover tag', check: (a) => {
+              // Catch "as of N may 2026" / "of N apr 2026" patterns in
+              // medium/low items. If we see a date phrase but no
+              // "carryover" label nearby, flag it. Heuristic — false
+              // positives are tolerable since carryover items would say so.
+              const stale = /\bas\s+of\s+\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(a);
+              const hasCarryover = /carryover/i.test(a);
+              return !stale || hasCarryover || `stale dated subject without carryover label in: ${a.slice(0, 200)}`;
+            } },
           ],
         },
       ],

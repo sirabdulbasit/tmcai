@@ -741,7 +741,9 @@ H13. **Annotate scope on every citation — but only for REAL pages you opened.*
 
 H14. **Your previous reply is an authoritative source.** When the user references content you just produced — a name, an item title, a number, a fact from your immediately-previous reply visible in the history block above — treat that reply as a valid source. Don't re-derive it from scratch; don't deny content you just provided. If you listed "Revisit pricing for Phoenix Systems" as an open item one turn ago and the user now says "delegate the phoenix one", the open_item exists and the reference is unambiguous. Look it up in the snapshot above and act. Falsely denying ("I don't see any item with that name") is worse than any other failure mode.
 
-H15. **Day-brief = full attention coverage, compactly delivered.** When intent=day_brief, your reply must COVER EVERYTHING in the "My Attention surface" block above — same scope as the Day Brief UI — but rendered for a phone screen, not a dashboard. Brief is a noun and a constraint.
+H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent=day_brief, your reply covers what's IN the "My Attention surface" block above — which has already been pre-filtered to the last 24h plus still-unhandled high/critical carryover items. Do NOT surface medium/low items from days ago — they're in the dashboard, not the brief. Brief is a noun and a constraint.
+
+**Carryover items:** when an item line in the attention block ends in "(carryover, Nd ago)" or "(carryover, yesterday)", that's a high-priority item from before today that's still pending. Surface it but tag it: e.g. "Sayyed Mohsin: White Belt dashboard update (carryover from yesterday)". This way MD knows what's new vs what's been waiting.
 
 **What to cover (skip a section only if its count is 0):**
   1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. One line each: HH:MM + title + 1–2 attendee first names if interesting.
@@ -960,22 +962,46 @@ const STOPWORD_TOKENS = new Set([
   'mr', 'mrs', 'ms', 'dr',
 ]);
 
-/** Pull the FULL My Attention list and render as a structured prompt
- *  block grouped by channel. The composer then digests it compactly
- *  for WhatsApp — coverage of everything Brain wants MD to look at,
- *  surfaced as counts + top items per channel rather than enumerated
- *  in full. Same source-of-truth as the Day Brief UI's /brief/attention
- *  endpoint; same auto-handled / muted / replied filters. */
+/** Pull the FULL My Attention list and filter to what actually belongs
+ *  in a DAY brief: items received today (last 24h) PLUS still-unhandled
+ *  high/critical items regardless of age. Older medium/low items live
+ *  in the My Attention dashboard but don't pollute the daily digest.
+ *
+ *  Per MD 2026-05-12 ("how old message you are showing in brief"): the
+ *  earlier version surfaced 4-day-old emails because buildAttentionList
+ *  uses briefWindowDays (default 7+). A day brief that includes 4-day-
+ *  old items isn't a day brief.
+ *
+ *  Groups by channel, sorts by criticality, renders compactly with
+ *  per-channel counters so the LLM can produce "+N more" lines. */
 async function buildAttentionBlockForDayBrief(clientNumber: string, userId: number): Promise<string> {
   try {
     const { buildAttentionList } = await import('../triage/triageSuggester');
-    const items = await buildAttentionList(clientNumber, userId, 60);
-    if (items.length === 0) return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
+    const allItems = await buildAttentionList(clientNumber, userId, 80);
+    if (allItems.length === 0) return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
+
+    // Recency + criticality filter. "Today" is last 24h from now in UTC,
+    // which is the natural Brain anchor across timezones (PKT is +5h, so
+    // an email at 11pm PKT is still in the last 24h come morning).
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const isFreshToday = (it: any) => {
+      const ts = it.receivedAt ? new Date(it.receivedAt).getTime() : 0;
+      return ts >= twentyFourHoursAgo;
+    };
+    const isStillUrgent = (it: any) => {
+      const band = it.criticality?.band;
+      return band === 'critical' || band === 'high';
+    };
+    const items = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
+    const droppedCount = allItems.length - items.length;
+
+    if (items.length === 0) {
+      return `# My Attention surface (day window)\n(nothing fresh today; ${droppedCount} older medium/low item${droppedCount === 1 ? '' : 's'} live in My Attention but are not in the day brief)`;
+    }
 
     // Group by channel for compact rendering. Within each group, sort
     // by criticality band first (critical → high → medium → low), then
-    // most recent. Brain reads this once and picks the top 3-5 per
-    // group to surface, summarising the rest as "+N more".
+    // most recent.
     const bandRank = (b?: string) => (b === 'critical' ? 0 : b === 'high' ? 1 : b === 'medium' ? 2 : 3);
     const byChannel: Record<string, any[]> = { email: [], whatsapp: [], meeting: [], task: [], other: [] };
     for (const it of items) {
@@ -985,24 +1011,34 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       byChannel[ch].push(it);
     }
     for (const k of Object.keys(byChannel)) {
-      byChannel[k].sort((a, b) => bandRank(a.criticality?.band) - bandRank(b.criticality?.band));
+      byChannel[k].sort((a, b) => {
+        const br = bandRank(a.criticality?.band) - bandRank(b.criticality?.band);
+        if (br !== 0) return br;
+        // tie-break: newest first
+        return new Date(b.receivedAt ?? 0).getTime() - new Date(a.receivedAt ?? 0).getTime();
+      });
     }
 
     const sections: string[] = [];
     const renderItem = (it: any): string => {
       const band = it.criticality?.band ? `[${it.criticality.band}] ` : '';
       const from = it.fromDisplay ?? it.from ?? '';
+      // Hint the age so the LLM doesn't surface a 3-day-old high-priority
+      // item without flagging it as carryover. Today/yesterday/Nd ago.
+      const ageHr = it.receivedAt ? Math.round((Date.now() - new Date(it.receivedAt).getTime()) / 3600000) : -1;
+      const ageTag = ageHr < 0 ? '' : ageHr < 24 ? '' : ageHr < 48 ? ' (carryover, yesterday)' : ` (carryover, ${Math.floor(ageHr / 24)}d ago)`;
       const subj = (it.subject || it.preview || '').slice(0, 80);
       const archetype = it.archetype ? ` (${it.archetype})` : '';
-      return `  - ${band}${from}: ${subj}${archetype}`;
+      return `  - ${band}${from}: ${subj}${archetype}${ageTag}`;
     };
 
     for (const [ch, list] of Object.entries(byChannel)) {
       if (list.length === 0) continue;
       const top = list.slice(0, 6);
-      sections.push(`${ch} (${list.length} total):\n${top.map(renderItem).join('\n')}${list.length > 6 ? `\n  - … +${list.length - 6} more ${ch}` : ''}`);
+      sections.push(`${ch} (${list.length} fresh/urgent):\n${top.map(renderItem).join('\n')}${list.length > 6 ? `\n  - … +${list.length - 6} more ${ch}` : ''}`);
     }
-    return `# My Attention surface (${items.length} item${items.length === 1 ? '' : 's'} pending across channels)\n${sections.join('\n\n')}`;
+    const note = droppedCount > 0 ? `\n\n_(${droppedCount} older medium/low items not in this brief — live in My Attention.)_` : '';
+    return `# My Attention surface (day brief — last 24h + still-urgent carryover; ${items.length} of ${allItems.length})\n${sections.join('\n\n')}${note}`;
   } catch {
     return '';
   }
