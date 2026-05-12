@@ -1271,11 +1271,19 @@ export async function buildAttentionList(
     });
   }
 
+  // Funnel telemetry — track drops at every stage so we can find the
+  // narrowing without grep. Per MD 2026-05-12: "why email is missing?"
+  // (4th repetition). Each filter records its drop count by channel.
+  let dedupDropped = 0;
+  let handledByRuleDropped = 0;
+  let noiseDropped = 0;
+
   const items: AttentionItem[] = [];
   for (const item of suggestions) {
     if (!item) continue;
-    if (hashes.has(item.dedupHash)) continue;
-    if (item.handledByRule) continue;  // autonomous — lives in Section 1, not Attention
+    if (hashes.has(item.dedupHash)) { dedupDropped += 1; continue; }
+    if (item.handledByRule) { handledByRuleDropped += 1; continue; }
+    if (item.noise) { noiseDropped += 1; continue; }
     // Attach WA chat pointer so Phase 2 loop extraction can fetch the
     // thread context (fetchThreadContext needs the @c.us-suffixed
     // chatId, not just the phone number).
@@ -1320,7 +1328,19 @@ export async function buildAttentionList(
     const representative = occurrences[0];
     (representative as any).seriesCount = occurrences.length;
     (representative as any).seriesOccurrenceIds = occurrences.map((o) => o.feedEventId);
-    representative.rationale = `${representative.rationale}\nThis is occurrence 1 of ${occurrences.length} in the series — accepting/delegating applies to all.`;
+    // Idempotent rationale update. Per MD 2026-05-12: the same series
+    // annotation was being concatenated multiple times in the card
+    // body — "This is occurrence 1 of 3 in the series..." repeated
+    // seven times in one rationale. Cause: suggestForFeedEvent caches
+    // the AttentionItem, and buildAttentionList runs N times per
+    // session (Day Brief polls). Each call mutated the cached object's
+    // .rationale by appending the annotation. Strip any prior series
+    // annotation first, then append a single fresh one.
+    const seriesAnnotationRe = /\s*This is occurrence \d+ of \d+ in the series — accepting\/delegating applies to all\.\s*/g;
+    const baseRationale = String(representative.rationale ?? '').replace(seriesAnnotationRe, '').trim();
+    representative.rationale = baseRationale
+      ? `${baseRationale}\nThis is occurrence 1 of ${occurrences.length} in the series — accepting/delegating applies to all.`
+      : `This is occurrence 1 of ${occurrences.length} in the series — accepting/delegating applies to all.`;
     collapsedItems.push(representative);
   }
   items.length = 0;
@@ -1727,14 +1747,18 @@ export async function buildAttentionList(
   if (items.length > limit) items.length = limit;
 
   // Funnel telemetry per MD 2026-05-12 ("506 emails, 0 in My
-  // Attention, fix it once for all"). Each filter stage records its
-  // drop count; this final log line tells us where the funnel narrows
-  // so future investigations don't have to grep the entire pipeline.
-  // Per-channel breakdown too — if Email=0 we know which gate did it.
+  // Attention, fix it once for all"). Each stage records its drop
+  // count; this final log line shows where the funnel narrows so
+  // future investigations don't have to grep the pipeline. The user
+  // has asked 4 times now where their emails went — this log answers
+  // it in one line per call.
   const finalByChannel: Record<string, number> = {};
   for (const it of items) finalByChannel[it.itemType] = (finalByChannel[it.itemType] ?? 0) + 1;
   console.log(
-    `[attention] funnel: ccDropped=${ccDropped} autonomyDropped=${autonomyDropped} `
+    `[attention] funnel: candidates=${suggestions.length} `
+    + `dedupDropped=${dedupDropped} handledByRuleDropped=${handledByRuleDropped} `
+    + `noiseDropped=${noiseDropped} ccDropped=${ccDropped} `
+    + `autonomyDropped=${autonomyDropped} `
     + `final=${items.length} byChannel=${JSON.stringify(finalByChannel)}`,
   );
 
