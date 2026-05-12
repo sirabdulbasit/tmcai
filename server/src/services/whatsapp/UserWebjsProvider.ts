@@ -1116,12 +1116,24 @@ export interface ThreadTurn {
 }
 export async function fetchThreadContext(userId: number, chatId: string, limit = 10): Promise<ThreadTurn[]> {
   const client = clients.get(userId);
-  if (!client) return [];
+  if (!client) {
+    // Smoking-gun for the "emptyThread=N" symptom in triage logs:
+    // the user-level webjs client isn't registered for this userId.
+    // That either means resumeAllSessions hasn't finished after a
+    // restart, or ingestion is happening via the tenant WebjsProvider
+    // (clientNumber-keyed) instead of the user one. Either way, the
+    // user-replied filter can't see the thread.
+    log.warn('[fetchThreadContext] no client in user map', { userId, chatId });
+    return [];
+  }
   try {
     const chat = await client.getChatById(chatId);
-    if (!chat?.fetchMessages) return [];
+    if (!chat?.fetchMessages) {
+      log.warn('[fetchThreadContext] getChatById returned no chat', { userId, chatId });
+      return [];
+    }
     const msgs = await chat.fetchMessages({ limit: Math.max(20, limit * 2) });
-    return (msgs || [])
+    const turns = (msgs || [])
       .filter((m: any) => (m.body && m.body.trim()) || m.type === 'ptt' || m.type === 'audio')
       .slice(-limit)
       .map((m: any) => ({
@@ -1129,7 +1141,14 @@ export async function fetchThreadContext(userId: number, chatId: string, limit =
         text: String(m.body || '(voice note)').slice(0, 500),
         timestamp: m.timestamp ? m.timestamp * 1000 : Date.now(),
       }));
-  } catch { return []; }
+    if (turns.length === 0) {
+      log.warn('[fetchThreadContext] chat returned 0 turns after filter', { userId, chatId, raw: (msgs || []).length });
+    }
+    return turns;
+  } catch (e: any) {
+    log.warn('[fetchThreadContext] threw', { userId, chatId, error: e?.message });
+    return [];
+  }
 }
 
 /** Resume previously-paired sessions on server boot.
