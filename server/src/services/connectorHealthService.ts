@@ -270,39 +270,93 @@ export async function detectStaleConnectors(): Promise<{ scanned: number; flippe
 }
 
 /**
- * Send a Brain WhatsApp ping per stale connector. Deduped via
- * brainContactsUser.dedupKey so a connector that's stale across
- * multiple sweep ticks only alerts once until it recovers.
+ * Send ONE Brain WhatsApp ping per user with all currently-stale
+ * connectors bundled together. Three structural changes vs the older
+ * "one message per connector at urgency=high" behaviour, which was
+ * spamming MD with paired text+voicenote alerts every 5h:
  *
- * Uses urgency='high' so it bypasses quiet hours only at emergency
- * level (not 'high' level) — the user explicitly asked Brain not to
- * be a postman; we ping once with substance and stop. Respects the
- * outboundEnabled opt-in: if the user hasn't opted in, the suppress
- * path silently records the alert but doesn't send.
+ * 1. Bundle by user. Three Google connectors share one OAuth grant —
+ *    when the refresh token expires, all three go stale at once and
+ *    the root cause is a single Production-verification step. One
+ *    message lists them together with a single CTA.
+ *
+ * 2. Urgency = 'normal'. 'high' dual-dispatches text + voicenote,
+ *    which is overkill for a connector alert AND was the source of
+ *    the duplicates MD saw. Connector-stale is informational, not
+ *    an emergency.
+ *
+ * 3. 24h re-alert window. OAuth Production verification is a
+ *    multi-day Google review, not a 4h reconnect. Pinging every 4h
+ *    trains MD to mute the channel. 24h with a single bundled
+ *    message respects the "act like a brain not a program" rule.
+ *
+ * dedupKey is sorted-connector-ids so the bundle composition is the
+ * identity — if a fourth connector goes stale tomorrow, that's a
+ * NEW fingerprint and MD hears about it; if the same set is still
+ * stale 24h later, the next sweep re-alerts once with updated ages.
  */
 async function fireStaleAlerts(stale: StaleConnector[]): Promise<void> {
   const { brainContactsUser } = await import('./notifications/brainOutboundService');
+  // Group by user. One user → one bundled message.
+  const byUser = new Map<number, StaleConnector[]>();
   for (const s of stale) {
-    const ageHr = Math.floor(s.staleMin / 60);
-    const ageStr = ageHr >= 24
-      ? `${Math.floor(ageHr / 24)} days`
-      : ageHr >= 1 ? `${ageHr}h` : `${s.staleMin}m`;
-    const body = `⚠️ ${s.label} not syncing — last update ${ageStr} ago.\n\nYour Day Brief is missing items from this source. Open Connectors → ${s.label} → Reconnect.`;
-    await brainContactsUser({
-      userId: s.userId,
-      kind: 'connector_stale',
-      summary: `${s.label} sync stale (${ageStr})`,
-      body,
-      urgency: 'high',
-      dedupKey: `connector_stale:${s.connectorId}`,
-      // 4h re-alert window — if still stale 4h later, ping again.
-      // Most token-expiry stalls are fixed within minutes of the
-      // user seeing the alert; if it's been 4h, the alert was
-      // missed and the user needs reminding.
-      dedupWindowMs: 4 * 60 * 60 * 1000,
-      metadata: { connectorTypeId: s.connectorTypeId, staleMin: s.staleMin } as any,
-    }).catch((e: any) => log.warn('alert send failed', { userId: s.userId, error: e.message }));
+    const arr = byUser.get(s.userId) ?? [];
+    arr.push(s);
+    byUser.set(s.userId, arr);
   }
+  for (const [userId, group] of byUser) {
+    // Detect the common Google-grant case: if Gmail/Calendar/Drive
+    // all stale at once, root cause is OAuth — one CTA, not three.
+    const googleSlugs = new Set(['google_gmail', 'google_calendar', 'google_drive', 'google_tasks', 'google_chat']);
+    const googleStale = group.filter((s) => googleSlugs.has(s.connectorTypeId));
+    const nonGoogleStale = group.filter((s) => !googleSlugs.has(s.connectorTypeId));
+
+    const lines: string[] = [];
+    if (googleStale.length >= 2) {
+      const labels = googleStale.map((s) => s.label).join(', ');
+      const oldestMin = Math.max(...googleStale.map((s) => s.staleMin));
+      lines.push(`⚠️ Google sync stalled (${labels}) — last update ${formatAge(oldestMin)} ago.`);
+      lines.push('Single OAuth grant expired. Open Connectors → reconnect any Google connector to restore all of them.');
+    } else {
+      for (const s of googleStale) {
+        lines.push(`⚠️ ${s.label} not syncing — last update ${formatAge(s.staleMin)} ago.`);
+      }
+      if (googleStale.length === 1) {
+        lines.push(`Open Connectors → ${googleStale[0].label} → Reconnect.`);
+      }
+    }
+    for (const s of nonGoogleStale) {
+      lines.push(`⚠️ ${s.label} not syncing — last update ${formatAge(s.staleMin)} ago.`);
+    }
+    if (nonGoogleStale.length > 0) {
+      const labels = nonGoogleStale.map((s) => s.label).join(', ');
+      lines.push(`Open Connectors → reconnect ${labels}.`);
+    }
+
+    const body = lines.join('\n');
+    const sortedIds = group.map((s) => s.connectorId).sort().join(',');
+    const summary = group.length === 1
+      ? `${group[0].label} sync stale`
+      : `${group.length} connectors sync stale`;
+
+    await brainContactsUser({
+      userId,
+      kind: 'connector_stale',
+      summary,
+      body,
+      urgency: 'normal',
+      dedupKey: `connector_stale:${sortedIds}`,
+      dedupWindowMs: 24 * 60 * 60 * 1000,
+      metadata: { connectorIds: group.map((s) => s.connectorId) } as any,
+    }).catch((e: any) => log.warn('alert send failed', { userId, error: e.message }));
+  }
+}
+
+function formatAge(min: number): string {
+  const hr = Math.floor(min / 60);
+  if (hr >= 24) return `${Math.floor(hr / 24)} days`;
+  if (hr >= 1) return `${hr}h`;
+  return `${min}m`;
 }
 
 /**
