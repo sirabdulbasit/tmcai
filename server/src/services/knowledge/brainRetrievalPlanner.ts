@@ -12,7 +12,7 @@ import { BRAIN_SCHEMA_VERSION, getBrainSchemaText } from './brainSchema';
 import { getCompactIndexForPlanner } from './tenantIndexService';
 import { getSystemCapabilities, renderCapabilitiesBlock } from './systemCapabilitiesService';
 
-export type PlanIntent = 'casual' | 'factual' | 'introspective';
+export type PlanIntent = 'casual' | 'factual' | 'introspective' | 'day_brief';
 /**
  * Orthogonal to PlanIntent. Tells the composer which wiki layer the
  * answer should LEAD with:
@@ -76,12 +76,39 @@ function renderHistoryBlock(history: PlannerHistoryTurn[]): string {
   return `\n# Recent conversation (most recent last)\n${lines.join('\n')}\n`;
 }
 
+/** Short-circuit before hitting the LLM planner. Day-brief asks are a
+ *  closed set of phrases — we don't need an LLM to route them. Saves a
+ *  call and gives the composer deterministic intent for structured-
+ *  digest formatting. Same trick is worth considering for other fixed
+ *  patterns over time. */
+function matchDayBriefShortcut(question: string): RetrievalPlan | null {
+  const q = question.trim().toLowerCase();
+  // Matches: "brief my day", "what's on my plate (today)", "daily brief",
+  // "morning brief", "give me a brief", "give me my day", "what's going
+  // on today", "summarise my day", "what do i have today", and the
+  // Roman-Urdu / Urdu equivalents Basit uses on WhatsApp.
+  const en = /^(brief\s+(my\s+day|me)|day\s+brief|daily\s+brief|morning\s+brief|give\s+me\s+(a\s+brief|my\s+day|the\s+brief|a\s+summary)|what'?s\s+(on\s+my\s+plate|going\s+on|happening)(\s+today)?|what\s+do\s+i\s+have\s+today|summari[sz]e\s+my\s+day|run\s+my\s+day|catch\s+me\s+up)\b/;
+  const urdu = /\b(mera\s+din|aaj\s+kya\s+hai|aaj\s+ka\s+brief|aaj\s+ki\s+update|day\s+ka\s+brief)\b/i;
+  if (!en.test(q) && !urdu.test(question)) return null;
+  return {
+    intent: 'day_brief',
+    scopeLean: 'personal',
+    openPageIds: [],
+    entityTerms: [],
+    faclTitles: [],
+    rationale: 'short-circuit:day_brief matched on phrase',
+  };
+}
+
 export async function planRetrieval(
   clientNumber: string,
   userId: number,
   question: string,
   history: PlannerHistoryTurn[] = [],
 ): Promise<RetrievalPlan> {
+  // Deterministic fast path for daily-digest asks. Skip the LLM planner.
+  const shortcut = matchDayBriefShortcut(question);
+  if (shortcut) return shortcut;
   const [schema, index, caps] = await Promise.all([
     Promise.resolve(getBrainSchemaText()),
     getCompactIndexForPlanner(clientNumber, userId),
@@ -156,7 +183,9 @@ function parsePlan(text: string): RetrievalPlan {
   try {
     const obj = JSON.parse(match[0]);
     const intent: PlanIntent =
-      obj.intent === 'factual' || obj.intent === 'introspective' ? obj.intent : 'casual';
+      obj.intent === 'factual' || obj.intent === 'introspective' || obj.intent === 'day_brief'
+        ? obj.intent
+        : 'casual';
     const scopeLean: ScopeLean =
       obj.scopeLean === 'personal' || obj.scopeLean === 'org' ? obj.scopeLean : 'mixed';
     return {

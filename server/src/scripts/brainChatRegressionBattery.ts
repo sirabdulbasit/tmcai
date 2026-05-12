@@ -378,6 +378,34 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
       ],
     },
     {
+      // MD's 2026-05-12 14:34 PKT failure: "Brief my day" returned a
+      // vague meta-summary ("your focus today seems to be on managing
+      // your open items"), not a real digest with calendar/items/inbox.
+      // After the day_brief intent + H15 structured-output rule, the
+      // reply must contain SUBSTANTIVE content from at least one real
+      // source block (calendar / open items / inbound).
+      name: 'day_brief — structured digest, not meta-commentary',
+      steps: [
+        {
+          user: 'Brief my day',
+          assertions: [
+            firstNameOnly,
+            // The failed reply leaked the test fixture into the brief.
+            // Real digests don't say "in both English and Urdu" — that's
+            // Brain noticing its own test runs.
+            { name: 'no meta-commentary about Brain\'s own activity', check: doesNotMention('in both English and Urdu|managing your open items and tasks|your focus today seems') },
+            // Substantive content: at least one real day-brief signal.
+            { name: 'mentions calendar, items, or inbound', check: (a) => {
+                const real = /\b(meeting|calendar|HH:MM|\d{1,2}:\d{2}|open\s+item|due\s+(today|tomorrow)|inbox|email|reply\s+from|message\s+from|critical|nothing\s+(urgent|on)|on\s+your\s+plate)\b/i;
+                return real.test(a) || `reply lacks day-brief signals: ${a.slice(0, 160)}…`;
+              } },
+            // Hard cap on size — WhatsApp readability.
+            { name: 'under 1000 chars (WhatsApp friendly)', check: shorterThan(1000) },
+          ],
+        },
+      ],
+    },
+    {
       // Direct repro of MD's 2026-05-12 14:20 PKT failure: a stale
       // brain_prompt_queue row (awaiting set_due_date) consumed MD's
       // "Brief my day" as a date-parse attempt and never reached the

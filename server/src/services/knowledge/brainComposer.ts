@@ -608,6 +608,15 @@ export async function compose(
   // to Asad" → LLM picks one Asad at random or says "I don't see them".
   const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
 
+  // ── Today's calendar ──
+  // Only built for day_brief intent. Pulls today's gcal feed_events so
+  // the structured digest can lead with meetings. Without this block,
+  // Brain's "brief my day" reply has no calendar grounding and ends up
+  // vaguely summarising whatever wiki retrieval returned.
+  const todayCalendarBlock = plan.intent === 'day_brief'
+    ? await buildTodayCalendarBlock(clientNumber, userId)
+    : '';
+
   const systemPrompt = `${persona.systemPreamble}
 
 # Brain schema (v${BRAIN_SCHEMA_VERSION})
@@ -616,7 +625,7 @@ ${schema}
 # System capabilities (what you can actually access right now — answer questions about yourself from this)
 ${capsBlock}
 
-${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}${openItemsBlock ? `${openItemsBlock}\n\n` : ''}${candidatesBlock ? `${candidatesBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
+${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}${openItemsBlock ? `${openItemsBlock}\n\n` : ''}${todayCalendarBlock ? `${todayCalendarBlock}\n\n` : ''}${candidatesBlock ? `${candidatesBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
 ${recentLog || '(no recent activity logged)'}
 
 # Pages opened for this turn (intent=${plan.intent})
@@ -719,7 +728,19 @@ H13. **Annotate scope on every citation — but only for REAL pages you opened.*
 - **Open Items, Day Brief, My Attention, and any Brain-emitted action result are NOT documents.** Never attribute an action ("I added X to open items") to a fake doc path like "SW_DASHBOARD/Open Items" or "(tenant FACL doc:)". The open_items table is an internal Nexeo feature, not a file. When confirming an action, just say what you did ("Added X to your open items, due tomorrow.") — no doc paths, no folder hierarchies, no FACL labels.
 - If you have not opened a page named X, you may not cite X. If you only saw X-shaped text inside the user's emails or in the recent-activity tail, that is not an org_doc — it's correspondence. Treat it as such.
 
-H14. **Your previous reply is an authoritative source.** When the user references content you just produced — a name, an item title, a number, a fact from your immediately-previous reply visible in the history block above — treat that reply as a valid source. Don't re-derive it from scratch; don't deny content you just provided. If you listed "Revisit pricing for Phoenix Systems" as an open item one turn ago and the user now says "delegate the phoenix one", the open_item exists and the reference is unambiguous. Look it up in the snapshot above and act. Falsely denying ("I don't see any item with that name") is worse than any other failure mode.`;
+H14. **Your previous reply is an authoritative source.** When the user references content you just produced — a name, an item title, a number, a fact from your immediately-previous reply visible in the history block above — treat that reply as a valid source. Don't re-derive it from scratch; don't deny content you just provided. If you listed "Revisit pricing for Phoenix Systems" as an open item one turn ago and the user now says "delegate the phoenix one", the open_item exists and the reference is unambiguous. Look it up in the snapshot above and act. Falsely denying ("I don't see any item with that name") is worse than any other failure mode.
+
+H15. **Day-brief asks get a structured digest, NOT meta-commentary.** When intent=day_brief, your job is to read the user's actual day from the live blocks above and produce a brief digest of substance. NEVER reply with reflective summaries like "you seem to be focused on managing your open items today" — that describes your observations of Brain's own activity, not the user's day. Pull from these EXACT sources, in this order, skipping any that are empty:
+
+  1. **Today's calendar** block above — list each meeting with HH:MM + title + 1–3 attendee names. Lead the brief with this if anything's scheduled.
+  2. **Open items snapshot** above — surface the items with priority=high or critical, OR with dueDate today/tomorrow. Don't list everything; pick what NEEDS attention. Quote real titles. If none qualify, say "nothing urgent on the open list".
+  3. **Risk Radar** flags above — if today's radar is in the prompt, lead each flag in 1 short line.
+  4. **Recent inbound from sender wikis** — the 1–3 most substantive new messages today that haven't been handled. Quote the sender's real name and one phrase that says what it's about.
+  5. End with ONE short sentence on what would matter most to look at first.
+
+Format: WhatsApp-friendly. Use short emoji section headers (📅 calendar, 📋 items, 📬 inbox, ⚠️ watch) ONLY if at least one item exists for that section. Bullets within sections. Hard cap: 600 chars total — this is for a phone screen, not a dashboard. If you exceed, drop the lowest-priority section first.
+
+The brief is FACTS from the user's day, surfaced compactly. Not a description of Brain. Not a commentary on what Brain has been doing. Not a list of Brain's own test/regression activity. If the open-items snapshot above contains rows clearly created by automated battery / smoke testing (titles like "Test regression task", "Test Urdu item"), SKIP those — they're not real work.`;
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
   // "what kind?" or "and that one?" against the previous turn instead
@@ -914,6 +935,51 @@ const STOPWORD_TOKENS = new Set([
   'open', 'items', 'item', 'brief', 'attention', 'day', 'reply',
   'mr', 'mrs', 'ms', 'dr',
 ]);
+
+/** Pull today's calendar events (gcal feed) for this user and render
+ *  as a structured block. Only the day-brief intent path uses this —
+ *  injecting it on every turn would bloat every prompt for no gain.
+ *
+ *  Events are pulled from feed_events with sourceType='gcal' filtered
+ *  to today (local-day window in UTC, so a 23:30 event still counts
+ *  as today). Returns '' when nothing's scheduled — Brain's digest
+ *  will simply skip the calendar section. */
+async function buildTodayCalendarBlock(clientNumber: string, userId: number): Promise<string> {
+  const now = new Date();
+  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59));
+  const rows = await prisma.feedEvent.findMany({
+    where: {
+      clientNumber, userId,
+      sourceType: 'gcal' as any,
+      // gcal rawPayload carries 'start' as ISO; we filter on event time,
+      // not created_at, because backfilled events would otherwise miss.
+      createdAt: { gte: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) },  // window the FROM clause
+    },
+    select: { id: true, rawPayload: true },
+    take: 200,
+  }).catch(() => [] as any[]);
+  // In-memory filter on the actual event start time from rawPayload.
+  // Cheaper than a JSONB indexed query on a low-volume table.
+  const events = rows
+    .map((r: any) => {
+      const p = r.rawPayload ?? {};
+      const startIso = typeof p.start === 'string' ? p.start : (p.start?.dateTime ?? p.start?.date ?? null);
+      const start = startIso ? new Date(startIso) : null;
+      return start && !Number.isNaN(start.getTime())
+        ? { id: r.id, start, title: String(p.summary ?? p.title ?? '(no title)').slice(0, 120), location: p.location ?? null, attendees: Array.isArray(p.attendees) ? p.attendees.map((a: any) => a?.email ?? a).filter(Boolean) : [] }
+        : null;
+    })
+    .filter((x: any): x is NonNullable<typeof x> => x !== null && x.start >= startOfDay && x.start <= endOfDay)
+    .sort((a: any, b: any) => a.start.getTime() - b.start.getTime());
+  if (events.length === 0) return '# Today\'s calendar\n(nothing scheduled)';
+  const lines = events.map((e: any) => {
+    const hhmm = e.start.toISOString().slice(11, 16);
+    const att = e.attendees.length > 0 ? ` — ${e.attendees.slice(0, 3).join(', ')}${e.attendees.length > 3 ? ` +${e.attendees.length - 3}` : ''}` : '';
+    return `- ${hhmm} ${e.title}${att}`;
+  });
+  return `# Today's calendar (UTC times)\n${lines.join('\n')}`;
+}
 
 /** Build the contact candidates block for this turn. Scans names, runs
  *  resolveContact per name (in parallel), and concatenates the blocks.
