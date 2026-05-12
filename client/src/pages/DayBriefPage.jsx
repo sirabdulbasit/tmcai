@@ -4525,6 +4525,14 @@ function buildAttentionOptions(item) {
 function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecided }) {
   const [open, setOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
+  // Mark Personal — for WhatsApp items only. Two-step inline flow:
+  //   null            → not in flow
+  //   { previewing }  → fetching counts from /preview
+  //   { willDelete }  → showing counts + typed-phrase confirm input
+  //   { applying }    → POSTing /mark, awaiting response
+  // Lives in the dropdown so the user doesn't lose context.
+  const [personalFlow, setPersonalFlow] = useState(null);
+  const [personalInput, setPersonalInput] = useState('');
   const ref = useRef(null);
   const suggested = item.suggestedAction;
 
@@ -4646,6 +4654,39 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecid
     });
   }
 
+  // Mark Personal — WhatsApp only. Hard-scrubs every trace of this
+  // sender from Brain's memory (feed_events, wiki, decisions) and adds
+  // to the exclusion list so future inbound never gets ingested. Two-
+  // step inline flow with typed-phrase confirmation: preview the counts
+  // first, then make MD type the contact's name to confirm. No browser
+  // dialogs (per user feedback).
+  if (item.itemType === 'whatsapp') {
+    const phoneIdentifier = item.senderPhone || item.from || muteIdentifier;
+    const displayName = item.fromDisplay || item.from || phoneIdentifier;
+    const startMarkPersonal = async () => {
+      try {
+        setPersonalFlow({ previewing: true });
+        const { data } = await api.post('/user/personal-contacts/preview', {
+          phone: phoneIdentifier,
+        });
+        setPersonalFlow({
+          willDelete: data.willDelete,
+          phone: data.phone || phoneIdentifier,
+          displayName,
+        });
+      } catch (err) {
+        notify?.(err?.response?.data?.error || 'Preview failed', 'error');
+        setPersonalFlow(null);
+      }
+    };
+    items.push({
+      id: 'mark_personal',
+      label: `🏠 Mark Personal — scrub ${displayName} and stop ingest`,
+      handler: startMarkPersonal,
+      separator: true,
+    });
+  }
+
   // Hide-pattern is destructive — keep it last with a separator
   items.push({
     id: 'hide_pattern',
@@ -4746,6 +4787,118 @@ function MoreActionsMenu({ item, busy, decide, openPicker, hide, notify, onDecid
                       Snooze for {s.label}
                     </button>
                   ))}
+                </div>
+              )}
+              {opt.id === 'mark_personal' && personalFlow && (
+                <div style={{
+                  margin: '6px 4px 4px',
+                  padding: 10,
+                  background: 'rgba(220, 38, 38, 0.08)',
+                  border: '1px solid rgba(220, 38, 38, 0.3)',
+                  borderRadius: 'var(--r-sm)',
+                  fontSize: 'var(--fs-sm)',
+                  color: 'var(--text)',
+                }}>
+                  {personalFlow.previewing ? (
+                    <div style={{ color: 'var(--text-muted)' }}>Counting what to scrub…</div>
+                  ) : personalFlow.willDelete ? (
+                    <>
+                      <div style={{ marginBottom: 6, fontWeight: 600 }}>This will hard-delete from Brain:</div>
+                      <ul style={{ margin: '0 0 8px 16px', padding: 0, color: 'var(--text-muted)' }}>
+                        <li>{personalFlow.willDelete.feedEvents} feed events</li>
+                        <li>{personalFlow.willDelete.wikiPages} wiki pages</li>
+                        <li>{personalFlow.willDelete.decisionLogs} decision logs</li>
+                      </ul>
+                      <div style={{ marginBottom: 4, color: 'var(--text-muted)' }}>
+                        Future messages from this contact won't be ingested.
+                        Reversible only in the sense that you can re-enable from Contacts —
+                        deleted data does not come back.
+                      </div>
+                      <div style={{ marginTop: 6, marginBottom: 4 }}>
+                        Type <strong>{personalFlow.displayName}</strong> to confirm:
+                      </div>
+                      <input
+                        type="text"
+                        value={personalInput}
+                        onChange={(e) => setPersonalInput(e.target.value)}
+                        autoFocus
+                        placeholder={personalFlow.displayName}
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          background: 'var(--bg-1)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 'var(--r-sm)',
+                          color: 'var(--text)',
+                          fontSize: 'var(--fs-sm)',
+                        }}
+                      />
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                        <button
+                          type="button"
+                          disabled={
+                            personalInput.trim().toLowerCase() !== String(personalFlow.displayName || '').toLowerCase()
+                          }
+                          onClick={async () => {
+                            setPersonalFlow({ applying: true });
+                            try {
+                              const { data } = await api.post('/user/personal-contacts/mark', {
+                                phone: personalFlow.phone,
+                                displayName: personalFlow.displayName,
+                                confirmPhrase: personalInput.trim(),
+                              });
+                              notify?.(
+                                `Marked ${personalFlow.displayName} as Personal — scrubbed ${data.scrubbed?.feedEvents ?? 0} events + ${data.scrubbed?.wikiPages ?? 0} wiki pages.`,
+                                'success',
+                              );
+                              setPersonalFlow(null);
+                              setPersonalInput('');
+                              setOpen(false);
+                              setTimeout(() => onDecided?.(), 400);
+                            } catch (err) {
+                              notify?.(err?.response?.data?.error || 'Mark personal failed', 'error');
+                              setPersonalFlow(null);
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            background: '#dc2626',
+                            color: '#fff',
+                            border: 0,
+                            borderRadius: 'var(--r-sm)',
+                            fontSize: 'var(--fs-sm)',
+                            cursor:
+                              personalInput.trim().toLowerCase() === String(personalFlow.displayName || '').toLowerCase()
+                                ? 'pointer'
+                                : 'not-allowed',
+                            opacity:
+                              personalInput.trim().toLowerCase() === String(personalFlow.displayName || '').toLowerCase()
+                                ? 1
+                                : 0.4,
+                          }}
+                        >
+                          Scrub & exclude
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setPersonalFlow(null); setPersonalInput(''); }}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'transparent',
+                            color: 'var(--text-muted)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 'var(--r-sm)',
+                            fontSize: 'var(--fs-sm)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  ) : personalFlow.applying ? (
+                    <div style={{ color: 'var(--text-muted)' }}>Scrubbing & excluding…</div>
+                  ) : null}
                 </div>
               )}
             </Fragment>
