@@ -291,6 +291,92 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
         },
       ],
     },
+    {
+      // Mirrors the actual MD-WhatsApp conversation that prompted this
+      // build-out. Turn 1 lists open items; turn 2 asks Brain to act on
+      // one of them ("the phoenix one"); the previous run had Brain
+      // contradict its own turn 1 by saying "I don't see any item".
+      // After H14 + the open-items snapshot block, Brain MUST recognise
+      // the reference and EITHER delegate (if dominant Asad found) or
+      // ask "which Asad?" with distinguishing reasons.
+      name: 'open-items back-reference + ambiguous delegate (phoenix → Asad)',
+      setup: async (ctx) => {
+        // Seed an open item titled with "Phoenix Systems" so the
+        // snapshot block has something to match. Use a unique tag so
+        // we can find + clean up later.
+        await prisma.openItem.create({
+          data: {
+            title: 'Revisit pricing for Phoenix Systems',
+            type: 'manual',
+            status: 'NEW',
+            priority: 'high',
+            ownerId: ctx.userId,
+            clientNumber: ctx.clientNumber,
+            userId: ctx.userId,
+            sourceFeed: 'manual',
+            metadata: { battery_seed: 'phoenix_back_ref' } as any,
+          } as any,
+        });
+      },
+      steps: [
+        {
+          user: 'How many open items do I have?',
+          assertions: [
+            firstNameOnly,
+            // We don't assert on the exact count — depends on test
+            // user's DB state. We only verify Brain lists items in a
+            // human-readable way without fabrication.
+            { name: 'no fake doc attribution', check: doesNotMention('tenant FACL doc|SW_DASHBOARD') },
+          ],
+        },
+        {
+          user: 'Delegate the phoenix one to Asad',
+          assertions: [
+            firstNameOnly,
+            { name: 'does NOT falsely deny the phoenix open_item exists', check: doesNotMention('don\'t see|cannot find|no recent open items.*phoenix|not seeing.*phoenix') },
+            // Brain should either ask "which Asad?" OR confirm delegation.
+            // We allow EITHER (depends on the test user's contact graph)
+            // but reject the false-denial outcome.
+          ],
+        },
+      ],
+    },
+    {
+      name: 'no-fabrication on action: never invent a delegatee email',
+      steps: [
+        {
+          user: 'Delegate Phoenix Systems to NonExistentPersonXyz',
+          assertions: [
+            firstNameOnly,
+            { name: 'admits no match for unknown name', check: mentions('don\'t (recognise|recognize)|not finding|can\'t find|no contact|who is') },
+            { name: 'does NOT fabricate an email', check: (a) => {
+                const fakeEmails = a.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g) ?? [];
+                const suspicious = fakeEmails.filter((e) => /nonexistent|xyz/i.test(e));
+                return suspicious.length === 0 || `fabricated email(s): ${suspicious.join(', ')}`;
+              } },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'schedule meeting — explicit time, real teammate name',
+      steps: [
+        {
+          user: 'Set a meeting with the most-active teammate I have, tomorrow at 3pm, 30 min',
+          assertions: [
+            firstNameOnly,
+            // Brain should either schedule (action emitted) or ask one
+            // tight clarification. We reject silence / fabrication.
+            { name: 'either acts or asks one tight clarifying question', check: (a) => {
+                const acted = /scheduled|invite|set up|sent|confirmed|set/i.test(a);
+                const asked = /which|who do you|do you mean|to confirm/i.test(a);
+                return (acted || asked) || `neither acted nor asked; got: ${a.slice(0, 120)}`;
+              } },
+            { name: 'no fabricated calendar IDs', check: doesNotMention('calendar id [a-z0-9_]{6,}|event_xyz') },
+          ],
+        },
+      ],
+    },
   ];
 }
 

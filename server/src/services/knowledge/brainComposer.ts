@@ -59,7 +59,9 @@ export interface ComposeResult {
  *  every type needs a matching branch in dispatchBrainChatAction and a
  *  prompt entry telling the LLM when to emit it. */
 export type ComposedAction =
-  | { type: 'add_open_item'; title: string; dueDate?: string; note?: string };
+  | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
+  | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
+  | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -566,6 +568,46 @@ export async function compose(
     ? '(no pages opened for this turn — answer from persona knowledge only, and be honest about what you do not have in context)'
     : opened.map((p) => renderOpenedPageWithQuery(p, question, datesById.get(p.id) ?? null)).join('\n\n');
 
+  // ── Open items snapshot ──
+  // The composer used to never see the user's actual open_items list as
+  // structured data — only via whatever happened to fall into the wiki
+  // retrieval. That meant when MD said "delegate the phoenix one" Brain
+  // ran a fresh search for "phoenix" and found nothing, even though the
+  // open_item titled "Revisit pricing for Phoenix Systems" was right
+  // there. Now we always inject the top 20 most-recent open items as a
+  // structured block so the LLM can match a partial reference ("phoenix",
+  // "the audit one", "Faizan's email") to a real open_item id and emit
+  // an action with that id.
+  const openItemsRows = await prisma.openItem.findMany({
+    where: {
+      clientNumber, userId,
+      status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
+      // Smoke filter — items flagged via metadata.smoke=true on ingest
+      // by starCadenceService should never appear in MD's conversational
+      // surface. Same filter the brainOutboundService applies on send.
+      NOT: { metadata: { path: ['smoke'], equals: true } } as any,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+    select: { id: true, title: true, priority: true, status: true, dueDate: true, delegateeName: true, delegateeEmail: true },
+  }).catch(() => [] as any[]);
+  const openItemsBlock = openItemsRows.length === 0
+    ? ''
+    : '# Open items snapshot (top 20 active — use these ids when emitting actions that reference an existing item)\n'
+      + openItemsRows.map((it: any) => {
+        const due = it.dueDate ? ` due ${it.dueDate.toISOString().slice(0, 10)}` : '';
+        const dele = it.delegateeName ? ` → ${it.delegateeName}` : '';
+        return `- ${it.id} [${it.priority}/${it.status}]: ${it.title}${due}${dele}`;
+      }).join('\n');
+
+  // ── Contact candidates ──
+  // Scan the user's question + last two conversation turns for proper-noun
+  // tokens (people names) and run each through resolveContact. Inject any
+  // resulting candidate blocks so the LLM can pick the right person OR
+  // ask a clean disambiguation question. Without this, MD says "delegate
+  // to Asad" → LLM picks one Asad at random or says "I don't see them".
+  const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
+
   const systemPrompt = `${persona.systemPreamble}
 
 # Brain schema (v${BRAIN_SCHEMA_VERSION})
@@ -574,7 +616,7 @@ ${schema}
 # System capabilities (what you can actually access right now — answer questions about yourself from this)
 ${capsBlock}
 
-${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
+${overlayBlock ? `${overlayBlock}\n\n` : ''}${delegationMatrixBlock ? `${delegationMatrixBlock}\n\n` : ''}${radarBlock ? `${radarBlock}\n\n` : ''}${instructionsBlock ? `${instructionsBlock}\n\n` : ''}${prefsBlock ? `# Learned user preferences (bias behaviour toward these)\n${prefsBlock}\n\n` : ''}${openItemsBlock ? `${openItemsBlock}\n\n` : ''}${candidatesBlock ? `${candidatesBlock}\n\n` : ''}# Recent tenant activity (chronological tail)
 ${recentLog || '(no recent activity logged)'}
 
 # Pages opened for this turn (intent=${plan.intent})
@@ -606,19 +648,41 @@ Today is ${new Date().toISOString().slice(0, 10)} (UTC). Use this as the anchor 
 Schema:
 \`\`\`
 "action": null
-        | { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string }
+        | { "type": "add_open_item",
+            "title": string,
+            "dueDate"?: "YYYY-MM-DD",
+            "note"?: string }
+        | { "type": "delegate_open_item",
+            "openItemId": string,         // MUST be an id from the "Open items snapshot" block above
+            "delegateeEmail": string,     // MUST come from a candidate in the "Candidates for X" block above
+            "delegateeName": string,
+            "note"?: string }
+        | { "type": "schedule_meeting",
+            "title": string,
+            "whenIso": "YYYY-MM-DDTHH:MM" (resolve relative dates against today),
+            "durationMin"?: number,
+            "attendeeEmails": string[],   // MUST come from candidate blocks above; never a guess
+            "attendeeNames": string[],
+            "note"?: string }
 \`\`\`
 
 When to emit \`action\`:
-- The user says any imperative that maps to an action above ("add it to open items", "remind me to X", "track this", "I need to do X by Y").
-- Required slots:
-  - \`add_open_item.title\` — REQUIRED. Infer from the conversation. If the previous turn discussed "White Belt course", title is "Take White Belt course". Never use a generic placeholder ("Follow-up", "Voice note follow-up") — those are last-resort fallbacks, not your default.
-- Optional slots: leave omitted if not stated. Don't ask for assignee, priority, or "importance" — items default to medium/open.
-- If you can fill the required slots from the conversation, DO IT. Set \`action\` and write the answer as a short confirmation ("Added — due tomorrow.").
-- If you genuinely can't infer the required slot, leave \`action\` null and ask ONE short clarifying question. Never ask for more than one slot at a time.
-- After you've emitted an action, the system runs it and the user sees your answer. Do not write "I'll add it" without also emitting the action — that's the empty-promise failure mode.
+- The user says any imperative that maps to an action above ("add it to open items", "delegate the phoenix one to Asad", "set a meeting with Asad Friday at 3pm", "remind me to X").
+- **Resolve, then act.** When the user names a person:
+  - If a "Candidates for X" block exists above with ONE dominant winner, use that email/name in the action.
+  - If the candidates block says "no dominant winner", DO NOT emit an action — ask ONE question listing the top 2 candidates by name + one distinguishing reason each.
+  - If no candidates block exists OR it says "no matching contacts found", ask the user to spell out the full name or provide an email. Do NOT invent an email.
+- **Match references to open items.** When the user says "delegate the phoenix one" / "the audit task" / "Faizan's email", scan the "Open items snapshot" block above for a title containing that fragment and emit \`openItemId\` for the matched row. If multiple match, ask which one. If none match but you mentioned it in a previous turn, the open_item DOES exist — say so and offer to re-look up.
+- **For meetings**: \`whenIso\` MUST be resolved against today's date in the system block above. "Tomorrow 3pm" today is "${new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)}T15:00". If the user only said "tomorrow" with no time, ask "what time?" — don't guess.
+- **Required slots that are genuinely missing → ask ONE question.** Never enumerate every slot. Never ask for "assignee, priority, importance, due date" all at once.
+- After you've emitted an action, the system runs it and you do NOT need to also describe what you did — keep \`answer\` to a one-line confirmation ("Done — delegated to Asad Shafique.").
+- Never write "I'll add it" / "I'll delegate it" / "I'll set it up" without ALSO emitting the action. That's the empty-promise failure mode.
 
 Slot continuity: if your IMMEDIATELY-PREVIOUS turn (visible in history above) said you'd add/snooze/delegate something and asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do NOT ask again. Do NOT pivot to retrieval.
+
+# Honesty rule for the open-items + candidates surface
+
+If the "Open items snapshot" block above contains a row whose title fragment matches what the user is referring to, that item EXISTS. Don't say "I don't see any open items with that name" when the snapshot literally lists one. Same for candidates: if the block shows two Asads, don't reply "I can't find any Asad" — say "which one?" with their distinguishing reasons.
 
 # Honesty rules (from brain_schema.md §4, non-negotiable for this turn)
 H1. **Answer from what is in front of you.** If the opened pages contain the fact the user asked for (a number, a list, a name, a status, a date), state it plainly. Do NOT punt with "would you like me to tell you more", "I would need to process this", "I could extract that for you" — if it's in the opened pages above, report it now.
@@ -653,7 +717,9 @@ H13. **Annotate scope on every citation — but only for REAL pages you opened.*
 **H13 hard constraints — never violate.**
 - The "(tenant FACL doc:)" suffix is ONLY valid when you are citing a page of \`pageType='org_doc'\` whose header you can see in the opened-pages block above. NEVER as a generic "this came from a tenant source" label.
 - **Open Items, Day Brief, My Attention, and any Brain-emitted action result are NOT documents.** Never attribute an action ("I added X to open items") to a fake doc path like "SW_DASHBOARD/Open Items" or "(tenant FACL doc:)". The open_items table is an internal Nexeo feature, not a file. When confirming an action, just say what you did ("Added X to your open items, due tomorrow.") — no doc paths, no folder hierarchies, no FACL labels.
-- If you have not opened a page named X, you may not cite X. If you only saw X-shaped text inside the user's emails or in the recent-activity tail, that is not an org_doc — it's correspondence. Treat it as such.`;
+- If you have not opened a page named X, you may not cite X. If you only saw X-shaped text inside the user's emails or in the recent-activity tail, that is not an org_doc — it's correspondence. Treat it as such.
+
+H14. **Your previous reply is an authoritative source.** When the user references content you just produced — a name, an item title, a number, a fact from your immediately-previous reply visible in the history block above — treat that reply as a valid source. Don't re-derive it from scratch; don't deny content you just provided. If you listed "Revisit pricing for Phoenix Systems" as an open item one turn ago and the user now says "delegate the phoenix one", the open_item exists and the reference is unambiguous. Look it up in the snapshot above and act. Falsely denying ("I don't see any item with that name") is worse than any other failure mode.`;
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
   // "what kind?" or "and that one?" against the previous turn instead
@@ -702,33 +768,75 @@ H13. **Annotate scope on every citation — but only for REAL pages you opened.*
   if (parsed.action) {
     try {
       const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
-      if (parsed.action.type === 'add_open_item') {
+      const act = parsed.action;
+      if (act.type === 'add_open_item') {
         const res = await dispatchInstruction({
           clientNumber,
           userId,
           instruction: {
             intent: 'add_open_item',
             confidence: 1,
-            summary: parsed.action.title,
+            summary: act.title,
+            params: { itemTitle: act.title, itemDueDate: act.dueDate, itemNote: act.note },
+          } as any,
+        });
+        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+        if (!res.ok) answer = res.message;
+        else if (!/added|added to|noted|done|got it/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'delegate_open_item') {
+        // Transition the existing open_item to DELEGATED with the
+        // resolved delegatee. We do this directly via the lifecycle
+        // service (the instructionDispatcher 'delegate' case is for
+        // forwarding a Gmail message, not transitioning an existing
+        // open_item — different shape).
+        try {
+          const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+          await prisma.openItem.update({
+            where: { id: act.openItemId },
+            data: {
+              delegateeName: act.delegateeName,
+              delegateeEmail: act.delegateeEmail,
+              // delegateeId is set only when the email resolves to an
+              // internal User row; we look that up here so internal
+              // delegations get the FK populated.
+              delegateeId: (await prisma.user.findFirst({
+                where: { clientNumber, email: act.delegateeEmail, isActive: true },
+                select: { id: true },
+              }).catch(() => null))?.id ?? null,
+            } as any,
+          });
+          await transitionStatus(act.openItemId, 'DELEGATED', {
+            clientNumber,
+            actor: `user:${userId}`,
+            reason: act.note || `Delegated via Brain Chat to ${act.delegateeName}`,
+          });
+          actionResult = { ok: true, artifactId: act.openItemId, message: `Delegated to ${act.delegateeName} <${act.delegateeEmail}>.` };
+          if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `Delegate failed: ${e?.message ?? e}` };
+          answer = actionResult.message;
+        }
+      } else if (act.type === 'schedule_meeting') {
+        const res = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: {
+            intent: 'schedule_meeting',
+            confidence: 1,
+            summary: act.title,
             params: {
-              itemTitle: parsed.action.title,
-              itemDueDate: parsed.action.dueDate,
-              itemNote: parsed.action.note,
+              meetingTitle: act.title,
+              meetingWhen: act.whenIso,
+              meetingDurationMin: act.durationMin,
+              // Mix names + emails as the dispatcher accepts either; the
+              // resolver gave us both so we pass through.
+              meetingAttendees: [...act.attendeeEmails, ...act.attendeeNames],
             },
           } as any,
         });
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-        // Replace the LLM's announcement with the actual outcome.
-        // The composer prompt already tells the LLM to keep `answer`
-        // short ("Added — due tomorrow."); on failure we override with
-        // the dispatcher's error so the user isn't told the action
-        // succeeded when it didn't.
-        if (!res.ok) {
-          answer = res.message;
-        } else if (!/added|added to|noted|done|got it/i.test(answer)) {
-          // LLM forgot the confirmation phrasing rule — append.
-          answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
-        }
+        if (!res.ok) answer = res.message;
+        else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
       }
     } catch (e: any) {
       actionResult = { ok: false, message: `Action dispatch failed: ${e?.message ?? e}` };
@@ -763,6 +871,72 @@ function renderOpenedPage(p: OpenedPage): string {
  * to know "what should I worry about today" without re-running the radar.
  * Returns '' when the doc is missing/empty/stale (>36h since generation).
  */
+/** Extract candidate person-name tokens from the user's current question
+ *  + their last two utterances. Heuristic: capitalised tokens of length
+ *  ≥3 that look like names ("Asad", "Phoenix") plus a few imperative-
+ *  trigger phrases ("delegate to X", "meeting with X", "schedule with X").
+ *  Tokens that are common stopwords or English month names are dropped.
+ *  This is intentionally noisy — false positives just produce empty
+ *  candidate blocks; false negatives (missing a name) are the real cost.
+ */
+function extractNameCandidates(question: string, history: ComposerHistoryTurn[]): string[] {
+  const lastUserUtterances = history
+    .filter((h) => h.role === 'user')
+    .slice(-2)
+    .map((h) => h.text);
+  const all = [question, ...lastUserUtterances].join(' ');
+
+  const found = new Set<string>();
+  // Pattern 1: explicit imperatives — "delegate to Asad", "meeting with Mr. X".
+  const imperativeRe = /\b(delegate|forward|assign|send|tell|message|email|meet|meeting|schedule|call)\b[^A-Za-z]*(?:to\s+|with\s+)?([A-Z][A-Za-z]{2,}(?:\s+[A-Z][A-Za-z]{2,})?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = imperativeRe.exec(all)) !== null) found.add(m[2]);
+
+  // Pattern 2: any capitalised word(s) of length ≥3, max 3 tokens. Filters
+  // out stopwords and month names below.
+  const capRe = /\b([A-Z][A-Za-z]{2,}(?:\s+[A-Z][A-Za-z]{2,}){0,2})\b/g;
+  while ((m = capRe.exec(all)) !== null) {
+    const t = m[1];
+    if (!STOPWORD_TOKENS.has(t.toLowerCase().split(/\s+/)[0])) found.add(t);
+  }
+
+  // Cap at 5 names per turn so we don't run 20 DB queries on a verbose msg.
+  return Array.from(found).slice(0, 5);
+}
+
+const STOPWORD_TOKENS = new Set([
+  'i', 'my', 'me', 'we', 'our', 'us', 'you', 'your', 'they', 'them', 'their',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  'today', 'tomorrow', 'yesterday', 'tonight',
+  'phoenix', // common in product names like "Phoenix Systems" — but treat as NOT a person name; org/account resolution is a separate codepath.
+  'gmail', 'whatsapp', 'calendar', 'drive', 'tasks', 'chat', 'nexeo', 'tmc',
+  'open', 'items', 'item', 'brief', 'attention', 'day', 'reply',
+  'mr', 'mrs', 'ms', 'dr',
+]);
+
+/** Build the contact candidates block for this turn. Scans names, runs
+ *  resolveContact per name (in parallel), and concatenates the blocks.
+ *  Returns '' when no usable names were found or no candidates matched. */
+async function buildCandidatesBlockForTurn(
+  clientNumber: string,
+  userId: number,
+  question: string,
+  history: ComposerHistoryTurn[],
+): Promise<string> {
+  const names = extractNameCandidates(question, history);
+  if (names.length === 0) return '';
+  const { resolveContact, renderCandidatesBlock } = await import('./contactResolver');
+  const results = await Promise.all(
+    names.map((n) => resolveContact(n, { clientNumber, userId, limit: 4 }).catch(() => [])),
+  );
+  const blocks: string[] = [];
+  results.forEach((cands, i) => {
+    if (cands.length > 0) blocks.push(renderCandidatesBlock(names[i], cands));
+  });
+  return blocks.join('\n\n');
+}
+
 function renderRiskRadarBlock(doc: { generatedAt?: Date | null; runDate?: Date | null; flags?: unknown; summary?: string | null; narrative?: string | null; flagCount?: number; highSeverityCount?: number } | null | undefined): string {
   if (!doc) return '';
   const generatedAt = doc.generatedAt ? new Date(doc.generatedAt) : null;
@@ -1279,8 +1453,10 @@ function parseCompose(text: string): ParsedCompose {
 }
 
 /** Reject anything that doesn't conform to ComposedAction. Validation is
- *  strict on `type` and `title` (the two non-negotiable fields). Optional
- *  fields are coerced to undefined when missing. */
+ *  strict on every non-negotiable field — required slots that are missing
+ *  cause the whole action to drop to null so the LLM's prose answer goes
+ *  out instead. This is intentional: bad action data is worse than no
+ *  action (we'd write a wrong row in the DB). */
 function normaliseAction(raw: unknown): ComposedAction | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
@@ -1291,6 +1467,31 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const dueDate = typeof r.dueDate === 'string' && r.dueDate.trim() ? r.dueDate.trim() : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
     return { type: 'add_open_item', title, dueDate, note };
+  }
+  if (type === 'delegate_open_item') {
+    const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';
+    const delegateeEmail = typeof r.delegateeEmail === 'string' ? r.delegateeEmail.trim() : '';
+    const delegateeName = typeof r.delegateeName === 'string' ? r.delegateeName.trim() : '';
+    // openItemId is the gate — without it we don't know what to move.
+    // Email is the second gate — name without email means the resolver
+    // returned nothing and we should NOT silently delegate to a guess.
+    if (!openItemId || !delegateeEmail || !delegateeName) return null;
+    const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
+    return { type: 'delegate_open_item', openItemId, delegateeEmail, delegateeName, note };
+  }
+  if (type === 'schedule_meeting') {
+    const title = typeof r.title === 'string' ? r.title.trim() : '';
+    const whenIso = typeof r.whenIso === 'string' ? r.whenIso.trim() : '';
+    const attendeeEmails = Array.isArray(r.attendeeEmails)
+      ? r.attendeeEmails.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+      : [];
+    const attendeeNames = Array.isArray(r.attendeeNames)
+      ? r.attendeeNames.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+      : [];
+    if (!title || !whenIso || attendeeEmails.length === 0) return null;
+    const durationMin = typeof r.durationMin === 'number' && r.durationMin > 0 ? Math.floor(r.durationMin) : undefined;
+    const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
+    return { type: 'schedule_meeting', title, whenIso, durationMin, attendeeEmails, attendeeNames, note };
   }
   return null;
 }
