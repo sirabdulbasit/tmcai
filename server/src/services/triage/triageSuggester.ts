@@ -1659,20 +1659,30 @@ export async function buildAttentionList(
   // and stays. Senders the user has explicitly starred (3+) also stay —
   // user has flagged the relationship as worth the interruption.
   //
-  // This implements the rule: "User receives only To-addressed emails in
-  // My Attention; CC emails only when something critical (escalation,
-  // sentiment, resignation, etc.) — Brain decides."
+  // Per MD 2026-05-12 ("again email is not reading, fix it once for
+  // all"): the previous CC filter required ★3+ stars OR high-band OR
+  // superpower OR critical — which is impossible for a new user with
+  // no star history (everything defaults to ★0) AND too strict for a
+  // high-volume exec who gets CC'd on legitimate cross-team work.
+  // 506 emails this week, 0 in My Attention — all killed by this gate.
+  //
+  // New rule: drop CC ONLY when band='low' AND no superpower fired.
+  // Medium, high, and critical CC emails all surface. Low-band CC is
+  // genuinely noise (newsletters, mailing lists with CC quirks, etc.)
+  // and stays suppressed. Users can mute specific noisy senders via
+  // the muted-senders list for finer control.
   const ccFiltered = items.filter((it) => {
     if (it.itemType !== 'email') return true;
     if (it.addressing !== 'cc') return true;
     if (it.critical) return true;
     const band = it.criticality?.band;
-    if (band === 'high' || band === 'critical') return true;
+    // Only LOW-band CC gets dropped now. Medium and above surface.
+    if (band !== 'low') return true;
     const sp = it.criticality?.superpowers;
     if (sp?.absence || sp?.crossSource || sp?.decay) return true;
-    if ((it.senderStars ?? 0) >= 3) return true;
     return false;
   });
+  const ccDropped = items.length - ccFiltered.length;
   items.length = 0;
   items.push(...ccFiltered);
 
@@ -1708,12 +1718,25 @@ export async function buildAttentionList(
     if (sa === 'acknowledge') return false;
     return true;
   });
+  const autonomyDropped = items.length - autonomousFiltered.length;
   items.length = 0;
   items.push(...autonomousFiltered);
 
   // Trim to limit AFTER collapse + autonomy filter so we surface the
   // most useful `limit` decisions, not the first N pre-collapse items.
   if (items.length > limit) items.length = limit;
+
+  // Funnel telemetry per MD 2026-05-12 ("506 emails, 0 in My
+  // Attention, fix it once for all"). Each filter stage records its
+  // drop count; this final log line tells us where the funnel narrows
+  // so future investigations don't have to grep the entire pipeline.
+  // Per-channel breakdown too — if Email=0 we know which gate did it.
+  const finalByChannel: Record<string, number> = {};
+  for (const it of items) finalByChannel[it.itemType] = (finalByChannel[it.itemType] ?? 0) + 1;
+  console.log(
+    `[attention] funnel: ccDropped=${ccDropped} autonomyDropped=${autonomyDropped} `
+    + `final=${items.length} byChannel=${JSON.stringify(finalByChannel)}`,
+  );
 
   // Hard cap on the critical band. The old UX was drowning in
   // false-positive criticals because the LLM's boolean flag was too
