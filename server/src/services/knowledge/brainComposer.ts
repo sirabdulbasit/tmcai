@@ -697,6 +697,7 @@ When to emit \`action\`:
 - **Required slots that are genuinely missing → ask ONE question.** Never enumerate every slot. Never ask for "assignee, priority, importance, due date" all at once.
 - After you've emitted an action, the system runs it and you do NOT need to also describe what you did — keep \`answer\` to a one-line confirmation ("Done — delegated to Asad Shafique.").
 - Never write "I'll add it" / "I'll delegate it" / "I'll set it up" without ALSO emitting the action. That's the empty-promise failure mode.
+- **NEVER claim an action was completed when it wasn't.** If you write phrases like "delegated", "added", "scheduled", "kar diya hai", "ho gaya", "done", "noted" — you MUST either (a) emit the corresponding action in THIS turn, OR (b) be quoting an artifactId from a previous successful dispatch visible in the conversation history. Lying that you did something when you didn't is the worst possible failure — it makes MD trust you less than if you had said "I didn't manage to do that, retry?". When MD asks "did you do X?" and you genuinely didn't (no action emitted this turn, no artifactId in history for X), say so plainly: "No, that didn't go through — let me retry now" and emit the action.
 
 Slot continuity: if your IMMEDIATELY-PREVIOUS turn (visible in history above) said you'd add/snooze/delegate something and asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do NOT ask again. Do NOT pivot to retrieval.
 
@@ -929,6 +930,62 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent
     } catch (e: any) {
       actionResult = { ok: false, message: `Action dispatch failed: ${e?.message ?? e}` };
       answer = actionResult.message;
+    }
+  }
+
+  // Full-name address guard. Per MD 2026-05-12: "Hi Basit Ahmed!"
+  // still leaked despite the persona rule. Narrow post-process:
+  // when the answer opens with a greeting + full name pattern,
+  // replace with greeting + first name. Doesn't touch the full name
+  // when it appears as a TOPIC reference ("Abdul Haseeb's profile
+  // says..."), only when it's an ADDRESS.
+  if (persona.userFullName && persona.userFirstName && persona.userFullName !== persona.userFirstName) {
+    const escapedFull = persona.userFullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const addressRe = new RegExp(
+      `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${escapedFull}\\b`,
+      'gi',
+    );
+    answer = answer.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${persona.userFirstName}`);
+  }
+
+  // Empty-promise guard. Per MD 2026-05-12: Brain replied
+  // "Revisit pricing for Phoenix System ka open item Asad Ahmed Taj
+  // ko delegate kar diya hai" without ever emitting an action — the
+  // item stayed NEW with no delegatee. Worst possible failure: Brain
+  // claimed something was done when it wasn't.
+  //
+  // Structural defense: if the answer text contains action-completion
+  // verbs (English, Roman-Urdu, Urdu) AND no action was successfully
+  // dispatched in this turn AND we can't see an artifactId from a
+  // previous turn referenced in the answer, override the answer with
+  // an honest "no, I didn't" line. The user can then retry the action
+  // and we get to actually emit it.
+  //
+  // This is intentionally narrow: only fires when the answer is
+  // claiming an action result. Status updates ("X is done" referring
+  // to an existing item's status) get a pass via the artifactId-in-
+  // history check — if Brain previously emitted a successful action
+  // with that artifactId, claiming it's done is honest.
+  if (!actionResult || actionResult.ok !== true) {
+    const completionRe = /\b(delegated|assigned|added\s+to\s+open\s+items|added\s+it\s+to|scheduled|sent\s+invite|kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai|done\s+—|delegated\s+it|reminded\s+set)\b/i;
+    if (completionRe.test(answer)) {
+      // Look for an artifactId in the recent history — pattern is the
+      // dispatcher's success messages from earlier turns. If we can
+      // see Brain previously confirmed dispatch of this kind of action
+      // with a real artifactId, the claim is honest.
+      const historyText = history.map((h) => h.text || '').join('\n');
+      const seenArtifact = /artifact[Ii]d[\s:=]+\w/.test(historyText)
+        || /\b(delegated|added)\s+(?:"[^"]+"|to\s+\w+)\s+(?:to|in)\s+\w/.test(historyText);
+      if (!seenArtifact) {
+        // Override with an honest message. Keep the original answer
+        // appended so the user sees what Brain TRIED to say if needed.
+        console.warn('[brain-chat] empty-promise guard triggered', {
+          userId, clientNumber,
+          attemptedAnswer: answer.slice(0, 200),
+        });
+        answer = `I didn't actually complete that — no action went through on my side. Tell me which item and which person and I'll act on it now.`;
+        actionResult = { ok: false, message: 'empty_promise_blocked' };
+      }
     }
   }
 
