@@ -271,59 +271,31 @@ export async function resolveContact(
   out.sort((a, b) => b.score - a.score);
   const filtered = out.filter((c) => c.signals.nameSimilarity > 0);
 
-  // ── Merge same-person duplicates ─────────────────────────────────────
-  // Per MD 2026-05-12: "why we have redundant and duplicated contacts —
-  // one with contact number, other with email, can't we merge it into
-  // one?" Same person appears twice when ingest created two Entity rows
-  // (one from email channel with .email set, one from WA channel with
-  // .phone set). The User table can also produce a third row.
+  // ── Same-name HINT, not silent merge ─────────────────────────────────
+  // Per MD 2026-05-12 ("are you hardcoding??"): I previously merged
+  // candidates with the same normalized name silently. That's a
+  // hardcoded judgement — "same name = same person" — applied without
+  // LLM context. Two real people can share a name.
   //
-  // Merge candidates whose normalised displayName is identical. Keep
-  // the strongest scored entry as the base; collapse the other's email/
-  // phone/signals into it. Result: ONE candidate with all channels.
-  // Brain Chat then surfaces a single line per person, with both
-  // identifiers — matches the brain-grade UX MD asked for.
-  const merged: ContactCandidate[] = [];
-  const seenByName = new Map<string, ContactCandidate>();
+  // Brain-grade approach: surface BOTH candidates with a "likelySamePerson"
+  // hint when names match closely. The LLM sees both rows + the hint
+  // and reasons from full context (sender wikis, recent activity,
+  // employer, prior delegations) about whether they're the same identity.
+  // If the LLM is confident they're one person, it treats them as such
+  // in its response. If not, it asks the user. Either way the JUDGEMENT
+  // happens at the LLM-with-context layer, not at a string compare.
   for (const c of filtered) {
-    const nameKey = normalise(c.displayName);
-    const existing = seenByName.get(nameKey);
-    if (!existing) {
-      seenByName.set(nameKey, c);
-      merged.push(c);
-      continue;
+    const others = filtered.filter((o) => o !== c && normalise(o.displayName) === normalise(c.displayName));
+    if (others.length > 0) {
+      // Mark this candidate as having same-name siblings. The
+      // renderCandidatesBlock function picks this up and adds a hint
+      // like "(also appears as +923... — possibly same person)".
+      const altIdentifiers = others.map((o) => o.email ?? 'WhatsApp').join(' / ');
+      c.signals.reasons.push(`same name also appears via ${altIdentifiers} — likely same person, confirm with user if uncertain`);
     }
-    // Merge into the existing winner (already-sorted, so existing has
-    // the higher score). Fill missing email/phone, combine reasons,
-    // boost the totals so the merged entry is at least as strong as
-    // either source alone.
-    if (!existing.email && c.email) existing.email = c.email;
-    // We can stash the alternate channel identifier in signals.reasons
-    // so the prompt has both surfacing.
-    const altChannel = c.relationship === 'internal_teammate'
-      ? `internal email ${c.email ?? ''}`
-      : c.email
-        ? `also via ${c.email}`
-        : `also via WhatsApp`;
-    if (!existing.signals.reasons.some((r) => r.includes('also via') || r.includes('internal email'))) {
-      existing.signals.reasons.push(altChannel.trim());
-    }
-    // Sum interaction signals so the merged entry reflects the full
-    // relationship strength.
-    existing.signals.interactions7d += c.signals.interactions7d;
-    existing.signals.totalInteractions += c.signals.totalInteractions;
-    existing.signals.delegatedToCount += c.signals.delegatedToCount;
-    if ((!existing.signals.lastInteractionAt && c.signals.lastInteractionAt)
-      || (existing.signals.lastInteractionAt && c.signals.lastInteractionAt
-        && c.signals.lastInteractionAt > existing.signals.lastInteractionAt)) {
-      existing.signals.lastInteractionAt = c.signals.lastInteractionAt;
-    }
-    // Score bump for being the same person on multiple channels —
-    // higher relationship strength than either alone.
-    existing.score += 20;
   }
 
-  return merged.slice(0, limit);
+  return filtered.slice(0, limit);
 }
 
 function scoreCandidate(args: {
