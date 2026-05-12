@@ -342,6 +342,38 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
       ],
     },
     {
+      // MD 2026-05-12 15:39 PKT: "Delegate waqas ahmed email to asad"
+      // triggered the email-report background job because the message
+      // contained "email" + "to". Three off-topic Brain replies followed.
+      // After the action-imperative exclusion in WhatsAppInbound.ts, this
+      // must route to the chat compose path (which we verify here by
+      // testing the answerAsBrain output directly — same destination).
+      //
+      // Note the battery calls answerAsBrain directly, so the upstream
+      // exclusion doesn't get exercised by this assertion path; the
+      // real-WA verification has to be done by MD live-testing. But we
+      // assert that the chat compose response itself behaves brain-grade
+      // for the delegate-an-email pattern — recognises it as a delegation
+      // request, not as anything else.
+      name: 'delegate-of-email pattern routes to chat (not email-report)',
+      steps: [
+        {
+          user: 'Delegate Waqas Ahmed email to Asad',
+          assertions: [
+            firstNameOnly,
+            { name: 'does NOT trigger the report-generator path', check: doesNotMention('Generating report|Report sent to your email|Check your inbox') },
+            // Brain should either delegate (top Asad found) or ask "which
+            // Asad?" — either is fine. Reject silence / unrelated reply.
+            { name: 'either delegates or asks disambiguation', check: (a) => {
+                const acted = /delegated|assigned|forwarded|sent\s+to|added\s+to/i.test(a);
+                const asked = /which\s+asad|who\s+(do\s+you\s+mean|exactly)|email\s+address|provide/i.test(a);
+                return acted || asked || `unrelated reply: ${a.slice(0, 160)}…`;
+              } },
+          ],
+        },
+      ],
+    },
+    {
       name: 'no-fabrication on action: never invent a delegatee email',
       steps: [
         {

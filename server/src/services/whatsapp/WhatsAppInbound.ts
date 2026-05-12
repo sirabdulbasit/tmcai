@@ -181,15 +181,34 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   }
 
   // ── Step 2b: Email report request ─────────────────────────────────────────
-  // Detect email requests — broad matching for natural language
-  const isEmailRequest = /\b(email|mail)\b/i.test(lower) && /\b(send|detail|report|full|it|me|on|in|to|via)\b/i.test(lower)
+  // Detect requests to email a previously-asked report to MD's inbox.
+  // Tricky because "email" appears in many unrelated chat utterances:
+  //   "delegate waqas's email to asad"   → DELEGATE action, NOT email-report
+  //   "reply to kashif's email"          → DRAFT_REPLY, NOT email-report
+  //   "what is the email of asad"        → QUESTION, NOT email-report
+  //   "forward this email to legal"      → FORWARD, NOT email-report
+  //
+  // Per user 2026-05-12: a message containing the word "email" used as
+  // a NOUN inside an action ("delegate the X email to Y") got routed
+  // here by mistake, triggering the report-generator background job
+  // and three sequential off-topic Brain replies.
+  //
+  // The fix is exclusion-first: if the message starts with any action
+  // imperative or asks "what is", we bail. The email-report path is
+  // for SHORT affirmation-style messages like "email it" / "yes email
+  // it" / "send me the full details on email".
+  const startsWithChatAction = /^\s*(delegate|forward|reply|respond|draft|add|track|snooze|hide|mute|archive|file|move|mark|close|complete|finish|defer|postpone|delay|push|accept|decline|dismiss|ignore|schedule|book|set\s+(up\s+)?(a\s+)?meeting|remind\s+me|book|tell|what\s+is|who\s+is|where\s+is|how\s+(many|much)|find\s+|look\s+up|search|show\s+me|list|brief)\b/i.test(lower);
+
+  const isEmailRequest = !startsWithChatAction && (
+    /\b(email|mail)\b/i.test(lower) && /\b(send|detail|report|full|it|me|on|in|to|via)\b/i.test(lower)
     || /\bsend\b.*\b(email|mail)\b/i.test(lower)
     || /\b(email|mail)\b.*\bsend\b/i.test(lower)
     || /\b(yes|yeah|sure|ok)\b.*\b(email|mail)\b/i.test(lower)
     || lower === 'email it' || lower === 'yes email' || lower === 'send email'
     || /\bon\s+(email|mail)\b/i.test(lower)    // "send details on email"
     || /\bin\s+(email|mail)\b/i.test(lower)    // "send details in email"
-    || /\bvia\s+(email|mail)\b/i.test(lower);  // "send via email"
+    || /\bvia\s+(email|mail)\b/i.test(lower)   // "send via email"
+  );
 
   if (isEmailRequest) {
     // Get user's email
