@@ -755,7 +755,11 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent
 
 **Compactness rules — non-negotiable:**
   - Hard cap: 800 characters total. Brain Chat on WhatsApp is one phone screen, not a memo.
-  - One line per item. Sender name + one phrase = enough. No full subject lines, no previews, no quoting full sentences from emails.
+  - One line per item. The line is: **sender + what this conversation/email is actually about** (not the raw preview). The attention block above gives you the SUBSTANCE (extracted from loops, conversation summaries, and triage rationale). USE THAT, not the verbatim subject. Example:
+      Wrong: "KD Bhatti: Voice note in English"
+      Right: "KD Bhatti: 3M payment for vehicle — first contact, looks transactional"
+      Wrong: "Azhar: Ok"
+      Right: "Azhar: clarifying 1400 figure breakdown (600+600+200?)"
   - Use "+N more in <channel>" instead of listing items 4-onwards. Counts are coverage; enumeration is detail.
   - Drop sections that are empty. Do NOT write "📬 Email: nothing" — just skip that section.
   - If the attention surface block says "(nothing pending)" overall, reply with one short line ("You're clear — nothing on your plate right now.") and stop.
@@ -1131,19 +1135,38 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
     const renderItem = (it: any): string => {
       const band = it.criticality?.band ? `[${it.criticality.band}] ` : '';
       const from = it.fromDisplay ?? it.from ?? '';
-      // Hint the age so the LLM doesn't surface a 3-day-old high-priority
-      // item without flagging it as carryover. Today/yesterday/Nd ago.
       const ageHr = it.receivedAt ? Math.round((Date.now() - new Date(it.receivedAt).getTime()) / 3600000) : -1;
       const ageTag = ageHr < 0 ? '' : ageHr < 24 ? '' : ageHr < 48 ? ' (carryover, yesterday)' : ` (carryover, ${Math.floor(ageHr / 24)}d ago)`;
-      const body = (it.subject || it.preview || '').slice(0, 80);
       const archetype = it.archetype ? ` (${it.archetype})` : '';
-      // If we enriched this item with conversation context (topic from
-      // analyzeConversation), lead with the topic and tail with the
-      // literal latest message so the line tells a complete story:
-      //   "Haseeb on ITL OTP — last: '069'"
-      // Without enrichment, render the body alone.
-      const ctx = it.contextPrefix ? `${it.contextPrefix} — last: "${body}"` : body;
-      return `  - ${band}${from}: ${ctx}${archetype}${ageTag}`;
+
+      // Extract the SUBSTANCE of this item — what is it actually about?
+      // The Day Brief web UI shows: triage rationale + open loops +
+      // conversation summary. The brief should reflect the SAME
+      // understanding, just compacted to one line. Per MD 2026-05-12
+      // ("same brief at both, WhatsApp will have less in text"):
+      // priority order, first non-empty wins:
+      //   1. Open-with-user loop's topic + ask  (most actionable;
+      //      already extracted by the conversation analyzer for WA)
+      //   2. contextPrefix  (set by our analyzeConversation pass for
+      //      short messages — already enriches "069"-style fragments)
+      //   3. triage rationale  (LLM's per-item "why this matters" — same
+      //      string the web UI's card shows under "Brain suggests…")
+      //   4. raw subject/preview  (last resort — what we used to show)
+      let substance = '';
+      const openLoop = it.loops?.find((l: any) => l.openWith === 'user' && l.ask);
+      const rawBody = (it.subject || it.preview || '').slice(0, 60);
+      if (openLoop?.ask) {
+        const topic = openLoop.topic ? `${openLoop.topic}: ` : '';
+        substance = `${topic}${openLoop.ask}`.slice(0, 140);
+      } else if (it.contextPrefix) {
+        substance = `${it.contextPrefix} — last: "${rawBody}"`.slice(0, 160);
+      } else if (typeof it.rationale === 'string' && it.rationale.length >= 30) {
+        substance = it.rationale.slice(0, 140);
+      } else {
+        substance = rawBody.slice(0, 100);
+      }
+
+      return `  - ${band}${from}: ${substance}${archetype}${ageTag}`;
     };
 
     for (const [ch, list] of Object.entries(byChannel)) {

@@ -626,6 +626,28 @@ export async function startPairing(userId: number, clientNumber: string): Promis
         return;
       }
 
+      // Content-based self-loop guard — backup for cases where the
+      // phone match fails (sender display "My Business" but phone
+      // doesn't normalize to a brainNumbers entry; e.g. tenant
+      // notifier rotated, or normalizePhone strips a leading +).
+      // Per MD 2026-05-12: Brain's own daily brief was re-ingested
+      // as an inbound and shown back in the Day Brief as "reply
+      // needed" with thread count 53 — the same brief, replicated
+      // over many days, polluting MD's attention surface.
+      //
+      // Brain's outbound day-brief follows a recognisable signature:
+      // starts with "Here's your brief for today" / "Hey <name>,
+      // here's your brief for today" / contains the calendar +
+      // email + WhatsApp emoji-section pattern. Drop anything that
+      // matches — never a real user inbound, always a Brain echo.
+      const bodyForSignatureCheck = String(message.body ?? '').slice(0, 400);
+      const isOwnBriefEcho = /^(here'?s your brief for today|hey\s+\w+[\s,]+here'?s your brief)/i.test(bodyForSignatureCheck)
+        || (/📅[^\n]*(today'?s calendar|day brief)/i.test(bodyForSignatureCheck) && /📬[^\n]*email/i.test(bodyForSignatureCheck));
+      if (isOwnBriefEcho) {
+        log.info('Skipped self-loop (brief content signature)', { userId, phone, bodyPrefix: bodyForSignatureCheck.slice(0, 80) });
+        return;
+      }
+
       let senderName: string | undefined;
       try { const c = await message.getContact(); senderName = c?.pushname || c?.name || c?.verifiedName; } catch {}
 
