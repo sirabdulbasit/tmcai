@@ -1507,29 +1507,55 @@ export async function buildAttentionList(
   const waCandidatesForReplyCheck = items.filter((it) => it.itemType === 'whatsapp');
   if (waCandidatesForReplyCheck.length > 0) {
     const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+    const { getRedis } = await import('../../utils/redisClient');
+    const redis = getRedis();
     const userRepliedFeedEventIds = new Set<string>();
-    // Telemetry counters so prod logs say what the filter *did*, not
-    // just that it ran. When the Kashif card keeps surfacing, we need
-    // to know whether it was: no chatId resolved, empty thread back,
-    // thread without an MD reply, or MD reply older than the inbound.
+    // Telemetry counters so prod logs say what the filter *did*. Two
+    // routes are tried per item, in order: (a) Redis outbound-marker
+    // (cheap, reliable, set whenever MD sends a WA message — works
+    // even when whatsapp-web.js is broken on @lid chats); (b) webjs
+    // fetchThreadContext (the original route — kept as fallback for
+    // chats that pre-date the marker rollout).
     let noChatId = 0;
     let emptyThread = 0;
     let noMeMsg = 0;
     let meStaleVsInbound = 0;
     let dropped = 0;
+    let droppedByMarker = 0;
     await Promise.all(waCandidatesForReplyCheck.map(async (it) => {
       try {
-        // chatId must be in @c.us / @g.us form for webjs.getChatById.
-        // Order: stamped chatId from rawPayload (canonical) → synthesize
-        // from senderPhone digits (skip for non-WA shapes) → bail.
-        // fromEmail/from are NOT valid here — they were a leftover from
-        // when this filter was sketched against the email pattern.
         let chatId = (it as any).chatId as string | null | undefined;
         if (!chatId) {
           const phoneDigits = String((it as any).senderPhone ?? '').replace(/[^\d]/g, '');
           if (phoneDigits) chatId = `${phoneDigits}@c.us`;
         }
         if (!chatId) { noChatId += 1; return; }
+
+        const inboundMs = it.receivedAt ? new Date(it.receivedAt).getTime() : 0;
+
+        // ── Route 1: Redis outbound marker. ──
+        // Set by UserWebjsProvider's message_received hook when fromMe=true.
+        // Key: wa_outbound:{userId}:{destChatId}. Value: most recent
+        // outbound timestamp (ms). If MD's latest outbound is newer
+        // than this inbound, the conversation is handled from MD's
+        // side. No webjs involvement.
+        if (redis) {
+          try {
+            const markerKey = `wa_outbound:${userId}:${chatId}`;
+            const markerVal = await redis.get(markerKey);
+            const markerMs = markerVal ? parseInt(markerVal, 10) : 0;
+            if (markerMs > 0 && inboundMs > 0 && markerMs > inboundMs) {
+              userRepliedFeedEventIds.add(it.feedEventId);
+              const fids = (it as any).conversationFeedEventIds ?? [it.feedEventId];
+              for (const fid of fids) userRepliedFeedEventIds.add(fid);
+              dropped += 1;
+              droppedByMarker += 1;
+              return;
+            }
+          } catch { /* fall through to webjs */ }
+        }
+
+        // ── Route 2: webjs fetchThreadContext (fallback). ──
         const thread = await fetchThreadContext(userId, String(chatId), 20);
         if (!thread || thread.length === 0) { emptyThread += 1; return; }
         const sorted = [...thread].sort((a, b) => b.timestamp - a.timestamp);
@@ -1537,9 +1563,6 @@ export async function buildAttentionList(
         const latestInbound = sorted.find((t) => t.from === 'them');
         if (!latestMe) { noMeMsg += 1; return; }
         if (!latestInbound) { return; }
-        // MD's most recent reply is newer than the most recent inbound
-        // → loop closed from MD's side. The card is no longer
-        // actionable; route it through Brief as 'you handled' instead.
         if (latestMe.timestamp > latestInbound.timestamp) {
           userRepliedFeedEventIds.add(it.feedEventId);
           const fids = (it as any).conversationFeedEventIds ?? [it.feedEventId];
@@ -1557,6 +1580,7 @@ export async function buildAttentionList(
     }
     console.log(
       `[triage] WA user-replied filter: candidates=${waCandidatesForReplyCheck.length} dropped=${dropped} `
+      + `byMarker=${droppedByMarker} byWebjs=${dropped - droppedByMarker} `
       + `noChatId=${noChatId} emptyThread=${emptyThread} noMeMsg=${noMeMsg} meStaleVsInbound=${meStaleVsInbound}`,
     );
   }

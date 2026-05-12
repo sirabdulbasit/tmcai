@@ -551,10 +551,32 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       // chat are treated as instructions to Brain — voice or text.
       // Detect by comparing the from jid to the client's own WID.
       // Any other fromMe=true message (replies to colleagues, etc.)
-      // is ignored: dictation is a deliberate self-message.
+      // is ignored for triage, but we DO record a lightweight outbound
+      // marker so the WA "you-replied" filter knows MD has answered
+      // this chat — without depending on webjs fetchThreadContext,
+      // which fails on @lid chats with "waitForChatLoading undefined".
       const ownWid: string = client.info?.wid?._serialized || '';
       const isSelfChat = !!ownWid && message.from === ownWid;
-      if (message.fromMe && !isSelfChat) return;
+      if (message.fromMe && !isSelfChat) {
+        // Record outbound marker in Redis. Key includes the rawFrom
+        // (which here is the destination chat id, since fromMe=true).
+        // Value is the message timestamp. TTL 7d — enough to outlive
+        // any sensible "needs reply" window. Best-effort — if Redis
+        // is down, we just lose the marker for this message.
+        try {
+          const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
+          const destChatId = message.to || rawFrom;
+          const { getRedis } = await import('../../utils/redisClient');
+          const redis = getRedis();
+          if (redis && destChatId) {
+            const key = `wa_outbound:${userId}:${destChatId}`;
+            await redis.set(key, String(ts), 'EX', 7 * 24 * 60 * 60);
+          }
+        } catch (e: any) {
+          log.warn('outbound marker write failed', { userId, error: e.message });
+        }
+        return;
+      }
 
       // For self-dictation, run a slim instruction-only pipeline:
       // transcribe (if voice) → check for pending confirmation → if
