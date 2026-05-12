@@ -181,34 +181,44 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   }
 
   // ── Step 2b: Email report request ─────────────────────────────────────────
-  // Detect requests to email a previously-asked report to MD's inbox.
-  // Tricky because "email" appears in many unrelated chat utterances:
-  //   "delegate waqas's email to asad"   → DELEGATE action, NOT email-report
-  //   "reply to kashif's email"          → DRAFT_REPLY, NOT email-report
-  //   "what is the email of asad"        → QUESTION, NOT email-report
-  //   "forward this email to legal"      → FORWARD, NOT email-report
+  // Continuity-anchored detection. The email-report path is for ONE
+  // specific scenario: MD just asked Brain for some data, Brain replied
+  // with a summary and offered "want me to email the full version?",
+  // MD says "yes" / "email it" / similar affirmation.
   //
-  // Per user 2026-05-12: a message containing the word "email" used as
-  // a NOUN inside an action ("delegate the X email to Y") got routed
-  // here by mistake, triggering the report-generator background job
-  // and three sequential off-topic Brain replies.
+  // It is NOT for any message that happens to contain "email" + a few
+  // common words. Per MD 2026-05-12: "Brain should understand the
+  // continuity of communication; don't pick any word like email — it
+  // should understand what I respond against what."
   //
-  // The fix is exclusion-first: if the message starts with any action
-  // imperative or asks "what is", we bail. The email-report path is
-  // for SHORT affirmation-style messages like "email it" / "yes email
-  // it" / "send me the full details on email".
-  const startsWithChatAction = /^\s*(delegate|forward|reply|respond|draft|add|track|snooze|hide|mute|archive|file|move|mark|close|complete|finish|defer|postpone|delay|push|accept|decline|dismiss|ignore|schedule|book|set\s+(up\s+)?(a\s+)?meeting|remind\s+me|book|tell|what\s+is|who\s+is|where\s+is|how\s+(many|much)|find\s+|look\s+up|search|show\s+me|list|brief)\b/i.test(lower);
-
-  const isEmailRequest = !startsWithChatAction && (
-    /\b(email|mail)\b/i.test(lower) && /\b(send|detail|report|full|it|me|on|in|to|via)\b/i.test(lower)
-    || /\bsend\b.*\b(email|mail)\b/i.test(lower)
-    || /\b(email|mail)\b.*\bsend\b/i.test(lower)
-    || /\b(yes|yeah|sure|ok)\b.*\b(email|mail)\b/i.test(lower)
-    || lower === 'email it' || lower === 'yes email' || lower === 'send email'
-    || /\bon\s+(email|mail)\b/i.test(lower)    // "send details on email"
-    || /\bin\s+(email|mail)\b/i.test(lower)    // "send details in email"
-    || /\bvia\s+(email|mail)\b/i.test(lower)   // "send via email"
+  // Two gates, both required:
+  //   (a) Brain's IMMEDIATELY PREVIOUS reply offered to email something
+  //       (or sent a summary that this message could be replying to).
+  //   (b) MD's current message is a short affirmation, not a fresh
+  //       imperative containing the word "email" as a noun.
+  //
+  // If either gate fails, fall through to the chat router — which has
+  // the full conversation history + open-items + candidates blocks and
+  // can decide the right thing to do.
+  const prevSessionForRouting = await prisma.$queryRawUnsafe(
+    `SELECT conversation_history FROM whatsapp_sessions
+     WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL
+     ORDER BY last_message_at DESC LIMIT 1`,
+    userId, params.clientNumber,
+  ) as any[];
+  const routingHistory = (prevSessionForRouting[0]?.conversation_history as any[]) || [];
+  const lastBrainReply = ([...routingHistory].reverse().find((m: any) => m.role === 'assistant')?.content ?? '') as string;
+  // Did Brain just offer to email / mention sending via email / ask "want details"?
+  const brainOfferedEmail = /\b(email\s+(it|this|that|the\s+\w+|you)|send.*(via|to|on|in)\s+(your\s+)?(email|mail|inbox)|want.*(email|the\s+full|the\s+details)|in\s+your\s+(inbox|email)|drop\s+(it|that)\s+in\s+your\s+inbox|full\s+(version|report).*email)\b/i.test(lastBrainReply);
+  // Affirmation shapes — short, mostly closed-vocabulary. Excludes any
+  // imperative that uses "email" as a noun.
+  const isShortAffirmation = lower.length <= 40 && (
+    /^(yes|yeah|yep|sure|ok|okay|please|do\s+it|go\s+ahead|email\s+it|send\s+it|send\s+email|yes\s+email|email\s+please)\b/i.test(lower)
+    || /^(yes|yeah|sure|ok)[\s,.]*?(email|send)/i.test(lower)
+    || lower === 'email' || lower === 'send' || lower === 'mail'
   );
+
+  const isEmailRequest = brainOfferedEmail && isShortAffirmation;
 
   if (isEmailRequest) {
     // Get user's email

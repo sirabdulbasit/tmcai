@@ -374,6 +374,24 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
       ],
     },
     {
+      // Per MD 2026-05-12: "Brain should understand continuity of
+      // communication; don't pick any word like email." The email-report
+      // path now requires Brain's previous reply to have OFFERED to
+      // email something. With no prior offer in history, "email it" /
+      // "yes email" must fall through to the chat router (or be
+      // answered by the chat compose path) — never spawn the report
+      // generator job.
+      name: 'continuity: bare "email it" with no prior offer does not spawn report job',
+      steps: [
+        {
+          user: 'email it',
+          assertions: [
+            { name: 'no report-job phrasing', check: doesNotMention('Generating report|Report sent to your email|Check your inbox') },
+          ],
+        },
+      ],
+    },
+    {
       name: 'no-fabrication on action: never invent a delegatee email',
       steps: [
         {
