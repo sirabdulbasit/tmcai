@@ -700,6 +700,15 @@ When to emit \`action\`:
 
 Slot continuity: if your IMMEDIATELY-PREVIOUS turn (visible in history above) said you'd add/snooze/delegate something and asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do NOT ask again. Do NOT pivot to retrieval.
 
+**Disambiguation-answer rule — non-negotiable.** If your previous turn ended with a clarifying question listing N options ("Which Asad — A, B, or C?", "Did you mean #232 or #239?"), the user's current message is the ANSWER to that question. Examples and how to map:
+  - "first one" / "first" / "the first" / "1" / "#1" → the FIRST option you listed
+  - "second" / "second one" / "2" → the SECOND option
+  - "yes the first" / "yeah first asad" / "first one asad" → ALSO the first option
+  - the literal name/email/phone you previously listed → that option
+After mapping the answer, if you still have a PENDING action (e.g. delegate, schedule), re-emit it with the resolved slot filled. Do NOT pivot to retrieval. Do NOT re-pose the same clarification. Do NOT interpret "first one" as "the first item in your open-items list" — that is a hallucinated re-direction and breaks the flow.
+
+If the user's answer is genuinely ambiguous (matches two of the options you listed equally), say so and ask ONE pointed follow-up — but do not just repeat the same question verbatim.
+
 # Honesty rule for the open-items + candidates surface
 
 If the "Open items snapshot" block above contains a row whose title fragment matches what the user is referring to, that item EXISTS. Don't say "I don't see any open items with that name" when the snapshot literally lists one. Same for candidates: if the block shows two Asads, don't reply "I can't find any Asad" — say "which one?" with their distinguishing reasons.
@@ -841,30 +850,58 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent
         // forwarding a Gmail message, not transitioning an existing
         // open_item — different shape).
         try {
-          const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
-          await prisma.openItem.update({
-            where: { id: act.openItemId },
-            data: {
-              delegateeName: act.delegateeName,
-              delegateeEmail: act.delegateeEmail,
-              // delegateeId is set only when the email resolves to an
-              // internal User row; we look that up here so internal
-              // delegations get the FK populated.
-              delegateeId: (await prisma.user.findFirst({
-                where: { clientNumber, email: act.delegateeEmail, isActive: true },
-                select: { id: true },
-              }).catch(() => null))?.id ?? null,
-            } as any,
+          // Defensive existence check. Per MD 2026-05-12: a previous
+          // delegate emission leaked a raw Prisma error to chat
+          // ("No record was found for an update") because the LLM
+          // emitted an openItemId that didn't exist (hallucinated id
+          // or stale snapshot reference to an already-closed item).
+          // Verify the item before update; on miss, give MD a useful
+          // message and let them retry with a clearer reference.
+          const existing = await prisma.openItem.findFirst({
+            where: { id: act.openItemId, clientNumber, userId },
+            select: { id: true, title: true, status: true },
           });
-          await transitionStatus(act.openItemId, 'DELEGATED', {
-            clientNumber,
-            actor: `user:${userId}`,
-            reason: act.note || `Delegated via Brain Chat to ${act.delegateeName}`,
-          });
-          actionResult = { ok: true, artifactId: act.openItemId, message: `Delegated to ${act.delegateeName} <${act.delegateeEmail}>.` };
-          if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
+          if (!existing) {
+            actionResult = {
+              ok: false,
+              message: `I couldn't find that open item to delegate (id ${act.openItemId}). It may have been closed or the reference got stale — tell me by title and I'll re-find it.`,
+            };
+            answer = actionResult.message;
+          } else if (existing.status === 'CLOSED' || existing.status === 'INFORMED') {
+            actionResult = {
+              ok: false,
+              message: `"${existing.title}" is already ${existing.status.toLowerCase()} — nothing to delegate. Want me to reopen it first?`,
+            };
+            answer = actionResult.message;
+          } else {
+            const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+            await prisma.openItem.update({
+              where: { id: existing.id },
+              data: {
+                delegateeName: act.delegateeName,
+                delegateeEmail: act.delegateeEmail,
+                // delegateeId is set only when the email resolves to an
+                // internal User row; we look that up here so internal
+                // delegations get the FK populated.
+                delegateeId: (await prisma.user.findFirst({
+                  where: { clientNumber, email: act.delegateeEmail, isActive: true },
+                  select: { id: true },
+                }).catch(() => null))?.id ?? null,
+              } as any,
+            });
+            await transitionStatus(existing.id, 'DELEGATED', {
+              clientNumber,
+              actor: `user:${userId}`,
+              reason: act.note || `Delegated via Brain Chat to ${act.delegateeName}`,
+            });
+            actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${act.delegateeName} <${act.delegateeEmail}>.` };
+            if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
+          }
         } catch (e: any) {
-          actionResult = { ok: false, message: `Delegate failed: ${e?.message ?? e}` };
+          // Never leak a raw Prisma stack to chat. Log it server-side
+          // for diagnosis; tell MD something they can act on.
+          console.warn('[brain-chat] delegate_open_item failed', { error: e?.message, openItemId: act.openItemId, userId });
+          actionResult = { ok: false, message: `I hit an error trying to delegate — the item id may be stale. Tell me which item by title and I'll retry.` };
           answer = actionResult.message;
         }
       } else if (act.type === 'schedule_meeting') {
