@@ -558,22 +558,35 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       const ownWid: string = client.info?.wid?._serialized || '';
       const isSelfChat = !!ownWid && message.from === ownWid;
       if (message.fromMe && !isSelfChat) {
-        // Record outbound marker in Redis. Key includes the rawFrom
-        // (which here is the destination chat id, since fromMe=true).
-        // Value is the message timestamp. TTL 7d — enough to outlive
-        // any sensible "needs reply" window. Best-effort — if Redis
-        // is down, we just lose the marker for this message.
+        // Record outbound in Redis. Two records:
+        //   wa_outbound:{userId}:{chatId}      → latest outbound timestamp
+        //     (used by triage's user-replied filter — already in use)
+        //   wa_outbound_log:{userId}:{chatId}  → LIST of last 50 outbound
+        //     messages with timestamp + body. Used by the thread modal so
+        //     MD can see BOTH sides of a conversation even when webjs is
+        //     broken on @lid chats (the modal's existing fetchThreadContext
+        //     path is unreliable; Redis is the deterministic backup).
+        //
+        // Body is capped at 1KB per message and the list at 50 entries —
+        // bounded storage even for chatty conversations. 7-day TTL matches
+        // the marker so cleanup is automatic.
         try {
           const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
           const destChatId = message.to || rawFrom;
           const { getRedis } = await import('../../utils/redisClient');
           const redis = getRedis();
           if (redis && destChatId) {
-            const key = `wa_outbound:${userId}:${destChatId}`;
-            await redis.set(key, String(ts), 'EX', 7 * 24 * 60 * 60);
+            const markerKey = `wa_outbound:${userId}:${destChatId}`;
+            const logKey = `wa_outbound_log:${userId}:${destChatId}`;
+            const body = String(message.body ?? '').slice(0, 1024);
+            await redis.set(markerKey, String(ts), 'EX', 7 * 24 * 60 * 60);
+            // LPUSH (newest at head), LTRIM to last 50, refresh TTL.
+            await redis.lpush(logKey, JSON.stringify({ ts, body }));
+            await redis.ltrim(logKey, 0, 49);
+            await redis.expire(logKey, 7 * 24 * 60 * 60);
           }
         } catch (e: any) {
-          log.warn('outbound marker write failed', { userId, error: e.message });
+          log.warn('outbound write failed', { userId, error: e.message });
         }
         return;
       }

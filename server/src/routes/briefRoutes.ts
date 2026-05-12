@@ -778,27 +778,61 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
         };
       });
 
-      // Try to enrich with the user's own outbound messages from the
-      // live webjs thread. fetchThreadContext returns both sides — we
-      // already have the inbound side from feed_events, but webjs is
-      // the only place 'me' messages live (we don't ingest outbound).
+      // Outbound messages — try TWO sources in order of reliability:
+      //   1. Redis log (wa_outbound_log) — populated by UserWebjsProvider
+      //      every time MD sends a WA message. Reliable, doesn't depend
+      //      on webjs being alive at view time. Last 50 messages, 7d TTL.
+      //   2. webjs fetchThreadContext — only works when the user-level
+      //      webjs client is alive AND the chat is in @c.us format (broken
+      //      on @lid chats per the May 12 diagnostic). Used as fallback
+      //      so older conversations (before the Redis log was deployed)
+      //      can still show outbound when webjs is alive.
+      //
+      // Merge results, deduping by timestamp.
       let outboundMsgs: any[] = [];
-      try {
-        const chatId = (event.rawPayload as any)?.chatId;
-        if (chatId) {
-          const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
-          const turns = await fetchThreadContext(user.id, String(chatId), 50);
-          outboundMsgs = turns
-            .filter((t) => t.from === 'me')
-            .map((t) => ({
-              from: 'me' as const,
-              subject: '',
-              text: t.text,
-              timestamp: toMs(t.timestamp) ?? t.timestamp,
-              fromName: 'You',
-            }));
+      const chatId = (event.rawPayload as any)?.chatId;
+      if (chatId) {
+        // (1) Redis log
+        try {
+          const { getRedis } = await import('../utils/redisClient');
+          const redis = getRedis();
+          if (redis) {
+            const logKey = `wa_outbound_log:${user.id}:${chatId}`;
+            const raw = await redis.lrange(logKey, 0, -1);
+            for (const entry of raw) {
+              try {
+                const obj = JSON.parse(entry) as { ts: number; body: string };
+                if (typeof obj.ts === 'number' && obj.body) {
+                  outboundMsgs.push({
+                    from: 'me' as const,
+                    subject: '',
+                    text: obj.body,
+                    timestamp: obj.ts,
+                    fromName: 'You',
+                  });
+                }
+              } catch { /* skip malformed entry */ }
+            }
+          }
+        } catch { /* redis unavailable — try webjs */ }
+
+        // (2) webjs fallback (only if Redis returned nothing)
+        if (outboundMsgs.length === 0) {
+          try {
+            const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
+            const turns = await fetchThreadContext(user.id, String(chatId), 50);
+            outboundMsgs = turns
+              .filter((t) => t.from === 'me')
+              .map((t) => ({
+                from: 'me' as const,
+                subject: '',
+                text: t.text,
+                timestamp: toMs(t.timestamp) ?? t.timestamp,
+                fromName: 'You',
+              }));
+          } catch { /* webjs broken too — inbound-only is still useful */ }
         }
-      } catch { /* webjs unavailable — inbound-only thread is still useful */ }
+      }
 
       // Merge + sort chronologically.
       const allMsgs = [...inboundMsgs, ...outboundMsgs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));

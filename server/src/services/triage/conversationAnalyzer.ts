@@ -111,7 +111,7 @@ Critical reasoning rules:
 
 Output JSON only — no preamble, no markdown:
 {
-  "summary": "<one sentence: 'Hunain's chat covers Phoenix budget, vendor scheduling, and a closed CV review'>",
+  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Mention the date(s) the conversation spans, what THEY said, what MD said, where it stands now. Example: 'On May 11, Hunain asked about Phoenix budget; MD said he'd review. Next day Hunain followed up with vendor timing and shared a draft SOW. As of May 12 evening, MD has acknowledged but not yet committed on either ask.' Concrete sentences with names + dates + decisions, not abstract labels.",
   "loops": [
     {
       "topic": "<2-5 word label, no hashtags>",
@@ -192,7 +192,12 @@ export async function analyzeConversation(args: {
       : [];
 
     const analysis: ConversationAnalysis = {
-      summary: String(obj.summary ?? '').slice(0, 240),
+      // Cap at 800 chars — chronological summary needs room for 3-5
+      // short sentences with names, dates, and decisions. Old cap (240)
+      // was tight for a single sentence; this fits MD's "complete
+      // descriptive summary from old to latest" ask without bloating
+      // the prompt downstream.
+      summary: String(obj.summary ?? '').slice(0, 800),
       loops,
       hasOpenLoopWithUser: loops.some((l) => l.openWith === 'user'),
       provider: r.provider,
