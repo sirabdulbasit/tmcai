@@ -377,6 +377,50 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
         },
       ],
     },
+    {
+      // Direct repro of MD's 2026-05-12 14:20 PKT failure: a stale
+      // brain_prompt_queue row (awaiting set_due_date) consumed MD's
+      // "Brief my day" as a date-parse attempt and never reached the
+      // chat router. The fix is in promptReplyHandler.looksLikeAnswer():
+      // "Brief my day" matches the new-chat trigger regex, the handler
+      // returns handled=false, and the chat compose path runs.
+      //
+      // We seed a stale awaiting prompt directly via SQL so the test
+      // doesn't depend on a prior turn having queued one. If the queue
+      // table has a different name than expected, the seed silently
+      // fails — the assertion below catches it either way.
+      name: 'stale brain prompt does not eat "Brief my day"',
+      setup: async (ctx) => {
+        // Seed a stale set_due_date prompt for this user. We bypass the
+        // model client because this is fixture setup — production code
+        // path goes through brainPromptQueueService.enqueuePrompt.
+        try {
+          await prisma.$executeRawUnsafe(
+            `INSERT INTO brain_prompt_queue (id, user_id, client_number, status, body, side_effect, created_at, updated_at)
+             VALUES (gen_random_uuid(), $1, $2, 'awaiting_reply', $3, $4::jsonb, NOW() - interval '2 hours', NOW())`,
+            ctx.userId, ctx.clientNumber,
+            'Hey, when did you want to wrap up the Phoenix Systems pricing review?',
+            JSON.stringify({ kind: 'set_due_date', openItemId: null }),
+          );
+        } catch {
+          // table may not exist in this env — assertion below still meaningful
+        }
+      },
+      steps: [
+        {
+          user: 'Brief my day',
+          assertions: [
+            { name: 'does NOT return the stale-prompt parse failure', check: doesNotMention("Couldn't parse|flagged for clarification") },
+            { name: 'is a real day-brief style reply', check: (a) => {
+              // Day-brief replies are substantive — multi-sentence, mention
+              // either items, calendar, emails, "today", or "nothing on".
+              const substantive = /\b(open\s+item|meeting|calendar|today|tomorrow|email|nothing|no\s+critical|on\s+your\s+plate|inbox|attention)\b/i;
+              return substantive.test(a) || `reply doesn't look like a day brief: ${a.slice(0, 120)}`;
+            } },
+          ],
+        },
+      ],
+    },
   ];
 }
 

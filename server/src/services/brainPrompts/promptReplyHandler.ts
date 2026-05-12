@@ -57,9 +57,26 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
   const text = input.text.trim();
   if (!text) return { handled: false };  // empty body — let normal flow ignore it
 
+  // Don't consume messages that clearly aren't answers to this prompt.
+  // Previously: ANY non-empty text was treated as the answer, so MD's
+  // unrelated "Brief my day" got eaten as a date-parse attempt against
+  // a stale set_due_date prompt and never reached the chat router.
+  // Now: if the text looks like a new chat command or doesn't match
+  // the side-effect's expected shape, leave the prompt awaiting and
+  // fall through to chat. The prompt can be answered later when MD
+  // actually addresses it.
+  const sideEffectKind = ((awaiting.sideEffect as any)?.kind as string | undefined) ?? 'noop';
+  if (!looksLikeAnswer(text, sideEffectKind)) {
+    log.info('skipping prompt consumption — message doesn\'t look like an answer', {
+      userId: input.userId, promptId: String(awaiting.id),
+      sideEffectKind, textPreview: text.slice(0, 60),
+    });
+    return { handled: false };
+  }
+
   log.info('handling prompt reply', {
     userId: input.userId, promptId: String(awaiting.id),
-    sideEffectKind: (awaiting.sideEffect as any)?.kind,
+    sideEffectKind,
   });
 
   // 1. Persist the answer immediately. Even if side-effect application
@@ -259,4 +276,63 @@ function composeAck(
 
 function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** Decide whether the inbound text is a plausible answer to the pending
+ *  prompt's side-effect, or a NEW chat command that should fall through
+ *  to the regular Brain chat router.
+ *
+ *  Two layers:
+ *    1. Universal "new chat command" detector — phrases that are clearly
+ *       new requests, never answers to any prompt. Same shape no matter
+ *       what side-effect is awaiting.
+ *    2. Side-effect-specific shape match — does the text look like a
+ *       date (for set_due_date), a name/email (for assign_owner), etc.
+ *
+ *  Tuned to err on the side of FALL-THROUGH. A false-negative answer
+ *  just delays applying a prompt by one turn; a false-positive eats a
+ *  legitimate new chat command and replies with gibberish ("couldn't
+ *  parse 'brief my day' as a date — flagged for clarification"). The
+ *  second failure mode is what MD hit on 2026-05-12 and is much worse. */
+function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+
+  // Layer 1 — universal new-chat trigger phrases. If MD opens with any
+  // of these, they're starting a new request, not answering an old prompt.
+  const newChatTrigger = /^(brief\s+my\s+day|day\s+brief|what'?s\s+(on\s+my\s+plate|critical|urgent|going\s+on)|how\s+(many|much)\s+|how\s+is\s+|list\s+(my|all|the)\s+|show\s+me\s+|tell\s+me\s+about\s+|delegate\s+|forward\s+|reply\s+(to\s+|with\s+)|draft\s+(a\s+)?reply|schedule\s+|set\s+(up\s+)?(a\s+)?meeting|book\s+(a\s+)?meeting|remind\s+me\s+|add\s+(it\s+|this\s+|a\s+task|to\s+my)|track\s+(this|that)|snooze\s+|mute\s+|hide\s+|cancel$|skip$|nevermind$|later$|stop$|bye$|exit$|hi$|hello$|hey$|good\s+(morning|afternoon|evening|night)|salaam|salam|aoa|assalam)\b/i;
+  if (newChatTrigger.test(t)) return false;
+
+  // Layer 2 — shape match per side-effect.
+  switch (sideEffectKind) {
+    case 'set_due_date': {
+      // Recognise common natural-language date forms + ISO.
+      const datePattern = /\b(today|tomorrow|tonight|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|next\s+\w+|by\s+\w+|in\s+\d+\s*(day|days|week|weeks|month|months)|end\s+of\s+(day|week|month)|asap|whenever|no\s+idea|sometime|aaj|kal|parsoon|abhi)\b/i;
+      const isoLike = /\b\d{4}-\d{2}-\d{2}\b/.test(t) || /^\d{1,2}[\/\-]\d{1,2}/.test(t) || /^\d+\s*(d|days|h|hours)$/i.test(t);
+      // Short messages with date words = answer. Long sentences with
+      // date words but also clear new-chat structure already failed layer 1.
+      if (datePattern.test(t)) return true;
+      if (isoLike) return true;
+      // Very short freeform like "tomorrow ok" or "monday next" — usually answer.
+      if (t.length <= 30 && /^[a-z\d\s.,;:-]+$/i.test(t)) return true;
+      return false;
+    }
+    case 'assign_owner': {
+      // Email present → almost certainly an owner answer.
+      if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(t)) return true;
+      // Short name-shaped: 1-4 tokens, mostly capitalised letters.
+      const tokens = t.split(/\s+/);
+      if (tokens.length >= 1 && tokens.length <= 4 && tokens.every((w) => /^[A-Z][a-z'\-]{1,}\.?$/.test(w) || /^[A-Z][A-Z]+$/.test(w))) return true;
+      return false;
+    }
+    case 'free_form_note':
+      // Anything that isn't a new-chat trigger (layer 1 already filtered).
+      return true;
+    case 'noop':
+    default:
+      // Without a typed side-effect we have nothing to validate against.
+      // Conservative: accept short freeform, reject anything that smells
+      // like a new request. Layer 1 already caught the loud cases.
+      return t.length <= 200;
+  }
 }
