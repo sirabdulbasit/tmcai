@@ -992,8 +992,52 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       const band = it.criticality?.band;
       return band === 'critical' || band === 'high';
     };
-    const items = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
-    const droppedCount = allItems.length - items.length;
+    // Substantive filter — drop WA messages that are pure noise:
+    // greetings, single-digit codes, one-word acks, empty voice notes.
+    // Per MD 2026-05-12 ("what is meaning of 069?"): low-content
+    // messages like "069", "AOA", "ok" should never bubble up to a
+    // daily brief. A real EA would either ignore them or aggregate.
+    // We do the simpler thing — drop them from the brief; they remain
+    // visible in My Attention dashboard if MD wants to scroll through.
+    const NON_SUBSTANTIVE_RE = /^\s*(aoa|aoa\.?|a\.o\.a\.?|salam|salam\.?|salaam|salam\s*alaikum|assalamu?\s*alai?kum|hi|hello|hey|hii+|yo|hola|good\s+(morning|evening|afternoon|night)|gn|gm|ok|okay|kk|k|ack|ackd|noted|sure|yes|yep|yup|haan|han|jee|theek|theek\s+hai|thanks|thx|ty|tysm|cool|got\s+it|done|np|no\s+problem|np|np\s+at\s+all|👍|🙏|🙌|😊|❤️|☺️|wa\s+alaikum|w\s+s|ws|wssm)\s*[.!?…\s]*$/i;
+    const isSubstantive = (it: any): boolean => {
+      // Only apply to WhatsApp — emails and meetings have their own
+      // archetype gates from triage, and even short emails carry headers
+      // that make context obvious. WhatsApp is the channel where MD
+      // gets noisy one-liners.
+      if (it.itemType !== 'whatsapp') return true;
+      const body = String(it.preview ?? it.subject ?? '').trim();
+      if (!body) return false;                              // empty body — drop
+      if (body.length < 4) return false;                    // 3 chars or fewer → noise
+      if (/^\d{1,4}\s*$/.test(body)) return false;          // pure number like "069", "23" → noise
+      if (NON_SUBSTANTIVE_RE.test(body)) return false;      // greeting/ack vocabulary
+      if (/^voice\s+note\s+(in\s+\w+|unavailable|no\s+transcription)/i.test(body)) return false; // unstransscribed voice
+      return true;
+    };
+    const filteredForFreshness = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
+    const items = filteredForFreshness.filter(isSubstantive);
+    const droppedCount = allItems.length - filteredForFreshness.length;
+    const droppedAsNoise = filteredForFreshness.length - items.length;
+
+    // Diagnostic log so we can see WHY the brief looks like it does.
+    // Per MD 2026-05-12 ("my email attachment not reflecting on Brief"):
+    // need to know what reached buildAttentionList and what got filtered.
+    // Counts by channel + a list of dropped-as-noise titles so we can
+    // tell whether the noise filter is too aggressive.
+    const byChannelRaw: Record<string, number> = {};
+    for (const it of allItems) {
+      byChannelRaw[it.itemType] = (byChannelRaw[it.itemType] ?? 0) + 1;
+    }
+    const droppedNoiseSamples = filteredForFreshness
+      .filter((it) => !isSubstantive(it))
+      .slice(0, 5)
+      .map((it) => `[${it.itemType}] ${(it.preview ?? it.subject ?? '').slice(0, 40)}`);
+    console.log(
+      `[day-brief] attention pipeline: total=${allItems.length} byChannel=${JSON.stringify(byChannelRaw)} `
+      + `freshOrUrgent=${filteredForFreshness.length} substantive=${items.length} `
+      + `droppedStale=${droppedCount} droppedNoise=${droppedAsNoise}`
+      + (droppedNoiseSamples.length > 0 ? ` noiseSample=${JSON.stringify(droppedNoiseSamples)}` : ''),
+    );
 
     if (items.length === 0) {
       return `# My Attention surface (day window)\n(nothing fresh today; ${droppedCount} older medium/low item${droppedCount === 1 ? '' : 's'} live in My Attention but are not in the day brief)`;
