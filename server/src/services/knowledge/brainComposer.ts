@@ -47,7 +47,19 @@ export interface ComposeResult {
   citedPageIds: string[];
   gaps: string[];
   sources: Array<{ type: string; id: any; snippet: string }>;
+  /** Action Brain wants to perform. Dispatched after compose returns;
+   *  the resulting confirmation/error replaces or supplements `answer`. */
+  action?: ComposedAction | null;
+  /** Set when an action was attempted. The dispatch outcome is folded
+   *  into the answer text; this is here for callers/logs. */
+  actionResult?: { ok: boolean; artifactId?: string; message: string } | null;
 }
+
+/** The chat composer's structured action surface. Keep this list tight —
+ *  every type needs a matching branch in dispatchBrainChatAction and a
+ *  prompt entry telling the LLM when to emit it. */
+export type ComposedAction =
+  | { type: 'add_open_item'; title: string; dueDate?: string; note?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -577,14 +589,36 @@ just produce a better answer.
 
 ${opts.steeringHint.slice(0, 1000)}
 ` : ''}
+# Today
+Today is ${new Date().toISOString().slice(0, 10)} (UTC). Use this as the anchor for relative dates ("today", "tomorrow", "yesterday", "Friday"). When the user gives a relative date, resolve it against today and emit an ISO date (YYYY-MM-DD) in any \`action.dueDate\` you produce.
+
 # Output rules for this turn
 - Respond with ONE JSON object and nothing else. No prose outside the object. No fenced code blocks.
-- Shape: { "answer": string, "cites": [pageId], "gaps": [string] }
+- Shape: { "answer": string, "cites": [pageId], "gaps": [string], "action": object|null }
 - "answer" is the message shown to the user. Markdown is fine. Prose for casual/introspective. Bullets only for enumerating items the user actually asked for.
 - "cites" MUST be a subset of the opened page IDs above. If you did not quote or paraphrase a page, do not cite it. If you opened nothing, cites=[].
 - "gaps" lists anything the user asked about that wasn't in the opened pages. One short phrase per gap. Each becomes a tracked gap page. Leave empty if nothing was missing.
 - NEVER invent a page ID. NEVER cite a page you didn't open.
-- If intent=casual and no pages were opened, answer conversationally from persona alone and return cites=[] gaps=[].
+- If intent=casual and no pages were opened, answer conversationally from persona alone and return cites=[] gaps=[] action=null.
+
+# Actions you can actually perform (when the user asks you to DO something, set "action" instead of just describing what you'd do)
+
+Schema:
+\`\`\`
+"action": null
+        | { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string }
+\`\`\`
+
+When to emit \`action\`:
+- The user says any imperative that maps to an action above ("add it to open items", "remind me to X", "track this", "I need to do X by Y").
+- Required slots:
+  - \`add_open_item.title\` — REQUIRED. Infer from the conversation. If the previous turn discussed "White Belt course", title is "Take White Belt course". Never use a generic placeholder ("Follow-up", "Voice note follow-up") — those are last-resort fallbacks, not your default.
+- Optional slots: leave omitted if not stated. Don't ask for assignee, priority, or "importance" — items default to medium/open.
+- If you can fill the required slots from the conversation, DO IT. Set \`action\` and write the answer as a short confirmation ("Added — due tomorrow.").
+- If you genuinely can't infer the required slot, leave \`action\` null and ask ONE short clarifying question. Never ask for more than one slot at a time.
+- After you've emitted an action, the system runs it and the user sees your answer. Do not write "I'll add it" without also emitting the action — that's the empty-promise failure mode.
+
+Slot continuity: if your IMMEDIATELY-PREVIOUS turn (visible in history above) said you'd add/snooze/delegate something and asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do NOT ask again. Do NOT pivot to retrieval.
 
 # Honesty rules (from brain_schema.md §4, non-negotiable for this turn)
 H1. **Answer from what is in front of you.** If the opened pages contain the fact the user asked for (a number, a list, a name, a status, a date), state it plainly. Do NOT punt with "would you like me to tell you more", "I would need to process this", "I could extract that for you" — if it's in the opened pages above, report it now.
@@ -640,6 +674,8 @@ H13. **Annotate scope on every citation.** When you cite a page, the answer pros
       citedPageIds: [],
       gaps: [],
       sources: [],
+      action: null,
+      actionResult: null,
     };
   }
 
@@ -650,11 +686,58 @@ H13. **Annotate scope on every citation.** When you cite a page, the answer pros
     .filter((p) => citedPageIds.includes(p.id))
     .map((p) => p.sourceRef);
 
+  // Action dispatch — if the LLM emitted a structured action, run it
+  // through the same instructionDispatcher the Day Brief uses so an
+  // open item created via Brain Chat is indistinguishable from one
+  // created via the Day Brief UI. Result is folded into the answer
+  // text so the user sees the actual outcome (success / artifact id /
+  // error) rather than the LLM's pre-action announcement.
+  let answer = parsed.answer;
+  let actionResult: { ok: boolean; artifactId?: string; message: string } | null = null;
+  if (parsed.action) {
+    try {
+      const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+      if (parsed.action.type === 'add_open_item') {
+        const res = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: {
+            intent: 'add_open_item',
+            confidence: 1,
+            summary: parsed.action.title,
+            params: {
+              itemTitle: parsed.action.title,
+              itemDueDate: parsed.action.dueDate,
+              itemNote: parsed.action.note,
+            },
+          } as any,
+        });
+        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+        // Replace the LLM's announcement with the actual outcome.
+        // The composer prompt already tells the LLM to keep `answer`
+        // short ("Added — due tomorrow."); on failure we override with
+        // the dispatcher's error so the user isn't told the action
+        // succeeded when it didn't.
+        if (!res.ok) {
+          answer = res.message;
+        } else if (!/added|added to|noted|done|got it/i.test(answer)) {
+          // LLM forgot the confirmation phrasing rule — append.
+          answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+        }
+      }
+    } catch (e: any) {
+      actionResult = { ok: false, message: `Action dispatch failed: ${e?.message ?? e}` };
+      answer = actionResult.message;
+    }
+  }
+
   return {
-    answer: parsed.answer,
+    answer,
     citedPageIds,
     gaps: parsed.gaps,
     sources,
+    action: parsed.action,
+    actionResult,
   };
 }
 
@@ -1172,19 +1255,37 @@ function extractCompanyHint(query: string): string | null {
   return null;
 }
 
-interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; }
+interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
 
 function parseCompose(text: string): ParsedCompose {
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { answer: text.trim() || '(no response)', cites: [], gaps: [] };
+  if (!match) return { answer: text.trim() || '(no response)', cites: [], gaps: [], action: null };
   try {
     const obj = JSON.parse(match[0]);
     return {
       answer: typeof obj.answer === 'string' ? obj.answer.trim() : (text.trim() || '(no response)'),
       cites: Array.isArray(obj.cites) ? obj.cites.filter((x: unknown): x is string => typeof x === 'string') : [],
       gaps: Array.isArray(obj.gaps) ? obj.gaps.filter((x: unknown): x is string => typeof x === 'string').map((s: string) => s.trim()).filter(Boolean) : [],
+      action: normaliseAction(obj.action),
     };
   } catch {
-    return { answer: text.trim() || '(no response)', cites: [], gaps: [] };
+    return { answer: text.trim() || '(no response)', cites: [], gaps: [], action: null };
   }
+}
+
+/** Reject anything that doesn't conform to ComposedAction. Validation is
+ *  strict on `type` and `title` (the two non-negotiable fields). Optional
+ *  fields are coerced to undefined when missing. */
+function normaliseAction(raw: unknown): ComposedAction | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const type = typeof r.type === 'string' ? r.type : null;
+  if (type === 'add_open_item') {
+    const title = typeof r.title === 'string' ? r.title.trim() : '';
+    if (!title) return null;
+    const dueDate = typeof r.dueDate === 'string' && r.dueDate.trim() ? r.dueDate.trim() : undefined;
+    const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
+    return { type: 'add_open_item', title, dueDate, note };
+  }
+  return null;
 }

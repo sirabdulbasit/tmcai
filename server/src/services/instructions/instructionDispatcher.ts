@@ -329,8 +329,19 @@ export async function dispatchInstruction(args: {
 
     // ─── add_open_item ───────────────────────────────────────────
     case 'add_open_item': {
-      const title = ix.params.itemTitle ?? 'Voice note follow-up';
+      const title = ix.params.itemTitle ?? 'Follow-up';
       const note = ix.params.itemNote ?? '';
+      // itemDueDate comes in as either an ISO date string or a date-time
+      // string. Brain Chat is instructed to emit ISO (today's date is in
+      // the system prompt so the LLM can resolve "tomorrow"/"Friday").
+      // Anything that doesn't parse cleanly is silently dropped — the
+      // item still gets created without a due date rather than the call
+      // failing on a slightly-wrong string.
+      let dueDate: Date | null = null;
+      if (ix.params.itemDueDate) {
+        const parsed = new Date(ix.params.itemDueDate);
+        if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+      }
       try {
         const op = await prisma.openItem.create({
           data: {
@@ -340,12 +351,14 @@ export async function dispatchInstruction(args: {
             priority: 'medium',
             ownerId: userId,
             clientNumber, userId,
-            sourceFeed: 'voice',
+            sourceFeed: ix.targetFeedEventId ? 'brain_chat' : 'manual',
             sourceFeedEventId: ix.targetFeedEventId ?? null,
+            ...(dueDate ? { dueDate } : {}),
           } as any,
           select: { id: true },
         });
-        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items.` };
+        const dueStr = dueDate ? ` (due ${dueDate.toISOString().slice(0, 10)})` : '';
+        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items${dueStr}.` };
       } catch (err: any) {
         return { ok: false, message: `Add open item failed: ${err.message}` };
       }
