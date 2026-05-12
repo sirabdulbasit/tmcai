@@ -124,7 +124,17 @@ async function getUserConnector(userId: number) {
 /** Stamp lastSyncAt for the user's whatsapp_personal row so the
  *  Day Brief + Connectors page show fresh "last sync" times for an
  *  event-driven channel that has no poll cycle of its own. Called
- *  on ready, on every inbound message, and from the heartbeat tick. */
+ *  on ready, on every inbound message, and from the heartbeat tick.
+ *
+ *  Auto-recovery: a stamp implies the channel is alive RIGHT NOW
+ *  (we just got a message / heartbeat / ready event). If the row is
+ *  in a degraded status (sync_stale / error / token_expired), heal
+ *  it via the markConnectorConnected chokepoint. Without this, a
+ *  webjs reconnect would update lastSyncAt but leave status='sync_stale'
+ *  from a prior detector run — the Day Brief banner would keep
+ *  showing WhatsApp as broken even though it's clearly alive. Memory:
+ *  feedback_connector_status_is_truth.md.
+ */
 async function stampWhatsAppSync(userId: number): Promise<void> {
   try {
     const row = await getUserConnector(userId);
@@ -133,6 +143,12 @@ async function stampWhatsAppSync(userId: number): Promise<void> {
       where: { id: row.id },
       data: { lastSyncAt: new Date() },
     });
+    // If the row was in a degraded state, this stamp proves the
+    // channel is alive — heal status + clear stale-error metadata.
+    if (row.status && row.status !== 'connected' && row.status !== 'pending') {
+      const { markConnectorConnected } = await import('../connectorHealthService');
+      await markConnectorConnected(row.id, 'whatsapp_alive_signal');
+    }
   } catch { /* best-effort; never block the message path */ }
 }
 
@@ -317,7 +333,7 @@ async function ensureUserConnector(userId: number, clientNumber: string) {
 async function writeMeta(userId: number, patch: UserMeta, status?: Status) {
   const existing = await getUserConnector(userId);
   if (!existing) return;
-  const meta = { ...(existing.metadata as any || {}), ...patch };
+  const merged = { ...(existing.metadata as any || {}), ...patch };
 
   // DB status column is a stable "is this pairing alive overall" marker.
   // Map providers real-time state to the canonical values:
@@ -332,10 +348,34 @@ async function writeMeta(userId: number, patch: UserMeta, status?: Status) {
   else if (status === 'disconnected') nextStatus = 'disconnected';
   else if (status === 'error') nextStatus = 'error';
 
+  // When transitioning to 'connected', route through the
+  // markConnectorConnected chokepoint so stale-error metadata
+  // (lastError, staleSince, lastRefreshError, etc.) gets stripped.
+  // Otherwise the BrokenConnectorBanner keeps showing the row as
+  // broken because the historical metadata says so. See memory:
+  // feedback_connector_status_is_truth.md.
+  if (nextStatus === 'connected') {
+    // First write the metadata patch + status atomically.
+    await prisma.userConnector.update({
+      where: { id: existing.id },
+      data: {
+        metadata: merged as any,
+        status: 'connected',
+        updatedAt: new Date(),
+      },
+    });
+    // Then strip stale-error metadata via the shared chokepoint
+    // (idempotent — re-reads the row, removes the keys, stamps
+    // recoveredAt/recoveredVia, and re-writes).
+    const { markConnectorConnected } = await import('../connectorHealthService');
+    await markConnectorConnected(existing.id, 'whatsapp_ready');
+    return;
+  }
+
   await prisma.userConnector.update({
     where: { id: existing.id },
     data: {
-      metadata: meta as any,
+      metadata: merged as any,
       ...(nextStatus ? { status: nextStatus } : {}),
       updatedAt: new Date(),
     },
