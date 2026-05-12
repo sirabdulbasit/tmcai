@@ -1508,41 +1508,57 @@ export async function buildAttentionList(
   if (waCandidatesForReplyCheck.length > 0) {
     const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
     const userRepliedFeedEventIds = new Set<string>();
+    // Telemetry counters so prod logs say what the filter *did*, not
+    // just that it ran. When the Kashif card keeps surfacing, we need
+    // to know whether it was: no chatId resolved, empty thread back,
+    // thread without an MD reply, or MD reply older than the inbound.
+    let noChatId = 0;
+    let emptyThread = 0;
+    let noMeMsg = 0;
+    let meStaleVsInbound = 0;
+    let dropped = 0;
     await Promise.all(waCandidatesForReplyCheck.map(async (it) => {
       try {
-        const chatId = (it as any).chatId
-          || (it as any).senderPhone
-          || it.fromEmail
-          || it.from;
-        if (!chatId) return;
-        const thread = await fetchThreadContext(userId, String(chatId), 10);
-        if (!thread || thread.length === 0) return;
-        // Sort newest→oldest by timestamp so we can read the latest
-        // message and the latest inbound separately.
+        // chatId must be in @c.us / @g.us form for webjs.getChatById.
+        // Order: stamped chatId from rawPayload (canonical) → synthesize
+        // from senderPhone digits (skip for non-WA shapes) → bail.
+        // fromEmail/from are NOT valid here — they were a leftover from
+        // when this filter was sketched against the email pattern.
+        let chatId = (it as any).chatId as string | null | undefined;
+        if (!chatId) {
+          const phoneDigits = String((it as any).senderPhone ?? '').replace(/[^\d]/g, '');
+          if (phoneDigits) chatId = `${phoneDigits}@c.us`;
+        }
+        if (!chatId) { noChatId += 1; return; }
+        const thread = await fetchThreadContext(userId, String(chatId), 20);
+        if (!thread || thread.length === 0) { emptyThread += 1; return; }
         const sorted = [...thread].sort((a, b) => b.timestamp - a.timestamp);
-        const latest = sorted[0];
+        const latestMe = sorted.find((t) => t.from === 'me');
         const latestInbound = sorted.find((t) => t.from === 'them');
-        if (!latest || !latestInbound) return;
-        // MD replied AFTER the latest inbound → drop from Attention.
-        if (latest.from === 'me' && latest.timestamp > latestInbound.timestamp) {
+        if (!latestMe) { noMeMsg += 1; return; }
+        if (!latestInbound) { return; }
+        // MD's most recent reply is newer than the most recent inbound
+        // → loop closed from MD's side. The card is no longer
+        // actionable; route it through Brief as 'you handled' instead.
+        if (latestMe.timestamp > latestInbound.timestamp) {
           userRepliedFeedEventIds.add(it.feedEventId);
-          // Also flag every collapsed feed_event id under this card so
-          // the buildHandledList side can bucket them as auto_decided.
           const fids = (it as any).conversationFeedEventIds ?? [it.feedEventId];
           for (const fid of fids) userRepliedFeedEventIds.add(fid);
+          dropped += 1;
+        } else {
+          meStaleVsInbound += 1;
         }
-      } catch { /* best-effort */ }
+      } catch { /* best-effort per-card */ }
     }));
     if (userRepliedFeedEventIds.size > 0) {
-      const before = items.length;
       const filtered = items.filter((it) => !userRepliedFeedEventIds.has(it.feedEventId));
       items.length = 0;
       items.push(...filtered);
-      // Surface the set on the function-scoped closure so the caller
-      // (buildHandledList runs separately) can mirror — for now we
-      // log and rely on the same fetchThreadContext call there.
-      console.log(`[triage] WA user-replied filter dropped ${before - items.length} cards`);
     }
+    console.log(
+      `[triage] WA user-replied filter: candidates=${waCandidatesForReplyCheck.length} dropped=${dropped} `
+      + `noChatId=${noChatId} emptyThread=${emptyThread} noMeMsg=${noMeMsg} meStaleVsInbound=${meStaleVsInbound}`,
+    );
   }
 
   // ── WhatsApp loop extraction (Phase 2) ──
@@ -1995,6 +2011,7 @@ export async function buildHandledList(
     if (cid) waChatIds.add(String(cid));
   }
   if (waChatIds.size > 0) {
+    let withReplies = 0;
     try {
       const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
       await Promise.all(Array.from(waChatIds).map(async (cid) => {
@@ -2005,10 +2022,14 @@ export async function buildHandledList(
           for (const t of thread) {
             if (t.from === 'me' && t.timestamp > lastMeMs) lastMeMs = t.timestamp;
           }
-          if (lastMeMs > 0) waReplyAtMsByChatId.set(cid, lastMeMs);
+          if (lastMeMs > 0) {
+            waReplyAtMsByChatId.set(cid, lastMeMs);
+            withReplies += 1;
+          }
         } catch { /* best-effort per-chat */ }
       }));
     } catch { /* best-effort: module load / batch-level */ }
+    console.log(`[brief] WA you-replied lookup: chats=${waChatIds.size} withReplies=${withReplies}`);
   }
 
   const out: HandledItem[] = [];
