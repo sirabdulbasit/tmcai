@@ -992,51 +992,115 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       const band = it.criticality?.band;
       return band === 'critical' || band === 'high';
     };
-    // Substantive filter — drop WA messages that are pure noise:
-    // greetings, single-digit codes, one-word acks, empty voice notes.
-    // Per MD 2026-05-12 ("what is meaning of 069?"): low-content
-    // messages like "069", "AOA", "ok" should never bubble up to a
-    // daily brief. A real EA would either ignore them or aggregate.
-    // We do the simpler thing — drop them from the brief; they remain
-    // visible in My Attention dashboard if MD wants to scroll through.
-    const NON_SUBSTANTIVE_RE = /^\s*(aoa|aoa\.?|a\.o\.a\.?|salam|salam\.?|salaam|salam\s*alaikum|assalamu?\s*alai?kum|hi|hello|hey|hii+|yo|hola|good\s+(morning|evening|afternoon|night)|gn|gm|ok|okay|kk|k|ack|ackd|noted|sure|yes|yep|yup|haan|han|jee|theek|theek\s+hai|thanks|thx|ty|tysm|cool|got\s+it|done|np|no\s+problem|np|np\s+at\s+all|👍|🙏|🙌|😊|❤️|☺️|wa\s+alaikum|w\s+s|ws|wssm)\s*[.!?…\s]*$/i;
-    const isSubstantive = (it: any): boolean => {
-      // Only apply to WhatsApp — emails and meetings have their own
-      // archetype gates from triage, and even short emails carry headers
-      // that make context obvious. WhatsApp is the channel where MD
-      // gets noisy one-liners.
-      if (it.itemType !== 'whatsapp') return true;
+    // Identify short WA bodies that need context-enrichment to be
+    // meaningful in a brief. NOT a drop filter — short messages like
+    // "069", "ok", "AOA" are legitimate fragments of an ongoing
+    // conversation. A brain understands them by reading the message
+    // they replied to. So instead of dropping, we'll fetch a piece
+    // of prior thread context for each one and render the line as
+    // "Haseeb: '069' (replying to your 'OTP?' 10m ago)".
+    const SHORT_OR_NOISY_RE = /^\s*(aoa|salam|salaam|salam\s*alaikum|assalamu?\s*alai?kum|wa\s*alaikum|wassalam|hi|hello|hey|hii+|yo|hola|good\s+(morning|evening|afternoon|night)|gn|gm|ok|okay|kk|k\b|ack|noted|sure|yes|yep|yup|haan|han|jee|theek|theek\s+hai|thanks|thx|ty|tysm|cool|got\s+it|done|np)\s*[.!?…\s]*$/i;
+    const needsContext = (it: any): boolean => {
+      if (it.itemType !== 'whatsapp') return false;
       const body = String(it.preview ?? it.subject ?? '').trim();
-      if (!body) return false;                              // empty body — drop
-      if (body.length < 4) return false;                    // 3 chars or fewer → noise
-      if (/^\d{1,4}\s*$/.test(body)) return false;          // pure number like "069", "23" → noise
-      if (NON_SUBSTANTIVE_RE.test(body)) return false;      // greeting/ack vocabulary
-      if (/^voice\s+note\s+(in\s+\w+|unavailable|no\s+transcription)/i.test(body)) return false; // unstransscribed voice
-      return true;
+      if (!body) return true;
+      if (body.length < 12) return true;                         // very short
+      if (/^\d{1,6}\s*$/.test(body)) return true;                // pure number/code
+      if (SHORT_OR_NOISY_RE.test(body)) return true;             // greeting/ack
+      if (/^voice\s+note\s+(in\s+\w+|unavailable|no\s+transcription)/i.test(body)) return true;
+      return false;
     };
-    const filteredForFreshness = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
-    const items = filteredForFreshness.filter(isSubstantive);
-    const droppedCount = allItems.length - filteredForFreshness.length;
-    const droppedAsNoise = filteredForFreshness.length - items.length;
 
-    // Diagnostic log so we can see WHY the brief looks like it does.
-    // Per MD 2026-05-12 ("my email attachment not reflecting on Brief"):
-    // need to know what reached buildAttentionList and what got filtered.
-    // Counts by channel + a list of dropped-as-noise titles so we can
-    // tell whether the noise filter is too aggressive.
+    const filteredForFreshness = allItems.filter((it) => isFreshToday(it) || isStillUrgent(it));
+
+    // For each WA item with a short/non-substantive body, read the
+    // whole chat thread and run it through the conversation analyzer
+    // (LLM call) to extract the TOPIC of the conversation. A real
+    // brain doesn't just quote the previous message — it reads enough
+    // back to understand what the thread is about, then describes
+    // that topic so the latest fragment ("069", "ok", "AOA") makes
+    // sense. Per MD 2026-05-12:
+    //   "what is 069, you should read previous if still not clear
+    //    read more previous until you get cleared picture and then
+    //    make it descriptive and then tell last message 069"
+    // analyzeConversation already does exactly that (loop extraction
+    // + summary), so we reuse it instead of inventing a parallel
+    // prompt. It's cached per latest-message-id so a chatty
+    // conversation doesn't re-burn the LLM call every brief.
+    //
+    // Cap at 5 items per brief — beyond that we're saturating LLM
+    // budget on a single read.
+    const wantsContext = filteredForFreshness.filter(needsContext).slice(0, 5);
+    if (wantsContext.length > 0) {
+      const { fetchThreadContext } = await import('../whatsapp/UserWebjsProvider');
+      const { analyzeConversation } = await import('../triage/conversationAnalyzer');
+      await Promise.all(wantsContext.map(async (it: any) => {
+        const chatId = it.chatId || (it.senderPhone ? `${String(it.senderPhone).replace(/[^\d]/g, '')}@c.us` : null);
+        const senderKey = String(it.senderPhone ?? it.chatId ?? it.from ?? '').toLowerCase();
+        if (!chatId || !senderKey) return;
+        try {
+          const thread = await fetchThreadContext(userId, String(chatId), 20);
+          if (!thread || thread.length === 0) return;
+          // Single-message threads can't have context; skip.
+          if (thread.length === 1) return;
+          const analysis = await analyzeConversation({
+            userId, clientNumber,
+            senderName: it.fromDisplay ?? it.from ?? 'them',
+            senderKey,
+            thread,
+            latestEventId: it.feedEventId,
+          });
+          // The analyzer returns:
+          //   summary: 2-3 sentence what-the-conversation-is-about
+          //   loops:   per-topic open/closed loops
+          // For the brief line we want a one-liner: prefer the most
+          // recent OPEN-with-user loop's "ask" (most actionable); fall
+          // back to the conversation summary; fall back to the prior-
+          // turn quote we used earlier as last resort.
+          const openLoop = analysis.loops?.find((l) => l.openWith === 'user' && l.ask);
+          const recentLoop = analysis.loops?.[0];
+          let topic = '';
+          if (openLoop?.ask) {
+            topic = openLoop.ask;
+          } else if (recentLoop?.topic) {
+            topic = recentLoop.topic;
+          } else if (analysis.summary) {
+            topic = analysis.summary;
+          }
+          if (topic) {
+            // Cap topic length for readability.
+            it.contextPrefix = topic.slice(0, 100);
+          } else {
+            // Fall back: prior-turn quote (still better than nothing).
+            const eventTs = it.receivedAt ? new Date(it.receivedAt).getTime() : Date.now();
+            const prior = [...thread]
+              .filter((t) => t.timestamp < eventTs - 1000 && t.text && t.text.trim().length >= 6)
+              .sort((a, b) => b.timestamp - a.timestamp)[0];
+            if (prior) {
+              const from = prior.from === 'me' ? 'your earlier message' : 'their earlier message';
+              it.contextPrefix = `in reply to ${from} "${prior.text.slice(0, 60)}"`;
+            }
+          }
+        } catch { /* best-effort */ }
+      }));
+    }
+
+    const items = filteredForFreshness;  // no drops — short messages stay, just enriched
+    const droppedCount = allItems.length - filteredForFreshness.length;
+
+    // Diagnostic log. Per MD 2026-05-12 ("my email attachment not
+    // reflecting on Brief"): need to know what reached buildAttentionList
+    // and what got filtered. Counts by channel + a list of short items
+    // that got enrichment so we can verify the context-fetch worked.
     const byChannelRaw: Record<string, number> = {};
     for (const it of allItems) {
       byChannelRaw[it.itemType] = (byChannelRaw[it.itemType] ?? 0) + 1;
     }
-    const droppedNoiseSamples = filteredForFreshness
-      .filter((it) => !isSubstantive(it))
-      .slice(0, 5)
-      .map((it) => `[${it.itemType}] ${(it.preview ?? it.subject ?? '').slice(0, 40)}`);
+    const enrichedCount = wantsContext.filter((it: any) => it.contextPrefix).length;
     console.log(
       `[day-brief] attention pipeline: total=${allItems.length} byChannel=${JSON.stringify(byChannelRaw)} `
-      + `freshOrUrgent=${filteredForFreshness.length} substantive=${items.length} `
-      + `droppedStale=${droppedCount} droppedNoise=${droppedAsNoise}`
-      + (droppedNoiseSamples.length > 0 ? ` noiseSample=${JSON.stringify(droppedNoiseSamples)}` : ''),
+      + `freshOrUrgent=${filteredForFreshness.length} droppedStale=${droppedCount} `
+      + `wantsContext=${wantsContext.length} enriched=${enrichedCount}`,
     );
 
     if (items.length === 0) {
@@ -1071,9 +1135,15 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
       // item without flagging it as carryover. Today/yesterday/Nd ago.
       const ageHr = it.receivedAt ? Math.round((Date.now() - new Date(it.receivedAt).getTime()) / 3600000) : -1;
       const ageTag = ageHr < 0 ? '' : ageHr < 24 ? '' : ageHr < 48 ? ' (carryover, yesterday)' : ` (carryover, ${Math.floor(ageHr / 24)}d ago)`;
-      const subj = (it.subject || it.preview || '').slice(0, 80);
+      const body = (it.subject || it.preview || '').slice(0, 80);
       const archetype = it.archetype ? ` (${it.archetype})` : '';
-      return `  - ${band}${from}: ${subj}${archetype}${ageTag}`;
+      // If we enriched this item with conversation context (topic from
+      // analyzeConversation), lead with the topic and tail with the
+      // literal latest message so the line tells a complete story:
+      //   "Haseeb on ITL OTP — last: '069'"
+      // Without enrichment, render the body alone.
+      const ctx = it.contextPrefix ? `${it.contextPrefix} — last: "${body}"` : body;
+      return `  - ${band}${from}: ${ctx}${archetype}${ageTag}`;
     };
 
     for (const [ch, list] of Object.entries(byChannel)) {
