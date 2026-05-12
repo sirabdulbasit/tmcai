@@ -120,8 +120,30 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
           user: 'What is today\'s date?',
           assertions: [
             {
-              name: 'includes today\'s ISO date',
-              check: (a, ctx) => a.includes(ctx.todayIso) || `expected today=${ctx.todayIso} in answer: ${a.slice(0, 120)}…`,
+              // Accept ISO ("2026-05-12") OR the natural-language form a real
+              // EA would use ("May 12, 2026" / "May 12th, 2026" / "12 May 2026").
+              // We only care that Brain knows today is May 12, 2026 — not that
+              // it emits ISO. The action surface uses ISO for slot values; the
+              // conversational answer can be human-friendly.
+              name: 'mentions today (any common date format)',
+              check: (a, ctx) => {
+                const [, mm, dd] = ctx.todayIso.split('-');
+                const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                const monthName = monthNames[parseInt(mm, 10) - 1];
+                const day = parseInt(dd, 10);
+                const patterns = [
+                  ctx.todayIso,
+                  `${monthName} ${day}, 2026`,
+                  `${monthName} ${day}th, 2026`,
+                  `${monthName} ${day}st, 2026`,
+                  `${monthName} ${day}nd, 2026`,
+                  `${monthName} ${day}rd, 2026`,
+                  `${day} ${monthName} 2026`,
+                  `${day} ${monthName}, 2026`,
+                ];
+                const hit = patterns.find((p) => a.includes(p));
+                return !!hit || `none of the expected date forms found in: ${a.slice(0, 120)}…`;
+              },
             },
           ],
         },
@@ -149,6 +171,7 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
             firstNameOnly,
             { name: 'confirms it was added', check: mentions('added|done|noted|got it') },
             { name: 'does not re-ask for assignee/priority', check: doesNotMention('assignee|priority|importance') },
+            { name: 'no fake doc attribution on the action confirmation', check: doesNotMention('tenant FACL doc|FACL doc:|SW_DASHBOARD|HaseebOS Open Items') },
           ],
         },
       ],
@@ -232,6 +255,7 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
           assertions: [
             firstNameOnly,
             { name: 'Roman-Urdu / Urdu reply', check: (a) => containsRomanUrdu(a) },
+            { name: 'no fake FACL doc fabrication', check: doesNotMention('tenant FACL doc|FACL doc:|SW_DASHBOARD|HaseebOS Open Items') },
           ],
         },
       ],
@@ -273,10 +297,33 @@ function buildScenarios(firstName: string, fullName: string): Scenario[] {
 // ── Runner ─────────────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2);
-  const argUser = args[args.indexOf('--user') + 1];
-  const argClient = args[args.indexOf('--client') + 1];
-  const userId = argUser && argUser !== '--user' ? parseInt(argUser, 10) : 5;
-  const clientNumber = argClient && argClient !== '--client' ? argClient : 'TMC-0001';
+  const argUserIdx = args.indexOf('--user');
+  const argClientIdx = args.indexOf('--client');
+  const argUser = argUserIdx >= 0 ? args[argUserIdx + 1] : null;
+  const argClient = argClientIdx >= 0 ? args[argClientIdx + 1] : null;
+
+  // Auto-resolve the test user. CLI args take precedence; otherwise pick
+  // the first active user on the first tenant — which on prod is MD's
+  // real account. Avoids the FK-violation noise from a hardcoded userId=5
+  // that doesn't exist in the deployed DB.
+  let userId: number;
+  let clientNumber: string;
+  if (argUser && argClient) {
+    userId = parseInt(argUser, 10);
+    clientNumber = argClient;
+  } else {
+    const firstUser = await prisma.user.findFirst({
+      where: { clientNumber: { not: '' } as any },
+      orderBy: { id: 'asc' },
+      select: { id: true, clientNumber: true },
+    });
+    if (!firstUser) {
+      console.error('No user found in DB — pass --user N --client TMC-XXXX explicitly.');
+      process.exit(2);
+    }
+    userId = firstUser.id;
+    clientNumber = firstUser.clientNumber;
+  }
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
   const fullName = user?.name ?? 'Test User';
