@@ -98,7 +98,24 @@ async function recentFeedContext(
     } as any,
   }).catch(() => [] as any[]);
 
-  return rows.map((r: any) => {
+  // 2026-05-13 Brain-mute filter: drop feed events from senders the
+  // user marked Private. The LLM delegate-to context should not see
+  // Brain-muted contacts even as background context — otherwise Brain
+  // could resolve "send Ali a reminder" to a Private Ali entry.
+  const { getBrainMutedSenders } = await import('../knowledge/brainMuteService');
+  const brainMuted = await getBrainMutedSenders(clientNumber, userId);
+  const filtered = (brainMuted.emails.size === 0 && brainMuted.phones.size === 0)
+    ? rows
+    : rows.filter((r: any) => {
+        const email = String(r.senderEmail ?? '').toLowerCase();
+        if (email && brainMuted.emails.has(email)) return false;
+        const p: any = r.rawPayload ?? {};
+        const phone = String(p.from ?? p.senderPhone ?? '').replace(/[^\d+]/g, '');
+        if (phone && brainMuted.phones.has(phone)) return false;
+        return true;
+      });
+
+  return filtered.map((r: any) => {
     const p: any = r.rawPayload ?? {};
     return {
       id: r.id,

@@ -1054,9 +1054,14 @@ export async function buildAttentionList(
   }).catch(() => [] as Array<{ entityId: string | null }>);
   const decidedSet = new Set(decidedIds.map((d) => d.entityId).filter(Boolean) as string[]);
 
-  // Muted senders — user has explicitly opted out of seeing items from
-  // these senders on My Attention or Brief. Build two normalised sets
-  // (email vs phone) so the filter can match feed_events directly.
+  // Muted senders — two sources, unioned:
+  //   1. Per-sender mute_sender rows (the legacy quick-mute table).
+  //   2. Contacts whose scope = 'private' in wiki_pages (the 2026-05-13
+  //      three-state model). When the user clicks Make Private on the
+  //      ContactsPage, that contact's email + phone identifiers go
+  //      here, suppressing My Attention cards for them.
+  // The same set serves the Brief filter and Open Items extraction
+  // downstream via getBrainMutedSenders().
   const mutedRows = await prisma.mutedSender.findMany({
     where: { userId, clientNumber },
     select: { channel: true, identifier: true },
@@ -1067,6 +1072,10 @@ export async function buildAttentionList(
     if (m.channel === 'email' && m.identifier) mutedEmails.add(m.identifier.toLowerCase());
     else if (m.channel === 'whatsapp' && m.identifier) mutedPhones.add(m.identifier);
   }
+  const { getBrainMutedSenders } = await import('../knowledge/brainMuteService');
+  const brainMuted = await getBrainMutedSenders(clientNumber, userId);
+  for (const e of brainMuted.emails) mutedEmails.add(e);
+  for (const p of brainMuted.phones) mutedPhones.add(p);
 
   // Thread-replied set: any Gmail thread the user has already sent a
   // reply on (via Brain's draft system) within the last 30 days. New
@@ -1940,6 +1949,8 @@ export async function buildHandledList(
   // senders are filtered out before bucketing so Brief never shows
   // them — user explicitly asked: "never want to be part of My
   // Attention or brief." They remain searchable in Wiki.
+  // 2026-05-13 union: also includes contacts the user marked Private
+  // (Brain-muted) via the ContactsPage ScopeSelector.
   const mutedRows = await prisma.mutedSender.findMany({
     where: { userId, clientNumber },
     select: { channel: true, identifier: true },
@@ -1950,6 +1961,10 @@ export async function buildHandledList(
     if (m.channel === 'email' && m.identifier) mutedEmails.add(m.identifier.toLowerCase());
     else if (m.channel === 'whatsapp' && m.identifier) mutedPhones.add(m.identifier);
   }
+  const { getBrainMutedSenders: getBrainMutedSenders2 } = await import('../knowledge/brainMuteService');
+  const brainMutedBrief = await getBrainMutedSenders2(clientNumber, userId);
+  for (const e of brainMutedBrief.emails) mutedEmails.add(e);
+  for (const p of brainMutedBrief.phones) mutedPhones.add(p);
 
   // Mirror buildAttentionList's thread-replied set so a feed_event
   // for a thread the user has already replied on lands in Brief

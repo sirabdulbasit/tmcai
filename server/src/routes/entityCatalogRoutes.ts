@@ -258,6 +258,10 @@ router.patch('/:id/publish', async (req: Request, res: Response) => {
       `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
       JSON.stringify(next), id,
     );
+    try {
+      const { invalidateBrainMuteCache } = await import('../services/knowledge/brainMuteService');
+      invalidateBrainMuteCache(req.user!.clientNumber, (page as any).userId);
+    } catch { /* non-critical */ }
     res.json({ id, scope: 'tenant' });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
@@ -289,6 +293,10 @@ router.patch('/:id/unpublish', async (req: Request, res: Response) => {
       `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
       JSON.stringify(next), id,
     );
+    try {
+      const { invalidateBrainMuteCache } = await import('../services/knowledge/brainMuteService');
+      invalidateBrainMuteCache(req.user!.clientNumber, (page as any).userId);
+    } catch { /* non-critical */ }
     res.json({ id, scope: 'normal' });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
@@ -362,6 +370,13 @@ router.patch('/:id/scope', async (req: Request, res: Response) => {
       `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
       JSON.stringify(next), id,
     );
+    // Bust the muted-senders cache so the next Brain pipeline read
+    // sees the new state (the cache TTL is 30s — too slow if the user
+    // just clicked Private and immediately reopens My Attention).
+    try {
+      const { invalidateBrainMuteCache } = await import('../services/knowledge/brainMuteService');
+      invalidateBrainMuteCache(req.user!.clientNumber, (page as any).userId);
+    } catch { /* non-critical */ }
     res.json({ id, scope: requested });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
