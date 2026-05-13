@@ -557,5 +557,14 @@ export async function executeIfMatched(event: FeedEventForExec): Promise<ExecRes
     select: { id: true },
   });
 
+  // Brain just terminated this feed event — drop the cached brief
+  // partition for this user so the next page-load recomputes both
+  // surfaces. Without this, a recently-cached partition could keep
+  // showing the item in My Attention until the 30s TTL expires.
+  try {
+    const { invalidatePartition } = await import('./briefPartitionService');
+    invalidatePartition(event.clientNumber, event.userId);
+  } catch { /* non-critical */ }
+
   return { executed: true, action, ruleId: rule.id, agentActionId: row.id };
 }

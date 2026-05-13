@@ -37,7 +37,13 @@ router.get('/attention', async (req: Request, res: Response) => {
   // 250-300 items in My Attention before the cards become unwieldy.
   const limit = Math.min(parseInt(String(req.query.limit ?? '30'), 10) || 30, 300);
   try {
-    const items = await buildAttentionList(user.clientNumber, user.id, limit);
+    // 2026-05-14 brain-shape refactor: route through the unified
+    // partition. Both /brief/attention and /brief/handled now read
+    // from the same in-memory result so the My Attention / Brief
+    // partition can't desync (the previous two-engine race).
+    const { computeBriefPartition } = await import('../services/triage/briefPartitionService');
+    const partition = await computeBriefPartition(user.clientNumber, user.id, limit, 100);
+    const items = partition.myAttention.slice(0, limit);
     // NOTE: WhatsApp push for critical items is NOT fired here anymore.
     // It used to be fire-and-forget on every /brief/attention call,
     // which meant opening the Day Brief in two tabs (or React's
@@ -310,11 +316,13 @@ router.get('/handled', async (req: Request, res: Response) => {
   const user = (req as any).user;
   const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 200);
   try {
-    const items = await buildHandledList(user.clientNumber, user.id, limit);
-    // Pre-compute per-bucket counts so the client doesn't have to filter
-    // for the header tally.
-    const byBucket: Record<string, number> = {};
-    for (const it of items) byBucket[it.bucket] = (byBucket[it.bucket] ?? 0) + 1;
+    // 2026-05-14 brain-shape refactor: share /brief/attention's
+    // partition computation so the two endpoints can't disagree on
+    // which feed event went to which side.
+    const { computeBriefPartition } = await import('../services/triage/briefPartitionService');
+    const partition = await computeBriefPartition(user.clientNumber, user.id, 200, limit);
+    const items = partition.brief.slice(0, limit);
+    const byBucket = partition.byBucket;
     res.json({ items, count: items.length, byBucket });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1933,6 +1941,13 @@ router.post('/decide', async (req: Request, res: Response) => {
   // items. We only invalidate this single row; broader pattern shifts
   // catch up on the 10-min TTL.
   invalidateTriageCache(feedEventId);
+  // Also drop the user's brief partition memo so the next page-load
+  // recomputes both surfaces from a fresh suggester pass. Without this,
+  // a 30s stale partition could re-surface the just-decided item.
+  {
+    const { invalidatePartition } = await import('../services/triage/briefPartitionService');
+    invalidatePartition(user.clientNumber, user.id);
+  }
 
   // Load the feed_event so we can enrich the audit row + re-run the
   // classifier to derive the canonical dedup_hash. This MUST match what the
