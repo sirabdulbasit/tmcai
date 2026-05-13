@@ -189,6 +189,15 @@ RULES:
 - If related open items exist: consider link_to_existing as primary.
 - confidence reflects your conviction that this is the RIGHT action.
 
+RATIONALE ↔ ACTION CONSISTENCY — non-negotiable:
+Your rationale and suggestedAction MUST agree. Before emitting JSON, re-read your own rationale and check:
+  - If rationale contains "no action required" / "no follow-up needed" / "no response needed" / "just acknowledging" / "thread is closed" / "loop is closed" / "informational only" / "FYI" / "nothing to do" / "no reply needed" → suggestedAction MUST be "acknowledge" or "ignore". NEVER "draft_reply".
+  - If rationale says you'd want the user to write back something specific → suggestedAction MUST be "draft_reply" or "delegate", NEVER "acknowledge".
+  - If rationale identifies a delegatee by name → suggestedAction MUST be "delegate" (or delegate_to_known), NEVER "draft_reply" without a delegatee.
+  - One-word acks ("Ok", "Thanks", "Noted", "Coming", "Done") sent BY the contact (not the user) are loop-closers. The right action is "acknowledge" with confidence high. NEVER "draft_reply" to "Ok".
+
+Self-contradiction (rationale says one thing, action says another) is the worst failure mode — it tells the user we're not actually thinking. Verify alignment before emitting.
+
 Be decisive. Don't hedge. The user trusts you to pick one path.`;
 
   const user = buildUserPrompt(ctx);

@@ -136,6 +136,14 @@ export async function gatherSenderContext(params: {
   clientNumber: string;
   userId: number;
   senderEmail: string | null;
+  /** WhatsApp/SMS/phone-based senders have no email — pass senderPhone
+   *  so the history lookup can match by either identifier. Without this
+   *  the function would return firstContact=true for every WhatsApp
+   *  contact regardless of how many messages exist (the bug Basit hit
+   *  on 2026-05-14: Abdul Haseeb's 11-message thread showing as
+   *  "first contact" because the senderHistory query only matched
+   *  senderEmail). */
+  senderPhone?: string | null;
   /** Optional: a Gmail threadId or WhatsApp chatId — if provided, thread
    *  context will be fetched even when the current event didn't carry it. */
   threadId?: string | null;
@@ -164,12 +172,15 @@ export async function gatherSenderContext(params: {
       firstContact: true,
     },
   };
-  const { clientNumber, userId, senderEmail, threadContextSeed } = params;
-  if (!senderEmail) return empty;
+  const { clientNumber, userId, senderEmail, senderPhone, threadContextSeed } = params;
+  // Need at least one identifier to look anything up. Email was the
+  // only original key — now phone is accepted too.
+  if (!senderEmail && !senderPhone) return empty;
 
   // Cache hit — threadContextSeed is swapped in fresh so the cached shell
   // reflects the CURRENT event's conversation state, not a stale one.
-  const cacheKey = `${clientNumber}:${userId}:${senderEmail.toLowerCase()}`;
+  const cacheKeyId = senderEmail ? senderEmail.toLowerCase() : `phone:${(senderPhone ?? '').replace(/[^\d+]/g, '')}`;
+  const cacheKey = `${clientNumber}:${userId}:${cacheKeyId}`;
   const cached = ctxCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < CTX_TTL_MS) {
     if (threadContextSeed && threadContextSeed.length > 0) {
@@ -247,10 +258,12 @@ export async function gatherSenderContext(params: {
   // exists yet. The topic page is pulled by the triage layer using the
   // dedup_hash at suggest-time (not here, since we don't have the hash).
   let wikiSnippet: string | null = null;
-  try {
-    const { getSenderHistoryMarkdown } = await import('./senderWikiService');
-    wikiSnippet = await getSenderHistoryMarkdown(clientNumber, userId, senderEmail, 800);
-  } catch { /* fall through to entity lookup */ }
+  if (senderEmail) {
+    try {
+      const { getSenderHistoryMarkdown } = await import('./senderWikiService');
+      wikiSnippet = await getSenderHistoryMarkdown(clientNumber, userId, senderEmail, 800);
+    } catch { /* fall through to entity lookup */ }
+  }
   if (!wikiSnippet && entity) {
     const page = await prisma.wikiPage.findFirst({
       where: { clientNumber, userId, pageType: 'entity', title: entity.name } as any,
@@ -264,12 +277,20 @@ export async function gatherSenderContext(params: {
   // ── 6. Full message history from this sender in last 90 days ──
   // Not just decisions — every inbound feed event. Gives Brain the shape
   // of the relationship: new contact vs long-running thread vs sporadic.
+  // Match by EITHER senderEmail OR senderPhone — a WhatsApp contact
+  // with no email still has months of interactions; matching on email
+  // alone made firstContact=true for every WA-only sender, even
+  // 11-thread regulars (Abdul Haseeb 2026-05-14).
+  const normalizedPhone = senderPhone ? senderPhone.replace(/[^\d+]/g, '') : '';
   const senderHistory = await prisma.feedEvent.findMany({
     where: {
       clientNumber,
       userId,
-      senderEmail: { equals: senderEmail, mode: 'insensitive' },
       createdAt: { gte: since },
+      OR: [
+        ...(senderEmail ? [{ senderEmail: { equals: senderEmail, mode: 'insensitive' as const } }] : []),
+        ...(normalizedPhone ? [{ senderPhone: normalizedPhone }] : []),
+      ],
     } as any,
     select: { id: true, rawPayload: true, sourceType: true, createdAt: true },
     orderBy: { createdAt: 'desc' },

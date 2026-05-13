@@ -709,6 +709,11 @@ async function _doTriage(row: {
       clientNumber: row.clientNumber,
       userId: row.userId,
       senderEmail: fromEmail ?? null,
+      // senderPhone for WA / phone-based senders — without this,
+      // firstContact falsely true for every WhatsApp regular.
+      senderPhone: (row.rawPayload as any)?.phoneNumber
+        ?? (row.rawPayload as any)?.senderPhone
+        ?? null,
       threadId,
       threadContextSeed,
       sourceType: row.sourceType,
