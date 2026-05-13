@@ -523,6 +523,12 @@ function projectListItem(row: any, userId: number) {
     email: meta.email ?? null,
     phone: meta.phone ?? null,
     scope: meta.scope ?? 'user',
+    // linkedPersonId — when multiple wiki rows represent the same
+    // person (e.g. work email + personal email + phone), they share
+    // this id. UI groups them under one collapsible header; each row
+    // keeps its own scope so the user can share work email publicly
+    // while keeping the personal one private.
+    linkedPersonId: meta.linkedPersonId ?? null,
     // Ownership signal so the UI can render Make Public / Make
     // Private only on contacts the current user owns.
     ownerUserId: row.userId ?? null,
@@ -540,5 +546,129 @@ function projectListItem(row: any, userId: number) {
     lastEnrichedAt: meta.last_enriched_at ?? null,
   };
 }
+
+/**
+ * POST /entity-catalog/link
+ *  Body: { ids: string[] }
+ *
+ * Link multiple entity_person wiki rows under a shared linkedPersonId,
+ * so the UI groups them as one logical person (e.g. work email +
+ * personal email + phone are three rows for one person). Each row
+ * keeps its own scope/stars; the link is purely identity-grouping.
+ *
+ * If any of the supplied rows already has a linkedPersonId, that id
+ * becomes the canonical group id and the others adopt it. This way
+ * adding a 4th identifier to an existing group is a single call.
+ *
+ * Ownership rule: caller must own (or be tenant admin for) every row
+ * in the group — you can't link someone else's contacts.
+ */
+router.post('/link', async (req: Request, res: Response) => {
+  try {
+    const ids: string[] = Array.isArray(req.body?.ids)
+      ? (req.body.ids as unknown[]).map((x) => String(x))
+      : [];
+    if (ids.length < 2) {
+      res.status(400).json({ error: 'need at least 2 ids to link' });
+      return;
+    }
+    const rows = await prisma.wikiPage.findMany({
+      where: { id: { in: ids }, clientNumber: req.user!.clientNumber, pageType: 'entity_person' } as any,
+      select: { id: true, userId: true, metadata: true },
+    });
+    if (rows.length !== ids.length) {
+      res.status(404).json({ error: 'one or more rows not found in your tenant' });
+      return;
+    }
+    if (!req.user!.isAdmin) {
+      const notOwned = rows.find((r) => (r as any).userId !== req.user!.id);
+      if (notOwned) {
+        res.status(403).json({ error: 'you can only link contacts you own' });
+        return;
+      }
+    }
+    // Reuse existing linkedPersonId if any row already has one;
+    // otherwise mint a fresh one.
+    let groupId: string | null = null;
+    for (const r of rows) {
+      const m = (r.metadata as any) ?? {};
+      if (typeof m.linkedPersonId === 'string' && m.linkedPersonId) {
+        groupId = m.linkedPersonId;
+        break;
+      }
+    }
+    if (!groupId) {
+      // cuid-ish: 16 hex chars is plenty for tenant-scoped uniqueness
+      groupId = `lpg_${Math.random().toString(16).slice(2, 10)}${Date.now().toString(36)}`;
+    }
+    const linkedAt = new Date().toISOString();
+    for (const r of rows) {
+      const m = ((r.metadata as Record<string, unknown> | null) ?? {});
+      const next = { ...m, linkedPersonId: groupId, linkedAt };
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+        JSON.stringify(next), r.id,
+      );
+    }
+    res.json({ ok: true, linkedPersonId: groupId, count: rows.length });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * POST /entity-catalog/unlink
+ *  Body: { id: string }
+ *
+ * Remove ONE row from its linked-person group. Other rows in the
+ * group remain linked. If only one row remains after this unlink, the
+ * link is also stripped from that remaining row (cleanup: a group of
+ * 1 is meaningless).
+ */
+router.post('/unlink', async (req: Request, res: Response) => {
+  try {
+    const id = String(req.body?.id ?? '').trim();
+    if (!id) { res.status(400).json({ error: 'id required' }); return; }
+    const row = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true, metadata: true },
+    });
+    if (!row || row.clientNumber !== req.user!.clientNumber || row.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    if ((row as any).userId !== req.user!.id && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'you can only unlink contacts you own' }); return;
+    }
+    const meta = ((row.metadata as Record<string, unknown> | null) ?? {});
+    const groupId = (meta as any).linkedPersonId as string | undefined;
+    if (!groupId) {
+      res.json({ ok: true, note: 'already unlinked' });
+      return;
+    }
+    const next = { ...meta };
+    delete (next as any).linkedPersonId;
+    delete (next as any).linkedAt;
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(next), id,
+    );
+    // Group-of-1 cleanup
+    const remaining = await prisma.$queryRawUnsafe<Array<{ id: string; metadata: any }>>(
+      `SELECT id, metadata FROM wiki_pages
+        WHERE client_number = $1 AND page_type = 'entity_person'
+          AND metadata->>'linkedPersonId' = $2`,
+      req.user!.clientNumber, groupId,
+    ).catch(() => [] as any[]);
+    if (remaining.length === 1) {
+      const r = remaining[0];
+      const m = (r.metadata as any) ?? {};
+      delete m.linkedPersonId;
+      delete m.linkedAt;
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+        JSON.stringify(m), r.id,
+      );
+    }
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
 
 export default router;

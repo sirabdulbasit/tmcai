@@ -818,6 +818,13 @@ model Entity {
   lastInteraction      DateTime? @map("last_interaction")
   clientNumber         String    @map("client_number") @db.VarChar(20)
   createdBy            Int?      @map("created_by")
+  // Per user 2026-05-13: an executive's contact often has multiple
+  // identifiers (work email + personal email + phone). Path B = keep
+  // one row per identifier, but link them under a shared id so Brain
+  // knows it's one person, while letting EACH row carry its own
+  // Public/Private scope. Nullable — unlinked rows have null. Multiple
+  // rows with the same linkedPersonId form a "person group."
+  linkedPersonId       String?   @map("linked_person_id") @db.VarChar(32)
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -827,6 +834,7 @@ model Entity {
   @@unique([clientNumber, entityType, email])
   @@index([clientNumber, entityType])
   @@index([clientNumber, name])
+  @@index([clientNumber, linkedPersonId])
   @@map("entities")
 }
 

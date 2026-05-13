@@ -122,6 +122,32 @@ export default function ContactsPage() {
     }
   }, [entities, notify]);
 
+  // Link two or more rows under one linkedPersonId (group them as
+  // "same person, different identifiers"). Per the user 2026-05-13:
+  // an executive contact often has work email + personal email + phone;
+  // Path B keeps each as its own row (so scope can differ per channel)
+  // but links them so Brain knows it's one person.
+  const onLinkContacts = useCallback(async (ids) => {
+    if (!Array.isArray(ids) || ids.length < 2) return;
+    try {
+      const { data } = await api.post('/entity-catalog/link', { ids });
+      notify('success', `Linked ${data.count} identifiers under one person.`);
+      load();
+    } catch (err) {
+      notify('error', `Link failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
+  const onUnlinkContact = useCallback(async (id) => {
+    try {
+      await api.post('/entity-catalog/unlink', { id });
+      notify('success', 'Unlinked from group.');
+      load();
+    } catch (err) {
+      notify('error', `Unlink failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
   const triggerSweep = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -395,13 +421,90 @@ export default function ContactsPage() {
       ) : entities.length === 0 ? (
         <EmptyState onRefresh={triggerSweep} />
       ) : (
-        <ContactsTable entities={entities} onSetStars={onSetStars} visibility={visibility} />
+        <ContactsTable
+          entities={entities}
+          onSetStars={onSetStars}
+          visibility={visibility}
+          onLinkContacts={onLinkContacts}
+          onUnlinkContact={onUnlinkContact}
+        />
       )}
     </div>
   );
 }
 
-function ContactsTable({ entities, onSetStars, visibility = '' }) {
+function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, onUnlinkContact }) {
+  // Build a duplicate-detection index from the full list. A pair is
+  // a "candidate duplicate" when they share a normalized phone OR
+  // email AND they don't already share a linkedPersonId (already
+  // linked rows don't need the badge). Per user 2026-05-13 settings:
+  // phone-OR-email match, ask each time.
+  const dupSiblings = (() => {
+    const byPhone = new Map(); // phone -> [ids]
+    const byEmail = new Map(); // email -> [ids]
+    const norm = (s) => String(s ?? '').toLowerCase().replace(/\s/g, '');
+    const normPhone = (s) => String(s ?? '').replace(/[^\d]/g, '');
+    for (const e of entities) {
+      if (e.email) {
+        const k = norm(e.email);
+        if (!byEmail.has(k)) byEmail.set(k, []);
+        byEmail.get(k).push(e.id);
+      }
+      if (e.phone) {
+        const k = normPhone(e.phone);
+        if (k && !byPhone.has(k)) byPhone.set(k, []);
+        if (k) byPhone.get(k).push(e.id);
+      }
+    }
+    const sibs = new Map(); // entityId -> [other entityIds that share phone/email AND aren't in the same link group]
+    const linkedGroupOf = new Map(); // entityId -> linkedPersonId|null
+    for (const e of entities) linkedGroupOf.set(e.id, e.linkedPersonId ?? null);
+    const consider = (group) => {
+      if (!group || group.length < 2) return;
+      for (const a of group) {
+        for (const b of group) {
+          if (a === b) continue;
+          // Skip if both are already in the same link group — no need to suggest.
+          const ga = linkedGroupOf.get(a);
+          const gb = linkedGroupOf.get(b);
+          if (ga && gb && ga === gb) continue;
+          if (!sibs.has(a)) sibs.set(a, new Set());
+          sibs.get(a).add(b);
+        }
+      }
+    };
+    for (const g of byPhone.values()) consider(g);
+    for (const g of byEmail.values()) consider(g);
+    return sibs;
+  })();
+  // Group entities by linkedPersonId. Rows with a shared id are
+  // rendered under one collapsible header. Unlinked rows render
+  // individually.
+  const groups = (() => {
+    const out = [];
+    const seen = new Set();
+    const indexByGroup = new Map();
+    for (const e of entities) {
+      const gid = e.linkedPersonId;
+      if (!gid) continue;
+      if (!indexByGroup.has(gid)) indexByGroup.set(gid, []);
+      indexByGroup.get(gid).push(e);
+    }
+    // Preserve original order; emit group at the position of its first member.
+    for (const e of entities) {
+      if (seen.has(e.id)) continue;
+      const gid = e.linkedPersonId;
+      if (gid && indexByGroup.has(gid) && indexByGroup.get(gid).length > 1) {
+        const members = indexByGroup.get(gid);
+        for (const m of members) seen.add(m.id);
+        out.push({ kind: 'group', linkedPersonId: gid, members });
+      } else {
+        seen.add(e.id);
+        out.push({ kind: 'single', entity: e });
+      }
+    }
+    return out;
+  })();
   // tenantName lives in AuthContext at the app root; pull it here so the
   // tenant-shared pill renders the company display name. This nested
   // component doesn't see ContactsPage's destructured useAuth — different
@@ -481,6 +584,42 @@ function ContactsTable({ entities, onSetStars, visibility = '' }) {
                     🔒 Private
                   </span>
                 )}
+                {/* Linked-group pill — shown when this row is part of a
+                    multi-identifier person (work email + personal email
+                    + phone all linked under one linkedPersonId). */}
+                {e.linkedPersonId && (
+                  <span
+                    style={pillStyle('#a78bfa', 'rgba(167,139,250,0.14)')}
+                    title="Linked to other identifiers under one person — Brain treats these as the same contact"
+                  >
+                    🔗 Linked
+                  </span>
+                )}
+                {/* Possible-duplicate hint — shown when this row shares a
+                    phone or email with another UNLINKED row. Click to
+                    link them as the same person (each row keeps its
+                    own scope/stars). */}
+                {(!e.linkedPersonId) && dupSiblings.has(e.id) && (() => {
+                  const sibIds = Array.from(dupSiblings.get(e.id));
+                  const sibTitles = sibIds
+                    .map((sid) => entities.find((x) => x.id === sid)?.title)
+                    .filter(Boolean)
+                    .slice(0, 2);
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => onLinkContacts?.([e.id, ...sibIds])}
+                      style={{
+                        ...pillStyle('#f59e0b', 'rgba(245,158,11,0.14)'),
+                        cursor: 'pointer',
+                        border: '1px solid rgba(245,158,11,0.4)',
+                      }}
+                      title={`Same identifier as: ${sibTitles.join(', ')}${sibIds.length > sibTitles.length ? ` (+${sibIds.length - sibTitles.length})` : ''}. Click to link them as one person.`}
+                    >
+                      ⚠ Same as {sibTitles[0] || 'another'} — Link
+                    </button>
+                  );
+                })()}
               </Td>
               <Td>
                 <span style={{ color: 'var(--text-muted, #98a0a8)' }}>
@@ -512,6 +651,28 @@ function ContactsTable({ entities, onSetStars, visibility = '' }) {
                       id={e.id}
                       isPublic={e.scope === 'tenant'}
                     />
+                  )}
+                  {/* Unlink — only visible on linked rows; lets the
+                      user split a wrongly-merged identifier back out
+                      from its person group. The remaining group rows
+                      stay linked to each other. */}
+                  {e.isOwner && e.linkedPersonId && onUnlinkContact && (
+                    <button
+                      type="button"
+                      onClick={() => onUnlinkContact(e.id)}
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: 6,
+                        background: 'transparent',
+                        color: 'var(--text-muted, #98a0a8)',
+                        border: '1px solid var(--border, #28323e)',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                      }}
+                      title="Remove this identifier from its linked-person group"
+                    >
+                      Unlink
+                    </button>
                   )}
                   <InactiveButton id={e.id} title={e.title} />
                 </div>
