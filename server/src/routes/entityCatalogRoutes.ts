@@ -700,6 +700,27 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
       });
       return;
     }
+    // Snapshot the explicit-publish set BEFORE delete so we can restore
+    // scope='tenant' on the rebuilt rows. classifyScope() always returns
+    // 'user' now, so without this every contact would come back Private
+    // even if the owner had explicitly clicked "Make Public" earlier.
+    // We match by metadata.email or metadata.phone — those are stable
+    // across the wipe/rebuild because they're sourced from feed_events.
+    const publicSnapshot = await prisma.$queryRawUnsafe<Array<{
+      email: string | null; phone: string | null;
+      publicSince: string | null; publicSetBy: number | null;
+    }>>(
+      `SELECT lower(metadata->>'email')        AS email,
+              metadata->>'phone'               AS phone,
+              metadata->>'publicSince'         AS "publicSince",
+              (metadata->>'publicSetBy')::int  AS "publicSetBy"
+         FROM wiki_pages
+        WHERE client_number = $1
+          AND user_id = $2
+          AND page_type = 'entity_person'
+          AND metadata->>'scope' = 'tenant'`,
+      req.user!.clientNumber, req.user!.id,
+    ).catch(() => [] as any[]);
     // Count + delete current user-owned entity_person rows.
     const deleted = await prisma.$executeRawUnsafe(
       `DELETE FROM wiki_pages
@@ -713,11 +734,43 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
     // cc7bb4d content-dedup in place, no duplicates get recreated.
     const r = await sweepForTenant(req.user!.clientNumber, { lookbackDays })
       .catch((e: any) => ({ scanned: 0, created: 0, enriched: 0, errors: 1, error: e.message }));
+    // Restore explicit Public opt-ins onto the rebuilt rows.
+    let restored = 0;
+    for (const snap of publicSnapshot) {
+      const email = snap.email ? snap.email.toLowerCase() : null;
+      const phone = snap.phone ? snap.phone.replace(/[^\d+]/g, '') : null;
+      if (!email && !phone) continue;
+      // Match the rebuilt row by email OR phone in metadata.
+      const updated = await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages
+            SET metadata = metadata
+                            || jsonb_build_object(
+                                 'scope', 'tenant',
+                                 'publicSince', COALESCE($3, metadata->>'publicSince', NOW()::text),
+                                 'publicSetBy', COALESCE($4::int, (metadata->>'publicSetBy')::int)
+                               ),
+                last_updated_at = NOW()
+          WHERE client_number = $1
+            AND page_type = 'entity_person'
+            AND (
+                  ($2 <> '' AND lower(metadata->>'email') = $2)
+                  OR ($5 <> '' AND regexp_replace(coalesce(metadata->>'phone',''),'[^0-9+]','','g') = $5)
+                )`,
+        req.user!.clientNumber,
+        email ?? '',
+        snap.publicSince,
+        snap.publicSetBy,
+        phone ?? '',
+      ).catch(() => 0);
+      restored += Number(updated) || 0;
+    }
     res.json({
       ok: true,
       deleted: Number(deleted),
       rebuilt: (r as any).created ?? 0,
       scanned: (r as any).scanned ?? 0,
+      publicRestored: restored,
+      publicSnapshotSize: publicSnapshot.length,
     });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
