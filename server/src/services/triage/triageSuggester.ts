@@ -1145,6 +1145,34 @@ export async function buildAttentionList(
   for (const e of brainMuted.emails) mutedEmails.add(e);
   for (const p of brainMuted.phones) mutedPhones.add(p);
 
+  // Tenant Brain WhatsApp notifier — Brain's own outbound messages
+  // arrive on the user's phone as INBOUND (Meta Cloud API → user's WA).
+  // The user's webjs ingest then writes them to feed_events. That's
+  // system loopback, not user inbound. Filter at attention-build so
+  // old feed_events (pre-ingest-filter) AND any new ones that slip
+  // through (format edge-cases) never surface as "reply needed".
+  // Per user 2026-05-14: "why is brain showing its own messages?"
+  try {
+    const notifier = await prisma.tenantWhatsappNotifier.findUnique({
+      where: { clientNumber },
+      select: { displayNumber: true },
+    });
+    if (notifier?.displayNumber) {
+      const raw = String(notifier.displayNumber).trim();
+      // Normalise into the same shapes feed_events.senderPhone is stored
+      // in. The filter check in pickFromBucket runs the senderPhone
+      // through replace(/[^\d+]/g, ''), so we union all common shapes:
+      // digits-only, with-plus, with-spaces-stripped, raw.
+      const digits = raw.replace(/[^\d]/g, '');
+      if (digits) {
+        mutedPhones.add(digits);
+        mutedPhones.add(`+${digits}`);
+      }
+      const normalized = raw.replace(/[^+\d]/g, '');
+      if (normalized) mutedPhones.add(normalized);
+    }
+  } catch { /* notifier missing — no filter to apply */ }
+
   // Thread-replied set: any Gmail thread the user has already sent a
   // reply on (via Brain's draft system) within the last 30 days. New
   // feed_events for the SAME thread create new feedEventIds, so the
@@ -2040,6 +2068,26 @@ export async function buildHandledList(
   const brainMutedBrief = await getBrainMutedSenders2(clientNumber, userId);
   for (const e of brainMutedBrief.emails) mutedEmails.add(e);
   for (const p of brainMutedBrief.phones) mutedPhones.add(p);
+
+  // Tenant Brain WhatsApp notifier — mirror buildAttentionList. Brain's
+  // own outbound notifications loop back through the user's WA and
+  // shouldn't appear in Brief either (Brain didn't 'handle' itself).
+  try {
+    const notifier = await prisma.tenantWhatsappNotifier.findUnique({
+      where: { clientNumber },
+      select: { displayNumber: true },
+    });
+    if (notifier?.displayNumber) {
+      const raw = String(notifier.displayNumber).trim();
+      const digits = raw.replace(/[^\d]/g, '');
+      if (digits) {
+        mutedPhones.add(digits);
+        mutedPhones.add(`+${digits}`);
+      }
+      const normalized = raw.replace(/[^+\d]/g, '');
+      if (normalized) mutedPhones.add(normalized);
+    }
+  } catch { /* notifier missing — no filter to apply */ }
 
   // Mirror buildAttentionList's thread-replied set so a feed_event
   // for a thread the user has already replied on lands in Brief
