@@ -321,12 +321,27 @@ const triageCache = new Map<string, { value: AttentionItem; expires: number }>()
 // over limit we drop the oldest 20% in one sweep.
 const TRIAGE_CACHE_MAX = 5000;
 
+// In-flight requests — promise coalescing to prevent the thundering-herd
+// bug where My Attention and Brief both call suggestForFeedEvent for the
+// same id at the same page load, both miss the cache, both invoke
+// _doTriage independently, and the LLM (non-deterministic) returns
+// different suggestedAction values to each — one says 'draft_reply',
+// the other says 'acknowledge'. The autonomy gate then routes the SAME
+// item to BOTH My Attention and Brief, violating the partition contract.
+// Per user 2026-05-14 ("HAIDER's 'Thank you Sir' shows in both surfaces").
+//
+// With this map, concurrent callers for the same id share one promise:
+// only one _doTriage runs, both surfaces get the same AttentionItem.
+const triageInflight = new Map<string, Promise<AttentionItem>>();
+
 export function invalidateTriageCache(feedEventId: string): void {
   triageCache.delete(feedEventId);
+  triageInflight.delete(feedEventId);
 }
 
 export function clearTriageCache(): void {
   triageCache.clear();
+  triageInflight.clear();
 }
 
 // Public entrypoint — returns cached result if available, otherwise
@@ -345,19 +360,34 @@ export async function suggestForFeedEvent(row: {
   if (cached && cached.expires > Date.now()) {
     return cached.value;
   }
-  const result = await _doTriage(row);
-  // Cap cache size — drop oldest entries first.
-  if (triageCache.size >= TRIAGE_CACHE_MAX) {
-    const toDelete = Math.floor(TRIAGE_CACHE_MAX * 0.2);
-    let i = 0;
-    for (const key of triageCache.keys()) {
-      if (i >= toDelete) break;
-      triageCache.delete(key);
-      i++;
+  // Coalesce: if another caller is already computing this id, await
+  // its in-flight promise instead of starting a duplicate _doTriage.
+  // This is the core fix for the My-Attention-vs-Brief leak.
+  const inflight = triageInflight.get(row.id);
+  if (inflight) return inflight;
+  const promise = (async () => {
+    try {
+      const result = await _doTriage(row);
+      // Cap cache size — drop oldest entries first.
+      if (triageCache.size >= TRIAGE_CACHE_MAX) {
+        const toDelete = Math.floor(TRIAGE_CACHE_MAX * 0.2);
+        let i = 0;
+        for (const key of triageCache.keys()) {
+          if (i >= toDelete) break;
+          triageCache.delete(key);
+          i++;
+        }
+      }
+      triageCache.set(row.id, { value: result, expires: Date.now() + TRIAGE_CACHE_TTL_MS });
+      return result;
+    } finally {
+      // Always clear the inflight entry so a later request can either
+      // hit the cache (if _doTriage succeeded) or retry (if it threw).
+      triageInflight.delete(row.id);
     }
-  }
-  triageCache.set(row.id, { value: result, expires: Date.now() + TRIAGE_CACHE_TTL_MS });
-  return result;
+  })();
+  triageInflight.set(row.id, promise);
+  return promise;
 }
 
 async function _doTriage(row: {
