@@ -197,6 +197,23 @@ export default function ContactsPage() {
     }
   }, [load, notify]);
 
+  // Reclaim ownership — take ownership of every entity_person row in
+  // the tenant that the user can already see. Non-destructive: doesn't
+  // delete, doesn't change scope, just repoints user_id so the
+  // ScopeSelector becomes available on every row.
+  const [reclaimFlow, setReclaimFlow] = useState(null);
+  const onReclaimOwnership = useCallback(async (confirmPhrase) => {
+    try {
+      const { data } = await api.post('/entity-catalog/reclaim-ownership', {
+        confirmPhrase,
+      });
+      notify('success', `Reclaimed ownership of ${data.reclaimed} contacts.`);
+      load();
+    } catch (err) {
+      notify('error', `Reclaim failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
   const triggerSweep = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -323,6 +340,13 @@ export default function ContactsPage() {
               {cleanupBusy ? 'Scanning…' : '🧹 Smart cleanup'}
             </button>
             <button
+              onClick={() => setReclaimFlow({ typed: '' })}
+              style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(167,139,250,0.45)', color: '#c4b5fd' }}
+              title="Take ownership of every contact you can see so you can change their scope (Normal/Public/Private). Non-destructive — only repoints user_id."
+            >
+              👤 Reclaim ownership
+            </button>
+            <button
               onClick={() => setResetFlow({ typed: '' })}
               style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(220,38,38,0.4)', color: '#fca5a5' }}
               title="Delete ALL your contacts and re-discover them from feed. Destructive."
@@ -331,6 +355,73 @@ export default function ContactsPage() {
             </button>
           </div>
         </div>
+
+        {/* Reclaim ownership panel — non-destructive, types login email */}
+        {reclaimFlow && (
+          <div style={{
+            marginTop: 12, padding: '14px 16px',
+            background: 'rgba(167,139,250,0.08)',
+            border: '1px solid rgba(167,139,250,0.35)',
+            borderRadius: 8, color: 'var(--text)', fontSize: 13, lineHeight: 1.5,
+          }}>
+            <div style={{ marginBottom: 6, fontWeight: 600 }}>
+              Take ownership of every visible contact?
+            </div>
+            <div style={{ marginBottom: 8, color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
+              Repoints every contact row in your tenant that you can see to your account
+              so you get the Normal / Public / Private chips on every row. Doesn't delete,
+              doesn't change scope, doesn't re-discover. Safe to repeat.
+            </div>
+            <div style={{ marginBottom: 6 }}>
+              Type your login email <strong>{user?.email}</strong> to confirm:
+            </div>
+            <input
+              type="text"
+              value={reclaimFlow.typed}
+              onChange={(ev) => setReclaimFlow({ ...reclaimFlow, typed: ev.target.value })}
+              autoFocus
+              placeholder={user?.email}
+              style={{
+                width: '100%', padding: '6px 8px',
+                background: 'var(--bg-1, #0d1117)',
+                border: '1px solid var(--border, #28323e)',
+                borderRadius: 4, color: 'var(--text, #e6e8eb)', fontSize: 13,
+              }}
+            />
+            <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                disabled={reclaimFlow.typed.trim().toLowerCase() !== String(user?.email ?? '').toLowerCase()}
+                onClick={async () => {
+                  const ok = reclaimFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase();
+                  if (!ok) return;
+                  await onReclaimOwnership(reclaimFlow.typed.trim());
+                  setReclaimFlow(null);
+                }}
+                style={{
+                  padding: '6px 12px', background: '#a78bfa', color: '#1a1a2e',
+                  border: 0, borderRadius: 4, fontSize: 13, fontWeight: 600,
+                  cursor: reclaimFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 'pointer' : 'not-allowed',
+                  opacity: reclaimFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 1 : 0.4,
+                }}
+              >
+                Reclaim ownership
+              </button>
+              <button
+                type="button"
+                onClick={() => setReclaimFlow(null)}
+                style={{
+                  padding: '6px 12px', background: 'transparent',
+                  color: 'var(--text-muted, #98a0a8)',
+                  border: '1px solid var(--border, #28323e)',
+                  borderRadius: 4, fontSize: 13, cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Reset & rebuild confirmation panel — destructive, types login email */}
         {resetFlow && (

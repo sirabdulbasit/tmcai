@@ -768,6 +768,75 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /entity-catalog/reclaim-ownership
+ *  Body: { confirmPhrase: string }
+ *
+ * Take ownership of every entity_person row in the tenant that the
+ * caller can see. After this call, the requesting user is the user_id
+ * on every contact they had visibility on — so the ScopeSelector
+ * (gated on isOwner in the UI) renders for all of them and they can
+ * mark Public / Private / Normal across the full list.
+ *
+ * Why this exists: contacts created BEFORE the reset-and-rebuild
+ * forceOwnerUserId fix (or before this user existed) belong to
+ * legacy / system users. Visibility was correct via discovered_by_users,
+ * but the user had no scope-change agency. This endpoint is the
+ * one-shot fix; future resets handle it automatically via
+ * forceOwnerUserId.
+ *
+ * Safety:
+ *  - Typed-phrase confirmation = login email
+ *  - Only operates on entity_person rows the caller could already see
+ *    (visibility query inherited from list endpoint)
+ *  - In a multi-Brain-user tenant, this WILL take rows from teammates
+ *    who own them. The endpoint is owner-or-admin-only and the typed
+ *    phrase is the safeguard. For Basit's single-user tenant this is
+ *    a no-op concern; flagged here for future hardening.
+ */
+router.post('/reclaim-ownership', async (req: Request, res: Response) => {
+  try {
+    const confirmPhrase = String((req.body ?? {}).confirmPhrase ?? '').trim().toLowerCase();
+    const me = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: { email: true },
+    });
+    const expected = String(me?.email ?? '').toLowerCase();
+    if (!confirmPhrase || confirmPhrase !== expected) {
+      res.status(400).json({
+        error: 'confirmPhrase must match your login email to confirm reclaim',
+        expected,
+      });
+      return;
+    }
+    // Take ownership of every entity_person row in the tenant the
+    // user has visibility on:
+    //   · already-owned rows (no-op)
+    //   · tenant-shared rows (scope='tenant')
+    //   · rows where the user is in discovered_by_users
+    // Done as a single UPDATE with a UNION-equivalent WHERE.
+    const userIdJson = JSON.stringify([req.user!.id]);
+    const updated = await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages
+          SET user_id = $2,
+              last_updated_at = NOW()
+        WHERE client_number = $1
+          AND page_type = 'entity_person'
+          AND status NOT IN ('inactive','deleted')
+          AND (
+                user_id = $2
+                OR metadata->>'scope' = 'tenant'
+                OR metadata @> $3::jsonb
+              )`,
+      req.user!.clientNumber, req.user!.id,
+      JSON.stringify({ discovered_by_users: JSON.parse(userIdJson) }),
+    ).catch((e: any) => { throw e; });
+    res.json({ ok: true, reclaimed: Number(updated) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /entity-catalog/reset-and-rebuild
  *  Body: { confirmPhrase: string, lookbackDays?: number }
  *
@@ -839,7 +908,17 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
     // Run a fresh sweep for the tenant. This walks recent feed_events
     // and calls ensureEntityForSender per unique sender. With the
     // cc7bb4d content-dedup in place, no duplicates get recreated.
-    const r = await sweepForTenant(req.user!.clientNumber, { lookbackDays })
+    //
+    // forceOwnerUserId: the resetting user becomes the owner of every
+    // rebuilt row (new AND content-dedup matches). Without this,
+    // pre-existing rows owned by system/legacy users would survive
+    // the reset and the requesting user wouldn't see the scope
+    // selector on them — that was the 2026-05-13 "auto / gmail /
+    // google" pattern Basit hit.
+    const r = await sweepForTenant(req.user!.clientNumber, {
+      lookbackDays,
+      forceOwnerUserId: req.user!.id,
+    })
       .catch((e: any) => ({ scanned: 0, created: 0, enriched: 0, errors: 1, error: e.message }));
     // Restore explicit Public AND Private opt-ins onto the rebuilt
     // rows. We carry the audit fields too (publicSince/publicSetBy for

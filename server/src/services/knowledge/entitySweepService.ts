@@ -163,6 +163,13 @@ export async function ensureEntityForSender(input: {
    *  outlook, slack, etc.). Tracked in metadata.channels[] so the UI
    *  can show "this contact came from gmail + whatsapp". */
   sourceType?: string | null;
+  /** Multiple channels aggregated upstream (e.g. sweepForTenant
+   *  groups by sender and collects array_agg(DISTINCT source_type)).
+   *  When passed, channels is the union of `channels` + sourceType.
+   *  Lets a single ensureEntityForSender call seed the row with the
+   *  full channel list instead of falling back to "Auto" because
+   *  the sweep didn't pass sourceType. */
+  channels?: string[];
   /** Manual / google_import / microsoft_import bypass the junk filter.
    *  Default unset = ingest path = filter applies. */
   importSource?: string;
@@ -294,14 +301,25 @@ export async function ensureEntityForSender(input: {
       ? (meta.discovered_by_users as number[])
       : [];
 
-    const newChannel = input.sourceType && !channels.includes(input.sourceType);
+    // Build the incoming-channels set: union of explicit channels[]
+    // (when sweep aggregated multiple sources for one sender) and the
+    // single sourceType (when called from a per-event ingest path).
+    const incomingChannels = new Set<string>();
+    if (Array.isArray(input.channels)) {
+      for (const c of input.channels) if (c) incomingChannels.add(c);
+    }
+    if (input.sourceType) incomingChannels.add(input.sourceType);
+    const channelsToAdd: string[] = [];
+    for (const c of incomingChannels) if (!channels.includes(c)) channelsToAdd.push(c);
+
+    const newChannel = channelsToAdd.length > 0;
     const newDiscoverer = !discoveredBy.includes(input.userId);
     const fillEmail = email && !meta.email;
     const fillPhone = phone && !meta.phone;
 
     if (newChannel || newDiscoverer || fillEmail || fillPhone) {
       const next: Record<string, unknown> = { ...meta };
-      if (newChannel) next.channels = [...channels, input.sourceType!];
+      if (newChannel) next.channels = [...channels, ...channelsToAdd];
       if (newDiscoverer) next.discovered_by_users = [...discoveredBy, input.userId];
       if (fillEmail) next.email = email;
       if (fillPhone) next.phone = phone;
@@ -332,7 +350,15 @@ export async function ensureEntityForSender(input: {
       scope,
       email: email || null,
       phone: phone || null,
-      channels: input.sourceType ? [input.sourceType] : [],
+      // Union: explicit channels[] (from sweep's array_agg) plus the
+      // single sourceType when present. Falls back to [] only when
+      // neither is provided.
+      channels: (() => {
+        const set = new Set<string>();
+        if (Array.isArray(input.channels)) for (const c of input.channels) if (c) set.add(c);
+        if (input.sourceType) set.add(input.sourceType);
+        return Array.from(set);
+      })(),
       // Multi-user visibility: the discovering user is the first member
       // of this set. Subsequent ingest hooks for other users append.
       discovered_by_users: [input.userId],
@@ -350,16 +376,33 @@ export async function ensureEntityForSender(input: {
  */
 export async function sweepForTenant(
   clientNumber: string,
-  opts: { lookbackDays?: number } = {},
+  opts: {
+    lookbackDays?: number;
+    /** When set, every contact created or updated by this sweep is
+     *  assigned (or kept assigned, on dedup) to this user_id —
+     *  overrides the default MIN(user_id) ownership rule. Used by
+     *  /entity-catalog/reset-and-rebuild so the resetting user owns
+     *  every rebuilt row (otherwise pre-existing rows keep their
+     *  legacy / system-user ownership and the requesting user gets
+     *  no scope-selector control over them). */
+    forceOwnerUserId?: number;
+  } = {},
 ): Promise<{ scanned: number; created: number; enriched: number; errors: number }> {
   const lookback = opts.lookbackDays ?? 30;
   const result = { scanned: 0, created: 0, enriched: 0, errors: 0 };
 
+  // Aggregate per sender: pick the lowest user_id as the default owner
+  // (the "first discoverer"), plus collect the DISTINCT source_type
+  // values so rebuilt rows know which channels surfaced them. Without
+  // the array_agg the sweep-created rows fall back to "Auto" in the
+  // UI — the channel field was empty because sweep didn't pass
+  // sourceType to ensureEntityForSender.
   const senders = await prisma.$queryRawUnsafe<any[]>(
     `SELECT sender_email,
             MAX(sender_name) AS sender_name,
             MAX(sender_phone) AS sender_phone,
             MIN(user_id) AS first_user_id,
+            array_agg(DISTINCT source_type) FILTER (WHERE source_type IS NOT NULL) AS channels,
             COUNT(*)::int AS event_count,
             MAX(created_at) AS last_seen
        FROM feed_events
@@ -375,15 +418,35 @@ export async function sweepForTenant(
   for (const s of senders) {
     result.scanned += 1;
     try {
+      const ownerUserId = opts.forceOwnerUserId ?? Number(s.first_user_id);
+      const channels: string[] = Array.isArray(s.channels)
+        ? (s.channels as string[]).filter(Boolean)
+        : [];
       const ensured = await ensureEntityForSender({
         clientNumber,
-        userId: Number(s.first_user_id),
+        userId: ownerUserId,
         senderEmail: s.sender_email,
         senderName: s.sender_name,
         senderPhone: s.sender_phone,
+        channels,
       });
       if (!ensured) continue;
       if (ensured.created) result.created += 1;
+      // When forceOwnerUserId is set AND the row already existed
+      // (content-dedup hit), the existing row's user_id stays. Repoint
+      // it so the resetting user actually owns it — that's the whole
+      // point of forceOwnerUserId. Only repoint rows in this tenant.
+      if (opts.forceOwnerUserId && !ensured.created) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE wiki_pages
+              SET user_id = $1,
+                  last_updated_at = NOW()
+            WHERE id = $2
+              AND client_number = $3
+              AND page_type = 'entity_person'`,
+          opts.forceOwnerUserId, ensured.id, clientNumber,
+        ).catch(() => {});
+      }
       const enriched = await enrichEntityPage(clientNumber, ensured.id);
       if (enriched) result.enriched += 1;
     } catch (err: any) {
