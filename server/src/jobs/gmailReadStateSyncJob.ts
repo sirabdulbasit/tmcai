@@ -66,6 +66,19 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
     return { userId, clientNumber, scanned: 0, updated: 0, errors: 1 };
   }
 
+  // MD's own email — used below to identify outbound feed_events for
+  // the per-thread userRepliedThread timestamp check. Prefer
+  // integrationEmail (the email Gmail is connected as) over user.email,
+  // since some users have a different login email than mailbox.
+  const userRow = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, integrationEmail: true },
+  });
+  const mdEmail = (userRow?.integrationEmail || userRow?.email || '').toLowerCase();
+  if (!mdEmail) {
+    return { userId, clientNumber, scanned: 0, updated: 0, errors: 1 };
+  }
+
   const { google } = await import('googleapis');
   const gmail = google.gmail({ version: 'v1', auth: client });
 
@@ -89,29 +102,44 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
     if (!pageToken) break;
   }
 
-  // Pull threadIds where the user has SENT at least one message in the
-  // last 30 days. This is the "have I replied on this conversation?"
-  // signal regardless of how the reply was sent (Brain draft, Gmail
-  // compose, mobile app, anywhere). The list response already includes
-  // threadId per row — no per-message fetch needed.
-  // Without this, threads the user replied to directly in Gmail kept
-  // surfacing on My Attention because Brain's internal decision_log
-  // had no record of those replies.
-  const repliedThreadSet = new Set<string>();
-  pageToken = undefined;
-  for (let page = 0; page < 4; page++) {  // up to 4 pages = 2000 sent
-    const res: any = await gmail.users.messages.list({
-      userId: 'me',
-      q: 'in:sent newer_than:30d',
-      maxResults: 500,
-      pageToken,
-    } as any).catch(() => null);
-    if (!res || !res.data) break;
-    for (const m of res.data.messages ?? []) {
-      if (m.threadId) repliedThreadSet.add(m.threadId);
-    }
-    pageToken = res.data.nextPageToken;
-    if (!pageToken) break;
+  // Build a map of (threadId → timestamp of MD's LATEST sent message).
+  // Per MD 2026-05-13: previously this was just a Set<threadId>, which
+  // meant once MD replied to a thread, every later message in that
+  // thread got silently filtered as "you-replied" even if N people had
+  // replied AFTER MD. Concrete failure:
+  //   May 11 19:24  basit.ahmed@      (MD replied)
+  //   May 13 11:31  umair@            (new — needs MD's eyes)
+  //   May 13 12:02  quddus.mohiuddin@ (new — needs MD's eyes)
+  // The Quddus + Umair messages were correctly ingested but
+  // suppressed because the set-only check marked the whole thread as
+  // "user replied" forever. The fix: track MD's latest sent time per
+  // thread and only set userRepliedThread=true when MD's reply is
+  // newer than the message we're evaluating.
+  //
+  // We use feed_events as the source of truth (MD's outbound is
+  // ingested with internalDate via the Gmail sync). Cheaper and more
+  // accurate than per-message Gmail API fetches.
+  const mdSentRows = await prisma.$queryRawUnsafe<Array<{ thread_id: string | null; latest_ms: string }>>(
+    `SELECT raw_payload->>'threadId' AS thread_id,
+            MAX(COALESCE(
+              (raw_payload->>'internalDate')::bigint,
+              EXTRACT(EPOCH FROM (raw_payload->>'date')::timestamptz)::bigint * 1000,
+              EXTRACT(EPOCH FROM created_at)::bigint * 1000
+            )) AS latest_ms
+       FROM feed_events
+      WHERE source_type = 'gmail'
+        AND user_id = $1
+        AND client_number = $2
+        AND sender_email = $3
+        AND created_at >= NOW() - interval '30 days'
+        AND raw_payload->>'threadId' IS NOT NULL
+      GROUP BY raw_payload->>'threadId'`,
+    userId, clientNumber, mdEmail,
+  ).catch(() => [] as Array<{ thread_id: string | null; latest_ms: string }>);
+
+  const mdLatestPerThread = new Map<string, number>();
+  for (const r of mdSentRows) {
+    if (r.thread_id) mdLatestPerThread.set(r.thread_id, Number(r.latest_ms));
   }
 
   // Fetch this user's gmail feed_events from the last 30 days.
@@ -122,7 +150,7 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
       sourceType: 'gmail',
       createdAt: { gte: thirtyDaysAgo },
     } as any,
-    select: { id: true, sourceId: true, rawPayload: true },
+    select: { id: true, sourceId: true, rawPayload: true, createdAt: true },
   });
 
   let updated = 0;
@@ -130,7 +158,32 @@ async function syncForUser(userId: number, clientNumber: string): Promise<ReadSt
     const cur: any = ev.rawPayload ?? {};
     const nowUnread = unreadSet.has(ev.sourceId);
     const tid = cur?.threadId as string | undefined;
-    const nowReplied = !!(tid && repliedThreadSet.has(tid));
+
+    // userRepliedThread is true ONLY when MD's latest reply in this
+    // thread is newer than (or equal to) this specific event's time.
+    // If a colleague has replied AFTER MD's last message, this event
+    // is part of unanswered activity and must surface.
+    let nowReplied = false;
+    if (tid) {
+      const mdLatest = mdLatestPerThread.get(tid);
+      if (mdLatest !== undefined) {
+        // This event's timestamp — prefer internalDate, fall back to date header, then created_at.
+        let evMs: number = 0;
+        const intDate = cur?.internalDate;
+        if (intDate && !Number.isNaN(Number(intDate))) {
+          evMs = Number(intDate);
+        } else if (cur?.date) {
+          const parsed = Date.parse(String(cur.date));
+          if (!Number.isNaN(parsed)) evMs = parsed;
+        }
+        if (evMs === 0) evMs = ev.createdAt.getTime();
+        // If MD's latest reply is at or after this event's time, MD has
+        // already responded to this (or later) — suppress. Otherwise
+        // this is new activity for MD to see.
+        nowReplied = mdLatest >= evMs;
+      }
+    }
+
     // Skip if both states already match (avoid pointless writes).
     if (cur.isUnread === nowUnread && cur.userRepliedThread === nowReplied) continue;
     try {
