@@ -248,6 +248,15 @@ router.patch('/:id/publish', async (req: Request, res: Response) => {
       res.status(403).json({ error: 'only the contact owner or a tenant admin can publish' }); return;
     }
     const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
+    // 2026-05-13 rule: phone-only contacts cannot become Public.
+    // Mirrors the guard in PATCH /:id/scope.
+    const hasEmail = typeof meta.email === 'string' && (meta.email as string).trim() !== '';
+    if (!hasEmail) {
+      res.status(400).json({
+        error: 'WhatsApp / phone-only contacts cannot be made Public. Add an email identifier first.',
+      });
+      return;
+    }
     const next = {
       ...meta,
       scope: 'tenant',
@@ -343,6 +352,18 @@ router.patch('/:id/scope', async (req: Request, res: Response) => {
       res.status(403).json({ error: 'only the contact owner or a tenant admin can change scope' }); return;
     }
     const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
+    // 2026-05-13 rule: WhatsApp-only contacts (phone, no email) cannot
+    // be made Public. A phone number is a personal identifier; sharing
+    // it across the tenant doesn't have the same legitimacy as sharing
+    // a work email. Private is still allowed — Brain-mute applies
+    // regardless of channel. Normal is also fine.
+    const hasEmail = typeof meta.email === 'string' && (meta.email as string).trim() !== '';
+    if (requested === 'tenant' && !hasEmail) {
+      res.status(400).json({
+        error: 'WhatsApp / phone-only contacts cannot be made Public. Add an email identifier first, or keep it Normal/Private.',
+      });
+      return;
+    }
     const next: Record<string, unknown> = { ...meta, scope: requested };
     const nowIso = new Date().toISOString();
     if (requested === 'tenant') {

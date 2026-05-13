@@ -925,9 +925,12 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                   {/* Three-state scope selector — owner-only.
                       Normal (default) | Public (tenant) | Private (Brain-mute).
                       Per 2026-05-13 contacts-visibility-is-user-decided
-                      rule, only the owner can change scope. */}
+                      rule, only the owner can change scope.
+                      hasEmail gate: phone-only (WhatsApp) contacts
+                      can't be made Public — the Public chip is hidden
+                      and the row only shows Normal | Private. */}
                   {e.isOwner && (
-                    <ScopeSelector id={e.id} scope={scope} />
+                    <ScopeSelector id={e.id} scope={scope} hasEmail={!!e.email} />
                   )}
                   {/* Unlink — only visible on linked rows; lets the
                       user split a wrongly-merged identifier back out
@@ -1146,7 +1149,7 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
  * is the ONLY surface that changes a contact's scope. Brain never
  * auto-calls /scope.
  */
-function ScopeSelector({ id, scope }) {
+function ScopeSelector({ id, scope, hasEmail }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const set = async (next) => {
@@ -1199,7 +1202,10 @@ function ScopeSelector({ id, scope }) {
       <span style={{ display: 'inline-flex', gap: 4 }}>
         {opt('normal',  'Normal',     '#b8c4cf', 'rgba(184,196,207,0.14)',
           'Normal — default. Only you see this contact. Brain processes interactions.')}
-        {opt('tenant',  '🌐 Public',  '#4fa9ff', 'rgba(79,169,255,0.12)',
+        {/* Public is only meaningful for email-identified contacts.
+            Phone-only (WhatsApp) rows can't be shared as tenant
+            contacts — a phone number is personal, not directory-grade. */}
+        {hasEmail && opt('tenant',  '🌐 Public',  '#4fa9ff', 'rgba(79,169,255,0.12)',
           'Make this contact visible to every user in your tenant. Brain on.')}
         {opt('private', '🔇 Private', '#c084fc', 'rgba(192,132,252,0.14)',
           'Mute Brain on this contact — out of My Attention, no WhatsApp brain processing, no Day Brief surfacing.')}
