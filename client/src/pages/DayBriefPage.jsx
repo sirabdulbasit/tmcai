@@ -592,11 +592,11 @@ export default function DayBriefPage() {
   const [handledByBucket, setHandledByBucket] = useState(cached?.handledByBucket ?? {});
   const [openItems, setOpenItems] = useState(cached?.openItems ?? []);
   const [promotions, setPromotions] = useState(cached?.promotions ?? []);
-  const [patterns, setPatterns] = useState(cached?.patterns ?? []);
+  // patterns/cognitive state removed 2026-05-14 — sections killed per
+  // user (auto-archive-suggestion-for-own-domain + frequency-spike noise).
   const [drafts, setDrafts] = useState(cached?.drafts ?? []);
   const [gaps, setGaps] = useState(cached?.gaps ?? null);
-  // Brain Cognitive Engine output — mind state + surfaced observations.
-  const [cognitive, setCognitive] = useState(cached?.cognitive ?? { mindState: null, observations: [] });
+  // cognitive state removed 2026-05-14 — see comment above on patterns.
   // If cache is hit, skip the full-screen "Brain is reading..." indicator —
   // the user is looking at real data and the refresh happens silently.
   const [loading, setLoading] = useState(!cached);
@@ -661,8 +661,6 @@ export default function DayBriefPage() {
           setVolume(brief.volume ?? null);
           setOpenItems(brief.topOpenItems ?? []);
           setPromotions(brief.rulePromotions ?? []);
-          // Only fall back to brief.patterns if /brief/insights didn't have any.
-          setPatterns((cur) => (cur && cur.length > 0 ? cur : (brief.patterns ?? [])));
         }
       })
       .finally(() => setBriefLoading(false));
@@ -681,13 +679,18 @@ export default function DayBriefPage() {
       // 02:08→02:09 was exactly this. Better to wait the real time
       // with a continuous loading indicator than fake an early
       // resolution.
-      const [atten, brain, ds, ins, gap, cog, hndl, connHealth] = await Promise.all([
+      // /brief/insights and /brief/cognitive removed from Day Brief
+      // 2026-05-14 per user — both were pattern-counting surfaces
+      // ("Brain is noticing", "Noticed overnight") that suggested
+      // hardcoded-threshold automations including auto-archive rules
+      // for the user's OWN COMPANY DOMAIN. Violated act-like-a-brain
+      // -not-a-program + the user-only exclusion rule. Server
+      // endpoints still exist; just not consumed by Day Brief.
+      const [atten, brain, ds, gap, hndl, connHealth] = await Promise.all([
         api.get('/brief/attention?limit=200').then((r) => r.data.items ?? []).catch(() => []),
         api.get('/brief/brain-actions').then((r) => r.data.actions ?? []).catch(() => []),
         api.get('/brief/drafts').then((r) => r.data.drafts ?? []).catch(() => []),
-        api.get('/brief/insights').then((r) => r.data.insights ?? []).catch(() => []),
         api.get('/brief/connector-gaps').then((r) => r.data).catch(() => null),
-        api.get('/brief/cognitive').then((r) => r.data ?? { mindState: null, observations: [] }).catch(() => ({ mindState: null, observations: [] })),
         api.get('/brief/handled?limit=100').then((r) => ({ items: r.data.items ?? [], byBucket: r.data.byBucket ?? {} })).catch(() => ({ items: [], byBucket: {} })),
         api.get('/brief/connector-health').then((r) => r.data ?? { healthy: 0, unhealthy: [] }).catch(() => ({ healthy: 0, unhealthy: [] })),
       ]);
@@ -696,8 +699,6 @@ export default function DayBriefPage() {
       setBrainActions(brain);
       setDrafts(ds);
       setGaps(gap);
-      setCognitive(cog);
-      setPatterns(ins);
       setHandled(hndl.items);
       setHandledByBucket(hndl.byBucket);
       // Write to module cache so navigation back to Day Brief is
@@ -711,8 +712,8 @@ export default function DayBriefPage() {
           dayBriefCache.set(user.id, {
             volume, attention: atten, brainActions: brain,
             handled: hndl.items, handledByBucket: hndl.byBucket,
-            openItems, promotions, patterns: ins, drafts: ds,
-            gaps: gap, cognitive: cog,
+            openItems, promotions, drafts: ds,
+            gaps: gap,
           });
         }, 0);
       }
@@ -1457,34 +1458,23 @@ export default function DayBriefPage() {
         </Section>
       )}
 
-      {/* Brain's running mind + observations */}
-      <BrainCognitiveSection cognitive={cognitive} onRerun={load} notify={notify} />
+      {/* "Brain is noticing" section removed 2026-05-14 per user — it was
+          pattern-counting theater: frequency-shift cards with no action
+          recommendation, occasionally showing the user's own activity
+          spike, triggered by hardcoded 2x-ratio thresholds (violated the
+          act-like-a-brain-not-a-program rule). The data layer
+          (brainCognitiveEngine, /brief/cognitive endpoint) remains in
+          place but is no longer rendered on Day Brief. Removing the
+          render also stops the per-load fetch for this data. */}
 
-      {/* "Noticed overnight" — patterns Brain spotted */}
-      {patterns.length > 0 && (
-        <Section
-          id="noticed-overnight"
-          title="Noticed overnight"
-          sub="Patterns you might want to act on"
-          icon="trending-up"
-          help={(
-            <div>
-              <strong>What this is.</strong> Patterns Brain spotted across your feed since yesterday — recurring senders, topics gaining momentum, anomalies (e.g. "Faisal usually replies in 4h, hasn't in 36").<br /><br />
-              <strong>How it works.</strong> The pattern-analysis job (weekly) and Brain Cognitive Engine surface candidate observations. They don't auto-act; they're prompts for you to consider.<br /><br />
-              <strong>How it helps.</strong> Forward-looking awareness. Insights you don't act on quietly fade; ones you click on become signal Brain uses to prioritise future surfaces.<br /><br />
-              <strong>Make it more useful for you:</strong>
-              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                <li><em>Click on insights you find useful</em> — Brain raises that pattern's priority next time.</li>
-                <li><em>Dismiss noise</em> — Brain stops surfacing similar observations.</li>
-                <li><em>Add a standing instruction</em> for any insight you want to formalise into a rule (e.g. "alert me on Faisal silence &gt; 24h").</li>
-                <li><strong>Example:</strong> Insight: <em>"3 emails about pricing this week, all unanswered."</em> Click → opens the cluster of items. Add a standing instruction "Alert me on any pricing email" so Brain flags them critical from now on.</li>
-              </ul>
-            </div>
-          )}
-        >
-          {patterns.map((p, i) => <InsightCard key={p.id ?? i} insight={p} onAction={load} />)}
-        </Section>
-      )}
+      {/* "Noticed overnight" section removed 2026-05-14 per user — it was
+          surfacing cards like "You've ignored 3 emails from tmcltd.com this
+          week. Want a rule to auto-archive them?" — recommending automated
+          exclusion of the user's OWN COMPANY DOMAIN based on a hardcoded
+          3-emails-ignored threshold. Directly contradicts the user-only
+          exclusion rule (feedback_exclusion_list_user_only.md) and the
+          act-like-a-brain-not-a-program rule. Server /brief/insights
+          remains in place but is no longer rendered. */}
 
       {/* ═══════════════════════════════════════════════════════════
           ZONE 3 — SETUP & REFLECTION  (less-frequent)
