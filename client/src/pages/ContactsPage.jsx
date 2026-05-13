@@ -735,28 +735,25 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                   title={e.title}
                   bold={isPublic && e.stars >= 4}
                 />
-                {isPublic ? (
+                {isPublic && (
                   <span
                     style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
                     title="Public — visible to every user in your tenant. Brain on."
                   >
                     🌐 Public
                   </span>
-                ) : isMuted ? (
+                )}
+                {isMuted && (
                   <span
                     style={pillStyle('#c084fc', 'rgba(192,132,252,0.14)')}
                     title="Private — Brain ignores this contact entirely. Out of My Attention, no WhatsApp brain, no Day Brief, no Open Items."
                   >
                     🔇 Private
                   </span>
-                ) : (
-                  <span
-                    style={pillStyle('#9b9b9b', 'rgba(155,155,155,0.10)')}
-                    title="Normal (default) — only you can see this contact. Brain processes interactions normally."
-                  >
-                    Normal
-                  </span>
                 )}
+                {/* Normal is the unmarked default — no pill. The
+                    ScopeSelector chips on the right edge of the row
+                    still convey the current state for owned rows. */}
                 {/* Linked-group pill — shown when this row is part of a
                     multi-identifier person (work email + personal email
                     + phone all linked under one linkedPersonId). */}
