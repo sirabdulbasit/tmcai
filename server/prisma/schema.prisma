@@ -1817,3 +1817,37 @@ model RuleLifecycle {
   @@index([clientNumber, state])
   @@map("rule_lifecycle")
 }
+
+// ─── WhatsApp Outbound Messages ─────────────────────────────────
+// Per MD 2026-05-12: thread modal showed only inbound messages
+// because we drop fromMe=true at ingest (UserWebjsProvider:557).
+// Result: every WA conversation looked one-sided. This table
+// captures MD's outbound message bodies so the thread modal can
+// render both sides AND the sender wiki can track relationship
+// strength based on both directions.
+//
+// Storage shape:
+//   - userId-scoped (each user's outbound is private to them)
+//   - chatId = the destination jid (e.g. 923xxxx@c.us or @lid)
+//   - waMessageId unique per user (dedup retries / reingest)
+//   - bodyText capped at 4000 chars (TEXT column; cap enforced at write)
+//   - sentAt = the WhatsApp-side timestamp, not our insert time
+//
+// Retention is currently unbounded — these aren't high-volume rows
+// (one per MD outbound). A cleanup script can be added if size
+// becomes an issue. Personal-contacts mark-personal scrubs this
+// table for that sender alongside feed_events.
+model WhatsAppOutboundMessage {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  chatId       String    @map("chat_id") @db.VarChar(150)
+  waMessageId  String?   @map("wa_message_id") @db.VarChar(150)
+  bodyText     String    @map("body_text") @db.Text
+  sentAt       DateTime  @map("sent_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, waMessageId])
+  @@index([clientNumber, userId, chatId, sentAt])
+  @@map("whatsapp_outbound_messages")
+}

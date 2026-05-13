@@ -558,35 +558,74 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       const ownWid: string = client.info?.wid?._serialized || '';
       const isSelfChat = !!ownWid && message.from === ownWid;
       if (message.fromMe && !isSelfChat) {
-        // Record outbound in Redis. Two records:
-        //   wa_outbound:{userId}:{chatId}      → latest outbound timestamp
-        //     (used by triage's user-replied filter — already in use)
-        //   wa_outbound_log:{userId}:{chatId}  → LIST of last 50 outbound
-        //     messages with timestamp + body. Used by the thread modal so
-        //     MD can see BOTH sides of a conversation even when webjs is
-        //     broken on @lid chats (the modal's existing fetchThreadContext
-        //     path is unreliable; Redis is the deterministic backup).
+        // Record outbound in TWO places:
+        //   1. Redis marker — fast read for triage's user-replied filter
+        //      (already in use)
+        //   2. Postgres whatsapp_outbound_messages — permanent storage so
+        //      the thread modal can show both sides of every conversation,
+        //      and so the sender wiki can count interactions in BOTH
+        //      directions (relationship strength previously only reflected
+        //      inbound).
         //
-        // Body is capped at 1KB per message and the list at 50 entries —
-        // bounded storage even for chatty conversations. 7-day TTL matches
-        // the marker so cleanup is automatic.
+        // The old Redis log (wa_outbound_log) is kept as a fast cache for
+        // the thread modal — Postgres is authoritative, Redis is for
+        // recently-active chats.
+        const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
+        const destChatId = message.to || rawFrom;
+        const body = String(message.body ?? '').slice(0, 4000);
+        const waMsgId = (message.id as any)?._serialized || (message.id as any)?.id || `${destChatId}:${ts}`;
+
+        // (1) Redis — fast path
         try {
-          const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
-          const destChatId = message.to || rawFrom;
           const { getRedis } = await import('../../utils/redisClient');
           const redis = getRedis();
           if (redis && destChatId) {
             const markerKey = `wa_outbound:${userId}:${destChatId}`;
             const logKey = `wa_outbound_log:${userId}:${destChatId}`;
-            const body = String(message.body ?? '').slice(0, 1024);
             await redis.set(markerKey, String(ts), 'EX', 7 * 24 * 60 * 60);
-            // LPUSH (newest at head), LTRIM to last 50, refresh TTL.
-            await redis.lpush(logKey, JSON.stringify({ ts, body }));
+            await redis.lpush(logKey, JSON.stringify({ ts, body: body.slice(0, 1024) }));
             await redis.ltrim(logKey, 0, 49);
             await redis.expire(logKey, 7 * 24 * 60 * 60);
           }
         } catch (e: any) {
-          log.warn('outbound write failed', { userId, error: e.message });
+          log.warn('outbound redis write failed', { userId, error: e.message });
+        }
+
+        // (2) Postgres — permanent
+        if (destChatId && body) {
+          try {
+            await prisma.whatsAppOutboundMessage.upsert({
+              where: { userId_waMessageId: { userId, waMessageId: waMsgId } } as any,
+              create: {
+                clientNumber, userId,
+                chatId: destChatId,
+                waMessageId: waMsgId,
+                bodyText: body,
+                sentAt: new Date(ts),
+              } as any,
+              update: {},  // idempotent — same waMessageId = same row
+            });
+          } catch (e: any) {
+            log.warn('outbound postgres write failed', { userId, error: e.message });
+          }
+
+          // (3) Sender wiki update — count this outbound in the
+          // relationship-strength signals so Brain's view of how often
+          // MD engages with this contact matches reality. Fire-and-forget;
+          // a failed wiki update shouldn't block the outbound write.
+          void (async () => {
+            try {
+              const { recordOutboundInteraction } = await import('../knowledge/senderWikiService');
+              await recordOutboundInteraction({
+                userId, clientNumber,
+                chatId: destChatId,
+                sentAt: new Date(ts),
+                body,
+              });
+            } catch (e: any) {
+              log.warn('sender wiki outbound update failed', { userId, error: e.message });
+            }
+          })();
         }
         return;
       }

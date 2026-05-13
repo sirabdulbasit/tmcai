@@ -327,6 +327,90 @@ export async function updateSenderWikiOnIngest(params: UpsertParams): Promise<vo
 }
 
 /**
+ * Record an outbound WhatsApp message (MD → contact) into the sender
+ * wiki so relationship-strength signals reflect both directions.
+ *
+ * Per MD 2026-05-12: "wiki should also be updated likewise" —
+ * previously sender wikis only tracked inbound, making Brain's view
+ * of relationships one-sided. Now: every outbound captured by
+ * UserWebjsProvider increments outboundInteractions on the sender's
+ * wiki page, updates lastSeenAt, and appends a "You: …" bullet to
+ * the recent list.
+ *
+ * Identifies the sender via phone-derived match. The chatId is
+ * `<digits>@c.us` or `<digits>@lid` — we extract the digit prefix
+ * and look up an existing sender_history page by that phone.
+ *
+ * Fire-and-forget — failures are logged but don't block the outbound
+ * write that called this.
+ */
+export async function recordOutboundInteraction(params: {
+  userId: number;
+  clientNumber: string;
+  chatId: string;
+  sentAt: Date;
+  body: string;
+}): Promise<void> {
+  const { userId, clientNumber, chatId, sentAt, body } = params;
+  const phoneDigits = (chatId.match(/^(\d+)/)?.[1] ?? '').trim();
+  if (!phoneDigits) return;
+
+  // The sender wiki page is keyed by phone (or email). For WA contacts
+  // it's the phone with '+' prefix. Match against both forms.
+  const phoneWithPlus = `+${phoneDigits}`;
+
+  const existing = await prisma.wikiPage.findFirst({
+    where: {
+      clientNumber, userId,
+      pageType: 'sender_history',
+      OR: [
+        { title: phoneWithPlus },
+        { title: phoneDigits },
+        { metadata: { path: ['senderPhone'], equals: phoneWithPlus } as any },
+        { metadata: { path: ['senderPhone'], equals: phoneDigits } as any },
+        { metadata: { path: ['phone'], equals: phoneWithPlus } as any },
+        { metadata: { path: ['phone'], equals: phoneDigits } as any },
+      ],
+    },
+    select: { id: true, metadata: true, bodyMarkdown: true },
+  }).catch(() => null);
+
+  if (!existing) {
+    // No inbound history yet — the contact hasn't messaged MD before
+    // (or the wiki hasn't been built yet for them). We don't create
+    // a sender_history page from outbound alone; the next inbound
+    // will create it via updateSenderWikiOnIngest. Outbound-only
+    // contacts (MD pinging someone first) get caught on their reply.
+    return;
+  }
+
+  const prevMeta: any = existing.metadata ?? {};
+  const outboundInteractions = (prevMeta.outboundInteractions ?? 0) + 1;
+  const totalInteractions = (prevMeta.totalInteractions ?? 0) + 1;
+  const lastSeenAt = sentAt.toISOString().slice(0, 16).replace('T', ' ');
+  const lastMdReplyAt = lastSeenAt;
+
+  const recent: string[] = Array.isArray(prevMeta.recent) ? prevMeta.recent : [];
+  recent.push(`- ${lastSeenAt} · You: ${body.slice(0, 120)}`);
+  const trimmedRecent = recent.slice(-15);
+
+  await prisma.wikiPage.update({
+    where: { id: existing.id },
+    data: {
+      metadata: {
+        ...prevMeta,
+        outboundInteractions,
+        totalInteractions,
+        lastSeenAt,
+        lastMdReplyAt,
+        recent: trimmedRecent,
+      } as any,
+      lastUpdatedAt: new Date(),
+    } as any,
+  }).catch(() => null);
+}
+
+/**
  * Pull the sender_history markdown body. Triage reads this instead of
  * recomputing 90 days of feed_events. Returns null if no page exists yet.
  */

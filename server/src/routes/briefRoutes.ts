@@ -778,21 +778,53 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
         };
       });
 
-      // Outbound messages — try TWO sources in order of reliability:
-      //   1. Redis log (wa_outbound_log) — populated by UserWebjsProvider
-      //      every time MD sends a WA message. Reliable, doesn't depend
-      //      on webjs being alive at view time. Last 50 messages, 7d TTL.
-      //   2. webjs fetchThreadContext — only works when the user-level
-      //      webjs client is alive AND the chat is in @c.us format (broken
-      //      on @lid chats per the May 12 diagnostic). Used as fallback
-      //      so older conversations (before the Redis log was deployed)
-      //      can still show outbound when webjs is alive.
+      // Outbound messages — three sources in order of authority:
+      //   1. Postgres whatsapp_outbound_messages — permanent storage,
+      //      captures every outbound MD has sent since 2026-05-13 deploy.
+      //      Authoritative.
+      //   2. Redis wa_outbound_log — fast cache; same data as Postgres
+      //      for recent chats (7d), used only if Postgres returned
+      //      nothing for some reason.
+      //   3. webjs fetchThreadContext — pulls live thread from
+      //      WhatsApp's local cache. Works for @c.us chats when webjs
+      //      is alive. Broken on @lid (whatsapp-web.js library bug).
+      //      When it works, it gives us HISTORICAL outbound that the
+      //      Postgres/Redis paths don't have (pre-deploy data).
       //
-      // Merge results, deduping by timestamp.
+      // On open, we ALSO opportunistically backfill: any outbound seen
+      // via webjs gets upserted to whatsapp_outbound_messages so the
+      // history is permanent from then on, regardless of webjs state.
+      //
+      // Merge + dedup by waMessageId or (ts within 1 second window).
       let outboundMsgs: any[] = [];
       const chatId = (event.rawPayload as any)?.chatId;
       if (chatId) {
-        // (1) Redis log
+        // (1) Postgres — authoritative
+        try {
+          const rows = await prisma.whatsAppOutboundMessage.findMany({
+            where: {
+              clientNumber: user.clientNumber,
+              userId: user.id,
+              chatId: String(chatId),
+            },
+            orderBy: { sentAt: 'asc' },
+            select: { bodyText: true, sentAt: true, waMessageId: true },
+            take: 100,
+          }).catch(() => [] as any[]);
+          for (const r of rows) {
+            outboundMsgs.push({
+              from: 'me' as const,
+              subject: '',
+              text: r.bodyText,
+              timestamp: r.sentAt.getTime(),
+              fromName: 'You',
+              _msgId: r.waMessageId,
+            });
+          }
+        } catch { /* try other sources */ }
+
+        // (2) Redis log — covers any outbound that hasn't been
+        // persisted yet (small race; useful if Postgres lookup failed).
         try {
           const { getRedis } = await import('../utils/redisClient');
           const redis = getRedis();
@@ -803,34 +835,62 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
               try {
                 const obj = JSON.parse(entry) as { ts: number; body: string };
                 if (typeof obj.ts === 'number' && obj.body) {
-                  outboundMsgs.push({
-                    from: 'me' as const,
-                    subject: '',
-                    text: obj.body,
-                    timestamp: obj.ts,
-                    fromName: 'You',
-                  });
+                  // Dedup by approximate timestamp (within 2s of an
+                  // existing message).
+                  const dup = outboundMsgs.some((m) => Math.abs(m.timestamp - obj.ts) < 2000);
+                  if (!dup) {
+                    outboundMsgs.push({
+                      from: 'me' as const,
+                      subject: '',
+                      text: obj.body,
+                      timestamp: obj.ts,
+                      fromName: 'You',
+                    });
+                  }
                 }
-              } catch { /* skip malformed entry */ }
+              } catch { /* skip malformed */ }
             }
           }
-        } catch { /* redis unavailable — try webjs */ }
+        } catch { /* try webjs */ }
 
-        // (2) webjs fallback (only if Redis returned nothing)
+        // (3) webjs backfill — only fires when we have ZERO outbound
+        // from the persistent sources. Tries to pull historical messages
+        // from WhatsApp's local cache. Best-effort, fails silently on
+        // @lid chats. Any messages it finds get persisted to Postgres
+        // so the next modal-open is fast.
         if (outboundMsgs.length === 0) {
           try {
             const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
             const turns = await fetchThreadContext(user.id, String(chatId), 50);
-            outboundMsgs = turns
-              .filter((t) => t.from === 'me')
-              .map((t) => ({
-                from: 'me' as const,
-                subject: '',
-                text: t.text,
-                timestamp: toMs(t.timestamp) ?? t.timestamp,
-                fromName: 'You',
-              }));
-          } catch { /* webjs broken too — inbound-only is still useful */ }
+            const meTurns = turns.filter((t) => t.from === 'me');
+            outboundMsgs = meTurns.map((t) => ({
+              from: 'me' as const,
+              subject: '',
+              text: t.text,
+              timestamp: toMs(t.timestamp) ?? t.timestamp,
+              fromName: 'You',
+            }));
+            // Persist for next time. Generate a synthetic msgId per turn
+            // (timestamp + content hash) so dedup on re-fetch works.
+            if (meTurns.length > 0) {
+              for (const t of meTurns) {
+                const ts = toMs(t.timestamp) ?? t.timestamp;
+                const syntheticId = `backfill:${chatId}:${ts}`;
+                await prisma.whatsAppOutboundMessage.upsert({
+                  where: { userId_waMessageId: { userId: user.id, waMessageId: syntheticId } } as any,
+                  create: {
+                    clientNumber: user.clientNumber,
+                    userId: user.id,
+                    chatId: String(chatId),
+                    waMessageId: syntheticId,
+                    bodyText: String(t.text).slice(0, 4000),
+                    sentAt: new Date(ts),
+                  } as any,
+                  update: {},
+                }).catch(() => null);
+              }
+            }
+          } catch { /* webjs broken — inbound-only is still useful */ }
         }
       }
 
