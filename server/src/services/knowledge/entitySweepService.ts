@@ -229,10 +229,48 @@ export async function ensureEntityForSender(input: {
   const normalized = normalizeContactName(input.senderName, email);
   const title = (normalized || phone || 'Unknown').slice(0, 280);
 
-  const existing = await prisma.wikiPage.findUnique({
+  // ── Dedup-by-content (per user 2026-05-13) ────────────────────────
+  // The existence check below used to be by deterministic id only.
+  // That missed legacy / cross-path duplicates: e.g. an admin "Add
+  // contact" flow created a CUID-id row with the same phone, and the
+  // WhatsApp ingest later created a person:phone:+xxx row instead of
+  // reusing the existing CUID one. Result: two wiki_pages, one
+  // person — the user has to manually link them after the fact.
+  //
+  // Now: search by content first. If a row already exists with the
+  // same email or normalized phone in metadata, return THAT row's id
+  // (whatever id format it has) instead of creating a new one. This
+  // makes ingest idempotent regardless of which path discovered the
+  // contact first or what id-generation rule was active at the time.
+  let existing = await prisma.wikiPage.findUnique({
     where: { id },
     select: { id: true, metadata: true, status: true },
   });
+  if (!existing) {
+    // Search by content fields. Cheaper than scanning whole table:
+    // limited to clientNumber + pageType + metadata path matches.
+    const phoneDigits = phone.replace(/[^\d]/g, '');
+    const candidates = await prisma.wikiPage.findMany({
+      where: {
+        clientNumber: input.clientNumber,
+        pageType: 'entity_person',
+        status: { not: 'deleted' as any },
+        OR: [
+          ...(email ? [{ metadata: { path: ['email'], equals: email } as any }] : []),
+          ...(phone ? [
+            { metadata: { path: ['phone'], equals: phone } as any },
+            { metadata: { path: ['phone'], equals: phoneDigits } as any },
+            { metadata: { path: ['phone'], equals: `+${phoneDigits}` } as any },
+          ] : []),
+        ],
+      },
+      select: { id: true, metadata: true, status: true },
+      take: 1,
+    }).catch(() => [] as Array<{ id: string; metadata: unknown; status: string | null }>);
+    if (candidates.length > 0) {
+      existing = candidates[0] as any;
+    }
+  }
   if (existing) {
     // Inactive rows are sticky — never resurrect via feed ingest. The
     // user explicitly marked this contact inactive; appending
@@ -246,6 +284,10 @@ export async function ensureEntityForSender(input: {
     //   · append the source channel (gmail/whatsapp/…) if new
     //   · add this user to discovered_by_users so they can see the
     //     contact in their own list (multi-user visibility)
+    //   · fill in missing email/phone if THIS ingest has one the
+    //     existing row doesn't (e.g. CUID row had only phone, now we
+    //     see the same person via email — update so future lookups
+    //     find by either identifier)
     const meta = meta0;
     const channels = Array.isArray(meta.channels) ? (meta.channels as string[]) : [];
     const discoveredBy = Array.isArray(meta.discovered_by_users)
@@ -254,17 +296,23 @@ export async function ensureEntityForSender(input: {
 
     const newChannel = input.sourceType && !channels.includes(input.sourceType);
     const newDiscoverer = !discoveredBy.includes(input.userId);
+    const fillEmail = email && !meta.email;
+    const fillPhone = phone && !meta.phone;
 
-    if (newChannel || newDiscoverer) {
+    if (newChannel || newDiscoverer || fillEmail || fillPhone) {
       const next: Record<string, unknown> = { ...meta };
       if (newChannel) next.channels = [...channels, input.sourceType!];
       if (newDiscoverer) next.discovered_by_users = [...discoveredBy, input.userId];
+      if (fillEmail) next.email = email;
+      if (fillPhone) next.phone = phone;
+      // Use the existing row's id, NOT the deterministic id — the
+      // content-match path can find a CUID-id row that needs updating.
       await prisma.$executeRawUnsafe(
         `UPDATE wiki_pages SET metadata = $1::jsonb WHERE id = $2`,
-        JSON.stringify(next), id,
+        JSON.stringify(next), existing.id,
       ).catch(() => {});
     }
-    return { id, created: false };
+    return { id: existing.id, created: false };
   }
 
   await prisma.$executeRawUnsafe(
