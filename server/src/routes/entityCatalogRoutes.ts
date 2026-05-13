@@ -615,6 +615,174 @@ router.post('/link', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /entity-catalog/merge
+ *  Body: { primaryId: string, secondaryIds: string[], confirmPhrase: string }
+ *
+ * Collapse one or more secondary contact rows INTO a primary row.
+ * After merge:
+ *   - Secondary rows are DELETED.
+ *   - Primary keeps its existing identifiers; fills email/phone from
+ *     secondaries if it was missing them.
+ *   - Stars become max across all rows (per-user user_stars maps merged).
+ *   - Channels become union of all rows' channel lists.
+ *   - discovered_by_users become union.
+ *   - sender_history pages whose metadata.entityId references any
+ *     secondary row get repointed at the primary id (so per-sender
+ *     history stays intact and queryable from the surviving row).
+ *
+ * Destructive. Requires a typed-phrase confirmation (the user must
+ * echo the primary's title) so a misclick can't silently delete
+ * legitimate records.
+ *
+ * Owner-or-admin on every row (you can't merge someone else's
+ * contacts).
+ */
+router.post('/merge', async (req: Request, res: Response) => {
+  try {
+    const primaryId = String(req.body?.primaryId ?? '').trim();
+    const secondaryIds: string[] = Array.isArray(req.body?.secondaryIds)
+      ? (req.body.secondaryIds as unknown[]).map((x) => String(x)).filter((x) => x && x !== primaryId)
+      : [];
+    const confirmPhrase = String(req.body?.confirmPhrase ?? '').trim();
+    if (!primaryId || secondaryIds.length === 0) {
+      res.status(400).json({ error: 'primaryId + at least one secondaryId required' });
+      return;
+    }
+    const allIds = [primaryId, ...secondaryIds];
+    const rows = await prisma.wikiPage.findMany({
+      where: { id: { in: allIds }, clientNumber: req.user!.clientNumber, pageType: 'entity_person' } as any,
+      select: { id: true, title: true, userId: true, metadata: true, bodyMarkdown: true, status: true },
+    });
+    if (rows.length !== allIds.length) {
+      res.status(404).json({ error: 'one or more rows not found in your tenant' });
+      return;
+    }
+    const primary = rows.find((r) => r.id === primaryId);
+    if (!primary) { res.status(404).json({ error: 'primary not found' }); return; }
+    // Ownership gate — caller must own every row (or be tenant admin).
+    if (!req.user!.isAdmin) {
+      const notOwned = rows.find((r) => (r as any).userId !== req.user!.id);
+      if (notOwned) {
+        res.status(403).json({ error: 'you can only merge contacts you own' });
+        return;
+      }
+    }
+    // Typed-phrase confirmation — destructive op, prevent misclick.
+    const expected = String(primary.title || '').toLowerCase();
+    if (!confirmPhrase || confirmPhrase.toLowerCase() !== expected) {
+      res.status(400).json({
+        error: 'confirmPhrase must match the primary contact title to confirm merge',
+        expected,
+      });
+      return;
+    }
+
+    // Build merged metadata.
+    const primaryMeta = ((primary.metadata as Record<string, unknown> | null) ?? {});
+    const secondaries = rows.filter((r) => r.id !== primaryId);
+    let mergedEmail = (primaryMeta as any).email ?? null;
+    let mergedPhone = (primaryMeta as any).phone ?? null;
+    const channelsSet = new Set<string>(Array.isArray((primaryMeta as any).channels) ? (primaryMeta as any).channels : []);
+    const discoverersSet = new Set<number>(Array.isArray((primaryMeta as any).discovered_by_users) ? (primaryMeta as any).discovered_by_users : []);
+    const userStars: Record<string, number> = { ...((primaryMeta as any).user_stars ?? {}) };
+    const mergedFromAudit: Array<{ id: string; title: string; mergedAt: string }> = [];
+    let bestRelStrength = ((primaryMeta as any).stats?.relationshipStrength as number | null) ?? null;
+    let bestWeeklyVolume = ((primaryMeta as any).stats?.weeklyVolume as number | null) ?? null;
+    let latestLastSeen: string | null = ((primaryMeta as any).stats?.lastSeen as string | null) ?? null;
+
+    for (const s of secondaries) {
+      const sm = ((s.metadata as Record<string, unknown> | null) ?? {}) as any;
+      if (!mergedEmail && sm.email) mergedEmail = sm.email;
+      if (!mergedPhone && sm.phone) mergedPhone = sm.phone;
+      if (Array.isArray(sm.channels)) for (const c of sm.channels) channelsSet.add(String(c));
+      if (Array.isArray(sm.discovered_by_users)) for (const u of sm.discovered_by_users) discoverersSet.add(Number(u));
+      // user_stars: merge per-user (max if both have a rating for the same user).
+      if (sm.user_stars && typeof sm.user_stars === 'object') {
+        for (const [uid, val] of Object.entries(sm.user_stars as Record<string, unknown>)) {
+          const cur = userStars[uid] ?? 0;
+          const next = Math.max(cur, Number(val) || 0);
+          if (next > 0) userStars[uid] = next;
+        }
+      }
+      const ss = sm.stats ?? {};
+      if (typeof ss.relationshipStrength === 'number' && (bestRelStrength == null || ss.relationshipStrength > bestRelStrength)) {
+        bestRelStrength = ss.relationshipStrength;
+      }
+      if (typeof ss.weeklyVolume === 'number' && (bestWeeklyVolume == null || ss.weeklyVolume > bestWeeklyVolume)) {
+        bestWeeklyVolume = ss.weeklyVolume;
+      }
+      if (typeof ss.lastSeen === 'string' && (!latestLastSeen || ss.lastSeen > latestLastSeen)) {
+        latestLastSeen = ss.lastSeen;
+      }
+      mergedFromAudit.push({ id: s.id, title: s.title, mergedAt: new Date().toISOString() });
+    }
+
+    const mergedMeta: Record<string, unknown> = {
+      ...primaryMeta,
+      email: mergedEmail,
+      phone: mergedPhone,
+      channels: Array.from(channelsSet),
+      discovered_by_users: Array.from(discoverersSet),
+      user_stars: userStars,
+      stats: {
+        ...((primaryMeta as any).stats ?? {}),
+        relationshipStrength: bestRelStrength,
+        weeklyVolume: bestWeeklyVolume,
+        lastSeen: latestLastSeen,
+      },
+      mergedFrom: [
+        ...(Array.isArray((primaryMeta as any).mergedFrom) ? (primaryMeta as any).mergedFrom : []),
+        ...mergedFromAudit,
+      ],
+    };
+
+    // 1. Write the merged metadata onto the primary.
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(mergedMeta), primaryId,
+    );
+
+    // 2. Repoint sender_history pages that reference any secondary's
+    //    entityId to point at the primary. The catalog's "entityId"
+    //    convention is the wiki_page id itself (for entity_person rows
+    //    where id starts with 'person:') or the Entity table id.
+    //    sender_history pages stash entityId in their metadata.
+    for (const s of secondaries) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages
+           SET metadata = jsonb_set(metadata, '{entityId}', to_jsonb($1::text))
+         WHERE client_number = $2
+           AND page_type IN ('sender_history','sender_topic')
+           AND metadata->>'entityId' = $3`,
+        primaryId, req.user!.clientNumber, s.id,
+      ).catch(() => null);
+    }
+
+    // 3. Delete the secondary wiki_pages (status=deleted is cleaner
+    //    than hard-delete — keeps audit trail and allows recovery if
+    //    the merge was wrong). The catalog GET filters status='deleted'
+    //    so they disappear from the UI immediately.
+    for (const s of secondaries) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages
+           SET status = 'deleted',
+               metadata = jsonb_set(metadata, '{mergedInto}', to_jsonb($1::text)),
+               last_updated_at = NOW()
+         WHERE id = $2`,
+        primaryId, s.id,
+      ).catch(() => null);
+    }
+
+    res.json({
+      ok: true,
+      primaryId,
+      mergedCount: secondaries.length,
+      mergedFrom: mergedFromAudit,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
  * POST /entity-catalog/unlink
  *  Body: { id: string }
  *

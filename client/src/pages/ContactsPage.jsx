@@ -148,6 +148,21 @@ export default function ContactsPage() {
     }
   }, [load, notify]);
 
+  // Merge — destructive. Collapses secondary rows into the primary
+  // (one survives, others get status=deleted; references repointed).
+  // Caller must pass the primary's title as confirmPhrase to confirm.
+  const onMergeContacts = useCallback(async ({ primaryId, secondaryIds, confirmPhrase }) => {
+    try {
+      const { data } = await api.post('/entity-catalog/merge', {
+        primaryId, secondaryIds, confirmPhrase,
+      });
+      notify('success', `Merged ${data.mergedCount} duplicate row(s) into the primary.`);
+      load();
+    } catch (err) {
+      notify('error', `Merge failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
   const triggerSweep = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -427,13 +442,19 @@ export default function ContactsPage() {
           visibility={visibility}
           onLinkContacts={onLinkContacts}
           onUnlinkContact={onUnlinkContact}
+          onMergeContacts={onMergeContacts}
         />
       )}
     </div>
   );
 }
 
-function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, onUnlinkContact }) {
+function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, onUnlinkContact, onMergeContacts }) {
+  // Local UI state for the destructive Merge confirmation. Holds
+  // { primaryId, secondaryIds, primaryTitle, typed } when the user has
+  // clicked Merge on a row but hasn't yet confirmed by typing the
+  // primary's title. Same pattern as the Mark-Personal flow.
+  const [mergeFlow, setMergeFlow] = useState(null);
   // Build a duplicate-detection index from the full list. A pair is
   // a "candidate duplicate" when they share a normalized phone OR
   // email AND they don't already share a linkedPersonId (already
@@ -620,18 +641,37 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                     .filter(Boolean)
                     .slice(0, 2);
                   return (
-                    <button
-                      type="button"
-                      onClick={() => onLinkContacts?.([e.id, ...sibIds])}
-                      style={{
-                        ...pillStyle('#f59e0b', 'rgba(245,158,11,0.14)'),
-                        cursor: 'pointer',
-                        border: '1px solid rgba(245,158,11,0.4)',
-                      }}
-                      title={`Same identifier as: ${sibTitles.join(', ')}${sibIds.length > sibTitles.length ? ` (+${sibIds.length - sibTitles.length})` : ''}. Click to link them as one person.`}
-                    >
-                      ⚠ Same as {sibTitles[0] || 'another'} — Link
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onLinkContacts?.([e.id, ...sibIds])}
+                        style={{
+                          ...pillStyle('#f59e0b', 'rgba(245,158,11,0.14)'),
+                          cursor: 'pointer',
+                          border: '1px solid rgba(245,158,11,0.4)',
+                        }}
+                        title={`Same identifier as: ${sibTitles.join(', ')}. Link keeps both rows but groups them — each keeps its scope.`}
+                      >
+                        ⚠ Same as {sibTitles[0] || 'another'} — Link
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMergeFlow({
+                          primaryId: e.id,
+                          secondaryIds: sibIds,
+                          primaryTitle: e.title,
+                          typed: '',
+                        })}
+                        style={{
+                          ...pillStyle('#dc2626', 'rgba(220,38,38,0.10)'),
+                          cursor: 'pointer',
+                          border: '1px solid rgba(220,38,38,0.35)',
+                        }}
+                        title={`Merge ${sibTitles.join(' + ')} INTO this row. The other row(s) will be deleted. Destructive — requires typed confirmation.`}
+                      >
+                        Merge
+                      </button>
+                    </>
                   );
                 })()}
               </Td>
@@ -696,6 +736,89 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
           })}
         </tbody>
       </table>
+      {/* Merge confirmation panel — destructive, requires typed phrase.
+          Same UX pattern as the Mark-Personal flow on Day Brief cards. */}
+      {mergeFlow && (
+        <div style={{
+          margin: '12px',
+          padding: 14,
+          background: 'rgba(220, 38, 38, 0.08)',
+          border: '1px solid rgba(220, 38, 38, 0.3)',
+          borderRadius: 6,
+          fontSize: 13,
+          color: 'var(--text, #e6e8eb)',
+        }}>
+          <div style={{ marginBottom: 8, fontWeight: 600 }}>
+            Merge {mergeFlow.secondaryIds.length} row(s) into <strong>"{mergeFlow.primaryTitle}"</strong>?
+          </div>
+          <div style={{ marginBottom: 8, color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
+            Other row(s) will be deleted. Email, phone, channels, and stars merge into "{mergeFlow.primaryTitle}".
+            sender_history references repointed. Not reversible.
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            Type <strong>{mergeFlow.primaryTitle}</strong> to confirm:
+          </div>
+          <input
+            type="text"
+            value={mergeFlow.typed}
+            onChange={(ev) => setMergeFlow({ ...mergeFlow, typed: ev.target.value })}
+            autoFocus
+            placeholder={mergeFlow.primaryTitle}
+            style={{
+              width: '100%',
+              padding: '6px 8px',
+              background: 'var(--bg-1, #0d1117)',
+              border: '1px solid var(--border, #28323e)',
+              borderRadius: 4,
+              color: 'var(--text, #e6e8eb)',
+              fontSize: 13,
+            }}
+          />
+          <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={mergeFlow.typed.trim().toLowerCase() !== String(mergeFlow.primaryTitle || '').toLowerCase()}
+              onClick={() => {
+                const ok = mergeFlow.typed.trim().toLowerCase() === String(mergeFlow.primaryTitle || '').toLowerCase();
+                if (!ok) return;
+                onMergeContacts?.({
+                  primaryId: mergeFlow.primaryId,
+                  secondaryIds: mergeFlow.secondaryIds,
+                  confirmPhrase: mergeFlow.typed.trim(),
+                });
+                setMergeFlow(null);
+              }}
+              style={{
+                padding: '6px 12px',
+                background: '#dc2626',
+                color: '#fff',
+                border: 0,
+                borderRadius: 4,
+                fontSize: 13,
+                cursor: mergeFlow.typed.trim().toLowerCase() === String(mergeFlow.primaryTitle || '').toLowerCase() ? 'pointer' : 'not-allowed',
+                opacity: mergeFlow.typed.trim().toLowerCase() === String(mergeFlow.primaryTitle || '').toLowerCase() ? 1 : 0.4,
+              }}
+            >
+              Merge & delete other row(s)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMergeFlow(null)}
+              style={{
+                padding: '6px 12px',
+                background: 'transparent',
+                color: 'var(--text-muted, #98a0a8)',
+                border: '1px solid var(--border, #28323e)',
+                borderRadius: 4,
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
