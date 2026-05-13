@@ -64,6 +64,7 @@ import brainConfigRoutes from './routes/brainConfigRoutes';
 import decisionsRoutes from './routes/decisionsRoutes';
 import thoughtRoutes from './routes/thoughtRoutes';
 import mcpRoutes from './routes/mcpRoutes';
+import staticPagesRoutes from './routes/staticPagesRoutes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestLoggerMiddleware } from './middleware/requestLogger';
 import { killSwitchMiddleware } from './middleware/killSwitchMiddleware';
@@ -238,6 +239,9 @@ v1.use('/triage', triageRoutes);
 v1.use('/wiki', wikiRoutes);
 v1.use('/drafts', draftsRoutes);
 v1.use('/brief', briefRoutes);
+
+// Static pages — served at root for Google OAuth branding verification
+app.use(staticPagesRoutes);
 
 // Mount versioned API
 app.use('/api/v1', v1);
