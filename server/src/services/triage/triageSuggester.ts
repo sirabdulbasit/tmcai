@@ -1084,6 +1084,44 @@ export async function buildAttentionList(
   }).catch(() => [] as Array<{ entityId: string | null }>);
   const decidedSet = new Set(decidedIds.map((d) => d.entityId).filter(Boolean) as string[]);
 
+  // Brain-handled set — feed_events the autonomousExecutor has already
+  // acted on. agent_action is the audit trail of what Brain DID; if
+  // Brain auto-acknowledged HAIDER at 4 PM, a human EA wouldn't re-
+  // evaluate at midnight and decide to draft a reply. Once Brain
+  // handled the item, it's handled — My Attention must respect that.
+  //
+  // Per user 2026-05-14: HAIDER appeared in both My Attention
+  // ('draft_reply' from a fresh suggester pass) and Brief
+  // ('acknowledge' from an earlier agent_action). Two decision
+  // engines (autonomousExecutor + triageSuggester) producing
+  // disagreeing outputs because My Attention wasn't checking
+  // agent_action. This filter closes the loop: the audit trail is
+  // the source of truth for Brain's terminal decisions.
+  //
+  // Terminal action types are the ones that conclusively handle a
+  // feed_event:
+  //   - acknowledge / ignore_email — done, no follow-up
+  //   - delegate                   — sent to someone else
+  //   - add_open_item              — converted into a tracked item
+  // Non-terminal action types (draft_reply pending review, etc.)
+  // do NOT mark the event as handled.
+  const BRAIN_TERMINAL_ACTIONS = ['acknowledge', 'ignore_email', 'delegate', 'add_open_item'];
+  const brainHandledRows = await prisma.agentAction.findMany({
+    where: {
+      clientNumber, userId,
+      status: 'done' as any,
+      createdAt: { gte: sevenDaysAgo },
+      actionType: { in: BRAIN_TERMINAL_ACTIONS } as any,
+    } as any,
+    select: { input: true },
+  }).catch(() => [] as Array<{ input: unknown }>);
+  const brainHandledSet = new Set<string>();
+  for (const r of brainHandledRows) {
+    const inp = r.input as Record<string, unknown> | null;
+    const fid = inp && typeof inp.feedEventId === 'string' ? inp.feedEventId : null;
+    if (fid) brainHandledSet.add(fid);
+  }
+
   // Muted senders — two sources, unioned:
   //   1. Per-sender mute_sender rows (the legacy quick-mute table).
   //   2. Contacts whose scope = 'private' in wiki_pages (the 2026-05-13
@@ -1236,6 +1274,13 @@ export async function buildAttentionList(
   function pickFromBucket(bucket: typeof emailRows, quota: number) {
     return bucket
       .filter((r) => !decidedSet.has(r.id))
+      // Brain-handled set: feed_events the autonomousExecutor terminated
+      // (acknowledge / ignore / delegate / add_open_item). Those live in
+      // Brief's "Brain knew what to do" section sourced from
+      // agent_action via /brief/brain-actions. Excluding them here
+      // keeps the My Attention / Brief partition honest — an item is
+      // EITHER awaiting the user OR handled by Brain, never both.
+      .filter((r) => !brainHandledSet.has(r.id))
       // Muted senders — explicit user opt-out. Drops from My Attention
       // entirely (and from Brief; see buildHandledList for the mirror).
       // Items still live in feed_events + Wiki archive so search works.
