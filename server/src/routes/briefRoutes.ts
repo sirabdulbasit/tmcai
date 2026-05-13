@@ -853,55 +853,91 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
           }
         } catch { /* try webjs */ }
 
-        // (3) webjs backfill — only fires when we have ZERO outbound
-        // from the persistent sources. Tries to pull historical messages
-        // from WhatsApp's local cache. Best-effort, fails silently on
-        // @lid chats. Any messages it finds get persisted to Postgres
-        // so the next modal-open is fast.
-        if (outboundMsgs.length === 0) {
-          try {
-            const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
-            const turns = await fetchThreadContext(user.id, String(chatId), 50);
-            const meTurns = turns.filter((t) => t.from === 'me');
-            outboundMsgs = meTurns.map((t) => ({
-              from: 'me' as const,
-              subject: '',
-              text: t.text,
-              timestamp: toMs(t.timestamp) ?? t.timestamp,
-              fromName: 'You',
-            }));
-            // Persist for next time. Generate a synthetic msgId per turn
-            // (timestamp + content hash) so dedup on re-fetch works.
-            if (meTurns.length > 0) {
-              for (const t of meTurns) {
-                const ts = toMs(t.timestamp) ?? t.timestamp;
-                const syntheticId = `backfill:${chatId}:${ts}`;
-                await prisma.whatsAppOutboundMessage.upsert({
-                  where: { userId_waMessageId: { userId: user.id, waMessageId: syntheticId } } as any,
-                  create: {
-                    clientNumber: user.clientNumber,
-                    userId: user.id,
-                    chatId: String(chatId),
-                    waMessageId: syntheticId,
-                    bodyText: String(t.text).slice(0, 4000),
-                    sentAt: new Date(ts),
-                  } as any,
-                  update: {},
-                }).catch(() => null);
-              }
+        // (3) webjs backfill — ALWAYS runs now (was: only when outbound
+        // was empty). The Postgres/Redis sources only capture outbound
+        // sent AFTER the 2026-05-13 capture-deploy; pre-deploy
+        // historical outbound only exists in WhatsApp's local cache.
+        // Running webjs unconditionally lets us pick that history up
+        // and persist it so the modal becomes complete over time.
+        // Dedupe by (timestamp within 2s OR existing waMessageId).
+        try {
+          const { fetchThreadContext } = await import('../services/whatsapp/UserWebjsProvider');
+          const turns = await fetchThreadContext(user.id, String(chatId), 50);
+          const meTurns = turns.filter((t) => t.from === 'me');
+          for (const t of meTurns) {
+            const ts = toMs(t.timestamp) ?? t.timestamp;
+            const dup = outboundMsgs.some((m) =>
+              Math.abs(m.timestamp - ts) < 2000 || m.text === t.text,
+            );
+            if (!dup) {
+              outboundMsgs.push({
+                from: 'me' as const,
+                subject: '',
+                text: t.text,
+                timestamp: ts,
+                fromName: 'You',
+              });
+              // Persist for next time. Synthetic msgId per turn so
+              // re-fetches stay idempotent.
+              const syntheticId = `backfill:${chatId}:${ts}`;
+              await prisma.whatsAppOutboundMessage.upsert({
+                where: { userId_waMessageId: { userId: user.id, waMessageId: syntheticId } } as any,
+                create: {
+                  clientNumber: user.clientNumber,
+                  userId: user.id,
+                  chatId: String(chatId),
+                  waMessageId: syntheticId,
+                  bodyText: String(t.text).slice(0, 4000),
+                  sentAt: new Date(ts),
+                } as any,
+                update: {},
+              }).catch(() => null);
             }
-          } catch { /* webjs broken — inbound-only is still useful */ }
-        }
+          }
+        } catch { /* webjs broken — inbound-only is still useful */ }
       }
 
       // Merge + sort chronologically.
       const allMsgs = [...inboundMsgs, ...outboundMsgs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
 
+      // Narrative thread summary — Preview mode renders this verbatim.
+      // Per user 2026-05-13: "there should be summary of all thread's
+      // messages in preview starting from older to new and providing
+      // complete picture narratively." conversationAnalyzer's
+      // SYSTEM_PROMPT already produces a 3-5 sentence chronological
+      // narrative ("oldest to latest... what THEY said, what YOU
+      // said..."). Pass the merged thread (inbound + outbound) so the
+      // narrative reflects both sides.
+      let waSummary = '';
+      let summaryProvider = 'none';
+      if (allMsgs.length > 0) {
+        try {
+          const { analyzeConversation } = await import('../services/triage/conversationAnalyzer');
+          const senderKey = String(event.senderPhone ?? event.senderEmail ?? event.id);
+          const analysis = await analyzeConversation({
+            userId: user.id,
+            clientNumber: user.clientNumber,
+            senderName: event.senderName ?? 'Contact',
+            senderKey,
+            thread: allMsgs.map((m: any) => ({
+              from: m.from === 'me' ? 'me' as const : 'them' as const,
+              text: m.text,
+              timestamp: m.timestamp,
+            })),
+            latestEventId: event.id,
+          });
+          waSummary = analysis.summary;
+          summaryProvider = analysis.provider;
+        } catch (err: any) {
+          console.warn(`[thread-preview] wa summary failed for ${event.id}: ${err.message}`);
+        }
+      }
+
       return res.json({
         itemType: 'whatsapp',
         messages: allMsgs,
-        summary: '',
-        summaryProvider: 'none',
+        summary: waSummary,
+        summaryProvider,
         cached: false,
       });
     }

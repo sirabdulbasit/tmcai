@@ -121,13 +121,30 @@ async function transcribeWithGemini(audioBuffer: Buffer, mimeType?: string): Pro
   const { getGenAI } = await import('./genaiClient');
   const ai = getGenAI();
 
+  // The user (Basit, Pakistan) speaks Urdu, English, or a mix. Gemini's
+  // default tends to render Urdu speech in Devanagari (Hindi script,
+  // \u0900-\u097F) because Urdu and Hindi sound similar \u2014 the model picks
+  // the more-trained script. Explicit prompt now: NEVER Devanagari.
+  // Urdu must be in Arabic script (\u0600-\u06FF); English in Latin script;
+  // mixed = keep both as-is in their own scripts. If the audio is
+  // English-only, return English. The forbidden-Devanagari clause is the
+  // single most important rule here \u2014 the user 2026-05-13 flagged a KD
+  // Bhatti voice note rendered in Hindi script and called it out.
   const result = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: [
       {
         role: 'user',
         parts: [
-          { text: 'Transcribe this audio. Return ONLY the spoken words verbatim \u2014 no commentary, no labels, no quotes, no brackets. If Urdu, write in Urdu script. If English, write in English. If mixed, keep both. If the audio has no clear speech, return an empty response.' },
+          { text: `Transcribe this audio. Return ONLY the spoken words verbatim \u2014 no commentary, no labels, no quotes, no brackets.
+
+SCRIPT RULES (non-negotiable):
+- If the speech is Urdu, write it in URDU SCRIPT (Arabic script, e.g. \u0633\u0631 \u0627\u062F\u06BE\u0631 \u0633\u06D2 \u06C1\u0645 \u0627\u067E\u0646\u06CC \u0633\u0627\u0631\u06CC \u0648\u0631\u06A9\u0646\u06AF \u06A9\u0645\u067E\u0644\u06CC\u0679 \u06A9\u0631\u06CC\u06BA \u06AF\u06D2). NEVER Devanagari / Hindi script.
+- If the speech is English, write it in English (Latin script).
+- If the speech mixes Urdu and English, keep each word in its own script: Urdu words in Arabic script, English words in Latin script. Do not transliterate one into the other.
+- Do NOT output Devanagari / Hindi characters (U+0900 to U+097F). This audio is from Pakistan; the language is Urdu, not Hindi, even if some words sound alike.
+
+If the audio has no clear speech, return an empty response.` },
           { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
         ],
       },
@@ -135,10 +152,37 @@ async function transcribeWithGemini(audioBuffer: Buffer, mimeType?: string): Pro
     config: { maxOutputTokens: 500 },
   });
 
-  const raw = (result.text ?? '').trim();
+  let raw = (result.text ?? '').trim();
   if (looksLikeSilence(raw)) {
     log.info('Gemini transcript looks like silence/boilerplate; returning empty', { raw: raw.slice(0, 80) });
     return { text: '', language: 'unknown', confidence: 0 };
+  }
+  // Safety net: if Gemini ignored the rule and emitted Devanagari anyway,
+  // retry once with a stronger forbid clause. After one retry, if it
+  // still emits Hindi script, accept the Latin-script fallback by
+  // asking for transliteration explicitly (last resort).
+  const hasDevanagari = /[\u0900-\u097F]/.test(raw);
+  if (hasDevanagari) {
+    log.warn('Gemini emitted Devanagari despite Urdu-only instruction; retrying', { raw: raw.slice(0, 80) });
+    try {
+      const retry = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: `Transcribe this audio. The speaker is from Pakistan and speaks URDU. Output the transcript in URDU SCRIPT (Arabic script, U+0600 to U+06FF) \u2014 for example \u0633\u0631 \u0627\u062F\u06BE\u0631 \u0633\u06D2 \u06C1\u0645. You are FORBIDDEN from using Devanagari / Hindi script (U+0900 to U+097F). If you cannot transcribe in Urdu script, transliterate to Roman Urdu (Latin letters, e.g. "Sir idhar se hum") \u2014 but NEVER Hindi script. Return ONLY the transcript, no commentary.` },
+              { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
+            ],
+          },
+        ],
+        config: { maxOutputTokens: 500 },
+      });
+      const retryText = (retry.text ?? '').trim();
+      if (retryText && !/[\u0900-\u097F]/.test(retryText)) raw = retryText;
+    } catch (e: any) {
+      log.error('Gemini Devanagari retry failed', { error: e.message });
+    }
   }
   const isUrdu = /[\u0600-\u06FF]/.test(raw);
   return { text: raw, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
