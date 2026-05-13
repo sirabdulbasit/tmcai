@@ -72,6 +72,12 @@ export default function ContactsPage() {
   const [minStars, setMinStars] = useState(0);
   const [source, setSource] = useState('');
   const [sort, setSort] = useState('stars');
+  // Visibility filter — Per MD 2026-05-13: "how can i see which contacts
+  // are marked Private or Public?" Three states:
+  //   '' (all) | 'public' (scope=tenant) | 'private' (scope=user)
+  // Filtered client-side from the entities list so it composes with the
+  // server-side filters above without an extra round-trip.
+  const [visibility, setVisibility] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -322,6 +328,40 @@ export default function ContactsPage() {
           <option value="stars">Sort: Stars</option>
           <option value="recent">Sort: Recent</option>
         </select>
+        {/* Visibility filter — All / Public / Private. Renders three
+            pill-style buttons so MD can quickly see which contacts are
+            tenant-shared vs personal. */}
+        <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+          {[
+            { value: '', label: 'All' },
+            { value: 'public', label: '🌐 Public' },
+            { value: 'private', label: '🔒 Private' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setVisibility(opt.value)}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: visibility === opt.value
+                  ? (opt.value === 'public' ? 'rgba(79,169,255,0.18)' : opt.value === 'private' ? 'rgba(155,155,155,0.18)' : 'rgba(214,109,60,0.15)')
+                  : 'transparent',
+                color: visibility === opt.value
+                  ? (opt.value === 'public' ? '#4fa9ff' : opt.value === 'private' ? '#cccccc' : 'var(--accent)')
+                  : 'var(--text-muted, #98a0a8)',
+                border: `1px solid ${visibility === opt.value
+                  ? (opt.value === 'public' ? '#4fa9ff' : opt.value === 'private' ? '#888' : 'var(--accent)')
+                  : 'var(--border, #28323e)'}`,
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
           Showing {entities.length}{total > entities.length ? ` of ${total}` : ''} contacts
         </span>
@@ -387,23 +427,58 @@ function ContactsTable({ entities, onSetStars }) {
           </tr>
         </thead>
         <tbody>
-          {entities.map((e) => (
-            <tr key={e.id} style={{ borderTop: '1px solid var(--border, #28323e)' }}>
+          {entities
+            .filter((e) => {
+              if (!visibility) return true;
+              if (visibility === 'public') return e.scope === 'tenant';
+              if (visibility === 'private') return e.scope !== 'tenant';
+              return true;
+            })
+            .map((e) => {
+            const isPrivate = e.scope !== 'tenant';
+            return (
+            <tr
+              key={e.id}
+              style={{
+                borderTop: '1px solid var(--border, #28323e)',
+                // Subtle muted background for Private rows so visibility
+                // is immediately scannable. Per MD: Private contacts and
+                // stars don't coexist — stars are a tenant-shared signal
+                // that doesn't apply to personal contacts.
+                background: isPrivate ? 'rgba(155,155,155,0.04)' : 'transparent',
+              }}
+            >
               <Td>
-                <StarRating value={e.stars ?? 0} onChange={(s) => onSetStars(e.id, s)} />
+                {isPrivate ? (
+                  <span
+                    style={{ color: 'var(--text-muted, #98a0a8)', fontSize: 14, cursor: 'help' }}
+                    title="Private contacts can't be starred. Stars are a tenant-shared signal; make this contact Public to rate them."
+                  >
+                    🔒
+                  </span>
+                ) : (
+                  <StarRating value={e.stars ?? 0} onChange={(s) => onSetStars(e.id, s)} />
+                )}
               </Td>
               <Td>
                 <EditableName
                   id={e.id}
                   title={e.title}
-                  bold={e.stars >= 4}
+                  bold={!isPrivate && e.stars >= 4}
                 />
-                {e.scope === 'tenant' && (
+                {e.scope === 'tenant' ? (
                   <span
                     style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
                     title="Public — visible to every user in your tenant"
                   >
-                    Public
+                    🌐 Public
+                  </span>
+                ) : (
+                  <span
+                    style={pillStyle('#9b9b9b', 'rgba(155,155,155,0.10)')}
+                    title="Private — only you can see this contact. Not in tenant wiki, not in shared search."
+                  >
+                    🔒 Private
                   </span>
                 )}
               </Td>
@@ -442,7 +517,8 @@ function ContactsTable({ entities, onSetStars }) {
                 </div>
               </Td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
