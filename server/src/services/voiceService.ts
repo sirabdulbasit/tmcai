@@ -184,8 +184,66 @@ If the audio has no clear speech, return an empty response.` },
       log.error('Gemini Devanagari retry failed', { error: e.message });
     }
   }
+  // Final defense: if BOTH transcription attempts still emitted
+  // Devanagari, drop down to a text-only conversion call. The previous
+  // two calls had audio context which may have biased the model toward
+  // Hindi; this one is a pure script-conversion task with no audio
+  // distraction. Per user 2026-05-14: "we should have only 2 languages
+  // right now english and urdu" \u2014 Hindi is not acceptable.
+  if (/[\u0900-\u097F]/.test(raw)) {
+    log.warn('Both transcription passes returned Devanagari \u2014 running script-conversion fallback');
+    try {
+      const converted = await transliterateDevanagariToUrdu(raw);
+      if (converted && !/[\u0900-\u097F]/.test(converted)) raw = converted;
+    } catch (e: any) {
+      log.error('Script conversion fallback failed', { error: e.message });
+    }
+  }
   const isUrdu = /[\u0600-\u06FF]/.test(raw);
   return { text: raw, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
+}
+
+/**
+ * Convert Devanagari (Hindi script) text to Urdu script (Arabic).
+ *
+ * This is a pure script-conversion call \u2014 same spoken language, just
+ * a different writing system. Used as the third-stage defense after
+ * transcription when Gemini refuses to emit Urdu script. Also used by
+ * the one-shot backfill script (scripts/backfillDevanagariToUrdu.ts)
+ * to repair feed_events already stored with Devanagari text from
+ * before the 2026-05-14 voice-script fixes.
+ *
+ * Exported so callers (ingest, backfill, future render-time defense)
+ * can share the same conversion logic.
+ *
+ * Brain-vs-programmer note (per memory rule): this defensive
+ * conversion exists because Gemini 2.5 Flash is unreliable at
+ * honoring "use Arabic script not Devanagari" instructions for Urdu
+ * speech. The proper fix is to route Urdu voice transcription
+ * through a model that handles the language more reliably (or pin
+ * a Urdu-optimized multilingual model). Carrying this layer until
+ * we benchmark alternatives.
+ */
+export async function transliterateDevanagariToUrdu(text: string): Promise<string> {
+  if (!text || !/[\u0900-\u097F]/.test(text)) return text;
+  const { getGenAI } = await import('./genaiClient');
+  const ai = getGenAI();
+  const r = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: `Convert the following text from Devanagari (Hindi script) to Urdu script (Arabic script, U+0600 to U+06FF). The underlying language is the same \u2014 only the writing system changes. Keep any English words in Latin script unchanged. Return ONLY the converted text, no commentary, no preamble, no quotes.
+
+Input:
+${text}` },
+        ],
+      },
+    ],
+    config: { maxOutputTokens: 1000 },
+  });
+  return String(r.text ?? '').trim();
 }
 
 // ─── Text-to-Speech: convert text to voice note ───────────────────────────────
