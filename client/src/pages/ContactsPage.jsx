@@ -395,13 +395,13 @@ export default function ContactsPage() {
       ) : entities.length === 0 ? (
         <EmptyState onRefresh={triggerSweep} />
       ) : (
-        <ContactsTable entities={entities} onSetStars={onSetStars} />
+        <ContactsTable entities={entities} onSetStars={onSetStars} visibility={visibility} />
       )}
     </div>
   );
 }
 
-function ContactsTable({ entities, onSetStars }) {
+function ContactsTable({ entities, onSetStars, visibility = '' }) {
   // tenantName lives in AuthContext at the app root; pull it here so the
   // tenant-shared pill renders the company display name. This nested
   // component doesn't see ContactsPage's destructured useAuth — different
