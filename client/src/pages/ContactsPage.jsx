@@ -478,34 +478,39 @@ export default function ContactsPage() {
           <option value="stars">Sort: Stars</option>
           <option value="recent">Sort: Recent</option>
         </select>
-        {/* Visibility filter — All / Public / Private. Renders three
-            pill-style buttons so MD can quickly see which contacts are
-            tenant-shared vs personal. */}
+        {/* Scope filter — All / Public / Normal / Private (2026-05-13
+            three-state model). Public = tenant-shared; Normal = default
+            owner-only with Brain on; Private = Brain-muted, out of My
+            Attention / WhatsApp / Day Brief. */}
         <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
           {[
-            { value: '', label: 'All' },
-            { value: 'public', label: '🌐 Public' },
-            { value: 'private', label: '🔒 Private' },
+            { value: '',        label: 'All',        accent: 'var(--accent)', bg: 'rgba(214,109,60,0.15)' },
+            { value: 'public',  label: '🌐 Public',   accent: '#4fa9ff',       bg: 'rgba(79,169,255,0.18)' },
+            { value: 'normal',  label: 'Normal',     accent: '#b8c4cf',       bg: 'rgba(184,196,207,0.14)' },
+            { value: 'private', label: '🔒 Private', accent: '#c084fc',       bg: 'rgba(192,132,252,0.16)' },
           ].map((opt) => (
             <button
               key={opt.value}
               type="button"
               onClick={() => setVisibility(opt.value)}
+              title={
+                opt.value === 'private'
+                  ? 'Private — Brain ignores entirely. Not in My Attention, no WhatsApp brain, no Day Brief.'
+                  : opt.value === 'normal'
+                    ? 'Normal — default. Owner-only visibility, Brain processes normally.'
+                    : opt.value === 'public'
+                      ? 'Public — visible across the tenant. Brain on.'
+                      : 'All contacts regardless of scope'
+              }
               style={{
                 padding: '4px 10px',
                 borderRadius: 999,
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: 'pointer',
-                background: visibility === opt.value
-                  ? (opt.value === 'public' ? 'rgba(79,169,255,0.18)' : opt.value === 'private' ? 'rgba(155,155,155,0.18)' : 'rgba(214,109,60,0.15)')
-                  : 'transparent',
-                color: visibility === opt.value
-                  ? (opt.value === 'public' ? '#4fa9ff' : opt.value === 'private' ? '#cccccc' : 'var(--accent)')
-                  : 'var(--text-muted, #98a0a8)',
-                border: `1px solid ${visibility === opt.value
-                  ? (opt.value === 'public' ? '#4fa9ff' : opt.value === 'private' ? '#888' : 'var(--accent)')
-                  : 'var(--border, #28323e)'}`,
+                background: visibility === opt.value ? opt.bg : 'transparent',
+                color: visibility === opt.value ? opt.accent : 'var(--text-muted, #98a0a8)',
+                border: `1px solid ${visibility === opt.value ? opt.accent : 'var(--border, #28323e)'}`,
               }}
             >
               {opt.label}
@@ -682,31 +687,43 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
           {entities
             .filter((e) => {
               if (!visibility) return true;
-              if (visibility === 'public') return e.scope === 'tenant';
-              if (visibility === 'private') return e.scope !== 'tenant';
+              if (visibility === 'public')  return e.scope === 'tenant';
+              if (visibility === 'private') return e.scope === 'private';
+              if (visibility === 'normal')  return e.scope !== 'tenant' && e.scope !== 'private';
               return true;
             })
             .map((e) => {
-            const isPrivate = e.scope !== 'tenant';
+            const scope = (e.scope === 'tenant' || e.scope === 'private') ? e.scope : 'normal';
+            const isPublic = scope === 'tenant';
+            const isMuted  = scope === 'private';
+            // "Stars are tenant-shared" semantics — only public rows
+            // accept stars. Both Normal and Private rows hide stars.
+            const starsDisabled = !isPublic;
             return (
             <tr
               key={e.id}
               style={{
                 borderTop: '1px solid var(--border, #28323e)',
-                // Subtle muted background for Private rows so visibility
-                // is immediately scannable. Per MD: Private contacts and
-                // stars don't coexist — stars are a tenant-shared signal
-                // that doesn't apply to personal contacts.
-                background: isPrivate ? 'rgba(155,155,155,0.04)' : 'transparent',
+                // Subtle muted background for non-public rows so scope
+                // is scannable. Muted (Private) gets a slightly stronger
+                // purple tint so the user can see at a glance which
+                // contacts Brain is ignoring.
+                background: isMuted
+                  ? 'rgba(192,132,252,0.05)'
+                  : !isPublic
+                    ? 'rgba(155,155,155,0.04)'
+                    : 'transparent',
               }}
             >
               <Td>
-                {isPrivate ? (
+                {starsDisabled ? (
                   <span
                     style={{ color: 'var(--text-muted, #98a0a8)', fontSize: 14, cursor: 'help' }}
-                    title="Private contacts can't be starred. Stars are a tenant-shared signal; make this contact Public to rate them."
+                    title={isMuted
+                      ? 'Private (Brain-muted) contacts cannot be starred. Stars are a tenant-shared signal.'
+                      : "Stars are a tenant-shared signal. Make this contact Public to rate them."}
                   >
-                    🔒
+                    {isMuted ? '🔇' : '·'}
                   </span>
                 ) : (
                   <StarRating value={e.stars ?? 0} onChange={(s) => onSetStars(e.id, s)} />
@@ -716,21 +733,28 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                 <EditableName
                   id={e.id}
                   title={e.title}
-                  bold={!isPrivate && e.stars >= 4}
+                  bold={isPublic && e.stars >= 4}
                 />
-                {e.scope === 'tenant' ? (
+                {isPublic ? (
                   <span
                     style={pillStyle('#4fa9ff', 'rgba(79,169,255,0.12)')}
-                    title="Public — visible to every user in your tenant"
+                    title="Public — visible to every user in your tenant. Brain on."
                   >
                     🌐 Public
+                  </span>
+                ) : isMuted ? (
+                  <span
+                    style={pillStyle('#c084fc', 'rgba(192,132,252,0.14)')}
+                    title="Private — Brain ignores this contact entirely. Out of My Attention, no WhatsApp brain, no Day Brief, no Open Items."
+                  >
+                    🔇 Private
                   </span>
                 ) : (
                   <span
                     style={pillStyle('#9b9b9b', 'rgba(155,155,155,0.10)')}
-                    title="Private — only you can see this contact. Not in tenant wiki, not in shared search."
+                    title="Normal (default) — only you can see this contact. Brain processes interactions normally."
                   >
-                    🔒 Private
+                    Normal
                   </span>
                 )}
                 {/* Linked-group pill — shown when this row is part of a
@@ -810,15 +834,12 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
               </Td>
               <Td>
                 <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {/* Public/Private toggle — owner-only. Default for
-                      every auto-discovered contact is private (user
-                      scope). User explicitly publishes a contact to
-                      make it visible across the tenant. */}
+                  {/* Three-state scope selector — owner-only.
+                      Normal (default) | Public (tenant) | Private (Brain-mute).
+                      Per 2026-05-13 contacts-visibility-is-user-decided
+                      rule, only the owner can change scope. */}
                   {e.isOwner && (
-                    <PublishButton
-                      id={e.id}
-                      isPublic={e.scope === 'tenant'}
-                    />
+                    <ScopeSelector id={e.id} scope={scope} />
                   )}
                   {/* Unlink — only visible on linked rows; lets the
                       user split a wrongly-merged identifier back out
@@ -1026,57 +1047,79 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
 }
 
 /**
- * PublishButton — owner-only toggle between private and tenant-public
- * scope on a single contact. Default for all auto-discovered contacts
- * is private; the owner clicks "Make Public" to share with their
- * tenant. Click again ("Make Private") to revoke.
+ * ScopeSelector — owner-only 3-way scope chip group (2026-05-13 model).
  *
- * Per user 2026-05-11: contacts default to private. Public is
- * always an explicit user action.
+ *   Normal  → default. Owner-only, Brain processes interactions.
+ *   Public  → visible across the tenant. Brain on. publicSetBy audit.
+ *   Private → Brain-muted. Out of My Attention, no WhatsApp brain, no
+ *             Day Brief, no Open Items. Owner still sees the row here.
+ *
+ * Per the 2026-05-13 contacts-visibility-is-user-decided rule, this
+ * is the ONLY surface that changes a contact's scope. Brain never
+ * auto-calls /scope.
  */
-function PublishButton({ id, isPublic }) {
+function ScopeSelector({ id, scope }) {
   const [busy, setBusy] = useState(false);
-  if (busy) {
-    return <span style={{ color: 'var(--text-muted, #98a0a8)', fontSize: 11 }}>…</span>;
-  }
-  const flip = async () => {
+  const [err, setErr] = useState(null);
+  const set = async (next) => {
+    if (next === scope) return;
     setBusy(true);
+    setErr(null);
     try {
-      const path = isPublic ? 'unpublish' : 'publish';
-      const res = await fetch(`/api/v1/entity-catalog/${id}/${path}`, {
-        method: 'PATCH', credentials: 'include',
+      const res = await fetch(`/api/v1/entity-catalog/${id}/scope`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: next }),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error || `Failed to ${path}`);
+        const e = await res.json().catch(() => ({}));
+        setErr(e.error || `Failed to set scope to ${next}`);
       } else {
-        // Tell the parent to refetch the list. Simplest: dispatch a
-        // custom event the ContactsPage useEffect listens to. If the
-        // parent doesn't listen, the row will update on next natural
-        // refresh.
         window.dispatchEvent(new CustomEvent('contacts:reload'));
       }
     } finally {
       setBusy(false);
     }
   };
+  const opt = (value, label, accent, bg, title) => {
+    const active = scope === value;
+    return (
+      <button
+        key={value}
+        type="button"
+        disabled={busy}
+        onClick={() => set(value)}
+        title={title}
+        style={{
+          padding: '3px 8px',
+          borderRadius: 4,
+          background: active ? bg : 'transparent',
+          color: active ? accent : 'var(--text-muted, #98a0a8)',
+          border: `1px solid ${active ? accent : 'var(--border, #444)'}`,
+          cursor: busy ? 'wait' : 'pointer',
+          fontSize: 11,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </button>
+    );
+  };
   return (
-    <button
-      type="button"
-      onClick={flip}
-      title={isPublic
-        ? 'This contact is visible to your whole tenant. Click to make it private again.'
-        : 'Make this contact visible to every user in your tenant.'}
-      style={{
-        background: isPublic ? 'rgba(79,169,255,0.10)' : 'transparent',
-        border: `1px solid ${isPublic ? 'rgba(79,169,255,0.45)' : 'var(--border, #444)'}`,
-        color: isPublic ? '#4fa9ff' : 'var(--text-muted, #98a0a8)',
-        padding: '3px 9px', borderRadius: 4, cursor: 'pointer',
-        fontSize: 11, whiteSpace: 'nowrap',
-      }}
-    >
-      {isPublic ? 'Make Private' : 'Make Public'}
-    </button>
+    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ display: 'inline-flex', gap: 4 }}>
+        {opt('normal',  'Normal',     '#b8c4cf', 'rgba(184,196,207,0.14)',
+          'Normal — default. Only you see this contact. Brain processes interactions.')}
+        {opt('tenant',  '🌐 Public',  '#4fa9ff', 'rgba(79,169,255,0.12)',
+          'Make this contact visible to every user in your tenant. Brain on.')}
+        {opt('private', '🔇 Private', '#c084fc', 'rgba(192,132,252,0.14)',
+          'Mute Brain on this contact — out of My Attention, no WhatsApp brain processing, no Day Brief surfacing.')}
+      </span>
+      {err && (
+        <span style={{ color: '#d9534f', fontSize: 10 }}>{err}</span>
+      )}
+    </span>
   );
 }
 

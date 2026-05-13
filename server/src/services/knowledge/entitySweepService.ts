@@ -874,30 +874,29 @@ function composeEntityBody(c: ComposeInput): string {
 
 // ─── Scope + system-user resolution ──────────────────────────────
 
-async function classifyScope(_clientNumber: string, _email: string): Promise<'tenant' | 'user'> {
-  // Default policy: USER-PRIVATE — ALWAYS, for every auto-discovered
-  // contact regardless of email domain or phone.
+async function classifyScope(_clientNumber: string, _email: string): Promise<'tenant' | 'normal'> {
+  // Default policy 2026-05-13 three-state model: NORMAL — Brain processes,
+  // owner-only visibility, NOT tenant-shared, NOT Brain-muted.
   //
-  // Per user 2026-05-11: "by default no contacts will be shared across
-  // the tenant unless user itself marked it as public, so we need an
-  // option of 'Public' in contact list only public contacts will be
-  // visible across the tenant".
+  // Per user 2026-05-13: contacts default to 'normal'. The user, and
+  // ONLY the user, decides if a contact becomes:
+  //   - 'tenant'  — visible across the tenant (Make Public)
+  //   - 'private' — Brain ignores entirely (Make Private = mute Brain)
+  // Brain MUST NOT auto-classify in either direction.
   //
-  // Previously phone-only contacts (e.g. WhatsApp pushname "Eye Spy
-  // Cctv") could become tenant-shared via legacy paths; the
-  // `entity_tenant_domains` allowlist could auto-share email contacts
-  // on company domains. Both removed. The contact's owner now MUST
-  // explicitly click "Make Public" on the row before any other user
-  // in the tenant can see it. This eliminates the trust-shattering
-  // case where one user's random WhatsApp sender shows up in every
-  // teammate's contacts.
+  // Earlier rule (2026-05-11 "private-by-default") kept its intent —
+  // owner-only visibility — but the label was misleading because Brain
+  // still processed those contacts. The 2026-05-13 rename clarifies
+  // semantics: Private now means Brain-mute, Normal means owner-only-
+  // but-Brain-on. Legacy scope='user' rows are read as 'normal' via
+  // projectListItem's compat shim until the one-shot migration ships.
   //
   // Manual add can still set scope='tenant' at create time via the
   // admin-only `forceTenantShared` flag in createManualContact — that
   // remains an explicit user choice. Google Workspace directory
   // contacts also stay tenant-shared since they ARE the company
   // directory — that path doesn't go through classifyScope.
-  return 'user';
+  return 'normal';
 }
 
 async function pickSystemUserId(clientNumber: string): Promise<number | null> {

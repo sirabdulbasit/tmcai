@@ -277,7 +277,10 @@ router.patch('/:id/unpublish', async (req: Request, res: Response) => {
       res.status(403).json({ error: 'only the contact owner or a tenant admin can unpublish' }); return;
     }
     const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
-    const next: Record<string, unknown> = { ...meta, scope: 'user' };
+    // 2026-05-13 three-state model: /unpublish flips back to 'normal'
+    // (was 'user' which meant the same thing — kept as compat alias on
+    // read via projectListItem until migration runs).
+    const next: Record<string, unknown> = { ...meta, scope: 'normal' };
     delete next.publicSince;
     delete next.publicSetBy;
     next.unpublishedAt = new Date().toISOString();
@@ -286,7 +289,80 @@ router.patch('/:id/unpublish', async (req: Request, res: Response) => {
       `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
       JSON.stringify(next), id,
     );
-    res.json({ id, scope: 'user' });
+    res.json({ id, scope: 'normal' });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * PATCH /:id/scope  — unified scope setter (2026-05-13 three-state model)
+ *  Body: { scope: 'private' | 'normal' | 'tenant' }
+ *
+ * One endpoint, three states. Replaces the two-button publish/unpublish
+ * model (those endpoints stay as compat wrappers for callers that still
+ * use them — both ultimately update metadata.scope).
+ *
+ * Semantics:
+ *   - 'private': Brain ignores this contact entirely — out of My
+ *                Attention, no WhatsApp brain processing, no Day Brief
+ *                surfacing, no Open Items extraction. Owner still sees
+ *                the row in Contacts.
+ *   - 'normal' : default for every auto-discovered contact. Owner-only
+ *                visibility; Brain processes interactions normally.
+ *   - 'tenant' : visible to every user in the tenant + Brain on.
+ *                Owner identity recorded in publicSetBy/publicSince
+ *                so any teammate can see who shared it.
+ *
+ * Auth: owner-or-admin. Per the 2026-05-13 contacts-visibility-is-
+ * user-decided rule, Brain MUST NOT auto-call this endpoint.
+ */
+router.patch('/:id/scope', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const requested = String((req.body ?? {}).scope ?? '').trim().toLowerCase();
+    if (requested !== 'private' && requested !== 'normal' && requested !== 'tenant') {
+      res.status(400).json({ error: "scope must be one of 'private' | 'normal' | 'tenant'" });
+      return;
+    }
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { clientNumber: true, pageType: true, userId: true, metadata: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    const isOwner = (page as any).userId === req.user!.id;
+    if (!isOwner && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'only the contact owner or a tenant admin can change scope' }); return;
+    }
+    const meta = ((page.metadata as Record<string, unknown> | null) ?? {});
+    const next: Record<string, unknown> = { ...meta, scope: requested };
+    const nowIso = new Date().toISOString();
+    if (requested === 'tenant') {
+      next.publicSince = meta.publicSince ?? nowIso;
+      next.publicSetBy = meta.publicSetBy ?? req.user!.id;
+      delete next.brainMutedAt;
+      delete next.brainMutedBy;
+    } else if (requested === 'private') {
+      // Mute audit — useful for "you muted Brain on this contact"
+      // breadcrumbs and for restoring Private on reset-and-rebuild.
+      next.brainMutedAt = meta.brainMutedAt ?? nowIso;
+      next.brainMutedBy = meta.brainMutedBy ?? req.user!.id;
+      delete next.publicSince;
+      delete next.publicSetBy;
+    } else {
+      // 'normal' — clear both Public and Private audit fields.
+      delete next.publicSince;
+      delete next.publicSetBy;
+      delete next.brainMutedAt;
+      delete next.brainMutedBy;
+      next.unpublishedAt = nowIso;
+      next.unpublishedBy = req.user!.id;
+    }
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(next), id,
+    );
+    res.json({ id, scope: requested });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
@@ -522,7 +598,16 @@ function projectListItem(row: any, userId: number) {
     confidence: row.confidence,
     email: meta.email ?? null,
     phone: meta.phone ?? null,
-    scope: meta.scope ?? 'user',
+    // Three-state visibility (2026-05-13 model):
+    //   'private' = Brain-muted, owner-only
+    //   'normal'  = default, Brain processes, owner-only
+    //   'tenant'  = Brain processes, visible to whole tenant
+    // Legacy rows have scope='user' — treat as 'normal' until migrated.
+    scope: ((): 'private' | 'normal' | 'tenant' => {
+      const raw = String(meta.scope ?? 'normal');
+      if (raw === 'tenant' || raw === 'private') return raw;
+      return 'normal';
+    })(),
     // linkedPersonId — when multiple wiki rows represent the same
     // person (e.g. work email + personal email + phone), they share
     // this id. UI groups them under one collapsible header; each row
@@ -700,25 +785,32 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
       });
       return;
     }
-    // Snapshot the explicit-publish set BEFORE delete so we can restore
-    // scope='tenant' on the rebuilt rows. classifyScope() always returns
-    // 'user' now, so without this every contact would come back Private
-    // even if the owner had explicitly clicked "Make Public" earlier.
-    // We match by metadata.email or metadata.phone — those are stable
-    // across the wipe/rebuild because they're sourced from feed_events.
-    const publicSnapshot = await prisma.$queryRawUnsafe<Array<{
+    // Snapshot every explicit scope choice BEFORE delete (both Public
+    // AND Brain-muted Private) so we can restore them on the rebuilt
+    // rows. classifyScope() always returns 'normal' for auto-discovery,
+    // so without this every contact would come back Normal — losing
+    // the user's manual Make-Public / Make-Private opt-ins.
+    //
+    // Match by metadata.email or metadata.phone — those are stable
+    // across wipe/rebuild because they're sourced from feed_events.
+    const scopeSnapshot = await prisma.$queryRawUnsafe<Array<{
       email: string | null; phone: string | null;
+      scope: 'tenant' | 'private';
       publicSince: string | null; publicSetBy: number | null;
+      brainMutedAt: string | null; brainMutedBy: number | null;
     }>>(
-      `SELECT lower(metadata->>'email')        AS email,
-              metadata->>'phone'               AS phone,
-              metadata->>'publicSince'         AS "publicSince",
-              (metadata->>'publicSetBy')::int  AS "publicSetBy"
+      `SELECT lower(metadata->>'email')         AS email,
+              metadata->>'phone'                AS phone,
+              metadata->>'scope'                AS scope,
+              metadata->>'publicSince'          AS "publicSince",
+              (metadata->>'publicSetBy')::int   AS "publicSetBy",
+              metadata->>'brainMutedAt'         AS "brainMutedAt",
+              (metadata->>'brainMutedBy')::int  AS "brainMutedBy"
          FROM wiki_pages
         WHERE client_number = $1
           AND user_id = $2
           AND page_type = 'entity_person'
-          AND metadata->>'scope' = 'tenant'`,
+          AND metadata->>'scope' IN ('tenant', 'private')`,
       req.user!.clientNumber, req.user!.id,
     ).catch(() => [] as any[]);
     // Count + delete current user-owned entity_person rows.
@@ -734,21 +826,31 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
     // cc7bb4d content-dedup in place, no duplicates get recreated.
     const r = await sweepForTenant(req.user!.clientNumber, { lookbackDays })
       .catch((e: any) => ({ scanned: 0, created: 0, enriched: 0, errors: 1, error: e.message }));
-    // Restore explicit Public opt-ins onto the rebuilt rows.
-    let restored = 0;
-    for (const snap of publicSnapshot) {
+    // Restore explicit Public AND Private opt-ins onto the rebuilt
+    // rows. We carry the audit fields too (publicSince/publicSetBy for
+    // tenant rows, brainMutedAt/brainMutedBy for private rows) so the
+    // history doesn't get reset along with the row data.
+    let publicRestored = 0;
+    let privateRestored = 0;
+    for (const snap of scopeSnapshot) {
       const email = snap.email ? snap.email.toLowerCase() : null;
       const phone = snap.phone ? snap.phone.replace(/[^\d+]/g, '') : null;
       if (!email && !phone) continue;
-      // Match the rebuilt row by email OR phone in metadata.
+      const isPrivate = snap.scope === 'private';
+      const auditPatch = isPrivate
+        ? `jsonb_build_object(
+             'scope', 'private',
+             'brainMutedAt', COALESCE($3, metadata->>'brainMutedAt', NOW()::text),
+             'brainMutedBy', COALESCE($4::int, (metadata->>'brainMutedBy')::int)
+           )`
+        : `jsonb_build_object(
+             'scope', 'tenant',
+             'publicSince', COALESCE($3, metadata->>'publicSince', NOW()::text),
+             'publicSetBy', COALESCE($4::int, (metadata->>'publicSetBy')::int)
+           )`;
       const updated = await prisma.$executeRawUnsafe(
         `UPDATE wiki_pages
-            SET metadata = metadata
-                            || jsonb_build_object(
-                                 'scope', 'tenant',
-                                 'publicSince', COALESCE($3, metadata->>'publicSince', NOW()::text),
-                                 'publicSetBy', COALESCE($4::int, (metadata->>'publicSetBy')::int)
-                               ),
+            SET metadata = metadata || ${auditPatch},
                 last_updated_at = NOW()
           WHERE client_number = $1
             AND page_type = 'entity_person'
@@ -758,19 +860,21 @@ router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
                 )`,
         req.user!.clientNumber,
         email ?? '',
-        snap.publicSince,
-        snap.publicSetBy,
+        isPrivate ? snap.brainMutedAt : snap.publicSince,
+        isPrivate ? snap.brainMutedBy : snap.publicSetBy,
         phone ?? '',
       ).catch(() => 0);
-      restored += Number(updated) || 0;
+      const n = Number(updated) || 0;
+      if (isPrivate) privateRestored += n; else publicRestored += n;
     }
     res.json({
       ok: true,
       deleted: Number(deleted),
       rebuilt: (r as any).created ?? 0,
       scanned: (r as any).scanned ?? 0,
-      publicRestored: restored,
-      publicSnapshotSize: publicSnapshot.length,
+      publicRestored,
+      privateRestored,
+      scopeSnapshotSize: scopeSnapshot.length,
     });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
