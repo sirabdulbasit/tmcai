@@ -475,6 +475,20 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
     };
     for (const g of byPhone.values()) consider(g);
     for (const g of byEmail.values()) consider(g);
+    // TEMP DIAGNOSTIC (user 2026-05-13: badge not rendering despite right
+    // data). Log what we computed so we can see if the IIFE actually ran
+    // and what it found. Remove after the issue is resolved.
+    if (typeof window !== 'undefined') {
+      // eslint-disable-next-line no-console
+      console.log('[Contacts] dupSiblings:', {
+        entitiesCount: entities.length,
+        byPhoneKeys: Array.from(byPhone.keys()),
+        byPhoneValueSizes: Array.from(byPhone.values()).map((v) => v.length),
+        sibsSize: sibs.size,
+        sibsEntries: Array.from(sibs.entries()).map(([k, v]) => ({ id: k, sibCount: v.size })),
+        sampleEntity: entities[0] ? { id: entities[0].id, phone: entities[0].phone, email: entities[0].email, linkedPersonId: entities[0].linkedPersonId } : null,
+      });
+    }
     return sibs;
   })();
   // Group entities by linkedPersonId. Rows with a shared id are
