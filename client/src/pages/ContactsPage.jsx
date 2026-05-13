@@ -163,6 +163,40 @@ export default function ContactsPage() {
     }
   }, [load, notify]);
 
+  // Hard delete one contact. Distinct from Mark inactive: this removes
+  // the row entirely so future feed events DO recreate the contact.
+  // Use Mark inactive instead if you want sticky suppression.
+  const onDeleteContact = useCallback(async ({ id, confirmPhrase }) => {
+    try {
+      await api.delete(`/entity-catalog/${encodeURIComponent(id)}`, {
+        data: { confirmPhrase },
+      });
+      notify('success', 'Contact deleted.');
+      load();
+    } catch (err) {
+      notify('error', `Delete failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
+  // Reset all contacts and rebuild from feed. Destructive — deletes
+  // every entity_person wiki_page this user owns, then re-runs the
+  // tenant sweep which re-discovers contacts via ensureEntityForSender
+  // (content-dedup at ingest is structural so the rebuild won't
+  // recreate duplicates).
+  const [resetFlow, setResetFlow] = useState(null);
+  const onResetRebuild = useCallback(async (confirmPhrase) => {
+    try {
+      const { data } = await api.post('/entity-catalog/reset-and-rebuild', {
+        confirmPhrase,
+        lookbackDays: 90,
+      });
+      notify('success', `Reset done — deleted ${data.deleted}, rebuilt ${data.rebuilt} contacts from feed.`);
+      load();
+    } catch (err) {
+      notify('error', `Reset failed: ${err.response?.data?.error ?? err.message}`);
+    }
+  }, [load, notify]);
+
   const triggerSweep = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -288,8 +322,83 @@ export default function ContactsPage() {
             >
               {cleanupBusy ? 'Scanning…' : '🧹 Smart cleanup'}
             </button>
+            <button
+              onClick={() => setResetFlow({ typed: '' })}
+              style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(220,38,38,0.4)', color: '#fca5a5' }}
+              title="Delete ALL your contacts and re-discover them from feed. Destructive."
+            >
+              ⟲ Reset &amp; rebuild
+            </button>
           </div>
         </div>
+
+        {/* Reset & rebuild confirmation panel — destructive, types login email */}
+        {resetFlow && (
+          <div style={{
+            marginTop: 12, padding: '14px 16px',
+            background: 'rgba(220,38,38,0.08)',
+            border: '1px solid rgba(220,38,38,0.35)',
+            borderRadius: 8, color: 'var(--text)', fontSize: 13, lineHeight: 1.5,
+          }}>
+            <div style={{ marginBottom: 6, fontWeight: 600 }}>
+              Reset all contacts and rebuild from feed?
+            </div>
+            <div style={{ marginBottom: 8, color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
+              This deletes every contact you own, then re-discovers them from the last 90 days of
+              feed activity (Gmail, WhatsApp, Calendar). Brain dedupes by phone/email content on
+              the rebuild, so duplicates won't come back. Mark-inactive flags are NOT preserved.
+              Not reversible.
+            </div>
+            <div style={{ marginBottom: 6 }}>
+              Type your login email <strong>{user?.email}</strong> to confirm:
+            </div>
+            <input
+              type="text"
+              value={resetFlow.typed}
+              onChange={(ev) => setResetFlow({ ...resetFlow, typed: ev.target.value })}
+              autoFocus
+              placeholder={user?.email}
+              style={{
+                width: '100%', padding: '6px 8px',
+                background: 'var(--bg-1, #0d1117)',
+                border: '1px solid var(--border, #28323e)',
+                borderRadius: 4, color: 'var(--text, #e6e8eb)', fontSize: 13,
+              }}
+            />
+            <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                disabled={resetFlow.typed.trim().toLowerCase() !== String(user?.email ?? '').toLowerCase()}
+                onClick={async () => {
+                  const ok = resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase();
+                  if (!ok) return;
+                  await onResetRebuild(resetFlow.typed.trim());
+                  setResetFlow(null);
+                }}
+                style={{
+                  padding: '6px 12px', background: '#dc2626', color: '#fff',
+                  border: 0, borderRadius: 4, fontSize: 13,
+                  cursor: resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 'pointer' : 'not-allowed',
+                  opacity: resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 1 : 0.4,
+                }}
+              >
+                Delete all &amp; rebuild
+              </button>
+              <button
+                type="button"
+                onClick={() => setResetFlow(null)}
+                style={{
+                  padding: '6px 12px', background: 'transparent',
+                  color: 'var(--text-muted, #98a0a8)',
+                  border: '1px solid var(--border, #28323e)',
+                  borderRadius: 4, fontSize: 13, cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Cleanup confirmation banner — mirrors the Open Items pattern */}
         {cleanupPreview && (
@@ -443,18 +552,23 @@ export default function ContactsPage() {
           onLinkContacts={onLinkContacts}
           onUnlinkContact={onUnlinkContact}
           onMergeContacts={onMergeContacts}
+          onDeleteContact={onDeleteContact}
         />
       )}
     </div>
   );
 }
 
-function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, onUnlinkContact, onMergeContacts }) {
+function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, onUnlinkContact, onMergeContacts, onDeleteContact }) {
   // Local UI state for the destructive Merge confirmation. Holds
   // { primaryId, secondaryIds, primaryTitle, typed } when the user has
   // clicked Merge on a row but hasn't yet confirmed by typing the
   // primary's title. Same pattern as the Mark-Personal flow.
   const [mergeFlow, setMergeFlow] = useState(null);
+  // Same shape for the per-row hard-delete confirmation. Distinct from
+  // Mark Inactive (sticky soft-delete) — hard delete removes the row
+  // so future feed events DO recreate the contact.
+  const [deleteFlow, setDeleteFlow] = useState(null);
   // Build a duplicate-detection index from the full list. A pair is
   // a "candidate duplicate" when they share a normalized phone OR
   // email AND they don't already share a linkedPersonId (already
@@ -729,6 +843,24 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                     </button>
                   )}
                   <InactiveButton id={e.id} title={e.title} />
+                  {e.isOwner && onDeleteContact && (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteFlow({ id: e.id, title: e.title, typed: '' })}
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: 6,
+                        background: 'transparent',
+                        color: '#fca5a5',
+                        border: '1px solid rgba(220,38,38,0.4)',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                      }}
+                      title="Hard delete — removes the row entirely. Distinct from Mark inactive (sticky soft-delete). Future feed events WILL recreate this contact."
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </Td>
             </tr>
@@ -812,6 +944,76 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                 borderRadius: 4,
                 fontSize: 13,
                 cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Hard-delete confirmation panel — destructive, types contact title */}
+      {deleteFlow && (
+        <div style={{
+          margin: '12px',
+          padding: 14,
+          background: 'rgba(220, 38, 38, 0.08)',
+          border: '1px solid rgba(220, 38, 38, 0.3)',
+          borderRadius: 6,
+          fontSize: 13,
+          color: 'var(--text, #e6e8eb)',
+        }}>
+          <div style={{ marginBottom: 8, fontWeight: 600 }}>
+            Hard delete <strong>"{deleteFlow.title}"</strong>?
+          </div>
+          <div style={{ marginBottom: 8, color: 'var(--text-muted, #98a0a8)', fontSize: 12 }}>
+            Removes the row entirely. If this contact messages you again,
+            Brain will create a fresh contact row from the feed event.
+            If you want sticky suppression (Brain never re-creates this
+            contact), use <em>Mark inactive</em> instead. Not reversible.
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            Type <strong>{deleteFlow.title}</strong> to confirm:
+          </div>
+          <input
+            type="text"
+            value={deleteFlow.typed}
+            onChange={(ev) => setDeleteFlow({ ...deleteFlow, typed: ev.target.value })}
+            autoFocus
+            placeholder={deleteFlow.title}
+            style={{
+              width: '100%', padding: '6px 8px',
+              background: 'var(--bg-1, #0d1117)',
+              border: '1px solid var(--border, #28323e)',
+              borderRadius: 4, color: 'var(--text, #e6e8eb)', fontSize: 13,
+            }}
+          />
+          <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={deleteFlow.typed.trim().toLowerCase() !== String(deleteFlow.title || '').toLowerCase()}
+              onClick={() => {
+                const ok = deleteFlow.typed.trim().toLowerCase() === String(deleteFlow.title || '').toLowerCase();
+                if (!ok) return;
+                onDeleteContact?.({ id: deleteFlow.id, confirmPhrase: deleteFlow.typed.trim() });
+                setDeleteFlow(null);
+              }}
+              style={{
+                padding: '6px 12px', background: '#dc2626', color: '#fff',
+                border: 0, borderRadius: 4, fontSize: 13,
+                cursor: deleteFlow.typed.trim().toLowerCase() === String(deleteFlow.title || '').toLowerCase() ? 'pointer' : 'not-allowed',
+                opacity: deleteFlow.typed.trim().toLowerCase() === String(deleteFlow.title || '').toLowerCase() ? 1 : 0.4,
+              }}
+            >
+              Delete contact
+            </button>
+            <button
+              type="button"
+              onClick={() => setDeleteFlow(null)}
+              style={{
+                padding: '6px 12px', background: 'transparent',
+                color: 'var(--text-muted, #98a0a8)',
+                border: '1px solid var(--border, #28323e)',
+                borderRadius: 4, fontSize: 13, cursor: 'pointer',
               }}
             >
               Cancel

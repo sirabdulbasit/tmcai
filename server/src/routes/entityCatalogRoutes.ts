@@ -615,6 +615,114 @@ router.post('/link', async (req: Request, res: Response) => {
 });
 
 /**
+ * DELETE /entity-catalog/:id
+ *  Body: { confirmPhrase: string }
+ *
+ * Hard delete a single contact. Distinct from PATCH /:id/inactive
+ * which is sticky (won't recreate from feed). Hard delete removes
+ * the wiki_page row entirely so a future feed event from the same
+ * sender WILL create a fresh row.
+ *
+ * Destructive — requires typed-phrase confirmation (user types the
+ * contact's title) to prevent misclicks.
+ *
+ * Owner-or-admin gate. Sender_history pages that referenced this
+ * entityId get their entityId field nulled (kept around for search;
+ * just unlinked from a deleted person).
+ */
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id);
+    const confirmPhrase = String((req.body ?? {}).confirmPhrase ?? '').trim();
+    const page = await prisma.wikiPage.findUnique({
+      where: { id },
+      select: { id: true, clientNumber: true, pageType: true, userId: true, title: true },
+    });
+    if (!page || page.clientNumber !== req.user!.clientNumber || page.pageType !== 'entity_person') {
+      res.status(404).json({ error: 'not found' }); return;
+    }
+    if ((page as any).userId !== req.user!.id && !req.user!.isAdmin) {
+      res.status(403).json({ error: 'you can only delete contacts you own' }); return;
+    }
+    const expected = String(page.title || '').toLowerCase();
+    if (!confirmPhrase || confirmPhrase.toLowerCase() !== expected) {
+      res.status(400).json({
+        error: 'confirmPhrase must match the contact title to confirm delete',
+        expected,
+      });
+      return;
+    }
+    // Unlink sender_history pages so they don't point at a deleted entity.
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages
+         SET metadata = jsonb_set(metadata, '{entityId}', 'null'::jsonb)
+       WHERE client_number = $1
+         AND page_type IN ('sender_history','sender_topic')
+         AND metadata->>'entityId' = $2`,
+      req.user!.clientNumber, id,
+    ).catch(() => null);
+    // Hard delete the wiki_page row + cascade related (entity, etc.).
+    await prisma.$executeRawUnsafe(`DELETE FROM wiki_pages WHERE id = $1`, id).catch(() => null);
+    res.json({ ok: true, deleted: id });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * POST /entity-catalog/reset-and-rebuild
+ *  Body: { confirmPhrase: string, lookbackDays?: number }
+ *
+ * Nuke + rebuild: deletes EVERY entity_person wiki_page this user owns,
+ * then re-runs sweepForTenant which re-discovers contacts from the
+ * user's feed_events (gmail / whatsapp / etc.). Useful when contacts
+ * have accumulated cruft and you want Brain to rebuild its view of
+ * who you've been corresponding with.
+ *
+ * Destructive — requires typed phrase. Caller types their own login
+ * email as confirmation (something they know that no misclick produces).
+ *
+ * Per the user 2026-05-13 feed-dedup principle: the rebuild goes
+ * through ensureEntityForSender which now content-matches by phone/
+ * email before insert, so the rebuild won't recreate duplicates.
+ */
+router.post('/reset-and-rebuild', async (req: Request, res: Response) => {
+  try {
+    const confirmPhrase = String((req.body ?? {}).confirmPhrase ?? '').trim().toLowerCase();
+    const lookbackDays = Math.max(7, Math.min(365, Number((req.body ?? {}).lookbackDays ?? 90)));
+    const me = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: { email: true },
+    });
+    const expected = String(me?.email ?? '').toLowerCase();
+    if (!confirmPhrase || confirmPhrase !== expected) {
+      res.status(400).json({
+        error: 'confirmPhrase must match your login email to confirm reset',
+        expected,
+      });
+      return;
+    }
+    // Count + delete current user-owned entity_person rows.
+    const deleted = await prisma.$executeRawUnsafe(
+      `DELETE FROM wiki_pages
+        WHERE client_number = $1
+          AND user_id = $2
+          AND page_type = 'entity_person'`,
+      req.user!.clientNumber, req.user!.id,
+    ).catch(() => 0);
+    // Run a fresh sweep for the tenant. This walks recent feed_events
+    // and calls ensureEntityForSender per unique sender. With the
+    // cc7bb4d content-dedup in place, no duplicates get recreated.
+    const r = await sweepForTenant(req.user!.clientNumber, { lookbackDays })
+      .catch((e: any) => ({ scanned: 0, created: 0, enriched: 0, errors: 1, error: e.message }));
+    res.json({
+      ok: true,
+      deleted: Number(deleted),
+      rebuilt: (r as any).created ?? 0,
+      scanned: (r as any).scanned ?? 0,
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+/**
  * POST /entity-catalog/merge
  *  Body: { primaryId: string, secondaryIds: string[], confirmPhrase: string }
  *
