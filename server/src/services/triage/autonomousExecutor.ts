@@ -490,7 +490,7 @@ export async function executeIfMatched(event: FeedEventForExec): Promise<ExecRes
         } else {
           // Email reply: general professional tone.
           const { callLLM } = await import('../llmRouter');
-          const baseSys = `You are drafting a concise, professional reply on behalf of the user. Write 2-4 sentences. Match the MD's tone: polite, direct, no filler. Do NOT fabricate facts — if more info is needed, ask one clear question. NEVER mention MyOS, Brain, AI, or any automation — the reply must read as if the user wrote it.`;
+          const baseSys = `You are drafting a concise, professional reply on behalf of the user. Write 2-4 sentences. Match the user's tone: polite, direct, no filler. Do NOT fabricate facts — if more info is needed, ask one clear question. NEVER mention MyOS, Brain, AI, or any automation — the reply must read as if the user wrote it.`;
           const { withUserPrompts } = await import('../knowledge/userPromptService');
           const sys = await withUserPrompts(baseSys, event.userId, 'draft_reply');
           const userMsg = `Incoming email:\nFrom: ${fromFull}\nSubject: ${subject}\nPreview: ${preview}\n\nWrite only the reply body. No salutation or signature — MyOS will add them.`;

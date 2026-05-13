@@ -88,20 +88,22 @@ function cacheKey(clientNumber: string, senderKey: string, latestEventId: string
 
 // ─── Prompt ────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are an executive assistant reading a WhatsApp conversation between the MD and one contact. The MD doesn't have time to read every message — your job is to identify the ACTIONABLE LOOPS in the conversation so the MD can focus only on what genuinely needs them.
+const SYSTEM_PROMPT = `You are an executive assistant reading a WhatsApp conversation between the user (referred to as "you" in your output) and one contact. The user doesn't have time to read every message — your job is to identify the ACTIONABLE LOOPS in the conversation so they can focus only on what genuinely needs them.
+
+IMPORTANT terminology: in every output field (summary, ask, resolution, etc.) refer to the user as "you" — never "MD", never "the MD", never any other label. The user reads these as their own day brief, so second-person is the natural voice. Refer to the other party by their actual name (e.g. "Azhar", not "the contact").
 
 A "loop" is a topic-scoped exchange. Same topic across multiple turns = ONE loop, even if the conversation interleaves with other topics. Loop states:
 
-  - openWith=user: someone (usually them) has opened a loop the MD must answer or act on. e.g. "Can you confirm the price?" "When are you back?" "Please review this draft."
-  - openWith=them: MD has asked something they haven't answered yet. e.g. MD said "Send me the SOW" and they haven't sent it.
-  - closed: a loop that has been completed. Their ack ("Ok", "Done", "On it", "Coming") closes a prior MD ask. The MD's substantive reply closes their ask.
+  - openWith=user: someone (usually them) has opened a loop you must answer or act on. e.g. "Can you confirm the price?" "When are you back?" "Please review this draft."
+  - openWith=them: you have asked something they haven't answered yet. e.g. you said "Send me the SOW" and they haven't sent it.
+  - closed: a loop that has been completed. Their ack ("Ok", "Done", "On it", "Coming") closes a prior ask of yours. Your substantive reply closes their ask.
   - casual: chitchat with no actionable element — greetings, blessings, expressions of thanks. ONE loop max for the entire casual stretch, type='casual'.
 
 Critical reasoning rules:
 
-  1. A short ack ("Ok", "Coming", "Doing", "On it") on its own is NOT a loop. Look at what it's responding to. If MD said "Are you coming at 4pm?" and they reply "Coming" — that CLOSES the scheduling loop. Don't surface "Coming" as a new open loop.
+  1. A short ack ("Ok", "Coming", "Doing", "On it") on its own is NOT a loop. Look at what it's responding to. If you said "Are you coming at 4pm?" and they reply "Coming" — that CLOSES the scheduling loop. Don't surface "Coming" as a new open loop.
 
-  2. If MD asked something and the contact has NOT yet replied substantively, that's openWith=them — the MD is waiting on them, not the other way around. Surface it so MD knows what's outstanding from the other side.
+  2. If you asked something and the contact has NOT yet replied substantively, that's openWith=them — you are waiting on them, not the other way around. Surface it so you know what's outstanding from the other side.
 
   3. Topics CAN interleave. Don't fragment a topic into multiple loops just because it spans many turns. Same topic = same loop.
 
@@ -111,14 +113,14 @@ Critical reasoning rules:
 
 Output JSON only — no preamble, no markdown:
 {
-  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Mention the date(s) the conversation spans, what THEY said, what MD said, where it stands now. Example: 'On May 11, Hunain asked about Phoenix budget; MD said he'd review. Next day Hunain followed up with vendor timing and shared a draft SOW. As of May 12 evening, MD has acknowledged but not yet committed on either ask.' Concrete sentences with names + dates + decisions, not abstract labels.",
+  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Mention the date(s) the conversation spans, what THEY said, what YOU said, where it stands now. Example: 'On May 11, Hunain asked about Phoenix budget; you said you'd review. Next day Hunain followed up with vendor timing and shared a draft SOW. As of May 12 evening, you have acknowledged but not yet committed on either ask.' Concrete sentences with names + dates + decisions, not abstract labels. Always 'you' — never 'MD'.",
   "loops": [
     {
       "topic": "<2-5 word label, no hashtags>",
-      "ask": "<plain-English summary of the ask, or null for casual>",
+      "ask": "<plain-English summary of the ask, written from your perspective. Use 'you' for the user, the contact's name for the other side. Example: 'Azhar wants you to confirm if 600+600+200 equals 1400.' or null for casual>",
       "openWith": "user" | "them" | null,
       "askedAt": "<HH:MM>" | null,
-      "resolution": "<for closed: how it closed>" | null,
+      "resolution": "<for closed: how it closed, using 'you' not 'MD'>" | null,
       "closedAt": "<HH:MM>" | null,
       "type": "decision_required" | "scheduling" | "info_request" | "task_handoff" | "casual"
     }
@@ -127,17 +129,21 @@ Output JSON only — no preamble, no markdown:
 
 function buildUserPrompt(senderName: string, thread: ThreadTurn[]): string {
   const lines: string[] = [];
-  lines.push(`Conversation between MD and ${senderName} (most recent at bottom):`);
+  // Label the user's own messages as "You" in the transcript so the LLM
+  // doesn't have a "MD" string to anchor on. Combined with the SYSTEM_PROMPT
+  // instruction to refer to the user as "you", this keeps "MD" out of every
+  // output field (summary, ask, resolution).
+  lines.push(`Conversation between you and ${senderName} (most recent at bottom):`);
   lines.push('');
   for (const t of thread) {
     const d = new Date(t.timestamp);
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
-    const who = t.from === 'me' ? 'MD' : senderName;
+    const who = t.from === 'me' ? 'You' : senderName;
     lines.push(`[${hh}:${mm}] ${who}: ${t.text.slice(0, 500)}`);
   }
   lines.push('');
-  lines.push('Identify the loops. Output JSON only.');
+  lines.push('Identify the loops. Output JSON only. Remember: in every output field, say "you" not "MD".');
   return lines.join('\n');
 }
 

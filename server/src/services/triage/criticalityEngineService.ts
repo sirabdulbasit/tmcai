@@ -458,14 +458,14 @@ Shape:
   "reasons": ["<3-6 short bullets citing concrete signals>"],
   "confidence": 0..1,
   "substantive":     <true|false>,
-  "substantiveWhy":  "<one short sentence: WHY this is/isn't substantive enough to interrupt the MD's day right now>"
+  "substantiveWhy":  "<one short sentence: WHY this is/isn't substantive enough to interrupt the user's day right now. Refer to the user as 'you', never 'MD'.>"
 }
 
-The substantive flag answers ONE question: would a competent human EA interrupt the MD's day to flag THIS message specifically?
+The substantive flag answers ONE question: would a competent human EA interrupt the user's day to flag THIS message specifically?
 
-  - substantive=true: the MESSAGE itself carries enough signal to warrant a push notification right now. Examples: explicit ask the MD must answer, deadline mentioned, dollar amount, contract reference, escalation language, sender ★3+ raising a concern, an absence/decay/cross-source superpower fired with concrete grounding.
+  - substantive=true: the MESSAGE itself carries enough signal to warrant a push notification right now. Examples: explicit ask the user must answer, deadline mentioned, dollar amount, contract reference, escalation language, sender ★3+ raising a concern, an absence/decay/cross-source superpower fired with concrete grounding.
 
-  - substantive=false: the message is conversational, ambiguous, or its weight lives in the surrounding thread rather than this single event. Examples: "Ok", "Yes", "AOA Basit", "Thanks", "On my way", "👍", a generic acknowledgment, an end-of-thread close, an FYI with no ask. The criticality (if any) is in the thread context, not this event — let the MD see it in My Attention; don't ping their phone.
+  - substantive=false: the message is conversational, ambiguous, or its weight lives in the surrounding thread rather than this single event. Examples: "Ok", "Yes", "AOA Basit", "Thanks", "On my way", "👍", a generic acknowledgment, an end-of-thread close, an FYI with no ask. The criticality (if any) is in the thread context, not this event — surface it in My Attention; don't ping the phone.
 
 Default to substantive=false unless you can name a specific concrete signal in the actual provided context. "Could imply", "potential for", "increases urgency for any related communication" are NOT concrete signals — those are hedges.
 
