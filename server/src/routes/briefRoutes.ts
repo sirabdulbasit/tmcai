@@ -805,6 +805,44 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
       //
       // Merge + dedup by waMessageId or (ts within 1 second window).
       let outboundMsgs: any[] = [];
+
+      // (0) rawPayload.threadContext from each sibling — historical
+      // outbound captured by webjs AT INGEST TIME. This is the only
+      // source for outbound that pre-dates the whatsapp_outbound_messages
+      // deploy (2026-05-13) and where webjs can't backfill live now
+      // (chat closed, @lid issue, webjs restarted). conversationAnalyzer
+      // uses this same field to ground summaries, so reading it here
+      // gives the thread modal parity with what the summary already
+      // sees. Per user 2026-05-14: "where are those messages which i
+      // sent??? without reading both how can i come to know why he is
+      // saying 'Great'?"
+      for (const sib of siblings) {
+        const tc = (sib.rawPayload as any)?.threadContext;
+        if (!Array.isArray(tc)) continue;
+        for (const t of tc) {
+          if (!t || t.from !== 'me' || !t.text) continue;
+          const ts = toMs(t.timestamp) ?? Date.now();
+          outboundMsgs.push({
+            from: 'me' as const,
+            subject: '',
+            text: String(t.text).slice(0, 4000),
+            timestamp: ts,
+            fromName: 'You',
+          });
+        }
+      }
+      // Dedup within outboundMsgs by (text + ts within 2s) — multiple
+      // siblings carry overlapping threadContext windows.
+      if (outboundMsgs.length > 1) {
+        outboundMsgs.sort((a, b) => a.timestamp - b.timestamp);
+        const deduped: typeof outboundMsgs = [];
+        for (const m of outboundMsgs) {
+          const dup = deduped.some((d) => d.text === m.text && Math.abs(d.timestamp - m.timestamp) < 2000);
+          if (!dup) deduped.push(m);
+        }
+        outboundMsgs = deduped;
+      }
+
       const chatId = (event.rawPayload as any)?.chatId;
       if (chatId) {
         // (1) Postgres — authoritative
@@ -820,14 +858,23 @@ router.get('/attention/:feedEventId/thread', async (req: Request, res: Response)
             take: 100,
           }).catch(() => [] as any[]);
           for (const r of rows) {
-            outboundMsgs.push({
-              from: 'me' as const,
-              subject: '',
-              text: r.bodyText,
-              timestamp: r.sentAt.getTime(),
-              fromName: 'You',
-              _msgId: r.waMessageId,
-            });
+            const ts = r.sentAt.getTime();
+            // Dedup against threadContext-sourced entries (same text +
+            // ts within 2s) so an outbound captured at ingest doesn't
+            // double-render with the Postgres copy.
+            const dup = outboundMsgs.some((m) =>
+              m.text === r.bodyText && Math.abs(m.timestamp - ts) < 2000,
+            );
+            if (!dup) {
+              outboundMsgs.push({
+                from: 'me' as const,
+                subject: '',
+                text: r.bodyText,
+                timestamp: ts,
+                fromName: 'You',
+                _msgId: r.waMessageId,
+              });
+            }
           }
         } catch { /* try other sources */ }
 
