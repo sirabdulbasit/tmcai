@@ -337,18 +337,62 @@ export async function dispatchInstruction(args: {
         if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
       }
 
-      // Note: we previously had a hardcoded case-insensitive title-match
-      // dedup here. Per MD 2026-05-12 ("are you hardcoding??") that was
-      // a string-equality judgement that couldn't even catch the real
-      // duplicates ("Revisit pricing for Phoenix Systems" vs "add
-      // 'revisit pricing for Phoenix Systems' as an open item" — clearly
-      // the same thing, exact-string match doesn't see it).
+      // Hygiene-level dedup. Per user 2026-05-13: "why brain is creating
+      // duplicate records?? similarly it is creating duplication in open
+      // items". This block was previously reverted as "hardcoded
+      // judgement" — but the user clarified the distinction: hygiene
+      // ≠ judgement.
       //
-      // Dedup is now handled at the LLM layer: the composer prompt
-      // includes the open-items snapshot and an explicit rule telling
-      // the LLM to scan for matching title OR topic before emitting
-      // add_open_item. The LLM reasons about identity with context;
-      // the dispatcher just executes.
+      //   Judgement (LLM owns): is "Revisit Phoenix pricing" the same
+      //     TASK as "follow up on Phoenix"? Different strings, possibly
+      //     same intent. The LLM has the open-items snapshot in its
+      //     prompt and is instructed to detect paraphrased matches
+      //     before emitting add_open_item.
+      //
+      //   Hygiene (DB owns): two rows with LITERALLY IDENTICAL titles
+      //     should never coexist. That's data integrity, not a decision
+      //     about meaning. If the user (or Brain) tries to add an item
+      //     whose title is byte-equal to an existing active one, return
+      //     the existing id instead of creating a duplicate row.
+      //
+      // The check is intentionally narrow (case-insensitive exact
+      // match on this user's active items only). Paraphrase detection
+      // remains the LLM's responsibility via the composer prompt.
+      try {
+        const existing = await prisma.openItem.findFirst({
+          where: {
+            clientNumber, userId,
+            ownerId: userId,
+            status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
+            title: { equals: title, mode: 'insensitive' as any },
+          },
+          select: { id: true, title: true, status: true, dueDate: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (existing) {
+          // If the caller specified a dueDate and the existing row has
+          // none, update the existing row's dueDate (treat the duplicate
+          // call as "set due date on existing X"). Otherwise just
+          // return the existing row's id with a "already exists" note.
+          if (dueDate && !existing.dueDate) {
+            await prisma.openItem.update({
+              where: { id: existing.id },
+              data: { dueDate } as any,
+            }).catch(() => null);
+            return {
+              ok: true,
+              artifactId: existing.id,
+              message: `"${existing.title}" already on your list — set due date to ${dueDate.toISOString().slice(0, 10)}.`,
+            };
+          }
+          return {
+            ok: true,
+            artifactId: existing.id,
+            message: `"${existing.title}" already on your open items (status: ${existing.status.toLowerCase()}). Not adding a duplicate.`,
+          };
+        }
+      } catch { /* fall through to create */ }
+
       try {
         const op = await prisma.openItem.create({
           data: {
