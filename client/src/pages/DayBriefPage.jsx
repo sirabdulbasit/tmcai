@@ -1476,16 +1476,12 @@ export default function DayBriefPage() {
           act-like-a-brain-not-a-program rule. Server /brief/insights
           remains in place but is no longer rendered. */}
 
-      {/* ═══════════════════════════════════════════════════════════
-          ZONE 3 — SETUP & REFLECTION  (less-frequent)
-          Ask Brain only — Standing Instructions and "What Brain Learned"
-          moved to My Rules where they live full-time, so Day Brief stays
-          focused on TODAY (Zone 1) + WHAT BRAIN DID (Zone 2).
-          ═══════════════════════════════════════════════════════════ */}
-      <ZoneHeader label="Ask" sub="Anything else, just ask." />
-
-      {/* Ask Brain — chat affordance, primary input */}
-      <AskBrain />
+      {/* "Ask Brain" widget removed from Day Brief 2026-05-14 per user
+          — was a single-shot Q&A box with no conversation memory, no
+          follow-ups, no Day Brief context. Duplicated Brain Chat (the
+          canonical conversational surface) worse, because users typed a
+          question expecting chat and got a stateless input. Brain Chat
+          remains as the proper home for natural-language asks. */}
     </div>
     </div>
   );
