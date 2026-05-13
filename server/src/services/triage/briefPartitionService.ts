@@ -86,13 +86,52 @@ export async function computeBriefPartition(
   // Coalesce concurrent partition requests to the same user behind one
   // promise so two endpoints don't both race the builders.
   const promise = (async (): Promise<BriefPartition> => {
-    const [myAttention, briefItems] = await Promise.all([
-      buildAttentionList(clientNumber, userId, attentionLimit),
-      buildHandledList(clientNumber, userId, briefLimit),
-    ]);
+    // SEQUENTIAL not parallel — buildAttentionList mutates shared
+    // AttentionItem objects in the suggester cache (e.g. it.critical
+    // gets demoted by loop extraction). If buildHandledList runs
+    // concurrently it reads inconsistent state. Running them in
+    // sequence guarantees buildHandledList sees the post-mutation
+    // values that My Attention's autonomy gate also evaluated.
+    const myAttention = await buildAttentionList(clientNumber, userId, attentionLimit);
+    const briefItems = await buildHandledList(clientNumber, userId, briefLimit);
+
+    // CONTRACT ENFORCEMENT — partition must be disjoint by feed_event
+    // id. If any item appears in both lists, drop it from Brief (the
+    // user-attention surface wins — never silently hide a card
+    // requiring action). Log the overlap so the next pipeline change
+    // sees it instead of papering over.
+    const attentionIds = new Set<string>();
+    for (const it of myAttention) {
+      if (it.feedEventId) attentionIds.add(it.feedEventId);
+      // Conversation collapse: My Attention groups feed_events by
+      // chat/thread into one card. The other members of that group
+      // are tracked in conversationFeedEventIds / threadFeedEventIds
+      // on the representative item. All of them belong to My Attention.
+      const conv = (it as any).conversationFeedEventIds;
+      if (Array.isArray(conv)) for (const fid of conv) if (fid) attentionIds.add(String(fid));
+      const tids = (it as any).threadFeedEventIds;
+      if (Array.isArray(tids)) for (const fid of tids) if (fid) attentionIds.add(String(fid));
+    }
+    const overlap: string[] = [];
+    const filteredBrief = briefItems.filter((it) => {
+      if (it.feedEventId && attentionIds.has(it.feedEventId)) {
+        overlap.push(it.feedEventId);
+        return false;
+      }
+      return true;
+    });
+    if (overlap.length > 0) {
+      console.warn(
+        `[brief-partition] LEAK detected — ${overlap.length} feed_events were in BOTH My Attention and Brief; removed from Brief. `
+        + `Sample ids: ${overlap.slice(0, 3).join(', ')}. `
+        + `Underlying race: builders disagreed on autonomy gate for the same feed_event. `
+        + `This enforcement is a band-aid; the real fix is making suggester output deterministic per partition.`,
+      );
+    }
+
     const byBucket: Record<string, number> = {};
-    for (const it of briefItems) byBucket[it.bucket] = (byBucket[it.bucket] ?? 0) + 1;
-    return { myAttention, brief: briefItems, byBucket };
+    for (const it of filteredBrief) byBucket[it.bucket] = (byBucket[it.bucket] ?? 0) + 1;
+    return { myAttention, brief: filteredBrief, byBucket };
   })();
   partitionCache.set(k, { promise, expiresAt: Date.now() + PARTITION_TTL_MS });
   // If the partition computation throws, drop the cache entry so the
