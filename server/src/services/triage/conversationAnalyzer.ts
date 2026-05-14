@@ -113,7 +113,7 @@ Critical reasoning rules:
 
 Output JSON only — no preamble, no markdown:
 {
-  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Mention the date(s) the conversation spans, what THEY said, what YOU said, where it stands now. Example: 'On May 11, Hunain asked about Phoenix budget; you said you'd review. Next day Hunain followed up with vendor timing and shared a draft SOW. As of May 12 evening, you have acknowledged but not yet committed on either ask.' Concrete sentences with names + dates + decisions, not abstract labels. Always 'you' — never 'MD'.",
+  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Use the ACTUAL dates from the transcript timestamps — every turn shows its date. NEVER write 'on an unspecified date' or 'on the same date' when the turns span different days. If the gap between two messages is more than 24h, name the gap (e.g. 'A week later, on May 14, Sofia replied with...'). Each substantive turn the contact sent must be reflected in the summary — do NOT skip messages just because they look short ('Ok, thank you' is a real turn that matters for sequencing). Example: 'On May 5, you shared three contacts at Popular PVC and said you wanted to be part of the solution. The next day Sofia replied briefly with \"Ok, thank you\". A week later, on May 14, Sofia sent a voice note and an \"FYI pls\" message — the conversation may be re-engaging.' Concrete: real dates + real names + real decisions. Always 'you' — never 'MD'.",
   "loops": [
     {
       "topic": "<2-5 word label, no hashtags>",
@@ -133,17 +133,28 @@ function buildUserPrompt(senderName: string, thread: ThreadTurn[]): string {
   // doesn't have a "MD" string to anchor on. Combined with the SYSTEM_PROMPT
   // instruction to refer to the user as "you", this keeps "MD" out of every
   // output field (summary, ask, resolution).
-  lines.push(`Conversation between you and ${senderName} (most recent at bottom):`);
+  //
+  // Each turn carries its FULL date (YYYY-MM-DD HH:MM) — not just HH:MM
+  // as before. WhatsApp threads often span days or weeks. With only
+  // time-of-day the LLM cannot tell May 5 from May 14, so it writes
+  // "on an unspecified date" or "on the same date" even when the
+  // conversation is multi-day. Per user 2026-05-14: Sofia thread
+  // spanned May 5 → May 6 → May 14 and the summary collapsed all
+  // three days as "the same date" + dropped Sofia's May 6 reply.
+  lines.push(`Conversation between you and ${senderName} (most recent at bottom). Each turn shows the EXACT date and time it was sent — do NOT collapse different dates into "the same date":`);
   lines.push('');
   for (const t of thread) {
     const d = new Date(t.timestamp);
+    const yyyy = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
     const who = t.from === 'me' ? 'You' : senderName;
-    lines.push(`[${hh}:${mm}] ${who}: ${t.text.slice(0, 500)}`);
+    lines.push(`[${yyyy}-${mo}-${dd} ${hh}:${mm}] ${who}: ${t.text.slice(0, 500)}`);
   }
   lines.push('');
-  lines.push('Identify the loops. Output JSON only. Remember: in every output field, say "you" not "MD".');
+  lines.push('Identify the loops. Output JSON only. Remember: in every output field, say "you" not "MD". Use the actual dates shown above — never "an unspecified date" / "on the same date" when the timestamps differ by more than 24h. If the conversation has a gap (e.g. May 5 → May 14 with no messages between), call out that gap.');
   return lines.join('\n');
 }
 
