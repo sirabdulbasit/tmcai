@@ -393,6 +393,62 @@ export async function dispatchInstruction(args: {
         }
       } catch { /* fall through to create */ }
 
+      // ─── Substring-containment dedup ────────────────────────────
+      // Catches the wrapper-vs-inner pattern that exact-match misses:
+      //   existing: "Revisit pricing for Phoenix Systems" (manual)
+      //   new:      "add 'revisit pricing for Phoenix Systems' as an open item"
+      //             (extracted from user's own outbound saying "I'll add this")
+      // Same intent, different framing. Per user 2026-05-14: this exact
+      // pair was visible side-by-side in Action Center.
+      //
+      // Rule: if NEW title's normalised text contains an existing active
+      // item's normalised title (or vice versa) for THIS user, treat as
+      // duplicate. Normalisation strips quotes, the "add ... as an open
+      // item" wrapper, and case differences. Length floor (>= 6 chars
+      // after normalisation) avoids matching trivial substrings like "ok".
+      //
+      // This is hygiene-level pattern recognition, not LLM judgement —
+      // the wrapper is a known structural artefact of commitment
+      // extraction reading the user's own self-referential outbound.
+      // Real semantic paraphrase dedup ("revisit Phoenix pricing" vs
+      // "follow up on Phoenix") still belongs to the LLM via the
+      // composer prompt.
+      try {
+        const normalize = (s: string) => s
+          .toLowerCase()
+          .replace(/^(add|please add|note|please note|track|create an open item for|add to open items)\s+/i, '')
+          .replace(/\s+as an open item$/i, '')
+          .replace(/['"`'']/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const newNorm = normalize(title);
+        if (newNorm.length >= 6) {
+          const candidates = await prisma.openItem.findMany({
+            where: {
+              clientNumber, userId,
+              ownerId: userId,
+              status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
+            },
+            select: { id: true, title: true, status: true, dueDate: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          for (const c of candidates) {
+            const existingNorm = normalize(c.title);
+            if (existingNorm.length < 6) continue;
+            // Containment in either direction = duplicate.
+            const isDup = newNorm.includes(existingNorm) || existingNorm.includes(newNorm);
+            if (isDup) {
+              return {
+                ok: true,
+                artifactId: c.id,
+                message: `Same intent as existing "${c.title}" (status: ${c.status.toLowerCase()}). Not adding a duplicate.`,
+              };
+            }
+          }
+        }
+      } catch { /* fall through to create */ }
+
       try {
         const op = await prisma.openItem.create({
           data: {

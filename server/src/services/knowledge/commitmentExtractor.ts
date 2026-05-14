@@ -75,6 +75,7 @@ Rules:
 - "We sent the deck yesterday" — NOT a commitment (past tense).
 - "Could you send the deck?" — NOT a commitment (asking the other side).
 - "Sounds good" / "OK" / acknowledgments alone — no commitments.
+- META-STATEMENTS about using the tooling itself are NEVER commitments. Phrases like "I'll add this as an open item", "let me note this down", "I'll put this in my system", "I'll add this to my list", "I'll track this", "noting this in Nexeo", "I'll add to open items" describe the user reaching for a feature — they are not promises to a third party. Skip them. If the ENTIRE message is meta ("I'll add this as an open item for Phoenix pricing"), return {"commitments": []}. If the message MIXES a real commitment with a meta-statement ("I'll send the deck Monday and I'll add this as an open item"), extract ONLY the real commitment ("send the deck Monday"), drop the meta.
 - If the message has none, return {"commitments": []}.
 - Never invent due dates. If the user said "soon", dueAt=null.
 - Output JSON only.`;
