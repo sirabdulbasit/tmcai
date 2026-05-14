@@ -449,14 +449,35 @@ export async function dispatchInstruction(args: {
         }
       } catch { /* fall through to create */ }
 
+      // ─── Gate ─────────────────────────────────────────────────────
+      // Centralised pre-create checks: Private-contact filter +
+      // delegation normalisation. See services/openItems/openItemGate.ts
+      // for the full rule list.
+      const { gateOpenItemCreate } = await import('../openItems/openItemGate');
+      const gate = await gateOpenItemCreate({
+        clientNumber, userId,
+        sourceFeedEventId: ix.targetFeedEventId ?? null,
+        title,
+        description: note,
+        delegateeId: (ix.params as any).delegateeId ?? null,
+        delegateeName: (ix.params as any).delegateeName ?? null,
+        delegateeEmail: (ix.params as any).delegateeEmail ?? null,
+      });
+      if (gate.block) {
+        return { ok: false, message: gate.reason ?? 'Open-item creation gated.' };
+      }
+
       try {
         const op = await prisma.openItem.create({
           data: {
             title, description: note,
             type: 'manual',
-            status: 'NEW',
+            status: gate.status,
             priority: 'medium',
             ownerId: userId,
+            ...(gate.delegateeId  != null ? { delegateeId: gate.delegateeId } : {}),
+            ...(gate.delegateeName       ? { delegateeName: gate.delegateeName } : {}),
+            ...(gate.delegateeEmail      ? { delegateeEmail: gate.delegateeEmail } : {}),
             clientNumber, userId,
             sourceFeed: ix.targetFeedEventId ? 'brain_chat' : 'manual',
             sourceFeedEventId: ix.targetFeedEventId ?? null,
@@ -465,7 +486,10 @@ export async function dispatchInstruction(args: {
           select: { id: true },
         });
         const dueStr = dueDate ? ` (due ${dueDate.toISOString().slice(0, 10)})` : '';
-        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items${dueStr}.` };
+        const delegStr = gate.status === 'DELEGATED' && gate.delegateeName
+          ? ` — delegated to ${gate.delegateeName}`
+          : '';
+        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items${delegStr}${dueStr}.` };
       } catch (err: any) {
         return { ok: false, message: `Add open item failed: ${err.message}` };
       }

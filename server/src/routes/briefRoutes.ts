@@ -2342,14 +2342,36 @@ router.post('/decide', async (req: Request, res: Response) => {
         }
       } catch { /* best-effort: fall back to raw subject/snippet */ }
     }
+    // Gate — Private-contact filter + delegation normalisation.
+    const { gateOpenItemCreate } = await import('../services/openItems/openItemGate');
+    const gate = await gateOpenItemCreate({
+      clientNumber: user.clientNumber,
+      userId: user.id,
+      sourceFeedEventId: feedEventId,
+      title,
+      description,
+      delegateeId: (body as any).delegateeId ?? null,
+      delegateeName: (body as any).delegateeName ?? null,
+      delegateeEmail: (body as any).delegateeEmail ?? null,
+    });
+    if (gate.block) {
+      return res.status(200).json({
+        ok: false,
+        reason: gate.reason ?? 'Gated — open-item not created.',
+        skipped: true,
+      });
+    }
     const created = await prisma.openItem.create({
       data: {
         title,
         description,
         type: itemType as string,
-        status: 'NEW',
+        status: gate.status,
         priority: body.priority ?? 'medium',
         ownerId: user.id,
+        ...(gate.delegateeId  != null ? { delegateeId: gate.delegateeId } : {}),
+        ...(gate.delegateeName       ? { delegateeName: gate.delegateeName } : {}),
+        ...(gate.delegateeEmail      ? { delegateeEmail: gate.delegateeEmail } : {}),
         sourceFeed: event.sourceType ?? null,
         sourceRef: feedEventId,
         clientNumber: user.clientNumber,
