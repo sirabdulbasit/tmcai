@@ -237,6 +237,10 @@ function BrainChannelSection({ user }) {
   const [outboundEnabled, setOutboundEnabled] = useState(false);  // opt-in default off
   const [outboundPaused, setOutboundPaused] = useState(false);
   const [dailyCap, setDailyCap] = useState('20');
+  // Day Brief scheduling — Brain fires the daily brief at this local
+  // time via WhatsApp (Nexeo channel). Default 08:30 PKT.
+  const [dayBriefTime, setDayBriefTime] = useState('08:30');
+  const [timezone, setTimezone] = useState('Asia/Karachi');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -252,6 +256,8 @@ function BrainChannelSection({ user }) {
       setOutboundEnabled(d.outboundEnabled === true);
       setOutboundPaused(!!d.outboundPaused);
       setDailyCap(String(d.dailyCap ?? 20));
+      setDayBriefTime(d.dayBriefTime || '08:30');
+      setTimezone(d.timezone || 'Asia/Karachi');
     }).catch(() => {
       setWhatsappNumber(user?.contactNumber || '');
     });
@@ -266,6 +272,8 @@ function BrainChannelSection({ user }) {
         outboundEnabled,
         outboundPaused,
         dailyCap: parseInt(dailyCap, 10) || 20,
+        dayBriefTime,
+        timezone,
       });
       setMsg('Saved');
       setTimeout(() => setMsg(''), 2000);
@@ -310,6 +318,32 @@ function BrainChannelSection({ user }) {
         <div className="settings-field">
           <label>Quiet hours end</label>
           <input type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div className="settings-field">
+          <label>Day Brief time</label>
+          <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
+          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+            Brain sends your daily brief to WhatsApp at this time. Bypasses quiet hours.
+          </div>
+        </div>
+        <div className="settings-field">
+          <label>Timezone</label>
+          <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
+                  style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+            <option value="Asia/Karachi">Asia/Karachi (PKT, UTC+5)</option>
+            <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
+            <option value="Asia/Riyadh">Asia/Riyadh (AST, UTC+3)</option>
+            <option value="Europe/London">Europe/London (GMT/BST)</option>
+            <option value="America/New_York">America/New_York (ET)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+            <option value="UTC">UTC</option>
+          </select>
+          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+            Used for quiet hours + Day Brief time evaluation.
+          </div>
         </div>
       </div>
 

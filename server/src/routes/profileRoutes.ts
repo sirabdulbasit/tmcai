@@ -211,17 +211,28 @@ router.get('/brain-channel', async (req: Request, res: Response) => {
     outboundEnabled: bc.outboundEnabled === true,
     outboundPaused: !!bc.outboundPaused,
     dailyCap: typeof bc.dailyCap === 'number' && bc.dailyCap >= 1 ? bc.dailyCap : 20,
+    // Day Brief delivery (added 2026-05-16). Time is HH:MM in the
+    // user's timezone. Default 08:30 — early enough to plan, late
+    // enough to settle in. Timezone defaults to Asia/Karachi (PKT)
+    // since the user base is currently TMC. Cron evaluates the
+    // user's wall-clock at this timezone every minute and fires
+    // the Day Brief via Nexeo when it matches.
+    dayBriefTime: bc.dayBriefTime ?? '08:30',
+    timezone: bc.timezone ?? 'Asia/Karachi',
   });
 });
 
 router.put('/brain-channel', async (req: Request, res: Response) => {
-  const { channel, whatsappNumber, quietStart, quietEnd, minConfidence, outboundEnabled, outboundPaused, dailyCap } = req.body ?? {};
+  const { channel, whatsappNumber, quietStart, quietEnd, minConfidence, outboundEnabled, outboundPaused, dailyCap, dayBriefTime, timezone } = req.body ?? {};
   const prisma = (await import('../db/prisma')).default;
   const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { notificationPreferences: true } });
   const prefs = ((u?.notificationPreferences as any) || {}) as Record<string, any>;
   // Preserve any existing brain_channel keys we don't accept here so a
   // partial PUT doesn't drop sibling settings.
   const existing = prefs.brain_channel || {};
+  // Validate HH:MM time format for dayBriefTime; reject silently
+  // (keep existing) if malformed.
+  const validTime = typeof dayBriefTime === 'string' && /^\d{2}:\d{2}$/.test(dayBriefTime);
   prefs.brain_channel = {
     ...existing,
     channel: channel ?? 'whatsapp',
@@ -234,6 +245,8 @@ router.put('/brain-channel', async (req: Request, res: Response) => {
     outboundEnabled: typeof outboundEnabled === 'boolean' ? outboundEnabled : existing.outboundEnabled === true,
     outboundPaused: !!outboundPaused,
     dailyCap: typeof dailyCap === 'number' && dailyCap >= 1 ? Math.min(dailyCap, 200) : 20,
+    dayBriefTime: validTime ? dayBriefTime : (existing.dayBriefTime ?? '08:30'),
+    timezone: typeof timezone === 'string' && timezone.length > 0 ? timezone : (existing.timezone ?? 'Asia/Karachi'),
     updatedAt: new Date().toISOString(),
   };
   await prisma.user.update({
