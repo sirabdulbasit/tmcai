@@ -481,6 +481,36 @@ const server = app.listen(env.port, async () => {
     }
   }, 60 * 60 * 1000);
 
+  // 2026-05-14 Phase 2 — DRAFT open-item ask cadence. Runs hourly,
+  // but each item's lastAskAt-by-UTC-day check throttles to one ask
+  // per day per draft. Day 5 = warning; day 6+ = expire (status CLOSED
+  // with inactivationReason in metadata). Outbound goes via Nexeo
+  // notifier per the Brain-never-speaks-as-user rule.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
+        const s = await runOpenItemDraftAsk();
+        if (s.asked + s.expired > 0) {
+          console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} errors=${s.errors}`);
+        }
+      } catch (err: any) {
+        console.warn('[openItemDraftAsk] error:', err.message);
+      }
+    })();
+  }, 3 * 60 * 1000); // first run 3 min after boot
+  setInterval(async () => {
+    try {
+      const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
+      const s = await runOpenItemDraftAsk();
+      if (s.asked + s.expired > 0) {
+        console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[openItemDraftAsk] error:', err.message);
+    }
+  }, 60 * 60 * 1000);
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {

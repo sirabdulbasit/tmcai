@@ -451,8 +451,9 @@ export async function dispatchInstruction(args: {
 
       // ─── Gate ─────────────────────────────────────────────────────
       // Centralised pre-create checks: Private-contact filter +
-      // delegation normalisation. See services/openItems/openItemGate.ts
-      // for the full rule list.
+      // delegation normalisation + DRAFT routing for missing
+      // priority/deadline. See services/openItems/openItemGate.ts.
+      const callerPriority = (ix.params as any).priority as ('critical'|'high'|'medium'|'low'|null|undefined);
       const { gateOpenItemCreate } = await import('../openItems/openItemGate');
       const gate = await gateOpenItemCreate({
         clientNumber, userId,
@@ -462,18 +463,24 @@ export async function dispatchInstruction(args: {
         delegateeId: (ix.params as any).delegateeId ?? null,
         delegateeName: (ix.params as any).delegateeName ?? null,
         delegateeEmail: (ix.params as any).delegateeEmail ?? null,
+        priority: callerPriority ?? null,
+        dueDate,
       });
       if (gate.block) {
         return { ok: false, message: gate.reason ?? 'Open-item creation gated.' };
       }
 
       try {
+        // priority: keep caller value if they provided one; for DRAFT
+        // status (slot-filling pending), store null-equivalent via the
+        // default 'medium' but mark missingSlots in metadata so the
+        // daily ask job knows what to fetch.
         const op = await prisma.openItem.create({
           data: {
             title, description: note,
             type: 'manual',
             status: gate.status,
-            priority: 'medium',
+            priority: callerPriority ?? 'medium',
             ownerId: userId,
             ...(gate.delegateeId  != null ? { delegateeId: gate.delegateeId } : {}),
             ...(gate.delegateeName       ? { delegateeName: gate.delegateeName } : {}),
@@ -482,6 +489,16 @@ export async function dispatchInstruction(args: {
             sourceFeed: ix.targetFeedEventId ? 'brain_chat' : 'manual',
             sourceFeedEventId: ix.targetFeedEventId ?? null,
             ...(dueDate ? { dueDate } : {}),
+            ...(gate.status === 'DRAFT' ? {
+              metadata: {
+                draft: {
+                  missingSlots: gate.missingSlots,
+                  asksSentCount: 0,
+                  firstAskScheduledAt: null,
+                  lastAskAt: null,
+                },
+              } as any,
+            } : {}),
           } as any,
           select: { id: true },
         });
@@ -489,7 +506,10 @@ export async function dispatchInstruction(args: {
         const delegStr = gate.status === 'DELEGATED' && gate.delegateeName
           ? ` — delegated to ${gate.delegateeName}`
           : '';
-        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items${delegStr}${dueStr}.` };
+        const draftStr = gate.status === 'DRAFT'
+          ? ` — parked as DRAFT (missing ${gate.missingSlots.join(' + ')}, I'll ask you on WhatsApp)`
+          : '';
+        return { ok: true, artifactId: op.id, message: `Added "${title}" to your open items${delegStr}${dueStr}${draftStr}.` };
       } catch (err: any) {
         return { ok: false, message: `Add open item failed: ${err.message}` };
       }

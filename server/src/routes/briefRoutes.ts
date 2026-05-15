@@ -2342,8 +2342,11 @@ router.post('/decide', async (req: Request, res: Response) => {
         }
       } catch { /* best-effort: fall back to raw subject/snippet */ }
     }
-    // Gate — Private-contact filter + delegation normalisation.
+    // Gate — Private-contact filter + delegation normalisation + DRAFT routing.
     const { gateOpenItemCreate } = await import('../services/openItems/openItemGate');
+    const bodyDueDate: Date | null = body.dueDate
+      ? (() => { const d = new Date(body.dueDate as any); return Number.isNaN(d.getTime()) ? null : d; })()
+      : null;
     const gate = await gateOpenItemCreate({
       clientNumber: user.clientNumber,
       userId: user.id,
@@ -2353,6 +2356,8 @@ router.post('/decide', async (req: Request, res: Response) => {
       delegateeId: (body as any).delegateeId ?? null,
       delegateeName: (body as any).delegateeName ?? null,
       delegateeEmail: (body as any).delegateeEmail ?? null,
+      priority: body.priority ?? null,
+      dueDate: bodyDueDate,
     });
     if (gate.block) {
       return res.status(200).json({
@@ -2361,6 +2366,9 @@ router.post('/decide', async (req: Request, res: Response) => {
         skipped: true,
       });
     }
+    const draftMeta = gate.status === 'DRAFT'
+      ? { draft: { missingSlots: gate.missingSlots, asksSentCount: 0, firstAskScheduledAt: null, lastAskAt: null } }
+      : null;
     const created = await prisma.openItem.create({
       data: {
         title,
@@ -2378,7 +2386,10 @@ router.post('/decide', async (req: Request, res: Response) => {
         userId: user.id,
         sourceFeedEventId: feedEventId,
         archetype: archetype ?? null,
-        metadata: forwardedMeta ? { forwarded: forwardedMeta } as any : undefined,
+        ...(bodyDueDate ? { dueDate: bodyDueDate } : {}),
+        metadata: forwardedMeta || draftMeta
+          ? { ...(forwardedMeta ? { forwarded: forwardedMeta } : {}), ...(draftMeta ?? {}) } as any
+          : undefined,
       } as any,
     });
     openItemId = created.id;

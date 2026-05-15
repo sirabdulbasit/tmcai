@@ -43,6 +43,10 @@ export interface GateInput {
   delegateeId?: number | null;
   delegateeName?: string | null;
   delegateeEmail?: string | null;
+  /** Caller's intended priority — when missing, gate routes to DRAFT. */
+  priority?: 'critical' | 'high' | 'medium' | 'low' | null;
+  /** Caller's intended due date — when missing, gate routes to DRAFT. */
+  dueDate?: Date | null;
 }
 
 export interface GateOutput {
@@ -52,10 +56,13 @@ export interface GateOutput {
   /** Reason for blocking, when block=true. */
   reason?: string;
   /** Normalised values to use in the prisma.openItem.create call. */
-  status: 'NEW' | 'DELEGATED';
+  status: 'NEW' | 'DELEGATED' | 'DRAFT';
   delegateeId: number | null;
   delegateeName: string | null;
   delegateeEmail: string | null;
+  /** When status='DRAFT' (item missing priority and/or dueDate), names
+   *  the slots the daily ask job should fill via WhatsApp. */
+  missingSlots: Array<'priority' | 'dueDate'>;
 }
 
 /** "Delegated to <Name>" pattern at start of description or as its
@@ -98,6 +105,7 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
             reason: 'Source sender is a Private contact — Brain skips open-item creation for muted senders.',
             status: 'NEW',
             delegateeId: null, delegateeName: null, delegateeEmail: null,
+            missingSlots: [],
           };
         }
       }
@@ -131,11 +139,40 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
     } catch { /* ignore */ }
   }
 
+  // 3) DRAFT routing — per user 2026-05-14: every open item should
+  // have priority AND deadline; if either is missing the item is
+  // PARKED as DRAFT and Brain asks via WhatsApp once a day for 5
+  // days, warns on day 5, expires day 6.
+  //
+  // Delegation takes precedence over DRAFT — if it's delegated we
+  // don't need a priority/due-date from the user; the delegatee
+  // resolves the item. Only non-delegated items can be DRAFT.
+  const missingSlots: Array<'priority' | 'dueDate'> = [];
+  if (!input.priority) missingSlots.push('priority');
+  if (!input.dueDate) missingSlots.push('dueDate');
+
+  if (hasDelegation) {
+    return {
+      block: false,
+      status: 'DELEGATED',
+      delegateeId, delegateeName, delegateeEmail,
+      missingSlots: [],
+    };
+  }
+
+  if (missingSlots.length > 0) {
+    return {
+      block: false,
+      status: 'DRAFT',
+      delegateeId: null, delegateeName: null, delegateeEmail: null,
+      missingSlots,
+    };
+  }
+
   return {
     block: false,
-    status: hasDelegation ? 'DELEGATED' : 'NEW',
-    delegateeId,
-    delegateeName,
-    delegateeEmail,
+    status: 'NEW',
+    delegateeId, delegateeName, delegateeEmail,
+    missingSlots: [],
   };
 }
