@@ -40,7 +40,11 @@ export default function OpenItemsPage() {
   const [filter, setFilter] = useState('all'); // all | open | delegated | done
   const [showCreate, setShowCreate] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
-  const [form, setForm] = useState({ title: '', description: '', type: 'task', priority: 'medium', dueDate: '' });
+  // priority starts empty (user picks it). Per 2026-05-15: pre-defaulting
+  // 'medium' meant the backend gate saw the slot as filled and never
+  // routed missing-priority items to DRAFT. Empty = "user hasn't chosen"
+  // so the gate's null-check fires correctly.
+  const [form, setForm] = useState({ title: '', description: '', type: 'task', priority: '', dueDate: '' });
   const [msg, setMsg] = useState('');
   const [atBottom, setAtBottom] = useState(false);
   const [cleanupPreview, setCleanupPreview] = useState(null); // { stale, dedup, total }
@@ -141,9 +145,16 @@ export default function OpenItemsPage() {
   async function handleCreate() {
     if (!form.title) return;
     try {
-      await api.post('/open-items', { ...form, dueDate: form.dueDate || undefined });
+      // Send priority as null when user didn't pick one (instead of the
+      // form's '' default) so the backend gate can route the item to
+      // DRAFT for slot-filling via the daily WhatsApp ask.
+      await api.post('/open-items', {
+        ...form,
+        priority: form.priority || null,
+        dueDate: form.dueDate || undefined,
+      });
       setShowCreate(false);
-      setForm({ title: '', description: '', type: 'task', priority: 'medium', dueDate: '' });
+      setForm({ title: '', description: '', type: 'task', priority: '', dueDate: '' });
       setMsg('Item created');
       loadItems(); loadStats();
       setTimeout(() => setMsg(''), 3000);
@@ -397,6 +408,7 @@ export default function OpenItemsPage() {
               <div style={{ flex: 1 }}>
                 <label style={s.label}>Priority</label>
                 <select style={s.input} value={form.priority} onChange={e => setForm({ ...form, priority: e.target.value })}>
+                  <option value="">— Brain will ask if not set —</option>
                   <option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
                 </select>
               </div>

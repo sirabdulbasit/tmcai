@@ -131,6 +131,32 @@ async function main(): Promise<void> {
 
   console.log(`\n${pairs.length} duplicate pair(s) found.\n`);
 
+  // ─── Standalone meta-task wrappers ─────────────────────────────
+  // Per user 2026-05-15: items like "add 'X' as an open item" and
+  // "draft a reply to Y" survive the pair detector when there's no
+  // canonical inner row to merge into — but they're STILL not real
+  // tasks. They're meta-statements the commitment extractor pulled
+  // from outbound. Archive them by pattern regardless of pairing.
+  // The going-forward fix is already in commitmentExtractor.ts
+  // (rejects these at extraction); this cleans existing rows.
+  const META_PATTERNS = [
+    /^add\s+['"`'']?.+['"`'']?\s+as an open item$/i,
+    /^add to open items?\s+/i,
+    /^note\s+(?:that\s+)?.+(?:in|to)\s+(?:my\s+)?(?:list|tracker|nexeo)$/i,
+    /^create an open item for\s+/i,
+    /^draft a reply to\s+/i,
+    /^reply to\s+\S+\s+later$/i,
+  ];
+  const standaloneMetaIds: Array<{ id: string; title: string }> = [];
+  for (const it of items) {
+    if (decided.has(it.id)) continue; // already in a pair
+    if (META_PATTERNS.some((re) => re.test(it.title.trim()))) {
+      standaloneMetaIds.push({ id: it.id, title: it.title });
+      console.log(`  META: archive "${it.title}" (no inner counterpart, but a meta-statement)`);
+    }
+  }
+  console.log(`\n${standaloneMetaIds.length} standalone meta-wrapper(s) found.\n`);
+
   if (args.dryRun) {
     console.log('DRY RUN — no changes made. Re-run without --dry-run to apply.');
     await prisma.$disconnect();
@@ -153,7 +179,22 @@ async function main(): Promise<void> {
       console.warn(`  failed to archive ${p.archiveId}: ${e.message}`);
     }
   }
-  console.log(`Done. archived=${archived} (set to DONE with dedup audit note).`);
+  let metaArchived = 0;
+  for (const m of standaloneMetaIds) {
+    try {
+      await prisma.openItem.update({
+        where: { id: m.id },
+        data: {
+          status: 'DONE',
+          description: { set: `[meta-wrapper-cleanup 2026-05-15] "${m.title}" was a commitment-extractor artefact, not a real task. Archived.` } as any,
+        } as any,
+      });
+      metaArchived += 1;
+    } catch (e: any) {
+      console.warn(`  failed to archive meta ${m.id}: ${e.message}`);
+    }
+  }
+  console.log(`Done. pairs_archived=${archived} meta_archived=${metaArchived} (set to DONE with audit notes).`);
   await prisma.$disconnect();
 }
 
