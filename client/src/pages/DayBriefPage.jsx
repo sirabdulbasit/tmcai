@@ -4049,11 +4049,14 @@ function AttentionCard({ item, onDecided, notify, drafts = [] }) {
               ? (item.preview || item.subject || '(empty message)')
               : (item.subject || '(no subject)')}
           </div>
-          {/* WhatsApp loop extraction (Phase 2) — when Brain has read
-              the full conversation thread and identified discrete open
-              loops by topic, render each as a bullet so the user sees
-              ALL the asks in one card without re-reading the chat. */}
-          {item.itemType === 'whatsapp' && Array.isArray(item.loops) && item.loops.length > 0 && (() => {
+          {/* Conversation analyzer block — when Brain has read the
+              full thread (WA OR Gmail) and emitted loops + summary,
+              render them as a structured block. Loops are the asks;
+              the summary is the chronological narrative. Per user
+              2026-05-15: this is the "rich card shape" they admired
+              on Abdul Haseeb's WA card; Extension 1 brought it to
+              Gmail threads. */}
+          {(item.itemType === 'whatsapp' || item.itemType === 'email') && Array.isArray(item.loops) && item.loops.length > 0 && (() => {
             const open = item.loops.filter((l) => l.openWith === 'user');
             const waiting = item.loops.filter((l) => l.openWith === 'them');
             const closed = item.loops.filter((l) => l.openWith === null && l.closedAt);

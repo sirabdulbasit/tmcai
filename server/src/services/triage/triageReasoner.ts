@@ -214,11 +214,36 @@ Be decisive. Don't hedge. The user trusts you to pick one path.`;
   if (!jsonMatch) throw new Error('LLM did not return JSON');
   const parsed = JSON.parse(jsonMatch[0]);
 
+  // ─── Rationale↔Action consistency guard (defense-in-depth) ──
+  // The prompt above tells the LLM never to emit draft_reply when the
+  // rationale says the loop is closed / no action needed. The LLM
+  // still does it occasionally. Per user 2026-05-15: Abdul Haseeb
+  // "Proceed" card had rationale "closing the loop on the previous
+  // discussion" + suggestedAction='draft_reply'. The rationale was
+  // right (loop IS closed); the action was wrong.
+  //
+  // After parsing, scan the rationale for the forbidden phrase list.
+  // If a match fires AND the action is draft_reply, override to
+  // acknowledge. Brand the override in the rationale so the audit
+  // is visible to the user. Log to console for telemetry (so we can
+  // measure how often the LLM violates its own rule).
+  let rationale = String(parsed.rationale ?? 'Limited history — using default.').slice(0, 240);
+  let suggestedAction = validAction(parsed.suggestedAction);
+  const RATIONALE_LOOP_CLOSED = /\b(closing the loop|loop is closed|loop closed|no action required|no response needed|no reply needed|no follow-?up needed|just acknowledg(?:ing|e)|thread is closed|informational only|nothing to do)\b/i;
+  if (suggestedAction === 'draft_reply' && RATIONALE_LOOP_CLOSED.test(rationale)) {
+    const matched = rationale.match(RATIONALE_LOOP_CLOSED)?.[0] ?? 'closed-loop phrase';
+    log.warn('Rationale↔action contradiction caught; overriding draft_reply → acknowledge', {
+      userId: ctx.userId, matched, originalAction: 'draft_reply',
+    });
+    suggestedAction = 'acknowledge';
+    rationale = `${rationale} (Brain caught itself: rationale says "${matched}", so switched suggestion to acknowledge.)`.slice(0, 240);
+  }
+
   // Validate + clamp
   return {
     archetype: validArchetype(parsed.archetype),
-    rationale: String(parsed.rationale ?? 'Limited history — using default.').slice(0, 240),
-    suggestedAction: validAction(parsed.suggestedAction),
+    rationale,
+    suggestedAction,
     confidence: clamp01(Number(parsed.confidence)),
     actions: Array.isArray(parsed.actions) ? parsed.actions.slice(0, 6).map((a: any) => ({
       id: String(a.id ?? 'draft_reply'),

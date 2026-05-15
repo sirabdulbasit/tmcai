@@ -111,19 +111,37 @@ Critical reasoning rules:
 
   5. NEVER invent loops not grounded in the actual messages. If you can't quote (mentally) the message that opened a loop, don't list it.
 
-Output JSON only — no preamble, no markdown:
+Output JSON only — no preamble, no markdown.
+
+CRITICAL — both fields are REQUIRED and must BOTH be populated:
+- "summary" tells the chronological story.
+- "loops" enumerates the discrete asks/topics — including CLOSED ones with their resolution.
+NEVER absorb closed loops into the summary prose and leave loops[] empty. The card UI renders these as separate visual blocks: the summary as a narrative paragraph, the closed loops as a checkmark list, the open loops as the suggested actions. Empty loops[] = the user loses the structured view they rely on (the user 2026-05-15: "I admired this card and it regressed when loops disappeared").
+
+A non-casual conversation almost always has at least 2-3 loops to enumerate (each topic the conversation touched). Closed loops have openWith=null AND a non-null closedAt AND resolution text. Active loops have openWith='user' or 'them'.
+
 {
-  "summary": "<CHRONOLOGICAL narrative, 3-5 short sentences, oldest to latest. Use the ACTUAL dates from the transcript timestamps — every turn shows its date. NEVER write 'on an unspecified date' or 'on the same date' when the turns span different days. If the gap between two messages is more than 24h, name the gap (e.g. 'A week later, on May 14, Sofia replied with...'). Each substantive turn the contact sent must be reflected in the summary — do NOT skip messages just because they look short ('Ok, thank you' is a real turn that matters for sequencing). When a turn is a voice note (lines starting with '🎤 Voice note' and an 'Original:' / 'English:' block in the body), DON'T summarise it as 'sent a voice note' — quote or paraphrase the actual transcribed content. The whole point of transcription is the substance; saying 'voice note' alone hides what was said. Example: 'On May 5, you shared three contacts at Popular PVC. The next day Sofia replied \"Ok, thank you\". A week later on May 14, Sofia sent a voice note saying she\\'d circle back once their team was ready, plus a brief \"FYI pls\".' Concrete: real dates + real names + real decisions + actual voice content. Always 'you' — never 'MD'.",
+  "summary": "<chronological narrative, can be longer for multi-day conversations (room for up to 2000 chars). Use the ACTUAL dates from the transcript timestamps — every turn shows its date. NEVER write 'on an unspecified date' or 'on the same date' when the turns span different days. If the gap between two messages is more than 24h, name the gap (e.g. 'A week later, on May 14, Sofia replied with...'). Each substantive turn the contact sent must be reflected in the summary. When a turn is a voice note (body starting with '🎤 Voice note'), quote or paraphrase the actual transcribed content — don't say 'sent a voice note' alone. Use 'you' for the user, never 'MD'. Do NOT enumerate closed loops here — that's the loops[] array's job.>",
   "loops": [
     {
       "topic": "<2-5 word label, no hashtags>",
-      "ask": "<plain-English summary of the ask, written from your perspective. Use 'you' for the user, the contact's name for the other side. Example: 'Azhar wants you to confirm if 600+600+200 equals 1400.' or null for casual>",
+      "ask": "<plain-English: what was the ask? Use 'you' / contact's name. Example: 'Azhar wants you to confirm 600+600+200=1400.' or null for casual>",
       "openWith": "user" | "them" | null,
-      "askedAt": "<HH:MM>" | null,
-      "resolution": "<for closed: how it closed, using 'you' not 'MD'>" | null,
-      "closedAt": "<HH:MM>" | null,
+      "askedAt": "<HH:MM or YYYY-MM-DD HH:MM>" | null,
+      "resolution": "<for CLOSED loops, required: how it closed. Example: 'Abdul Haseeb acknowledged this.' or 'You confirmed the $300 purchase.' Required when closedAt is set.>" | null,
+      "closedAt": "<HH:MM or YYYY-MM-DD HH:MM>" | null,
       "type": "decision_required" | "scheduling" | "info_request" | "task_handoff" | "casual"
     }
+  ]
+}
+
+Worked example (Abdul Haseeb 18-message thread spanning May 12-15):
+{
+  "summary": "On May 12 you shared an ABAP development update; Abdul acknowledged. On May 13 you informed him you'd bought $25 in Claude API credits for HaseebOS. By May 15 the credits had been consumed in two days; you proposed optimising HaseebOS first before more spend. Abdul advised making it work first then optimise. You agreed and said you'd need bulk credits (~$300) for AI-based ABAP development. Abdul replied 'Proceed' — confirming the $300 purchase.",
+  "loops": [
+    { "topic": "Claude API credits for HaseebOS", "ask": null, "openWith": null, "askedAt": "2026-05-13 09:42", "resolution": "Abdul Haseeb acknowledged this.", "closedAt": "2026-05-13 10:15", "type": "decision_required" },
+    { "topic": "HaseebOS credit consumption and optimization", "ask": null, "openWith": null, "askedAt": "2026-05-15 11:03", "resolution": "Abdul wants you to make it work first before optimising.", "closedAt": "2026-05-15 11:30", "type": "info_request" },
+    { "topic": "Bulk credit purchase for HaseebOS and ABAP development", "ask": "Abdul approving $300 bulk credit purchase.", "openWith": null, "askedAt": "2026-05-15 15:20", "resolution": "Abdul approved the $300 purchase ('Proceed').", "closedAt": "2026-05-15 15:47", "type": "decision_required" }
   ]
 }`;
 
@@ -209,12 +227,13 @@ export async function analyzeConversation(args: {
       : [];
 
     const analysis: ConversationAnalysis = {
-      // Cap at 800 chars — chronological summary needs room for 3-5
-      // short sentences with names, dates, and decisions. Old cap (240)
-      // was tight for a single sentence; this fits MD's "complete
-      // descriptive summary from old to latest" ask without bloating
-      // the prompt downstream.
-      summary: String(obj.summary ?? '').slice(0, 800),
+      // Cap at 2000 chars — earlier 800 cut multi-day narratives mid-
+      // sentence (user flagged on 2026-05-15: Abdul Haseeb's 4-day
+      // arc summary ended at "Abdul Haseeb ask"). 2000 gives room
+      // for genuinely rich threads without exploding downstream
+      // prompts (this string ends up inside brainComposer's
+      // attentionBlock).
+      summary: String(obj.summary ?? '').slice(0, 2000),
       loops,
       hasOpenLoopWithUser: loops.some((l) => l.openWith === 'user'),
       provider: r.provider,
