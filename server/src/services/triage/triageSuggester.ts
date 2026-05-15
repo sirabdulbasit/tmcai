@@ -1782,6 +1782,67 @@ export async function buildAttentionList(
     }));
   }
 
+  // ── Gmail thread loop extraction (Phase 3-equivalent for email) ──
+  // Per user 2026-05-14: "this kind of explanation should be for every
+  // feed". The WA loop extractor above gives Abdul Haseeb's 10-turn
+  // thread a chronological narrative + closed-loops list. Extend the
+  // same pattern to Gmail threads with multiple messages so emails
+  // get the same shape (multi-day arc, what's closed, what's open).
+  //
+  // Runs only on email cards whose rawPayload carries a threadId AND
+  // the thread actually has more than one message — single-message
+  // emails fall through to the per-event reasoner (no loop concept
+  // applies there). The thread fetch cap of 30 keeps LLM budget
+  // reasonable for long threads.
+  const gmailCardsForLoops = items.filter((it) => {
+    if (it.itemType !== 'email') return false;
+    const payload = ((it as any).rawPayload ?? {}) as { threadId?: string };
+    return !!payload.threadId;
+  });
+  if (gmailCardsForLoops.length > 0) {
+    const { fetchEmailThreadContext } = await import('../gmailService');
+    const { analyzeConversation } = await import('./conversationAnalyzer');
+    await Promise.all(gmailCardsForLoops.map(async (it) => {
+      try {
+        const payload = ((it as any).rawPayload ?? {}) as { threadId?: string };
+        const threadId = payload.threadId!;
+        const thread = await fetchEmailThreadContext(userId, threadId, 30).catch(() => []);
+        // Single-message threads don't benefit from loop extraction —
+        // there's nothing to close. Skip and let the per-event reasoner
+        // handle the card.
+        if (thread.length < 2) return;
+        const senderKey = (it.fromEmail || it.from || '').toLowerCase().trim();
+        // Cache key — uses the feed_event id (changes when new mail
+        // arrives, naturally invalidating).
+        const latestEventId = it.feedEventId;
+        const analysis = await analyzeConversation({
+          userId, clientNumber,
+          senderName: it.fromDisplay || it.from || senderKey,
+          senderKey,
+          // ThreadTurn shape: { from, text, timestamp }. Email fetcher
+          // returns extra fields (subject, fromName, to, cc) which the
+          // analyzer ignores — structural typing covers it.
+          thread,
+          latestEventId,
+        });
+        (it as any).loops = analysis.loops;
+        (it as any).conversationSummary = analysis.summary;
+        // Mirror the WA card's no-open-loop demotion: if the analyzer
+        // sees only closed/casual loops, the email doesn't need to
+        // bother the user. Downgrade so the autonomy gate can route it
+        // to Brief instead of My Attention.
+        if (!analysis.hasOpenLoopWithUser && analysis.loops.length > 0) {
+          if (it.criticality) {
+            it.criticality.band = it.criticality.band === 'critical' ? 'medium' : it.criticality.band;
+          }
+          it.critical = false;
+        }
+      } catch (err: any) {
+        console.warn('[triage] loop extraction failed for Gmail card', it.feedEventId, err.message);
+      }
+    }));
+  }
+
   // ── CC suppression ──
   // Emails where the user is on CC (not To/Bcc) drop OFF My Attention by
   // default. Most CC mail is FYI/informational and crowds the actionable
