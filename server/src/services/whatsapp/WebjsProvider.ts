@@ -243,6 +243,22 @@ export class WebjsProvider implements IWhatsAppProvider {
       const isVoice = message.type === 'ptt' || message.type === 'audio';
       if (!isVoice && (!message.body || !message.body.trim())) return;
 
+      // Type whitelist — mirror UserWebjsProvider. Non-message events
+      // (e2e_notification, ciphertext, call_log, gp2, etc.) carry the
+      // chatId in `body` and leak past the empty-body guard. Drop them
+      // at ingest. See UserWebjsProvider for the full reasoning.
+      const messageTypeStr = String(message.type ?? 'chat').toLowerCase();
+      const REAL_MESSAGE_TYPES = new Set([
+        'chat', 'ptt', 'audio', 'image', 'video', 'document',
+        'sticker', 'location', 'vcard', 'multi_vcard', 'list',
+        'list_response', 'buttons_response', 'order', 'payment',
+        'product', 'revoked',
+      ]);
+      if (!REAL_MESSAGE_TYPES.has(messageTypeStr)) {
+        log.info('Skipped non-message event type', { type: messageTypeStr, from: rawFrom });
+        return;
+      }
+
       const msgId = message.id?._serialized ?? message.id?.id ?? `${rawFrom}:${message.timestamp}:${message.body?.slice(0, 16)}`;
       if (markSeen(msgId)) {
         log.info('Raw message event — duplicate, skipping', { msgId });

@@ -533,6 +533,32 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
       if (!message.body?.trim() && !message.hasMedia) return;
 
+      // ── Type whitelist ──
+      // WhatsApp emits non-message events through the same client.on
+      // ('message') hook: e2e_notification (security code changed),
+      // ciphertext (failed decrypt), call_log, gp2 (group ops),
+      // broadcast_notification, etc. These are NOT messages — they're
+      // system metadata. Their body field often contains the chatId
+      // (@lid format) instead of empty, so the empty-body guard above
+      // doesn't catch them, and they end up surfaced as "Tahir BM Bank
+      // Alfalah sent: 144697582436430@lid" cards the user can't find
+      // in WhatsApp because they aren't real messages.
+      //
+      // Per user 2026-05-15: "from where this message is coming? i
+      // can't find it in my whatsapp" — Tahir e2e_notification leaked
+      // as a card. Whitelist actual content types only.
+      const messageTypeStr = String(message.type ?? 'chat').toLowerCase();
+      const REAL_MESSAGE_TYPES = new Set([
+        'chat', 'ptt', 'audio', 'image', 'video', 'document',
+        'sticker', 'location', 'vcard', 'multi_vcard', 'list',
+        'list_response', 'buttons_response', 'order', 'payment',
+        'product', 'revoked',
+      ]);
+      if (!REAL_MESSAGE_TYPES.has(messageTypeStr)) {
+        log.info('Skipped non-message event type', { userId, type: messageTypeStr, from: rawFrom });
+        return;
+      }
+
       // Bot/automation message filter — drop messages that are clearly
       // output from another AI assistant or chatbot leaking into the
       // user's chat. Pattern: body starts with "[AI]", "[BOT]",
