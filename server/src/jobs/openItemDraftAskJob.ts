@@ -36,7 +36,7 @@
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
-import { sendViaNotifier } from '../services/notifications/whatsappNotifierService';
+import { brainContactsUser } from '../services/notifications/brainOutboundService';
 
 const log = createLogger('open-item-draft-ask');
 
@@ -91,14 +91,14 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
   const now = new Date();
   const todayUtcDateStr = now.toISOString().slice(0, 10);
 
-  // Pull all DRAFT items + owner email/phone for delivery routing.
-  // Cap at 500 per run; daily cadence makes this comfortably enough.
+  // Pull all DRAFT items. Cap at 500 per run; daily cadence makes
+  // this comfortably enough. Owner phone lookup happens inside
+  // brainContactsUser so we don't duplicate the resolution logic.
   const drafts = await prisma.openItem.findMany({
     where: { status: { in: ACTIVE_DRAFT_STATUSES } as any },
     select: {
       id: true, title: true, status: true, createdAt: true,
       clientNumber: true, userId: true, metadata: true,
-      owner: { select: { phoneNumber: true, integrationEmail: true, email: true } } as any,
     } as any,
     take: 500,
   }) as any[];
@@ -148,20 +148,22 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         continue;
       }
 
-      // Resolve owner phone — Brain → user via Nexeo channel.
-      const ownerPhone: string | null = item.owner?.phoneNumber ?? null;
-      if (!ownerPhone) {
-        log.warn('Draft ask: owner has no phoneNumber', { itemId: item.id, userId: item.userId });
-        result.errors += 1;
-        continue;
-      }
-
       const warn = day === WARN_DAY;
       const body = buildAskBody({ title: item.title, missingSlots, day, warn });
 
-      const dispatchRes = await sendViaNotifier(item.clientNumber, ownerPhone, body);
-      if (!dispatchRes.ok) {
-        log.warn('Draft ask send failed', { itemId: item.id, error: dispatchRes.error });
+      // Brain → user via the canonical brainContactsUser path. Handles
+      // opt-in gate, pause flag, quiet hours, dedup, channel selection.
+      // dedupKey scoped per item per UTC day so each day's ask is
+      // unique even if multiple ticks fire.
+      const dispatchRes = await brainContactsUser({
+        userId: item.userId,
+        kind: 'open_item_draft_ask',
+        summary: `Draft ask day ${day}: "${item.title.slice(0, 60)}"`,
+        body,
+        dedupKey: `draft_ask:${item.id}:${todayUtcDateStr}`,
+      });
+      if (!dispatchRes.sent) {
+        log.warn('Draft ask not sent', { itemId: item.id, reason: dispatchRes.reason });
         result.errors += 1;
         // Do NOT advance asksSentCount or lastAskAt — next tick retries.
         continue;

@@ -511,6 +511,33 @@ const server = app.listen(env.port, async () => {
     }
   }, 60 * 60 * 1000);
 
+  // 2026-05-14 Phase 3.0 — daily smart follow-up engine. One LLM
+  // verdict per active item per day; dispatches via Nexeo only.
+  // Per-user learning via agent_action history of past verdicts.
+  // Internal Nexeo delegatees get direct nudges; external delegations
+  // get owner-side "want to chase?" reminders (Brain never contacts
+  // external per feedback_brain_never_speaks_as_user 2026-05-14).
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runOpenItemFollowUp } = await import('./jobs/openItemFollowUpJob');
+        const s = await runOpenItemFollowUp();
+        console.log(`[openItemFollowUp] scanned=${s.scanned} dispatched=${s.dispatched} verdicts=${JSON.stringify(s.verdicts)} errors=${s.errors}`);
+      } catch (err: any) {
+        console.warn('[openItemFollowUp] error:', err.message);
+      }
+    })();
+  }, 5 * 60 * 1000); // first run 5 min after boot
+  setInterval(async () => {
+    try {
+      const { runOpenItemFollowUp } = await import('./jobs/openItemFollowUpJob');
+      const s = await runOpenItemFollowUp();
+      console.log(`[openItemFollowUp] scanned=${s.scanned} dispatched=${s.dispatched} verdicts=${JSON.stringify(s.verdicts)} errors=${s.errors}`);
+    } catch (err: any) {
+      console.warn('[openItemFollowUp] error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000); // daily
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {
