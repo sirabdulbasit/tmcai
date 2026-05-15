@@ -249,31 +249,54 @@ async function dispatch(item: any, verdict: Verdict): Promise<{ ok: boolean; det
       return { ok: true, detail: 'flagged for My Attention' };
     }
     case 'nudge_internal_delegatee': {
-      // Internal delegatee — IS a Nexeo user. Route via brainContactsUser
-      // targeting THAT user's id. brainContactsUser handles the opt-in
-      // gate per delegatee (so a colleague who hasn't enabled Brain
-      // outbound won't receive auto-nudges) and the dedup window.
       if (!item.delegateeId) return { ok: false, detail: 'no internal delegatee id' };
       const ageDays = Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (24 * 60 * 60 * 1000));
-      const ownerName = item.owner?.email?.split('@')[0] ?? 'your colleague';
-      const body = `— Nexeo —\nHey, a quick nudge on behalf of ${ownerName}:\n\n"${item.title}"\n\nAny update? This has been open for ${ageDays} day${ageDays === 1 ? '' : 's'}.`;
+      const { phraseInternalNudge, addressUser, rememberPending } = await import('../services/notifications/brainHumanComm');
+      const delegateeFirstName = await addressUser(item.delegateeId);
+      const ownerFirstName = item.owner?.email
+        ? String(item.owner.email).split('@')[0]
+        : '';
+      const body = phraseInternalNudge({
+        delegateeFirstName,
+        ownerFirstName,
+        itemTitle: item.title,
+        ageDays,
+        itemId: item.id,
+      });
       const r = await brainContactsUser({
         userId: item.delegateeId,
         kind: 'open_item_internal_nudge',
-        summary: `Nudge on "${item.title.slice(0, 60)}" from ${ownerName}`,
+        summary: `Nudge on "${item.title.slice(0, 60)}" from ${ownerFirstName || 'colleague'}`,
         body,
         dedupKey: `followup_nudge:${item.id}:${new Date().toISOString().slice(0, 10)}`,
       });
+      if (r.sent) {
+        // Remember on delegatee's side so their "did it" / "still
+        // working on it" reply resolves to this item.
+        await rememberPending(item.delegateeId, {
+          kind: 'open_item_internal_nudge',
+          refId: item.id,
+          refTitle: item.title,
+          meta: { ownerUserId: item.userId, ageDays },
+        });
+      }
       return {
         ok: r.sent,
         detail: r.sent ? `nudged ${item.delegateeName ?? `user#${item.delegateeId}`}` : (r.reason ?? 'send blocked'),
       };
     }
     case 'ask_owner_to_chase': {
-      // External delegatee — Brain never contacts external. Ask owner.
       const who = item.delegateeName ?? item.delegateeEmail ?? 'the delegatee';
       const ageDays = Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (24 * 60 * 60 * 1000));
-      const body = `— Nexeo —\n${who} hasn't moved on this in ${ageDays} day${ageDays === 1 ? '' : 's'}:\n\n"${item.title}"\n\nWant to send them a quick nudge? (They're not on Nexeo, so I can't ping them directly.)`;
+      const { phraseOwnerChase, addressUser, rememberPending } = await import('../services/notifications/brainHumanComm');
+      const userFirstName = await addressUser(item.userId);
+      const body = phraseOwnerChase({
+        userFirstName,
+        delegateeName: who,
+        itemTitle: item.title,
+        ageDays,
+        itemId: item.id,
+      });
       const r = await brainContactsUser({
         userId: item.userId,
         kind: 'open_item_owner_chase_prompt',
@@ -281,6 +304,15 @@ async function dispatch(item: any, verdict: Verdict): Promise<{ ok: boolean; det
         body,
         dedupKey: `followup_chase:${item.id}:${new Date().toISOString().slice(0, 10)}`,
       });
+      if (r.sent) {
+        // Owner's "yes draft it" / "no skip" replies resolve here.
+        await rememberPending(item.userId, {
+          kind: 'open_item_owner_chase',
+          refId: item.id,
+          refTitle: item.title,
+          meta: { delegateeName: who, delegateeEmail: item.delegateeEmail, ageDays },
+        });
+      }
       return {
         ok: r.sent,
         detail: r.sent ? 'asked owner to chase' : (r.reason ?? 'send blocked'),

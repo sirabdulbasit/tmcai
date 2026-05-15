@@ -63,28 +63,13 @@ function dayIndex(createdAt: Date, now: Date): number {
   return Math.floor((now.getTime() - createdAt.getTime()) / (24 * 60 * 60 * 1000));
 }
 
-function buildAskBody(args: {
-  title: string;
-  missingSlots: Array<'priority' | 'dueDate'>;
-  day: number;
-  warn: boolean;
-}): string {
-  const { title, missingSlots, day, warn } = args;
-  const slotPhrase = (() => {
-    const both = missingSlots.includes('priority') && missingSlots.includes('dueDate');
-    if (both) return 'priority and deadline';
-    if (missingSlots.includes('priority')) return 'priority';
-    return 'deadline';
-  })();
-  // Tone — natural, Brain identifies itself.
-  const lead = day === 0
-    ? `Quick one — what ${slotPhrase} should I put on this open item?\n\n"${title}"`
-    : `Still need ${slotPhrase} for this open item (day ${day + 1}):\n\n"${title}"`;
-  const warnLine = warn
-    ? `\n\nIf I don't hear back today I'll drop this draft from your list. Reply "skip" if you want to drop it now.`
-    : `\n\nReply with the priority (critical / high / medium / low) and/or a deadline (e.g. "tomorrow 5pm", "Fri", "May 22"). Reply "skip" to drop it.`;
-  return `— Nexeo —\n${lead}${warnLine}`;
-}
+// Phrasing delegated to brainHumanComm.phraseDraftAsk so all
+// Brain↔user voice lives in one place. Per user 2026-05-15:
+// "user shouldn't feel that he is talking to any program".
+// - varied wording per day/item
+// - first-name greeting when available
+// - no "— Nexeo —" branded header (Brain identity is conveyed by
+//   the WhatsApp sender being Nexeo's number, not by a label)
 
 export async function runOpenItemDraftAsk(): Promise<RunResult> {
   const result: RunResult = { scanned: 0, asked: 0, expired: 0, errors: 0 };
@@ -148,8 +133,15 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         continue;
       }
 
-      const warn = day === WARN_DAY;
-      const body = buildAskBody({ title: item.title, missingSlots, day, warn });
+      const { phraseDraftAsk, addressUser, rememberPending } = await import('../services/notifications/brainHumanComm');
+      const userFirstName = await addressUser(item.userId);
+      const body = phraseDraftAsk({
+        userFirstName,
+        itemTitle: item.title,
+        missingSlots,
+        dayIndex: day,
+        itemId: item.id,
+      });
 
       // Brain → user via the canonical brainContactsUser path. Handles
       // opt-in gate, pause flag, quiet hours, dedup, channel selection.
@@ -168,6 +160,16 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         // Do NOT advance asksSentCount or lastAskAt — next tick retries.
         continue;
       }
+
+      // Remember pending so the user's reply ("high tomorrow 5pm" /
+      // "do it" / "skip") can be resolved against this specific ask
+      // when it arrives via WhatsApp. 24h TTL.
+      await rememberPending(item.userId, {
+        kind: 'open_item_draft_ask',
+        refId: item.id,
+        refTitle: item.title,
+        meta: { missingSlots, dayIndex: day },
+      });
 
       // Stamp success.
       await prisma.openItem.update({
