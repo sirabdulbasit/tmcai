@@ -538,6 +538,33 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000); // daily
 
+  // 2026-05-15 — WA ingest health audit. Reconciles webjs's view of
+  // each chat against feed_events + whatsapp_outbound_messages and
+  // emits a structured warning when coverage drops below 80%.
+  // Per user: "make sure this should not happen again" — Aziz
+  // Masood thread had only 1 of ~5 inbound captured and zero
+  // outbound. This job makes that gap loud instead of silent.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runWaIngestHealthAudit } = await import('./jobs/waIngestHealthAudit');
+        const s = await runWaIngestHealthAudit();
+        console.log(`[waIngestAudit] users=${s.usersAudited} chats=${s.chatsAudited} gaps=${s.gapsFound} errors=${s.errors}`);
+      } catch (err: any) {
+        console.warn('[waIngestAudit] error:', err.message);
+      }
+    })();
+  }, 10 * 60 * 1000); // first run 10 min after boot
+  setInterval(async () => {
+    try {
+      const { runWaIngestHealthAudit } = await import('./jobs/waIngestHealthAudit');
+      const s = await runWaIngestHealthAudit();
+      console.log(`[waIngestAudit] users=${s.usersAudited} chats=${s.chatsAudited} gaps=${s.gapsFound} errors=${s.errors}`);
+    } catch (err: any) {
+      console.warn('[waIngestAudit] error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000); // daily
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {

@@ -522,6 +522,109 @@ export async function startPairing(userId: number, clientNumber: string): Promis
     log.info('Disconnected', { userId, reason });
   });
 
+  // ─── Outbound capture (shared between 'message' and 'message_create') ──
+  // Per user 2026-05-15: outbound messages sent from the user's PHONE
+  // (synced to webjs) were missing from whatsapp_outbound_messages.
+  // Cause: whatsapp-web.js fires 'message' reliably for inbound but
+  // 'message_create' for outbound originating on the synced device.
+  // The old handler only listened to 'message' so phone-typed outbounds
+  // were never captured. This function is now invoked from BOTH events.
+  // The upsert on (userId, waMessageId) keeps duplicates safe if both
+  // events fire for the same message.
+  //
+  // Also accepts media-only outbounds (body empty) — records a
+  // placeholder body so the conversation turn isn't silently lost.
+  // The Apr 10 image-without-caption to Aziz was the visible miss
+  // from that empty-body guard.
+  const captureOutboundMessage = async (message: any): Promise<void> => {
+    try {
+      const ownWid: string = client.info?.wid?._serialized || '';
+      const isSelfChat = !!ownWid && (message.from === ownWid || message.to === ownWid);
+      if (!message.fromMe) return;
+      if (isSelfChat) return; // self-dictation handled by the 'message' handler
+      const rawFrom = message.from || '';
+      // Skip groups / status / newsletters
+      if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
+      const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
+      const destChatId = message.to || rawFrom;
+      if (!destChatId) return;
+      // Body — fall back to a media-type placeholder so empty-caption
+      // outbound is still recorded as a conversation turn (not silently
+      // dropped). The thread modal renders this as "[image]" / "[voice]"
+      // so the user sees they sent something, even without text.
+      let body = String(message.body ?? '').slice(0, 4000);
+      if (!body && message.hasMedia) {
+        const t = String(message.type ?? '').toLowerCase();
+        body = t === 'image' ? '[image]'
+          : t === 'video' ? '[video]'
+          : t === 'audio' || t === 'ptt' ? '[voice]'
+          : t === 'document' ? '[document]'
+          : t === 'sticker' ? '[sticker]'
+          : '[media]';
+      }
+      const waMsgId = (message.id as any)?._serialized || (message.id as any)?.id || `${destChatId}:${ts}`;
+
+      // Redis fast path (existing behaviour)
+      try {
+        const { getRedis } = await import('../../utils/redisClient');
+        const redis = getRedis();
+        if (redis && destChatId) {
+          const markerKey = `wa_outbound:${userId}:${destChatId}`;
+          const logKey = `wa_outbound_log:${userId}:${destChatId}`;
+          await redis.set(markerKey, String(ts), 'EX', 7 * 24 * 60 * 60);
+          await redis.lpush(logKey, JSON.stringify({ ts, body: body.slice(0, 1024) }));
+          await redis.ltrim(logKey, 0, 49);
+          await redis.expire(logKey, 7 * 24 * 60 * 60);
+        }
+      } catch (e: any) {
+        log.warn('outbound redis write failed', { userId, error: e.message });
+      }
+
+      // Postgres permanent. No body-emptiness gate anymore — body now
+      // always has at least a placeholder for media-only outbound.
+      try {
+        await prisma.whatsAppOutboundMessage.upsert({
+          where: { userId_waMessageId: { userId, waMessageId: waMsgId } } as any,
+          create: {
+            clientNumber, userId,
+            chatId: destChatId,
+            waMessageId: waMsgId,
+            bodyText: body,
+            sentAt: new Date(ts),
+          } as any,
+          update: {},
+        });
+      } catch (e: any) {
+        log.warn('outbound postgres write failed', { userId, error: e.message });
+      }
+
+      // Sender wiki update — fire-and-forget
+      void (async () => {
+        try {
+          const { recordOutboundInteraction } = await import('../knowledge/senderWikiService');
+          await recordOutboundInteraction({
+            userId, clientNumber,
+            chatId: destChatId,
+            sentAt: new Date(ts),
+            body,
+          });
+        } catch (e: any) {
+          log.warn('sender wiki outbound update failed', { userId, error: e.message });
+        }
+      })();
+    } catch (e: any) {
+      log.warn('captureOutboundMessage error', { userId, error: e.message });
+    }
+  };
+
+  // 'message_create' fires for BOTH inbound and outbound, but the
+  // 'message' handler below covers inbound. Here we only handle the
+  // outbound side — gated on fromMe inside captureOutboundMessage.
+  client.on('message_create', async (message: any) => {
+    if (!message.fromMe) return; // 'message' handles inbound
+    await captureOutboundMessage(message);
+  });
+
   client.on('message', async (message: any) => {
     try {
       // Stamp freshness regardless of whether the message survives the
@@ -584,75 +687,10 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       const ownWid: string = client.info?.wid?._serialized || '';
       const isSelfChat = !!ownWid && message.from === ownWid;
       if (message.fromMe && !isSelfChat) {
-        // Record outbound in TWO places:
-        //   1. Redis marker — fast read for triage's user-replied filter
-        //      (already in use)
-        //   2. Postgres whatsapp_outbound_messages — permanent storage so
-        //      the thread modal can show both sides of every conversation,
-        //      and so the sender wiki can count interactions in BOTH
-        //      directions (relationship strength previously only reflected
-        //      inbound).
-        //
-        // The old Redis log (wa_outbound_log) is kept as a fast cache for
-        // the thread modal — Postgres is authoritative, Redis is for
-        // recently-active chats.
-        const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
-        const destChatId = message.to || rawFrom;
-        const body = String(message.body ?? '').slice(0, 4000);
-        const waMsgId = (message.id as any)?._serialized || (message.id as any)?.id || `${destChatId}:${ts}`;
-
-        // (1) Redis — fast path
-        try {
-          const { getRedis } = await import('../../utils/redisClient');
-          const redis = getRedis();
-          if (redis && destChatId) {
-            const markerKey = `wa_outbound:${userId}:${destChatId}`;
-            const logKey = `wa_outbound_log:${userId}:${destChatId}`;
-            await redis.set(markerKey, String(ts), 'EX', 7 * 24 * 60 * 60);
-            await redis.lpush(logKey, JSON.stringify({ ts, body: body.slice(0, 1024) }));
-            await redis.ltrim(logKey, 0, 49);
-            await redis.expire(logKey, 7 * 24 * 60 * 60);
-          }
-        } catch (e: any) {
-          log.warn('outbound redis write failed', { userId, error: e.message });
-        }
-
-        // (2) Postgres — permanent
-        if (destChatId && body) {
-          try {
-            await prisma.whatsAppOutboundMessage.upsert({
-              where: { userId_waMessageId: { userId, waMessageId: waMsgId } } as any,
-              create: {
-                clientNumber, userId,
-                chatId: destChatId,
-                waMessageId: waMsgId,
-                bodyText: body,
-                sentAt: new Date(ts),
-              } as any,
-              update: {},  // idempotent — same waMessageId = same row
-            });
-          } catch (e: any) {
-            log.warn('outbound postgres write failed', { userId, error: e.message });
-          }
-
-          // (3) Sender wiki update — count this outbound in the
-          // relationship-strength signals so Brain's view of how often
-          // MD engages with this contact matches reality. Fire-and-forget;
-          // a failed wiki update shouldn't block the outbound write.
-          void (async () => {
-            try {
-              const { recordOutboundInteraction } = await import('../knowledge/senderWikiService');
-              await recordOutboundInteraction({
-                userId, clientNumber,
-                chatId: destChatId,
-                sentAt: new Date(ts),
-                body,
-              });
-            } catch (e: any) {
-              log.warn('sender wiki outbound update failed', { userId, error: e.message });
-            }
-          })();
-        }
+        // Delegate to the shared capture function (also called from
+        // message_create — see above). Upsert keyed on waMessageId is
+        // idempotent so double-fire across events is safe.
+        await captureOutboundMessage(message);
         return;
       }
 
@@ -900,6 +938,23 @@ export async function startPairing(userId: number, clientNumber: string): Promis
  *  message by id. Returns null when no live client is paired. */
 export function __getInternalClient(userId: number): any | null {
   return clients.get(userId) ?? null;
+}
+
+/** List all currently-connected webjs clients with their user + tenant.
+ *  Used by the ingest health audit job to reconcile what webjs sees
+ *  against feed_events + whatsapp_outbound_messages. */
+export async function listConnectedClients(): Promise<Array<{ userId: number; clientNumber: string; client: any }>> {
+  const out: Array<{ userId: number; clientNumber: string; client: any }> = [];
+  for (const [userId, client] of clients.entries()) {
+    if (!client?.info) continue; // skip half-initialised clients
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { clientNumber: true },
+    }).catch(() => null);
+    if (!u?.clientNumber) continue;
+    out.push({ userId, clientNumber: u.clientNumber, client });
+  }
+  return out;
 }
 
 /**
