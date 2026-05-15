@@ -845,11 +845,21 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       // Pull last ~10 turns of this chat so Brain can reason about context
       // — "On it" / "sure" / "yes" mean nothing without the preceding ask.
       let threadContext: ThreadTurn[] = [];
+      // Also use the same fetch to back-catch-up outbound messages we
+      // missed. Per user 2026-05-16 "I replied via WhatsApp but card
+      // still here" — the message_create listener can stop firing
+      // silently (saw a 18:41 yesterday cutoff) AND breaks on @lid
+      // chats. This back-catch-up makes EVERY inbound an opportunity
+      // to verify our outbound record matches reality for this chat.
+      // Independent of message_create — works even when the listener
+      // is dead. Pairs with the periodic engagement reconciliation
+      // job (commit B) for full defense-in-depth.
+      let priorMessages: any[] = [];
       try {
         const chat = await message.getChat();
         if (chat?.fetchMessages) {
-          const prior = await chat.fetchMessages({ limit: 15 });
-          threadContext = (prior || [])
+          priorMessages = await chat.fetchMessages({ limit: 15 });
+          threadContext = (priorMessages || [])
             .filter((m: any) => (m.body && m.body.trim()))
             .slice(-10)
             .map((m: any) => ({
@@ -859,6 +869,46 @@ export async function startPairing(userId: number, clientNumber: string): Promis
             } as ThreadTurn));
         }
       } catch (e: any) { log.warn('threadContext fetch failed', { error: e.message }); }
+
+      // Back-catch-up of outbound messages — for each fromMe message in
+      // the recent fetch, ensure it's in whatsapp_outbound_messages.
+      // Independent of the message_create listener (which may not fire
+      // for @lid chats or after a webjs reconnect). This guarantees that
+      // every time Brain sees an inbound on a chat, it also catches up
+      // on any outbound it missed in the recent window.
+      void (async () => {
+        for (const m of priorMessages) {
+          if (!m.fromMe) continue;
+          const ts = m.timestamp ? m.timestamp * 1000 : Date.now();
+          const msgId = m.id?._serialized || m.id?.id || `backfill:${rawFrom}:${ts}`;
+          let body = String(m.body ?? '').slice(0, 4000);
+          if (!body && m.hasMedia) {
+            const t = String(m.type ?? '').toLowerCase();
+            body = t === 'image' ? '[image]'
+              : t === 'video' ? '[video]'
+              : t === 'audio' || t === 'ptt' ? '[voice]'
+              : t === 'document' ? '[document]'
+              : t === 'sticker' ? '[sticker]'
+              : '[media]';
+          }
+          if (!body) continue; // truly empty event (system / reaction); skip
+          try {
+            await prisma.whatsAppOutboundMessage.upsert({
+              where: { userId_waMessageId: { userId, waMessageId: msgId } } as any,
+              create: {
+                clientNumber, userId,
+                chatId: rawFrom,
+                waMessageId: msgId,
+                bodyText: body,
+                sentAt: new Date(ts),
+              } as any,
+              update: {},
+            });
+          } catch (e: any) {
+            log.warn('back-catch-up outbound write failed', { userId, error: e.message });
+          }
+        }
+      })();
 
       const payload = {
         waMessageId: message.id?._serialized || message.id?.id || null,

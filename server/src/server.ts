@@ -565,6 +565,38 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000); // daily
 
+  // 2026-05-16 — WA outbound reconciliation (Path 3 of 3 in the
+  // defense-in-depth model). Walks recent chats per connected user
+  // every 10 min and writes any outbound rows missed by the
+  // message_create listener or the on-inbound back-catch-up. With
+  // all three paths running, an outbound has to slip past ALL of
+  // them to be silently lost — improbable. The daily ingest audit
+  // catches anything that somehow does.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runWaOutboundReconciliation } = await import('./jobs/waOutboundReconciliation');
+        const s = await runWaOutboundReconciliation();
+        if (s.outboundWritten > 0 || s.errors > 0) {
+          console.log(`[waOutboundRecon] users=${s.usersScanned} chats=${s.chatsScanned} written=${s.outboundWritten} errors=${s.errors}`);
+        }
+      } catch (err: any) {
+        console.warn('[waOutboundRecon] error:', err.message);
+      }
+    })();
+  }, 7 * 60 * 1000); // first run 7 min after boot
+  setInterval(async () => {
+    try {
+      const { runWaOutboundReconciliation } = await import('./jobs/waOutboundReconciliation');
+      const s = await runWaOutboundReconciliation();
+      if (s.outboundWritten > 0 || s.errors > 0) {
+        console.log(`[waOutboundRecon] users=${s.usersScanned} chats=${s.chatsScanned} written=${s.outboundWritten} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[waOutboundRecon] error:', err.message);
+    }
+  }, 10 * 60 * 1000); // every 10 min
+
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
   setInterval(async () => {
     try {
