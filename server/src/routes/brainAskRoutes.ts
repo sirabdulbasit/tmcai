@@ -65,7 +65,7 @@ export async function answerAsBrain(
   userId: number,
   question: string,
   history: BrainHistoryTurn[] = [],
-  opts: { steeringHint?: string | null } = {},
+  opts: { steeringHint?: string | null; channel?: 'web' | 'whatsapp' } = {},
 ): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string }> {
   // Trim history to the last 6 turns so we don't blow up the prompt.
   // Most follow-ups need only the immediately previous Q&A; 6 covers
@@ -76,6 +76,17 @@ export async function answerAsBrain(
   const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
     steeringHint: opts.steeringHint ?? null,
   });
+  // Channel render — wraps the composer output in the per-channel
+  // formatter so WhatsApp sees a terse one-paragraph answer while
+  // web sees the full markdown.
+  const channel = opts.channel ?? 'web';
+  if (channel === 'whatsapp') {
+    const { renderForChannel } = await import('../services/knowledge/channelRenderer');
+    const rendered = renderForChannel(result, 'whatsapp');
+    // Replace the prose with the rendered body but keep the rest of
+    // the composer's output (sources etc.) for downstream side-effects.
+    result.answer = rendered.body;
+  }
 
   // Side effects (fire-and-forget — don't block the response on them)
   Promise.resolve().then(async () => {
@@ -449,9 +460,21 @@ router.post('/ask', async (req: Request, res: Response) => {
   const history: BrainHistoryTurn[] = rawHistory
     .filter((t) => t && (t.role === 'user' || t.role === 'brain') && typeof t.text === 'string')
     .map((t) => ({ role: t.role, text: String(t.text).slice(0, 2000) })); // bound each turn
+  // Channel selector — 'web' (default) returns the full markdown
+  // answer + sources + cites + gaps. 'whatsapp' compresses to a
+  // single short paragraph. Per user 2026-05-16: same composer,
+  // same conversation history, different render per channel.
+  const channel = (String(req.body?.channel ?? 'web') === 'whatsapp') ? 'whatsapp' : 'web';
   try {
-    const out = await answerAsBrain(user.clientNumber, user.id, question, history);
-    res.json({ question, answer: out.answer, sources: out.sources, gaps: out.gaps, intent: out.intent });
+    const out = await answerAsBrain(user.clientNumber, user.id, question, history, { channel });
+    if (channel === 'whatsapp') {
+      // WA callers get the terse body only — no cites/gaps/intent
+      // noise. They can read the audit via the web view if they
+      // need to drill in.
+      res.json({ question, answer: out.answer });
+    } else {
+      res.json({ question, answer: out.answer, sources: out.sources, gaps: out.gaps, intent: out.intent });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
