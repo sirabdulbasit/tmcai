@@ -492,50 +492,62 @@ router.put('/open-items', async (req: Request, res: Response) => {
 // what we're about to delete. Two-key handshake: the count guards
 // against a window where new items appeared between preview and
 // confirm; the phrase guards against accidental fire.
-router.post('/open-items/purge/preview', async (req: Request, res: Response) => {
-  const { scope } = req.body ?? {};
+// Build the where clause + confirmation phrase for a given purge
+// scope. Nuclear `all` overrides everything else and uses a stronger
+// phrase so accidental fire is impossible.
+function buildPurgeWhereAndPhrase(userId: number, scope: any): { where: any; phrase: (count: number) => string; isNuclear: boolean } {
+  const wantAll = scope?.all === true;
+  if (wantAll) {
+    // Nuclear: every row for this user, regardless of status / metadata.
+    // The "INCLUDING ACTIVE" suffix is the explicit consent that the
+    // user is wiping work-in-progress, not just dead rows.
+    return {
+      where: { userId },
+      phrase: (count) => `DELETE ALL ${count} ITEMS INCLUDING ACTIVE`,
+      isNuclear: true,
+    };
+  }
   const wantClosed = scope?.closed === true;
   const wantExpiredDraft = scope?.expiredDraft === true;
   const wantStale = scope?.stale === true;
-  const prisma = (await import('../db/prisma')).default;
-
-  const where: any = { userId: req.user!.id, OR: [] };
+  const where: any = { userId, OR: [] };
   if (wantClosed) where.OR.push({ status: 'CLOSED' });
   if (wantExpiredDraft) where.OR.push({ AND: [{ status: 'CLOSED' }, { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any }] });
   if (wantStale) where.OR.push({ metadata: { path: ['stale'], equals: true } as any });
-  if (where.OR.length === 0) return res.json({ count: 0, phrase: null });
+  return {
+    where,
+    phrase: (count) => `PURGE ${count} ITEMS`,
+    isNuclear: false,
+  };
+}
 
+router.post('/open-items/purge/preview', async (req: Request, res: Response) => {
+  const { scope } = req.body ?? {};
+  const { where, phrase, isNuclear } = buildPurgeWhereAndPhrase(req.user!.id, scope);
+  if (!isNuclear && (!where.OR || where.OR.length === 0)) {
+    return res.json({ count: 0, phrase: null, nuclear: false });
+  }
+  const prisma = (await import('../db/prisma')).default;
   const count = await prisma.openItem.count({ where });
-  // Phrase the user must type back. Includes the count so it can't be
-  // reused across previews.
-  const phrase = `PURGE ${count} ITEMS`;
-  res.json({ count, phrase });
+  res.json({ count, phrase: phrase(count), nuclear: isNuclear });
 });
 
 router.post('/open-items/purge', async (req: Request, res: Response) => {
-  const { scope, phrase } = req.body ?? {};
-  const wantClosed = scope?.closed === true;
-  const wantExpiredDraft = scope?.expiredDraft === true;
-  const wantStale = scope?.stale === true;
-  if (!wantClosed && !wantExpiredDraft && !wantStale) {
+  const { scope, phrase: typed } = req.body ?? {};
+  const { where, phrase: makePhrase, isNuclear } = buildPurgeWhereAndPhrase(req.user!.id, scope);
+  if (!isNuclear && (!where.OR || where.OR.length === 0)) {
     return res.status(400).json({ error: 'no_scope_selected' });
   }
   const prisma = (await import('../db/prisma')).default;
-  const where: any = { userId: req.user!.id, OR: [] };
-  if (wantClosed) where.OR.push({ status: 'CLOSED' });
-  if (wantExpiredDraft) where.OR.push({ AND: [{ status: 'CLOSED' }, { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any }] });
-  if (wantStale) where.OR.push({ metadata: { path: ['stale'], equals: true } as any });
-
   const count = await prisma.openItem.count({ where });
-  const expectedPhrase = `PURGE ${count} ITEMS`;
-  if (String(phrase ?? '').trim() !== expectedPhrase) {
-    // The count moved between preview and confirm, OR the user typed
-    // it wrong. Either way, fail closed and tell them the new count
-    // so the next attempt is honest.
-    return res.status(409).json({ error: 'phrase_mismatch', expectedPhrase, count });
+  const expectedPhrase = makePhrase(count);
+  if (String(typed ?? '').trim() !== expectedPhrase) {
+    // Count moved between preview and confirm, OR user typo'd. Fail
+    // closed; return the fresh count so the next attempt is honest.
+    return res.status(409).json({ error: 'phrase_mismatch', expectedPhrase, count, nuclear: isNuclear });
   }
   const r = await prisma.openItem.deleteMany({ where });
-  res.json({ success: true, deleted: r.count });
+  res.json({ success: true, deleted: r.count, nuclear: isNuclear });
 });
 
 // ─── Brain name (user can call their Brain anything) ──────────────

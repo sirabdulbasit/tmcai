@@ -969,13 +969,35 @@ function OpenItemsSection() {
  * No browser dialogs ([[feedback_no_browser_dialogs]]).
  */
 function PurgePanel() {
-  const [scope, setScope] = useState({ closed: false, stale: false, expiredDraft: false });
-  const [preview, setPreview] = useState(null); // { count, phrase }
+  // Scope shape: three "dead-item" toggles + one "all" nuclear flag.
+  // Nuclear deletes every row including active delegations, drafts,
+  // and NEW items — protected by a stronger confirmation phrase
+  // ("DELETE ALL N ITEMS INCLUDING ACTIVE") server-side.
+  const [scope, setScope] = useState({ closed: false, stale: false, expiredDraft: false, all: false });
+  const [preview, setPreview] = useState(null);
   const [typed, setTyped] = useState('');
   const [working, setWorking] = useState(false);
   const [msg, setMsg] = useState('');
 
-  const togglesEmpty = !scope.closed && !scope.stale && !scope.expiredDraft;
+  const togglesEmpty = !scope.closed && !scope.stale && !scope.expiredDraft && !scope.all;
+  // Nuclear locks out the dead-item toggles — wiping "everything"
+  // includes them anyway, no point letting the user double-pick.
+  const deadDisabled = scope.all;
+
+  const flipDead = (k, v) => {
+    setScope((s) => ({ ...s, [k]: v }));
+    setPreview(null); setTyped('');
+  };
+  const flipNuclear = (v) => {
+    setScope((s) => v
+      ? { closed: false, stale: false, expiredDraft: false, all: true }
+      : { ...s, all: false });
+    setPreview(null); setTyped('');
+  };
+  const selectAllDead = () => {
+    setScope({ closed: true, stale: true, expiredDraft: true, all: false });
+    setPreview(null); setTyped('');
+  };
 
   const runPreview = async () => {
     setWorking(true); setMsg(''); setPreview(null); setTyped('');
@@ -997,7 +1019,7 @@ function PurgePanel() {
       const r = await api.post('/profile/open-items/purge', { scope, phrase: typed });
       setMsg(`Purged ${r.data.deleted} item${r.data.deleted === 1 ? '' : 's'}.`);
       setPreview(null); setTyped('');
-      setScope({ closed: false, stale: false, expiredDraft: false });
+      setScope({ closed: false, stale: false, expiredDraft: false, all: false });
     } catch (e) {
       if (e.response?.status === 409) {
         setMsg(`Count changed — phrase should now be "${e.response.data.expectedPhrase}". Re-preview to confirm.`);
@@ -1018,21 +1040,61 @@ function PurgePanel() {
         Preview to see the count, then type the confirmation phrase exactly to fire.
       </p>
 
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
-        <input type="checkbox" checked={scope.closed}
-               onChange={(e) => { setScope({ ...scope, closed: e.target.checked }); setPreview(null); }} />
-        <span>All closed items</span>
-      </label>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
-        <input type="checkbox" checked={scope.expiredDraft}
-               onChange={(e) => { setScope({ ...scope, expiredDraft: e.target.checked }); setPreview(null); }} />
-        <span>Expired DRAFT items only</span>
-      </label>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
-        <input type="checkbox" checked={scope.stale}
-               onChange={(e) => { setScope({ ...scope, stale: e.target.checked }); setPreview(null); }} />
-        <span>Items marked stale</span>
-      </label>
+      {/* Dead-item scopes — safe individually, safe combined */}
+      <div style={{ marginBottom: 14, opacity: deadDisabled ? 0.4 : 1 }}>
+        <div style={{ fontSize: 12, color: '#aaa', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+          Dead items
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={scope.closed} disabled={deadDisabled}
+                 onChange={(e) => flipDead('closed', e.target.checked)} />
+          <span>All closed items</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={scope.expiredDraft} disabled={deadDisabled}
+                 onChange={(e) => flipDead('expiredDraft', e.target.checked)} />
+          <span>Expired DRAFT items only</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={scope.stale} disabled={deadDisabled}
+                 onChange={(e) => flipDead('stale', e.target.checked)} />
+          <span>Items marked stale</span>
+        </label>
+        <button type="button" onClick={selectAllDead} disabled={deadDisabled}
+          style={{
+            marginTop: 4, padding: '4px 10px', fontSize: 12,
+            background: 'transparent', border: '1px solid #444', color: '#ccc',
+            borderRadius: 6, cursor: deadDisabled ? 'not-allowed' : 'pointer',
+          }}>
+          Select all dead
+        </button>
+      </div>
+
+      {/* Nuclear — fenced off visually and by a stronger phrase server-side */}
+      <div style={{
+        marginBottom: 14, padding: 10, borderRadius: 8,
+        background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.4)',
+      }}>
+        <div style={{ fontSize: 12, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>
+          Nuclear reset
+        </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: '4px 0' }}>
+          <input type="checkbox" checked={scope.all}
+                 onChange={(e) => flipNuclear(e.target.checked)}
+                 style={{ marginTop: 2 }} />
+          <div>
+            <div style={{ color: '#fecaca', fontWeight: 600 }}>
+              Everything — including active items
+            </div>
+            <div style={{ fontSize: 11, color: '#fca5a5', marginTop: 2 }}>
+              ⚠ Deletes every open item for you, regardless of status.
+              Active delegations Brain is currently chasing, DRAFT items
+              awaiting your priority, NEW items not yet triaged — all gone.
+              Use this for a clean reset, not routine cleanup.
+            </div>
+          </div>
+        </label>
+      </div>
 
       <div style={{ display: 'flex', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="settings-btn" onClick={runPreview} disabled={working || togglesEmpty}>
