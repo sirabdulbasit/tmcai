@@ -6,7 +6,10 @@ import api from '../services/api';
 export default function SettingsPage() {
   const { user, logout, fontScale, appDefaultFontScale, fontScaleIsOverride, setFontScale, resetFontScaleToDefault } = useAuth();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', gender: '', preferredTitle: '' });
+  // `gender` retired from UI 2026-05-18 (replaced by preferredTitle for
+  // address tone). Field stays on the User model so legacy data is
+  // preserved; just no longer surfaced in Settings.
+  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', preferredTitle: '' });
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -14,7 +17,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.get('/profile').then(res => {
       const p = res.data.profile || {};
-      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', gender: p.gender || '', preferredTitle: p.preferredTitle || '' });
+      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', preferredTitle: p.preferredTitle || '' });
     }).catch(() => {});
   }, []);
 
@@ -127,8 +130,8 @@ export default function SettingsPage() {
               </section>
             )}
 
-            {/* Brain name */}
-            <BrainNameSection />
+            {/* Brain name moved to Brain tab 2026-05-18 — it's a Brain
+                configuration choice, not personal info. */}
 
             {/* Display — user-level font scale (inherits from organisation default).
                 SuperAdmin also sees the organisation-wide default control below. */}
@@ -141,11 +144,12 @@ export default function SettingsPage() {
               isSuperAdmin={!!user?.isSuperAdmin}
             />
 
-            {/* Personalization */}
+            {/* Context Brain knows about you — what the LLM reads to
+                tailor outputs. Was "Personalization"; renamed 2026-05-18. */}
             <section className="settings-section">
-              <h2>Personalization</h2>
+              <h2>Context Brain knows about you</h2>
               <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
-                How Brain addresses you and what it knows about your working context.
+                Brain reads these when composing messages, drafting replies, or briefing your day.
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="settings-field">
@@ -153,31 +157,24 @@ export default function SettingsPage() {
                   <input value={profile.city} onChange={e => setProfile(p => ({ ...p, city: e.target.value }))} placeholder="e.g. Karachi" />
                 </div>
                 <div className="settings-field">
-                  <label>Contact Number</label>
+                  <label>Contact number</label>
                   <input value={profile.contactNumber} onChange={e => setProfile(p => ({ ...p, contactNumber: e.target.value }))} placeholder="e.g. +92 300 1234567" />
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div className="settings-field">
-                  <label>Gender</label>
-                  <select value={profile.gender} onChange={e => setProfile(p => ({ ...p, gender: e.target.value }))} style={{ width: '100%', padding: '8px', background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
-                    <option value="">— Select —</option>
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                  </select>
-                </div>
-                <div className="settings-field">
-                  <label>How should Brain address you?</label>
-                  <input value={profile.preferredTitle} onChange={e => setProfile(p => ({ ...p, preferredTitle: e.target.value }))} placeholder="e.g. Sir, Boss, Ma'am" />
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+                    Brain pings you here by default. Override on the Brain tab if you want a different number.
+                  </div>
                 </div>
               </div>
               <div className="settings-field">
-                <label>About Me</label>
-                <textarea rows={3} value={profile.aboutMe} onChange={e => setProfile(p => ({ ...p, aboutMe: e.target.value }))} placeholder="Tell Brain about yourself — background, working style, what you focus on..." />
+                <label>How Brain should address you</label>
+                <input value={profile.preferredTitle} onChange={e => setProfile(p => ({ ...p, preferredTitle: e.target.value }))} placeholder="e.g. Sir, Boss, Ma'am, or your first name" />
               </div>
               <div className="settings-field">
-                <label>Custom Instructions</label>
-                <textarea rows={3} value={profile.instructions} onChange={e => setProfile(p => ({ ...p, instructions: e.target.value }))} placeholder="e.g. Always flag project risks. Show amounts in PKR. Focus on delivery metrics." />
+                <label>Background</label>
+                <textarea rows={3} value={profile.aboutMe} onChange={e => setProfile(p => ({ ...p, aboutMe: e.target.value }))} placeholder="Tell Brain about yourself — role, working style, what you focus on day-to-day." />
+              </div>
+              <div className="settings-field">
+                <label>Standing orders</label>
+                <textarea rows={3} value={profile.instructions} onChange={e => setProfile(p => ({ ...p, instructions: e.target.value }))} placeholder="Preferences Brain should always follow — e.g. always flag project risks. Show amounts in PKR. Don't auto-acknowledge messages from external clients." />
               </div>
               <button className="settings-btn" onClick={saveProfile} disabled={saving}>{saving ? 'Saving…' : 'Save Profile'}</button>
               <p style={{ fontSize: 11, color: '#666', marginTop: 8 }}>
@@ -234,37 +231,49 @@ export default function SettingsPage() {
  * default (and usually best) choice for Abdul.
  */
 function BrainChannelSection({ user }) {
-  const [channel, setChannel] = useState('whatsapp');
-  const [whatsappNumber, setWhatsappNumber] = useState('');
+  // Rewritten 2026-05-18 per user UX call:
+  //   - Channel dropdown dropped (only WhatsApp; one-line note instead).
+  //   - WhatsApp number defaults to registered contact number; only
+  //     persists an override if the user explicitly enters one.
+  //   - Numeric "Minimum confidence" replaced by a 3-mode boldness
+  //     selector (cautious / balanced / eager). Backend derives the
+  //     threshold for existing consumers.
+  //   - Daily message cap dropped from UI (still a hard ceiling in code).
+  //   - Trust statement moved to the top of the section.
+  //   - "Send test ping" button verifies the channel without enabling
+  //     the autonomous opt-in.
+  //   - Brain naming (was on Profile) moved here as the first block.
+  const [registeredNumber, setRegisteredNumber] = useState('');
+  const [whatsappNumberOverride, setWhatsappNumberOverride] = useState('');
+  const [overrideOpen, setOverrideOpen] = useState(false);
   const [quietStart, setQuietStart] = useState('22:00');
   const [quietEnd, setQuietEnd] = useState('06:00');
-  const [minConfidence, setMinConfidence] = useState('0.7');
-  const [outboundEnabled, setOutboundEnabled] = useState(false);  // opt-in default off
+  const [boldness, setBoldness] = useState('cautious');
+  const [outboundEnabled, setOutboundEnabled] = useState(false);
   const [outboundPaused, setOutboundPaused] = useState(false);
-  const [dailyCap, setDailyCap] = useState('20');
-  // Day Brief scheduling — Brain fires the daily brief at this local
-  // time via WhatsApp (Nexeo channel). Default 08:30 PKT.
   const [dayBriefTime, setDayBriefTime] = useState('08:30');
   const [timezone, setTimezone] = useState('Asia/Karachi');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+  const [pingMsg, setPingMsg] = useState('');
+  const [pinging, setPinging] = useState(false);
 
   useEffect(() => {
     if (!user?.id) return;
     api.get(`/profile/brain-channel`).then((r) => {
       const d = r.data || {};
-      setChannel(d.channel || 'whatsapp');
-      setWhatsappNumber(d.whatsappNumber || user?.contactNumber || '');
+      setRegisteredNumber(d.registeredContactNumber || user?.contactNumber || '');
+      setWhatsappNumberOverride(d.whatsappNumber || '');
+      setOverrideOpen(!!d.whatsappNumber);
       setQuietStart(d.quietStart || '22:00');
       setQuietEnd(d.quietEnd || '06:00');
-      setMinConfidence(String(d.minConfidence ?? 0.7));
+      setBoldness(d.boldness || 'cautious');
       setOutboundEnabled(d.outboundEnabled === true);
       setOutboundPaused(!!d.outboundPaused);
-      setDailyCap(String(d.dailyCap ?? 20));
       setDayBriefTime(d.dayBriefTime || '08:30');
       setTimezone(d.timezone || 'Asia/Karachi');
     }).catch(() => {
-      setWhatsappNumber(user?.contactNumber || '');
+      setRegisteredNumber(user?.contactNumber || '');
     });
   }, [user?.id]);
 
@@ -272,11 +281,11 @@ function BrainChannelSection({ user }) {
     setSaving(true); setMsg('');
     try {
       await api.put('/profile/brain-channel', {
-        channel, whatsappNumber, quietStart, quietEnd,
-        minConfidence: parseFloat(minConfidence),
+        whatsappNumber: overrideOpen ? whatsappNumberOverride : '',
+        quietStart, quietEnd,
+        boldness,
         outboundEnabled,
         outboundPaused,
-        dailyCap: parseInt(dailyCap, 10) || 20,
         dayBriefTime,
         timezone,
       });
@@ -288,136 +297,175 @@ function BrainChannelSection({ user }) {
     setSaving(false);
   };
 
+  const sendTestPing = async () => {
+    setPinging(true); setPingMsg('');
+    try {
+      await api.post('/profile/test-ping');
+      setPingMsg('Sent — check your WhatsApp.');
+      setTimeout(() => setPingMsg(''), 4000);
+    } catch (err) {
+      const reason = err?.response?.data?.reason || err?.response?.data?.error || 'send failed';
+      setPingMsg(`Test ping failed: ${reason}`);
+      setTimeout(() => setPingMsg(''), 6000);
+    }
+    setPinging(false);
+  };
+
+  const pingTarget = overrideOpen && whatsappNumberOverride ? whatsappNumberOverride : registeredNumber;
+
   return (
-    <section className="settings-section">
-      <h2>Brain notifications</h2>
-      <p style={{ color: '#888', fontSize: 13, marginTop: -4, marginBottom: 12 }}>
-        How Brain reaches you between Day Briefs. By default Brain runs silently and saves everything for the next brief; only MEDIUM/HIGH-confidence decisions that need you mid-day ping you here.
-      </p>
-      {msg && <div className="settings-msg" style={{ marginBottom: 10 }}>{msg}</div>}
+    <>
+      <BrainNameSection />
 
-      <div className="settings-field">
-        <label>Channel</label>
-        <select value={channel} onChange={(e) => setChannel(e.target.value)}
-                style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
-          <option value="none">Silent — only Day Brief</option>
-          <option value="whatsapp">WhatsApp</option>
-          <option value="email">Email</option>
-          <option value="in_app">In-app only</option>
-        </select>
-      </div>
+      <section className="settings-section">
+        <h2>Brain notifications</h2>
+        <p style={{ color: '#888', fontSize: 13, marginTop: -4, marginBottom: 12 }}>
+          Brain reaches you on WhatsApp via the company number. By default Brain runs silently and saves everything for the next Day Brief; only items above your boldness threshold ping you mid-day.
+        </p>
 
-      {channel === 'whatsapp' && (
+        {/* Trust statement promoted to the top — the load-bearing
+            reassurance, no longer buried inside the opt-in box. */}
+        <div style={{
+          padding: 12, marginBottom: 14,
+          background: 'rgba(34,197,94,0.08)',
+          border: '1px solid rgba(34,197,94,0.4)',
+          borderRadius: 8,
+          fontSize: 12, lineHeight: 1.5, color: '#d1fae5',
+        }}>
+          <strong style={{ color: '#86efac' }}>Brain never replies as you.</strong> Brain cannot send messages from your personal WhatsApp number to anyone — not your colleagues, not your contacts, not on heuristic, not ever. Your contacts only hear from you when you explicitly send.
+        </div>
+
+        {msg && <div className="settings-msg" style={{ marginBottom: 10 }}>{msg}</div>}
+
         <div className="settings-field">
           <label>WhatsApp number</label>
-          <input value={whatsappNumber} onChange={(e) => setWhatsappNumber(e.target.value)}
-                 placeholder="+92 300 1234567" />
+          {!overrideOpen ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: '#1f1f1f', border: '1px solid #333', borderRadius: 8 }}>
+              <span style={{ flex: 1, color: '#eee', fontSize: 13 }}>
+                Pinging on <strong>{registeredNumber || '(no number on file)'}</strong> <span style={{ color: '#666' }}>(your registered contact number)</span>
+              </span>
+              <button type="button" onClick={() => setOverrideOpen(true)}
+                style={{ background: 'transparent', border: '1px solid #444', color: '#ccc', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
+                Use different number
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                value={whatsappNumberOverride}
+                onChange={(e) => setWhatsappNumberOverride(e.target.value)}
+                placeholder={registeredNumber || '+92 300 1234567'}
+                style={{ flex: 1 }}
+              />
+              <button type="button" onClick={() => { setOverrideOpen(false); setWhatsappNumberOverride(''); }}
+                style={{ background: 'transparent', border: '1px solid #444', color: '#ccc', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: 'pointer' }}>
+                Use registered
+              </button>
+            </div>
+          )}
         </div>
-      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="settings-field">
+            <label>Quiet hours start <span style={{ color: '#666', fontWeight: 400 }}>(your timezone)</span></label>
+            <input type="time" value={quietStart} onChange={(e) => setQuietStart(e.target.value)} />
+          </div>
+          <div className="settings-field">
+            <label>Quiet hours end</label>
+            <input type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div className="settings-field">
+            <label>Day Brief time</label>
+            <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              Brain sends the daily brief to WhatsApp at this time. Bypasses quiet hours.
+            </div>
+          </div>
+          <div className="settings-field">
+            <label>Timezone</label>
+            <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
+                    style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+              <option value="Asia/Karachi">Asia/Karachi (PKT, UTC+5)</option>
+              <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
+              <option value="Asia/Riyadh">Asia/Riyadh (AST, UTC+3)</option>
+              <option value="Europe/London">Europe/London (GMT/BST)</option>
+              <option value="America/New_York">America/New_York (ET)</option>
+              <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
+        </div>
+
         <div className="settings-field">
-          <label>Quiet hours start</label>
-          <input type="time" value={quietStart} onChange={(e) => setQuietStart(e.target.value)} />
-        </div>
-        <div className="settings-field">
-          <label>Quiet hours end</label>
-          <input type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} />
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <div className="settings-field">
-          <label>Day Brief time</label>
-          <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
-          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
-            Brain sends your daily brief to WhatsApp at this time. Bypasses quiet hours.
+          <label>How bold should Brain be?</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+            {[
+              { v: 'cautious', t: 'Cautious', d: 'Only ping for high-stakes items. Quiet by default.' },
+              { v: 'balanced', t: 'Balanced', d: 'Ping when Brain is reasonably confident the item needs you today.' },
+              { v: 'eager',    t: 'Eager',    d: 'Ping liberally. Best when you want maximum visibility and don\'t mind interruptions.' },
+            ].map((o) => (
+              <label key={o.v} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10, padding: 10,
+                background: boldness === o.v ? 'rgba(204,107,74,0.12)' : '#1f1f1f',
+                border: `1px solid ${boldness === o.v ? 'rgba(204,107,74,0.6)' : '#333'}`,
+                borderRadius: 8, cursor: 'pointer',
+              }}>
+                <input type="radio" name="boldness" value={o.v} checked={boldness === o.v} onChange={() => setBoldness(o.v)} style={{ marginTop: 2 }} />
+                <div>
+                  <div style={{ color: boldness === o.v ? '#fbbf24' : '#eee', fontWeight: 600, fontSize: 13 }}>{o.t}</div>
+                  <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{o.d}</div>
+                </div>
+              </label>
+            ))}
           </div>
         </div>
-        <div className="settings-field">
-          <label>Timezone</label>
-          <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
-                  style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
-            <option value="Asia/Karachi">Asia/Karachi (PKT, UTC+5)</option>
-            <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
-            <option value="Asia/Riyadh">Asia/Riyadh (AST, UTC+3)</option>
-            <option value="Europe/London">Europe/London (GMT/BST)</option>
-            <option value="America/New_York">America/New_York (ET)</option>
-            <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
-            <option value="UTC">UTC</option>
-          </select>
-          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
-            Used for quiet hours + Day Brief time evaluation.
-          </div>
+
+        <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+          Opt-in
+        </h3>
+
+        <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundEnabled ? 'rgba(34,197,94,0.10)' : '#1f1f1f', border: `1px solid ${outboundEnabled ? 'rgba(34,197,94,0.5)' : '#444'}`, borderRadius: 8 }}>
+          <input type="checkbox" id="outboundEnabled" checked={outboundEnabled} onChange={(e) => setOutboundEnabled(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <label htmlFor="outboundEnabled" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
+            <div style={{ color: outboundEnabled ? '#86efac' : '#eee', fontWeight: 600 }}>
+              {outboundEnabled ? 'Brain may message me on WhatsApp' : 'Enable Brain to message me on WhatsApp'}
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+              When enabled, Brain pings you for items it judges substantive enough to interrupt your day. Default: <strong>off</strong> — Brain stays in Day Brief.
+            </div>
+          </label>
         </div>
-      </div>
 
-      <div className="settings-field">
-        <label>Minimum confidence to ping (0.0 – 1.0)</label>
-        <input type="number" step="0.05" min="0" max="1" value={minConfidence} onChange={(e) => setMinConfidence(e.target.value)} />
-        <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
-          Below this, Brain saves it for Day Brief instead of messaging you.
+        <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundPaused ? 'rgba(239,68,68,0.10)' : '#1f1f1f', border: `1px solid ${outboundPaused ? 'rgba(239,68,68,0.5)' : '#333'}`, borderRadius: 8, marginTop: 8 }}>
+          <input type="checkbox" id="outboundPaused" checked={outboundPaused} onChange={(e) => setOutboundPaused(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <label htmlFor="outboundPaused" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
+            <div style={{ color: outboundPaused ? '#fca5a5' : '#eee', fontWeight: 600 }}>
+              {outboundPaused ? 'Pause active — Brain is silent' : 'Temporarily pause (kill switch)'}
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+              Hard kill switch on top of the opt-in. Use during meetings, evenings, weekends — flip off when you want Brain back.
+            </div>
+          </label>
         </div>
-      </div>
 
-      <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
-        Brain → you on WhatsApp (opt-in)
-      </h3>
-
-      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundEnabled ? 'rgba(34,197,94,0.10)' : '#1f1f1f', border: `1px solid ${outboundEnabled ? 'rgba(34,197,94,0.5)' : '#444'}`, borderRadius: 8 }}>
-        <input type="checkbox" id="outboundEnabled" checked={outboundEnabled} onChange={(e) => setOutboundEnabled(e.target.checked)} style={{ width: 18, height: 18 }} />
-        <label htmlFor="outboundEnabled" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
-          <div style={{ color: outboundEnabled ? '#86efac' : '#eee', fontWeight: 600 }}>
-            {outboundEnabled ? 'Brain may message me on WhatsApp' : 'Enable Brain to message me on WhatsApp'}
-          </div>
-          <div style={{ fontSize: 11, color: '#888', marginTop: 2, lineHeight: 1.5 }}>
-            When enabled, Brain pings you from the company's WhatsApp Business number for items it judges substantive enough to interrupt your day. Default: <strong>off</strong> — Brain stays in Day Brief / email.
-            <br /><br />
-            <strong style={{ color: '#86efac' }}>Brain never replies as you.</strong> Brain has no path to send messages from your personal WhatsApp number to anyone — not your colleagues, not your contacts, not on heuristic, not ever. Your contacts only ever hear from you when you explicitly send.
-          </div>
-        </label>
-      </div>
-
-      <div className="settings-field" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, background: outboundPaused ? 'rgba(239,68,68,0.10)' : '#1f1f1f', border: `1px solid ${outboundPaused ? 'rgba(239,68,68,0.5)' : '#333'}`, borderRadius: 8, marginTop: 8 }}>
-        <input type="checkbox" id="outboundPaused" checked={outboundPaused} onChange={(e) => setOutboundPaused(e.target.checked)} style={{ width: 18, height: 18 }} />
-        <label htmlFor="outboundPaused" style={{ flex: 1, cursor: 'pointer', margin: 0 }}>
-          <div style={{ color: outboundPaused ? '#fca5a5' : '#eee', fontWeight: 600 }}>
-            {outboundPaused ? 'Pause active — Brain is silent' : 'Temporarily pause (kill switch)'}
-          </div>
-          <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
-            On top of the opt-in: a hard kill switch. When checked, Brain sends nothing to your WhatsApp regardless of the toggle above. Use during meetings, evenings, weekends — flip off when you want Brain back.
-          </div>
-        </label>
-      </div>
-
-      <div className="settings-field">
-        <label>Daily message cap</label>
-        <input type="number" min="1" max="200" value={dailyCap} onChange={(e) => setDailyCap(e.target.value)} />
-        <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
-          Hard ceiling on outbound from Brain in any 24h window. Even a runaway bug can never exceed this. Default 20.
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16 }}>
+          <button className="settings-btn" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" onClick={sendTestPing} disabled={pinging || !pingTarget}
+            style={{
+              background: 'transparent', border: '1px solid #444', color: '#ccc',
+              borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: pingTarget ? 'pointer' : 'not-allowed',
+            }}>
+            {pinging ? 'Sending…' : 'Send test ping'}
+          </button>
+          {pingMsg && <span style={{ fontSize: 12, color: pingMsg.startsWith('Sent') ? '#4ade80' : '#fca5a5' }}>{pingMsg}</span>}
         </div>
-      </div>
-
-      <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
-        Per-channel autonomy
-      </h3>
-      <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
-        Brain auto-sends when its confidence is above this threshold. Below it, Brain drafts and surfaces in Day Brief. Every action you take trains the Brain.
-      </p>
-      <PerChannelThresholds />
-
-      <h3 style={{ fontSize: 13, color: '#aaa', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.5px' }}>
-        Learning threshold
-      </h3>
-      <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
-        How many times you have to make the same decision before Brain starts doing it on its own. Every autonomous action is always listed in the "Brief" section of Day Brief so you can review what Brain did.
-      </p>
-      <BrainAutonomyThresholds />
-
-      <button className="settings-btn" onClick={save} disabled={saving}>
-        {saving ? 'Saving…' : 'Save'}
-      </button>
-    </section>
+      </section>
+    </>
   );
 }
 

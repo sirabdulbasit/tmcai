@@ -190,8 +190,29 @@ router.put('/app-defaults/font-scale', async (req: Request, res: Response) => {
   res.json({ success: true, fontScale });
 });
 
-// ─── Brain notification channel (WhatsApp / email / in_app) ────────
+// ─── Brain notification channel (WhatsApp only — see [[project_brain_whatsapp_channel]]) ───
 // Persists under users.notification_preferences JSON, keyed by 'brain_channel'.
+//
+// 2026-05-18 cleanup:
+//   - `channel` field retired from the UI (always 'whatsapp'); kept in
+//     storage for backward compat with older PUT bodies.
+//   - `minConfidence` replaced by `boldness` ('cautious' | 'balanced' |
+//     'eager') in the UI. The numeric threshold is derived for back-
+//     end consumers that still read minConfidence directly. Default
+//     for new users: cautious (0.85) — quiet on day 1.
+//   - `dailyCap` retired from the UI; the 20/day ceiling lives in code
+//     as a hard safety bound.
+
+type Boldness = 'cautious' | 'balanced' | 'eager';
+const BOLDNESS_TO_THRESHOLD: Record<Boldness, number> = {
+  cautious: 0.85, balanced: 0.7, eager: 0.55,
+};
+function thresholdToBoldness(t: number): Boldness {
+  if (t >= 0.8) return 'cautious';
+  if (t >= 0.65) return 'balanced';
+  return 'eager';
+}
+
 router.get('/brain-channel', async (req: Request, res: Response) => {
   const prisma = (await import('../db/prisma')).default;
   const u = await prisma.user.findUnique({
@@ -200,51 +221,65 @@ router.get('/brain-channel', async (req: Request, res: Response) => {
   });
   const prefs = (u?.notificationPreferences as any) || {};
   const bc = prefs.brain_channel || {};
+  const storedThreshold = typeof bc.minConfidence === 'number' ? bc.minConfidence : 0.85;
   res.json({
-    channel: bc.channel ?? 'whatsapp',
-    whatsappNumber: bc.whatsappNumber ?? u?.contactNumber ?? '',
+    // Channel is always WhatsApp; included for backward compat.
+    channel: 'whatsapp',
+    // WhatsApp number defaults to the user's contact number — front-end
+    // shows "Pinging on X (your contact number)" and only persists a
+    // value here if the user explicitly overrides.
+    whatsappNumber: bc.whatsappNumber ?? '',
+    registeredContactNumber: u?.contactNumber ?? '',
     quietStart: bc.quietStart ?? '22:00',
     quietEnd: bc.quietEnd ?? '06:00',
-    minConfidence: bc.minConfidence ?? 0.7,
+    boldness: typeof bc.boldness === 'string' ? bc.boldness : thresholdToBoldness(storedThreshold),
+    // Legacy numeric — kept in the response so older clients don't break.
+    minConfidence: storedThreshold,
     // Opt-in: defaults to false. User must explicitly enable Brain
     // outbound on WhatsApp from Settings before any push fires.
     outboundEnabled: bc.outboundEnabled === true,
     outboundPaused: !!bc.outboundPaused,
+    // dailyCap is a hard safety ceiling enforced in code. Not user-
+    // settable from the UI anymore; included for backward compat.
     dailyCap: typeof bc.dailyCap === 'number' && bc.dailyCap >= 1 ? bc.dailyCap : 20,
-    // Day Brief delivery (added 2026-05-16). Time is HH:MM in the
-    // user's timezone. Default 08:30 — early enough to plan, late
-    // enough to settle in. Timezone defaults to Asia/Karachi (PKT)
-    // since the user base is currently TMC. Cron evaluates the
-    // user's wall-clock at this timezone every minute and fires
-    // the Day Brief via Nexeo when it matches.
+    // Day Brief delivery (added 2026-05-16). HH:MM in the user's timezone.
     dayBriefTime: bc.dayBriefTime ?? '08:30',
     timezone: bc.timezone ?? 'Asia/Karachi',
   });
 });
 
 router.put('/brain-channel', async (req: Request, res: Response) => {
-  const { channel, whatsappNumber, quietStart, quietEnd, minConfidence, outboundEnabled, outboundPaused, dailyCap, dayBriefTime, timezone } = req.body ?? {};
+  const { whatsappNumber, quietStart, quietEnd, boldness, outboundEnabled, outboundPaused, dayBriefTime, timezone } = req.body ?? {};
   const prisma = (await import('../db/prisma')).default;
   const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { notificationPreferences: true } });
   const prefs = ((u?.notificationPreferences as any) || {}) as Record<string, any>;
-  // Preserve any existing brain_channel keys we don't accept here so a
-  // partial PUT doesn't drop sibling settings.
   const existing = prefs.brain_channel || {};
-  // Validate HH:MM time format for dayBriefTime; reject silently
-  // (keep existing) if malformed.
   const validTime = typeof dayBriefTime === 'string' && /^\d{2}:\d{2}$/.test(dayBriefTime);
+
+  // Boldness: accept the new field; derive the numeric threshold every
+  // backend consumer reads. Backward compat: if the caller still sends
+  // `minConfidence` (old client), use it directly.
+  const incomingBoldness: Boldness | null =
+    boldness === 'cautious' || boldness === 'balanced' || boldness === 'eager' ? boldness : null;
+  const fallbackThreshold = typeof existing.minConfidence === 'number' ? existing.minConfidence : 0.85;
+  const minConfidence = incomingBoldness
+    ? BOLDNESS_TO_THRESHOLD[incomingBoldness]
+    : (typeof req.body?.minConfidence === 'number' ? req.body.minConfidence : fallbackThreshold);
+  const storedBoldness = incomingBoldness ?? thresholdToBoldness(minConfidence);
+
   prefs.brain_channel = {
     ...existing,
-    channel: channel ?? 'whatsapp',
+    channel: 'whatsapp',
     whatsappNumber: whatsappNumber ?? '',
     quietStart: quietStart ?? '22:00',
     quietEnd: quietEnd ?? '06:00',
-    minConfidence: typeof minConfidence === 'number' ? minConfidence : 0.7,
-    // outboundEnabled is the opt-in. Strict boolean — if undefined,
-    // preserve existing (don't silently turn it on).
+    boldness: storedBoldness,
+    minConfidence,
     outboundEnabled: typeof outboundEnabled === 'boolean' ? outboundEnabled : existing.outboundEnabled === true,
     outboundPaused: !!outboundPaused,
-    dailyCap: typeof dailyCap === 'number' && dailyCap >= 1 ? Math.min(dailyCap, 200) : 20,
+    // dailyCap stays at whatever was last set (or default 20); not
+    // user-editable from the UI.
+    dailyCap: typeof existing.dailyCap === 'number' && existing.dailyCap >= 1 ? existing.dailyCap : 20,
     dayBriefTime: validTime ? dayBriefTime : (existing.dayBriefTime ?? '08:30'),
     timezone: typeof timezone === 'string' && timezone.length > 0 ? timezone : (existing.timezone ?? 'Asia/Karachi'),
     updatedAt: new Date().toISOString(),
@@ -254,6 +289,34 @@ router.put('/brain-channel', async (req: Request, res: Response) => {
     data: { notificationPreferences: prefs as any },
   });
   res.json({ success: true });
+});
+
+// Test ping — fires a single "Hi from Brain" WA message via the
+// canonical brainContactsUser path so the user can verify the
+// channel actually reaches them. Bypasses the opt-in gate ONLY for
+// this one call (user clicked the button, intent is explicit).
+router.post('/test-ping', async (req: Request, res: Response) => {
+  try {
+    const { brainContactsUser } = await import('../services/notifications/brainOutboundService');
+    const r = await brainContactsUser({
+      userId: req.user!.id,
+      kind: 'test_ping',
+      summary: 'Test ping from Settings → Brain',
+      body: "Hi — this is Brain. The WhatsApp channel is working. You can reply here any time.",
+      bypassRateLimit: true,
+      // User clicked the button explicitly — their intent IS the
+      // consent for this single send. The opt-in remains required
+      // for autonomous Brain → user pings.
+      bypassOptIn: true,
+    });
+    if (r.sent) {
+      res.json({ ok: true });
+    } else {
+      res.status(409).json({ ok: false, reason: r.reason ?? 'send_failed' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ─── Per-channel confidence thresholds (email / whatsapp / delegation / calendar) ───

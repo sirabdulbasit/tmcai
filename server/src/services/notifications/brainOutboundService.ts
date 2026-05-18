@@ -86,6 +86,11 @@ export interface BrainContactRequest {
    * firing back-to-back probes. NEVER set from production code paths.
    */
   bypassRateLimit?: boolean;
+  /** Bypass the opt-in gate (outboundEnabled). Reserved for explicit
+   *  user-initiated probes — Settings → "Send test ping" — where the
+   *  user clicked the button to verify the channel reaches them. The
+   *  user's intent is the consent. NEVER use from background jobs. */
+  bypassOptIn?: boolean;
   /** Free-form metadata persisted on the audit row. */
   metadata?: Record<string, unknown>;
 }
@@ -175,7 +180,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // outboundPaused is preserved as a hard kill switch on top of the
   // opt-in: if the user enabled outbound but later wants silence, they
   // flip pause and even legitimate-looking sends are blocked.
-  if (bc.outboundEnabled !== true) {
+  if (bc.outboundEnabled !== true && !req.bypassOptIn) {
     return await record({
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
