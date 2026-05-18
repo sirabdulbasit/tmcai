@@ -66,7 +66,7 @@ export async function answerAsBrain(
   question: string,
   history: BrainHistoryTurn[] = [],
   opts: { steeringHint?: string | null; channel?: 'web' | 'whatsapp' } = {},
-): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string }> {
+): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string; panel?: import('../services/knowledge/channelRenderer').PanelDirective | null }> {
   // Trim history to the last 6 turns so we don't blow up the prompt.
   // Most follow-ups need only the immediately previous Q&A; 6 covers
   // a chain of 3 back-and-forth pairs, which is plenty for most threads.
@@ -80,6 +80,15 @@ export async function answerAsBrain(
   // formatter so WhatsApp sees a terse one-paragraph answer while
   // web sees the full markdown.
   const channel = opts.channel ?? 'web';
+  // Decide if a dashboard panel should accompany the answer (web only).
+  // For WA we skip the decision entirely — the renderer drops panels.
+  let panel: import('../services/knowledge/channelRenderer').PanelDirective | null = null;
+  if (channel === 'web') {
+    try {
+      const { decidePanel } = await import('../services/knowledge/panelDecider');
+      panel = await decidePanel({ userId, clientNumber, intent: plan.intent });
+    } catch { /* non-critical — answer ships without a panel */ }
+  }
   if (channel === 'whatsapp') {
     const { renderForChannel } = await import('../services/knowledge/channelRenderer');
     const rendered = renderForChannel(result, 'whatsapp');
@@ -152,6 +161,7 @@ export async function answerAsBrain(
     sources: result.sources,
     gaps: result.gaps,
     intent: plan.intent,
+    panel,
   };
 }
 
@@ -473,7 +483,7 @@ router.post('/ask', async (req: Request, res: Response) => {
       // need to drill in.
       res.json({ question, answer: out.answer });
     } else {
-      res.json({ question, answer: out.answer, sources: out.sources, gaps: out.gaps, intent: out.intent });
+      res.json({ question, answer: out.answer, sources: out.sources, gaps: out.gaps, intent: out.intent, panel: out.panel ?? null });
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });

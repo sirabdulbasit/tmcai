@@ -39,6 +39,35 @@ router.get('/stats', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ─── Batch fetch by ids (used by Brain Chat panel overlay) ────
+// Frontend gets a PanelDirective with itemIds[] and needs the rows
+// (title, status, priority, dueDate) to render the card.
+router.post('/by-ids', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const ids = raw
+      .filter((x: unknown): x is string => typeof x === 'string')
+      .slice(0, 50);
+    if (ids.length === 0) { res.json({ items: [] }); return; }
+    const prismaMod = await import('../db/prisma');
+    const items = await prismaMod.default.openItem.findMany({
+      where: { id: { in: ids }, userId: user.id } as any,
+      select: {
+        id: true, title: true, description: true, status: true, priority: true,
+        dueDate: true, delegateeName: true, delegateeEmail: true, createdAt: true,
+      } as any,
+    });
+    // Preserve caller-supplied order so the panel renders in the
+    // sequence the directive specified.
+    const byId = new Map(items.map((i: any) => [i.id, i]));
+    const ordered = ids.map((id: string) => byId.get(id)).filter(Boolean);
+    res.json({ items: ordered });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── Get single item ──────────────────────────────────────────
 router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   try {

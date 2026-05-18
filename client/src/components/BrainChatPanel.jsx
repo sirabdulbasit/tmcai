@@ -19,6 +19,12 @@ export default function BrainChatPanel() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [wikiPageId, setWikiPageId] = useState(null);
+  // Pop-out overlay card for dashboard panel directives (open items
+  // list, contact card, etc). Brain sends a PanelDirective alongside
+  // the answer when the question warrants a structured view; the
+  // Bubble shows a "View details" chip and this state drives the
+  // overlay.
+  const [activePanel, setActivePanel] = useState(null);
   const endRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -65,6 +71,7 @@ export default function BrainChatPanel() {
           intent: data?.intent,
           text: data?.answer ?? '(no answer)',
           sources: data?.sources ?? [],
+          panel: data?.panel ?? null,
         },
       ]);
     } catch (e) {
@@ -132,6 +139,8 @@ export default function BrainChatPanel() {
             sources={m.sources}
             error={m.error}
             retry={m.retry}
+            panel={m.panel}
+            onPanelOpen={(p) => setActivePanel(p)}
             onSourceClick={(s) => { if (s.type === 'wiki_page') setWikiPageId(s.id); }}
             feedbackTarget={
               m.role === 'brain' && !m.error && m.id
@@ -191,11 +200,12 @@ export default function BrainChatPanel() {
         </div>
       </div>
       {wikiPageId && <WikiPageDetail id={wikiPageId} onClose={() => setWikiPageId(null)} />}
+      {activePanel && <PanelOverlay panel={activePanel} onClose={() => setActivePanel(null)} />}
     </div>
   );
 }
 
-function Bubble({ role, intent, sources, error, children, onSourceClick, feedbackTarget = null, retry = null, onRetry = null }) {
+function Bubble({ role, intent, sources, error, children, onSourceClick, feedbackTarget = null, retry = null, onRetry = null, panel = null, onPanelOpen = null }) {
   const isUser = role === 'user';
   const renderBody = () => {
     if (isUser || error || typeof children !== 'string') {
@@ -248,6 +258,30 @@ function Bubble({ role, intent, sources, error, children, onSourceClick, feedbac
           })}
         </div>
       )}
+      {panel && onPanelOpen && (
+        <button
+          type="button"
+          onClick={() => onPanelOpen(panel)}
+          style={{
+            marginTop: 8,
+            padding: '6px 12px',
+            background: 'var(--bg-1)',
+            border: '1px solid var(--accent)',
+            borderRadius: 'var(--r-md)',
+            color: 'var(--accent)',
+            fontSize: 'var(--fs-sm)',
+            fontWeight: 'var(--fw-medium)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+          title={panel.title}
+        >
+          {panelIconFor(panel.kind)} View {panel.title.toLowerCase()}
+          {panel.kind === 'open_items_list' && Array.isArray(panel.itemIds) ? ` (${panel.itemIds.length})` : ''}
+        </button>
+      )}
       {retry?.applied && (
         <div style={{
           fontSize: 10, color: '#a5b4fc', fontWeight: 600,
@@ -273,6 +307,135 @@ function Bubble({ role, intent, sources, error, children, onSourceClick, feedbac
           onRetry={onRetry}
         />
       )}
+    </div>
+  );
+}
+
+// Pop-out overlay card — renders a PanelDirective from the Brain
+// response. Click backdrop or X to dismiss. Per user 2026-05-18:
+// "Pop-out overlay card" UX, not a docked split.
+function PanelOverlay({ panel, onClose }) {
+  // Esc closes the overlay — keyboard-accessible.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(640px, 92vw)',
+          maxHeight: '82vh',
+          background: 'var(--bg-1, #1a1a1a)',
+          border: '1px solid var(--border, #333)',
+          borderRadius: 'var(--r-lg, 10px)',
+          display: 'flex', flexDirection: 'column',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+        }}
+      >
+        <div style={{
+          padding: '14px 18px',
+          borderBottom: '1px solid var(--border, #333)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-md, 14px)', fontWeight: 600, color: 'var(--text, #eee)' }}>
+            <span>{panelIconFor(panel.kind)}</span>
+            <span>{panel.title}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: 'transparent', border: 0, color: 'var(--text-dim, #888)',
+              fontSize: 20, cursor: 'pointer', lineHeight: 1, padding: 4,
+            }}
+          >×</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
+          {panel.kind === 'open_items_list' ? (
+            <OpenItemsPanelBody itemIds={panel.itemIds} />
+          ) : (
+            <div style={{ color: 'var(--text-dim, #888)', fontSize: 13 }}>
+              Panel kind "{panel.kind}" isn't rendered yet.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function panelIconFor(kind) {
+  switch (kind) {
+    case 'open_items_list': return '📋';
+    case 'contact_card':    return '👤';
+    case 'calendar_week':   return '🗓';
+    case 'deal_summary':    return '💼';
+    case 'custom_table':    return '📊';
+    default:                return '·';
+  }
+}
+
+function OpenItemsPanelBody({ itemIds }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.post('/open-items/by-ids', { ids: itemIds })
+      .then((r) => { if (alive) setItems(r.data.items ?? []); })
+      .catch((e) => { if (alive) setErr(e?.response?.data?.error ?? e.message); });
+    return () => { alive = false; };
+  }, [itemIds]);
+
+  if (err) return <div style={{ color: 'var(--danger, #f87171)', fontSize: 13 }}>{err}</div>;
+  if (items === null) return <div style={{ color: 'var(--text-dim, #888)', fontSize: 13 }}>Loading…</div>;
+  if (items.length === 0) return <div style={{ color: 'var(--text-dim, #888)', fontSize: 13 }}>Nothing to show.</div>;
+
+  const priorityColor = (p) => p === 'critical' ? '#f87171' : p === 'high' ? '#fb923c' : p === 'medium' ? '#fbbf24' : '#9ca3af';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((it) => (
+        <div key={it.id} style={{
+          padding: '10px 12px',
+          border: '1px solid var(--border, #333)',
+          borderRadius: 'var(--r-md, 8px)',
+          background: 'var(--bg-2, #222)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{
+              width: 6, alignSelf: 'stretch',
+              background: priorityColor(it.priority),
+              borderRadius: 3, flexShrink: 0,
+            }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text, #eee)', wordBreak: 'break-word' }}>
+                {it.title}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-dim, #888)', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <span>{it.status}</span>
+                {it.priority && <span>· {it.priority}</span>}
+                {it.dueDate && <span>· due {new Date(it.dueDate).toISOString().slice(0, 10)}</span>}
+                {it.delegateeName && <span>· {it.delegateeName}</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
