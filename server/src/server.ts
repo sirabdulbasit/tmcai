@@ -538,6 +538,23 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000); // daily
 
+  // 2026-05-16 — Day Brief dispatch. Fires each opted-in user's
+  // daily brief on WhatsApp at their configured local time
+  // (brain_channel.dayBriefTime + .timezone). Ticks every minute;
+  // each user fires once per local-day. Composer + WA renderer
+  // shared with /brain/ask so web and WhatsApp see the same brain.
+  setInterval(async () => {
+    try {
+      const { runDayBriefDispatch } = await import('./jobs/dayBriefDispatchJob');
+      const s = await runDayBriefDispatch();
+      if (s.fired + s.errors > 0) {
+        console.log(`[dayBriefDispatch] scanned=${s.scanned} fired=${s.fired} skipped=${s.skipped} errors=${s.errors}`);
+      }
+    } catch (err: any) {
+      console.warn('[dayBriefDispatch] error:', err.message);
+    }
+  }, 60 * 1000);
+
   // 2026-05-15 — WA ingest health audit. Reconciles webjs's view of
   // each chat against feed_events + whatsapp_outbound_messages and
   // emits a structured warning when coverage drops below 80%.
