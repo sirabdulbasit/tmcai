@@ -47,6 +47,16 @@ export interface GateInput {
   priority?: 'critical' | 'high' | 'medium' | 'low' | null;
   /** Caller's intended due date — when missing, gate routes to DRAFT. */
   dueDate?: Date | null;
+  /** Source feed (gmail / whatsapp / etc) + the source-specific ref
+   *  (Gmail message id, WA message id, etc). When both are present
+   *  the gate's exact-dedup layer blocks duplicate inserts from a
+   *  webhook + poll race or a real-time-then-backfill chain. */
+  sourceFeed?: string | null;
+  sourceRef?: string | null;
+  /** Skip the semantic-dedup LLM call. Use only when the caller is
+   *  certain this is intentional (e.g. UI create where the user
+   *  acknowledged a duplicate warning and chose to proceed). */
+  skipDedupCheck?: boolean;
 }
 
 export interface GateOutput {
@@ -55,6 +65,10 @@ export interface GateOutput {
   block: boolean;
   /** Reason for blocking, when block=true. */
   reason?: string;
+  /** When block=true and the cause was a duplicate, this is the id
+   *  of the existing item the caller should surface ("you already
+   *  have this — see <existing>"). null otherwise. */
+  duplicateOfId?: string | null;
   /** Normalised values to use in the prisma.openItem.create call. */
   status: 'NEW' | 'DELEGATED' | 'DRAFT';
   delegateeId: number | null;
@@ -151,6 +165,65 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
         };
       }
     } catch { /* fall through — never break create on a settings lookup */ }
+  }
+
+  // 1c) Dedup — exact then semantic. Block create when we find a
+  // still-open item that's clearly the same loop.
+  //
+  // Exact layer: (userId, sourceFeed, sourceRef) — catches double-fire
+  // from webhook + poll races / real-time + backfill chains. Cheap DB
+  // query, no LLM.
+  //
+  // Semantic layer: structural pre-filter (Jaccard ≥ 0.2 on title
+  // tokens against last 50 open items) gates an LLM judgement on
+  // whether the new item closes the same loop as one of the
+  // candidates. Per [[feedback_no_hardcoded_judgement]] the actual
+  // "is this the same loop?" decision is LLM-with-context; the
+  // Jaccard is structural pre-filter only.
+  //
+  // skipDedupCheck on the input bypasses BOTH layers — used when the
+  // user has explicitly confirmed they want a duplicate (e.g. UI
+  // create after a warning).
+  if (!input.skipDedupCheck) {
+    try {
+      const { findExactDuplicate, findSemanticDuplicate } =
+        await import('./semanticDedupService');
+
+      const exact = await findExactDuplicate({
+        userId: input.userId,
+        sourceFeed: input.sourceFeed ?? null,
+        sourceRef: input.sourceRef ?? null,
+      });
+      if (exact) {
+        return {
+          block: true,
+          reason: exact.reason,
+          duplicateOfId: exact.itemId,
+          status: 'NEW',
+          delegateeId: null, delegateeName: null, delegateeEmail: null,
+          missingSlots: [],
+        };
+      }
+
+      const semantic = await findSemanticDuplicate({
+        userId: input.userId,
+        clientNumber: input.clientNumber,
+        newTitle: input.title,
+        newDescription: input.description ?? null,
+        newDelegateeName: input.delegateeName ?? null,
+        newDelegateeEmail: input.delegateeEmail ?? null,
+      });
+      if (semantic) {
+        return {
+          block: true,
+          reason: semantic.reason,
+          duplicateOfId: semantic.itemId,
+          status: 'NEW',
+          delegateeId: null, delegateeName: null, delegateeEmail: null,
+          missingSlots: [],
+        };
+      }
+    } catch { /* fall through — dedup failure must never break create */ }
   }
 
   // 2) Delegation normalisation.
