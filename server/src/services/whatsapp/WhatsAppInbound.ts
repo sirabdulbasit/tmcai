@@ -741,6 +741,7 @@ async function processWhatsAppQuery(
     if (userProfile.jobDescription) parts.push(`User's JD: ${userProfile.jobDescription}`);
     if (userProfile.aboutMe) parts.push(`About user: ${userProfile.aboutMe}`);
     if (userProfile.instructions) parts.push(`Custom instructions: ${userProfile.instructions}`);
+    if (userProfile.preferredTitle) parts.push(`Address the user as: ${userProfile.preferredTitle}`);
     if (parts.length > 0) {
       profileBlock = '── USER PROFILE ──\n' + parts.join('\n') +
         '\nADAPTIVE TONE: Mirror the user\'s communication style. If casual, be casual. If formal, be formal.\n\n';

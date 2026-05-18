@@ -31,6 +31,7 @@ export async function generateBriefing(userId: number): Promise<string> {
   let profileBlock = '';
   if (profile?.jobDescription) profileBlock += `User role: ${profile.jobDescription}\n`;
   if (profile?.instructions) profileBlock += `Instructions: ${profile.instructions}\n`;
+  if (profile?.preferredTitle) profileBlock += `Address the user as: ${profile.preferredTitle}\n`;
 
   const prompt = profileBlock +
     'Generate a concise MORNING BRIEFING for this user. Include:\n' +

@@ -65,6 +65,10 @@ export default function SettingsPage() {
     { id: 'profile',    label: 'Profile' },
     { id: 'brain',      label: 'Brain' },
     { id: 'openItems',  label: 'Open Items' },
+    // Organisation tab is SA-only — the tenant-wide default settings
+    // belong here, not on personal Profile. Conditionally appended so
+    // non-SA users never see it.
+    ...(user?.isSuperAdmin ? [{ id: 'organisation', label: 'Organisation' }] : []),
     { id: 'security',   label: 'Security' },
   ];
 
@@ -133,15 +137,14 @@ export default function SettingsPage() {
             {/* Brain name moved to Brain tab 2026-05-18 — it's a Brain
                 configuration choice, not personal info. */}
 
-            {/* Display — user-level font scale (inherits from organisation default).
-                SuperAdmin also sees the organisation-wide default control below. */}
+            {/* Display — personal text-scale only. The SA-only tenant
+                default lives on the Organisation tab. */}
             <DisplaySection
               fontScale={fontScale}
               setFontScale={setFontScale}
               appDefaultFontScale={appDefaultFontScale}
               isOverride={fontScaleIsOverride}
               resetToDefault={resetFontScaleToDefault}
-              isSuperAdmin={!!user?.isSuperAdmin}
             />
 
             {/* Context Brain knows about you — what the LLM reads to
@@ -177,9 +180,6 @@ export default function SettingsPage() {
                 <textarea rows={3} value={profile.instructions} onChange={e => setProfile(p => ({ ...p, instructions: e.target.value }))} placeholder="Preferences Brain should always follow — e.g. always flag project risks. Show amounts in PKR. Don't auto-acknowledge messages from external clients." />
               </div>
               <button className="settings-btn" onClick={saveProfile} disabled={saving}>{saving ? 'Saving…' : 'Save Profile'}</button>
-              <p style={{ fontSize: 11, color: '#666', marginTop: 8 }}>
-                Tip: You can also update these by telling Brain — e.g. "I live in Karachi" or "remember my number is 0300-1234567"
-              </p>
             </section>
           </>
         )}
@@ -190,6 +190,12 @@ export default function SettingsPage() {
 
         {tab === 'openItems' && (
           <OpenItemsSection />
+        )}
+
+        {tab === 'organisation' && user?.isSuperAdmin && (
+          <OrganisationDefaultsSection
+            appDefaultFontScale={appDefaultFontScale}
+          />
         )}
 
         {tab === 'security' && (
@@ -638,18 +644,85 @@ function BrainNameSection() {
  *  For SuperAdmins, a second control is rendered below so they can set
  *  the organisation-wide default from Settings without having to navigate
  *  to Admin → Application Configuration. */
-function DisplaySection({ fontScale, setFontScale, appDefaultFontScale, isOverride, resetToDefault, isSuperAdmin }) {
-  const PRESETS = [
-    { label: 'Small', value: 0.9 },
-    { label: 'Normal', value: 1.0 },
-    { label: 'Large', value: 1.15 },
-    { label: 'XL', value: 1.3 },
-  ];
+// PRESETS shared by DisplaySection and OrganisationDefaultsSection. The
+// continuous A-/A+ controls were dropped 2026-05-18 — they overlapped
+// with the discrete presets and the "Normal" preset rendered as an empty
+// button because its selected-state coloured the text the same as the
+// background. Selected state now uses a stronger border + background
+// swap so the label is always readable.
+const FONT_PRESETS = [
+  { label: 'Small', value: 0.9 },
+  { label: 'Normal', value: 1.0 },
+  { label: 'Large', value: 1.15 },
+  { label: 'XL', value: 1.3 },
+];
+
+function fontPresetButtonStyle(active) {
+  return active
+    ? {
+        // Strong contrast — never match label to background.
+        background: 'var(--bg-1)',
+        color: 'var(--accent)',
+        borderColor: 'var(--accent)',
+        borderWidth: 2,
+        fontWeight: 700,
+      }
+    : undefined;
+}
+
+function DisplaySection({ fontScale, setFontScale, appDefaultFontScale, isOverride, resetToDefault }) {
   const current = Number(fontScale ?? 1);
   const clampedCurrent = Math.round(current * 100);
   const orgPct = Math.round(Number(appDefaultFontScale ?? 1) * 100);
 
-  // SA-only: load + mutate the tenant default.
+  return (
+    <section className="settings-section">
+      <h2>Display</h2>
+      <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
+        Scale the interface text up or down. {isOverride
+          ? <>You're using a personal override; organisation default is <strong>{orgPct}%</strong>.</>
+          : <>You're using the organisation default (<strong>{orgPct}%</strong>).</>}
+      </p>
+
+      <div className="settings-field">
+        <label>Your text size · {clampedCurrent}%{isOverride ? ' (personal)' : ' (org default)'}</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {FONT_PRESETS.map((p) => (
+            <button
+              key={p.value}
+              className="settings-btn"
+              onClick={() => setFontScale(p.value)}
+              style={fontPresetButtonStyle(Math.abs(current - p.value) < 0.02)}
+            >{p.label}</button>
+          ))}
+          {isOverride && (
+            <>
+              <span style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
+              <button className="settings-btn" onClick={resetToDefault} title="Revert to the organisation default">
+                Reset to org default
+              </button>
+            </>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+          Preview — this sentence resizes with your setting.
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * OrganisationDefaultsSection — SA-only tenant-wide knobs. Moved out
+ * of the personal Profile/Display tab 2026-05-18 because it's a tenant
+ * concern, not a personal one. New tab "Organisation" only appears in
+ * the nav for SA users; this component lives there.
+ *
+ * Currently holds just the org-default font scale; over time additional
+ * tenant defaults (default boldness, default DRAFT expiry, etc.) can
+ * live here.
+ */
+function OrganisationDefaultsSection({ appDefaultFontScale }) {
   const [appDefault, setAppDefault] = useState(Number(appDefaultFontScale ?? 1));
   const [savingDefault, setSavingDefault] = useState(false);
   const [defaultMsg, setDefaultMsg] = useState('');
@@ -657,11 +730,10 @@ function DisplaySection({ fontScale, setFontScale, appDefaultFontScale, isOverri
   useEffect(() => { setAppDefault(Number(appDefaultFontScale ?? 1)); }, [appDefaultFontScale]);
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
     api.get('/profile/app-defaults/font-scale').then((r) => {
       if (typeof r.data?.fontScale === 'number') setAppDefault(r.data.fontScale);
     }).catch(() => {});
-  }, [isSuperAdmin]);
+  }, []);
 
   const saveAppDefault = async (next) => {
     const clamped = Math.min(1.4, Math.max(0.85, Number(next) || 1));
@@ -681,71 +753,32 @@ function DisplaySection({ fontScale, setFontScale, appDefaultFontScale, isOverri
 
   return (
     <section className="settings-section">
-      <h2>Display</h2>
-      <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
-        Scale the interface text up or down. {isOverride
-          ? <>You're using a personal override; organisation default is <strong>{orgPct}%</strong>.</>
-          : <>You're using the organisation default (<strong>{orgPct}%</strong>).</>}
+      <h2>Organisation defaults</h2>
+      <p style={{ fontSize: 12, color: '#888', marginTop: -4, marginBottom: 14 }}>
+        Tenant-wide settings that apply to every user. Individual users can
+        still override these from their own Profile / Brain tab where
+        applicable.
       </p>
 
-      {/* Personal scale */}
       <div className="settings-field">
-        <label>Your text size · {clampedCurrent}%{isOverride ? ' (personal)' : ' (org default)'}</label>
+        <label>Text size · {appDefaultPct}%</label>
+        <p style={{ fontSize: 12, color: '#666', marginTop: 2, marginBottom: 8 }}>
+          Default interface text size for every user. Users who set a personal
+          override (Profile → Display) keep their override.
+        </p>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="settings-btn" onClick={() => setFontScale(Math.max(0.85, current - 0.05))} disabled={current <= 0.85} title="Smaller">A−</button>
-          <button className="settings-btn" onClick={() => setFontScale(Math.min(1.4, current + 0.05))} disabled={current >= 1.4} title="Larger">A+</button>
-          <span style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
-          {PRESETS.map((p) => (
+          {FONT_PRESETS.map((p) => (
             <button
               key={p.value}
               className="settings-btn"
-              onClick={() => setFontScale(p.value)}
-              style={Math.abs(current - p.value) < 0.02 ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
+              onClick={() => saveAppDefault(p.value)}
+              disabled={savingDefault}
+              style={fontPresetButtonStyle(Math.abs(appDefault - p.value) < 0.02)}
             >{p.label}</button>
           ))}
-          {isOverride && (
-            <>
-              <span style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
-              <button className="settings-btn" onClick={resetToDefault} title="Revert to the organisation default">
-                Reset to org default
-              </button>
-            </>
-          )}
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
-          Preview — this sentence resizes with your setting.
-        </div>
+        {defaultMsg && <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>{defaultMsg}</div>}
       </div>
-
-      {/* SA-only: app-wide default */}
-      {isSuperAdmin && (
-        <div className="settings-field" style={{ marginTop: 18, paddingTop: 14, borderTop: '1px dashed var(--border)' }}>
-          <label>
-            🛡 Organisation default · {appDefaultPct}%
-            <span style={{ marginLeft: 8, fontSize: 11, padding: '2px 8px', borderRadius: 10, background: 'rgba(204,107,74,0.15)', color: 'var(--accent)', fontWeight: 600 }}>
-              SA only
-            </span>
-          </label>
-          <p style={{ fontSize: 12, color: '#666', marginTop: 2, marginBottom: 8 }}>
-            Sets the default interface text size for every user in <strong>{/* tenant name omitted */}this tenant</strong>. Individual users can still set a personal override, which wins over this.
-          </p>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="settings-btn" onClick={() => saveAppDefault(Math.max(0.85, appDefault - 0.05))} disabled={savingDefault || appDefault <= 0.85} title="Smaller">A−</button>
-            <button className="settings-btn" onClick={() => saveAppDefault(Math.min(1.4, appDefault + 0.05))} disabled={savingDefault || appDefault >= 1.4} title="Larger">A+</button>
-            <span style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
-            {PRESETS.map((p) => (
-              <button
-                key={p.value}
-                className="settings-btn"
-                onClick={() => saveAppDefault(p.value)}
-                disabled={savingDefault}
-                style={Math.abs(appDefault - p.value) < 0.02 ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
-              >{p.label}</button>
-            ))}
-          </div>
-          {defaultMsg && <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>{defaultMsg}</div>}
-        </div>
-      )}
     </section>
   );
 }

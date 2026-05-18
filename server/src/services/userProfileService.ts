@@ -12,6 +12,11 @@ export interface UserProfile {
   aboutMe: string | null;
   instructions: string | null;
   tonePreference: string | null;
+  /** How Brain should address the user (e.g. "Sir", "Boss", first name).
+   *  Stored under notificationPreferences.profile.preferredTitle to avoid
+   *  a schema migration. Joined here so every LLM-context builder sees
+   *  one canonical profile shape. */
+  preferredTitle: string | null;
 }
 
 export async function getUserProfile(userId: number): Promise<UserProfile | null> {
@@ -24,16 +29,32 @@ export async function getUserProfile(userId: number): Promise<UserProfile | null
       aboutMe: true,
       instructions: true,
       tonePreference: true,
+      notificationPreferences: true,
     },
   });
 
   if (!user) return null;
 
-  if (!user.jobDescription && !user.city && !user.contactNumber && !user.aboutMe && !user.instructions && !user.tonePreference) {
+  const prefs = (user.notificationPreferences as any) ?? {};
+  const preferredTitle = prefs?.profile?.preferredTitle ?? null;
+
+  if (
+    !user.jobDescription && !user.city && !user.contactNumber
+    && !user.aboutMe && !user.instructions && !user.tonePreference
+    && !preferredTitle
+  ) {
     return null;
   }
 
-  return user;
+  return {
+    jobDescription: user.jobDescription,
+    city: user.city,
+    contactNumber: user.contactNumber,
+    aboutMe: user.aboutMe,
+    instructions: user.instructions,
+    tonePreference: user.tonePreference,
+    preferredTitle,
+  };
 }
 
 export async function updateUserProfile(userId: number, data: Partial<UserProfile>): Promise<UserProfile> {
@@ -54,8 +75,18 @@ export async function updateUserProfile(userId: number, data: Partial<UserProfil
       aboutMe: true,
       instructions: true,
       tonePreference: true,
+      notificationPreferences: true,
     },
   });
 
-  return user;
+  const prefs = (user.notificationPreferences as any) ?? {};
+  return {
+    jobDescription: user.jobDescription,
+    city: user.city,
+    contactNumber: user.contactNumber,
+    aboutMe: user.aboutMe,
+    instructions: user.instructions,
+    tonePreference: user.tonePreference,
+    preferredTitle: prefs?.profile?.preferredTitle ?? null,
+  };
 }

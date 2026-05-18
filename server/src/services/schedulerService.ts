@@ -50,6 +50,7 @@ async function executeTask(taskId: number): Promise<void> {
     let profileBlock = '';
     if (profile?.jobDescription) profileBlock += `User role: ${profile.jobDescription}. `;
     if (profile?.instructions) profileBlock += `Instructions: ${profile.instructions}. `;
+    if (profile?.preferredTitle) profileBlock += `Address the user as: ${profile.preferredTitle}. `;
 
     const systemPrompt = profileBlock + buildSystemPrompt(context, getDataLastUpdated());
 
