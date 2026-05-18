@@ -28,13 +28,17 @@
  *   - remind_owner              — surface on My Attention (set a flag
  *                                  in metadata.followup that the brief
  *                                  builder reads).
- *   - nudge_internal_delegatee  — auto-send Nexeo WhatsApp to the
- *                                  internal Nexeo-user delegatee. Brain
- *                                  identifies itself.
- *   - ask_owner_to_chase        — used when delegatee is external.
- *                                  Auto-send Nexeo WhatsApp to OWNER
+ *   - ask_owner_to_chase        — Auto-send Nexeo WhatsApp to OWNER
  *                                  ("Asad still pending — want to ping
- *                                  him?"). External never contacted.
+ *                                  him?"). Owner decides whether to
+ *                                  draft a follow-up via the email
+ *                                  chase path. Brain NEVER pings the
+ *                                  delegatee directly — internal or
+ *                                  external. The Nexeo WhatsApp number
+ *                                  is reserved for Brain↔owner only
+ *                                  (user 2026-05-18:
+ *                                  "this whatsapp is only for a
+ *                                  communication between brain and user").
  *   - escalate                  — bump priority to high, surface on
  *                                  attention.
  *   - mark_stale                — set metadata.followup.stale=true so
@@ -56,7 +60,6 @@ const ACTIVE = ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'S
 type Action =
   | 'do_nothing'
   | 'remind_owner'
-  | 'nudge_internal_delegatee'
   | 'ask_owner_to_chase'
   | 'escalate'
   | 'mark_stale'
@@ -79,7 +82,7 @@ function newResult(): RunResult {
   return {
     scanned: 0,
     verdicts: {
-      do_nothing: 0, remind_owner: 0, nudge_internal_delegatee: 0,
+      do_nothing: 0, remind_owner: 0,
       ask_owner_to_chase: 0, escalate: 0, mark_stale: 0, bump_priority: 0,
     },
     dispatched: 0,
@@ -97,13 +100,13 @@ You will see:
 
 Return STRICT JSON, no prose:
 {
-  "action": "do_nothing" | "remind_owner" | "nudge_internal_delegatee" | "ask_owner_to_chase" | "escalate" | "mark_stale" | "bump_priority",
+  "action": "do_nothing" | "remind_owner" | "ask_owner_to_chase" | "escalate" | "mark_stale" | "bump_priority",
   "reason": "one short sentence why",
   "newPriority": "critical" | "high" | "medium" | "low"   // only when action='bump_priority'
 }
 
 Rules — non-negotiable:
-1. NEVER pick nudge_internal_delegatee for an EXTERNAL delegatee — Brain only talks to its own Nexeo users. For external delegations the right move is ask_owner_to_chase.
+1. Brain NEVER messages the delegatee directly — neither internal nor external. The Nexeo WhatsApp channel is reserved for Brain↔owner communication only. When a chase is warranted, the action is ALWAYS ask_owner_to_chase, regardless of whether the delegatee is internal or external. The owner decides whether and how to nudge.
 2. If the user dismissed/ignored your last 2+ verdicts on similar items, default to do_nothing this cycle. Don't be a pest.
 3. mark_stale ONLY when: no activity in 14+ days, low/medium priority, no upcoming deadline. Not for high/critical items.
 4. escalate is reserved for items with concrete urgency signals (deadline within 24h, money/contract context, explicit blocker). Don't escalate generic items just because they're old.
@@ -112,7 +115,7 @@ Rules — non-negotiable:
 
 Examples of good calls:
   - Item age 1d, delegated to internal Asad, no movement: do_nothing (too fresh)
-  - Item age 4d, delegated to internal Asad, no movement: nudge_internal_delegatee
+  - Item age 4d, delegated to internal Asad, no movement: ask_owner_to_chase
   - Item age 4d, delegated to external client, no movement: ask_owner_to_chase
   - Item age 15d, low priority, no movement, no deadline: mark_stale
   - Item age 3d, due in 18 hours, high priority: escalate
@@ -213,8 +216,18 @@ async function judge(item: any, delegateeType: 'internal' | 'external' | 'none')
     if (!m) return null;
     const obj = JSON.parse(m[0]);
     const action = String(obj.action ?? 'do_nothing') as Action;
-    const allowed: Action[] = ['do_nothing', 'remind_owner', 'nudge_internal_delegatee',
+    const allowed: Action[] = ['do_nothing', 'remind_owner',
       'ask_owner_to_chase', 'escalate', 'mark_stale', 'bump_priority'];
+    // Backward-compat: if a previously-cached LLM response or a slow
+    // rollout returns the retired nudge_internal_delegatee verdict,
+    // redirect to ask_owner_to_chase so the chase still happens via
+    // the owner (the only path Brain is allowed to use).
+    if ((action as string) === 'nudge_internal_delegatee') {
+      return {
+        action: 'ask_owner_to_chase',
+        reason: 'redirected from retired nudge_internal_delegatee verdict (Brain only contacts the owner)',
+      };
+    }
     if (!allowed.includes(action)) return null;
     return {
       action,
@@ -248,43 +261,13 @@ async function dispatch(item: any, verdict: Verdict): Promise<{ ok: boolean; det
       });
       return { ok: true, detail: 'flagged for My Attention' };
     }
-    case 'nudge_internal_delegatee': {
-      if (!item.delegateeId) return { ok: false, detail: 'no internal delegatee id' };
-      const ageDays = Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (24 * 60 * 60 * 1000));
-      const { phraseInternalNudge, addressUser, rememberPending } = await import('../services/notifications/brainHumanComm');
-      const delegateeFirstName = await addressUser(item.delegateeId);
-      const ownerFirstName = item.owner?.email
-        ? String(item.owner.email).split('@')[0]
-        : '';
-      const body = phraseInternalNudge({
-        delegateeFirstName,
-        ownerFirstName,
-        itemTitle: item.title,
-        ageDays,
-        itemId: item.id,
-      });
-      const r = await brainContactsUser({
-        userId: item.delegateeId,
-        kind: 'open_item_internal_nudge',
-        summary: `Nudge on "${item.title.slice(0, 60)}" from ${ownerFirstName || 'colleague'}`,
-        body,
-        dedupKey: `followup_nudge:${item.id}:${new Date().toISOString().slice(0, 10)}`,
-      });
-      if (r.sent) {
-        // Remember on delegatee's side so their "did it" / "still
-        // working on it" reply resolves to this item.
-        await rememberPending(item.delegateeId, {
-          kind: 'open_item_internal_nudge',
-          refId: item.id,
-          refTitle: item.title,
-          meta: { ownerUserId: item.userId, ageDays },
-        });
-      }
-      return {
-        ok: r.sent,
-        detail: r.sent ? `nudged ${item.delegateeName ?? `user#${item.delegateeId}`}` : (r.reason ?? 'send blocked'),
-      };
-    }
+    // case 'nudge_internal_delegatee' — RETIRED 2026-05-18.
+    // Brain MUST NOT message the delegatee directly. The Nexeo
+    // WhatsApp channel is reserved for Brain↔owner only. Any verdict
+    // that would have landed here is redirected to ask_owner_to_chase
+    // in the parser; this case is intentionally absent so the
+    // dispatcher would error out if a redirect ever failed (defense
+    // in depth against accidental reintroduction).
     case 'ask_owner_to_chase': {
       const who = item.delegateeName ?? item.delegateeEmail ?? 'the delegatee';
       const ageDays = Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (24 * 60 * 60 * 1000));
