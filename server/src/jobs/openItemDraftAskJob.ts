@@ -41,8 +41,12 @@ import { brainContactsUser } from '../services/notifications/brainOutboundServic
 const log = createLogger('open-item-draft-ask');
 
 const ACTIVE_DRAFT_STATUSES = ['DRAFT'];
-const MAX_ASKS = 6; // days 0..5; day 6 expires
-const WARN_DAY = 5; // include "I'll drop this draft today if I don't hear back"
+// MAX_ASKS / WARN_DAY are now per-user (Settings → Open Items →
+// DRAFT expiry). Resolved per item via getOpenItemsSettings(userId).
+// Day N is counted as floor((now - createdAt) / 24h):
+//   days 0 .. (expiry-2): ask
+//   day  (expiry-1):       final ask + warning
+//   day  expiry or later:  status -> CLOSED, audit reason recorded.
 
 interface DraftMeta {
   missingSlots?: Array<'priority' | 'dueDate'>;
@@ -107,8 +111,14 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
 
       const day = dayIndex(item.createdAt, now);
 
-      // Day 6+ → expire.
-      if (day >= MAX_ASKS) {
+      // Per-user DRAFT expiry — Settings → Open Items.
+      const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+      const oiSettings = await getOpenItemsSettings(item.userId);
+      const maxAsks = oiSettings.draftExpiryDays;
+      const warnDay = Math.max(1, maxAsks - 1);
+
+      // Day >= maxAsks → expire.
+      if (day >= maxAsks) {
         await prisma.openItem.update({
           where: { id: item.id },
           data: {
@@ -119,7 +129,7 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
                 ...meta,
                 expiredAt: now.toISOString(),
               },
-              inactivationReason: 'Draft expired — priority/deadline not provided after 6 daily prompts',
+              inactivationReason: `Draft expired — priority/deadline not provided after ${maxAsks} daily prompts`,
             } as any,
           } as any,
         });
@@ -141,6 +151,7 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         missingSlots,
         dayIndex: day,
         itemId: item.id,
+        warnDay,
       });
 
       // Brain → user via the canonical brainContactsUser path. Handles

@@ -88,23 +88,28 @@ export async function addressUser(userId: number): Promise<string> {
   }
 }
 
-/** Compose a draft-ask body with variation. Days 0-3 are casual
- *  asks; day 4 picks up urgency; day 5 is the explicit warning. */
+/** Compose a draft-ask body with variation. Casual asks until the
+ *  final day, which is the explicit warning. `warnDay` defaults to 5
+ *  to preserve old behaviour when callers don't pass it (DRAFT expiry
+ *  was 6 days, warning on day 5). New caller passes warnDay derived
+ *  from the user's draftExpiryDays setting. */
 export function phraseDraftAsk(args: {
   userFirstName: string;
   itemTitle: string;
   missingSlots: Array<'priority' | 'dueDate'>;
   dayIndex: number;
   itemId: string;
+  warnDay?: number;
 }): string {
   const { userFirstName, itemTitle, missingSlots, dayIndex, itemId } = args;
+  const warnDay = args.warnDay ?? 5;
   const both = missingSlots.includes('priority') && missingSlots.includes('dueDate');
   const slotPhrase = both
     ? 'a priority and a deadline'
     : missingSlots.includes('priority') ? 'a priority' : 'a deadline';
 
   const greet = userFirstName ? `${userFirstName}, ` : '';
-  const warn = dayIndex === 5;
+  const warn = dayIndex >= warnDay;
 
   if (warn) {
     return [

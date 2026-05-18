@@ -21,7 +21,11 @@ import createLogger from '../utils/logger';
 
 const log = createLogger('open-items-backlog-cleanup');
 
-const STALE_DAYS = 30;
+// Default if no per-user setting is present. Stale window is now
+// per-user (Settings → Open Items → Stale threshold); resolved by
+// item.userId via getOpenItemsSettings. 0 disables the stale sweep
+// for that user.
+const DEFAULT_STALE_DAYS = 30;
 const HARD_LIMIT_PER_RUN = 500;
 
 interface CleanupStats {
@@ -47,7 +51,10 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
     scanned: 0, archivedByGate: 0, archivedStale: 0, archivedDuplicate: 0, archivedSmoke: 0, errors: 0,
   };
 
-  const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000);
+  // Per-user stale window resolved inside the loop. The candidate
+  // findMany pulls everything currently open and non-critical; the
+  // stale decision is made per-item with the user's setting.
+  const userStaleCache = new Map<number, number>();
 
   // 1. Pull all NEW / TRIAGED items, non-critical, in batches.
   const items = await prisma.openItem.findMany({
@@ -126,12 +133,25 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         continue;
       }
 
-      // 1c. Stale: created > 30 days ago, no delegation, no notes.
+      // 1c. Stale: created > N days ago (per-user staleThresholdDays;
+      // default 30; 0 disables), no delegation, no notes.
       // Even if `updatedAt` shifted (Brain re-scoring), we treat it as
       // stale unless the user has actually engaged.
+      let staleDays = userStaleCache.get(it.userId);
+      if (staleDays === undefined) {
+        try {
+          const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+          const s = await getOpenItemsSettings(it.userId);
+          staleDays = s.staleThresholdDays > 0 ? s.staleThresholdDays : DEFAULT_STALE_DAYS;
+        } catch {
+          staleDays = DEFAULT_STALE_DAYS;
+        }
+        userStaleCache.set(it.userId, staleDays);
+      }
+      const userCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
       const hasNotes = Array.isArray((it as any).notes) && (it as any).notes.length > 0;
       const hasDelegation = !!(meta as any).delegateeEmail || !!(meta as any).delegateeName;
-      if (it.createdAt < cutoff && !hasNotes && !hasDelegation) {
+      if (staleDays > 0 && it.createdAt < userCutoff && !hasNotes && !hasDelegation) {
         await prisma.openItem.update({
           where: { id: it.id },
           data: {

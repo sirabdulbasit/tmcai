@@ -112,6 +112,47 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
     } catch { /* tolerate — if we can't check, fall through to create */ }
   }
 
+  // 1b) User auto-create settings — Settings → Open Items.
+  //   - Per-source toggle (email / WhatsApp / voice): when off, Brain
+  //     still detected the item but the user has asked us not to
+  //     create live rows from this source. Caller is expected to park
+  //     it as a Day Brief suggestion instead.
+  //   - Criticality floor: when the priority is below the floor, same
+  //     treatment — block the live create, surface as a suggestion.
+  // Block path returns a structured reason so the caller can route
+  // to the right surface (Day Brief suggestion queue) instead of
+  // silently dropping.
+  if (input.sourceFeedEventId) {
+    try {
+      const event = await prisma.feedEvent.findUnique({
+        where: { id: input.sourceFeedEventId },
+        select: { sourceType: true },
+      });
+      const { getOpenItemsSettings, sourceToggleKey, meetsCriticalityFloor } =
+        await import('./openItemsSettings');
+      const settings = await getOpenItemsSettings(input.userId);
+      const key = sourceToggleKey(event?.sourceType ?? null);
+      if (key && settings[key] === false) {
+        return {
+          block: true,
+          reason: `Auto-create from ${event?.sourceType} disabled in Settings → Open Items.`,
+          status: 'NEW',
+          delegateeId: null, delegateeName: null, delegateeEmail: null,
+          missingSlots: [],
+        };
+      }
+      if (!meetsCriticalityFloor(input.priority ?? null, settings.autoCreateCriticalityFloor)) {
+        return {
+          block: true,
+          reason: `Priority below the auto-create floor (${settings.autoCreateCriticalityFloor}) in Settings → Open Items.`,
+          status: 'NEW',
+          delegateeId: null, delegateeName: null, delegateeEmail: null,
+          missingSlots: [],
+        };
+      }
+    } catch { /* fall through — never break create on a settings lookup */ }
+  }
+
   // 2) Delegation normalisation.
   let delegateeId = input.delegateeId ?? null;
   let delegateeName = input.delegateeName ?? null;

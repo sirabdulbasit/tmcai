@@ -414,6 +414,12 @@ router.put('/open-items', async (req: Request, res: Response) => {
     where: { id: req.user!.id },
     data: { notificationPreferences: prefs as any },
   });
+  // Bust the in-memory settings cache so the next job tick picks up
+  // the new values immediately instead of waiting for the 60s TTL.
+  try {
+    const { invalidateOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+    invalidateOpenItemsSettings(req.user!.id);
+  } catch { /* non-critical */ }
   res.json({ success: true });
 });
 
