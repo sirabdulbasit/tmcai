@@ -248,6 +248,83 @@ export async function getSentSamples(userId: number, max = 6): Promise<{ samples
   }
 }
 
+// ─── Sent emails to a specific recipient (for tone learning) ──
+//
+// Pulls the most recent N emails the user has sent to `recipientEmail`.
+// Used by smartChaseService to few-shot the chase composer with the
+// user's actual register for THIS person — first-name vs surname,
+// formal vs casual, sentence length, sign-off style.
+//
+// Returns full text bodies (up to 1200 chars each) with quoted
+// replies + signatures stripped at common delimiters.
+export async function getSentSamplesToRecipient(
+  userId: number,
+  recipientEmail: string,
+  max = 8,
+): Promise<{ samples: Array<{ subject: string; body: string; date: string }>; error?: string }> {
+  const { client, error } = await getAuthenticatedClient(userId);
+  if (!client) return { samples: [], error };
+  try {
+    const gmail = google.gmail({ version: 'v1', auth: client });
+    const list = await gmail.users.messages.list({
+      userId: 'me',
+      q: `from:me to:${recipientEmail} -is:draft`,
+      maxResults: max * 2,
+    });
+    const ids = (list.data.messages ?? []).map((m) => m.id!).filter(Boolean).slice(0, max * 2);
+
+    const samples: Array<{ subject: string; body: string; date: string }> = [];
+    for (const id of ids) {
+      try {
+        const d = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+        const headers = d.data.payload?.headers ?? [];
+        const getH = (k: string) => headers.find((h) => h.name?.toLowerCase() === k.toLowerCase())?.value ?? '';
+        const subject = getH('Subject');
+        const date = getH('Date');
+
+        const findText = (part: any): string => {
+          if (!part) return '';
+          if (part.mimeType === 'text/plain' && part.body?.data) {
+            return Buffer.from(part.body.data, 'base64').toString('utf-8');
+          }
+          if (part.parts) {
+            for (const p of part.parts) {
+              const t = findText(p);
+              if (t) return t;
+            }
+          }
+          return '';
+        };
+        let body = findText(d.data.payload) || (d.data.snippet ?? '');
+
+        // Strip quoted-reply and signature blocks. Order matters —
+        // signatures often appear before the first quote.
+        const cutMarkers: RegExp[] = [
+          /\nOn .{1,80} wrote:/i,
+          /\n-+\s*Original Message\s*-+/i,
+          /\n>\s/,
+          /\n--\s*\n/,
+        ];
+        for (const m of cutMarkers) {
+          const idx = body.search(m);
+          if (idx > 50) body = body.slice(0, idx);
+        }
+        body = body.replace(/\s+\n/g, '\n').trim();
+
+        // Skip 1-liners and pure forwards — no tone signal.
+        if (body.length < 30) continue;
+        if (/^(fwd|fw|re):\s/i.test(subject) && body.length < 80) continue;
+
+        samples.push({ subject, body: body.slice(0, 1200), date });
+        if (samples.length >= max) break;
+      } catch { /* skip individual message errors */ }
+    }
+    return { samples };
+  } catch (err: any) {
+    return { samples: [], error: err.message };
+  }
+}
+
 // ─── Mark message as read ─────────────────────────────────────
 // Removes the UNREAD label so it no longer contributes to the inbox counter
 // (the same counter Day Brief's "Emails unread" tile reads live). Called
