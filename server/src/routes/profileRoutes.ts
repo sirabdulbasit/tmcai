@@ -328,6 +328,147 @@ router.put('/brain-autonomy', async (req: Request, res: Response) => {
   res.json({ success: true, ...prefs.brain_autonomy });
 });
 
+// ─── Open Items settings (added 2026-05-18) ──────────────────────
+// User-facing knobs for the open-items lifecycle. Anything that is a
+// stance choice ("how aggressive should Brain be") lives here. Anything
+// that needs context (which specific day to send a nudge, what priority
+// an item really is) stays Brain-judged per [[feedback_no_hardcoded_judgement]].
+
+interface OpenItemsSettings {
+  // Lifecycle
+  followUpDays: number;            // Default cadence between chase attempts; 3
+  autoArchiveClosedAfterDays: number; // 0 = never; 30 default
+  staleThresholdDays: number;      // 0 = never; 14 default — Brain surfaces "is this alive?"
+  draftExpiryDays: number;         // 6 default — DRAFT items expire after N days of asks
+  draftAskChannel: 'whatsapp' | 'email' | 'both'; // currently WA only; default 'whatsapp'
+  // Auto-creation gating
+  autoCreateFromEmail: boolean;    // default true (current behaviour)
+  autoCreateFromWhatsapp: boolean; // default true
+  autoCreateFromVoice: boolean;    // default true
+  autoCreateCriticalityFloor: 'all' | 'medium' | 'high'; // default 'all'
+  // Display
+  defaultSort: 'priority' | 'deadline' | 'recent' | 'oldest'; // default 'priority'
+}
+
+const DEFAULT_OPEN_ITEMS: OpenItemsSettings = {
+  followUpDays: 3,
+  autoArchiveClosedAfterDays: 30,
+  staleThresholdDays: 14,
+  draftExpiryDays: 6,
+  draftAskChannel: 'whatsapp',
+  autoCreateFromEmail: true,
+  autoCreateFromWhatsapp: true,
+  autoCreateFromVoice: true,
+  autoCreateCriticalityFloor: 'all',
+  defaultSort: 'priority',
+};
+
+function clampDays(v: any, min: number, max: number, fallback: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+router.get('/open-items', async (req: Request, res: Response) => {
+  const prisma = (await import('../db/prisma')).default;
+  const u = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { notificationPreferences: true },
+  });
+  const prefs = (u?.notificationPreferences as any) || {};
+  const oi = prefs.open_items ?? {};
+  res.json({ ...DEFAULT_OPEN_ITEMS, ...oi });
+});
+
+router.put('/open-items', async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const prisma = (await import('../db/prisma')).default;
+  const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { notificationPreferences: true } });
+  const prefs = ((u?.notificationPreferences as any) || {}) as Record<string, any>;
+  const existing = (prefs.open_items ?? {}) as Partial<OpenItemsSettings>;
+
+  const draftChannel = ['whatsapp', 'email', 'both'].includes(body.draftAskChannel)
+    ? body.draftAskChannel
+    : (existing.draftAskChannel ?? DEFAULT_OPEN_ITEMS.draftAskChannel);
+  const floor = ['all', 'medium', 'high'].includes(body.autoCreateCriticalityFloor)
+    ? body.autoCreateCriticalityFloor
+    : (existing.autoCreateCriticalityFloor ?? DEFAULT_OPEN_ITEMS.autoCreateCriticalityFloor);
+  const sort = ['priority', 'deadline', 'recent', 'oldest'].includes(body.defaultSort)
+    ? body.defaultSort
+    : (existing.defaultSort ?? DEFAULT_OPEN_ITEMS.defaultSort);
+
+  prefs.open_items = {
+    followUpDays: clampDays(body.followUpDays, 1, 30, existing.followUpDays ?? DEFAULT_OPEN_ITEMS.followUpDays),
+    autoArchiveClosedAfterDays: clampDays(body.autoArchiveClosedAfterDays, 0, 365, existing.autoArchiveClosedAfterDays ?? DEFAULT_OPEN_ITEMS.autoArchiveClosedAfterDays),
+    staleThresholdDays: clampDays(body.staleThresholdDays, 0, 90, existing.staleThresholdDays ?? DEFAULT_OPEN_ITEMS.staleThresholdDays),
+    draftExpiryDays: clampDays(body.draftExpiryDays, 2, 30, existing.draftExpiryDays ?? DEFAULT_OPEN_ITEMS.draftExpiryDays),
+    draftAskChannel: draftChannel,
+    autoCreateFromEmail: typeof body.autoCreateFromEmail === 'boolean' ? body.autoCreateFromEmail : (existing.autoCreateFromEmail ?? DEFAULT_OPEN_ITEMS.autoCreateFromEmail),
+    autoCreateFromWhatsapp: typeof body.autoCreateFromWhatsapp === 'boolean' ? body.autoCreateFromWhatsapp : (existing.autoCreateFromWhatsapp ?? DEFAULT_OPEN_ITEMS.autoCreateFromWhatsapp),
+    autoCreateFromVoice: typeof body.autoCreateFromVoice === 'boolean' ? body.autoCreateFromVoice : (existing.autoCreateFromVoice ?? DEFAULT_OPEN_ITEMS.autoCreateFromVoice),
+    autoCreateCriticalityFloor: floor,
+    defaultSort: sort,
+    updatedAt: new Date().toISOString(),
+  };
+  await prisma.user.update({
+    where: { id: req.user!.id },
+    data: { notificationPreferences: prefs as any },
+  });
+  res.json({ success: true });
+});
+
+// Purge — destructive. Requires typed-phrase confirmation per
+// [[feedback_no_browser_dialogs]]. Server validates that the user
+// typed the exact phrase shown to them, AND that the count matches
+// what we're about to delete. Two-key handshake: the count guards
+// against a window where new items appeared between preview and
+// confirm; the phrase guards against accidental fire.
+router.post('/open-items/purge/preview', async (req: Request, res: Response) => {
+  const { scope } = req.body ?? {};
+  const wantClosed = scope?.closed === true;
+  const wantExpiredDraft = scope?.expiredDraft === true;
+  const wantStale = scope?.stale === true;
+  const prisma = (await import('../db/prisma')).default;
+
+  const where: any = { userId: req.user!.id, OR: [] };
+  if (wantClosed) where.OR.push({ status: 'CLOSED' });
+  if (wantExpiredDraft) where.OR.push({ AND: [{ status: 'CLOSED' }, { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any }] });
+  if (wantStale) where.OR.push({ metadata: { path: ['stale'], equals: true } as any });
+  if (where.OR.length === 0) return res.json({ count: 0, phrase: null });
+
+  const count = await prisma.openItem.count({ where });
+  // Phrase the user must type back. Includes the count so it can't be
+  // reused across previews.
+  const phrase = `PURGE ${count} ITEMS`;
+  res.json({ count, phrase });
+});
+
+router.post('/open-items/purge', async (req: Request, res: Response) => {
+  const { scope, phrase } = req.body ?? {};
+  const wantClosed = scope?.closed === true;
+  const wantExpiredDraft = scope?.expiredDraft === true;
+  const wantStale = scope?.stale === true;
+  if (!wantClosed && !wantExpiredDraft && !wantStale) {
+    return res.status(400).json({ error: 'no_scope_selected' });
+  }
+  const prisma = (await import('../db/prisma')).default;
+  const where: any = { userId: req.user!.id, OR: [] };
+  if (wantClosed) where.OR.push({ status: 'CLOSED' });
+  if (wantExpiredDraft) where.OR.push({ AND: [{ status: 'CLOSED' }, { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any }] });
+  if (wantStale) where.OR.push({ metadata: { path: ['stale'], equals: true } as any });
+
+  const count = await prisma.openItem.count({ where });
+  const expectedPhrase = `PURGE ${count} ITEMS`;
+  if (String(phrase ?? '').trim() !== expectedPhrase) {
+    // The count moved between preview and confirm, OR the user typed
+    // it wrong. Either way, fail closed and tell them the new count
+    // so the next attempt is honest.
+    return res.status(409).json({ error: 'phrase_mismatch', expectedPhrase, count });
+  }
+  const r = await prisma.openItem.deleteMany({ where });
+  res.json({ success: true, deleted: r.count });
+});
+
 // ─── Brain name (user can call their Brain anything) ──────────────
 router.get('/brain-name', async (req: Request, res: Response) => {
   const { getBrainPersona } = await import('../services/knowledge/brainPersonaService');

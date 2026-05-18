@@ -59,9 +59,10 @@ export default function SettingsPage() {
 
   const [tab, setTab] = useState('profile');
   const tabs = [
-    { id: 'profile',  label: 'Profile' },
-    { id: 'brain',    label: 'Brain' },
-    { id: 'security', label: 'Security' },
+    { id: 'profile',    label: 'Profile' },
+    { id: 'brain',      label: 'Brain' },
+    { id: 'openItems',  label: 'Open Items' },
+    { id: 'security',   label: 'Security' },
   ];
 
   return (
@@ -188,6 +189,10 @@ export default function SettingsPage() {
 
         {tab === 'brain' && (
           <BrainChannelSection user={user} />
+        )}
+
+        {tab === 'openItems' && (
+          <OpenItemsSection />
         )}
 
         {tab === 'security' && (
@@ -693,6 +698,285 @@ function DisplaySection({ fontScale, setFontScale, appDefaultFontScale, isOverri
           {defaultMsg && <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>{defaultMsg}</div>}
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * OpenItemsSection — knobs for the open-items lifecycle.
+ *
+ * Three groups: lifecycle (follow-up cadence, archive, stale, DRAFT
+ * expiry), auto-creation gating (which sources Brain may auto-create
+ * from + the criticality floor), and purge (destructive — typed-phrase
+ * confirmation per the no-browser-dialogs rule).
+ *
+ * What's NOT here on purpose: anything that asks the user to predict
+ * a specific day or threshold. Brain decides "send today vs tomorrow";
+ * the user decides "how often, max attempts, what's a stale item".
+ */
+function OpenItemsSection() {
+  const [s, setS] = useState({
+    followUpDays: 3,
+    autoArchiveClosedAfterDays: 30,
+    staleThresholdDays: 14,
+    draftExpiryDays: 6,
+    draftAskChannel: 'whatsapp',
+    autoCreateFromEmail: true,
+    autoCreateFromWhatsapp: true,
+    autoCreateFromVoice: true,
+    autoCreateCriticalityFloor: 'all',
+    defaultSort: 'priority',
+  });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    api.get('/profile/open-items')
+      .then((r) => setS((prev) => ({ ...prev, ...r.data })))
+      .catch(() => {});
+  }, []);
+
+  const set = (k, v) => setS((prev) => ({ ...prev, [k]: v }));
+
+  const save = async () => {
+    setSaving(true); setMsg('');
+    try {
+      await api.put('/profile/open-items', s);
+      setMsg('Saved');
+      setTimeout(() => setMsg(''), 2000);
+    } catch {
+      setMsg('Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <section className="settings-section">
+        <h2>Open Items — lifecycle</h2>
+        <p style={{ fontSize: 12, color: '#888', marginTop: -6, marginBottom: 14 }}>
+          How long items live, how often Brain chases delegations, when an item is
+          considered stale.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div className="settings-field">
+            <label>Follow-up cadence (days)</label>
+            <input type="number" min="1" max="30" value={s.followUpDays}
+                   onChange={(e) => set('followUpDays', parseInt(e.target.value, 10) || 3)} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              Default gap between delegation chase attempts. Brain may chase sooner
+              or later based on signals (deadline, recipient activity) — this is the
+              baseline.
+            </div>
+          </div>
+
+          <div className="settings-field">
+            <label>Auto-archive closed items after (days)</label>
+            <input type="number" min="0" max="365" value={s.autoArchiveClosedAfterDays}
+                   onChange={(e) => set('autoArchiveClosedAfterDays', parseInt(e.target.value, 10) || 0)} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              0 = never. Closed items stay searchable but stop appearing in /open-items
+              + Day Brief after this many days.
+            </div>
+          </div>
+
+          <div className="settings-field">
+            <label>Stale threshold (days, 0 = off)</label>
+            <input type="number" min="0" max="90" value={s.staleThresholdDays}
+                   onChange={(e) => set('staleThresholdDays', parseInt(e.target.value, 10) || 0)} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              No activity for this many days → Brain surfaces "Is this still alive?"
+              instead of letting it sit indefinitely.
+            </div>
+          </div>
+
+          <div className="settings-field">
+            <label>DRAFT expiry (days)</label>
+            <input type="number" min="2" max="30" value={s.draftExpiryDays}
+                   onChange={(e) => set('draftExpiryDays', parseInt(e.target.value, 10) || 6)} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              DRAFT items (missing priority or deadline) expire after N daily asks.
+              Default 6 — Brain asks days 0–4, warns on day 5, closes day 6.
+            </div>
+          </div>
+
+          <div className="settings-field">
+            <label>DRAFT ask channel</label>
+            <select value={s.draftAskChannel} onChange={(e) => set('draftAskChannel', e.target.value)}
+                    style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+              <option value="whatsapp">WhatsApp only</option>
+              <option value="email">Email only</option>
+              <option value="both">Both</option>
+            </select>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+              Where Brain asks you to fill in missing priority/deadline.
+            </div>
+          </div>
+
+          <div className="settings-field">
+            <label>Default sort on /open-items</label>
+            <select value={s.defaultSort} onChange={(e) => set('defaultSort', e.target.value)}
+                    style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+              <option value="priority">Priority</option>
+              <option value="deadline">Deadline</option>
+              <option value="recent">Most recent activity</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h2>Auto-creation — which sources Brain may create items from</h2>
+        <p style={{ fontSize: 12, color: '#888', marginTop: -6, marginBottom: 14 }}>
+          When off, Brain still detects the item internally but parks it as a
+          suggestion in Day Brief for one-tap accept instead of creating it live.
+          Useful while you're earning trust on a source.
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={s.autoCreateFromEmail}
+                 onChange={(e) => set('autoCreateFromEmail', e.target.checked)} />
+          <span>Email</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={s.autoCreateFromWhatsapp}
+                 onChange={(e) => set('autoCreateFromWhatsapp', e.target.checked)} />
+          <span>WhatsApp</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+          <input type="checkbox" checked={s.autoCreateFromVoice}
+                 onChange={(e) => set('autoCreateFromVoice', e.target.checked)} />
+          <span>Voice notes</span>
+        </label>
+
+        <div className="settings-field" style={{ marginTop: 14 }}>
+          <label>Criticality floor for auto-create</label>
+          <select value={s.autoCreateCriticalityFloor} onChange={(e) => set('autoCreateCriticalityFloor', e.target.value)}
+                  style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+            <option value="all">All — auto-create at any criticality</option>
+            <option value="medium">Medium and above</option>
+            <option value="high">High and critical only</option>
+          </select>
+          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+            Brain's criticality call is LLM-judged from the message's substance.
+            Below this floor, items become Day Brief suggestions instead of live items.
+          </div>
+        </div>
+      </section>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+        <button className="settings-btn" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>
+        {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#4ade80' : '#f87171' }}>{msg}</span>}
+      </div>
+
+      <PurgePanel />
+    </>
+  );
+}
+
+/**
+ * PurgePanel — destructive cleanup with typed-phrase confirmation.
+ *
+ * Two-step: (1) user picks scope (closed / stale / expired-draft) and
+ * hits Preview → server returns the count + the exact phrase the user
+ * must type. (2) user types the phrase + hits Purge → server validates
+ * both the phrase AND that the count still matches (so new items
+ * arriving between preview and confirm can't get silently swept).
+ *
+ * No browser dialogs ([[feedback_no_browser_dialogs]]).
+ */
+function PurgePanel() {
+  const [scope, setScope] = useState({ closed: false, stale: false, expiredDraft: false });
+  const [preview, setPreview] = useState(null); // { count, phrase }
+  const [typed, setTyped] = useState('');
+  const [working, setWorking] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const togglesEmpty = !scope.closed && !scope.stale && !scope.expiredDraft;
+
+  const runPreview = async () => {
+    setWorking(true); setMsg(''); setPreview(null); setTyped('');
+    try {
+      const r = await api.post('/profile/open-items/purge/preview', { scope });
+      setPreview(r.data);
+      if (r.data.count === 0) setMsg('Nothing matches the selected scope.');
+    } catch (e) {
+      setMsg('Preview failed.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const runPurge = async () => {
+    if (!preview || preview.count === 0) return;
+    setWorking(true); setMsg('');
+    try {
+      const r = await api.post('/profile/open-items/purge', { scope, phrase: typed });
+      setMsg(`Purged ${r.data.deleted} item${r.data.deleted === 1 ? '' : 's'}.`);
+      setPreview(null); setTyped('');
+      setScope({ closed: false, stale: false, expiredDraft: false });
+    } catch (e) {
+      if (e.response?.status === 409) {
+        setMsg(`Count changed — phrase should now be "${e.response.data.expectedPhrase}". Re-preview to confirm.`);
+        setPreview(e.response.data ? { count: e.response.data.count, phrase: e.response.data.expectedPhrase } : null);
+      } else {
+        setMsg('Purge failed.');
+      }
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <section className="settings-section" style={{ marginTop: 16, borderLeft: '3px solid #dc2626', paddingLeft: 12 }}>
+      <h2 style={{ color: '#fca5a5' }}>Purge data — destructive</h2>
+      <p style={{ fontSize: 12, color: '#888', marginTop: -6, marginBottom: 14 }}>
+        Hard-deletes the selected open items. Cannot be undone. Pick a scope, hit
+        Preview to see the count, then type the confirmation phrase exactly to fire.
+      </p>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+        <input type="checkbox" checked={scope.closed}
+               onChange={(e) => { setScope({ ...scope, closed: e.target.checked }); setPreview(null); }} />
+        <span>All closed items</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+        <input type="checkbox" checked={scope.expiredDraft}
+               onChange={(e) => { setScope({ ...scope, expiredDraft: e.target.checked }); setPreview(null); }} />
+        <span>Expired DRAFT items only</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+        <input type="checkbox" checked={scope.stale}
+               onChange={(e) => { setScope({ ...scope, stale: e.target.checked }); setPreview(null); }} />
+        <span>Items marked stale</span>
+      </label>
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="settings-btn" onClick={runPreview} disabled={working || togglesEmpty}>
+          {working ? 'Working…' : 'Preview'}
+        </button>
+
+        {preview && preview.count > 0 && (
+          <>
+            <div style={{ fontSize: 13, color: '#fca5a5' }}>
+              {preview.count} item{preview.count === 1 ? '' : 's'} will be deleted. Type{' '}
+              <code style={{ background: '#2a2a2a', padding: '2px 6px', borderRadius: 4 }}>{preview.phrase}</code>{' '}
+              to confirm.
+            </div>
+            <input type="text" value={typed} onChange={(e) => setTyped(e.target.value)}
+                   placeholder={preview.phrase}
+                   style={{ flex: '1 1 240px', minWidth: 200, padding: 8, background: '#2a2a2a', border: '1px solid #dc2626', color: '#eee', borderRadius: 8, fontSize: 13, fontFamily: 'monospace' }} />
+            <button className="settings-btn danger" onClick={runPurge}
+                    disabled={working || typed !== preview.phrase}>
+              {working ? 'Purging…' : 'Purge'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {msg && <div style={{ fontSize: 12, color: msg.startsWith('Purged') ? '#4ade80' : '#fca5a5', marginTop: 10 }}>{msg}</div>}
     </section>
   );
 }
