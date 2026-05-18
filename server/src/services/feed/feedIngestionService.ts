@@ -83,7 +83,27 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
   // also forge this value, which requires the ingest secret.
   const sourceIntegrity = computeSourceIntegrity(input.clientNumber, input.sourceType, input.sourceId, contentHash);
 
-  // Dedup check via unique constraint — try to insert, catch PGE 23505
+  // Dedup — two layers, in this order:
+  //   1) Pre-check via findUnique on (clientNumber, contentHash). Catches
+  //      the common case: a poller re-fetches messages it already
+  //      ingested. Eliminates a Prisma `prisma:error` log line on every
+  //      hit (the create+catch pattern below logs to stderr before the
+  //      catch can run). Without this, every poller tick fires N error
+  //      lines for N already-seen items.
+  //   2) The unique-constraint catch below stays as a race-safety net
+  //      for the rare case where two ingest paths fire concurrently
+  //      and both pass the pre-check. The error is then expected and
+  //      rare — not a daily 1000s-of-lines log polluter.
+  {
+    const existing = await prisma.feedEvent.findUnique({
+      where: { clientNumber_contentHash: { clientNumber: input.clientNumber, contentHash } },
+      select: { id: true },
+    }).catch(() => null);
+    if (existing) {
+      return { status: 'duplicate', feedEventId: existing.id, contentHash };
+    }
+  }
+
   try {
     // Source-native event time (Gmail Date / Calendar start /
     // WhatsApp ts / Tasks updated). Lets every consumer query "when

@@ -673,49 +673,12 @@ model OpenItem {
   @@map("open_items")
 }
 
-/**
- * HaseebOS v15 L2+ — OpenItem embeddings for similar-items lookup.
- * Stored as a JSON float array to avoid a pgvector dependency in dev. When
- * pgvector is available, a separate migration can add a `vector(1536)` column
- * + IVFFlat index; the service layer stays backwards-compatible.
- */
-model OpenItemEmbedding {
-  id           Int      @id @default(autoincrement())
-  clientNumber String   @map("client_number") @db.VarChar(20)
-  openItemId   String   @unique @map("open_item_id")
-  model        String   @db.VarChar(50)
-  dim          Int
-  embedding    Json
-  textHash     String   @map("text_hash") @db.VarChar(64)
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  @@index([clientNumber, createdAt])
-  @@map("open_item_embeddings")
-}
-
-/**
- * HaseebOS v15 L2 — append-only history of status transitions per OpenItem.
- * Written atomically with every status change by lifecycleService. Powers the
- * Steering Wheel timeline view and serves as the audit trail for invalid
- * transition attempts (status from==to, reason='rejected').
- */
-model ItemStatusHistory {
-  id            Int      @id @default(autoincrement())
-  clientNumber  String   @map("client_number") @db.VarChar(20)
-  openItemId    String   @map("open_item_id")
-  fromStatus    String   @map("from_status") @db.VarChar(20)
-  toStatus      String   @map("to_status") @db.VarChar(20)
-  outcome       String   @default("accepted") @db.VarChar(20) // accepted | rejected
-  reason        String?  @db.VarChar(500)
-  actor         String?  @db.VarChar(50) // user:<id> | agent:<name> | system
-  traceId       String?  @map("trace_id") @db.VarChar(64)
-  metadata      Json?
-  createdAt     DateTime @default(now()) @map("created_at")
-
-  @@index([clientNumber, openItemId, createdAt])
-  @@index([clientNumber, outcome, createdAt])
-  @@map("item_status_history")
-}
+// Models removed 2026-05-18:
+//   - OpenItemEmbedding → table dropped (orphan, never referenced)
+//   - ItemStatusHistory → table dropped (replaced by open_items.notes JSON)
+// Both tables were created by past migrations but no service ever queried
+// them. Drop verified via grep; backup of empty data in
+// /tmp/tmcai-drop-backup-2026-05-18 on prod.
 
 // ─── MyOS Wiki (Memex layer) ──────────────────────────────────────
 // Per-user, multi-tenant wiki pages. Backing storage can be Notion (when the
@@ -1342,30 +1305,9 @@ model OKR {
   @@map("okrs")
 }
 
-// ─── Risk Register ────────────────────────────────────────────────
-
-model RiskRegisterItem {
-  id           String    @id @default(cuid())
-  clientNumber String    @map("client_number") @db.VarChar(20)
-  description  String    @db.Text
-  category     String    @db.VarChar(30) // financial | operational | compliance | technical | client | employee
-  severity     String    @db.VarChar(10) // critical | high | medium | low
-  status       String    @default("open") @db.VarChar(20) // open | mitigating | mitigated | closed
-  mitigation   String?   @db.Text
-  ownerId      Int?      @map("owner_id")
-  entityId     String?   @map("entity_id")
-  source       String    @db.VarChar(30) // erp | email | chat | known | manual
-  sourceRef    String?   @map("source_ref") @db.VarChar(500)
-  detectedAt   DateTime  @default(now()) @map("detected_at")
-  resolvedAt   DateTime? @map("resolved_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
-
-  @@index([clientNumber, status])
-  @@index([clientNumber, severity])
-  @@index([clientNumber, entityId])
-  @@map("risk_register_items")
-}
+// Model removed 2026-05-18: RiskRegisterItem → table dropped.
+// Risk tracking now lives in risk_flag_docs + risk_register (the
+// wiki-based register), not this orphan table. No service queried it.
 
 // ─── Action Idempotency Log ──────────────────────────────────────
 
@@ -1752,21 +1694,10 @@ model KpiValue {
   @@map("kpi_values")
 }
 
-// ─── M7: Agent Config Overrides (per-tenant customization) ──────
-model AgentConfigOverride {
-  id             Int      @id @default(autoincrement())
-  clientNumber   String   @map("client_number") @db.VarChar(20)
-  agentType      String   @map("agent_type") @db.VarChar(50)
-  configKey      String   @map("config_key") @db.VarChar(100)
-  configValue    Json     @map("config_value")
-  overrideReason String?  @map("override_reason") @db.Text
-  updatedBy      Int?     @map("updated_by") // FK → User
-  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  @@unique([clientNumber, agentType, configKey])
-  @@map("agent_config_overrides")
-}
+// Model removed 2026-05-18: AgentConfigOverride → table dropped.
+// Per-tenant agent customisation now lives in user_prompt_overlay
+// (instructions per user) and brain_configs (per-tenant brain
+// settings). No service ever queried the override table.
 
 // ─── M8: Notification Queue (unified dispatch) ──────────────────
 model NotificationQueue {
