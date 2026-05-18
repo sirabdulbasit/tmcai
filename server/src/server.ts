@@ -378,20 +378,29 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000);
 
-  // MyOS — delegation follow-up scheduler every 30 min: nudge delegatees
-  // whose 7-day window has passed without a response. Escalates after 3
-  // attempts without response instead of nagging forever.
-  setInterval(async () => {
-    try {
-      const { runDelegationFollowUp } = await import('./jobs/delegationFollowUpJob');
-      const s = await runDelegationFollowUp();
-      if (s.sent > 0 || s.escalated > 0 || s.errors > 0) {
-        console.log(`[delegationFollowUp] scanned=${s.scanned} sent=${s.sent} escalated=${s.escalated} errors=${s.errors}`);
-      }
-    } catch (err: any) {
-      console.warn('[delegationFollowUp] error:', err.message);
-    }
-  }, 30 * 60 * 1000);
+  // DISABLED 2026-05-18 — delegationFollowUpJob was sending emails from
+  // the user's Gmail identity (sendUserEmail → gmail.users.messages.send
+  // with userId='me'). That violates feedback_brain_never_speaks_as_user
+  // (no message from user's paired Gmail/WhatsApp without an explicit
+  // user-initiated chain). Mohsin Hassan flagged it with "Your AI is
+  // hallucinating on this email sends me repeated reminders".
+  //
+  // Job code retained in tree pending the smarter rewrite (per-recipient
+  // tone from sent-mail samples + LLM-judged timing + disclosure or
+  // draft-then-tap dispatch). The setInterval is the kill switch; flip
+  // it back on only after the rewrite ships.
+  //
+  // setInterval(async () => {
+  //   try {
+  //     const { runDelegationFollowUp } = await import('./jobs/delegationFollowUpJob');
+  //     const s = await runDelegationFollowUp();
+  //     if (s.sent > 0 || s.escalated > 0 || s.errors > 0) {
+  //       console.log(`[delegationFollowUp] scanned=${s.scanned} sent=${s.sent} escalated=${s.escalated} errors=${s.errors}`);
+  //     }
+  //   } catch (err: any) {
+  //     console.warn('[delegationFollowUp] error:', err.message);
+  //   }
+  // }, 30 * 60 * 1000);
 
   // HaseebOS v15 L2 — snooze timer every 60s: wake SNOOZED items when due
   setInterval(async () => {
