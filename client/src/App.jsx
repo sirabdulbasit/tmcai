@@ -19,15 +19,20 @@ import ContactDetailPage from './pages/ContactDetailPage';
 import HowBrainWorksPage from './pages/HowBrainWorksPage';
 import WelcomePage from './pages/WelcomePage';
 import BrainAvatar from './components/BrainAvatar';
+import StaleConnectorBanner from './components/StaleConnectorBanner';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="app-loading">Loading...</div>;
   if (!user) return <Navigate to="/login" replace />;
-  // BrainAvatar is mounted once per protected route render so it lives
-  // above every authenticated page — the user always sees Brain thinking.
+  // BrainAvatar — Brain's thinking indicator. Lives over every page.
+  // StaleConnectorBanner — top-of-page warning for stale/errored
+  // connectors. Renders only when something is wrong; invisible
+  // otherwise. Loud-not-silent failure surface per the trust
+  // architecture (was: users learning via Day Brief 6h later).
   return (
     <>
+      <StaleConnectorBanner />
       {children}
       <BrainAvatar />
     </>

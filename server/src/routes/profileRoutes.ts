@@ -585,6 +585,57 @@ router.post('/open-items/purge', async (req: Request, res: Response) => {
   res.json({ success: true, deleted: r.count, nuclear: isNuclear, tenantWide: isTenantWide });
 });
 
+// ─── Connector health (drives the in-app stale banner) ───────────
+//
+// Returns the user's stale / errored / expired connectors so the
+// frontend can render a top-of-page banner the moment a connector
+// goes silent, instead of the user finding out via the daily Day
+// Brief. Polled every ~60s from the client.
+//
+// Thresholds:
+//   - `sync_stale` (set by connectorHealthService) → always surfaced
+//   - `error` / `token_expired` → always surfaced
+//   - `connected` BUT `last_sync_at` older than 24h → surfaced as
+//     "stale" even though status hasn't flipped yet (catches the
+//     window where the health service hasn't ticked yet)
+router.get('/connector-health', async (req: Request, res: Response) => {
+  const prisma = (await import('../db/prisma')).default;
+  const rows = await prisma.userConnector.findMany({
+    where: { userId: req.user!.id },
+    select: {
+      id: true,
+      status: true,
+      lastSyncAt: true,
+      errorMessage: true,
+      connectorType: { select: { slug: true, name: true } },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  const now = Date.now();
+  const STALE_MS = 24 * 60 * 60 * 1000;
+  const stale = rows
+    .map((r) => {
+      const ageMs = r.lastSyncAt ? now - r.lastSyncAt.getTime() : null;
+      const isDegraded = ['sync_stale', 'error', 'token_expired', 'expired'].includes(r.status);
+      const isOverdue = r.status === 'connected' && ageMs !== null && ageMs > STALE_MS;
+      if (!isDegraded && !isOverdue) return null;
+      return {
+        id: r.id,
+        slug: r.connectorType.slug,
+        name: r.connectorType.name,
+        status: r.status,
+        lastSyncAt: r.lastSyncAt?.toISOString() ?? null,
+        ageMin: ageMs !== null ? Math.floor(ageMs / 60000) : null,
+        errorMessage: r.errorMessage,
+        reason: isDegraded ? r.status : 'overdue',
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  res.json({ stale, checkedAt: new Date().toISOString() });
+});
+
 // ─── Brain name (user can call their Brain anything) ──────────────
 router.get('/brain-name', async (req: Request, res: Response) => {
   const { getBrainPersona } = await import('../services/knowledge/brainPersonaService');
