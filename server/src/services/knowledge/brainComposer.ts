@@ -574,26 +574,50 @@ export async function compose(
   // retrieval. That meant when MD said "delegate the phoenix one" Brain
   // ran a fresh search for "phoenix" and found nothing, even though the
   // open_item titled "Revisit pricing for Phoenix Systems" was right
-  // there. Now we always inject the top 20 most-recent open items as a
+  // there. Now we always inject the top 30 active open items as a
   // structured block so the LLM can match a partial reference ("phoenix",
   // "the audit one", "Faizan's email") to a real open_item id and emit
-  // an action with that id.
+  // an action with that id. Also feeds the Day-Brief Open Items section
+  // (top 3 by priority/due-date picked from this snapshot) — 30 gives
+  // enough headroom that high-priority items further back in history
+  // still surface even when 30+ low-priority items were created recently.
   const openItemsRows = await prisma.openItem.findMany({
     where: {
       clientNumber, userId,
       status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
       // Smoke filter — items flagged via metadata.smoke=true on ingest
-      // by starCadenceService should never appear in MD's conversational
+      // by starCadenceService should never appear in the user's conversational
       // surface. Same filter the brainOutboundService applies on send.
       NOT: { metadata: { path: ['smoke'], equals: true } } as any,
     },
-    orderBy: { createdAt: 'desc' },
-    take: 20,
+    // Priority-first ordering serves the Day-Brief "top 3" pick directly.
+    // For partial-reference lookups (the original use) the LLM still has
+    // 30 active items to match against, which is plenty for an inbox of
+    // any realistic size.
+    orderBy: [
+      // Postgres enum-less string sort: rely on Prisma raw priority and
+      // do the final ranking inside the LLM (snapshot exposes priority).
+      { dueDate: { sort: 'asc', nulls: 'last' } },
+      { createdAt: 'desc' },
+    ],
+    take: 30,
     select: { id: true, title: true, priority: true, status: true, dueDate: true, delegateeName: true, delegateeEmail: true },
   }).catch(() => [] as any[]);
+  // Surface critical/high items first inside the block so the LLM's
+  // attention naturally lands there when ranking. Falls back to the SQL
+  // ordering (due-date asc) for medium/low.
+  const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  openItemsRows.sort((a: any, b: any) => {
+    const pa = PRIORITY_RANK[String(a.priority ?? '').toLowerCase()] ?? 4;
+    const pb = PRIORITY_RANK[String(b.priority ?? '').toLowerCase()] ?? 4;
+    if (pa !== pb) return pa - pb;
+    const da = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+    const db = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+    return da - db;
+  });
   const openItemsBlock = openItemsRows.length === 0
     ? ''
-    : '# Open items snapshot (top 20 active — use these ids when emitting actions that reference an existing item)\n'
+    : `# Open items snapshot (top ${openItemsRows.length} active, sorted by priority then due-date — use these ids when emitting actions that reference an existing item, and pick the Day-Brief Open Items section from the top of this list)\n`
       + openItemsRows.map((it: any) => {
         const due = it.dueDate ? ` due ${it.dueDate.toISOString().slice(0, 10)}` : '';
         const dele = it.delegateeName ? ` → ${it.delegateeName}` : '';
@@ -771,7 +795,7 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** When intent
   1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. One line each: HH:MM + title + 1–2 attendee first names if interesting.
   2. 📬 **Email** — top 3 from the My Attention surface's email bucket by criticality. If more, end with "+N more in inbox" (use the real count from the bucket header).
   3. 💬 **WhatsApp** — same pattern: top 3 conversations, "+N more" if exceeded.
-  4. 📋 **Open items** — top 3 needing your attention from the open-items snapshot (priority high/critical OR no owner yet OR due today/tomorrow). "+N more" if exceeded.
+  4. 📋 **Open items** — ALWAYS include this section if the "Open items snapshot" block above has at least one row. Show the top 3 ordered by: priority (critical > high > medium > low), then due date asc (soonest first, null last), then most recent. Use this exact line shape: "Title — [priority] — owner/delegatee/—". If the snapshot has more than 3 rows, end with "+N more open items (open Nexeo to see all)" using the real count visible to you. Do NOT skip this section just because no item is "due today" — open items are the user's live task ledger and the brief is their morning hand-off; an empty ledger is the only valid reason to omit it.
   5. ⚠️ **Watching** — risk radar flags, one short line each (max 2).
   6. **Closing line** — one sentence: which single thing would you start with, and why. No fluff like "let me know if you need anything".
 

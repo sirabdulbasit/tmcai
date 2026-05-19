@@ -552,9 +552,20 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   let responseText: string;
   try {
     const { answerAsBrain } = await import('../../routes/brainAskRoutes');
-    const r = await answerAsBrain(params.clientNumber, userId, queryText);
+    // Map WA session history (role:user|assistant, content) to Brain's
+    // shape (role:user|brain, text). Without this, every WA message was
+    // a context-less standalone — Brain just sent a Day Brief listing
+    // "Numair: Google credits email", then on "add the google email to
+    // open items" it ran a fresh Gmail search and asked which Google
+    // email the user meant (security alerts, calendar invites, etc.)
+    // because it couldn't see what it had just said.
+    const brainHistory = history.map((h: any) => ({
+      role: h.role === 'assistant' ? ('brain' as const) : ('user' as const),
+      text: String(h.content ?? ''),
+    }));
+    const r = await answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' });
     responseText = r.answer;
-    log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0 });
+    log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
   } catch (error: any) {
     log.warn('answerAsBrain failed — falling back to legacy pipeline', { error: error.message, userId });
     try {
