@@ -1725,7 +1725,11 @@ router.get('/brain-actions', async (req: Request, res: Response) => {
     // a video call to uncle" in the Brief, which Brain literally cannot
     // do. Real follow-up dispatches (chase emails, etc.) are logged
     // separately under their own actionType and still appear correctly.
-    const INTERNAL_ACTION_TYPES = ['user_signal', 'feedback_diagnosis', 'criticality_calibration', 'followup_verdict'];
+    // delegation_marked_stale is pure bookkeeping (Brain flagged a
+    // delegation as stale, stopped the follow-up timer) — no external
+    // action taken, doesn't fit "Brain acting on my behalf" per the
+    // strict autonomy definition.
+    const INTERNAL_ACTION_TYPES = ['user_signal', 'feedback_diagnosis', 'criticality_calibration', 'followup_verdict', 'delegation_marked_stale'];
     const actions = await prisma.agentAction.findMany({
       where: {
         clientNumber: user.clientNumber, userId: user.id,
