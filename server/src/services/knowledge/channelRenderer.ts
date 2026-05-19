@@ -140,10 +140,16 @@ export function renderForChannel(
   }
   // WhatsApp: compress.
   const stripped = stripMarkdown(result.answer);
-  // If the composer attached an action_result message (e.g. "Added X
-  // to your open items"), prefer that as the WA body — it's the
-  // user-facing confirmation, terse by design.
-  const sourceText = result.actionResult?.message?.trim()
+  // If the composer attached a SUCCESSFUL action_result message
+  // (e.g. "Added X to your open items"), prefer that as the WA body —
+  // it's the user-facing confirmation, terse by design. Critical:
+  // ok===true gate. Without it, internal sentinel messages from
+  // failed-action guards (e.g. 'empty_promise_blocked') leak verbatim
+  // to the user as their reply. Observed 2026-05-20: Basit asked
+  // "any open item?" → factual query → no action emitted → empty-
+  // promise guard mis-fired → renderer surfaced the sentinel string
+  // instead of the answer Brain had already composed.
+  const sourceText = result.actionResult?.ok === true && result.actionResult.message?.trim()
     ? result.actionResult.message
     : stripped;
   const body = trimToLimit(sourceText, WA_MAX_CHARS);

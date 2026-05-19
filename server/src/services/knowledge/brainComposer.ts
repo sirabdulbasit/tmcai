@@ -1203,7 +1203,15 @@ export async function compose(
   // history check — if Brain previously emitted a successful action
   // with that artifactId, claiming it's done is honest.
   if (!actionResult || actionResult.ok !== true) {
-    const completionRe = /\b(delegated|assigned|added\s+to\s+open\s+items|added\s+it\s+to|scheduled|sent\s+invite|kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai|done\s+—|delegated\s+it|reminded\s+set)\b/i;
+    // First-person completion claims only. Match patterns where Brain
+    // is claiming IT just did something ("I've added X", "Done — delegated
+    // to Y", Brain-voice "I scheduled the meeting"), NOT generic mentions
+    // ("you've added 5 to open items", "these items were delegated to
+    // various owners last week"). Without this scoping, factual queries
+    // like "any open item?" triggered the guard because the LLM's answer
+    // mentioned "added to open items" while describing existing rows.
+    // Observed 2026-05-20: Basit asked "any open item?" → sentinel reply.
+    const completionRe = /(?:^|[.!?:]\s+|—\s+|"\s+)(?:i'?ve|i\s+have|i'?ll|i\s+just|i\s+already|i\s+)(?:delegated|assigned|added|scheduled|sent|reminded|set|drafted)\b|^done\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
     if (completionRe.test(answer)) {
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
