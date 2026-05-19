@@ -1,5 +1,6 @@
 import prisma from '../db/prisma';
 import { listAll } from '../services/adapters/adapterRegistry';
+import { stampConnectorSync } from '../services/connectorSyncTracker';
 
 /**
  * HaseebOS v15 L1 — generic feed poller.
@@ -59,6 +60,23 @@ export async function pollAllTenants(): Promise<PollSummary[]> {
             else errors += 1;
           } catch {
             errors += 1;
+          }
+        }
+        // receive() worked → connector is alive. Stamp lastSyncAt for every
+        // user in this tenant who has the matching slug 'connected', so the
+        // freshness indicator + stale-connector banner reflect poll liveness
+        // instead of "last Re-scribe All click" (which left gmail/drive
+        // looking 13d stale even while polls were running fine).
+        const ct = await prisma.connectorType.findUnique({
+          where: { slug: adapter.sourceType },
+        }).catch(() => null);
+        if (ct) {
+          const users = await prisma.userConnector.findMany({
+            where: { clientNumber: t.clientNumber, connectorTypeId: ct.id, status: 'connected' },
+            select: { userId: true },
+          }).catch(() => [] as Array<{ userId: number }>);
+          for (const u of users) {
+            await stampConnectorSync(u.userId, [adapter.sourceType]);
           }
         }
       } catch (err: any) {

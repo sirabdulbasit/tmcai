@@ -837,11 +837,14 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
         }).catch(() => { /* best-effort */ });
       };
 
-      // Save for the triggering connector
+      // Save for the triggering connector. lastSyncAt=now because a fresh
+      // OAuth grant IS proof of liveness — otherwise the row reads as
+      // "13d stale" right after the user reconnected, which the stale-
+      // banner then surfaces as a false alarm.
       const triggerUc = await prisma.userConnector.upsert({
         where: { userId_connectorTypeId: { userId, connectorTypeId } },
-        create: { userId, clientNumber: user.clientNumber, connectorTypeId, config: encryptedConfig as any, status: 'connected' },
-        update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
+        create: { userId, clientNumber: user.clientNumber, connectorTypeId, config: encryptedConfig as any, status: 'connected', lastSyncAt: new Date() },
+        update: { config: encryptedConfig as any, status: 'connected', errorMessage: null, lastSyncAt: new Date() },
       });
       await clearStaleErrorMeta(triggerUc.id);
 
@@ -858,8 +861,8 @@ export async function handleOAuthCallback(code: string, state: string): Promise<
           if (tenantConfig?.isEnabled) {
             const sibling = await prisma.userConnector.upsert({
               where: { userId_connectorTypeId: { userId, connectorTypeId: gt.id } },
-              create: { userId, clientNumber: user.clientNumber, connectorTypeId: gt.id, config: encryptedConfig as any, status: 'connected' },
-              update: { config: encryptedConfig as any, status: 'connected', errorMessage: null },
+              create: { userId, clientNumber: user.clientNumber, connectorTypeId: gt.id, config: encryptedConfig as any, status: 'connected', lastSyncAt: new Date() },
+              update: { config: encryptedConfig as any, status: 'connected', errorMessage: null, lastSyncAt: new Date() },
             });
             await clearStaleErrorMeta(sibling.id);
           }
