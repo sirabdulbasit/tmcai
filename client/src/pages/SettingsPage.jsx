@@ -264,6 +264,8 @@ function BrainChannelSection({ user }) {
   const [pingMsg, setPingMsg] = useState('');
   const [pinging, setPinging] = useState(false);
   const [briefMsg, setBriefMsg] = useState('');
+  const [briefMsgKind, setBriefMsgKind] = useState('info'); // 'ok' | 'err' | 'info'
+  const [briefPreview, setBriefPreview] = useState('');
   const [sendingBrief, setSendingBrief] = useState(false);
 
   useEffect(() => {
@@ -320,15 +322,21 @@ function BrainChannelSection({ user }) {
   };
 
   const sendDayBriefNow = async () => {
-    setSendingBrief(true); setBriefMsg('');
+    setSendingBrief(true); setBriefMsg(''); setBriefPreview('');
     try {
-      await api.post('/profile/day-brief/send-now');
-      setBriefMsg('Day Brief sent — check your WhatsApp.');
-      setTimeout(() => setBriefMsg(''), 5000);
+      const r = await api.post('/profile/day-brief/send-now');
+      setBriefMsg('Sent — check your WhatsApp. Same content below.');
+      setBriefMsgKind('ok');
+      setBriefPreview(r?.data?.preview || '');
     } catch (err) {
       const reason = err?.response?.data?.reason || err?.response?.data?.error || 'send failed';
-      setBriefMsg(`Day Brief send failed: ${reason}`);
-      setTimeout(() => setBriefMsg(''), 7000);
+      // If dispatch failed but the composer still returned content, show it
+      // so the user can verify what Brain *would* have sent and fix the
+      // failure cause (most often: notifier_not_paired).
+      const preview = err?.response?.data?.preview || '';
+      setBriefMsg(`Send failed: ${reason}${preview ? ' — preview below.' : ''}`);
+      setBriefMsgKind('err');
+      setBriefPreview(preview);
     }
     setSendingBrief(false);
   };
@@ -398,37 +406,96 @@ function BrainChannelSection({ user }) {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <div className="settings-field">
-            <label>Day Brief time</label>
-            <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
-            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
-              Brain sends the daily brief to WhatsApp at this time. Bypasses quiet hours.
+        {/* Day Brief delivery — schedule, timezone, and on-demand send/preview.
+            Grouped into its own block so the "send now / preview" affordance
+            sits next to the schedule it's previewing, not buried under a
+            shared row with quiet hours. */}
+        <div style={{
+          marginTop: 8, padding: 14,
+          border: '1px solid #2f2f2f', borderRadius: 10, background: '#1a1a1a',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#eee', letterSpacing: 0.3, textTransform: 'uppercase' }}>
+              Day Brief delivery
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-              <button type="button" onClick={sendDayBriefNow} disabled={sendingBrief || !pingTarget}
-                style={{
-                  background: 'transparent', border: '1px solid #444', color: '#ccc',
-                  borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: pingTarget ? 'pointer' : 'not-allowed',
-                }}>
-                {sendingBrief ? 'Sending Day Brief…' : 'Send Day Brief now'}
-              </button>
-              {briefMsg && <span style={{ fontSize: 11, color: briefMsg.startsWith('Day Brief sent') ? '#4ade80' : '#fca5a5' }}>{briefMsg}</span>}
+            <div style={{ fontSize: 11, color: '#666' }}>via WhatsApp · bypasses quiet hours</div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="settings-field">
+              <label>Scheduled time</label>
+              <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
+            </div>
+            <div className="settings-field">
+              <label>Timezone</label>
+              <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
+                      style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
+                <option value="Asia/Karachi">Asia/Karachi (PKT, UTC+5)</option>
+                <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
+                <option value="Asia/Riyadh">Asia/Riyadh (AST, UTC+3)</option>
+                <option value="Europe/London">Europe/London (GMT/BST)</option>
+                <option value="America/New_York">America/New_York (ET)</option>
+                <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+                <option value="UTC">UTC</option>
+              </select>
             </div>
           </div>
-          <div className="settings-field">
-            <label>Timezone</label>
-            <select value={timezone} onChange={(e) => setTimezone(e.target.value)}
-                    style={{ width: '100%', padding: 8, background: '#2a2a2a', border: '1px solid #444', color: '#eee', borderRadius: 8, fontSize: 13 }}>
-              <option value="Asia/Karachi">Asia/Karachi (PKT, UTC+5)</option>
-              <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
-              <option value="Asia/Riyadh">Asia/Riyadh (AST, UTC+3)</option>
-              <option value="Europe/London">Europe/London (GMT/BST)</option>
-              <option value="America/New_York">America/New_York (ET)</option>
-              <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
-              <option value="UTC">UTC</option>
-            </select>
+
+          {/* On-demand send. Primary-styled button so it reads as a real
+              feature, not a secondary chip. After click, the composed body
+              is shown inline so the user can see what Brain sent (or would
+              have sent, if the notifier isn't paired yet). */}
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <button type="button" onClick={sendDayBriefNow} disabled={sendingBrief || !pingTarget}
+              style={{
+                background: pingTarget ? '#e94560' : '#4a2730',
+                border: 'none', color: '#fff',
+                borderRadius: 8, padding: '10px 18px', fontSize: 13, fontWeight: 600,
+                cursor: pingTarget && !sendingBrief ? 'pointer' : 'not-allowed',
+                opacity: sendingBrief ? 0.7 : 1,
+              }}>
+              {sendingBrief ? 'Composing & sending…' : 'Send Day Brief to my WhatsApp now'}
+            </button>
+            {!pingTarget && (
+              <span style={{ fontSize: 11, color: '#888' }}>
+                Add a WhatsApp number above first.
+              </span>
+            )}
+            {briefMsg && (
+              <span style={{
+                fontSize: 12,
+                color: briefMsgKind === 'ok' ? '#4ade80' : briefMsgKind === 'err' ? '#fca5a5' : '#aaa',
+              }}>{briefMsg}</span>
+            )}
           </div>
+
+          <div style={{ fontSize: 11, color: '#666', marginTop: 8 }}>
+            Sends today's Day Brief immediately, same content the {dayBriefTime || '08:30'} cron will send. Skips the once-per-day gate so you can preview as many times as you want.
+          </div>
+
+          {/* Inline preview of the composed body. Renders below the button
+              so the user sees Brain's actual output without checking WA —
+              especially useful before the notifier is paired (sent=false
+              still returns preview content). */}
+          {briefPreview && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  Preview · what Brain just composed
+                </div>
+                <button type="button" onClick={() => { setBriefPreview(''); setBriefMsg(''); }}
+                  style={{ background: 'transparent', border: 'none', color: '#888', fontSize: 11, cursor: 'pointer', padding: 0 }}>
+                  Hide
+                </button>
+              </div>
+              <pre style={{
+                margin: 0, padding: 12, background: '#0f0f0f', border: '1px solid #2a2a2a',
+                borderRadius: 8, color: '#ddd', fontSize: 12.5, lineHeight: 1.55,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit',
+                maxHeight: 360, overflowY: 'auto',
+              }}>{briefPreview}</pre>
+            </div>
+          )}
         </div>
 
         <div className="settings-field">
