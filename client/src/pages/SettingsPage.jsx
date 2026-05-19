@@ -189,7 +189,7 @@ export default function SettingsPage() {
         )}
 
         {tab === 'openItems' && (
-          <OpenItemsSection />
+          <OpenItemsSection isSuperAdmin={!!user?.isSuperAdmin} clientNumber={user?.clientNumber} />
         )}
 
         {tab === 'organisation' && user?.isSuperAdmin && (
@@ -795,7 +795,7 @@ function OrganisationDefaultsSection({ appDefaultFontScale }) {
  * a specific day or threshold. Brain decides "send today vs tomorrow";
  * the user decides "how often, max attempts, what's a stale item".
  */
-function OpenItemsSection() {
+function OpenItemsSection({ isSuperAdmin = false, clientNumber = '' }) {
   const [s, setS] = useState({
     followUpDays: 3,
     autoArchiveClosedAfterDays: 30,
@@ -952,7 +952,7 @@ function OpenItemsSection() {
         {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? '#4ade80' : '#f87171' }}>{msg}</span>}
       </div>
 
-      <PurgePanel />
+      <PurgePanel isSuperAdmin={isSuperAdmin} clientNumber={clientNumber} />
     </>
   );
 }
@@ -968,12 +968,13 @@ function OpenItemsSection() {
  *
  * No browser dialogs ([[feedback_no_browser_dialogs]]).
  */
-function PurgePanel() {
-  // Scope shape: three "dead-item" toggles + one "all" nuclear flag.
-  // Nuclear deletes every row including active delegations, drafts,
-  // and NEW items — protected by a stronger confirmation phrase
-  // ("DELETE ALL N ITEMS INCLUDING ACTIVE") server-side.
-  const [scope, setScope] = useState({ closed: false, stale: false, expiredDraft: false, all: false });
+function PurgePanel({ isSuperAdmin = false, clientNumber = '' }) {
+  // Scope shape: three "dead-item" toggles + one "all" nuclear flag
+  // + (SA only) tenantWide flag. Default scope is the requester's
+  // own items. SA users can toggle tenantWide=true to operate across
+  // the whole tenant — server-side the confirmation phrase grows the
+  // " ACROSS TENANT" suffix so keystrokes match consequence.
+  const [scope, setScope] = useState({ closed: false, stale: false, expiredDraft: false, all: false, tenantWide: false });
   const [preview, setPreview] = useState(null);
   const [typed, setTyped] = useState('');
   const [working, setWorking] = useState(false);
@@ -1017,9 +1018,9 @@ function PurgePanel() {
     setWorking(true); setMsg('');
     try {
       const r = await api.post('/profile/open-items/purge', { scope, phrase: typed });
-      setMsg(`Purged ${r.data.deleted} item${r.data.deleted === 1 ? '' : 's'}.`);
+      setMsg(`Purged ${r.data.deleted} item${r.data.deleted === 1 ? '' : 's'}${r.data.tenantWide ? ' across the tenant' : ''}.`);
       setPreview(null); setTyped('');
-      setScope({ closed: false, stale: false, expiredDraft: false, all: false });
+      setScope({ closed: false, stale: false, expiredDraft: false, all: false, tenantWide: false });
     } catch (e) {
       if (e.response?.status === 409) {
         setMsg(`Count changed — phrase should now be "${e.response.data.expectedPhrase}". Re-preview to confirm.`);
@@ -1039,6 +1040,35 @@ function PurgePanel() {
         Hard-deletes the selected open items. Cannot be undone. Pick a scope, hit
         Preview to see the count, then type the confirmation phrase exactly to fire.
       </p>
+
+      {/* SA-only tenant-wide toggle. Default OFF — must be explicit.
+          When on, every where-clause swaps from {userId: me} to
+          {clientNumber: my_tenant} and the confirmation phrase gets
+          " ACROSS TENANT" appended server-side so the keystrokes
+          reflect the consequence. */}
+      {isSuperAdmin && (
+        <div style={{
+          marginBottom: 14, padding: 10, borderRadius: 8,
+          background: scope.tenantWide ? 'rgba(204,107,74,0.15)' : 'rgba(204,107,74,0.05)',
+          border: `1px solid ${scope.tenantWide ? 'rgba(204,107,74,0.6)' : 'rgba(204,107,74,0.3)'}`,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <input type="checkbox" checked={scope.tenantWide}
+                   onChange={(e) => { setScope({ ...scope, tenantWide: e.target.checked }); setPreview(null); setTyped(''); }}
+                   style={{ marginTop: 2 }} />
+            <div>
+              <div style={{ color: scope.tenantWide ? '#fbbf24' : '#eee', fontWeight: 600 }}>
+                Across the entire tenant ({clientNumber || 'this tenant'}) — SA only
+              </div>
+              <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                Off: operate only on items you personally own. On: operate on
+                every user's items in this tenant. Use this to clean up data
+                created by other users or by background pollers.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
 
       {/* Dead-item scopes — safe individually, safe combined */}
       <div style={{ marginBottom: 14, opacity: deadDisabled ? 0.4 : 1 }}>

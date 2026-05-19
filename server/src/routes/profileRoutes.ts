@@ -492,49 +492,84 @@ router.put('/open-items', async (req: Request, res: Response) => {
 // what we're about to delete. Two-key handshake: the count guards
 // against a window where new items appeared between preview and
 // confirm; the phrase guards against accidental fire.
-// Build the where clause + confirmation phrase for a given purge
-// scope. Nuclear `all` overrides everything else and uses a stronger
-// phrase so accidental fire is impossible.
-function buildPurgeWhereAndPhrase(userId: number, scope: any): { where: any; phrase: (count: number) => string; isNuclear: boolean } {
+// Status variants treated as "closed/done" — historical data has
+// stored these with different casings (lowercase 'closed' + 'done',
+// uppercase 'CLOSED' + 'DONE', plus 'ARCHIVED'). The purge gate
+// must match every variant or counts come back as 0 even when data
+// exists.
+const CLOSED_STATUS_VARIANTS = ['CLOSED', 'closed', 'DONE', 'done', 'ARCHIVED', 'archived'];
+
+// Build the where clause + confirmation phrase for a given purge scope.
+//
+// Scoping rules:
+//   - Non-SA: always user-scoped (`userId = me`). Users only see/affect
+//     their own items.
+//   - SA + tenantWide=true: tenant-scoped (`clientNumber = my_tenant`).
+//     Lets the SA wipe the whole tenant's data — useful for fresh-start
+//     reset, dev cleanup, data migration. Wraps the typed-phrase with
+//     "ACROSS TENANT" so the keystrokes match the consequence.
+//   - SA + tenantWide=false: same as non-SA (user-scoped).
+//
+// Nuclear `all` overrides the dead-item togges but still respects the
+// userId-vs-tenant scoping decision above.
+function buildPurgeWhereAndPhrase(
+  userId: number,
+  clientNumber: string,
+  isSuperAdmin: boolean,
+  scope: any,
+): { where: any; phrase: (count: number) => string; isNuclear: boolean; isTenantWide: boolean } {
+  const tenantWide = isSuperAdmin && scope?.tenantWide === true;
+  // Top-level scope is the entry filter every clause runs under.
+  const baseScope: any = tenantWide ? { clientNumber } : { userId };
+  const scopeSuffix = tenantWide ? ' ACROSS TENANT' : '';
+
   const wantAll = scope?.all === true;
   if (wantAll) {
-    // Nuclear: every row for this user, regardless of status / metadata.
-    // The "INCLUDING ACTIVE" suffix is the explicit consent that the
-    // user is wiping work-in-progress, not just dead rows.
     return {
-      where: { userId },
-      phrase: (count) => `DELETE ALL ${count} ITEMS INCLUDING ACTIVE`,
+      where: baseScope,
+      phrase: (count) => `DELETE ALL ${count} ITEMS INCLUDING ACTIVE${scopeSuffix}`,
       isNuclear: true,
+      isTenantWide: tenantWide,
     };
   }
   const wantClosed = scope?.closed === true;
   const wantExpiredDraft = scope?.expiredDraft === true;
   const wantStale = scope?.stale === true;
-  const where: any = { userId, OR: [] };
-  if (wantClosed) where.OR.push({ status: 'CLOSED' });
-  if (wantExpiredDraft) where.OR.push({ AND: [{ status: 'CLOSED' }, { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any }] });
+  const where: any = { ...baseScope, OR: [] };
+  if (wantClosed) where.OR.push({ status: { in: CLOSED_STATUS_VARIANTS } });
+  if (wantExpiredDraft) where.OR.push({
+    AND: [
+      { status: { in: CLOSED_STATUS_VARIANTS } },
+      { metadata: { path: ['draft', 'expiredAt'], not: null as any } as any },
+    ],
+  });
   if (wantStale) where.OR.push({ metadata: { path: ['stale'], equals: true } as any });
   return {
     where,
-    phrase: (count) => `PURGE ${count} ITEMS`,
+    phrase: (count) => `PURGE ${count} ITEMS${scopeSuffix}`,
     isNuclear: false,
+    isTenantWide: tenantWide,
   };
 }
 
 router.post('/open-items/purge/preview', async (req: Request, res: Response) => {
   const { scope } = req.body ?? {};
-  const { where, phrase, isNuclear } = buildPurgeWhereAndPhrase(req.user!.id, scope);
+  const { where, phrase, isNuclear, isTenantWide } = buildPurgeWhereAndPhrase(
+    req.user!.id, req.user!.clientNumber, !!req.user!.isSuperAdmin, scope,
+  );
   if (!isNuclear && (!where.OR || where.OR.length === 0)) {
-    return res.json({ count: 0, phrase: null, nuclear: false });
+    return res.json({ count: 0, phrase: null, nuclear: false, tenantWide: false });
   }
   const prisma = (await import('../db/prisma')).default;
   const count = await prisma.openItem.count({ where });
-  res.json({ count, phrase: phrase(count), nuclear: isNuclear });
+  res.json({ count, phrase: phrase(count), nuclear: isNuclear, tenantWide: isTenantWide });
 });
 
 router.post('/open-items/purge', async (req: Request, res: Response) => {
   const { scope, phrase: typed } = req.body ?? {};
-  const { where, phrase: makePhrase, isNuclear } = buildPurgeWhereAndPhrase(req.user!.id, scope);
+  const { where, phrase: makePhrase, isNuclear, isTenantWide } = buildPurgeWhereAndPhrase(
+    req.user!.id, req.user!.clientNumber, !!req.user!.isSuperAdmin, scope,
+  );
   if (!isNuclear && (!where.OR || where.OR.length === 0)) {
     return res.status(400).json({ error: 'no_scope_selected' });
   }
@@ -544,10 +579,10 @@ router.post('/open-items/purge', async (req: Request, res: Response) => {
   if (String(typed ?? '').trim() !== expectedPhrase) {
     // Count moved between preview and confirm, OR user typo'd. Fail
     // closed; return the fresh count so the next attempt is honest.
-    return res.status(409).json({ error: 'phrase_mismatch', expectedPhrase, count, nuclear: isNuclear });
+    return res.status(409).json({ error: 'phrase_mismatch', expectedPhrase, count, nuclear: isNuclear, tenantWide: isTenantWide });
   }
   const r = await prisma.openItem.deleteMany({ where });
-  res.json({ success: true, deleted: r.count, nuclear: isNuclear });
+  res.json({ success: true, deleted: r.count, nuclear: isNuclear, tenantWide: isTenantWide });
 });
 
 // ─── Brain name (user can call their Brain anything) ──────────────
