@@ -1719,7 +1719,13 @@ router.get('/brain-actions', async (req: Request, res: Response) => {
     // clicks, not actions Brain took for you — surfacing them in the
     // Brief mislabels them and pollutes the "20 actions I took" count.
     // Also exclude diagnostic / scoring rows that aren't user-facing.
-    const INTERNAL_ACTION_TYPES = ['user_signal', 'feedback_diagnosis', 'criticality_calibration'];
+    // followup_verdict is the verdict log written by openItemFollowUpJob
+    // for its own learning loop — many are `do_nothing` decisions, none
+    // are user-facing actions; surfacing them painted "Acted on — make
+    // a video call to uncle" in the Brief, which Brain literally cannot
+    // do. Real follow-up dispatches (chase emails, etc.) are logged
+    // separately under their own actionType and still appear correctly.
+    const INTERNAL_ACTION_TYPES = ['user_signal', 'feedback_diagnosis', 'criticality_calibration', 'followup_verdict'];
     const actions = await prisma.agentAction.findMany({
       where: {
         clientNumber: user.clientNumber, userId: user.id,
