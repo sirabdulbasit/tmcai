@@ -279,6 +279,11 @@ async function gatherKnowledge(input: ScoreInput) {
   // Pull at most 2 pages that are (a) about this sender/entity, or
   // (b) a past decision/pattern for the same topic.
   if (!input.entityId && !input.fromEmail) return [];
+  // Multi-tenancy: meeting_minutes and sender_topic are scope='user'.
+  // Without the (scope='tenant' OR user_id=$me) filter, scoring would
+  // read another user's sender_topic for the same sender — biasing
+  // criticality with their relationship, not this user's. The tenant-
+  // shared types (entity_person, topic, decision, pattern) stay visible.
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, title, page_type AS "pageType",
             SUBSTRING(COALESCE(body_markdown,''), 1, 280) AS snippet
@@ -286,10 +291,11 @@ async function gatherKnowledge(input: ScoreInput) {
       WHERE client_number = $1
         AND status = 'active'
         AND page_type IN ('entity_person','topic','decision','pattern','meeting_minutes','sender_topic')
+        AND (scope = 'tenant' OR user_id = $5)
         AND (metadata->>'entityId' = $2 OR metadata->>'senderEmail' = $3 OR title ILIKE '%' || $4 || '%')
       ORDER BY last_updated_at DESC
       LIMIT 2`,
-    input.clientNumber, input.entityId ?? '', input.fromEmail ?? '', input.senderDomain ?? '',
+    input.clientNumber, input.entityId ?? '', input.fromEmail ?? '', input.senderDomain ?? '', input.userId,
   );
   return rows;
 }

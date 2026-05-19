@@ -328,17 +328,25 @@ export async function openPagesForPlan(
     if (typeof tid === 'string' && tid) openedThreadIds.add(tid);
   }
   if (openedThreadIds.size > 0) {
+    // CRITICAL: user_id filter REQUIRED. email_message pages are
+    // scope='user' — without this clause, threads shared across users
+    // (newsletters, mailing-list digests, AWS Partner notices, etc.)
+    // leak siblings between users. Observed 2026-05-20: Haseeb's
+    // "Experience is Strategy" email surfaced as one of Basit's "5
+    // latest emails" because both users received messages on the same
+    // Asian Business Review thread. Multi-tenancy breach, not a UX bug.
     const siblings = await prisma.$queryRawUnsafe<any[]>(
       `SELECT id, title, page_type AS "pageType", body_markdown AS "bodyMarkdown",
               metadata->>'date' AS "msgDate", metadata->>'threadId' AS "threadId"
          FROM wiki_pages
         WHERE client_number = $1
+          AND user_id = $3
           AND page_type = 'email_message'
           AND metadata->>'threadId' = ANY($2::text[])
           AND status NOT IN ('superseded','deleted')
         ORDER BY last_updated_at ASC
         LIMIT 30`,
-      clientNumber, Array.from(openedThreadIds),
+      clientNumber, Array.from(openedThreadIds), userId,
     ).catch(() => []);
     for (const s of siblings) {
       if (seen.has(s.id)) continue;
