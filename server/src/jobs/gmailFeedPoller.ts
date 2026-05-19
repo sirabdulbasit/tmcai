@@ -1,7 +1,6 @@
 import prisma from '../db/prisma';
 import { getInbox, readEmail } from '../services/adapters/gmailAdapter';
 import { ingest } from '../services/feed/feedIngestionService';
-import { isFeatureEnabled } from '../services/featureFlagService';
 import { stampConnectorSync } from '../services/connectorSyncTracker';
 
 /**
@@ -13,9 +12,6 @@ import { stampConnectorSync } from '../services/connectorSyncTracker';
  * message ID — content hash is canonicalized on source-id alone.
  *
  * This is a stop-gap until Gmail Push API (pub/sub watch) is wired.
- *
- * Feature flag: `feature_feed_ingestion_pubsub` — when off, the poller is a
- * no-op so the default deploy doesn't spam feed.raw during development.
  */
 
 // Per-tick cap. 100 covers a very active MD's daily inflow. Initial historical
@@ -45,8 +41,6 @@ export async function pollAllActiveUsers(): Promise<PollResult[]> {
 
   const results: PollResult[] = [];
   for (const u of users) {
-    const enabled = await isFeatureEnabled(u.clientNumber, 'feature_feed_ingestion_pubsub', false);
-    if (!enabled) continue;
     try {
       const r = await pollUser(u.id, u.clientNumber);
       results.push(r);

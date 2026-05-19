@@ -1,6 +1,5 @@
 import prisma from '../db/prisma';
 import { listAll } from '../services/adapters/adapterRegistry';
-import { isFeatureEnabled } from '../services/featureFlagService';
 
 /**
  * HaseebOS v15 L1 — generic feed poller.
@@ -14,9 +13,6 @@ import { isFeatureEnabled } from '../services/featureFlagService';
  * This supersedes the hard-coded `gmailFeedPoller` as the default pull path.
  * The Gmail poller is kept for its `enrichBody()` helper that the Feed Curator
  * uses on VIP emails; it no longer drives scheduled ingestion.
- *
- * Feature flag: per-tenant `feature_feed_ingestion_pubsub` (existing). When
- * off, the generic poller is a no-op.
  */
 
 // Per-tick cap on rows the adapter is allowed to pull. Was 25 — too
@@ -46,8 +42,6 @@ export async function pollAllTenants(): Promise<PollSummary[]> {
   });
   const summaries: PollSummary[] = [];
   for (const t of tenants) {
-    const enabled = await isFeatureEnabled(t.clientNumber, 'feature_feed_ingestion_pubsub', false);
-    if (!enabled) continue;
     for (const adapter of listAll()) {
       // Adapters with no receive() (push-only e.g. Slack webhooks, WhatsApp) should be skipped.
       if (!adapter.capabilities().receive) continue;

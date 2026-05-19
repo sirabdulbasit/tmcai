@@ -10,7 +10,6 @@ import prisma from '../db/prisma';
 import { getEvents } from '../services/calendarService';
 import { stampConnectorSync } from '../services/connectorSyncTracker';
 import { ingest } from '../services/feed/feedIngestionService';
-import { isFeatureEnabled } from '../services/featureFlagService';
 
 export interface GcalPollResult {
   userId: number;
@@ -36,8 +35,6 @@ export async function pollAllActiveCalendarUsers(): Promise<GcalPollResult[]> {
 
   const results: GcalPollResult[] = [];
   for (const u of users) {
-    const enabled = await isFeatureEnabled(u.clientNumber, 'feature_feed_ingestion_pubsub', false);
-    if (!enabled) continue;
     try {
       const r = await pollUser(u.id, u.clientNumber);
       results.push(r);
