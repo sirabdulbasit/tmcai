@@ -263,6 +263,8 @@ function BrainChannelSection({ user }) {
   const [msg, setMsg] = useState('');
   const [pingMsg, setPingMsg] = useState('');
   const [pinging, setPinging] = useState(false);
+  const [briefMsg, setBriefMsg] = useState('');
+  const [sendingBrief, setSendingBrief] = useState(false);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -315,6 +317,20 @@ function BrainChannelSection({ user }) {
       setTimeout(() => setPingMsg(''), 6000);
     }
     setPinging(false);
+  };
+
+  const sendDayBriefNow = async () => {
+    setSendingBrief(true); setBriefMsg('');
+    try {
+      await api.post('/profile/day-brief/send-now');
+      setBriefMsg('Day Brief sent — check your WhatsApp.');
+      setTimeout(() => setBriefMsg(''), 5000);
+    } catch (err) {
+      const reason = err?.response?.data?.reason || err?.response?.data?.error || 'send failed';
+      setBriefMsg(`Day Brief send failed: ${reason}`);
+      setTimeout(() => setBriefMsg(''), 7000);
+    }
+    setSendingBrief(false);
   };
 
   const pingTarget = overrideOpen && whatsappNumberOverride ? whatsappNumberOverride : registeredNumber;
@@ -388,6 +404,16 @@ function BrainChannelSection({ user }) {
             <input type="time" value={dayBriefTime} onChange={(e) => setDayBriefTime(e.target.value)} />
             <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
               Brain sends the daily brief to WhatsApp at this time. Bypasses quiet hours.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={sendDayBriefNow} disabled={sendingBrief || !pingTarget}
+                style={{
+                  background: 'transparent', border: '1px solid #444', color: '#ccc',
+                  borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: pingTarget ? 'pointer' : 'not-allowed',
+                }}>
+                {sendingBrief ? 'Sending Day Brief…' : 'Send Day Brief now'}
+              </button>
+              {briefMsg && <span style={{ fontSize: 11, color: briefMsg.startsWith('Day Brief sent') ? '#4ade80' : '#fca5a5' }}>{briefMsg}</span>}
             </div>
           </div>
           <div className="settings-field">

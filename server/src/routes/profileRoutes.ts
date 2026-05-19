@@ -319,6 +319,26 @@ router.post('/test-ping', async (req: Request, res: Response) => {
   }
 });
 
+// "Send Day Brief now" — manual one-shot trigger from Settings. Same
+// composer the morning cron uses, same brainContactsUser dispatch path.
+// Skips the scheduled-time / once-per-day gates because the user clicked
+// the button (explicit consent + they want to see the real thing right
+// now). Lets the user verify the brief format and the WA channel before
+// they commit to the morning autopilot.
+router.post('/day-brief/send-now', async (req: Request, res: Response) => {
+  try {
+    const { manualDispatchDayBrief } = await import('../jobs/dayBriefDispatchJob');
+    const r = await manualDispatchDayBrief(req.user!.id);
+    if (r.sent) {
+      res.json({ ok: true, preview: r.preview });
+    } else {
+      res.status(409).json({ ok: false, reason: r.reason ?? 'send_failed', preview: r.preview });
+    }
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ─── Per-channel confidence thresholds (email / whatsapp / delegation / calendar) ───
 router.get('/brain-channel-thresholds', async (req: Request, res: Response) => {
   const prisma = (await import('../db/prisma')).default;

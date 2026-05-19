@@ -187,3 +187,54 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
 
   return result;
 }
+
+/**
+ * Manual single-user dispatch — used by the "Send Day Brief now" button in
+ * Settings. Skips the scheduled-time and once-per-day gates because the
+ * user clicked the button intentionally (explicit consent, fresh test).
+ * Bypasses opt-in / rate limits / quiet hours for the same reason.
+ *
+ * Does NOT mark the Redis fired-today key, so the scheduled cron still
+ * fires the regular Day Brief later if time hasn't passed yet.
+ */
+export async function manualDispatchDayBrief(
+  userId: number,
+): Promise<{ sent: boolean; reason?: string; preview?: string }> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, clientNumber: true, notificationPreferences: true },
+  });
+  if (!u) return { sent: false, reason: 'unknown_user' };
+
+  const prefs = (u.notificationPreferences as any) ?? {};
+  const bc = prefs.brain_channel ?? {};
+  const timezone = typeof bc.timezone === 'string' && bc.timezone.length > 0
+    ? bc.timezone : 'Asia/Karachi';
+  const wall = wallClockInZone(new Date(), timezone);
+
+  const { answerAsBrain } = await import('../routes/brainAskRoutes');
+  const out = await answerAsBrain(u.clientNumber, u.id, 'brief my day', [], { channel: 'whatsapp' });
+  const body = (out.answer || '').trim();
+  if (!body) {
+    log.warn('manual day brief composer returned empty', { userId: u.id });
+    return { sent: false, reason: 'empty_composer' };
+  }
+
+  const dispatch = await brainContactsUser({
+    userId: u.id,
+    kind: 'day_brief_manual',
+    summary: `Day Brief (manual) — ${wall?.ymd ?? 'now'}`,
+    body,
+    urgency: 'normal',
+    bypassQuietHours: true,
+    bypassOptIn: true,
+    bypassRateLimit: true,
+    metadata: { localDate: wall?.ymd, localTime: wall?.hhmm, timezone, manual: true },
+  });
+
+  if (!dispatch.sent) {
+    log.warn('manual day brief not sent', { userId: u.id, reason: dispatch.reason });
+    return { sent: false, reason: dispatch.reason ?? 'send_failed', preview: body };
+  }
+  return { sent: true, preview: body };
+}
