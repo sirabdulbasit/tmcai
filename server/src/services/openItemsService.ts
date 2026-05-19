@@ -247,6 +247,23 @@ export async function updateItem(id: string, clientNumber: string, input: Update
   });
 }
 
+/**
+ * THE canonical query for a user's open items. ONE function. Three callers:
+ *   - GET /open-items (UI's Action Center list)
+ *   - brainComposer's "Open items snapshot" injection (web + WhatsApp chat)
+ *   - dayBriefDispatchJob's open-items section
+ *
+ * All three MUST go through here so the web UI, web Brain Chat, and
+ * WhatsApp Brain show the same rows for the same user. Per Basit
+ * 2026-05-20: "brain should have same knowledge, same feed, same open
+ * item as it is showing in tai.tmcltd, brain chat or whatsap chat all
+ * three conversation, information, sources should be the same."
+ *
+ * Defaults match the Action Center's "All" tab: every status except
+ * closed/done/archived (case-insensitive), priority-first order,
+ * smoke/test items excluded. Callers can opt in to wider/narrower
+ * filtering via the options.
+ */
 export async function listItems(
   userId: number,
   clientNumber: string,
@@ -256,6 +273,12 @@ export async function listItems(
     type?: OpenItemType | OpenItemType[];
     entityId?: string;
     sourceFeed?: string;
+    /** Cap on rows returned. Default: no cap (UI lists all). */
+    limit?: number;
+    /** Drop test/regression items (metadata.smoke=true). Default true.
+     *  brainComposer always wants this; UI now opts-in by default too
+     *  so the Action Center doesn't show battery rows. */
+    excludeSmoke?: boolean;
   },
 ) {
   const where: Record<string, unknown> = { userId, clientNumber };
@@ -294,6 +317,14 @@ export async function listItems(
   if (filters?.sourceFeed) {
     where.sourceFeed = filters.sourceFeed;
   }
+  // Smoke filter — default ON for ALL callers. UI's previous behaviour
+  // didn't exclude smoke items; this aligns it with brainComposer so
+  // Action Center, web Brain Chat, and WhatsApp Brain agree on what's
+  // a real item.
+  const excludeSmoke = filters?.excludeSmoke ?? true;
+  if (excludeSmoke) {
+    (where as any).NOT = { metadata: { path: ['smoke'], equals: true } };
+  }
 
   return prisma.openItem.findMany({
     where,
@@ -301,6 +332,7 @@ export async function listItems(
       { priority: 'asc' }, // critical first
       { createdAt: 'desc' },
     ],
+    ...(filters?.limit ? { take: Math.min(Math.max(filters.limit, 1), 500) } : {}),
   });
 }
 

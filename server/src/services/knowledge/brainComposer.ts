@@ -947,40 +947,24 @@ export async function compose(
     : opened.map((p) => renderOpenedPageWithQuery(p, question, datesById.get(p.id) ?? null)).join('\n\n');
 
   // ── Open items snapshot ──
-  // The composer used to never see the user's actual open_items list as
-  // structured data — only via whatever happened to fall into the wiki
-  // retrieval. That meant when MD said "delegate the phoenix one" Brain
-  // ran a fresh search for "phoenix" and found nothing, even though the
-  // open_item titled "Revisit pricing for Phoenix Systems" was right
-  // there. Now we always inject the top 30 active open items as a
-  // structured block so the LLM can match a partial reference ("phoenix",
-  // "the audit one", "Faizan's email") to a real open_item id and emit
-  // an action with that id. Also feeds the Day-Brief Open Items section
-  // (top 3 by priority/due-date picked from this snapshot) — 30 gives
-  // enough headroom that high-priority items further back in history
-  // still surface even when 30+ low-priority items were created recently.
-  const openItemsRows = await prisma.openItem.findMany({
-    where: {
-      clientNumber, userId,
-      status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED'] },
-      // Smoke filter — items flagged via metadata.smoke=true on ingest
-      // by starCadenceService should never appear in the user's conversational
-      // surface. Same filter the brainOutboundService applies on send.
-      NOT: { metadata: { path: ['smoke'], equals: true } } as any,
-    },
-    // Priority-first ordering serves the Day-Brief "top 3" pick directly.
-    // For partial-reference lookups (the original use) the LLM still has
-    // 30 active items to match against, which is plenty for an inbox of
-    // any realistic size.
-    orderBy: [
-      // Postgres enum-less string sort: rely on Prisma raw priority and
-      // do the final ranking inside the LLM (snapshot exposes priority).
-      { dueDate: { sort: 'asc', nulls: 'last' } },
-      { createdAt: 'desc' },
-    ],
-    take: 30,
-    select: { id: true, title: true, priority: true, status: true, dueDate: true, delegateeName: true, delegateeEmail: true },
-  }).catch(() => [] as any[]);
+  // CANONICAL: routed through openItemsService.listItems so the web UI's
+  // Action Center, web Brain Chat, and WhatsApp Brain all see the same
+  // rows for the same user. The previous inline query here used a
+  // stricter uppercase-only status filter and missed INFORMED + any
+  // legacy lowercase status values (e.g. items bulk-marked-wrong with
+  // status='closed'), producing a different row set than the UI showed.
+  // Per Basit 2026-05-20 — "brain should have same knowledge, same feed,
+  // same open item as it is showing in tai.tmcltd, brain chat or whatsap
+  // chat all three conversation, information, sources should be the
+  // same." Single function, three callers.
+  const { listItems: listOpenItems } = await import('../openItemsService');
+  const openItemsRows = (await listOpenItems(userId, clientNumber, {
+    limit: 30,
+    excludeSmoke: true,
+  }).catch(() => [] as any[])) as Array<{
+    id: string; title: string; priority: string; status: string;
+    dueDate: Date | null; delegateeName: string | null; delegateeEmail: string | null;
+  }>;
   // Surface critical/high items first inside the block so the LLM's
   // attention naturally lands there when ranking. Falls back to the SQL
   // ordering (due-date asc) for medium/low.
