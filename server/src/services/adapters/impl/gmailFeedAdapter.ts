@@ -22,8 +22,15 @@ export class GmailFeedAdapter extends FeedAdapter {
     });
     const { stampConnectorSync } = await import('../../connectorSyncTracker');
     const all: unknown[] = [];
+    // Cap per-user pulls at 100 for the 2-min poll cycle. The
+    // genericFeedPoller's MAX_EVENTS_PER_ADAPTER=500 is too aggressive
+    // for gmail — 500 sequential metadata fetches (even chunked) push
+    // past Gmail's per-user quota and the 30s circuit breaker budget.
+    // Historical backfill goes through Re-scribe All, NOT this path.
+    // Dedup via contentHash means overlap on adjacent ticks is free.
+    const perUserCap = Math.min(limit, 100);
     for (const u of users) {
-      const r = await getInbox(u.id, limit);
+      const r = await getInbox(u.id, perUserCap);
       for (const e of r.emails ?? []) {
         all.push({ ...e, __userId: u.id });
       }
