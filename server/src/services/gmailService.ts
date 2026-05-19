@@ -43,27 +43,40 @@ export async function getInbox(userId: number, maxResults = 10, query?: string):
 
     if (!response.data.messages) return { emails: [] };
 
+    // Parallelize per-message metadata fetches in concurrency-capped chunks.
+    // Sequential was the original implementation, but at limit=500 (set by
+    // genericFeedPoller for inbox headroom) it took ~25s — over the gmail
+    // adapter's 15s circuit-breaker timeout — so every regular poll tripped
+    // and lastSyncAt stayed frozen until a Re-scribe button click.
+    // Concurrency=10 finishes 500 messages in ~5s while staying inside
+    // Gmail's per-user quota tolerance (250 units/sec, messages.get=5 units).
+    // Individual 429s land in the per-call catch and are skipped harmlessly.
+    const messages = response.data.messages.slice(0, maxResults);
     const emails: EmailSummary[] = [];
-    for (const msg of response.data.messages.slice(0, maxResults)) {
-      try {
-        const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date'] });
-        const headers = detail.data.payload?.headers || [];
-        const getHeader = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
-
-        emails.push({
-          id: msg.id!,
-          threadId: msg.threadId!,
-          from: getHeader('From'),
-          to: getHeader('To'),
-          cc: getHeader('Cc'),
-          bcc: getHeader('Bcc'),
-          subject: getHeader('Subject'),
-          snippet: detail.data.snippet || '',
-          date: getHeader('Date'),
-          isUnread: detail.data.labelIds?.includes('UNREAD') || false,
-          labels: detail.data.labelIds || [],
-        });
-      } catch { /* skip individual email errors */ }
+    const CHUNK = 10;
+    for (let i = 0; i < messages.length; i += CHUNK) {
+      const chunk = messages.slice(i, i + CHUNK);
+      const results = await Promise.all(chunk.map(async (msg) => {
+        try {
+          const detail = await gmail.users.messages.get({ userId: 'me', id: msg.id!, format: 'metadata', metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date'] });
+          const headers = detail.data.payload?.headers || [];
+          const getHeader = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+          return {
+            id: msg.id!,
+            threadId: msg.threadId!,
+            from: getHeader('From'),
+            to: getHeader('To'),
+            cc: getHeader('Cc'),
+            bcc: getHeader('Bcc'),
+            subject: getHeader('Subject'),
+            snippet: detail.data.snippet || '',
+            date: getHeader('Date'),
+            isUnread: detail.data.labelIds?.includes('UNREAD') || false,
+            labels: detail.data.labelIds || [],
+          } as EmailSummary;
+        } catch { return null; }
+      }));
+      for (const r of results) if (r) emails.push(r);
     }
 
     return { emails };
