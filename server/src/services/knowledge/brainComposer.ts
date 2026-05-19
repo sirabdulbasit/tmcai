@@ -612,6 +612,44 @@ H13. **Annotate scope on every citation, but only for REAL pages.** Tenant-sourc
 H14. **Your previous reply is an authoritative source for content.** When the user references something you just said (name, item title, number), don't re-derive it. Look it up and act. Falsely denying ("I don't see any item with that name") when you just listed it is worse than any other failure. (Note: this applies to content — actions still require fresh emission per Rule 6 above.)`;
 
 /** Day-Brief-specific format rules. Only sent on intent=day_brief. */
+/** Exclusive-source rules. Each canonical entity (open items, emails,
+ *  meetings, WhatsApp threads, connectors) has exactly one block in the
+ *  prompt that names the authoritative data. When the user asks about
+ *  that entity, the answer MUST come from that block — never from
+ *  wiki_pages, recent activity, vector search results, or anywhere else.
+ *
+ *  Why this exists: Basit's 2026-05-20 transcript showed Brain answering
+ *  "any open item?" with 19 fabricated items (status=DONE, status=closed)
+ *  drawn from wiki_pages whose titles mentioned the phrase "open item"
+ *  — even though the actual Open Items snapshot in the same prompt had
+ *  exactly 2 rows. The data was right; the LLM ignored it and invented.
+ *  This rule block says: don't.
+ *
+ *  Applies to factual, day_brief, and action-emit turns. Skipped for
+ *  pure casual chat (no entity questions). */
+const SURFACE_EXCLUSIVITY_RULES = `# Surface exclusivity — non-negotiable
+
+Every entity in the user's workspace has exactly ONE authoritative block in this prompt. When the user asks about that entity, you answer EXCLUSIVELY from that block. Never substitute wiki_pages, recent activity, vector-search results, semantic guesses, or content from past turns.
+
+| Entity | Authoritative block | What you answer with |
+|---|---|---|
+| Open items | "Open items snapshot" | Count = rows.length. Listing = these rows only. Status / priority / due / delegatee = the row's fields. Item titles you mention MUST appear verbatim in the snapshot. |
+| Today's meetings | "Today's calendar" | Same — every meeting you list is in that block. Don't pull meetings from email content or wiki summaries. |
+| Emails needing attention | "My Attention surface" (email bucket) | Same — top emails come from there. Recent activity tail and email_message wiki pages are NOT alternative sources. |
+| WhatsApp threads needing attention | "My Attention surface" (whatsapp bucket) | Same — never invent threads from wiki search. |
+| Risk / worry list | "Risk Radar" block | If absent, say "nothing on the radar". Don't synthesize risks from email content. |
+| Standing instructions | "Standing instructions" block | Same. |
+| Delegation routing | "Delegation matrix" block | When picking a delegate target, this is the only legitimate source. |
+
+**Rules:**
+1. **If the authoritative block is empty, the answer is empty.** "How many open items?" + empty snapshot → "You have zero active open items." Do NOT fall back to searching elsewhere.
+2. **If the user asks for a count, you count rows in the block — no estimating, no rounding, no synthesizing from other context.** N rows = N items, period.
+3. **Status / priority / due-date / delegatee labels you cite MUST come from the block's row data.** No inventing labels like "(status DONE)" or "(closed)" when the row says NEW or DELEGATED. Quote the row's field verbatim.
+4. **If you find yourself writing an item title that's not in the snapshot, stop.** That title came from a wiki page or email content — it's not an open item. Either remove it from your answer or move it to a separate "I also see this in your wiki/inbox" section that's clearly distinct from the canonical entity.
+5. **You can synthesize ABOUT the entities** (why is X high-priority, how should I sequence Y and Z, what's the pattern across these emails) — but the data being synthesized is still only from the authoritative block.
+
+This rule trumps any vector-search "relevance" intuition. If the snapshot has 2 items and the wiki has 17 pages mentioning "open item", you answer with 2. The wiki pages are context, not data.`;
+
 const DAY_BRIEF_FORMAT_RULES = `# Day Brief format (this turn is a daily digest)
 H15. **Day-brief = TODAY's attention surface, compactly delivered.** Your reply covers what's IN the "My Attention surface" block — pre-filtered to the last 24h + still-unhandled high/critical carryover. Do NOT surface medium/low items from days ago — they're in the dashboard, not the brief.
 
@@ -836,6 +874,16 @@ If the "Open items snapshot" block above contains a row whose title fragment mat
   // Day Brief format — only on day_brief intent.
   if (intent === 'day_brief') {
     parts.push(DAY_BRIEF_FORMAT_RULES);
+  }
+
+  // Surface exclusivity — non-negotiable on factual / day_brief / action
+  // turns. Casual chat skips it (no entity questions). This block is the
+  // structural guard against the "19 vs 2" hallucination: the LLM had
+  // the right snapshot in front of it and still invented items from
+  // wiki_pages. Goes last so it's the LAST set of rules in the model's
+  // context window — best position for adherence.
+  if (intent === 'factual' || intent === 'day_brief' || intent === 'introspective' || isActionTurn) {
+    parts.push(SURFACE_EXCLUSIVITY_RULES);
   }
 
   return parts.join('\n\n');
