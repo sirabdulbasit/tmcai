@@ -180,9 +180,66 @@ export async function deleteEvent(userId: number, eventId: string): Promise<{ su
 
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
-    await calendar.events.delete({ calendarId: 'primary', eventId });
+    await calendar.events.delete({ calendarId: 'primary', eventId, sendUpdates: 'all' });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: `Delete failed: ${err.message}` };
+  }
+}
+
+// ─── Update event ─────────────────────────────────────────────
+
+/** Patch an existing calendar event. Pass only the fields you want
+ *  to change. Returns the updated event on success or an error
+ *  string on failure. */
+export async function updateEvent(
+  userId: number,
+  eventId: string,
+  patch: {
+    title?: string;
+    description?: string;
+    startTime?: string;
+    endTime?: string;
+    location?: string;
+    attendees?: string[];
+  },
+): Promise<{ event?: CalendarEvent; error?: string }> {
+  const { client, error } = await getAuthenticatedClient(userId);
+  if (!client) return { error };
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const body: any = {};
+    if (patch.title !== undefined) body.summary = patch.title;
+    if (patch.description !== undefined) body.description = patch.description;
+    if (patch.location !== undefined) body.location = patch.location;
+    if (patch.startTime !== undefined) body.start = { dateTime: patch.startTime, timeZone: 'Asia/Karachi' };
+    if (patch.endTime !== undefined) body.end = { dateTime: patch.endTime, timeZone: 'Asia/Karachi' };
+    if (patch.attendees !== undefined) body.attendees = patch.attendees.map((email) => ({ email }));
+
+    const response = await calendar.events.patch({
+      calendarId: 'primary',
+      eventId,
+      requestBody: body,
+      sendUpdates: 'all',
+    });
+    const event = response.data;
+    return {
+      event: {
+        id: event.id!,
+        title: event.summary || patch.title || '',
+        description: event.description || undefined,
+        start: event.start?.dateTime || event.start?.date || patch.startTime || '',
+        end: event.end?.dateTime || event.end?.date || patch.endTime || '',
+        location: event.location || undefined,
+        attendees: event.attendees?.map((a) => a.email!).filter(Boolean) || [],
+        status: event.status || 'confirmed',
+        isAllDay: !!event.start?.date,
+        organizer: event.organizer?.email || undefined,
+        link: event.hangoutLink || event.htmlLink || undefined,
+      },
+    };
+  } catch (err: any) {
+    return { error: `Update failed: ${err.message}` };
   }
 }

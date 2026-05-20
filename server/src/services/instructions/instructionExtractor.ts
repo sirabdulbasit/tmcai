@@ -34,6 +34,8 @@ export type InstructionIntent =
   | 'draft_reply'
   | 'delegate'
   | 'schedule_meeting'
+  | 'cancel_meeting'
+  | 'reschedule_meeting'
   | 'add_open_item'
   | 'set_window';
 
@@ -56,6 +58,15 @@ export interface ExtractedInstruction {
     meetingWhen?: string;       // ISO or natural language ("tomorrow 3pm")
     meetingAttendees?: string[]; // names or emails
     meetingDurationMin?: number;
+    /** cancel_meeting / reschedule_meeting — eventId comes from Brain's
+     *  recent artifacts block (the eventId returned by a prior
+     *  successful schedule_meeting dispatch). */
+    eventId?: string;
+    titleHint?: string;
+    reason?: string;
+    /** reschedule_meeting */
+    newWhenIso?: string;
+    newDurationMin?: number;
     /** add_open_item */
     itemTitle?: string;
     itemDueDate?: string;

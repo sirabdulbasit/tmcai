@@ -62,6 +62,8 @@ export type ComposedAction =
   | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
+  | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
+  | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenIso?: string; newDurationMin?: number; reason?: string }
   | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
   | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string }
   | { type: 'set_brain_name'; name: string };
@@ -499,13 +501,67 @@ function toOpenedPage(p: { id: string; title: string; pageType: string; bodyMark
 }
 
 export interface ComposerHistoryTurn {
-  role: 'user' | 'brain';
+  role: 'user' | 'brain' | 'artifact';
   text: string;
+}
+
+/** Structured payload for role='artifact' history turns. Stored as
+ *  JSON-stringified text on the ComposerHistoryTurn so it travels
+ *  through existing persistence (conversation_history JSONB) without
+ *  schema changes. */
+export interface BrainArtifactRecord {
+  kind: 'schedule_meeting' | 'send_email' | 'add_open_item' | 'delegate_open_item' | 'notify_via_whatsapp' | 'cancel_meeting' | 'reschedule_meeting';
+  artifactId: string;
+  summary: string;     // human-readable one-liner
+  dispatchedAt: string; // ISO timestamp
+}
+
+/** Parse a role='artifact' turn's text back into structured form. */
+function parseArtifact(text: string): BrainArtifactRecord | null {
+  try {
+    const obj = JSON.parse(text);
+    if (typeof obj?.artifactId === 'string' && typeof obj?.kind === 'string') {
+      return {
+        kind: obj.kind,
+        artifactId: obj.artifactId,
+        summary: typeof obj.summary === 'string' ? obj.summary : '',
+        dispatchedAt: typeof obj.dispatchedAt === 'string' ? obj.dispatchedAt : '',
+      };
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+/** Render the recent-artifacts block for compose's prompt. Only
+ *  surfaces artifacts from the last 24 hours; older ones rarely
+ *  matter for cancel/reschedule intent. */
+function renderArtifactsBlock(history: ComposerHistoryTurn[]): string {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const artifacts = history
+    .filter((h) => h.role === 'artifact')
+    .map((h) => parseArtifact(h.text))
+    .filter((a): a is BrainArtifactRecord => !!a)
+    .filter((a) => {
+      const t = new Date(a.dispatchedAt).getTime();
+      return Number.isFinite(t) && t >= cutoff;
+    })
+    .slice(-8);
+  if (artifacts.length === 0) return '';
+  const lines = artifacts.map((a) => `- ${a.kind} artifactId=${a.artifactId} — ${a.summary}`);
+  return `# Recent action artifacts (this session, last 24h)
+${lines.join('\n')}
+
+When the user asks to cancel or reschedule something you've just done ("cancel that meeting", "move it to 4pm"), refer to ONE of these artifactIds in your action.eventId / action.artifactId field. Do NOT invent ids. If none of these match the user's reference, ask which one.`;
 }
 
 function renderComposerHistoryBlock(history: ComposerHistoryTurn[]): string {
   if (!history.length) return '';
-  const recent = history.slice(-6);
+  // Artifact turns are not conversation — they're structured side-data.
+  // Render them in renderArtifactsBlock instead. Here we keep only
+  // user/brain turns so the model sees clean dialogue.
+  const turns = history.filter((h) => h.role === 'user' || h.role === 'brain');
+  if (!turns.length) return '';
+  const recent = turns.slice(-6);
   const lines = recent.map((t) => {
     const who = t.role === 'user' ? 'User' : 'Brain';
     const txt = t.text.slice(0, 600);
@@ -736,6 +792,16 @@ Schema:
             "attendeeEmails": string[],   // MUST come from candidate blocks; never a guess
             "attendeeNames": string[],
             "note"?: string }
+        | { "type": "cancel_meeting",
+            "eventId": string,            // MUST come from the "Recent action artifacts" block — never invent one
+            "titleHint"?: string,         // optional, for user-readable confirmation
+            "reason"?: string }           // optional, included in cancellation notice to attendees
+        | { "type": "reschedule_meeting",
+            "eventId": string,            // MUST come from the "Recent action artifacts" block
+            "titleHint"?: string,
+            "newWhenIso"?: "YYYY-MM-DDTHH:MM",  // local time; the dispatcher appends user's TZ offset
+            "newDurationMin"?: number,
+            "reason"?: string }
         | { "type": "send_email",
             "to": string[],                          // MUST be real email addresses from a Candidates block. Never a name; never a guess.
             "cc"?: string[],
@@ -858,6 +924,7 @@ function assembleSystemPrompt(args: {
   todayCalendarBlock: string;
   attentionBlock: string;
   candidatesBlock: string;
+  artifactsBlock: string;
   recentLog: string;
   openedBlock: string;
   steeringHint: string | null | undefined;
@@ -867,7 +934,7 @@ function assembleSystemPrompt(args: {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, openItemsBlock, todayCalendarBlock,
-    attentionBlock, candidatesBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
+    attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
   } = args;
 
   const todayBlock = `# Today
@@ -959,6 +1026,14 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // or for factual queries about specific people.
   if (candidatesBlock && (isActionTurn || intent === 'factual')) {
     parts.push(candidatesBlock);
+  }
+
+  // Recent action artifacts — needed when actions might be emitted so
+  // the LLM can reference eventIds for cancel/reschedule, or so it can
+  // truthfully cite a recent dispatch when the user asks "did it go
+  // through?". Only sent on action turns (not casual / day_brief).
+  if (artifactsBlock && isActionTurn) {
+    parts.push(artifactsBlock);
   }
 
   // Recent tenant activity tail — useful background for factual /
@@ -1201,6 +1276,7 @@ export async function compose(
     }
   }
 
+  const artifactsBlock = renderArtifactsBlock(history);
   const systemPrompt = assembleSystemPrompt({
     intent: effectiveIntent,
     isActionTurn,
@@ -1216,6 +1292,7 @@ export async function compose(
     todayCalendarBlock,
     attentionBlock,
     candidatesBlock,
+    artifactsBlock,
     recentLog: recentLog || '(no recent activity logged)',
     openedBlock,
     steeringHint: opts.steeringHint,
@@ -1334,6 +1411,7 @@ export async function compose(
       question, history,
       candidatesBlock: candidatesBlock ?? '',
       openItemsBlock: openItemsBlock ?? '',
+      artifactsBlock: artifactsBlock ?? '',
       todayDate,
       userId, clientNumber,
     });
@@ -1529,6 +1607,42 @@ export async function compose(
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         if (!res.ok) answer = res.message;
         else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'cancel_meeting') {
+        const res = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: {
+            intent: 'cancel_meeting',
+            confidence: 1,
+            summary: `cancel ${act.titleHint ?? act.eventId}`,
+            params: {
+              eventId: act.eventId,
+              titleHint: act.titleHint,
+              reason: act.reason,
+            },
+          } as any,
+        });
+        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+        answer = res.message;
+      } else if (act.type === 'reschedule_meeting') {
+        const res = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: {
+            intent: 'reschedule_meeting',
+            confidence: 1,
+            summary: `reschedule ${act.titleHint ?? act.eventId}`,
+            params: {
+              eventId: act.eventId,
+              titleHint: act.titleHint,
+              newWhenIso: act.newWhenIso,
+              newDurationMin: act.newDurationMin,
+              reason: act.reason,
+            },
+          } as any,
+        });
+        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+        answer = res.message;
       } else if (act.type === 'set_brain_name') {
         // User renamed Brain through chat ("call yourself Suzi" /
         // "your name is Friday" / "reset your name"). Persisted via
@@ -2783,6 +2897,7 @@ async function decideAction(opts: {
   history: ComposerHistoryTurn[];
   candidatesBlock: string;
   openItemsBlock: string;
+  artifactsBlock: string;
   todayDate: string;
   userId?: number;
   clientNumber?: string;
@@ -2807,6 +2922,8 @@ ActionSchema is one of these (set "type" to one of these values):
 - { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string }
 - { "type": "delegate_open_item", "openItemId": string, "delegateeEmail": string, "delegateeName": string, "note"?: string }
 - { "type": "schedule_meeting", "title": string, "whenIso": "YYYY-MM-DDTHH:MM", "durationMin"?: number, "attendeeEmails": string[], "attendeeNames": string[], "note"?: string }
+- { "type": "cancel_meeting", "eventId": string, "titleHint"?: string, "reason"?: string }
+- { "type": "reschedule_meeting", "eventId": string, "titleHint"?: string, "newWhenIso"?: "YYYY-MM-DDTHH:MM", "newDurationMin"?: number, "reason"?: string }
 - { "type": "send_email", "to": string[], "cc"?: string[], "subject": string, "body": string }
 - { "type": "notify_via_whatsapp", "recipientName": string, "recipientPhone": string, "message": string }
 - { "type": "set_brain_name", "name": string }
@@ -2815,6 +2932,7 @@ Slot grounding rules (MUST follow):
 - Emails MUST come from the Candidates block or appear verbatim in the user's message. NEVER guess.
 - Phone numbers MUST come from the Candidates block or appear verbatim in the user's message.
 - openItemId MUST come from the Open Items snapshot.
+- eventId for cancel_meeting / reschedule_meeting MUST come from the Recent action artifacts block. If no matching artifact exists, set action=null and missing_slot="eventId" (Brain will ask the user which meeting).
 - whenIso resolves relative dates ("tomorrow", "Friday") against today's date.
 - For test emails: if user said "test email to <addr>", use subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — these are the canonical test defaults.
 - A user message like "first one" / "the first" / "option 1" maps to candidate #1 in the Candidates block.
@@ -2840,7 +2958,9 @@ ${historyText || '(none)'}
 
 ${opts.candidatesBlock || '(no candidates block)'}
 
-${opts.openItemsBlock || '(no open items snapshot)'}`;
+${opts.openItemsBlock || '(no open items snapshot)'}
+
+${opts.artifactsBlock || '(no recent action artifacts)'}`;
 
   try {
     const { callGemini } = await import('../geminiService');
@@ -2996,6 +3116,30 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const durationMin = typeof r.durationMin === 'number' && r.durationMin > 0 ? Math.floor(r.durationMin) : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
     return { type: 'schedule_meeting', title, whenIso, durationMin, attendeeEmails, attendeeNames, note };
+  }
+  if (type === 'cancel_meeting') {
+    // eventId is the only hard requirement — without it we don't know
+    // which event to cancel. titleHint helps the dispatcher log a
+    // human-readable summary; reason is optional and goes to a
+    // notification email if Calendar attendees expect explanation.
+    const eventId = typeof r.eventId === 'string' ? r.eventId.trim() : '';
+    if (!eventId) return reject('cancel_meeting:no-eventId');
+    const titleHint = typeof r.titleHint === 'string' && r.titleHint.trim() ? r.titleHint.trim() : undefined;
+    const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
+    return { type: 'cancel_meeting', eventId, titleHint, reason };
+  }
+  if (type === 'reschedule_meeting') {
+    // At minimum need eventId + at least one of {newWhenIso, newDurationMin}.
+    // Without either change field, this isn't actually a reschedule.
+    const eventId = typeof r.eventId === 'string' ? r.eventId.trim() : '';
+    if (!eventId) return reject('reschedule_meeting:no-eventId');
+    const newWhenIso = typeof r.newWhenIso === 'string' && r.newWhenIso.trim() ? r.newWhenIso.trim() : undefined;
+    const newDurationMin = typeof r.newDurationMin === 'number' && r.newDurationMin > 0
+      ? Math.floor(r.newDurationMin) : undefined;
+    if (!newWhenIso && !newDurationMin) return reject('reschedule_meeting:no-change-fields');
+    const titleHint = typeof r.titleHint === 'string' && r.titleHint.trim() ? r.titleHint.trim() : undefined;
+    const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
+    return { type: 'reschedule_meeting', eventId, titleHint, newWhenIso, newDurationMin, reason };
   }
   if (type === 'send_email') {
     // Strict slot validation. Missing any of {to, subject, body} drops

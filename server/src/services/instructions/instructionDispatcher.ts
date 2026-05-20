@@ -370,6 +370,80 @@ export async function dispatchInstruction(args: {
       }
     }
 
+    // ─── cancel_meeting ──────────────────────────────────────────
+    case 'cancel_meeting': {
+      const eventId = String(ix.params.eventId ?? '').trim();
+      const titleHint = String(ix.params.titleHint ?? '').trim();
+      const reason = String(ix.params.reason ?? '').trim();
+      if (!eventId) {
+        return { ok: false, message: `Cancel failed: no eventId provided.` };
+      }
+      try {
+        const { deleteEvent } = await import('../calendarService');
+        const r = await deleteEvent(userId, eventId);
+        if (!r.success) {
+          return { ok: false, message: `Cancel failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        }
+        const titleBit = titleHint ? ` "${titleHint}"` : '';
+        const reasonBit = reason ? ` (${reason})` : '';
+        return {
+          ok: true,
+          artifactId: eventId,
+          message: `Cancelled meeting${titleBit}.${reasonBit} Attendees notified.`,
+        };
+      } catch (err: any) {
+        return { ok: false, message: `Cancel failed: ${err.message}` };
+      }
+    }
+
+    // ─── reschedule_meeting ──────────────────────────────────────
+    case 'reschedule_meeting': {
+      const eventId = String(ix.params.eventId ?? '').trim();
+      const titleHint = String(ix.params.titleHint ?? '').trim();
+      const newWhenIso = String(ix.params.newWhenIso ?? '').trim();
+      const newDurationMin = Number(ix.params.newDurationMin ?? 0);
+      const reason = String(ix.params.reason ?? '').trim();
+      if (!eventId) {
+        return { ok: false, message: `Reschedule failed: no eventId provided.` };
+      }
+      if (!newWhenIso && !newDurationMin) {
+        return { ok: false, message: `Reschedule failed: provide a new time or new duration.` };
+      }
+      try {
+        const patch: { startTime?: string; endTime?: string } = {};
+        if (newWhenIso) {
+          const normalizedNewIso = normalizeWhenIsoToLocalTz(newWhenIso, '+05:00');
+          const startDate = new Date(normalizedNewIso);
+          if (Number.isNaN(startDate.getTime())) {
+            return { ok: false, message: `Reschedule failed: couldn't parse new time "${newWhenIso}".` };
+          }
+          patch.startTime = startDate.toISOString();
+          // If duration wasn't specified, default to 30 min from start
+          const duration = newDurationMin > 0 ? newDurationMin : 30;
+          patch.endTime = new Date(startDate.getTime() + duration * 60_000).toISOString();
+        } else if (newDurationMin) {
+          // Only changing duration — need to fetch current start to compute end.
+          // Skipping this branch for now; treat duration-only as needing
+          // a new time too. Return helpful error.
+          return { ok: false, message: `Reschedule failed: please tell me the new time as well as the duration change.` };
+        }
+        const { updateEvent } = await import('../calendarService');
+        const r = await updateEvent(userId, eventId, patch);
+        if (r.error || !r.event) {
+          return { ok: false, message: `Reschedule failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        }
+        const titleBit = titleHint ? ` "${titleHint}"` : '';
+        const reasonBit = reason ? ` (${reason})` : '';
+        return {
+          ok: true,
+          artifactId: r.event.id,
+          message: `Rescheduled meeting${titleBit} to ${r.event.start}.${reasonBit} Attendees notified.`,
+        };
+      } catch (err: any) {
+        return { ok: false, message: `Reschedule failed: ${err.message}` };
+      }
+    }
+
     // ─── add_open_item ───────────────────────────────────────────
     case 'add_open_item': {
       const title = ix.params.itemTitle ?? 'Follow-up';

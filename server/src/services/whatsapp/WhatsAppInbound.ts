@@ -377,13 +377,28 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     // open items" it ran a fresh Gmail search and asked which Google
     // email the user meant (security alerts, calendar invites, etc.)
     // because it couldn't see what it had just said.
-    const brainHistory = history.map((h: any) => ({
-      role: h.role === 'assistant' ? ('brain' as const) : ('user' as const),
-      text: String(h.content ?? ''),
-    }));
+    const brainHistory = history.map((h: any) => {
+      const role = h.role === 'assistant' ? ('brain' as const)
+        : h.role === 'artifact' ? ('artifact' as const)
+        : ('user' as const);
+      return { role, text: String(h.content ?? '') };
+    });
     const r = await answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' });
     responseText = r.answer;
     log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
+
+    // If this turn dispatched a successful action, persist the artifact
+    // into session history so next turn's compose can resolve
+    // cancel/reschedule references. Stored as role='artifact' with
+    // JSON-stringified content. The composer filters these out of the
+    // conversation block and renders them in a dedicated artifacts
+    // block instead. Per Basit 2026-05-21: enables "ok cancel this
+    // meeting" to actually work against the eventId from a prior
+    // schedule_meeting dispatch.
+    if (r.artifact) {
+      history.push({ role: 'artifact', content: JSON.stringify(r.artifact) });
+      log.info('Brain artifact persisted to session', { userId, kind: r.artifact.kind, artifactId: r.artifact.artifactId });
+    }
   } catch (error: any) {
     log.warn('answerAsBrain failed — falling back to legacy pipeline', { error: error.message, userId });
     try {

@@ -56,8 +56,15 @@ router.use((req: Request, res: Response, next) => {
  *     pages become discoverable on the next turn.
  */
 export interface BrainHistoryTurn {
-  role: 'user' | 'brain';
+  role: 'user' | 'brain' | 'artifact';
   text: string;
+}
+
+export interface BrainArtifactForCaller {
+  kind: string;
+  artifactId: string;
+  summary: string;
+  dispatchedAt: string;
 }
 
 export async function answerAsBrain(
@@ -66,15 +73,21 @@ export async function answerAsBrain(
   question: string,
   history: BrainHistoryTurn[] = [],
   opts: { steeringHint?: string | null; channel?: 'web' | 'whatsapp' } = {},
-): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string; panel?: import('../services/knowledge/channelRenderer').PanelDirective | null }> {
-  // Trim history to the last 6 turns so we don't blow up the prompt.
-  // Most follow-ups need only the immediately previous Q&A; 6 covers
-  // a chain of 3 back-and-forth pairs, which is plenty for most threads.
-  const trimmedHistory = history.slice(-6);
-  const plan = await planRetrieval(clientNumber, userId, question, trimmedHistory);
+): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string; panel?: import('../services/knowledge/channelRenderer').PanelDirective | null; artifact?: BrainArtifactForCaller | null }> {
+  // Trim history to the last 24 turns. Wider window than before so
+  // role='artifact' entries from earlier in the session reach the
+  // composer for cancel/reschedule resolution; conversation messages
+  // are still capped at 6 inside compose's history block renderer.
+  const trimmedHistory = history.slice(-24);
+  const plan = await planRetrieval(
+    clientNumber, userId, question,
+    trimmedHistory
+      .filter((h): h is { role: 'user' | 'brain'; text: string } => h.role !== 'artifact'),
+  );
   const opened = await openPagesForPlan(clientNumber, userId, plan, question);
   const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
     steeringHint: opts.steeringHint ?? null,
+    channel: opts.channel,
   });
   // Channel render — wraps the composer output in the per-channel
   // formatter so WhatsApp sees a terse one-paragraph answer while
@@ -156,12 +169,32 @@ export async function answerAsBrain(
     } catch { /* best-effort */ }
   });
 
+  // Surface the artifact (if this turn dispatched a successful action)
+  // so the caller can persist it into session history for next-turn
+  // cancel/reschedule resolution. result.actionResult and result.action
+  // come from compose; map to a stable shape the caller can store.
+  let artifact: BrainArtifactForCaller | null = null;
+  if (
+    result.actionResult &&
+    result.actionResult.ok === true &&
+    result.actionResult.artifactId &&
+    result.action
+  ) {
+    artifact = {
+      kind: result.action.type,
+      artifactId: String(result.actionResult.artifactId),
+      summary: result.actionResult.message?.slice(0, 200) ?? '',
+      dispatchedAt: new Date().toISOString(),
+    };
+  }
+
   return {
     answer: result.answer,
     sources: result.sources,
     gaps: result.gaps,
     intent: plan.intent,
     panel,
+    artifact,
   };
 }
 
