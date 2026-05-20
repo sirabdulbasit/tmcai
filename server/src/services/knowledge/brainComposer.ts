@@ -961,24 +961,16 @@ export async function compose(
     : opened.map((p) => renderOpenedPageWithQuery(p, question, datesById.get(p.id) ?? null)).join('\n\n');
 
   // ── Open items snapshot ──
-  // CANONICAL: routed through openItemsService.listItems so the web UI's
-  // Action Center, web Brain Chat, and WhatsApp Brain all see the same
-  // rows for the same user. The previous inline query here used a
-  // stricter uppercase-only status filter and missed INFORMED + any
-  // legacy lowercase status values (e.g. items bulk-marked-wrong with
-  // status='closed'), producing a different row set than the UI showed.
-  // Per Basit 2026-05-20 — "brain should have same knowledge, same feed,
-  // same open item as it is showing in tai.tmcltd, brain chat or whatsap
-  // chat all three conversation, information, sources should be the
-  // same." Single function, three callers.
-  const { listItems: listOpenItems } = await import('../openItemsService');
-  const openItemsRows = (await listOpenItems(userId, clientNumber, {
-    limit: 30,
-    excludeSmoke: true,
-  }).catch(() => [] as any[])) as Array<{
-    id: string; title: string; priority: string; status: string;
-    dueDate: Date | null; delegateeName: string | null; delegateeEmail: string | null;
-  }>;
+  // CANONICAL VIEW: getOpenItems is the SOLE entry point. Web UI's
+  // Action Center, this composer snapshot, WhatsApp Brain, Day Brief
+  // cron — all four call the same function with the same defaults.
+  // Per README in services/views: divergence by accident is impossible
+  // because there's nowhere else to go for this data.
+  const { getOpenItems } = await import('../views');
+  const openItemsRows = await getOpenItems({
+    clientNumber, userId,
+    opts: { limit: 30, excludeSmoke: true },
+  }).catch(() => [] as any[]);
   // Surface critical/high items first inside the block so the LLM's
   // attention naturally lands there when ranking. Falls back to the SQL
   // ordering (due-date asc) for medium/low.
@@ -1699,49 +1691,22 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
  *  as today). Returns '' when nothing's scheduled — Brain's digest
  *  will simply skip the calendar section. */
 async function buildTodayCalendarBlock(clientNumber: string, userId: number): Promise<string> {
-  const now = new Date();
-  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-  const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59));
-  const rows = await prisma.feedEvent.findMany({
-    where: {
-      clientNumber, userId,
-      sourceType: 'gcal' as any,
-      // gcal rawPayload carries 'start' as ISO; we filter on event time,
-      // not created_at, because backfilled events would otherwise miss.
-      createdAt: { gte: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000) },  // window the FROM clause
-    },
-    select: { id: true, rawPayload: true },
-    take: 200,
-  }).catch(() => [] as any[]);
-  // In-memory filter on the actual event start time from rawPayload.
-  // Cheaper than a JSONB indexed query on a low-volume table.
-  const events = rows
-    .map((r: any) => {
-      const p = r.rawPayload ?? {};
-      const startIso = typeof p.start === 'string' ? p.start : (p.start?.dateTime ?? p.start?.date ?? null);
-      const start = startIso ? new Date(startIso) : null;
-      return start && !Number.isNaN(start.getTime())
-        ? { id: r.id, start, title: String(p.summary ?? p.title ?? '(no title)').slice(0, 120), location: p.location ?? null, attendees: Array.isArray(p.attendees) ? p.attendees.map((a: any) => a?.email ?? a).filter(Boolean) : [] }
-        : null;
-    })
-    .filter((x: any): x is NonNullable<typeof x> => x !== null && x.start >= startOfDay && x.start <= endOfDay)
-    .sort((a: any, b: any) => a.start.getTime() - b.start.getTime());
+  // CANONICAL VIEW: getTodayCalendar is the SOLE entry point for "what
+  // meetings does this user have today". Web UI's Day Brief calendar
+  // tile, this composer block, the dayBriefDispatchJob — all route
+  // through the same view function so the time strings, attendee
+  // lists, and event titles are byte-identical across surfaces. Per
+  // README in services/views: rule of thumb, no prisma calls outside
+  // the views layer for user-facing entities.
+  const { getTodayCalendar } = await import('../views');
+  const tz = 'Asia/Karachi'; // future: pull from user prefs
+  const events = await getTodayCalendar({ clientNumber, userId, opts: { timezone: tz } });
   if (events.length === 0) return '# Today\'s calendar\n(nothing scheduled)';
-  // Render times in the user's local timezone (Asia/Karachi default).
-  // Previous version used toISOString().slice(11, 16) which is UTC, so a
-  // 3 PM PKT meeting (10:00 UTC) rendered as "10:00" — the LLM then told
-  // the user "10am meeting", off by 5 hours. Observed 2026-05-20: an HR
-  // Kickoff at 3pm-4pm PKT showed in Brain's brief as "10:00 Objective
-  // Setting" while the UI Day Brief correctly showed "Wed May 20 3pm-4pm
-  // (GMT+5)". Same event, different time = trust failure.
-  const tz = 'Asia/Karachi';
-  const timeFmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
-  });
-  const lines = events.map((e: any) => {
-    const hhmm = timeFmt.format(e.start);
-    const att = e.attendees.length > 0 ? ` — ${e.attendees.slice(0, 3).join(', ')}${e.attendees.length > 3 ? ` +${e.attendees.length - 3}` : ''}` : '';
-    return `- ${hhmm} ${e.title}${att}`;
+  const lines = events.map((e) => {
+    const att = e.attendees.length > 0
+      ? ` — ${e.attendees.slice(0, 3).join(', ')}${e.attendees.length > 3 ? ` +${e.attendees.length - 3}` : ''}`
+      : '';
+    return `- ${e.localTime} ${e.title}${att}`;
   });
   return `# Today's calendar (times in ${tz})\n${lines.join('\n')}`;
 }
