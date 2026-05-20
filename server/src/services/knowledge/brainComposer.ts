@@ -63,7 +63,8 @@ export type ComposedAction =
   | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
   | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
-  | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string };
+  | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string }
+  | { type: 'set_brain_name'; name: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -713,6 +714,8 @@ Schema:
             "recipientName": string,                 // The person's display name. Used in the auto-prepended introduction.
             "recipientPhone": string,                // E.164 phone (e.g. "+923001234567"). MUST be a real phone from a Candidates block. Never an email; never a guess.
             "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it.
+        | { "type": "set_brain_name",
+            "name": string }                         // The new name the user chose. Empty string / "reset" / "none" clears the custom name (you go back to "your AI assistant"). Examples: "Suzi", "Friday", "Atlas". Length cap 40 chars.
 \`\`\`
 
 When to emit \`action\`:
@@ -749,6 +752,13 @@ When to emit \`action\`:
 Slot continuity: if your immediately-previous turn asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do not ask again.
 
 Disambiguation-answer rule: if your previous turn ended with a clarifying question listing N options, the user's current message is the ANSWER. Map "first", "1", "the first one" to option 1, etc. After mapping, re-emit the pending action with the resolved slot.
+
+- **set_brain_name — the user can rename you through conversation.** When the user says "your name is X", "call yourself X", "I'll call you X", "let's name you X" — emit \`set_brain_name\` with \`name\` = the proposed name. Examples that should fire:
+  - "your name is Suzi" → \`{ type: "set_brain_name", name: "Suzi" }\`
+  - "call yourself Friday" → \`{ type: "set_brain_name", name: "Friday" }\`
+  - "I want to name you Atlas" → \`{ type: "set_brain_name", name: "Atlas" }\`
+  - "reset your name" / "forget your name" / "you don't need a name" → \`{ type: "set_brain_name", name: "" }\` (clears it, you go back to "your AI assistant").
+  After the action dispatches, the cache invalidates and your next turn already reflects the new name. Don't ask for confirmation on this — the user said it clearly; act. They can change it again any time.
 
 **Multi-action rule (one action per turn).** Your \`action\` field can hold ONE action. When the user requests several things at once ("send email + schedule meeting + reply on WhatsApp"), do NOT promise all three in text and then emit none of them — that's the failure mode where Brain confirmed three sends and dispatched zero. Instead:
   - Pick the FIRST action you can fully ground (recipient resolved, fields known) and emit just that one.
@@ -1247,6 +1257,32 @@ export async function compose(
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         if (!res.ok) answer = res.message;
         else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'set_brain_name') {
+        // User renamed Brain through chat ("call yourself Suzi" /
+        // "your name is Friday" / "reset your name"). Persisted via
+        // setBrainName which also invalidates the persona cache so
+        // the very next turn uses the new name in the system prompt.
+        // Same destination as Settings → Brain → Name input, so the
+        // UI and conversation paths stay in sync.
+        try {
+          const { setBrainName } = await import('./brainPersonaService');
+          const saved = await setBrainName(userId, act.name || null);
+          if (saved) {
+            actionResult = {
+              ok: true,
+              message: `Got it — from now on you can call me ${saved}.`,
+            };
+          } else {
+            actionResult = {
+              ok: true,
+              message: `Cleared my custom name — I'll go by "your AI assistant" from here on. You can name me again any time.`,
+            };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `Couldn't save the name: ${e?.message ?? 'unknown'}` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'notify_via_whatsapp') {
         // Outbound WhatsApp via the tenant Nexeo number, NOT the user's
         // personal WA. Recipient sees a message from Nexeo's number,
@@ -2382,6 +2418,23 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const phoneOk = !recipientPhone.includes('@') && /^[+\d][\d\s().-]{6,}$/.test(recipientPhone);
     if (!recipientName || !phoneOk || !message) return null;
     return { type: 'notify_via_whatsapp', recipientName, recipientPhone, message };
+  }
+  if (type === 'set_brain_name') {
+    // User-controlled rename: "call yourself X", "your name is Y".
+    // Stored in user.notificationPreferences.brainName, surfaced by
+    // brainPersonaService.getBrainPersona on every subsequent turn,
+    // also reflected in Settings → Brain. Empty / 'reset' / null
+    // clears it (back to "your AI assistant" default). Length cap
+    // matches setBrainName's slice(0, 40).
+    const raw = typeof r.name === 'string' ? r.name.trim() : '';
+    // A few obvious garbage values get dropped to null (clear the name).
+    const cleared = /^(reset|none|null|blank|clear|default|no name|nothing)$/i.test(raw);
+    const name = cleared ? '' : raw.slice(0, 40);
+    // Empty is valid (it's a "reset to default") but we still validate
+    // that the LLM emitted SOMETHING meaningful. Don't allow a single
+    // character (probably a typo or wrong-field misuse).
+    if (!cleared && (!name || name.length < 2)) return null;
+    return { type: 'set_brain_name', name };
   }
   return null;
 }

@@ -500,25 +500,71 @@ function BrainChannelSection({ user }) {
 
         <div className="settings-field">
           <label>How bold should Brain be?</label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: '#888', marginTop: 4, marginBottom: 10 }}>
+            Confidence threshold for Brain to ping you outside Day Brief. Same dial drives what enters <em>My Attention</em> vs <em>Brief</em>.
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: 10,
+          }}>
             {[
-              { v: 'cautious', t: 'Cautious', d: 'Only ping for high-stakes items. Quiet by default.' },
-              { v: 'balanced', t: 'Balanced', d: 'Ping when Brain is reasonably confident the item needs you today.' },
-              { v: 'eager',    t: 'Eager',    d: 'Ping liberally. Best when you want maximum visibility and don\'t mind interruptions.' },
-            ].map((o) => (
-              <label key={o.v} style={{
-                display: 'flex', alignItems: 'flex-start', gap: 10, padding: 10,
-                background: boldness === o.v ? 'rgba(204,107,74,0.12)' : '#1f1f1f',
-                border: `1px solid ${boldness === o.v ? 'rgba(204,107,74,0.6)' : '#333'}`,
-                borderRadius: 8, cursor: 'pointer',
-              }}>
-                <input type="radio" name="boldness" value={o.v} checked={boldness === o.v} onChange={() => setBoldness(o.v)} style={{ marginTop: 2 }} />
-                <div>
-                  <div style={{ color: boldness === o.v ? '#fbbf24' : '#eee', fontWeight: 600, fontSize: 13 }}>{o.t}</div>
-                  <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{o.d}</div>
-                </div>
-              </label>
-            ))}
+              { v: 'cautious', t: 'Cautious', d: 'High-stakes items only. Quiet by default.',                       threshold: '≈ 95% confidence' },
+              { v: 'balanced', t: 'Balanced', d: 'Items Brain is reasonably confident need you today.',             threshold: '≈ 85% confidence' },
+              { v: 'eager',    t: 'Eager',    d: 'Maximum visibility. More pings, occasional false positives.',     threshold: '≈ 70% confidence' },
+            ].map((o) => {
+              const selected = boldness === o.v;
+              return (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => setBoldness(o.v)}
+                  aria-pressed={selected}
+                  style={{
+                    textAlign: 'left',
+                    padding: '14px 14px 12px',
+                    background: selected ? 'rgba(204,107,74,0.16)' : '#1f1f1f',
+                    border: `1px solid ${selected ? '#cc6b4a' : '#333'}`,
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    fontFamily: 'inherit',
+                    transition: 'border-color 0.15s ease, background 0.15s ease',
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {/* Selection indicator — filled gold when selected, hollow gray when not. */}
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        display: 'inline-block',
+                        width: 14, height: 14, borderRadius: '50%',
+                        border: `2px solid ${selected ? '#fbbf24' : '#555'}`,
+                        background: selected ? '#fbbf24' : 'transparent',
+                        boxShadow: selected ? '0 0 0 3px rgba(251,191,36,0.18)' : 'none',
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span style={{
+                      color: selected ? '#fbbf24' : '#eee',
+                      fontWeight: 600, fontSize: 14,
+                      letterSpacing: 0.2,
+                    }}>{o.t}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#aaa', lineHeight: 1.5 }}>
+                    {o.d}
+                  </div>
+                  <div style={{
+                    fontSize: 10, color: selected ? '#cc6b4a' : '#666',
+                    textTransform: 'uppercase', letterSpacing: 0.4,
+                    marginTop: 'auto',
+                  }}>
+                    {o.threshold}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
 
