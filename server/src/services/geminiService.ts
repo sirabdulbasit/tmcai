@@ -96,7 +96,7 @@ export async function countGeminiTokens(
 export async function callGemini(
   systemPrompt: string,
   userMessage: string,
-  opts?: { maxTokens?: number; flash?: boolean },
+  opts?: { maxTokens?: number; flash?: boolean; responseMimeType?: string },
 ): Promise<string> {
   if (!env.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
   const modelId = opts?.flash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
@@ -144,6 +144,7 @@ export async function callGemini(
       systemInstruction: systemPrompt,
       maxOutputTokens: effectiveMax,
       thinkingConfig: { thinkingBudget } as any,
+      ...(opts?.responseMimeType ? { responseMimeType: opts.responseMimeType } : {}),
     } as any,
   });
   return (resp.text ?? '').trim();

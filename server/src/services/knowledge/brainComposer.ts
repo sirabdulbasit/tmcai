@@ -1106,6 +1106,7 @@ export async function compose(
   // ask a clean disambiguation question. Without this, MD says "delegate
   // to Asad" → LLM picks one Asad at random or says "I don't see them".
   const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
+  const todayDate = new Date().toISOString().slice(0, 10);
 
   // ── Today's calendar ──
   // Only built for day_brief intent. Pulls today's gcal feed_events so
@@ -1200,7 +1201,7 @@ export async function compose(
     openedBlock,
     steeringHint: opts.steeringHint,
     channel: opts.channel ?? 'web',
-    todayDate: new Date().toISOString().slice(0, 10),
+    todayDate,
   });
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
@@ -1270,68 +1271,77 @@ export async function compose(
     answerHead: parsed.answer.slice(0, 80),
   });
 
-  // ── Option A: post-compose empty-promise retry ─────────────────────
-  // If the LLM produced prose that claims completion ("I've sent",
-  // "I'm scheduling", "delegated to X") but emitted NO structured
-  // action JSON, re-call the LLM once with a corrective addendum.
-  // Deterministic loop terminator that converts "LLM ignored the
-  // emit-action rule" from a user-visible empty-promise into an
-  // automatic self-correction.
+  // ── Option A (v2): constrained action-decider when main compose fails ─
+  // When the main compose produces prose that claims completion ("I've
+  // sent", "I'm scheduling", "delegated to X") but emits no action,
+  // OR produces wandering disambiguation prose after the user has
+  // clearly resolved the slot, run a CONSTRAINED action-decider call.
   //
-  // Why not just rely on the post-dispatch guard?
-  //   The guard at the end of composeAnswer catches the lie and shows
-  //   an honest "I didn't do that" — but the work still didn't land.
-  //   With the retry, the SECOND attempt usually emits the action JSON
-  //   the first attempt forgot. So instead of "lied → caught and
-  //   replaced with honest no-op", the user gets "tried → corrected
-  //   → action actually dispatched." Same number of LLM calls in the
-  //   happy path; one extra only when the empty-promise pattern is
-  //   detected.
+  // The decider has only TWO output paths:
+  //   - action (structured JSON for the dispatcher)
+  //   - missing_slot (a specific field name to ask the user about)
   //
-  // Bounded: ONE retry attempt. If the retry STILL produces prose
-  // without an action, fall through to the post-dispatch guard which
-  // shows the honest "I didn't" marker. Never recurses.
-  if (!parsed.action && EMPTY_PROMISE_RE.test(parsed.answer)) {
-    console.warn('[brain-chat] empty-promise detected, retrying compose', {
-      userId, clientNumber, firstAttemptHead: parsed.answer.slice(0, 100),
+  // No free-form prose path means no escape valve. The wandering /
+  // "let me ask AGAIN which Asad" failure mode (observed 2026-05-20
+  // when Basit gave full disambiguation answers and Brain kept looping)
+  // is structurally impossible — the model MUST commit.
+  //
+  // Trigger conditions:
+  //   (1) Main compose claimed completion (empty-promise regex matched)
+  //       BUT emitted no action.
+  //   (2) Main compose produced disambiguation prose (no action) AND
+  //       the user's current message is a short slot-fill answer
+  //       (the disambiguation-resolution case).
+  //
+  // Cost: one extra LLM call (Flash, ~1024 tokens, constrained JSON)
+  // only when the failure pattern is detected. Happy path unchanged.
+  const userMessageLooksLikeSlotFill =
+    !parsed.action &&
+    question.trim().length <= 60 &&
+    history.length > 0 &&
+    history[history.length - 1]?.role === 'brain' &&
+    /\?\s*$/.test(history[history.length - 1]?.text || '');
+  const triggerDecider =
+    !parsed.action &&
+    (EMPTY_PROMISE_RE.test(parsed.answer) || userMessageLooksLikeSlotFill);
+
+  if (triggerDecider) {
+    console.warn('[brain-chat] triggering constrained action-decider', {
+      userId, clientNumber,
+      reason: EMPTY_PROMISE_RE.test(parsed.answer) ? 'empty-promise' : 'slot-fill-no-action',
+      firstAttemptHead: parsed.answer.slice(0, 100),
     });
-    const correctiveAddendum = `\n\n# CORRECTIVE INSTRUCTION (your previous attempt failed)
-Your previous attempt for this exact turn was:
----
-${raw}
----
-That response CLAIMED completion in prose ("I've sent" / "I'm scheduling" / "delegated to X") but emitted NO structured "action" JSON. The dispatcher cannot run a prose claim — it only runs structured actions. The previous response was REJECTED.
-
-Choose ONE now:
-(a) **Emit the action.** Fill the appropriate "action": { type: "...", ... } JSON from the conversation context. The slot data you need is already in the candidate / open-items / history blocks above — use it. Then write a one-line confirmation in "answer" that DESCRIBES the action you're emitting (don't claim it's done — the dispatcher will report success).
-(b) **If you genuinely cannot ground the action** (no candidate email, no parseable time, no item id), rewrite "answer" to ASK for the SPECIFIC missing slot. Do not claim you did anything. Set "action": null.
-
-Forbidden in your retry: any claim-completion phrasing ("I've sent / scheduled / delegated", "Sending it now", "I'll send shortly") without a corresponding action JSON.`;
-    try {
-      const retry = await callLLM(systemPrompt, userMessage + correctiveAddendum, {
-        maxTokens: 2048, userId, clientNumber, purpose: 'chat_compose_retry',
-      });
-      const retryParsed = parseCompose(retry.text);
-      console.info('[brain-chat] compose.retried', {
-        userId, clientNumber,
-        retryRawLen: retry.text.length,
-        retryActionEmitted: !!retryParsed.action,
-        retryActionType: retryParsed.action?.type ?? null,
-        retryAnswerHead: retryParsed.answer.slice(0, 80),
-      });
-      // Use the retry result if it either (a) emitted an action, or
-      // (b) no longer claims completion. If retry STILL claims work
-      // without action, keep the first attempt — the post-guard will
-      // overwrite with the honest "I didn't" marker.
-      if (retryParsed.action || !EMPTY_PROMISE_RE.test(retryParsed.answer)) {
-        parsed.action = retryParsed.action;
-        parsed.answer = retryParsed.answer;
-        parsed.cites = retryParsed.cites;
-        parsed.gaps = retryParsed.gaps;
+    const decision = await decideAction({
+      question, history,
+      candidatesBlock: candidatesBlock ?? '',
+      openItemsBlock: openItemsBlock ?? '',
+      todayDate,
+      userId, clientNumber,
+    });
+    console.info('[brain-chat] decideAction.result', {
+      userId, clientNumber,
+      decidedAction: decision?.action?.type ?? null,
+      missingSlot: decision?.missingSlot ?? null,
+      rationale: (decision?.rationale ?? '').slice(0, 120),
+    });
+    if (decision) {
+      if (decision.action) {
+        // Decider committed to an action. Use it — replace whatever
+        // confused prose the main compose produced with a neutral
+        // descriptive line; the dispatch path below (or the gate)
+        // will overwrite with the actionResult message anyway.
+        parsed.action = decision.action;
+        parsed.answer = `Proceeding with ${decision.action.type.replace(/_/g, ' ')} based on your message.`;
+      } else if (decision.missingSlot) {
+        // Decider couldn't ground the action because a specific slot
+        // is missing. Ask the user for THAT slot, not a generic
+        // "what did you want?" question.
+        parsed.answer = renderMissingSlotPrompt(null, decision.missingSlot);
+        parsed.action = null;
       }
-    } catch (e: any) {
-      console.warn('[brain-chat] retry failed', { userId, error: e?.message });
-      // Fall through with first attempt; post-guard catches the lie.
+      // If both action and missingSlot are null, the decider concluded
+      // no action intent — leave the first attempt's prose unchanged
+      // and let the post-guard handle any lingering empty-promise.
     }
   }
 
@@ -2731,6 +2741,136 @@ function renderActionPreview(act: ComposedAction, _blockReason: string): string 
     return `Before I send the WhatsApp, please confirm — message to ${act.recipientName} (${act.recipientPhone}):\n\n"${act.message}"\n\nThe note will be prefixed with "Hi ${act.recipientName}, this is Nexeo — your AI assistant…" so the recipient knows it's from me, not you. Reply "send" to confirm, or tell me what to change.`;
   }
   return `Before I proceed, please confirm the details and reply "send".`;
+}
+
+/** Constrained action-decider. Replaces A's free-form retry with a
+ *  call whose output is structurally restricted to a tiny JSON shape:
+ *
+ *    { "action": <ActionSchema> | null,
+ *      "missing_slot": "<field name>" | null,
+ *      "rationale": "<one short sentence>" }
+ *
+ *  No prose-output path means no escape valve. The model can either
+ *  commit to an action OR explicitly name what's missing. The
+ *  "wander into more disambiguation prose" failure mode (observed
+ *  2026-05-20: Brain kept asking "which Asad?" instead of emitting
+ *  schedule_meeting after the user resolved the slot) is structurally
+ *  impossible here.
+ *
+ *  Uses Gemini Flash with responseMimeType="application/json" for
+ *  strict JSON output. Falls back gracefully on parse failure. */
+async function decideAction(opts: {
+  question: string;
+  history: ComposerHistoryTurn[];
+  candidatesBlock: string;
+  openItemsBlock: string;
+  todayDate: string;
+  userId?: number;
+  clientNumber?: string;
+}): Promise<{ action: ComposedAction | null; missingSlot: string | null; rationale: string } | null> {
+  // Tight system prompt: just the action schema and decision rules.
+  // No persona, no day-brief format, no factual rules — those would
+  // dilute the model's attention. The decider has ONE job: decide.
+  const systemPrompt = `You are a structured action extractor. Read the conversation context and decide exactly one of three things:
+
+1. **Emit an action** when the conversation provides all required slots.
+2. **Report a missing slot** when the action is clear but one required field cannot be filled from the conversation.
+3. **No action** when the user's message is not an action request.
+
+Output ONLY a JSON object — no prose, no explanation, no markdown:
+{
+  "action": <ActionSchema> | null,
+  "missing_slot": "<specific field name>" | null,
+  "rationale": "<one short sentence>"
+}
+
+ActionSchema is one of these (set "type" to one of these values):
+- { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string }
+- { "type": "delegate_open_item", "openItemId": string, "delegateeEmail": string, "delegateeName": string, "note"?: string }
+- { "type": "schedule_meeting", "title": string, "whenIso": "YYYY-MM-DDTHH:MM", "durationMin"?: number, "attendeeEmails": string[], "attendeeNames": string[], "note"?: string }
+- { "type": "send_email", "to": string[], "cc"?: string[], "subject": string, "body": string }
+- { "type": "notify_via_whatsapp", "recipientName": string, "recipientPhone": string, "message": string }
+- { "type": "set_brain_name", "name": string }
+
+Slot grounding rules (MUST follow):
+- Emails MUST come from the Candidates block or appear verbatim in the user's message. NEVER guess.
+- Phone numbers MUST come from the Candidates block or appear verbatim in the user's message.
+- openItemId MUST come from the Open Items snapshot.
+- whenIso resolves relative dates ("tomorrow", "Friday") against today's date.
+- For test emails: if user said "test email to <addr>", use subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — these are the canonical test defaults.
+- A user message like "first one" / "the first" / "option 1" maps to candidate #1 in the Candidates block.
+
+If the user's CURRENT message is a slot-fill or disambiguation answer to YOUR previous question:
+- Map their answer to the slot they're resolving.
+- EMIT the action with the resolved slot, do NOT re-ask.
+
+If the action type is ambiguous (user said "remind me about X" — is it add_open_item or schedule_meeting?), pick the most natural mapping and explain in rationale.
+
+If only ONE field is genuinely missing, set "action": null and "missing_slot" to the exact JSON field name (e.g., "to", "subject", "whenIso", "attendeeEmails").
+
+If the message has no action intent at all, set both action and missing_slot to null.
+
+Today is ${opts.todayDate} (UTC). Use this as the anchor for relative dates.`;
+
+  const historyText = opts.history.slice(-8).map((h) => `[${h.role}] ${h.text}`).join('\n');
+  const userPayload = `User's current message:
+${opts.question}
+
+Recent conversation:
+${historyText || '(none)'}
+
+${opts.candidatesBlock || '(no candidates block)'}
+
+${opts.openItemsBlock || '(no open items snapshot)'}`;
+
+  try {
+    const { callGemini } = await import('../geminiService');
+    const raw = await callGemini(systemPrompt, userPayload, {
+      maxTokens: 1024,
+      flash: true,
+      responseMimeType: 'application/json',
+    });
+    // The model returns JSON. Strip any markdown fencing just in case.
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const validated = normaliseAction(parsed.action);
+    return {
+      action: validated,
+      missingSlot: typeof parsed.missing_slot === 'string' && parsed.missing_slot.trim()
+        ? parsed.missing_slot.trim()
+        : null,
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale.trim() : '',
+    };
+  } catch (e: any) {
+    console.warn('[brain-chat] decideAction failed', {
+      userId: opts.userId, clientNumber: opts.clientNumber, error: e?.message,
+    });
+    return null;
+  }
+}
+
+/** Render a one-line message asking the user for a specific missing
+ *  slot. Used when the action-decider reports `missing_slot`. */
+function renderMissingSlotPrompt(actionType: string | null, slot: string): string {
+  const SLOT_PROMPTS: Record<string, string> = {
+    to: 'Who should I send the email to? Give me the name or email address.',
+    attendeeEmails: 'Who should I invite to the meeting?',
+    attendeeNames: 'Who should I invite to the meeting?',
+    whenIso: 'What date and time should I schedule it for?',
+    subject: 'What should the subject line be?',
+    body: 'What should the email say?',
+    openItemId: 'Which open item are you referring to? Mention the title or part of it.',
+    delegateeEmail: 'Who should I delegate it to?',
+    delegateeName: 'Who should I delegate it to?',
+    title: 'What\'s the title or topic?',
+    recipientPhone: 'What\'s the recipient\'s phone number?',
+    recipientName: 'Who should I send the WhatsApp to?',
+    message: 'What should the WhatsApp message say?',
+    name: 'What name would you like?',
+    dueDate: 'When is it due?',
+  };
+  const ask = SLOT_PROMPTS[slot] ?? `I need one more detail (${slot}) before I can proceed.`;
+  return ask;
 }
 
 interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
