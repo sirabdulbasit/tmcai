@@ -185,195 +185,35 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     return;
   }
 
-  // ── Step 2b: Email report request ─────────────────────────────────────────
-  // Continuity-anchored detection. The email-report path is for ONE
-  // specific scenario: MD just asked Brain for some data, Brain replied
-  // with a summary and offered "want me to email the full version?",
-  // MD says "yes" / "email it" / similar affirmation.
+  // ── Step 2b REMOVED 2026-05-20: email-report fast-path ────────────────────
+  // The old code ran a regex over Brain's last reply to detect "Brain
+  // offered email" + a regex over the user's message to detect "user
+  // said yes", and on both matches generated a structured business
+  // report and emailed it to the user.
   //
-  // It is NOT for any message that happens to contain "email" + a few
-  // common words. Per MD 2026-05-12: "Brain should understand the
-  // continuity of communication; don't pick any word like email — it
-  // should understand what I respond against what."
+  // The trigger was wrong. Observed 2026-05-20 on Basit's session:
+  //   1. Basit: "send email to asad and ask when haseeb is coming back"
+  //   2. Brain: disambiguation listing 2 Asads + 2 Haseebs, where the
+  //      contact metadata for Asad happened to contain the substring
+  //      "sends meeting notes for HEDP via email".
+  //   3. Basit: "yes this asad" — meant as a disambiguation answer.
+  //   4. `brainOfferedEmail` regex `send.*via.*email` matched the
+  //      contact metadata. `isShortAffirmation` matched "yes…". Both
+  //      gates true → email-report fast-path fired → Brain generated
+  //      a Day Brief and emailed it to Basit instead of continuing the
+  //      send-email pending action to Asad.
   //
-  // Two gates, both required:
-  //   (a) Brain's IMMEDIATELY PREVIOUS reply offered to email something
-  //       (or sent a summary that this message could be replying to).
-  //   (b) MD's current message is a short affirmation, not a fresh
-  //       imperative containing the word "email" as a noun.
+  // Same architectural sin as the deleted greeting fast-path: a
+  // hardcoded behavior intercept running BEFORE Brain sees the message,
+  // matching surface patterns that can't reason about conversation
+  // continuity. Per Basit "don't hardcode anything this is the crime
+  // in building AI".
   //
-  // If either gate fails, fall through to the chat router — which has
-  // the full conversation history + open-items + candidates blocks and
-  // can decide the right thing to do.
-  const prevSessionForRouting = await prisma.$queryRawUnsafe(
-    `SELECT conversation_history FROM whatsapp_sessions
-     WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL
-     ORDER BY last_message_at DESC LIMIT 1`,
-    userId, params.clientNumber,
-  ) as any[];
-  const routingHistory = (prevSessionForRouting[0]?.conversation_history as any[]) || [];
-  const lastBrainReply = ([...routingHistory].reverse().find((m: any) => m.role === 'assistant')?.content ?? '') as string;
-  // Did Brain just offer to email / mention sending via email / ask "want details"?
-  const brainOfferedEmail = /\b(email\s+(it|this|that|the\s+\w+|you)|send.*(via|to|on|in)\s+(your\s+)?(email|mail|inbox)|want.*(email|the\s+full|the\s+details)|in\s+your\s+(inbox|email)|drop\s+(it|that)\s+in\s+your\s+inbox|full\s+(version|report).*email)\b/i.test(lastBrainReply);
-  // Affirmation shapes — short, mostly closed-vocabulary. Excludes any
-  // imperative that uses "email" as a noun.
-  const isShortAffirmation = lower.length <= 40 && (
-    /^(yes|yeah|yep|sure|ok|okay|please|do\s+it|go\s+ahead|email\s+it|send\s+it|send\s+email|yes\s+email|email\s+please)\b/i.test(lower)
-    || /^(yes|yeah|sure|ok)[\s,.]*?(email|send)/i.test(lower)
-    || lower === 'email' || lower === 'send' || lower === 'mail'
-  );
-
-  const isEmailRequest = brainOfferedEmail && isShortAffirmation;
-
-  if (isEmailRequest) {
-    // Get user's email
-    const userRows = await prisma.$queryRawUnsafe(
-      `SELECT email FROM users WHERE id = $1`, userId,
-    ) as any[];
-    const userEmail = userRows[0]?.email;
-
-    if (!userEmail) {
-      await sendReply(params, `[no email address on file — update in Settings → Profile]`);
-      return;
-    }
-
-    // Get last data query from session history to know WHAT to report on
-    const prevSessions = await prisma.$queryRawUnsafe(
-      `SELECT conversation_history FROM whatsapp_sessions
-       WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL
-       ORDER BY last_message_at DESC LIMIT 1`,
-      userId, params.clientNumber,
-    ) as any[];
-
-    const prevHistory = (prevSessions[0]?.conversation_history as any[]) || [];
-    // Find last user query that was a data question (not greeting/email request)
-    const lastDataQuery = [...prevHistory].reverse().find(
-      (m: any) => m.role === 'user' && !/\b(hi|hello|email|mail|send|bye)\b/i.test(m.content)
-    );
-
-    if (!lastDataQuery) {
-      await sendReply(params, `[nothing to email — ask a question first, then say "email it"]`);
-      return;
-    }
-
-    await sendReply(params, `[generating report and sending to your email…]`);
-
-    // Generate full detailed report (higher tokens, HTML formatted)
-    try {
-      log.info('Email report: generating', { query: lastDataQuery.content, userEmail });
-
-      const { classifyIntent } = await import('../intentService');
-      const { getAIConfig } = await import('../aiConfigService');
-      const { retrieveData } = await import('../../controllers/chat/dataRetrieval');
-
-      const aiConfig = await getAIConfig(params.clientNumber);
-      const intent = await classifyIntent(lastDataQuery.content);
-      log.info('Email report: intent classified', { type: intent.type });
-
-      const { context } = await retrieveData(
-        lastDataQuery.content, intent, 'gemini-flash', aiConfig, Date.now(),
-        () => {}, () => false, userId, ['org'], prevHistory.slice(-6),
-      );
-      log.info('Email report: data retrieved', { contextLen: (context || '').length });
-
-      // Ask Gemini for PLAIN TEXT report (not HTML — we build the HTML ourselves)
-      const { getGenAI } = await import('../genaiClient');
-      const ai = getGenAI();
-      const prompt = [
-        `Write a detailed professional report for this business query: "${lastDataQuery.content}"`,
-        `Use the data below to create a comprehensive analysis.`,
-        `Format: Use clear headings, bullet points, and numbers.`,
-        `Do NOT use HTML or markdown. Just plain text with line breaks.`,
-        `Include: key metrics, breakdown/analysis, insights, and recommendations.`,
-        context ? `\nDATA:\n${context}` : '\nNo relevant data found.',
-      ].join('\n');
-
-      const reportResult = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { maxOutputTokens: 4096 },
-      });
-
-      const reportText = (reportResult.text ?? '').trim();
-      log.info('Email report: text generated', { textLen: reportText.length });
-
-      // Convert plain text to professional HTML email
-      const reportBody = reportText
-        .split('\n')
-        .map(line => {
-          const trimmed = line.trim();
-          if (!trimmed) return '<br/>';
-          // Headings (lines ending with : or ALL CAPS or starting with number.)
-          if (/^[A-Z\s]{5,}:?$/.test(trimmed) || /^\d+\.\s+[A-Z]/.test(trimmed)) {
-            return `<h2 style="color:#cc6b4a;font-size:16px;margin:20px 0 8px 0;font-weight:600;">${trimmed}</h2>`;
-          }
-          // Sub-headings
-          if (trimmed.endsWith(':') && trimmed.length < 60) {
-            return `<h3 style="color:#333;font-size:14px;margin:16px 0 6px 0;font-weight:600;">${trimmed}</h3>`;
-          }
-          // Bullet points
-          if (/^[•\-\*]\s/.test(trimmed)) {
-            return `<li style="margin:4px 0;padding-left:4px;">${trimmed.replace(/^[•\-\*]\s*/, '')}</li>`;
-          }
-          // Bold markers
-          const withBold = trimmed.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
-          return `<p style="margin:6px 0;line-height:1.6;">${withBold}</p>`;
-        })
-        .join('\n');
-
-      const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-      const fullHtml = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background:#f4f4f4;font-family:'Segoe UI',Arial,sans-serif;">
-  <div style="max-width:680px;margin:20px auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-
-    <!-- Header -->
-    <div style="background:#1a1a2e;padding:24px 32px;text-align:center;">
-      <h1 style="color:#cc6b4a;font-size:22px;margin:0;font-weight:700;">TMC AI Report</h1>
-      <p style="color:#a0a0b0;font-size:13px;margin:6px 0 0 0;">Requested via WhatsApp by ${userName}</p>
-      <p style="color:#888;font-size:11px;margin:4px 0 0 0;">${now}</p>
-    </div>
-
-    <!-- Query -->
-    <div style="background:#f8f8f8;padding:12px 32px;border-bottom:1px solid #eee;">
-      <p style="margin:0;color:#666;font-size:12px;">Query: <strong style="color:#333;">"${lastDataQuery.content}"</strong></p>
-    </div>
-
-    <!-- Report Body -->
-    <div style="padding:24px 32px;color:#333;font-size:14px;line-height:1.7;">
-      ${reportBody}
-    </div>
-
-    <!-- Footer -->
-    <div style="background:#f8f8f8;padding:16px 32px;border-top:1px solid #eee;text-align:center;">
-      <p style="margin:0;color:#999;font-size:11px;">
-        Generated by <strong>TMC AI Intelligence</strong> |
-        <a href="https://tai.tmcltd.com" style="color:#cc6b4a;text-decoration:none;">tai.tmcltd.com</a>
-      </p>
-      <p style="margin:4px 0 0 0;color:#bbb;font-size:10px;">For interactive dashboards and charts, visit the web portal.</p>
-    </div>
-  </div>
-</body>
-</html>`;
-
-      const { sendEmail } = await import('../emailService');
-      const subject = `TMC AI Report: ${lastDataQuery.content.slice(0, 50)}`;
-      const sent = await sendEmail(userEmail, subject, fullHtml);
-
-      if (sent) {
-        await sendReply(params, `[report sent to ${userEmail}]`);
-      } else {
-        await sendReply(params, `[email send failed — try again or use the web portal]`);
-      }
-    } catch (e: any) {
-      log.error('Email report failed', { error: e.message, stack: e.stack?.slice(0, 200) });
-      await sendReply(params, `[report generation failed — ${e?.message ?? 'unknown error'}]`);
-    }
-    return;
-  }
+  // Replacement: route everything through Brain. If the user genuinely
+  // wants a report emailed, Brain emits a `send_email` action with the
+  // report content (existing action type, dispatched through Gmail).
+  // The intent classifier handles "yes" as a pending-action resolution,
+  // not as a fresh email trigger.
 
   // ── Step 2c REMOVED 2026-05-20: hardcoded "isHireRequest" fast-path
   //    that pattern-matched "hire agent" / "add team member" and returned

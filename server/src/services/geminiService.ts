@@ -126,17 +126,24 @@ export async function callGemini(
   // maxOutputTokens. With a small budget (< 2048) the model burns most
   // of it thinking and emits a truncated response. Two protections:
   //   1. Floor the budget to 2048 so there's always room for real output.
-  //   2. Set thinkingBudget: 0 for chat-style short responses (we want
-  //      the answer, not a reasoning trace).
+  //   2. Pick a thinkingBudget that the model actually accepts.
+  //
+  // 2026-05-20: gemini-2.5-pro (the Pro tier) rejects thinkingBudget: 0
+  // with `"Budget 0 is invalid. This model only works in thinking
+  // mode."` — observed on Basit's WhatsApp Brain turn at 18:04. Flash
+  // still accepts 0. So: Flash → 0 (fast chat), Pro → 128 (minimum
+  // non-zero so the call doesn't 400, but small enough that thinking
+  // tokens don't eat the output budget).
   const requested = opts?.maxTokens ?? 1024;
   const effectiveMax = Math.max(2048, requested);
+  const thinkingBudget = opts?.flash ? 0 : 128;
   const resp = await ai.models.generateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: userMessage }] }],
     config: {
       systemInstruction: systemPrompt,
       maxOutputTokens: effectiveMax,
-      thinkingConfig: { thinkingBudget: 0 } as any,
+      thinkingConfig: { thinkingBudget } as any,
     } as any,
   });
   return (resp.text ?? '').trim();

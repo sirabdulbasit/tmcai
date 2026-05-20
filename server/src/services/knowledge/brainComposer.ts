@@ -1198,8 +1198,19 @@ export async function compose(
     });
     raw = r.text;
   } catch (err: any) {
+    // Provider failure: LOG the full chain (Gemini Pro thinking-budget
+    // errors, Anthropic credit-balance copy, timeouts) for diagnosis,
+    // but NEVER ship err.message to the user. It contains provider
+    // names, model error codes, even Anthropic's billing text — that's
+    // an internal-infra leak on a phone screen. Replace with a single
+    // bracketed system marker (the only non-LLM string the user is
+    // allowed to see). Per Basit 2026-05-20 — "don't hardcode anything
+    // this is the crime in building AI". The previous code emitted
+    // "I can't reach my reasoning service right now — ${err.message}…"
+    // as fake-Brain prose; that's the exact pattern the rule forbids.
+    console.warn('[brain-chat] LLM call failed', { error: err?.message, userId, clientNumber });
     return {
-      answer: `I can't reach my reasoning service right now — ${err.message}. Try again in a moment.`,
+      answer: `[Brain unavailable — reasoning service down, retry shortly]`,
       citedPageIds: [],
       gaps: [],
       sources: [],
@@ -1214,6 +1225,23 @@ export async function compose(
   const sources = opened
     .filter((p) => citedPageIds.includes(p.id))
     .map((p) => p.sourceRef);
+
+  // Diagnostic — what did the LLM actually emit on this turn? Without
+  // this we can't tell whether a "Sending email now" prose without an
+  // actionResult came from (a) LLM emitting no action at all, (b)
+  // normaliseAction rejecting it for missing slots, or (c) dispatcher
+  // failing silently. Logged once per compose, regardless of outcome.
+  // Observed 2026-05-20: Basit asked Brain to send an email to Asad
+  // and Brain replied "Sending now…" with no actionResult — was it
+  // (a), (b), or (c)? No way to tell from production logs.
+  console.info('[brain-chat] compose.parsed', {
+    userId, clientNumber,
+    rawLen: raw.length,
+    actionEmitted: !!parsed.action,
+    actionType: parsed.action?.type ?? null,
+    citesCount: parsed.cites.length,
+    answerHead: parsed.answer.slice(0, 80),
+  });
 
   // Action dispatch — if the LLM emitted a structured action, run it
   // through the same instructionDispatcher the Day Brief uses so an
@@ -2431,7 +2459,11 @@ interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; actio
 
 function parseCompose(text: string): ParsedCompose {
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { answer: text.trim() || '(no response)', cites: [], gaps: [], action: null };
+  if (!match) {
+    // No JSON envelope at all — LLM emitted prose. Pass it through
+    // (handles flash-fallback cases where the model ignores schema).
+    return { answer: text.trim() || '(no response)', cites: [], gaps: [], action: null };
+  }
   try {
     const obj = JSON.parse(match[0]);
     return {
@@ -2441,7 +2473,38 @@ function parseCompose(text: string): ParsedCompose {
       action: normaliseAction(obj.action),
     };
   } catch {
-    return { answer: text.trim() || '(no response)', cites: [], gaps: [], action: null };
+    // JSON.parse failed — typically because maxOutputTokens truncated
+    // the envelope mid-cites array, leaving an unclosed bracket. We
+    // observed this 2026-05-20 on Basit's "send a test email to
+    // asad…" turn: the LLM emitted 20+ cite ids and ran out of tokens,
+    // and the raw `{"answer": "...","cites":[…` shipped to WhatsApp
+    // as the user-visible reply.
+    //
+    // Salvage strategy: pull the `"answer": "..."` string with a
+    // non-greedy regex that tolerates a missing closing `}`. The cites
+    // and action are lost (they came after the answer in the schema),
+    // but the user gets clean prose instead of a JSON dump.
+    const answerSalvage = text.match(/"answer"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (answerSalvage && answerSalvage[1]) {
+      const unescaped = answerSalvage[1]
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+      console.warn('[brain-chat] compose JSON truncated; salvaged answer field', {
+        textLen: text.length, answerLen: unescaped.length,
+      });
+      return { answer: unescaped.trim(), cites: [], gaps: [], action: null };
+    }
+    // Neither valid JSON nor a recoverable answer field. Better to
+    // emit a bracketed marker than ship a JSON brace to the user.
+    console.warn('[brain-chat] compose unparseable, returning system marker', {
+      head: text.slice(0, 120),
+    });
+    return {
+      answer: `[Brain output malformed — retry, or check logs]`,
+      cites: [], gaps: [], action: null,
+    };
   }
 }
 
@@ -2449,11 +2512,22 @@ function parseCompose(text: string): ParsedCompose {
  *  strict on every non-negotiable field — required slots that are missing
  *  cause the whole action to drop to null so the LLM's prose answer goes
  *  out instead. This is intentional: bad action data is worse than no
- *  action (we'd write a wrong row in the DB). */
+ *  action (we'd write a wrong row in the DB).
+ *
+ *  When validation drops a non-null raw, we log WHY. Otherwise a "Sending
+ *  email now…" prose with no actionResult looks identical whether the
+ *  LLM forgot to emit an action at all or emitted one with an empty
+ *  subject. Observed 2026-05-20: Basit's send-email-to-Asad turn went
+ *  out as bare prose with no action, and we couldn't tell which path
+ *  it took. */
 function normaliseAction(raw: unknown): ComposedAction | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const type = typeof r.type === 'string' ? r.type : null;
+  const reject = (reason: string): null => {
+    console.warn('[brain-chat] action rejected', { type, reason, keys: Object.keys(r) });
+    return null;
+  };
   if (type === 'add_open_item') {
     const title = typeof r.title === 'string' ? r.title.trim() : '';
     if (!title) return null;
@@ -2498,7 +2572,9 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const cc = ccRaw.filter((x: unknown): x is string => typeof x === 'string' && x.includes('@'));
     const subject = typeof r.subject === 'string' ? r.subject.trim() : '';
     const body = typeof r.body === 'string' ? r.body.trim() : '';
-    if (to.length === 0 || !subject || !body) return null;
+    if (to.length === 0) return reject('send_email:no-recipient');
+    if (!subject) return reject('send_email:no-subject');
+    if (!body) return reject('send_email:no-body');
     const replyToFeedEventId = typeof r.replyToFeedEventId === 'string' && r.replyToFeedEventId.trim()
       ? r.replyToFeedEventId.trim() : undefined;
     return { type: 'send_email', to, cc: cc.length ? cc : undefined, subject, body, replyToFeedEventId };
