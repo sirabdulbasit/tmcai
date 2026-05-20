@@ -170,13 +170,18 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   }
 
   // ── Step 2: Session control commands ─────────────────────────────────────
+  // Keyword shortcut for session close. The DB action stays; the reply
+  // is a SYSTEM marker (bracketed) so it's clearly machine-generated
+  // status, not Brain pretending to speak. Per Basit 2026-05-20:
+  // "don't hardcode anything this is the crime in building AI" — system
+  // status messages are honest; fake-Brain greetings are not.
   const lower = queryText.toLowerCase().trim();
   if (['bye', 'stop', 'end', 'quit', 'exit'].includes(lower)) {
     await prisma.$executeRawUnsafe(
       `UPDATE whatsapp_sessions SET closed_at = NOW() WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL`,
       userId, params.clientNumber,
     );
-    await sendReply(params, `Goodbye, ${userName}! Session ended. Send any message to start a new conversation.`);
+    await sendReply(params, `[session ended — send any message to resume]`);
     return;
   }
 
@@ -228,7 +233,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     const userEmail = userRows[0]?.email;
 
     if (!userEmail) {
-      await sendReply(params, `I don't have your email address on file. Please update it in Settings.`);
+      await sendReply(params, `[no email address on file — update in Settings → Profile]`);
       return;
     }
 
@@ -247,11 +252,11 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     );
 
     if (!lastDataQuery) {
-      await sendReply(params, `What would you like me to email? Ask a question first and then say "email it".`);
+      await sendReply(params, `[nothing to email — ask a question first, then say "email it"]`);
       return;
     }
 
-    await sendReply(params, `Generating report and sending to your email...`);
+    await sendReply(params, `[generating report and sending to your email…]`);
 
     // Generate full detailed report (higher tokens, HTML formatted)
     try {
@@ -359,30 +364,23 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       const sent = await sendEmail(userEmail, subject, fullHtml);
 
       if (sent) {
-        await sendReply(params, `Done! Report sent to your email. Check your inbox.`);
+        await sendReply(params, `[report sent to ${userEmail}]`);
       } else {
-        await sendReply(params, `Failed to send email. Please try again or check tai.tmcltd.com`);
+        await sendReply(params, `[email send failed — try again or use the web portal]`);
       }
     } catch (e: any) {
       log.error('Email report failed', { error: e.message, stack: e.stack?.slice(0, 200) });
-      await sendReply(params, `Sorry, couldn't send the report right now. Try again or check tai.tmcltd.com`);
+      await sendReply(params, `[report generation failed — ${e?.message ?? 'unknown error'}]`);
     }
     return;
   }
 
-  // ── Step 2c: Check if user wants to hire an agent ─────────────────────────
-  const isHireRequest = /\b(hire|create|add).*(agent|team member|subordinate|assistant)\b/i.test(lower)
-    || /\b(i need|get me).*(agent|someone|person|assistant).*(monitor|track|check|watch)\b/i.test(lower);
-
-  if (isHireRequest) {
-    await sendReply(params,
-      `To hire a new agent, go to the web portal:\n\ntai.tmcltd.com → My Team → Hire New Agent\n\n` +
-      `There you can set the agent's name, task, schedule, and how it reports back to you.\n\n` +
-      `Once hired, you can talk to it here by name. e.g., "Atlas, check project risks daily"`
-    );
-    return;
-  }
-
+  // ── Step 2c REMOVED 2026-05-20: hardcoded "isHireRequest" fast-path
+  //    that pattern-matched "hire agent" / "add team member" and returned
+  //    a canned "go to the web portal" reply. Per Basit: "don't hardcode
+  //    anything this is the crime in building AI". Routing through Brain
+  //    instead — let Brain answer naturally with the same web-portal
+  //    pointer if and when it knows that's the right answer.
   // ── Step 2d: Agent conversation with session tracking ─────────────────────
   // If user is talking to an agent, ALL messages go to that agent until:
   //   - 10 min idle timeout → agent says goodbye
@@ -509,44 +507,16 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     history = [];
   }
 
-  // ── Step 4: Pure greetings (no follow-up question) ───────────────────────
-  // Match ONLY when the message is JUST a greeting — no follow-up question
-  // attached. "hi" / "hello" / "good morning" alone hit this fast path;
-  // "hi who are you?" / "hi anything for me?" must route to Brain so the
-  // multi-part rule + introspective / day_brief overrides apply.
-  // Per Basit 2026-05-20: previous greeting regex matched "hi who are u?"
-  // and short-circuited to the hardcoded "Hi <fullName>! How can I help?"
-  // bypass — Brain never saw the identity question, post-process never
-  // ran to swap full name → preferredTitle.
-  const isPureGreeting = /^(hi+|hello+|hey+|assalam(u?\s*alai?kum)?|salam(\s*alai?kum)?|good\s+morning|good\s+evening|good\s+afternoon|aoa)\s*[.!?,…]*\s*$/i.test(lower);
-
-  if (isPureGreeting) {
-    // Use persona.addressAs (preferredTitle from Settings → Profile,
-    // e.g. "Sir") instead of raw userName which is the user's full
-    // display name. Keeps the fast-path response consistent with how
-    // Brain addresses the user everywhere else.
-    let addressName = userName;
-    try {
-      const { getBrainPersona } = await import('../knowledge/brainPersonaService');
-      const persona = await getBrainPersona(userId, params.clientNumber);
-      addressName = persona.addressAs || persona.userFirstName || userName;
-    } catch { /* fall back to userName */ }
-
-    if (isNewSession) {
-      // First message in a new session — greet + brief intro
-      const greeting = `Hi ${addressName}! 👋  I'm your AI assistant — I read your inbox, WhatsApp, and calendar, and surface what needs you. Try "anything for me?" or "brief my day" to start.`;
-      history.push({ role: 'user', content: queryText }, { role: 'assistant', content: greeting });
-      await prisma.$executeRawUnsafe(
-        `UPDATE whatsapp_sessions SET conversation_history = $1::jsonb, last_message_at = NOW() WHERE id = $2`,
-        JSON.stringify(history.slice(-20)), sessionId,
-      );
-      await sendReply(params, greeting);
-      return;
-    }
-    // Returning user in existing session — short greeting
-    await sendReply(params, `Hi ${addressName}! How can I help you?`);
-    return;
-  }
+  // ── Step 4 REMOVED 2026-05-20: hardcoded greeting fast-path that
+  //    pattern-matched "hi" / "hello" / etc. and returned a canned reply
+  //    (different versions for new-session vs returning), bypassing Brain
+  //    composer entirely. Per Basit: "don't hardcode anything this is
+  //    the crime in building AI". Every message — including a bare "hi" —
+  //    now routes through Brain so the reply is generated, addressing,
+  //    tone, identity, and any embedded follow-up question are all
+  //    handled by one consistent path. The 1-2 second LLM latency on
+  //    greetings is the price for honesty: every reply is Brain talking,
+  //    not code pretending to be Brain.
 
   // ── Step 5: Process query through Brain (the living two-pass pipeline) ────
   // Refresh typing indicator (it expires after ~25s, processing can take 5-15s)
@@ -580,7 +550,11 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       responseText = await processWhatsAppQuery(userId, params.clientNumber, queryText, history);
     } catch (err2: any) {
       log.error('Query processing failed', { error: err2.message, userId });
-      responseText = `Sorry ${userName}, I couldn't process that just now. Try again or open MyOS on the web.`;
+      // System marker, not a fake-Brain apology. When BOTH the primary
+      // Brain composer AND the legacy fallback throw, the user gets a
+      // clearly bracketed status message — not a hardcoded sentence
+      // pretending to be Brain.
+      responseText = `[Brain unavailable — ${err2?.message ?? 'unknown error'}. Try again in a moment or use the web.]`;
     }
   }
 
@@ -834,7 +808,7 @@ async function processWhatsAppQuery(
     config: { maxOutputTokens: maxTokens },
   });
 
-  const response = (result.text ?? '').trim() || `Sorry, I couldn't process that. Try again or check tai.tmcltd.com`;
+  const response = (result.text ?? '').trim() || `[LLM returned empty response — try again]`;
 
   // ── Self-learning (same as web — tracks on WhatsApp too) ────────────────
   learnFromMessage(clientNumber, userId, query, intent.type).catch(() => {});

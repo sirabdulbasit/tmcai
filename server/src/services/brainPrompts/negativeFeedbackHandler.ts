@@ -125,11 +125,13 @@ export async function tryConsumeAsFeedback(input: ConsumeInput): Promise<Consume
     return {
       handled: true,
       action: 'demote_bundle',
+      // System marker (bracketed), not fake-Brain "Got it" prose. Honest
+      // acknowledgement of the state change without pretending to be Brain.
       ackMessage: feedEventIds.length === 0
-        ? "Got it — I'll back off."
+        ? `[noted — backing off]`
         : isStrong
-          ? `Got it — I'll stop bringing those ${feedEventIds.length === 1 ? 'this thread' : `${feedEventIds.length} threads`} up for the next 24h.`
-          : `Got it — I'll demote that and stop pinging unless something material changes.`,
+          ? `[demoted ${feedEventIds.length === 1 ? 'this thread' : `${feedEventIds.length} threads`} — paused 24h]`
+          : `[demoted — won't ping again unless something material changes]`,
     };
   }
 
@@ -147,7 +149,7 @@ export async function tryConsumeAsFeedback(input: ConsumeInput): Promise<Consume
     return {
       handled: true,
       action: 'skip_prompt',
-      ackMessage: "Got it — skipped.",
+      ackMessage: `[prompt skipped]`,
     };
   }
 

@@ -257,20 +257,26 @@ function composeAck(
   side: { kind?: string } | null,
   outcome: SideEffectOutcome,
 ): string {
+  // System markers (bracketed), not fake-Brain "Got it" replies. Per
+  // Basit 2026-05-20: "don't hardcode anything this is the crime in
+  // building AI". These are state-transition acknowledgements emitted
+  // by the prompt-queue dispatcher — clearly machine status, not Brain
+  // speaking. Each variant names the actual outcome so the user knows
+  // exactly what changed.
   const kind = side?.kind ?? 'noop';
   switch (kind) {
     case 'set_due_date':
-      if (outcome.status === 'applied') return `Got it — due ${outcome.detail}.`;
-      if (outcome.detail === 'unparseable_date') return `Got it. Couldn't parse "${clip(answer, 40)}" as a date — flagged for clarification.`;
-      return 'Got it.';
+      if (outcome.status === 'applied') return `[due date set: ${outcome.detail}]`;
+      if (outcome.detail === 'unparseable_date') return `[couldn't parse "${clip(answer, 40)}" as a date — flagged for clarification]`;
+      return `[noted]`;
     case 'assign_owner':
-      if (outcome.status === 'applied') return `Got it — assigned to ${outcome.detail}.`;
-      return 'Got it. Couldn\'t identify the owner — please reply with a name or email.';
+      if (outcome.status === 'applied') return `[assigned to ${outcome.detail}]`;
+      return `[owner not identified — reply with a name or email]`;
     case 'free_form_note':
-      return outcome.status === 'applied' ? 'Got it — noted.' : 'Got it.';
+      return outcome.status === 'applied' ? `[note saved]` : `[noted]`;
     case 'noop':
     default:
-      return 'Got it.';
+      return `[noted]`;
   }
 }
 
