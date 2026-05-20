@@ -1352,31 +1352,35 @@ Forbidden in your retry: any claim-completion phrasing ("I've sent / scheduled /
   let answer = parsed.answer;
   let actionResult: { ok: boolean; artifactId?: string; message: string } | null = null;
 
-  // ── Option B: Mandatory Recipient Verification gate (human-facing) ─
-  // For any action that touches another human (send_email,
-  // schedule_meeting, notify_via_whatsapp), verify that EVERY
-  // recipient/attendee slot value either appears in the user's current
-  // message OR was quoted by Brain in a recent turn. If neither —
-  // the LLM inferred the recipient from candidates without ever
-  // discussing it with the user — block dispatch and rewrite the
-  // answer as a structured preview.
+  // ── Option B: Preview-by-default gate for human-facing actions ───
+  // Every action that touches another human (send_email,
+  // schedule_meeting, notify_via_whatsapp) is blocked by default
+  // and converted to a preview. The user sees EVERY slot value
+  // (recipient, time, subject, body, attendees) and confirms on the
+  // NEXT turn. Only on confirmation does the action dispatch.
   //
-  // Solves the "wrong recipient" failure: 2-Asad case where the LLM
-  // confidently picks one Asad without the user ever seeing or
-  // confirming which one. After B: the LLM can't ship a wrong
-  // recipient because the recipient must have appeared in the
-  // conversation first (either typed by the user OR quoted by Brain
-  // in the immediately-prior turn, e.g., a disambiguation listing).
+  // Solves the full "Brain did the wrong thing" failure class:
+  //   - wrong recipient (2-Asad case) → user sees the email, corrects
+  //   - wrong time (3pm misparsed as 03:00) → user sees the ISO, corrects
+  //   - wrong subject / wrong body → user reads draft, corrects
+  //   - wrong action type → user sees "schedule_meeting" when they
+  //     wanted add_open_item, corrects
+  //
+  // Two narrow exceptions for one-shot dispatch:
+  //   1. Confirmation turn — prior Brain message was a preview AND
+  //      user's current message is a short confirmation ("yes",
+  //      "send", "go ahead").
+  //   2. Canonical test email — subject + body match hardcoded test
+  //      defaults AND recipient appears verbatim in user message.
   //
   // Internal actions (add_open_item, delegate_open_item, set_brain_name)
-  // are not gated — they're either reversible (add) or affect only
-  // the user's own data (delegate, rename). Only outbound-to-human
-  // actions get the safety mandate. Per Basit 2026-05-20: "Brain did
-  // the wrong thing — destroys trust." Wrong recipient on outbound
-  // mail/meeting is the worst failure: actually-visible to other
-  // humans, can't be retracted.
+  // skip the gate — reversible or user-owned data, no cross-human
+  // impact. Per Basit 2026-05-20: "0 tolerance on wrong actions by
+  // Brain." Wrong outbound to another human is irreversible and
+  // visible; the preview default ensures the user always catches it
+  // before it ships.
   if (parsed.action) {
-    const blockReason = verifyRecipientsInConversation(parsed.action, question, history);
+    const blockReason = gateHumanFacingAction(parsed.action, question, history);
     if (blockReason) {
       console.warn('[brain-chat] human-facing action blocked by verification gate', {
         userId, clientNumber, actionType: parsed.action.type, reason: blockReason,
@@ -2612,65 +2616,100 @@ function extractCompanyHint(query: string): string | null {
   return null;
 }
 
-/** Verify that every human-facing recipient/attendee in `act` either
- *  appears in the user's CURRENT message OR was quoted by Brain in a
- *  recent turn. Returns null if all recipients are verified (action
- *  can dispatch), or a string describing what couldn't be verified
- *  (action should be blocked, preview shown instead).
+/** Preview-by-default safety gate for human-facing actions.
  *
- *  This is Option B's safety gate. Internal actions (add_open_item,
- *  delegate, set_brain_name) skip this — they don't touch other
- *  humans. Only send_email / schedule_meeting / notify_via_whatsapp
- *  are gated.
+ *  Returns a "block reason" string when the action should be blocked
+ *  and a preview shown, or null when the action is safe to dispatch.
  *
- *  The verification is intentionally simple: did the recipient
- *  identifier (email or phone) appear in recent conversation text? If
- *  yes, we trust that the user has either typed it or seen Brain quote
- *  it; if no, the LLM inferred it from internal data (candidates block)
- *  without discussing it. The user hasn't had a chance to catch a
- *  wrong-recipient pick. */
-function verifyRecipientsInConversation(
+ *  Policy: every human-facing action (send_email, schedule_meeting,
+ *  notify_via_whatsapp) goes through a one-turn preview UNLESS one
+ *  of two narrow exceptions applies:
+ *
+ *    1. The user is confirming a preview Brain just showed — last
+ *       Brain message contains a preview signature and the user's
+ *       current message is a short confirmation ("yes", "send",
+ *       "go ahead", "do it"). This is the normal two-turn happy path.
+ *
+ *    2. The action is a TEST EMAIL with a fully explicit recipient
+ *       and our canonical test subject/body defaults. The user is
+ *       checking the channel; the contents are pro-forma; the
+ *       recipient is whatever the user typed verbatim. Safe to
+ *       one-shot.
+ *
+ *  Everything else — wrong time, wrong attendee, wrong subject, wrong
+ *  body, wrong action type — gets caught by the user when they see
+ *  the preview. No outbound action ships without the user seeing the
+ *  exact slot values first. Per Basit 2026-05-20: "wrong recipient /
+ *  wrong time destroys trust — invisible damage that can't be
+ *  retracted."
+ *
+ *  Internal actions (add_open_item, delegate, set_brain_name) skip
+ *  this entirely — they're reversible / affect only user data. */
+function gateHumanFacingAction(
   act: ComposedAction,
   question: string,
   history: ComposerHistoryTurn[],
 ): string | null {
-  // Internal-only actions — skip verification.
+  // Internal-only actions — skip the gate.
   if (act.type === 'add_open_item') return null;
   if (act.type === 'delegate_open_item') return null;
   if (act.type === 'set_brain_name') return null;
 
-  // Recent conversation text = user's current message + last few turns.
-  // 4 turns ≈ 2 user / 2 brain — enough to cover preview-then-confirm
-  // flows without being so wide that stale mentions count.
-  const recentText = [
-    question,
-    ...history.slice(-4).map((h) => h.text || ''),
-  ].join('\n').toLowerCase();
+  // Exception 1: prior turn was a preview AND user is confirming.
+  if (priorTurnWasPreview(history) && userMessageIsShortConfirmation(question)) {
+    return null;
+  }
 
-  if (act.type === 'send_email') {
-    const missing = act.to.filter((email) => !recentText.includes(email.toLowerCase()));
-    if (missing.length > 0) {
-      return `recipient email(s) not seen in conversation: ${missing.join(', ')}`;
-    }
+  // Exception 2: canonical test-email pattern with explicit recipient.
+  if (act.type === 'send_email' && isCanonicalTestEmail(act, question)) {
     return null;
   }
-  if (act.type === 'schedule_meeting') {
-    const missing = act.attendeeEmails.filter((email) => !recentText.includes(email.toLowerCase()));
-    if (missing.length > 0) {
-      return `attendee email(s) not seen in conversation: ${missing.join(', ')}`;
-    }
-    return null;
-  }
-  if (act.type === 'notify_via_whatsapp') {
-    // Phone normalization — strip formatting before checking.
-    const normalized = act.recipientPhone.replace(/[\s().-]/g, '');
-    const recentNorm = recentText.replace(/[\s().-]/g, '');
-    if (!recentNorm.includes(normalized)) {
-      return `recipient phone ${act.recipientPhone} not seen in conversation`;
-    }
-    return null;
-  }
-  return null;
+
+  // Default: human-facing action requires preview-then-confirm. Show
+  // every slot value to the user; let them catch wrong-recipient,
+  // wrong-time, wrong-subject, wrong-body, wrong-action-type before
+  // the email/invite/WA goes out.
+  return `human-facing action requires preview; type=${act.type}`;
+}
+
+/** Brain's last user-visible message looks like one of our preview
+ *  templates. The signature must be distinctive enough that no
+ *  ordinary Brain reply contains it. */
+function priorTurnWasPreview(history: ComposerHistoryTurn[]): boolean {
+  const lastBrain = [...history].reverse().find((h) => h.role === 'brain');
+  if (!lastBrain) return false;
+  // Preview signature: contains "Before I send" or "Before I" + "please confirm"
+  // followed by the structured slot block (To: / With: / etc).
+  const t = lastBrain.text;
+  if (!/Before I (send|proceed)/i.test(t)) return false;
+  if (!/please confirm|Reply ['"]?send['"]?/i.test(t)) return false;
+  return true;
+}
+
+/** The user's current message is a short confirmation of a preview
+ *  Brain just showed. Limited to a closed set of confirmation words
+ *  to avoid false positives ("yes I know him" should NOT confirm). */
+function userMessageIsShortConfirmation(question: string): boolean {
+  const q = question.trim().toLowerCase();
+  if (q.length > 30) return false; // long messages aren't bare confirmations
+  return /^(yes|yep|yes\s+send|send|send\s+it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|approved|approve|yes\s+please)\.?$/.test(q);
+}
+
+/** Recognize the canonical test-email pattern: subject + body match
+ *  the defaults Brain auto-fills for "send a test email" requests,
+ *  AND every recipient appears verbatim in the user's current message.
+ *
+ *  The subject + body checks are exact-match (case-insensitive) — a
+ *  paraphrased test email ("Test message", "Hello from Nexeo")
+ *  doesn't qualify and goes through preview. This keeps the one-shot
+ *  exception narrow. */
+function isCanonicalTestEmail(act: ComposedAction, question: string): boolean {
+  if (act.type !== 'send_email') return false;
+  const subjectOk = /^test email( from nexeo)?$/i.test(act.subject.trim());
+  const bodyOk = /^this is a test message from your ai assistant\.?( if you received this, the integration is working\.?)?$/i.test(act.body.trim());
+  if (!subjectOk || !bodyOk) return false;
+  const q = question.toLowerCase();
+  return act.to.every((email) => q.includes(email.toLowerCase()));
 }
 
 /** Render a structured preview when the verification gate blocks an
