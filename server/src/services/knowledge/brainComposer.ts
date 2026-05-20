@@ -1061,23 +1061,42 @@ export async function compose(
   // attention-dilution for Gemini/Claude.
   const isActionTurn = looksLikeImperative(question);
 
-  // Casual-override heuristic. Per Basit 2026-05-20: "hi whats in open
-  // items?" → planner classified casual (because of the "hi" prefix) →
-  // casual prompt is intentionally minimal (no schema, no open-items
-  // snapshot) → Brain just greeted and ignored the actual question.
-  // If the user's text mentions a known entity ("open item", "email",
-  // "meeting", "calendar", "whatsapp", "contact", etc.), upgrade casual
-  // → factual so the entity snapshots get included in the prompt. A
-  // factual question wrapped in a casual prefix should still get
-  // factual treatment.
+  // Casual-override heuristic. Three patterns to detect, in priority
+  // order (most-inclusive first so a question that's BOTH "anything
+  // for me?" and "who are you" gets the day_brief blocks AND can answer
+  // identity from persona):
+  //
+  //   1. dayBriefishRe — status-check phrases ("anything for me?",
+  //      "what's up", "anything pending", "catch me up", "fill me in").
+  //      These need the full attention surface + open items + calendar
+  //      + risk radar in context — Brain decides what's important from
+  //      across all channels. Per Basit 2026-05-20: "since brain is
+  //      ready everything email, whatsapp, calendar, risk so brain will
+  //      decide what it thinks important for me to update or to ask".
+  //
+  //   2. introspectiveRe — identity / capability questions wrapped in
+  //      a casual prefix ("Hi who are you?", "what can you do?"). These
+  //      need the schema + capabilities blocks. Falls back here only
+  //      when the status-check pattern didn't already match.
+  //
+  //   3. entityKeywordRe — specific entity questions ("show me my
+  //      emails", "what meetings today"). Upgraded to factual so the
+  //      relevant snapshots get included.
+  //
+  // Pure greetings ("hi", "hello", "good morning") with no follow-up
+  // stay casual — minimal prompt, fast reply.
+  const dayBriefishRe = /\b(anything\s+(for\s+me|pending|new|urgent|important|going\s+on)|whats?\s+(up|new|going\s+on|happening|on\s+my\s+plate|on\s+my\s+desk|important|urgent|pending)|what\s+do\s+i\s+have(\s+today)?|catch\s+me\s+up|brief\s+(me|my\s+day)|summari[sz]e\s+my\s+day|run\s+my\s+day|update\s+me|fill\s+me\s+in|tell\s+me\s+whats?\s+(important|urgent|pending|happening|going\s+on))\b/i;
   const entityKeywordRe = /\b(open\s+item|emails?|inbox|sent\s+item|meeting|meetings|calendar|whatsapp|wa|chat|contact|task|tasks|reminder|reply|drafts?|day\s+brief|brief|status|update)\b/i;
-  // Introspective patterns wrapped in casual prefixes ("Hi who are you?",
-  // "hello what can you do") — these need the schema + capabilities
-  // blocks too, not the minimal casual prompt. Upgrade to introspective.
   const introspectiveRe = /\b(who\s+(are\s+you|made\s+you)|what\s+(are\s+you|can\s+you\s+do|do\s+you\s+know\s+about\s+(me|us|tmc|nexeo))|tell\s+me\s+about\s+(yourself|nexeo|tmc|you))\b/i;
   let effectiveIntent = String(plan.intent ?? 'factual');
   if (effectiveIntent === 'casual') {
-    if (introspectiveRe.test(question)) {
+    if (dayBriefishRe.test(question)) {
+      // day_brief beats other classifications when both match — it's
+      // the most inclusive prompt (attention + open items + calendar +
+      // radar). Identity questions in the same message are still
+      // answerable from the persona block (always present).
+      effectiveIntent = 'day_brief';
+    } else if (introspectiveRe.test(question)) {
       effectiveIntent = 'introspective';
     } else if (entityKeywordRe.test(question)) {
       effectiveIntent = 'factual';
