@@ -1085,9 +1085,13 @@ export async function compose(
   //
   // Pure greetings ("hi", "hello", "good morning") with no follow-up
   // stay casual — minimal prompt, fast reply.
-  const dayBriefishRe = /\b(anything\s+(for\s+me|pending|new|urgent|important|going\s+on)|whats?\s+(up|new|going\s+on|happening|on\s+my\s+plate|on\s+my\s+desk|important|urgent|pending)|what\s+do\s+i\s+have(\s+today)?|catch\s+me\s+up|brief\s+(me|my\s+day)|summari[sz]e\s+my\s+day|run\s+my\s+day|update\s+me|fill\s+me\s+in|tell\s+me\s+whats?\s+(important|urgent|pending|happening|going\s+on))\b/i;
+  const dayBriefishRe = /\b(anything\s+(for\s+(me|us)|pending|new|urgent|important|going\s+on)|whats?\s+(up|new|going\s+on|happening|on\s+my\s+plate|on\s+my\s+desk|important|urgent|pending)|what\s+do\s+i\s+have(\s+today)?|catch\s+me\s+up|brief\s+(me|my\s+day)|summari[sz]e\s+my\s+day|run\s+my\s+day|update\s+me|fill\s+me\s+in|tell\s+me\s+whats?\s+(important|urgent|pending|happening|going\s+on))\b/i;
   const entityKeywordRe = /\b(open\s+item|emails?|inbox|sent\s+item|meeting|meetings|calendar|whatsapp|wa|chat|contact|task|tasks|reminder|reply|drafts?|day\s+brief|brief|status|update)\b/i;
-  const introspectiveRe = /\b(who\s+(are\s+you|made\s+you)|what\s+(are\s+you|can\s+you\s+do|do\s+you\s+know\s+about\s+(me|us|tmc|nexeo))|tell\s+me\s+about\s+(yourself|nexeo|tmc|you))\b/i;
+  // Introspective patterns — handles formal "you" AND informal "u" / "r" /
+  // "ya" / "ur" shorthand that the planner classifies as casual. Per
+  // Basit 2026-05-20: "hi who are u?" got only the greeting back because
+  // the prior regex required literal "you" and missed the shorthand.
+  const introspectiveRe = /\b(who\s+(?:are|r)\s+(?:you|u|ya|ur)|who\s+made\s+(?:you|u)|what\s+(?:are|r)\s+(?:you|u|ya|ur)|what\s+can\s+(?:you|u)\s+do|what\s+do\s+(?:you|u)\s+know\s+about\s+(?:me|us|tmc|nexeo)|tell\s+me\s+about\s+(?:yourself|nexeo|tmc|you|u|urself))\b/i;
   let effectiveIntent = String(plan.intent ?? 'factual');
   if (effectiveIntent === 'casual') {
     if (dayBriefishRe.test(question)) {
