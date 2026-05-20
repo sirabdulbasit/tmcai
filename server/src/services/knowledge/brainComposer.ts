@@ -661,8 +661,8 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** Your reply 
 
 **What to cover (skip a section only if its count is 0):**
   1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. Use the times exactly as written in that block — they are already in the user's local timezone (the block header tells you which). Do NOT convert, shift, or re-render the hour. One line each: HH:MM + title + 1-2 attendee first names if interesting.
-  2. 📬 **Email** — pick the top 3 in the ORDER they appear in the "My Attention surface" block above (do not re-rank by criticality, recency, sender, or your own judgement). The surface is already ranked correctly — your job is to render the top 3 in that order so the brief matches what the user sees on the web Day Brief UI. If more, "+N more in inbox".
-  3. 💬 **WhatsApp** — same: top 3 conversations in source order, "+N more" if exceeded.
+  2. 📬 **Email** — pick the FIRST THREE rows from the "email" sub-section of the My Attention surface block (NOT a re-ranking, NOT a re-selection by criticality / recency / your own judgement — literally the first three lines). For the "+N more" line, copy the EXACT string the attention block prepared for you (it looks like "+11 more in inbox"). Do NOT invent a different number. The block tells you the true total — use that count, never estimate.
+  3. 💬 **WhatsApp** — same: first three rows from the "whatsapp" sub-section in source order, then the exact "+N more in WhatsApp" string the block provides. Never re-rank, never substitute, never estimate the count.
   4. 📋 **Open items** — ALWAYS include this section if the "Open items snapshot" has at least one row. Show top 3 ordered by: priority (critical > high > medium > low), then due date asc (soonest first, null last), then most recent. Line shape: "Title — [priority] — owner/delegatee/—". More than 3 rows → "+N more open items (open Nexeo to see all)". Do NOT skip just because no item is "due today" — open items are the user's live task ledger; an empty ledger is the only valid reason to omit.
   5. ⚠️ **Watching** — Risk Radar flags, one short line each (max 2).
   6. **Closing line** — one sentence: which single thing would you start with, and why. No fluff.
@@ -1594,8 +1594,21 @@ const STOPWORD_TOKENS = new Set([
  *  per-channel counters so the LLM can produce "+N more" lines. */
 async function buildAttentionBlockForDayBrief(clientNumber: string, userId: number): Promise<string> {
   try {
-    const { buildAttentionList } = await import('../triage/triageSuggester');
-    const allItems = await buildAttentionList(clientNumber, userId, 80);
+    // CANONICAL VIEW — route through getAttentionSurface which wraps
+    // computeBriefPartition (the same function GET /api/brief/attention
+    // calls). Previously this function called buildAttentionList
+    // directly with limit=80 — which (a) bypassed the partition cache,
+    // and (b) re-mutated buildAttentionList's shared state per its own
+    // documented warning ("buildAttentionList mutates shared
+    // AttentionItem objects in the suggester cache"). Result: UI and
+    // Brain saw different rankings and different counts for the same
+    // user at the same moment.
+    //
+    // Per Basit 2026-05-20: "there is difference between whatsapp brain
+    // and UI brain why? this is again trust shaker". One brain by
+    // construction means one DATA function — this is that fix.
+    const { getAttentionSurface } = await import('../views');
+    const allItems = await getAttentionSurface({ clientNumber, userId, opts: { limit: 200 } });
     if (allItems.length === 0) return '# My Attention surface\n(nothing pending — inbox/wa/items are clear)';
 
     // Per MD 2026-05-12: "Sobia, Taiba seem to be missed." Earlier
@@ -1805,7 +1818,17 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
     for (const [ch, list] of Object.entries(byChannel)) {
       if (list.length === 0) continue;
       const top = list.slice(0, 10);
-      sections.push(`${ch} (${list.length} pending):\n${top.map(renderItem).join('\n')}${list.length > 10 ? `\n  - … +${list.length - 10} more ${ch}` : ''}`);
+      // Pre-compute the "+N more" line for the LLM so it CAN'T fabricate
+      // a different number. Per Basit 2026-05-20: web Brain said "+11
+      // more in inbox" (correct), WhatsApp Brain said "+8 more" (wrong)
+      // for the same 14 emails. Different surfaces, same data, wrong
+      // arithmetic on at least one. Format rule below says to use the
+      // exact "+N more" string we provide.
+      const remaining = Math.max(0, list.length - 3);
+      const overflowLine = remaining > 0
+        ? `\n  +${remaining} more ${ch} (use exactly: "+${remaining} more in ${ch === 'email' ? 'inbox' : ch === 'whatsapp' ? 'WhatsApp' : ch}")`
+        : '';
+      sections.push(`${ch} (${list.length} pending — top 3 below, show those 3, then add the +N line verbatim):\n${top.map(renderItem).join('\n')}${overflowLine}`);
     }
     return `# My Attention surface (${items.length} pending across channels — same source as the Day Brief UI)\n${sections.join('\n\n')}`;
   } catch {
