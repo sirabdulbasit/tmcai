@@ -846,15 +846,22 @@ Today is ${todayDate} (UTC). Use this as the anchor for relative dates ("today",
   // ("Numair Mazhar: Asking to assign a COPA resource for Grow
   // Reporting.") the web Brain Chat produced.
   const channelRule = channel === 'whatsapp'
-    ? `# Channel: WhatsApp — COMPACT mode (non-negotiable)
-Your reply will be read on a phone screen. Hard cap: 800 characters total. Render rules:
-- ONE LINE per item. No multi-sentence prose. "<Sender>: <one-clause substance>." That's it.
-- NO markdown. No **, no \`, no headers (#). Plain text with section emojis (📅 📬 💬 📋 ⚠️) only.
-- NO commentary about Brain's own activity ("I see..." / "Looking at..." / "It seems...").
-- NO ", which needs to be / will likely / seems to be" expansions — those are web verbosity.
-- Web Brain Chat produces "Numair Mazhar: Asking to assign a COPA resource for Grow Reporting." — match that compactness here. Anything longer gets truncated mid-message by the renderer; user sees half a brief and trust breaks.`
+    ? `# Channel: WhatsApp — COMPACT but COMPLETE (non-negotiable)
+Your reply will be read on a phone screen. Target ≤ 800 characters total; the renderer hard-caps at 1000 with overflow guidance below.
+
+**Two properties matter equally — neither beats the other:**
+1. **Compact per-item** — ONE LINE per row: "<Sender>: <one-clause substance>." No multi-sentence prose. No "which needs to be / will likely / seems to be" expansions. No commentary about your own activity ("I see…", "Looking at…", "It seems…"). No markdown (**, \`, #, etc.); plain text with the section emojis (📅 📬 💬 📋 ⚠️) only.
+2. **Complete the picture** — every section with content gets included. Calendar → Email → WhatsApp → Open Items → Watching → closing line. Dropping a section because you're "running out of space" is wrong; tighten the per-item lines until everything fits.
+
+**Trade-off priority when the cap is tight (in order):**
+  a. Cut verbose words from each item line (verbs like "asking" / "following up" can become ":" alone)
+  b. Reduce per-section "top 3" to "top 2" — but still emit the +N more line
+  c. Drop the closing reasoning sentence
+  Never silently drop a whole section. If WhatsApp has content, the 💬 section appears, even with just "+N more in WhatsApp" and zero shown.
+
+Web Brain Chat produces "Numair Mazhar: Asking to assign a COPA resource for Grow Reporting." — match that compactness here. Web also produces all five sections (calendar / email / WhatsApp / open items / closing). Match that completeness too. The user expects to see the same picture on phone and laptop.`
     : `# Channel: web
-Markdown rendering is supported. Use bullets, headers, and bold sparingly for scannability. No hard char cap.`;
+Markdown rendering is supported. Use bullets, headers, and bold sparingly for scannability. No hard char cap. Per-item lines still kept short for scannability (the day-brief format rules apply).`;
 
   // Casual turns — minimal prompt. No schema, no rules, no actions.
   if (intent === 'casual' && !isActionTurn) {
