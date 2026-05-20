@@ -757,6 +757,13 @@ When to emit \`action\`:
   - The disclosure footer "Sent by Nexeo, <user>'s AI assistant" is appended automatically by the dispatcher — do NOT include it in your \`body\`.
   - **PREVIEW BEFORE SENDING for fresh outbound.** Per Rule D of conversational rules: when the user hasn't seen the draft yet, your first reply states {to, subject, body} in your \`answer\` text and DOES NOT emit \`action\`. Emit the structured action only on the user's next-turn confirmation ("yes send", "go ahead", "send it"). For obvious one-step requests where the user already gave the exact recipient + topic in this same message, you may emit directly — but only when ambiguity is zero.
 
+  - **Test emails are a one-shot exception.** When the user says "send a test email to X" / "send test email to X@y" / similar, you have permission to auto-fill subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — emit \`send_email\` on the FIRST turn. Do NOT ask "want me to send?" — a test email is its own confirmation. The user is checking the channel; they don't care about wording.
+
+  - **Confirmation turn ("yes", "go ahead", "send it") MUST emit the action.** If your previous turn previewed an email or asked "want me to send?", the user's confirmation OBLIGATES you to emit \`send_email\` this turn. Forbidden alternatives:
+    - "Alright, I'm sending it now." (prose claiming you sent without emitting) — that's the empty-promise failure mode.
+    - "I'll let you know once it's sent." (deferring) — there's no "later"; you either emit now or you don't.
+    If you don't have a subject/body yet on the confirmation turn, auto-fill reasonable defaults from the conversation context. If you cannot determine a reasonable body even from context, say so plainly ("I don't have anything specific to write in the body — what should it say?") and DO NOT claim to send.
+
 Slot continuity: if your immediately-previous turn asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do not ask again.
 
 Disambiguation-answer rule: if your previous turn ended with a clarifying question listing N options, the user's current message is the ANSWER. Map "first", "1", "the first one" to option 1, etc. After mapping, re-emit the pending action with the resolved slot.
@@ -1534,7 +1541,18 @@ export async function compose(
     // Observed 2026-05-20: Basit asked Brain to send an email; Brain
     // wrote "I've sent that draft reply to Numair Mazhar..." with no
     // dispatched action; guard's regex missed it; lie reached the user.
-    const completionRe = /\b(?:i'?ve|i\s+have|i'?ll|i\s+just|i\s+already|i)\s+(?:delegated|assigned|added|scheduled|sent|reminded|set|drafted|dispatched|emailed|forwarded|replied)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+    //
+    // 2026-05-20 (later): missed again. Brain wrote "Alright Sir, I'm
+    // sending that test email to sirabdulbasit@gmail.com now. I'll let
+    // you know once it's sent." — no action emitted, no actionResult,
+    // guard didn't fire because:
+    //   - "I'm" wasn't in the pronoun alternation
+    //   - "sending" / "send" weren't in the verb set (only past-tense
+    //     "sent" was)
+    // Added: i'?m pronoun, present-continuous verbs (sending, etc.),
+    // and base-form verbs that follow "I'll" / "I'?m about to" / "now
+    // I'll" (send, delegate, etc.).
+    const completionRe = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
     if (completionRe.test(answer)) {
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
