@@ -701,4 +701,125 @@ router.post('/notion/disconnect', requireAuth, async (req: Request, res: Respons
   res.json({ ok: true });
 });
 
+// ─── Manual sync (per connector + sync all) ─────────────────────────
+//
+// Per Basit 2026-05-20: "Can you provide sync option for each connector?
+// and sync-all for all connectors". Both endpoints dispatch to the
+// same pollers the cron uses, scoped to the current user — same
+// behaviour, just on-demand instead of every 2-15 minutes.
+//
+// Result shape per connector: { ok, fetched, ingested, duplicates,
+// errors, message? }. Sync-all wraps multiple per-connector calls in
+// Promise.all and returns a keyed object so the UI can toast a summary.
+//
+// Drive note: google_drive_personal isn't polled — it's scribed via
+// the Re-scribe All flow. The per-connector sync for Drive runs a
+// lightweight stamp + drive.about.get probe so the last_sync_at
+// indicator + banner clear, and the user knows the connector is alive
+// without paying the cost of a full re-scribe.
+
+type SyncResult = { ok: boolean; fetched?: number; ingested?: number; duplicates?: number; errors?: number; message?: string };
+
+async function syncOneConnector(slug: string, userId: number, clientNumber: string): Promise<SyncResult> {
+  try {
+    if (slug === 'gmail') {
+      const { pollAllTenants } = await import('../jobs/genericFeedPoller');
+      const all = await pollAllTenants();
+      const row = all.find((r) => r.tenantId === clientNumber && r.source === 'gmail');
+      return { ok: true, ...(row ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 }) };
+    }
+    if (slug === 'google_calendar') {
+      const { pollAllActiveCalendarUsers } = await import('../jobs/gcalFeedPoller');
+      const all = await pollAllActiveCalendarUsers();
+      const row = all.find((r) => r.userId === userId);
+      return { ok: true, ...(row ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 }) };
+    }
+    if (slug === 'google_tasks') {
+      const { pollAllActiveTasksUsers } = await import('../jobs/gtasksFeedPoller');
+      const all = await pollAllActiveTasksUsers();
+      const row = all.find((r) => r.userId === userId);
+      return { ok: true, ...(row ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 }) };
+    }
+    if (slug === 'google_chat') {
+      const { pollAllActiveChatUsers } = await import('../jobs/gchatFeedPoller');
+      const all = await pollAllActiveChatUsers();
+      const row = all.find((r) => r.userId === userId);
+      return { ok: true, ...(row ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 }) };
+    }
+    if (slug === 'google_drive_personal') {
+      // Drive is scribed, not polled. Manual sync = ping the API to
+      // verify auth + stamp last_sync_at so the stale banner clears.
+      // Actual ingest happens through Re-scribe All.
+      const { getAuthenticatedClient } = await import('../services/integrationService');
+      const { client, error } = await getAuthenticatedClient(userId);
+      if (!client) return { ok: false, message: error ?? 'auth failed' };
+      try {
+        const { google } = await import('googleapis');
+        const drive = google.drive({ version: 'v3', auth: client });
+        await drive.about.get({ fields: 'user' });
+        const { stampConnectorSync } = await import('../services/connectorSyncTracker');
+        await stampConnectorSync(userId, ['google_drive_personal']);
+        return { ok: true, fetched: 0, ingested: 0, duplicates: 0, errors: 0, message: 'Drive auth verified. Full re-ingest runs via Re-scribe All.' };
+      } catch (err: any) {
+        return { ok: false, message: `Drive probe failed: ${err.message}` };
+      }
+    }
+    if (slug === 'whatsapp_personal') {
+      // WhatsApp is event-driven (webjs/Meta inbound). No poll cycle.
+      // Stamp to acknowledge the user clicked Sync.
+      const { stampConnectorSync } = await import('../services/connectorSyncTracker');
+      await stampConnectorSync(userId, ['whatsapp_personal']);
+      return { ok: true, fetched: 0, ingested: 0, duplicates: 0, errors: 0, message: 'WhatsApp is event-driven — messages arrive in real time, no manual pull needed.' };
+    }
+    // Outlook / Slack / OneDrive / Teams / CRM — these route through
+    // genericFeedPoller's adapter registry. Same call as gmail, just
+    // filter on the right source.
+    if (['outlook', 'slack', 'onedrive_personal', 'outlook_calendar', 'ms_teams', 'crm'].includes(slug)) {
+      const { pollAllTenants } = await import('../jobs/genericFeedPoller');
+      const all = await pollAllTenants();
+      const row = all.find((r) => r.tenantId === clientNumber && r.source === slug);
+      return { ok: true, ...(row ?? { fetched: 0, ingested: 0, duplicates: 0, errors: 0 }) };
+    }
+    return { ok: false, message: `Sync not yet wired for connector "${slug}".` };
+  } catch (err: any) {
+    return { ok: false, message: err?.message ?? 'unknown sync error' };
+  }
+}
+
+/** POST /connectors/:slug/sync — trigger a manual pull for ONE connector
+ *  scoped to the current user. Returns the same result shape every poller
+ *  emits, plus an optional human message for connectors that don't poll. */
+router.post('/:slug/sync', requireAuth, async (req: Request, res: Response) => {
+  const user = req.user!;
+  const slug = String(req.params.slug || '').trim();
+  if (!slug) return res.status(400).json({ ok: false, error: 'slug required' });
+  const result = await syncOneConnector(slug, user.id, user.clientNumber);
+  res.json({ slug, ...result });
+});
+
+/** POST /connectors/sync-all — trigger sync for every connector this user
+ *  has connected. Runs in parallel; returns { ok, results } where results
+ *  is keyed by slug. Same data the cron eventually pulls — just now. */
+router.post('/sync-all', requireAuth, async (req: Request, res: Response) => {
+  const user = req.user!;
+  try {
+    const connected = await prisma.userConnector.findMany({
+      where: { userId: user.id, clientNumber: user.clientNumber, status: 'connected' },
+      include: { connectorType: { select: { slug: true } } },
+    });
+    const slugs = connected
+      .map((c) => c.connectorType?.slug)
+      .filter((s): s is string => typeof s === 'string');
+    const entries = await Promise.all(
+      slugs.map(async (slug) => [slug, await syncOneConnector(slug, user.id, user.clientNumber)] as const),
+    );
+    const results = Object.fromEntries(entries);
+    const totalIngested = Object.values(results).reduce((sum, r) => sum + (r.ingested ?? 0), 0);
+    const totalErrors = Object.values(results).reduce((sum, r) => sum + (r.errors ?? 0), 0);
+    res.json({ ok: true, results, summary: { synced: slugs.length, totalIngested, totalErrors } });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 export default router;

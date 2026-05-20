@@ -362,6 +362,52 @@ export default function ConnectorsPage() {
     setTestingId(null);
   }
 
+  // Per-connector manual sync. Triggers the same poller the cron uses,
+  // scoped to this user, for one connector. Returns {ingested, errors,
+  // message?}. Banner toast shows the result; load() refreshes the
+  // last_sync_at indicator.
+  const [syncingId, setSyncingId] = useState(null);
+  async function handleSync(c) {
+    setSyncingId(c.id);
+    try {
+      const r = await api.post(`/connectors/${c.slug}/sync`);
+      const d = r.data ?? {};
+      if (d.ok === false) {
+        flash(`${c.name}: ${d.message || 'sync failed'}`, 'error');
+      } else if (d.message) {
+        flash(`${c.name}: ${d.message}`, 'info');
+      } else {
+        const ingested = d.ingested ?? 0;
+        const errors = d.errors ?? 0;
+        flash(`${c.name} synced — ${ingested} new${errors ? `, ${errors} errors` : ''}`, errors ? 'error' : 'success');
+      }
+      load(); // refresh status + last sync timestamps
+    } catch (err) {
+      flash(`${c.name} sync failed: ${err.response?.data?.error || err.message || 'unknown'}`, 'error');
+    }
+    setSyncingId(null);
+  }
+
+  // Sync All — fires every connected connector in parallel for this user.
+  const [syncingAll, setSyncingAll] = useState(false);
+  async function handleSyncAll() {
+    setSyncingAll(true);
+    try {
+      const r = await api.post('/connectors/sync-all');
+      const d = r.data ?? {};
+      if (d.ok) {
+        const s = d.summary ?? {};
+        flash(`Synced ${s.synced ?? 0} connectors · ${s.totalIngested ?? 0} new items${s.totalErrors ? ` · ${s.totalErrors} errors` : ''}`, s.totalErrors ? 'error' : 'success');
+      } else {
+        flash(d.error || 'Sync all failed', 'error');
+      }
+      load();
+    } catch (err) {
+      flash(`Sync all failed: ${err.response?.data?.error || err.message || 'unknown'}`, 'error');
+    }
+    setSyncingAll(false);
+  }
+
   async function handleDisconnect(c) {
     if (c.slug === 'whatsapp_personal' || c.authMethod === 'qr_pair') {
       return handleWhatsAppDisconnect(c);
@@ -500,6 +546,23 @@ export default function ConnectorsPage() {
             <span style={{ fontSize: 20, fontWeight: 700, color: '#eee' }}>My Connectors</span>
             <span style={s.badge('#4ade80')}>{connectors.filter(c => c.userConnector?.status === 'connected').length} Connected</span>
             <span style={s.badge('#888')}>{connectors.length} Available</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              style={{
+                ...s.btn,
+                background: syncingAll ? '#4a2730' : '#e94560',
+                color: '#fff', border: 'none',
+                opacity: syncingAll ? 0.7 : 1,
+                cursor: syncingAll ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+              }}
+              disabled={syncingAll}
+              onClick={handleSyncAll}
+              title="Pull fresh data for every connected connector now — gmail, calendar, chat, tasks, drive."
+            >
+              {syncingAll ? '⟳ Syncing all…' : '⟳ Sync all'}
+            </button>
           </div>
         </div>
 
@@ -776,6 +839,14 @@ export default function ConnectorsPage() {
                               onClick={() => handleTest(c)}
                             >
                               {testingId === c.id ? 'Testing...' : 'Test'}
+                            </button>
+                            <button
+                              style={{ ...s.btn, ...s.btnOutline, fontSize: 11, opacity: syncingId === c.id || syncingAll ? 0.6 : 1 }}
+                              disabled={syncingId === c.id || syncingAll}
+                              onClick={() => handleSync(c)}
+                              title={`Pull fresh data from ${c.name} now (instead of waiting for the next cron tick).`}
+                            >
+                              {syncingId === c.id ? '⟳ Syncing…' : '⟳ Sync'}
                             </button>
                             {c.slug === 'whatsapp_personal' && (
                               <button

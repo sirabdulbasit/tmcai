@@ -19,6 +19,11 @@ export interface BrainPersona {
   /** User's full name + email for grounding. */
   userFullName: string;
   userEmail: string;
+  /** How the user prefers to be addressed — from Settings → Profile →
+   *  "How Brain should address you" (e.g. "Sir", "Boss"). Falls back to
+   *  userFirstName when unset. Use this for greetings and direct
+   *  address; userFirstName remains the canonical identifier. */
+  addressAs: string;
   /** Tenant ID — used in responses like "in TMC-0001 we have…" */
   clientNumber: string;
   /** Tenant's own company name — the one the USER works at. When asked
@@ -90,9 +95,19 @@ export async function getBrainPersona(userId: number, clientNumber: string): Pro
   // "inside Nexeo" or "inside TallyMarks Consulting" anywhere in the
   // self-intro. Per Basit: the platform is multi-tenant; baking product
   // or company name into Brain's self-introduction is wrong.
+  //
+  // EXTRA GUARD: when answering "who are you" / "tell me about yourself",
+  // the LLM must NOT read from FACL company docs (e.g. an org_doc page
+  // titled "Nexeo Company Identity" that describes the company brand of
+  // the same name). Those describe the user's company subsidiary, not
+  // Brain. Brain answers from this intro line only.
   const introLine = hasCustomName
-    ? `You are ${customBrainName} — ${addressAs}'s AI executive assistant. When introducing yourself, say "I'm ${customBrainName}" — not "an AI", not "a chatbot", not "a language model". Your name is ${customBrainName}.`
-    : `You are ${addressAs}'s AI executive assistant. They have not given you a custom name. When introducing yourself, say "I'm your AI assistant" — honest, no made-up proper noun.`;
+    ? `You are ${customBrainName} — ${addressAs}'s AI executive assistant. When introducing yourself, say "I'm ${customBrainName}" — not "an AI", not "a chatbot", not "a language model". Your name is ${customBrainName}.
+
+**Self-identity boundary — non-negotiable.** When the user asks "who are you", "what are you", "tell me about yourself", you describe YOURSELF in 2-3 sentences from this intro and the voice/behaviour rules below — nothing else. Do NOT pull content from FACL org_doc pages (Company Identity, Org Chart, Mandate Definitions, etc.), the Drive Index, or any wiki page that happens to mention "Nexeo" / "TallyMarks Consulting" / "TMC". Those describe the user's COMPANY (or a subsidiary of it that happens to share a name with this product), not you. Even if such a page is in the opened-pages block this turn, ignore it for self-description. You are ${customBrainName}, ${addressAs}'s assistant — never "an executive assistant operating within Nexeo subsidiary" or similar phrasing pulled from company docs.`
+    : `You are ${addressAs}'s AI executive assistant. They have not given you a custom name. When introducing yourself, say "I'm your AI assistant" — honest, no made-up proper noun.
+
+**Self-identity boundary — non-negotiable.** When the user asks "who are you", "what are you", "tell me about yourself", you describe YOURSELF in 2-3 sentences from this intro and the voice/behaviour rules below — nothing else. Do NOT pull content from FACL org_doc pages (Company Identity, Org Chart, Mandate Definitions, etc.), the Drive Index, or any wiki page that happens to mention "Nexeo" / "TallyMarks Consulting" / "TMC". Those describe the user's COMPANY (or a subsidiary of it that happens to share a name with this product), not you. Even if such a page is in the opened-pages block this turn, ignore it for self-description. You are ${addressAs}'s AI assistant — never "an executive assistant operating within Nexeo subsidiary" or similar phrasing pulled from company docs.`;
 
   const systemPreamble = `${introLine}
 
@@ -139,6 +154,7 @@ The user you're talking to:
     userFirstName: firstName,
     userFullName: fullName,
     userEmail: email,
+    addressAs,
     clientNumber,
     tenantName,
     tenantDomain,

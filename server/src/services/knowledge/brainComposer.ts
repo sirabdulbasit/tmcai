@@ -1400,19 +1400,31 @@ export async function compose(
     }
   }
 
-  // Full-name address guard. Per MD 2026-05-12: "Hi Basit Ahmed!"
-  // still leaked despite the persona rule. Narrow post-process:
-  // when the answer opens with a greeting + full name pattern,
-  // replace with greeting + first name. Doesn't touch the full name
-  // when it appears as a TOPIC reference ("Abdul Haseeb's profile
-  // says..."), only when it's an ADDRESS.
-  if (persona.userFullName && persona.userFirstName && persona.userFullName !== persona.userFirstName) {
+  // Address guard. Replaces greeting + full-name OR greeting + first-name
+  // openers with greeting + the user's preferred form of address
+  // (preferredTitle from Settings → Profile, e.g. "Sir", "Boss"; falls
+  // back to firstName when unset). Per Basit 2026-05-20: persona told
+  // Brain to use "Sir" but Brain kept saying "Hi Basit Ahmed!" anyway —
+  // structural post-process is the only thing that stops it 100% of the
+  // time. Doesn't touch full names as TOPIC references ("Abdul Haseeb's
+  // profile says..."), only when used as a direct ADDRESS in an opener.
+  const targetAddress = persona.addressAs || persona.userFirstName;
+  if (persona.userFullName && targetAddress) {
     const escapedFull = persona.userFullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const addressRe = new RegExp(
-      `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${escapedFull}\\b`,
-      'gi',
-    );
-    answer = answer.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${persona.userFirstName}`);
+    const escapedFirst = persona.userFirstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match greeting + full name OR greeting + first name (when the
+    // preferred address differs from the first name, e.g. user set
+    // "Sir" but the LLM defaulted to using their first name).
+    const namesToReplace = persona.userFirstName && persona.userFirstName !== targetAddress
+      ? `(?:${escapedFull}|${escapedFirst})`
+      : escapedFull;
+    if (persona.userFullName !== targetAddress) {
+      const addressRe = new RegExp(
+        `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${namesToReplace}\\b`,
+        'gi',
+      );
+      answer = answer.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${targetAddress}`);
+    }
   }
 
   // Empty-promise guard. Per MD 2026-05-12: Brain replied
