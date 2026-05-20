@@ -1351,6 +1351,51 @@ Forbidden in your retry: any claim-completion phrasing ("I've sent / scheduled /
   // error) rather than the LLM's pre-action announcement.
   let answer = parsed.answer;
   let actionResult: { ok: boolean; artifactId?: string; message: string } | null = null;
+
+  // ── Option B: Mandatory Recipient Verification gate (human-facing) ─
+  // For any action that touches another human (send_email,
+  // schedule_meeting, notify_via_whatsapp), verify that EVERY
+  // recipient/attendee slot value either appears in the user's current
+  // message OR was quoted by Brain in a recent turn. If neither —
+  // the LLM inferred the recipient from candidates without ever
+  // discussing it with the user — block dispatch and rewrite the
+  // answer as a structured preview.
+  //
+  // Solves the "wrong recipient" failure: 2-Asad case where the LLM
+  // confidently picks one Asad without the user ever seeing or
+  // confirming which one. After B: the LLM can't ship a wrong
+  // recipient because the recipient must have appeared in the
+  // conversation first (either typed by the user OR quoted by Brain
+  // in the immediately-prior turn, e.g., a disambiguation listing).
+  //
+  // Internal actions (add_open_item, delegate_open_item, set_brain_name)
+  // are not gated — they're either reversible (add) or affect only
+  // the user's own data (delegate, rename). Only outbound-to-human
+  // actions get the safety mandate. Per Basit 2026-05-20: "Brain did
+  // the wrong thing — destroys trust." Wrong recipient on outbound
+  // mail/meeting is the worst failure: actually-visible to other
+  // humans, can't be retracted.
+  if (parsed.action) {
+    const blockReason = verifyRecipientsInConversation(parsed.action, question, history);
+    if (blockReason) {
+      console.warn('[brain-chat] human-facing action blocked by verification gate', {
+        userId, clientNumber, actionType: parsed.action.type, reason: blockReason,
+      });
+      // Convert to a preview the user must confirm. Action dispatch
+      // is skipped entirely; the user sees the exact slot values
+      // Brain wants to use and either confirms or corrects.
+      answer = renderActionPreview(parsed.action, blockReason);
+      actionResult = { ok: false, message: 'preview_required' };
+      // Returning null action so dispatch loop below is a no-op,
+      // but we keep `parsed.action` original on the result so the
+      // caller (UI / WA) can see what was attempted.
+      return {
+        answer, citedPageIds, gaps: parsed.gaps, sources,
+        action: parsed.action, actionResult,
+      };
+    }
+  }
+
   if (parsed.action) {
     try {
       const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
@@ -2565,6 +2610,88 @@ function extractCompanyHint(query: string): string | null {
     return t;
   }
   return null;
+}
+
+/** Verify that every human-facing recipient/attendee in `act` either
+ *  appears in the user's CURRENT message OR was quoted by Brain in a
+ *  recent turn. Returns null if all recipients are verified (action
+ *  can dispatch), or a string describing what couldn't be verified
+ *  (action should be blocked, preview shown instead).
+ *
+ *  This is Option B's safety gate. Internal actions (add_open_item,
+ *  delegate, set_brain_name) skip this — they don't touch other
+ *  humans. Only send_email / schedule_meeting / notify_via_whatsapp
+ *  are gated.
+ *
+ *  The verification is intentionally simple: did the recipient
+ *  identifier (email or phone) appear in recent conversation text? If
+ *  yes, we trust that the user has either typed it or seen Brain quote
+ *  it; if no, the LLM inferred it from internal data (candidates block)
+ *  without discussing it. The user hasn't had a chance to catch a
+ *  wrong-recipient pick. */
+function verifyRecipientsInConversation(
+  act: ComposedAction,
+  question: string,
+  history: ComposerHistoryTurn[],
+): string | null {
+  // Internal-only actions — skip verification.
+  if (act.type === 'add_open_item') return null;
+  if (act.type === 'delegate_open_item') return null;
+  if (act.type === 'set_brain_name') return null;
+
+  // Recent conversation text = user's current message + last few turns.
+  // 4 turns ≈ 2 user / 2 brain — enough to cover preview-then-confirm
+  // flows without being so wide that stale mentions count.
+  const recentText = [
+    question,
+    ...history.slice(-4).map((h) => h.text || ''),
+  ].join('\n').toLowerCase();
+
+  if (act.type === 'send_email') {
+    const missing = act.to.filter((email) => !recentText.includes(email.toLowerCase()));
+    if (missing.length > 0) {
+      return `recipient email(s) not seen in conversation: ${missing.join(', ')}`;
+    }
+    return null;
+  }
+  if (act.type === 'schedule_meeting') {
+    const missing = act.attendeeEmails.filter((email) => !recentText.includes(email.toLowerCase()));
+    if (missing.length > 0) {
+      return `attendee email(s) not seen in conversation: ${missing.join(', ')}`;
+    }
+    return null;
+  }
+  if (act.type === 'notify_via_whatsapp') {
+    // Phone normalization — strip formatting before checking.
+    const normalized = act.recipientPhone.replace(/[\s().-]/g, '');
+    const recentNorm = recentText.replace(/[\s().-]/g, '');
+    if (!recentNorm.includes(normalized)) {
+      return `recipient phone ${act.recipientPhone} not seen in conversation`;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Render a structured preview when the verification gate blocks an
+ *  action. The user sees the exact slot values Brain wants to use and
+ *  can either confirm (next turn) or correct. This is the structural
+ *  "no surprise sends to humans" guarantee. */
+function renderActionPreview(act: ComposedAction, _blockReason: string): string {
+  if (act.type === 'send_email') {
+    const to = act.to.join(', ');
+    const cc = act.cc && act.cc.length ? `\nCc: ${act.cc.join(', ')}` : '';
+    return `Before I send, please confirm — I'm about to send:\n\nTo: ${to}${cc}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
+  }
+  if (act.type === 'schedule_meeting') {
+    const attendees = act.attendeeNames.length > 0 ? act.attendeeNames.join(', ') : act.attendeeEmails.join(', ');
+    const dur = act.durationMin ? ` (${act.durationMin} min)` : '';
+    return `Before I send the invite, please confirm — meeting:\n\nWith: ${attendees}\nWhen: ${act.whenIso}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
+  }
+  if (act.type === 'notify_via_whatsapp') {
+    return `Before I send the WhatsApp, please confirm — message to ${act.recipientName} (${act.recipientPhone}):\n\n"${act.message}"\n\nThe note will be prefixed with "Hi ${act.recipientName}, this is Nexeo — your AI assistant…" so the recipient knows it's from me, not you. Reply "send" to confirm, or tell me what to change.`;
+  }
+  return `Before I proceed, please confirm the details and reply "send".`;
 }
 
 interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
