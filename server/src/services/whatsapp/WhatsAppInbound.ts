@@ -509,34 +509,42 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     history = [];
   }
 
-  // ── Step 4: Greetings / simple messages ───────────────────────────────────
-  const isGreeting = /^(hi|hello|hey|assalam|salam|good morning|good evening)\b/i.test(lower);
+  // ── Step 4: Pure greetings (no follow-up question) ───────────────────────
+  // Match ONLY when the message is JUST a greeting — no follow-up question
+  // attached. "hi" / "hello" / "good morning" alone hit this fast path;
+  // "hi who are you?" / "hi anything for me?" must route to Brain so the
+  // multi-part rule + introspective / day_brief overrides apply.
+  // Per Basit 2026-05-20: previous greeting regex matched "hi who are u?"
+  // and short-circuited to the hardcoded "Hi <fullName>! How can I help?"
+  // bypass — Brain never saw the identity question, post-process never
+  // ran to swap full name → preferredTitle.
+  const isPureGreeting = /^(hi+|hello+|hey+|assalam(u?\s*alai?kum)?|salam(\s*alai?kum)?|good\s+morning|good\s+evening|good\s+afternoon|aoa)\s*[.!?,…]*\s*$/i.test(lower);
 
-  if (isGreeting && isNewSession) {
-    // First message in a new session — greet by name and introduce
-    const greeting = [
-      `Hi ${userName}! 👋`,
-      '',
-      `I'm your TMCAI assistant. You can ask me anything about your company data:`,
-      `• Projects — "show project status", "which projects are delayed?"`,
-      `• Sales — "revenue breakdown", "top clients"`,
-      `• Employees — "how many employees?", "show org chart"`,
-      `• Risks — "open risks", "critical issues"`,
-      '',
-      `What would you like to know?`,
-    ].join('\n');
-    history.push({ role: 'user', content: queryText }, { role: 'assistant', content: greeting });
-    await prisma.$executeRawUnsafe(
-      `UPDATE whatsapp_sessions SET conversation_history = $1::jsonb, last_message_at = NOW() WHERE id = $2`,
-      JSON.stringify(history.slice(-20)), sessionId,
-    );
-    await sendReply(params, greeting);
-    return;
-  }
+  if (isPureGreeting) {
+    // Use persona.addressAs (preferredTitle from Settings → Profile,
+    // e.g. "Sir") instead of raw userName which is the user's full
+    // display name. Keeps the fast-path response consistent with how
+    // Brain addresses the user everywhere else.
+    let addressName = userName;
+    try {
+      const { getBrainPersona } = await import('../knowledge/brainPersonaService');
+      const persona = await getBrainPersona(userId, params.clientNumber);
+      addressName = persona.addressAs || persona.userFirstName || userName;
+    } catch { /* fall back to userName */ }
 
-  if (isGreeting && !isNewSession) {
+    if (isNewSession) {
+      // First message in a new session — greet + brief intro
+      const greeting = `Hi ${addressName}! 👋  I'm your AI assistant — I read your inbox, WhatsApp, and calendar, and surface what needs you. Try "anything for me?" or "brief my day" to start.`;
+      history.push({ role: 'user', content: queryText }, { role: 'assistant', content: greeting });
+      await prisma.$executeRawUnsafe(
+        `UPDATE whatsapp_sessions SET conversation_history = $1::jsonb, last_message_at = NOW() WHERE id = $2`,
+        JSON.stringify(history.slice(-20)), sessionId,
+      );
+      await sendReply(params, greeting);
+      return;
+    }
     // Returning user in existing session — short greeting
-    await sendReply(params, `Hi ${userName}! How can I help you?`);
+    await sendReply(params, `Hi ${addressName}! How can I help you?`);
     return;
   }
 
