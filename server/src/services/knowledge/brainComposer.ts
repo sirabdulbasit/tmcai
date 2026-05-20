@@ -61,7 +61,8 @@ export interface ComposeResult {
 export type ComposedAction =
   | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
-  | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string };
+  | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
+  | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -700,6 +701,12 @@ Schema:
             "attendeeEmails": string[],   // MUST come from candidate blocks; never a guess
             "attendeeNames": string[],
             "note"?: string }
+        | { "type": "send_email",
+            "to": string[],                          // MUST be real email addresses from a Candidates block. Never a name; never a guess.
+            "cc"?: string[],
+            "subject": string,                       // Concise, action-oriented. NOT "Hi" or "Following up". For replies, "Re: <original subject>".
+            "body": string,                          // Full email body in the user's voice. Disclosure footer "Sent by Nexeo, <user>'s AI assistant" appended automatically by the dispatcher — do NOT include it yourself.
+            "replyToFeedEventId"?: string }          // When replying to an existing inbound, the feed_event id so Gmail keeps it threaded. Omit for fresh outbound.
 \`\`\`
 
 When to emit \`action\`:
@@ -713,7 +720,14 @@ When to emit \`action\`:
 - **Never write "I'll add it" / "I'll delegate it" without ALSO emitting the action.** That's the empty-promise failure mode.
 - **CRITICAL: action.payload must mirror your answer text.** Every name, recipient, title, and identifier you mention in \`answer\` MUST appear verbatim in \`action.payload\`, and every field in \`action.payload\` must be named in \`answer\`. If your text says "I'll email Numair about Google credits" but your action's title is "EXIM solution", that's a lie — rewrite both until they match.
 - **NEVER source action subjects from the Open Items snapshot for items the user hasn't named.** The snapshot is for RESOLVING references the user made; it's not a menu to pick from. If you can't quote a recent line containing the action subject (recipient, delegatee, item title), do NOT emit an action — ask for the missing detail in text.
-- **If the user's ask maps to an action TYPE not in the list above** (sending a fresh outbound email, making a phone call, posting elsewhere), do NOT pick the nearest type that "sort of" fits. Say so plainly and offer the closest legitimate alternative or ask the user to clarify.
+- **If the user's ask maps to an action TYPE not in the list above** (making a phone call, posting to Slack, sending SMS), do NOT pick the nearest type that "sort of" fits. Say so plainly and offer the closest legitimate alternative or ask the user to clarify.
+
+- **send_email is for OUTBOUND email from the user's Gmail.** Use it when the user says "email X", "send an email to Y", "reply to Z", "respond to that thread". Requirements before emitting:
+  - \`to\` MUST be real email address(es) from a Candidates block above. If you only have a name and no candidate match, ask the user to confirm the email or pick from a candidates list. NEVER guess an email.
+  - \`subject\` and \`body\` MUST be specific — say what you'd send. Vague subjects like "Following up" or "Hi" fail; "Re: Google credits — Debby's consumption plan question" passes.
+  - For replies, include \`replyToFeedEventId\` if you opened the original inbound email (its id is in the opened pages or attention surface). This keeps Gmail threading correct.
+  - The disclosure footer "Sent by Nexeo, <user>'s AI assistant" is appended automatically by the dispatcher — do NOT include it in your \`body\`.
+  - **PREVIEW BEFORE SENDING for fresh outbound.** Per Rule D of conversational rules: when the user hasn't seen the draft yet, your first reply states {to, subject, body} in your \`answer\` text and DOES NOT emit \`action\`. Emit the structured action only on the user's next-turn confirmation ("yes send", "go ahead", "send it"). For obvious one-step requests where the user already gave the exact recipient + topic in this same message, you may emit directly — but only when ambiguity is zero.
 
 Slot continuity: if your immediately-previous turn asked for one missing slot, the user's current message is FILLING THAT SLOT. Re-emit the same action with the slot now populated. Do not ask again.
 
@@ -1210,6 +1224,68 @@ export async function compose(
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         if (!res.ok) answer = res.message;
         else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'send_email') {
+        // Outbound email via the user's own Gmail account. Per the
+        // locked decision in feedback_brain_never_speaks_as_user.md:
+        // Brain CAN send from the user's Gmail (it's the user's
+        // identity, not Brain's) BUT MUST append the disclosure footer
+        // so recipients know an assistant composed it. Sent via
+        // gmailService.sendUserEmail which uses the user's OAuth grant.
+        try {
+          const { sendUserEmail } = await import('../gmailService');
+          const userName = persona.userFirstName || persona.userFullName || 'the user';
+          const disclosureFooter = `\n\n—\nSent by Nexeo, ${userName}'s AI assistant.`;
+          const bodyWithFooter = act.body.endsWith(disclosureFooter)
+            ? act.body
+            : `${act.body}${disclosureFooter}`;
+          // Single-To-only for v1; if act.to.length > 1, the first is
+          // the primary recipient and the rest go to Cc. cc array (if
+          // present) is appended after that. Comma-join is what
+          // sendUserEmail expects for cc.
+          const primaryTo = act.to[0];
+          const extraCc = [...act.to.slice(1), ...(act.cc ?? [])];
+          const ccStr = extraCc.length ? extraCc.join(', ') : undefined;
+          // If this is a reply, look up the original feed event for
+          // threadId + messageId headers so Gmail keeps it in-thread.
+          let threadOpts: { threadId?: string; inReplyTo?: string; references?: string } | undefined;
+          if (act.replyToFeedEventId) {
+            const fe = await prisma.feedEvent.findUnique({
+              where: { id: act.replyToFeedEventId },
+              select: { sourceId: true, rawPayload: true },
+            }).catch(() => null);
+            if (fe) {
+              const payload = (fe.rawPayload as Record<string, unknown> | null) ?? {};
+              const messageIdHeader = typeof payload.messageIdHeader === 'string'
+                ? payload.messageIdHeader
+                : (typeof payload.messageId === 'string' ? payload.messageId : undefined);
+              const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
+              threadOpts = {
+                threadId,
+                inReplyTo: messageIdHeader,
+                references: messageIdHeader,
+              };
+            }
+          }
+          const sendRes = await sendUserEmail(userId, primaryTo, act.subject, bodyWithFooter, ccStr, threadOpts);
+          if (sendRes.success) {
+            const recipients = [primaryTo, ...extraCc].join(', ');
+            actionResult = {
+              ok: true,
+              artifactId: sendRes.messageId,
+              message: `Sent email to ${recipients} — subject: "${act.subject}".`,
+            };
+            // Replace the LLM's announcement with the canonical
+            // confirmation so what the user sees matches what dispatched.
+            answer = actionResult.message;
+          } else {
+            actionResult = { ok: false, message: `Send failed: ${sendRes.error ?? 'unknown error from Gmail'}` };
+            answer = actionResult.message;
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] send_email failed', { error: e?.message, userId });
+          actionResult = { ok: false, message: `Send failed: ${e?.message ?? 'unknown'}` };
+          answer = actionResult.message;
+        }
       }
     } catch (e: any) {
       actionResult = { ok: false, message: `Action dispatch failed: ${e?.message ?? e}` };
@@ -2236,6 +2312,23 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const durationMin = typeof r.durationMin === 'number' && r.durationMin > 0 ? Math.floor(r.durationMin) : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
     return { type: 'schedule_meeting', title, whenIso, durationMin, attendeeEmails, attendeeNames, note };
+  }
+  if (type === 'send_email') {
+    // Strict slot validation. Missing any of {to, subject, body} drops
+    // the action to null so the LLM's text answer goes out alone, and
+    // the empty-promise guard catches any "I've sent" claim that
+    // accompanies a null action. We do NOT silently send with one of
+    // these missing — that's how wrong-recipient bugs happen.
+    const toRaw = Array.isArray(r.to) ? r.to : (typeof r.to === 'string' ? [r.to] : []);
+    const to = toRaw.filter((x: unknown): x is string => typeof x === 'string' && x.includes('@'));
+    const ccRaw = Array.isArray(r.cc) ? r.cc : (typeof r.cc === 'string' ? [r.cc] : []);
+    const cc = ccRaw.filter((x: unknown): x is string => typeof x === 'string' && x.includes('@'));
+    const subject = typeof r.subject === 'string' ? r.subject.trim() : '';
+    const body = typeof r.body === 'string' ? r.body.trim() : '';
+    if (to.length === 0 || !subject || !body) return null;
+    const replyToFeedEventId = typeof r.replyToFeedEventId === 'string' && r.replyToFeedEventId.trim()
+      ? r.replyToFeedEventId.trim() : undefined;
+    return { type: 'send_email', to, cc: cc.length ? cc : undefined, subject, body, replyToFeedEventId };
   }
   return null;
 }
