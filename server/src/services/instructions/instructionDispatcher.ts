@@ -287,40 +287,47 @@ export async function dispatchInstruction(args: {
     // ─── schedule_meeting ────────────────────────────────────────
     case 'schedule_meeting': {
       const title = ix.params.meetingTitle ?? 'Discussion';
-      const whenText = ix.params.meetingWhen ?? '';
-      const duration = ix.params.meetingDurationMin ?? 30;
-      const attendees = ix.params.meetingAttendees ?? [];
+      const whenIso = ix.params.meetingWhen ?? '';
+      const duration = Math.max(1, Number(ix.params.meetingDurationMin ?? 30));
+      const attendeesRaw = ix.params.meetingAttendees ?? [];
+      // The composer passes a mixed array of emails + names. We can only
+      // send invites to emails — filter to addresses with an "@".
+      const attendees = (attendeesRaw as string[]).filter((a) => typeof a === 'string' && a.includes('@'));
+
       try {
-        // Calendar event creation lives in calendarService — call it
-        // through the existing helper. We pass natural-language `when`
-        // and let that service parse / fall back to a reasonable slot.
-        const { createCalendarEvent } = await import('../calendarService').catch(() => ({} as any));
-        if (typeof createCalendarEvent !== 'function') {
-          // Calendar create not yet wired — log a draft so user can act manually.
-          await prisma.agentAction.create({
-            data: {
-              clientNumber, userId,
-              actionType: 'meeting_draft',
-              status: 'pending_approval',
-              requiresApproval: true,
-              executedByAgent: 'voice_instruction',
-              input: { title, whenText, duration, attendees, sourceFeedEventId: ix.targetFeedEventId } as any,
-              output: { note: 'Calendar create not yet wired — review on Day Brief and create manually.' } as any,
-            } as any,
-          });
-          return {
-            ok: true,
-            message: `I\'ll create a meeting "${title}" for ${whenText}${attendees.length ? ` with ${attendees.join(', ')}` : ''}. Calendar create isn\'t fully wired yet — staged for your review on Day Brief.`,
-            warnings: ['calendar-create-stub'],
-          };
+        // Build ISO end-time from start + duration. brainComposer emits
+        // whenIso = "YYYY-MM-DDTHH:MM" (no seconds, no zone), which
+        // Calendar will treat as the Asia/Karachi local time the
+        // calendarService sets.
+        const startDate = new Date(whenIso);
+        if (Number.isNaN(startDate.getTime())) {
+          return { ok: false, message: `Schedule failed: I couldn't parse the time "${whenIso}". Tell me the date and time clearly (e.g. "tomorrow 3pm" or "2026-05-21 15:00").` };
         }
-        const ev = await createCalendarEvent({
-          userId, clientNumber, title, whenText, durationMin: duration, attendees,
+        const endDate = new Date(startDate.getTime() + duration * 60_000);
+
+        // Real Google Calendar event creation. Previous version imported
+        // a non-existent name (`createCalendarEvent`) — the actual export
+        // is `createEvent`. The undefined import dropped every Brain
+        // schedule_meeting into the stub branch below, which returned
+        // ok:true with a misleading "I'll create..." message — Brain
+        // claimed scheduled, calendar untouched. Observed 2026-05-20.
+        const { createEvent } = await import('../calendarService');
+        const r = await createEvent(userId, {
+          title,
+          startTime: startDate.toISOString(),
+          endTime: endDate.toISOString(),
+          attendees,
         });
+
+        if (r.error || !r.event) {
+          return { ok: false, message: `Schedule failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        }
+
+        const eventStart = r.event.start ?? whenIso;
         return {
           ok: true,
-          artifactId: ev?.id,
-          message: `Meeting "${title}" set for ${ev?.start ?? whenText}${attendees.length ? ` with ${attendees.join(', ')}` : ''}.`,
+          artifactId: r.event.id,
+          message: `Meeting "${title}" scheduled for ${eventStart}${attendees.length ? ` with ${attendees.join(', ')}` : ''}.${attendees.length ? ' Invites sent.' : ''}`,
         };
       } catch (err: any) {
         return { ok: false, message: `Schedule failed: ${err.message}` };

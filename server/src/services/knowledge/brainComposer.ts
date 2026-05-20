@@ -1021,8 +1021,24 @@ export async function compose(
   // the retrieval rules, day_brief gets the brief format. Same data — less
   // attention-dilution for Gemini/Claude.
   const isActionTurn = looksLikeImperative(question);
+
+  // Casual-override heuristic. Per Basit 2026-05-20: "hi whats in open
+  // items?" → planner classified casual (because of the "hi" prefix) →
+  // casual prompt is intentionally minimal (no schema, no open-items
+  // snapshot) → Brain just greeted and ignored the actual question.
+  // If the user's text mentions a known entity ("open item", "email",
+  // "meeting", "calendar", "whatsapp", "contact", etc.), upgrade casual
+  // → factual so the entity snapshots get included in the prompt. A
+  // factual question wrapped in a casual prefix should still get
+  // factual treatment.
+  const entityKeywordRe = /\b(open\s+item|emails?|inbox|sent\s+item|meeting|meetings|calendar|whatsapp|wa|chat|contact|task|tasks|reminder|reply|drafts?|day\s+brief|brief|status|update)\b/i;
+  let effectiveIntent = String(plan.intent ?? 'factual');
+  if (effectiveIntent === 'casual' && entityKeywordRe.test(question)) {
+    effectiveIntent = 'factual';
+  }
+
   const systemPrompt = assembleSystemPrompt({
-    intent: String(plan.intent ?? 'factual'),
+    intent: effectiveIntent,
     isActionTurn,
     persona,
     schema,
@@ -1239,11 +1255,16 @@ export async function compose(
     // is claiming IT just did something ("I've added X", "Done — delegated
     // to Y", Brain-voice "I scheduled the meeting"), NOT generic mentions
     // ("you've added 5 to open items", "these items were delegated to
-    // various owners last week"). Without this scoping, factual queries
-    // like "any open item?" triggered the guard because the LLM's answer
-    // mentioned "added to open items" while describing existing rows.
-    // Observed 2026-05-20: Basit asked "any open item?" → sentinel reply.
-    const completionRe = /(?:^|[.!?:]\s+|—\s+|"\s+)(?:i'?ve|i\s+have|i'?ll|i\s+just|i\s+already|i\s+)(?:delegated|assigned|added|scheduled|sent|reminded|set|drafted)\b|^done\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+    // various owners last week").
+    //
+    // Earlier version missed "I've sent" / "I've delegated" because the
+    // pronoun alternation expected the verb immediately, no whitespace.
+    // Fixed: required \s+ between pronoun and verb. Also extended verb
+    // set with dispatched/emailed for the upcoming send_email action.
+    // Observed 2026-05-20: Basit asked Brain to send an email; Brain
+    // wrote "I've sent that draft reply to Numair Mazhar..." with no
+    // dispatched action; guard's regex missed it; lie reached the user.
+    const completionRe = /\b(?:i'?ve|i\s+have|i'?ll|i\s+just|i\s+already|i)\s+(?:delegated|assigned|added|scheduled|sent|reminded|set|drafted|dispatched|emailed|forwarded|replied)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
     if (completionRe.test(answer)) {
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
