@@ -33,8 +33,15 @@ import type { ComposeResult, ComposedAction } from './brainComposer';
 export type Channel = 'web' | 'whatsapp';
 
 /** Hard cap on a single WA message. WhatsApp accepts up to 4096
- *  but anything over ~600 reads like a wall of text on a phone. */
-const WA_MAX_CHARS = 600;
+ *  but anything over ~1000 starts to feel like a memo on a phone.
+ *  Day Brief specifically asks the LLM to stay ≤ 800; this cap is
+ *  the renderer's safety net for non-brief replies that grew. Was 600
+ *  — too tight, truncated mid-content on the day brief (calendar +
+ *  2 emails, then "..."). Raised to 1000 to match the format rule
+ *  ceiling with headroom. Per Basit 2026-05-20: WA brief was missing
+ *  WhatsApp + Open Items + closing line because trim cut the message
+ *  in the middle of the email section. */
+const WA_MAX_CHARS = 1000;
 
 /** Compress markdown to plain text suitable for WhatsApp.
  *  Removes: backtick-fenced code blocks, inline code, bold/italic

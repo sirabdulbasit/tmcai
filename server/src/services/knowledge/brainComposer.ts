@@ -520,6 +520,14 @@ export interface ComposeOptions {
    *  wrong person — re-scope to Omar") so the LLM corrects course on the
    *  second attempt. Bounded to 1000 chars by the caller. */
   steeringHint?: string | null;
+  /** Target rendering channel — drives compactness, formatting choice,
+   *  and the renderer's later trim limit. 'whatsapp' tells the LLM to
+   *  produce one-line-per-item compact output (≤ 800 chars); 'web' lets
+   *  it use markdown + longer prose. Per Basit 2026-05-20: previously
+   *  this flag was dropped at the answerAsBrain → compose boundary, so
+   *  the LLM never knew it was writing for WA — it produced verbose
+   *  web-format prose and the channelRenderer trimmed mid-sentence. */
+  channel?: 'web' | 'whatsapp';
 }
 
 // ─── Conditional-prompt assembly ──────────────────────────────────────
@@ -774,10 +782,13 @@ function buildCasualPrompt(args: {
   persona: { systemPreamble: string };
   todayBlock: string;
   capsBlock: string;
+  channelRule: string;
 }): string {
   return `${args.persona.systemPreamble}
 
 ${CORE_CONVERSATIONAL_RULES}
+
+${args.channelRule}
 
 ${args.todayBlock}
 
@@ -811,26 +822,50 @@ function assembleSystemPrompt(args: {
   recentLog: string;
   openedBlock: string;
   steeringHint: string | null | undefined;
+  channel: 'web' | 'whatsapp';
   todayDate: string;
 }): string {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, openItemsBlock, todayCalendarBlock,
-    attentionBlock, candidatesBlock, recentLog, openedBlock, steeringHint, todayDate,
+    attentionBlock, candidatesBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
   } = args;
 
   const todayBlock = `# Today
 Today is ${todayDate} (UTC). Use this as the anchor for relative dates ("today", "tomorrow", "yesterday", "Friday"). When the user gives a relative date, resolve against today and emit ISO (YYYY-MM-DD) in any \`action.dueDate\` you produce.`;
 
+  // Channel-specific compactness directive. When writing for WhatsApp,
+  // the LLM must produce one-line-per-item compact output — no
+  // multi-sentence prose, no commentary, no markdown. The renderer
+  // trims to 1000 chars but anything close to that wall-of-texts on a
+  // phone screen, so target ≤ 800. Per Basit 2026-05-20: WA brief was
+  // truncated mid-sentence because the LLM produced 600-char paragraphs
+  // per email item ("Numair is asking to assign a COPA resource for
+  // Grow Reporting, which needs to be delegated to someone who can
+  // action it. Sohaib is mentioned.") instead of the one-liner
+  // ("Numair Mazhar: Asking to assign a COPA resource for Grow
+  // Reporting.") the web Brain Chat produced.
+  const channelRule = channel === 'whatsapp'
+    ? `# Channel: WhatsApp — COMPACT mode (non-negotiable)
+Your reply will be read on a phone screen. Hard cap: 800 characters total. Render rules:
+- ONE LINE per item. No multi-sentence prose. "<Sender>: <one-clause substance>." That's it.
+- NO markdown. No **, no \`, no headers (#). Plain text with section emojis (📅 📬 💬 📋 ⚠️) only.
+- NO commentary about Brain's own activity ("I see..." / "Looking at..." / "It seems...").
+- NO ", which needs to be / will likely / seems to be" expansions — those are web verbosity.
+- Web Brain Chat produces "Numair Mazhar: Asking to assign a COPA resource for Grow Reporting." — match that compactness here. Anything longer gets truncated mid-message by the renderer; user sees half a brief and trust breaks.`
+    : `# Channel: web
+Markdown rendering is supported. Use bullets, headers, and bold sparingly for scannability. No hard char cap.`;
+
   // Casual turns — minimal prompt. No schema, no rules, no actions.
   if (intent === 'casual' && !isActionTurn) {
-    return buildCasualPrompt({ persona, todayBlock, capsBlock });
+    return buildCasualPrompt({ persona, todayBlock, capsBlock, channelRule });
   }
 
   // Build the variant prompt in pieces, then join.
   const parts: string[] = [];
   parts.push(persona.systemPreamble);
   parts.push(CORE_CONVERSATIONAL_RULES);
+  parts.push(channelRule);
 
   // Schema — only for introspective questions (about Brain/Nexeo/tenant)
   // and for factual queries that might need to reason about the data model.
@@ -1125,6 +1160,7 @@ export async function compose(
     recentLog: recentLog || '(no recent activity logged)',
     openedBlock,
     steeringHint: opts.steeringHint,
+    channel: opts.channel ?? 'web',
     todayDate: new Date().toISOString().slice(0, 10),
   });
 

@@ -317,16 +317,21 @@ export async function listItems(
   if (filters?.sourceFeed) {
     where.sourceFeed = filters.sourceFeed;
   }
-  // Smoke filter — default ON for ALL callers. UI's previous behaviour
-  // didn't exclude smoke items; this aligns it with brainComposer so
-  // Action Center, web Brain Chat, and WhatsApp Brain agree on what's
-  // a real item.
-  const excludeSmoke = filters?.excludeSmoke ?? true;
-  if (excludeSmoke) {
-    (where as any).NOT = { metadata: { path: ['smoke'], equals: true } };
-  }
-
-  return prisma.openItem.findMany({
+  // Smoke filter is OPT-IN (default false). Per Basit 2026-05-20: the
+  // previous default-true broke the UI Action Center — it showed
+  // "2 Total Open" in the stats tile but "No items found" in the list,
+  // because Prisma's NOT-JSON-path clause silently drops rows whose
+  // metadata doesn't contain a 'smoke' key (Postgres treats missing-
+  // key path queries as NULL → NOT NULL → UNKNOWN → row excluded by
+  // WHERE). The two real items (EXIM, Polypack) have no smoke key in
+  // metadata so they got filtered out by my own "safety" filter.
+  //
+  // Fix: JS post-filter only the rows we want to drop, and only when
+  // the caller explicitly asks. UI doesn't pass excludeSmoke → keeps
+  // its prior behaviour. Brain composer (via services/views/openItems)
+  // passes excludeSmoke=true → smoke rows get dropped at the JS layer,
+  // safely, without the Postgres NULL-semantics trap.
+  const rows = await prisma.openItem.findMany({
     where,
     orderBy: [
       { priority: 'asc' }, // critical first
@@ -334,6 +339,14 @@ export async function listItems(
     ],
     ...(filters?.limit ? { take: Math.min(Math.max(filters.limit, 1), 500) } : {}),
   });
+
+  if (filters?.excludeSmoke === true) {
+    return rows.filter((r) => {
+      const md = (r as { metadata?: unknown }).metadata as Record<string, unknown> | null;
+      return !md || md.smoke !== true;
+    });
+  }
+  return rows;
 }
 
 // ─── Status transitions ──────────────────────────────────────────
