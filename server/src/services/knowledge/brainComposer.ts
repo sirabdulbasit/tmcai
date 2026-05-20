@@ -62,7 +62,8 @@ export type ComposedAction =
   | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
-  | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string };
+  | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
+  | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -558,7 +559,8 @@ const CORE_CONVERSATIONAL_RULES = `# Core conversational rules (always apply)
 3. **Enumerate ambiguity.** When the user's request has two or more valid readings, present 2-3 as named options and ask which one. Don't ask "is that right?" against a single guess.
 4. **Honesty about limits.** If you can't do something or don't have the info, say so plainly. Don't fabricate. Don't punt with "would you like me to look into that" when the answer is already in front of you.
 5. **Mirror language and vary register.** Reply in the user's current-message language. Vary your acknowledgements ("Got it" / "Makes sense" / "Alright" / "One sec"). Don't sound mechanical.
-6. **Never claim what you didn't do.** If you write "delegated", "added", "sent", "scheduled" — you MUST also emit the corresponding structured action this turn, OR be quoting a confirmed previous action visible in history. False completion claims are the worst failure mode.`;
+6. **Never claim what you didn't do.** If you write "delegated", "added", "sent", "scheduled" — you MUST also emit the corresponding structured action this turn, OR be quoting a confirmed previous action visible in history. False completion claims are the worst failure mode.
+7. **Address every part of a multi-part message.** A single user message often contains TWO or more distinct items: greeting + question, question + sub-question, request + clarification, etc. ("Hi who are you?" is greeting AND identity question. "Brief my day. Also what's the weather?" is two requests.) Answer EACH part — don't lock onto the first and drop the rest. If parts conflict or you can't address one, say which and why; don't silently skip.`;
 
 /** Output shape rules — sent on every turn (the LLM must always emit
  *  valid JSON). Channel-aware: markdown is fine for web; on WhatsApp,
@@ -707,6 +709,10 @@ Schema:
             "subject": string,                       // Concise, action-oriented. NOT "Hi" or "Following up". For replies, "Re: <original subject>".
             "body": string,                          // Full email body in the user's voice. Disclosure footer "Sent by Nexeo, <user>'s AI assistant" appended automatically by the dispatcher — do NOT include it yourself.
             "replyToFeedEventId"?: string }          // When replying to an existing inbound, the feed_event id so Gmail keeps it threaded. Omit for fresh outbound.
+        | { "type": "notify_via_whatsapp",
+            "recipientName": string,                 // The person's display name. Used in the auto-prepended introduction.
+            "recipientPhone": string,                // E.164 phone (e.g. "+923001234567"). MUST be a real phone from a Candidates block. Never an email; never a guess.
+            "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it.
 \`\`\`
 
 When to emit \`action\`:
@@ -722,7 +728,11 @@ When to emit \`action\`:
 - **NEVER source action subjects from the Open Items snapshot for items the user hasn't named.** The snapshot is for RESOLVING references the user made; it's not a menu to pick from. If you can't quote a recent line containing the action subject (recipient, delegatee, item title), do NOT emit an action — ask for the missing detail in text.
 - **If the user's ask maps to an action TYPE not in the list above** (making a phone call, posting to Slack, sending SMS, sending a WhatsApp message AS the user from their personal WhatsApp identity), do NOT pick the nearest type that "sort of" fits. Say so plainly and offer the closest legitimate alternative or ask the user to clarify.
 
-- **Sending WhatsApp messages from the user's personal WhatsApp identity is FORBIDDEN.** Per the Brain-never-speaks-as-user rule: Brain MUST NOT send any message from the user's paired WhatsApp number, ever. When the user says "reply to X on WhatsApp", "send WA message to Y", "tell Z on WhatsApp" — do NOT promise to send. Reply honestly: *"I can't send WhatsApp messages from your personal number — that would mean speaking as you. I can draft the message for you to copy/paste, or you can send it directly. Which?"* No action emit. The empty-promise guard will catch any "I've sent" claim, but the right behavior is to refuse before claiming.
+- **WhatsApp from the user's personal number is FORBIDDEN. WhatsApp from the Nexeo notifier number on the user's behalf is ALLOWED via \`notify_via_whatsapp\`.** Distinction matters and the user can tell:
+  - Forbidden: replying to a contact AS the user, from the user's paired WhatsApp number — recipient would see the user's number and assume the user wrote it. Hard rule, no exceptions, ever.
+  - Allowed: sending FROM the Nexeo tenant notifier number, with an explicit introduction ("Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know: ..."). Recipient sees a different number, knows an assistant is writing, sees the message clearly attributed.
+  - Use \`notify_via_whatsapp\` when the user EXPLICITLY asks to inform/notify/tell someone — e.g. "tell Asad I'll be in office", "let Yousuf know the meeting moved", "ping Debby that the plan is ready". The dispatcher auto-prepends the introduction; you write only the substantive message in \`message\`.
+  - Do NOT use \`notify_via_whatsapp\` to "reply" on the user's existing WhatsApp thread with a contact — that creates split-identity confusion (contact sees half the thread from user's number, half from Nexeo's). For reply intent, draft for the user to copy/paste instead.
 
 - **Identity-by-channel: emails go to email addresses, meetings go to email addresses, WhatsApp replies are forbidden.** When a contact has BOTH email and phone in the Candidates block (most TMC contacts do), pick by the channel the action requires:
   - send_email \`to\` → MUST be the email address (the one with @), never the phone number.
@@ -1051,9 +1061,17 @@ export async function compose(
   // factual question wrapped in a casual prefix should still get
   // factual treatment.
   const entityKeywordRe = /\b(open\s+item|emails?|inbox|sent\s+item|meeting|meetings|calendar|whatsapp|wa|chat|contact|task|tasks|reminder|reply|drafts?|day\s+brief|brief|status|update)\b/i;
+  // Introspective patterns wrapped in casual prefixes ("Hi who are you?",
+  // "hello what can you do") — these need the schema + capabilities
+  // blocks too, not the minimal casual prompt. Upgrade to introspective.
+  const introspectiveRe = /\b(who\s+(are\s+you|made\s+you)|what\s+(are\s+you|can\s+you\s+do|do\s+you\s+know\s+about\s+(me|us|tmc|nexeo))|tell\s+me\s+about\s+(yourself|nexeo|tmc|you))\b/i;
   let effectiveIntent = String(plan.intent ?? 'factual');
-  if (effectiveIntent === 'casual' && entityKeywordRe.test(question)) {
-    effectiveIntent = 'factual';
+  if (effectiveIntent === 'casual') {
+    if (introspectiveRe.test(question)) {
+      effectiveIntent = 'introspective';
+    } else if (entityKeywordRe.test(question)) {
+      effectiveIntent = 'factual';
+    }
   }
 
   const systemPrompt = assembleSystemPrompt({
@@ -1229,6 +1247,35 @@ export async function compose(
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         if (!res.ok) answer = res.message;
         else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'notify_via_whatsapp') {
+        // Outbound WhatsApp via the tenant Nexeo number, NOT the user's
+        // personal WA. Recipient sees a message from Nexeo's number,
+        // with an introduction making it clear an assistant is writing
+        // on the user's behalf. This is the WA mirror of send_email's
+        // disclosure-footer pattern — Brain speaks as Brain, on behalf
+        // of the user, not impersonating them.
+        try {
+          const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+          const userName = persona.userFirstName || persona.userFullName || 'the user';
+          const intro = `Hi ${act.recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+          const fullBody = `${intro}${act.message}`;
+          const r = await sendTenantWhatsAppText(clientNumber, act.recipientPhone, fullBody, userId);
+          if (r.ok) {
+            actionResult = {
+              ok: true,
+              artifactId: r.waMessageId,
+              message: `Sent WhatsApp to ${act.recipientName} (${act.recipientPhone}) from the Nexeo number, introducing me as your assistant.`,
+            };
+            answer = actionResult.message;
+          } else {
+            actionResult = { ok: false, message: `WhatsApp send failed: ${r.error ?? 'tenant notifier not paired or returned no result'}` };
+            answer = actionResult.message;
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] notify_via_whatsapp failed', { error: e?.message, userId });
+          actionResult = { ok: false, message: `WhatsApp send failed: ${e?.message ?? 'unknown'}` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'send_email') {
         // Outbound email via the user's own Gmail account. Per the
         // locked decision in feedback_brain_never_speaks_as_user.md:
@@ -2318,6 +2365,23 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const replyToFeedEventId = typeof r.replyToFeedEventId === 'string' && r.replyToFeedEventId.trim()
       ? r.replyToFeedEventId.trim() : undefined;
     return { type: 'send_email', to, cc: cc.length ? cc : undefined, subject, body, replyToFeedEventId };
+  }
+  if (type === 'notify_via_whatsapp') {
+    // Outbound WhatsApp from Nexeo's tenant notifier number (NOT the
+    // user's personal WA — that's still forbidden). Brain identifies
+    // itself in the body so the recipient knows it's an assistant, not
+    // the user themselves. Same pattern as send_email's "Sent by Nexeo"
+    // footer but for the WA channel.
+    const recipientName = typeof r.recipientName === 'string' ? r.recipientName.trim() : '';
+    const recipientPhone = typeof r.recipientPhone === 'string' ? r.recipientPhone.trim() : '';
+    const message = typeof r.message === 'string' ? r.message.trim() : '';
+    // Phone must be E.164-ish (digits + optional + / spaces / dashes /
+    // parens). If the LLM put an email in this field, we reject — that
+    // would be the same channel-confusion bug as send_email got with
+    // a phone number, in reverse.
+    const phoneOk = !recipientPhone.includes('@') && /^[+\d][\d\s().-]{6,}$/.test(recipientPhone);
+    if (!recipientName || !phoneOk || !message) return null;
+    return { type: 'notify_via_whatsapp', recipientName, recipientPhone, message };
   }
   return null;
 }
