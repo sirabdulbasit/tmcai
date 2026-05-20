@@ -624,10 +624,16 @@ const EMPTY_PROMISE_RE = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)
  *  cheap (slightly longer prompt, no quality loss). */
 function looksLikeImperative(text: string): boolean {
   const q = text.trim().toLowerCase();
-  // Leading verb — strongest signal.
-  if (/^(add|delegate|send|schedule|remind|snooze|draft|reply|create|forward|mark|close|cancel|update|book|set|email|ask|chase|follow|tell|note|log|move)\b/.test(q)) return true;
+  // Leading verb — strongest signal. Added 2026-05-21: reschedule,
+  // postpone, move (already there), and explicit "cancel" leading
+  // imperatives for the Phase 2 cancel_meeting / reschedule_meeting
+  // capabilities. Without these, "reschedule polypack at 3pm" was
+  // classified as non-imperative — ACTION_RULES + artifacts block
+  // weren't injected, the LLM couldn't see eventIds, and it fell
+  // back to "I can't reschedule" prose.
+  if (/^(add|delegate|send|schedule|reschedule|postpone|remind|snooze|draft|reply|create|forward|mark|close|cancel|delete|remove|update|change|book|set|email|ask|chase|follow|tell|note|log|move|push|shift|invite)\b/.test(q)) return true;
   // Body verb with action-y framing.
-  if (/\b(please|kindly|can you|could you)\s+(add|delegate|send|schedule|remind|snooze|draft|reply|create|forward|mark|close|cancel|update|book|set\s+up|email|ask|chase|follow up|tell|note|log|move)\b/.test(q)) return true;
+  if (/\b(please|kindly|can you|could you)\s+(add|delegate|send|schedule|reschedule|postpone|remind|snooze|draft|reply|create|forward|mark|close|cancel|delete|remove|update|change|book|set\s+up|email|ask|chase|follow up|tell|note|log|move|push|shift|invite)\b/.test(q)) return true;
   return false;
 }
 
@@ -1278,7 +1284,29 @@ export async function compose(
     }
   }
 
-  const artifactsBlock = renderArtifactsBlock(history);
+  // Artifacts block — includes (a) session-dispatched action artifacts
+  // from history AND (b) upcoming Google Calendar events when the user
+  // message looks cancel/reschedule-ish, so Brain can identify ANY
+  // meeting the user references — not just ones it scheduled in-session.
+  // Without (b), a meeting scheduled in a prior session (or manually on
+  // Calendar) had no resolvable eventId and Brain self-disabled.
+  let artifactsBlock = renderArtifactsBlock(history);
+  if (isActionTurn && /\b(cancel|reschedule|postpone|move|push|shift|change|update|delete|remove)\b/i.test(question)) {
+    try {
+      const { getUpcomingEvents } = await import('../calendarService');
+      const upcoming = await getUpcomingEvents(userId, 7);
+      if (upcoming.events && upcoming.events.length > 0) {
+        const calLines = upcoming.events.slice(0, 15).map((e) =>
+          `- schedule_meeting artifactId=${e.id} — "${e.title}" at ${e.start}${e.attendees?.length ? ` with ${e.attendees.slice(0, 3).join(', ')}` : ''}`,
+        );
+        const calBlock = `# Upcoming calendar events (next 7 days — use these artifactIds for cancel_meeting / reschedule_meeting actions referencing existing meetings)
+${calLines.join('\n')}`;
+        artifactsBlock = artifactsBlock ? `${artifactsBlock}\n\n${calBlock}` : calBlock;
+      }
+    } catch (e: any) {
+      console.warn('[brain-chat] upcoming calendar fetch failed', { userId, error: e?.message });
+    }
+  }
   const systemPrompt = assembleSystemPrompt({
     intent: effectiveIntent,
     isActionTurn,
@@ -1399,9 +1427,18 @@ export async function compose(
     history.length > 0 &&
     history[history.length - 1]?.role === 'brain' &&
     /\?\s*$/.test(history[history.length - 1]?.text || '');
+  // Mutate intent — user clearly asked for action but main compose
+  // self-disabled ("I can't…"). Fire the decider to either commit OR
+  // honestly identify the missing slot (e.g., eventId not in artifacts).
+  // Added 2026-05-21 after Basit's reschedule turn was rejected by
+  // the main compose without ever consulting the decider.
+  const userMessageIsActionImperative =
+    !parsed.action &&
+    looksLikeImperative(question) &&
+    /^i\s+(?:can'?t|cannot|am\s+unable)/i.test(parsed.answer);
   const triggerDecider =
     !parsed.action &&
-    (EMPTY_PROMISE_RE.test(parsed.answer) || userMessageLooksLikeSlotFill);
+    (EMPTY_PROMISE_RE.test(parsed.answer) || userMessageLooksLikeSlotFill || userMessageIsActionImperative);
 
   if (triggerDecider) {
     console.warn('[brain-chat] triggering constrained action-decider', {
