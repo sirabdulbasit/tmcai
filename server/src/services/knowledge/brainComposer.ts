@@ -544,6 +544,23 @@ export interface ComposeOptions {
 // plan.intent + a light heuristic on the user's text. They drive WHICH
 // rule blocks the assembler concatenates.
 
+/** Empty-promise / completion-claim detector. Matches first-person
+ *  completion verbs across English (past, present-continuous, base form),
+ *  Roman-Urdu ("kar diya"), and Urdu-ish forms. Used in two places:
+ *    1. The post-dispatch guard at the end of composeAnswer — overrides
+ *       the LLM's reply with an honest "I didn't" if it claimed work
+ *       that wasn't dispatched.
+ *    2. Option A: post-compose retry. Before dispatch, if no action was
+ *       emitted but the answer claims one, re-call the LLM once with a
+ *       corrective addendum. Catches the "LLM said it did, didn't
+ *       actually" failure mode structurally instead of via prompt rules.
+ *
+ *  Designed to be inclusive of the patterns we've seen in production:
+ *  "I've sent", "I'll send", "I'm sending", "I sent", "I just sent",
+ *  "Done — delegated", "kar diya hai", "ho gaya". False positives are
+ *  cheap (one extra LLM call) — false negatives ship a lie. */
+const EMPTY_PROMISE_RE = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+
 /** Cheap heuristic for "the user is asking me to DO something." Used to
  *  gate the action vocabulary + emission rules — they shouldn't ride
  *  along on casual chat or factual questions. We don't need an LLM to
@@ -1235,11 +1252,6 @@ export async function compose(
   }
 
   const parsed = parseCompose(raw);
-  const validCiteSet = new Set(opened.map((p) => p.id));
-  const citedPageIds = parsed.cites.filter((id) => validCiteSet.has(id));
-  const sources = opened
-    .filter((p) => citedPageIds.includes(p.id))
-    .map((p) => p.sourceRef);
 
   // Diagnostic — what did the LLM actually emit on this turn? Without
   // this we can't tell whether a "Sending email now" prose without an
@@ -1257,6 +1269,79 @@ export async function compose(
     citesCount: parsed.cites.length,
     answerHead: parsed.answer.slice(0, 80),
   });
+
+  // ── Option A: post-compose empty-promise retry ─────────────────────
+  // If the LLM produced prose that claims completion ("I've sent",
+  // "I'm scheduling", "delegated to X") but emitted NO structured
+  // action JSON, re-call the LLM once with a corrective addendum.
+  // Deterministic loop terminator that converts "LLM ignored the
+  // emit-action rule" from a user-visible empty-promise into an
+  // automatic self-correction.
+  //
+  // Why not just rely on the post-dispatch guard?
+  //   The guard at the end of composeAnswer catches the lie and shows
+  //   an honest "I didn't do that" — but the work still didn't land.
+  //   With the retry, the SECOND attempt usually emits the action JSON
+  //   the first attempt forgot. So instead of "lied → caught and
+  //   replaced with honest no-op", the user gets "tried → corrected
+  //   → action actually dispatched." Same number of LLM calls in the
+  //   happy path; one extra only when the empty-promise pattern is
+  //   detected.
+  //
+  // Bounded: ONE retry attempt. If the retry STILL produces prose
+  // without an action, fall through to the post-dispatch guard which
+  // shows the honest "I didn't" marker. Never recurses.
+  if (!parsed.action && EMPTY_PROMISE_RE.test(parsed.answer)) {
+    console.warn('[brain-chat] empty-promise detected, retrying compose', {
+      userId, clientNumber, firstAttemptHead: parsed.answer.slice(0, 100),
+    });
+    const correctiveAddendum = `\n\n# CORRECTIVE INSTRUCTION (your previous attempt failed)
+Your previous attempt for this exact turn was:
+---
+${raw}
+---
+That response CLAIMED completion in prose ("I've sent" / "I'm scheduling" / "delegated to X") but emitted NO structured "action" JSON. The dispatcher cannot run a prose claim — it only runs structured actions. The previous response was REJECTED.
+
+Choose ONE now:
+(a) **Emit the action.** Fill the appropriate "action": { type: "...", ... } JSON from the conversation context. The slot data you need is already in the candidate / open-items / history blocks above — use it. Then write a one-line confirmation in "answer" that DESCRIBES the action you're emitting (don't claim it's done — the dispatcher will report success).
+(b) **If you genuinely cannot ground the action** (no candidate email, no parseable time, no item id), rewrite "answer" to ASK for the SPECIFIC missing slot. Do not claim you did anything. Set "action": null.
+
+Forbidden in your retry: any claim-completion phrasing ("I've sent / scheduled / delegated", "Sending it now", "I'll send shortly") without a corresponding action JSON.`;
+    try {
+      const retry = await callLLM(systemPrompt, userMessage + correctiveAddendum, {
+        maxTokens: 2048, userId, clientNumber, purpose: 'chat_compose_retry',
+      });
+      const retryParsed = parseCompose(retry.text);
+      console.info('[brain-chat] compose.retried', {
+        userId, clientNumber,
+        retryRawLen: retry.text.length,
+        retryActionEmitted: !!retryParsed.action,
+        retryActionType: retryParsed.action?.type ?? null,
+        retryAnswerHead: retryParsed.answer.slice(0, 80),
+      });
+      // Use the retry result if it either (a) emitted an action, or
+      // (b) no longer claims completion. If retry STILL claims work
+      // without action, keep the first attempt — the post-guard will
+      // overwrite with the honest "I didn't" marker.
+      if (retryParsed.action || !EMPTY_PROMISE_RE.test(retryParsed.answer)) {
+        parsed.action = retryParsed.action;
+        parsed.answer = retryParsed.answer;
+        parsed.cites = retryParsed.cites;
+        parsed.gaps = retryParsed.gaps;
+      }
+    } catch (e: any) {
+      console.warn('[brain-chat] retry failed', { userId, error: e?.message });
+      // Fall through with first attempt; post-guard catches the lie.
+    }
+  }
+
+  // Cite resolution moved AFTER the retry so retry's cites win if it
+  // ran. Otherwise this uses the first attempt's cites unchanged.
+  const validCiteSet = new Set(opened.map((p) => p.id));
+  const citedPageIds = parsed.cites.filter((id) => validCiteSet.has(id));
+  const sources = opened
+    .filter((p) => citedPageIds.includes(p.id))
+    .map((p) => p.sourceRef);
 
   // Action dispatch — if the LLM emitted a structured action, run it
   // through the same instructionDispatcher the Day Brief uses so an
@@ -1559,9 +1644,10 @@ export async function compose(
     //     "sent" was)
     // Added: i'?m pronoun, present-continuous verbs (sending, etc.),
     // and base-form verbs that follow "I'll" / "I'?m about to" / "now
-    // I'll" (send, delegate, etc.).
-    const completionRe = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
-    if (completionRe.test(answer)) {
+    // I'll" (send, delegate, etc.). The constant is hoisted (see
+    // EMPTY_PROMISE_RE near the top) so the post-compose retry
+    // (Option A) can use the same detector.
+    if (EMPTY_PROMISE_RE.test(answer)) {
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
       // see Brain previously confirmed dispatch of this kind of action
