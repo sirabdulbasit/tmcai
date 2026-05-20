@@ -17,6 +17,28 @@ import type { ExtractedInstruction } from './instructionExtractor';
 
 const log = createLogger('instruction-dispatch');
 
+/** Normalize a possibly-naive ISO datetime to include an explicit
+ *  timezone offset. If the input already carries Z or +HH:MM, return
+ *  as-is. If it's naive (e.g. "2026-05-22T11:00"), append the offset
+ *  and ensure seconds are present.
+ *
+ *  Critical for Google Calendar correctness: passing a naive datetime
+ *  through `new Date()` reinterprets it as UTC. The dispatcher must
+ *  pre-attach the user's local offset BEFORE that conversion so the
+ *  emitted UTC ISO matches the user's intent.
+ *
+ *  Asia/Karachi is +05:00 with no DST, so we treat the offset as
+ *  fixed. Multi-timezone support is a follow-up. */
+function normalizeWhenIsoToLocalTz(whenIso: string, fixedOffset: string): string {
+  if (!whenIso || typeof whenIso !== 'string') return whenIso;
+  // Already has offset / Z suffix — trust it.
+  if (/[Zz]|[+-]\d{2}:?\d{2}$/.test(whenIso)) return whenIso;
+  // Add seconds if missing: "2026-05-22T11:00" → "2026-05-22T11:00:00"
+  let s = whenIso;
+  if (/T\d{2}:\d{2}$/.test(s)) s = s + ':00';
+  return s + fixedOffset;
+}
+
 export interface DispatchResult {
   ok: boolean;
   message: string;
@@ -295,11 +317,25 @@ export async function dispatchInstruction(args: {
       const attendees = (attendeesRaw as string[]).filter((a) => typeof a === 'string' && a.includes('@'));
 
       try {
-        // Build ISO end-time from start + duration. brainComposer emits
-        // whenIso = "YYYY-MM-DDTHH:MM" (no seconds, no zone), which
-        // Calendar will treat as the Asia/Karachi local time the
-        // calendarService sets.
-        const startDate = new Date(whenIso);
+        // brainComposer emits whenIso as "YYYY-MM-DDTHH:MM" intended to
+        // mean the USER's local time. The previous version passed that
+        // through `new Date(whenIso).toISOString()` — which parses naive
+        // ISO as UTC and re-emits with the Z suffix. Then calendarService
+        // passes `timeZone: 'Asia/Karachi'` alongside, but the Z-suffixed
+        // dateTime overrides — Google Calendar uses the fixed UTC time
+        // and ignores the timeZone field for interpretation.
+        //
+        // Net effect observed 2026-05-21 02:24 PKT: Basit asked for
+        // "tomorrow 11am", LLM emitted "2026-05-21T11:00", dispatcher
+        // converted to "2026-05-21T11:00:00.000Z", Google read it as
+        // 11:00 UTC = 16:00 PKT. User got a 4 PM invite instead of 11 AM.
+        //
+        // Fix: ALWAYS normalize whenIso to include an explicit timezone
+        // offset (Asia/Karachi = +05:00, no DST). Then `new Date()`
+        // parses it as a specific instant, and Google Calendar
+        // interprets it correctly regardless of the timeZone field.
+        const normalizedWhenIso = normalizeWhenIsoToLocalTz(whenIso, '+05:00');
+        const startDate = new Date(normalizedWhenIso);
         if (Number.isNaN(startDate.getTime())) {
           return { ok: false, message: `Schedule failed: I couldn't parse the time "${whenIso}". Tell me the date and time clearly (e.g. "tomorrow 3pm" or "2026-05-21 15:00").` };
         }

@@ -559,7 +559,7 @@ export interface ComposeOptions {
  *  "I've sent", "I'll send", "I'm sending", "I sent", "I just sent",
  *  "Done — delegated", "kar diya hai", "ho gaya". False positives are
  *  cheap (one extra LLM call) — false negatives ship a lie. */
-const EMPTY_PROMISE_RE = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+const EMPTY_PROMISE_RE = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
 
 /** Cheap heuristic for "the user is asking me to DO something." Used to
  *  gate the action vocabulary + emission rules — they shouldn't ride
@@ -621,7 +621,14 @@ H5e. **OFFER THE NEXT MOVE.** Every factual reply should close with one short, s
 
 H6. **Prefer the most recent source when they disagree.** Each opened page header shows \`last_updated\` and \`age_days\`. Lead with the newer one; flag older as potentially stale. For "current / latest" questions, ignore pages older than 60 days unless nothing newer exists.
 
-H7. **Surface age when info is stale.** If the only available source is >60 days old, say so explicitly ("last updated 94 days ago"). Don't present stale data as current.`;
+H7. **Surface age when info is stale.** If the only available source is >60 days old, say so explicitly ("last updated 94 days ago"). Don't present stale data as current.
+
+H7a. **NEVER FABRICATE PROCESSES, TEAMS, OR ESCALATIONS THAT DON'T EXIST.** There is no "support team", no "engineering team", no "escalation channel", no "we'll look into this" handoff that you can defer to. The system Brain runs in is: you, the user, the dispatcher, and the integrations (Gmail / Calendar / etc.). Nothing else. Observed 2026-05-21: when Brain couldn't fix a wrong calendar invite, it wrote "I am escalating this to the support team to figure out why my calendar actions are not working correctly. I will let you know as soon as I have an update from them." — pure fabrication. There is no support team and no future update.
+  - When you genuinely cannot do something, say so plainly RIGHT NOW: "I can't cancel or reschedule that meeting — my schedule_meeting action only creates new events, it doesn't modify existing ones. To fix it, please cancel the wrong event in Google Calendar yourself, then I can schedule a new one for the correct time."
+  - Acceptable bracketed status markers (machine-emitted): "[Brain unavailable — reasoning service down, retry shortly]", "[preview required]". These are clearly NOT pretending to be Brain.
+  - FORBIDDEN: "the team will look into it", "I've notified support", "I'll follow up with engineering", "let me check with the system", "I'll escalate this", "I'll update you when done" without an action emitted, any reference to processes / teams / channels that aren't in the action schema.
+
+H7b. **CAPABILITY HONESTY.** Your actions are exactly the set defined in the action schema above (add_open_item, delegate_open_item, schedule_meeting, send_email, notify_via_whatsapp, set_brain_name). You CANNOT cancel meetings, reschedule meetings, modify open items after creation, recall sent emails, or undo any dispatched action. If the user asks for one of these, say plainly that you can't and offer the user the manual route (e.g., "cancel that on Calendar yourself, then I can schedule the replacement").`;
 
 /** Authority / scope rules — apply when there are opened pages with
  *  potentially conflicting claims (factual + introspective). */
@@ -1106,7 +1113,19 @@ export async function compose(
   // ask a clean disambiguation question. Without this, MD says "delegate
   // to Asad" → LLM picks one Asad at random or says "I don't see them".
   const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
-  const todayDate = new Date().toISOString().slice(0, 10);
+  // Compute today's date in the USER's local timezone, not UTC. At
+  // 02:23 PKT on May 21, UTC is still May 20 — anchoring "today" to
+  // UTC made "tomorrow" resolve to May 21 (the same day the user was
+  // already on) instead of May 22. Observed 2026-05-21 in Basit's
+  // meeting-invite session. For TMC users (Asia/Karachi, +05:00, no
+  // DST) we shift forward 5h before slicing. Multi-timezone support
+  // is a follow-up — when user.timezone is added to the schema, this
+  // function reads it per-user.
+  const todayDate = (() => {
+    const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+    const localNow = new Date(Date.now() + PKT_OFFSET_MS);
+    return localNow.toISOString().slice(0, 10);
+  })();
 
   // ── Today's calendar ──
   // Only built for day_brief intent. Pulls today's gcal feed_events so
