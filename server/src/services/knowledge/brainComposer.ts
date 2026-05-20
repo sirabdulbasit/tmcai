@@ -657,9 +657,9 @@ H15. **Day-brief = TODAY's attention surface, compactly delivered.** Your reply 
 **Carryover items:** when an item ends in "(carryover, Nd ago)" or "(carryover, yesterday)", surface it but tag it — e.g. "Sayyed Mohsin: White Belt update (carryover from yesterday)".
 
 **What to cover (skip a section only if its count is 0):**
-  1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. One line each: HH:MM + title + 1-2 attendee first names if interesting.
-  2. 📬 **Email** — top 3 from My Attention's email bucket by criticality. If more, "+N more in inbox".
-  3. 💬 **WhatsApp** — same: top 3 conversations, "+N more" if exceeded.
+  1. 📅 **Today's calendar** — every meeting from the "Today's calendar" block. Use the times exactly as written in that block — they are already in the user's local timezone (the block header tells you which). Do NOT convert, shift, or re-render the hour. One line each: HH:MM + title + 1-2 attendee first names if interesting.
+  2. 📬 **Email** — pick the top 3 in the ORDER they appear in the "My Attention surface" block above (do not re-rank by criticality, recency, sender, or your own judgement). The surface is already ranked correctly — your job is to render the top 3 in that order so the brief matches what the user sees on the web Day Brief UI. If more, "+N more in inbox".
+  3. 💬 **WhatsApp** — same: top 3 conversations in source order, "+N more" if exceeded.
   4. 📋 **Open items** — ALWAYS include this section if the "Open items snapshot" has at least one row. Show top 3 ordered by: priority (critical > high > medium > low), then due date asc (soonest first, null last), then most recent. Line shape: "Title — [priority] — owner/delegatee/—". More than 3 rows → "+N more open items (open Nexeo to see all)". Do NOT skip just because no item is "due today" — open items are the user's live task ledger; an empty ledger is the only valid reason to omit.
   5. ⚠️ **Watching** — Risk Radar flags, one short line each (max 2).
   6. **Closing line** — one sentence: which single thing would you start with, and why. No fluff.
@@ -1727,12 +1727,23 @@ async function buildTodayCalendarBlock(clientNumber: string, userId: number): Pr
     .filter((x: any): x is NonNullable<typeof x> => x !== null && x.start >= startOfDay && x.start <= endOfDay)
     .sort((a: any, b: any) => a.start.getTime() - b.start.getTime());
   if (events.length === 0) return '# Today\'s calendar\n(nothing scheduled)';
+  // Render times in the user's local timezone (Asia/Karachi default).
+  // Previous version used toISOString().slice(11, 16) which is UTC, so a
+  // 3 PM PKT meeting (10:00 UTC) rendered as "10:00" — the LLM then told
+  // the user "10am meeting", off by 5 hours. Observed 2026-05-20: an HR
+  // Kickoff at 3pm-4pm PKT showed in Brain's brief as "10:00 Objective
+  // Setting" while the UI Day Brief correctly showed "Wed May 20 3pm-4pm
+  // (GMT+5)". Same event, different time = trust failure.
+  const tz = 'Asia/Karachi';
+  const timeFmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+  });
   const lines = events.map((e: any) => {
-    const hhmm = e.start.toISOString().slice(11, 16);
+    const hhmm = timeFmt.format(e.start);
     const att = e.attendees.length > 0 ? ` — ${e.attendees.slice(0, 3).join(', ')}${e.attendees.length > 3 ? ` +${e.attendees.length - 3}` : ''}` : '';
     return `- ${hhmm} ${e.title}${att}`;
   });
-  return `# Today's calendar (UTC times)\n${lines.join('\n')}`;
+  return `# Today's calendar (times in ${tz})\n${lines.join('\n')}`;
 }
 
 /** Build the contact candidates block for this turn. Scans names, runs
