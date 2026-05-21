@@ -265,6 +265,32 @@ export async function resolveContact(
     });
   }
 
+  // ── Sprint 2: alias memory boost ─────────────────────────────────
+  // Before sorting, check whether the user has previously resolved
+  // this alias to a specific identifier. If so, boost the matching
+  // candidate dramatically — the user has already done the work of
+  // disambiguation; we shouldn't re-ask. Per the third-party review:
+  // "Once the user has resolved 'Asad → asad.ahmed@tmcltd.ai',
+  // subsequent sessions should not re-ask."
+  try {
+    const { bestAliasResolution } = await import('./userResolutionAliasService');
+    const prior = await bestAliasResolution(userId, q);
+    if (prior) {
+      const matchIdLc = prior.identifier.toLowerCase();
+      for (const c of out) {
+        if ((c.email ?? '').toLowerCase() === matchIdLc) {
+          // +200 boost is decisive — even a single past resolution
+          // makes this the obvious winner unless something has
+          // catastrophically changed.
+          c.score += 200;
+          c.signals.reasons.unshift(
+            `you've previously resolved "${q}" to this person (${prior.usedCount}× before)`,
+          );
+        }
+      }
+    }
+  } catch { /* alias service failure is non-fatal — drop to vanilla ranking */ }
+
   // Sort by score desc, return top N. Drop anything with similarity 0 — if
   // there's no name overlap at all, it shouldn't be in the candidate list
   // (avoids the "I matched on email substring nobody asked about" failure).

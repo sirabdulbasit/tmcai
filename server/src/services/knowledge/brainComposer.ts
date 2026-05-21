@@ -1998,6 +1998,15 @@ ${calLines.join('\n')}`;
     }
   }
 
+  // Sprint 2: record alias resolutions implied by a successful dispatch.
+  // When Brain just scheduled with "Asad Ahmed Taj" <asad.ahmed@tmcltd.ai>
+  // because the user typed "asad", we now know "asad" → that email for
+  // this user. Next session's resolver picks immediately. Fire-and-
+  // forget; failures must not affect the user-visible reply.
+  if (parsed.action && actionResult && actionResult.ok === true) {
+    recordAliasesFromDispatch(clientNumber, userId, question, parsed.action).catch(() => undefined);
+  }
+
   return {
     answer,
     citedPageIds,
@@ -3148,6 +3157,95 @@ function renderMissingSlotPrompt(actionType: string | null, slot: string): strin
   };
   const ask = SLOT_PROMPTS[slot] ?? `I need one more detail (${slot}) before I can proceed.`;
   return ask;
+}
+
+/** Record alias resolutions implied by a successfully-dispatched
+ *  action. When Brain just sent an email to "Asad Ahmed Taj"
+ *  <asad.ahmed@tmcltd.ai> on the user's instruction, the user's
+ *  alias ("asad" or "asad ahmed taj" depending on what they typed)
+ *  → asad.ahmed@tmcltd.ai is now confirmed. Stored so the next
+ *  session's resolver picks immediately instead of re-asking.
+ *
+ *  Sprint 2 (2026-05-21). Idempotent — repeat dispatches just bump
+ *  usedCount. Failures are non-fatal: alias recording must not
+ *  break the dispatch reply path. */
+async function recordAliasesFromDispatch(
+  clientNumber: string,
+  userId: number,
+  question: string,
+  action: ComposedAction,
+): Promise<void> {
+  try {
+    const { recordResolution } = await import('./userResolutionAliasService');
+    const qLower = question.toLowerCase();
+    const aliasCandidates = (full: string, first: string): string[] => {
+      const out = new Set<string>();
+      const fullLc = full.toLowerCase().trim();
+      const firstLc = first.toLowerCase().trim();
+      // Record the full name + first name as aliases (whichever the
+      // user typed will match). Skip alias if the user didn't
+      // actually mention this name (avoids recording for slots
+      // resolved purely from candidates without user mention).
+      if (qLower.includes(fullLc)) out.add(fullLc);
+      if (firstLc && qLower.includes(firstLc)) out.add(firstLc);
+      return Array.from(out);
+    };
+
+    if (action.type === 'schedule_meeting' || action.type === 'reschedule_meeting') {
+      const names = (action.type === 'schedule_meeting' ? action.attendeeNames : []) as string[];
+      const emails = (action.type === 'schedule_meeting' ? action.attendeeEmails : []) as string[];
+      const pairCount = Math.min(names.length, emails.length);
+      for (let i = 0; i < pairCount; i++) {
+        const full = names[i]; const email = emails[i];
+        if (!full || !email) continue;
+        const first = full.split(/\s+/)[0] ?? '';
+        for (const alias of aliasCandidates(full, first)) {
+          await recordResolution({
+            clientNumber, userId, alias,
+            identifier: email,
+            identifierKind: 'email',
+            displayName: full,
+            source: 'explicit',
+          }).catch(() => undefined);
+        }
+      }
+    } else if (action.type === 'notify_via_whatsapp') {
+      const full = action.recipientName;
+      const phone = action.recipientPhone;
+      if (full && phone) {
+        const first = full.split(/\s+/)[0] ?? '';
+        for (const alias of aliasCandidates(full, first)) {
+          await recordResolution({
+            clientNumber, userId, alias,
+            identifier: phone,
+            identifierKind: 'phone',
+            displayName: full,
+            source: 'explicit',
+          }).catch(() => undefined);
+        }
+      }
+    } else if (action.type === 'delegate_open_item') {
+      const full = action.delegateeName;
+      const email = action.delegateeEmail;
+      if (full && email) {
+        const first = full.split(/\s+/)[0] ?? '';
+        for (const alias of aliasCandidates(full, first)) {
+          await recordResolution({
+            clientNumber, userId, alias,
+            identifier: email,
+            identifierKind: 'email',
+            displayName: full,
+            source: 'explicit',
+          }).catch(() => undefined);
+        }
+      }
+    }
+    // send_email has no attendee NAMES in the action schema (only to[])
+    // — alias recording would require pairing against candidates which
+    // is fragile. Skipped intentionally.
+  } catch (e: any) {
+    console.warn('[brain-chat] alias recording failed (non-fatal)', { userId, error: e?.message });
+  }
 }
 
 /** Dispatch a pending action directly from its stored slots.

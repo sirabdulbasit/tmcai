@@ -532,6 +532,49 @@ model WhatsAppSession {
 }
 
 /**
+ * UserResolutionAlias — per-user mapping from a short name / nickname
+ * to a specific identifier (email or phone) the user has resolved
+ * before. Sprint 2 (2026-05-21).
+ *
+ * Solves "every session asks 'which Asad?'" — after the first
+ * explicit resolution, the resolver hits this table on every later
+ * mention of the alias and surfaces the prior pick as a strong-
+ * preference candidate. The LLM still confirms before sending if
+ * Brain's preview gate fires, so a stale alias can be caught.
+ *
+ * Stored as a normalized lowercase alias (no spaces, no
+ * special chars trimmed) so "Asad" / "asad" / "ASAD" all match the
+ * same row.
+ *
+ * source values:
+ *   - 'explicit'  — user resolved disambiguation explicitly
+ *   - 'inferred'  — recipient was unambiguous, recording for future
+ *   - 'pinned'    — user manually pinned via Settings (not yet wired)
+ *
+ * Confidence is 0..1; resolutions decay over time but remain
+ * authoritative until the user contradicts.
+ */
+model UserResolutionAlias {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  alias        String   @db.VarChar(120) // normalized lowercase
+  identifier   String   @db.VarChar(200) // email OR phone (normalized)
+  identifierKind String @map("identifier_kind") @db.VarChar(20) // 'email' | 'phone'
+  displayName  String?  @map("display_name") @db.VarChar(200)
+  source       String   @default("explicit") @db.VarChar(20)
+  confidence   Float    @default(1.0)
+  usedCount    Int      @default(1) @map("used_count")
+  lastUsedAt   DateTime @default(now()) @map("last_used_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, alias, identifier], name: "one_alias_target_per_user")
+  @@index([userId, alias])
+  @@index([clientNumber, lastUsedAt])
+  @@map("user_resolution_aliases")
+}
+
+/**
  * BrainPendingAction — durable working memory for a multi-turn action.
  *
  * Sprint 1 (2026-05-21) addresses the "Brain forgets what we were doing"
