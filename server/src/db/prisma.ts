@@ -34,6 +34,37 @@ const TENANT_SCOPED_MODELS = new Set<string>([
 const READ_OPS = new Set(['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);
 const WHERE_OPS = new Set(['update', 'updateMany', 'delete', 'deleteMany', 'upsert']);
 
+/**
+ * P0 (2026-05-22) — USER-OWNED models. Reads on these MUST filter by
+ * userId in addition to clientNumber. Without this, two users in the
+ * same tenant see each other's data (exact failure on Basit/Haseeb
+ * 2026-05-21). The extension below auto-injects userId from the
+ * tenantContext on reads against these models.
+ *
+ * Entity is INTENTIONALLY EXCLUDED — it's mixed-scope (rows can be
+ * scope='user' OR scope='tenant'). Application layer (contactResolver)
+ * uses explicit scope-aware filters; auto-injecting userId here would
+ * suppress legitimate scope='tenant' reads.
+ *
+ * WikiPage is also mixed-scope and excluded for the same reason.
+ */
+const USER_SCOPED_MODELS = new Set<string>([
+  'FeedEvent', 'OpenItem', 'OpenItemEmbedding',
+  'WhatsAppSession', 'WhatsAppMessage',
+  'BrainPendingAction', 'BrainActionArtifact',
+  'BrainUserMessage', 'BrainPromptQueue',
+  'UserMemory', 'UserResolutionAlias',
+  'Person', 'PersonFacet',
+  'Conversation', 'Message',
+  'PushSubscription', 'ScheduledTask',
+  'UserConnector', 'AgentMemory',
+  'MutedSender', 'UserPrompt', 'UserPromptOverlay',
+  'PatternHidden', 'ThoughtEntry',
+  'PersonalDocument', 'PersonalChunk',
+  'RetrievalFeedback',
+  'WhatsAppOutboundMessage',
+]);
+
 const prisma = base.$extends({
   query: {
     $allModels: {
@@ -136,6 +167,74 @@ const prisma = base.$extends({
       },
     },
   },
+}).$extends({
+  // P0 (2026-05-22) — USER-SCOPE injection for user-owned models.
+  // Runs AFTER the tenant-scope extension above. For reads on
+  // USER_SCOPED_MODELS, if the where-clause lacks userId AND we
+  // have a userId in tenantContext, inject it. This closes the
+  // cross-user leak class — Basit (user 2) was seeing Haseeb's
+  // emails because feed queries filtered by clientNumber only.
+  //
+  // Logged as a warn so engineers can see when this fires and
+  // either add explicit userId or call runWithoutTenant() for
+  // legitimate cross-user reads.
+  name: 'userScopeGuard',
+  query: {
+    $allModels: {
+      async $allOperations({ model, operation, args, query }) {
+        if (!USER_SCOPED_MODELS.has(model)) return query(args);
+        if (!READ_OPS.has(operation)) return query(args);
+        const scope = currentTenant();
+        if (!scope || scope.bypass || !scope.userId) return query(args);
+        const a: any = args ?? {};
+        const where = a.where ?? {};
+        // Check if userId is anywhere in the where-tree (top-level,
+        // nested AND, nested OR). If yes, leave alone.
+        if (hasUserIdAnywhere(where)) return query(args);
+        // findUnique only accepts unique-key shapes; post-filter.
+        if (operation === 'findUnique' || operation === 'findUniqueOrThrow') {
+          const userSelect = a.select;
+          const callerOmittedUserId =
+            userSelect && typeof userSelect === 'object'
+              && userSelect.userId !== true && userSelect.user_id !== true;
+          const patched = callerOmittedUserId
+            ? { ...a, select: { ...userSelect, userId: true } }
+            : args;
+          const row: any = await query(patched);
+          if (!row) return row;
+          if (row.userId !== scope.userId && row.user_id !== scope.userId) {
+            console.warn('[userScope] findUnique tenant-match but wrong user', {
+              model, expectedUserId: scope.userId, gotUserId: row.userId ?? row.user_id,
+            });
+            if (operation === 'findUniqueOrThrow') throw new Error('User scope mismatch');
+            return null as any;
+          }
+          if (callerOmittedUserId) {
+            const { userId: _u, ...rest } = row;
+            return rest;
+          }
+          return row;
+        }
+        // findMany / findFirst / count / aggregate / groupBy: inject userId via AND.
+        console.warn('[userScope] auto-injecting userId on unscoped read', { model, operation });
+        const safeWhere = { AND: [where, { userId: scope.userId }] };
+        return query({ ...a, where: safeWhere } as any);
+      },
+    },
+  },
 });
+
+/** Recursively check if a where-clause has userId at any nesting depth. */
+function hasUserIdAnywhere(where: any): boolean {
+  if (!where || typeof where !== 'object') return false;
+  if ('userId' in where || 'user_id' in where) {
+    const v = where.userId ?? where.user_id;
+    return v !== undefined && v !== null;
+  }
+  if (Array.isArray(where.AND)) return where.AND.some(hasUserIdAnywhere);
+  if (Array.isArray(where.OR)) return where.OR.length > 0 && where.OR.every(hasUserIdAnywhere);
+  if (where.NOT) return hasUserIdAnywhere(where.NOT);
+  return false;
+}
 
 export default prisma;
