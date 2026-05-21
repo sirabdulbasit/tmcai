@@ -541,6 +541,86 @@ model WhatsAppSession {
 }
 
 /**
+ * Person — unified per-user identity for someone the user
+ * communicates with. Quality Sprint 3 (2026-05-21).
+ *
+ * Solves the "Asad-via-Gmail + Asad-via-WhatsApp + Asad-via-Calendar
+ * are three different rows" fragmentation. A Person aggregates all
+ * facets (email, phone, WA JID, internal user id, entity id) under
+ * one identity per (userId, clientNumber).
+ *
+ * Scope is per-user — the user's view of "who is this person". Two
+ * users in the same tenant can have different Person records for
+ * the same human (e.g., one knows Asad only by work email, another
+ * also knows his WhatsApp). Tenant-wide identity unification is a
+ * future enhancement.
+ *
+ * displayName: free-form, what Brain uses when referring to them
+ * canonicalName: lowercase / collapsed-whitespace for fuzzy lookup
+ *                (e.g., "Asad Ahmed Taj" → "asad ahmed taj")
+ *
+ * Facets are unique by (personId, facetType, facetValue) so an email
+ * can only belong to one Person per row.
+ */
+model Person {
+  id            String         @id @default(cuid())
+  clientNumber  String         @map("client_number") @db.VarChar(20)
+  userId        Int            @map("user_id")
+  displayName   String         @map("display_name") @db.VarChar(200)
+  canonicalName String?        @map("canonical_name") @db.VarChar(200)
+  metadata      Json?
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  facets        PersonFacet[]
+
+  @@index([userId, canonicalName])
+  @@index([clientNumber, userId])
+  @@map("persons")
+}
+
+/**
+ * PersonFacet — one identifier (email / phone / etc) belonging
+ * to a Person. Quality Sprint 3 (2026-05-21).
+ *
+ * facetType values:
+ *   - 'email'         — e.g., asad.ahmed@tmcltd.ai
+ *   - 'phone'         — E.164-ish, e.g., +923001234567
+ *   - 'whatsapp_jid'  — Meta WA identifier (when separate from phone)
+ *   - 'user_id'       — internal User.id (string-encoded) when this
+ *                       Person IS a tenant teammate
+ *   - 'entity_id'     — Entity.id when this Person was first seen
+ *                       as an external contact row
+ *
+ * source values:
+ *   - 'user_explicit' — user told Brain ("Asad's number is +923…")
+ *   - 'inferred'      — backfilled from existing data
+ *   - 'system'        — auto-linked during action dispatch
+ *   - 'backfill'      — populated by the one-time migration
+ *
+ * verified=true means we've confirmed this facet works (sent email,
+ * called number, etc.). Useful for ranking when picking which
+ * channel to use for a Person.
+ */
+model PersonFacet {
+  id          String   @id @default(cuid())
+  personId    String   @map("person_id")
+  facetType   String   @map("facet_type") @db.VarChar(20)
+  facetValue  String   @map("facet_value") @db.VarChar(300)
+  verified    Boolean  @default(false)
+  source      String   @db.VarChar(20)
+  confidence  Float    @default(1.0)
+  lastSeenAt  DateTime? @map("last_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  person      Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, facetType, facetValue], name: "one_facet_value_per_person")
+  @@index([facetType, facetValue])
+  @@map("person_facets")
+}
+
+/**
  * UserMemory — durable per-user preferences and facts.
  * Quality Sprint 2 (2026-05-21).
  *

@@ -90,7 +90,15 @@ export async function findAliasesForIdentifier(
 
 /** Record a user-confirmed alias resolution. Upserts on
  *  (userId, alias, identifier) — repeat resolutions bump usedCount
- *  and lastUsedAt instead of inserting duplicates. */
+ *  and lastUsedAt instead of inserting duplicates.
+ *
+ *  Quality Sprint 3: also auto-links a Person record. When alias
+ *  "asad" → asad.ahmed@tmcltd.ai is recorded, ensure a Person
+ *  exists for that email under this user. If a Person with the
+ *  same displayName already exists with a DIFFERENT facet (e.g.,
+ *  phone), the new facet gets attached to that Person instead of
+ *  creating a duplicate — that's the cross-channel coherence
+ *  win. */
 export async function recordResolution(args: {
   clientNumber: string;
   userId: number;
@@ -138,6 +146,27 @@ export async function recordResolution(args: {
       },
     });
   }
+
+  // Quality Sprint 3: auto-link a Person for this identifier so
+  // cross-channel coherence builds up over time. Fire-and-forget;
+  // alias recording must not fail if person service has an issue.
+  try {
+    const { findOrCreatePersonByFacet } = await import('./personService');
+    const facetType = args.identifierKind === 'email' ? 'email' : 'phone';
+    await findOrCreatePersonByFacet({
+      clientNumber: args.clientNumber,
+      userId: args.userId,
+      displayName: args.displayName || args.alias,
+      facetType,
+      facetValue: normId,
+      source: source === 'explicit' ? 'user_explicit' : 'inferred',
+      verified: source === 'explicit',
+    });
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.warn('[alias] person auto-link failed', { error: e?.message });
+  }
+
   return rowToAlias(row);
 }
 

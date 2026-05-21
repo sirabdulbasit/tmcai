@@ -291,6 +291,30 @@ export async function resolveContact(
     }
   } catch { /* alias service failure is non-fatal — drop to vanilla ranking */ }
 
+  // ── Sprint 3: Person cross-channel enrichment ────────────────────
+  // For each candidate with an email, look up if a Person record has
+  // multiple facets — surface the additional channels ("also reachable
+  // via WhatsApp +923...") so the LLM and user see ONE coherent
+  // identity instead of three split rows. Non-fatal on error.
+  try {
+    const { findPersonByFacet } = await import('./personService');
+    for (const c of out) {
+      const email = c.email;
+      if (!email) continue;
+      const person = await findPersonByFacet(userId, 'email', email).catch(() => null);
+      if (!person) continue;
+      const otherFacets = person.facets.filter(
+        (f) => !(f.facetType === 'email' && f.facetValue.toLowerCase() === email.toLowerCase()),
+      );
+      if (otherFacets.length === 0) continue;
+      const channelList = otherFacets
+        .map((f) => `${f.facetType.replace('_', ' ')} ${f.facetValue}`)
+        .slice(0, 3)
+        .join(', ');
+      c.signals.reasons.push(`also reachable via ${channelList}`);
+    }
+  } catch { /* person service failure is non-fatal */ }
+
   // Sort by score desc, return top N. Drop anything with similarity 0 — if
   // there's no name overlap at all, it shouldn't be in the candidate list
   // (avoids the "I matched on email substring nobody asked about" failure).
