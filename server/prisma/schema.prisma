@@ -541,6 +541,193 @@ model WhatsAppSession {
 }
 
 /**
+ * PromptBlock — composable prompt fragments stored as data, not code.
+ * Phase 1 of the reasoning-first / data-driven refactor (2026-05-22).
+ *
+ * Replaces the hardcoded TS constants (CORE_CONVERSATIONAL_RULES,
+ * ACTION_RULES, FACTUAL_HONESTY_RULES, communication contract, etc.)
+ * Composer assembles a system prompt by querying applicable blocks
+ * at runtime instead of stitching constants together in code.
+ *
+ * Why: Brain can author its own prompt rules via the
+ * propose_prompt_block meta-action. User reviews in Settings →
+ * Brain → Rules, approves, the block lives in DB, next turn applies
+ * it. No code deploy needed. This is the "Brain builds itself"
+ * mechanism for behavior tuning.
+ *
+ * scope:
+ *   - 'system': built-in seeded rules. Cannot be edited by users.
+ *   - 'tenant': org-wide rules. Admin-only authoring.
+ *   - 'user':   per-user rules from explicit settings or inferred
+ *               from reflection (user must confirm).
+ *
+ * whenToInclude shape:
+ *   { intent?: string[], requiresActionTurn?: boolean,
+ *     channels?: ('web'|'whatsapp')[], languageHint?: string }
+ *   Empty / null = always included.
+ *
+ * priority: higher = appears earlier in assembled prompt. System
+ * rules typically 100-200; user overrides 250+ so they win on conflict.
+ */
+model PromptBlock {
+  id            String    @id @default(cuid())
+  clientNumber  String?   @map("client_number") @db.VarChar(20) // null = system-wide
+  userId        Int?      @map("user_id")                        // null = tenant or system-scope
+  name          String    @db.VarChar(80)
+  content       String    @db.Text
+  whenToInclude Json?     @map("when_to_include")
+  priority      Int       @default(100)
+  scope         String    @default("user") @db.VarChar(20)
+  isActive      Boolean   @default(true) @map("is_active")
+  source        String    @default("user_proposed") @db.VarChar(20)
+  approvedAt    DateTime? @map("approved_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, name, scope], name: "one_block_name_per_user_scope")
+  @@index([clientNumber, scope, isActive])
+  @@index([userId, isActive])
+  @@map("prompt_blocks")
+}
+
+/**
+ * ActionDefinition — registry of action types Brain can dispatch.
+ * Phase 1 of data-driven refactor (2026-05-22).
+ *
+ * Replaces the switch/case in instructionDispatcher and the
+ * normaliseAction validator. Each action type is a row with its
+ * schema, the handler module + function to invoke, the preview
+ * template, the capability key required.
+ *
+ * The generic dispatcher reads this table on every action turn:
+ *   - validates the payload against schema
+ *   - checks capability via capability_registry
+ *   - invokes handlerModule.handlerFunction(payload)
+ *
+ * Brain can propose new action types via register_action_type
+ * meta-action — constrained to use existing handler patterns
+ * (e.g., webhook adapter). User approves in Settings.
+ *
+ * schema (jsonb): JSON schema describing the action's slots.
+ *   { type: 'object', required: ['to', 'subject', 'body'], properties: {...} }
+ *
+ * isHumanFacing: true → preview gate applies; false → direct dispatch OK.
+ */
+model ActionDefinition {
+  id                 String    @id @default(cuid())
+  type               String    @unique @db.VarChar(40)
+  displayName        String    @map("display_name") @db.VarChar(100)
+  description        String    @db.Text
+  schema             Json
+  handlerModule      String    @map("handler_module") @db.VarChar(100)
+  handlerFunction    String    @map("handler_function") @db.VarChar(100)
+  previewTemplate    String?   @map("preview_template") @db.Text
+  requiresCapability String?   @map("requires_capability") @db.VarChar(80)
+  isHumanFacing      Boolean   @default(false) @map("is_human_facing")
+  isActive           Boolean   @default(true) @map("is_active")
+  scope              String    @default("system") @db.VarChar(20)
+  source             String    @default("seeded") @db.VarChar(20)
+  approvedAt         DateTime? @map("approved_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([scope, isActive])
+  @@map("action_definitions")
+}
+
+/**
+ * CapabilityRegistry — what each user/tenant is allowed to do.
+ * Phase 1 of data-driven refactor (2026-05-22).
+ *
+ * Replaces inline checks like "if user.integrationProvider === 'google'
+ * then can send_email". Each capability is a row; the generic dispatcher
+ * checks the registry before invoking an action.
+ *
+ * Brain can request a new capability via request_capability — the
+ * row is created with status='requested'; user approves in Settings;
+ * status flips to 'enabled'.
+ */
+model CapabilityRegistry {
+  id            String    @id @default(cuid())
+  clientNumber  String    @map("client_number") @db.VarChar(20)
+  userId        Int       @map("user_id")
+  capabilityKey String    @map("capability_key") @db.VarChar(80)
+  status        String    @db.VarChar(20) // enabled | disabled | requested | denied
+  config        Json?
+  grantedBy     Int?      @map("granted_by")
+  grantedAt     DateTime? @map("granted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, capabilityKey], name: "one_capability_per_user")
+  @@index([clientNumber, status])
+  @@map("capability_registry")
+}
+
+/**
+ * ClarificationMemory — Brain's record of "I had to ask X, you said Y".
+ * Phase 1 of reasoning-first refactor (2026-05-22).
+ *
+ * Every time Brain decides to ASK a clarifying question (instead of
+ * acting or answering directly), this table records the question, the
+ * slot being filled, and (when the user answers) the resolution. Future
+ * similar turns hit this table BEFORE asking again — that's how the
+ * system gets smarter without code changes.
+ *
+ * questionHash: normalized hash of the (slot + context-signature)
+ * pair, for O(1) lookup. Match logic: same slot + similar context →
+ * reuse the resolution.
+ */
+model ClarificationMemory {
+  id              String   @id @default(cuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  questionPattern String   @map("question_pattern") @db.Text
+  questionHash    String   @map("question_hash") @db.VarChar(64)
+  slotBeingFilled String   @map("slot_being_filled") @db.VarChar(80)
+  resolutionValue Json     @map("resolution_value")
+  resolutionContext Json?  @map("resolution_context")
+  usedCount       Int      @default(1) @map("used_count")
+  lastUsedAt      DateTime @default(now()) @map("last_used_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, questionHash], name: "one_resolution_per_user_per_question")
+  @@index([userId, slotBeingFilled])
+  @@index([clientNumber, lastUsedAt])
+  @@map("clarification_memory")
+}
+
+/**
+ * ReasoningTrace — debugging + audit trail for the reasoning-first
+ * composer. One row per turn. Phase 1 (2026-05-22).
+ *
+ * Captures Brain's decision (act/ask/answer/decline), the rationale,
+ * the model's confidence, token spend. Used for:
+ *   - Settings → Brain → Activity (user-visible "how Brain decided")
+ *   - Postmortems when Brain misbehaves ("which path did reasoning take?")
+ *   - Cost monitoring (per-user token spend)
+ *
+ * 14-day TTL via the cleanup job to bound storage.
+ */
+model ReasoningTrace {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  turnId        String   @map("turn_id") @db.VarChar(60)
+  reasoningText String?  @map("reasoning_text") @db.Text
+  decidedAction String   @map("decided_action") @db.VarChar(30)
+  actionType    String?  @map("action_type") @db.VarChar(40)
+  confidence    Float?
+  inputTokens   Int?     @map("input_tokens")
+  outputTokens  Int?     @map("output_tokens")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([clientNumber, createdAt])
+  @@map("reasoning_traces")
+}
+
+/**
  * BrainActionArtifact — canonical lifecycle record for every
  * action Brain has attempted. Quality Sprint 5b (2026-05-21).
  *
