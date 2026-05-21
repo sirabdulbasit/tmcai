@@ -1199,6 +1199,23 @@ export async function compose(
     console.info('[brain-chat] pending.confirm dispatching', {
       userId, clientNumber, channel, kind: activePending.actionKind, pendingId: activePending.id,
     });
+
+    // Q5b finish: transition the existing 'previewed' artifact through
+    // confirmed → dispatching → succeeded/failed. Lookup by pendingId.
+    let artifactRowId: string | null = null;
+    try {
+      const existing = await (prisma as any).brainActionArtifact.findFirst({
+        where: { pendingActionId: activePending.id, status: 'previewed' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) {
+        artifactRowId = existing.id;
+        const { updateArtifactStatus } = await import('./brainActionArtifactService');
+        await updateArtifactStatus(artifactRowId, 'confirmed');
+        await updateArtifactStatus(artifactRowId, 'dispatching');
+      }
+    } catch { /* artifact tracking is non-fatal */ }
+
     try {
       const { withIdempotency } = await import('../actionIdempotencyService');
       const idemActionType = brainActionTypeToIdem(activePending.actionKind);
@@ -1217,6 +1234,15 @@ export async function compose(
       } else if (!dispatchResult.ok) {
         await markFailed(activePending.id, dispatchResult.message);
       }
+      // Q5b finish: terminal status transition.
+      try {
+        const { updateArtifactStatus } = await import('./brainActionArtifactService');
+        await updateArtifactStatus(artifactRowId, dispatchResult.ok ? 'succeeded' : 'failed', {
+          result: dispatchResult,
+          artifactExtId: dispatchResult.artifactId ?? null,
+          errorMessage: dispatchResult.ok ? null : dispatchResult.message,
+        });
+      } catch { /* non-fatal */ }
       return {
         answer: dispatchResult.message,
         citedPageIds: [],
@@ -1227,6 +1253,13 @@ export async function compose(
       };
     } catch (e: any) {
       await markFailed(activePending.id, e?.message);
+      try {
+        const { updateArtifactStatus } = await import('./brainActionArtifactService');
+        await updateArtifactStatus(artifactRowId, 'failed', {
+          errorCode: 'dispatch_threw',
+          errorMessage: String(e?.message ?? 'unknown'),
+        });
+      } catch { /* non-fatal */ }
       return {
         answer: `[Action failed: ${e?.message ?? 'unknown error'}]`,
         citedPageIds: [], gaps: [], sources: [], action: null,

@@ -255,24 +255,18 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
       // Check if session timed out (10 min idle)
       if (idleMs > AGENT_SESSION_TIMEOUT_MS) {
-        // End agent session with goodbye
+        // End agent session \u2014 bracketed system marker, NOT fake-Brain
+        // goodbye prose. Per Basit 2026-05-20: "don't hardcode anything
+        // this is the crime in building AI". The previous canned
+        // multilingual goodbye ("Thank you Sir! Our conversation is
+        // ending now.") looked like the agent speaking; it's actually
+        // a state transition emitted by the dispatcher. Honest
+        // bracketed marker eliminates the fake-Brain impression.
         const agentName = session.active_agent_name;
         await prisma.$executeRawUnsafe(
           `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
         );
-
-        // Detect language of user's message for goodbye
-        const isUrdu = /[\u0600-\u06FF]/.test(queryText);
-        const isRomanUrdu = /\b(kia|kaise|hai|hain|ho|kar|rahi|batao|dekho|mujhe)\b/i.test(lower);
-
-        const goodbye = isUrdu
-          ? `*${agentName}*: شکریہ Sir! میری بات ختم ہو رہی ہے۔ اگر دوبارہ بات کرنی ہو تو "${agentName}" کہہ کر مجھے بلا لیں۔`
-          : isRomanUrdu
-          ? `*${agentName}*: Shukriya Sir! Meri conversation yahan khatam ho rahi hai. Agar dobara baat karni ho to "${agentName}" keh kar mujhe bula lein.`
-          : `*${agentName}*: Thank you Sir! Our conversation is ending now. If you need me again, just say "${agentName}" to start.`;
-
-        await sendReply(params, goodbye);
-        // Continue to process current message as main AI
+        await sendReply(params, `[agent session ended \u2014 ${agentName} idle 10+ min; routing to main AI]`);
       } else {
         // Session still active — check if user wants to leave
         const switchingAway = /\b(main ai|tmc ai|exit|back|leave|stop|bye|shukriya|thanks|theek hai)\b/i.test(lower);
@@ -281,11 +275,8 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
           await prisma.$executeRawUnsafe(
             `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
           );
-          const isUrdu = /[\u0600-\u06FF]/.test(queryText) || /\b(shukriya|theek)\b/i.test(lower);
-          const goodbye = isUrdu
-            ? `*${agentName}*: جی Sir، اگر کوئی اور بات ہو تو بتائیں۔ اللہ حافظ!`
-            : `*${agentName}*: Sure Sir, I'm here whenever you need me. Take care!`;
-          await sendReply(params, goodbye);
+          // Bracketed marker, no fake-Brain prose. Per Basit 2026-05-20.
+          await sendReply(params, `[agent session ended — ${agentName} closed; routing to main AI]`);
           return;
         }
 

@@ -9,6 +9,7 @@ import SchedulerPage from './pages/SchedulerPage';
 import AgentsPage from './pages/AgentsPage';
 import OpenItemsPage from './pages/OpenItemsPage';
 import BrainConfigPage from './pages/BrainConfigPage';
+import BrainMemoryPage from './pages/BrainMemoryPage';
 import ConnectorsPage from './pages/ConnectorsPage';
 import ConnectorGuidePage from './pages/ConnectorGuidePage';
 import ThoughtPipelinePage from './pages/ThoughtPipelinePage';
@@ -60,6 +61,7 @@ export default function App() {
       <Route path="/agents" element={<ProtectedRoute><AgentsPage /></ProtectedRoute>} />
       <Route path="/open-items" element={<ProtectedRoute><OpenItemsPage /></ProtectedRoute>} />
       <Route path="/brain" element={<ProtectedRoute><BrainConfigPage /></ProtectedRoute>} />
+      <Route path="/brain/memory" element={<ProtectedRoute><BrainMemoryPage /></ProtectedRoute>} />
       <Route path="/connectors" element={<ProtectedRoute><ConnectorsPage /></ProtectedRoute>} />
       <Route path="/connector-guide" element={<ConnectorGuidePage />} />
       <Route path="/thoughts" element={<ProtectedRoute><ThoughtPipelinePage /></ProtectedRoute>} />

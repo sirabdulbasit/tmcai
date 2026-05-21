@@ -55,30 +55,95 @@ export default function BrainChatPanel() {
       .map((m) => ({ role: m.role, text: String(m.text ?? '') }));
     setMessages((m) => [...m, { role: 'user', text: q }]);
     setBusy(true);
+
+    // Quality Sprint 5e finish (2026-05-21): consume the /brain/ask-stream
+    // SSE endpoint when available — falls back to the blocking /brain/ask
+    // POST on any error. The streaming path gives the user immediate
+    // visual feedback ("thinking..." stage) and progressive text chunks
+    // instead of a 3-7 second blank wait.
+    const answerId = `chat:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    let streamed = false;
     try {
-      const { data } = await api.post('/brain/ask', { question: q, history });
-      // Stable client-side id for this answer — feedback/subjectId references it.
-      // The server doesn't persist a row per chat answer today, so we carry the
-      // query + answer + sources as `context` in the feedback call so diagnosis
-      // can reconstruct what was shown.
-      const answerId = `chat:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      setMessages((m) => [
-        ...m,
-        {
-          role: 'brain',
-          id: answerId,
-          question: q,
-          intent: data?.intent,
-          text: data?.answer ?? '(no answer)',
-          sources: data?.sources ?? [],
-          panel: data?.panel ?? null,
-        },
-      ]);
-    } catch (e) {
-      setMessages((m) => [...m, { role: 'brain', text: e?.response?.data?.error ?? e.message, error: true }]);
-    } finally {
-      setBusy(false);
+      // Use fetch (not axios) because we need raw streaming reads.
+      const resp = await fetch('/api/v1/brain/ask-stream', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, history, channel: 'web' }),
+      });
+      if (resp.ok && resp.body) {
+        streamed = true;
+        // Insert a placeholder brain message to update as chunks arrive.
+        setMessages((m) => [...m, {
+          role: 'brain', id: answerId, question: q, text: '', streaming: true,
+          sources: [], panel: null, intent: null,
+        }]);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let accText = '';
+        let meta = {};
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          // SSE frames are separated by blank lines.
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const frame = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            const eventMatch = frame.match(/^event:\s*(\w+)/m);
+            const dataMatch = frame.match(/^data:\s*(.*)$/m);
+            if (!eventMatch || !dataMatch) continue;
+            const event = eventMatch[1];
+            let data;
+            try { data = JSON.parse(dataMatch[1]); } catch { data = null; }
+            if (event === 'chunk' && data?.text) {
+              accText += (accText && !accText.endsWith(' ') ? ' ' : '') + data.text;
+              setMessages((m) => m.map((mm) =>
+                mm.id === answerId ? { ...mm, text: accText } : mm,
+              ));
+            } else if (event === 'meta' && data) {
+              meta = data;
+              setMessages((m) => m.map((mm) =>
+                mm.id === answerId ? { ...mm, sources: data.sources ?? [], panel: data.panel ?? null, intent: data.intent } : mm,
+              ));
+            } else if (event === 'error' && data?.message) {
+              setMessages((m) => m.map((mm) =>
+                mm.id === answerId ? { ...mm, text: data.message, error: true, streaming: false } : mm,
+              ));
+            } else if (event === 'done') {
+              setMessages((m) => m.map((mm) =>
+                mm.id === answerId ? { ...mm, streaming: false } : mm,
+              ));
+            }
+          }
+        }
+      }
+    } catch {
+      // Stream failed — fall through to blocking path below.
     }
+
+    if (!streamed) {
+      try {
+        const { data } = await api.post('/brain/ask', { question: q, history });
+        setMessages((m) => [
+          ...m,
+          {
+            role: 'brain',
+            id: answerId,
+            question: q,
+            intent: data?.intent,
+            text: data?.answer ?? '(no answer)',
+            sources: data?.sources ?? [],
+            panel: data?.panel ?? null,
+          },
+        ]);
+      } catch (e) {
+        setMessages((m) => [...m, { role: 'brain', text: e?.response?.data?.error ?? e.message, error: true }]);
+      }
+    }
+    setBusy(false);
   };
 
   // Retry handler — invoked from FeedbackButtons after a 👎 with a

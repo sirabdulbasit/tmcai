@@ -187,10 +187,14 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
                 log.error('meta voice transcription failed', { error: err.message });
               }
               if (!messageBody) {
+                // Bracketed system marker, NOT fake-Brain prose. Per Basit
+                // 2026-05-20: "don't hardcode anything this is the crime
+                // in building AI". The previous "Sorry, I couldn't…" line
+                // was textbook fake-Brain. State error → bracket-wrapped.
                 const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
                 await sendTenantWhatsAppText(
                   clientNumber, '+' + message.from,
-                  "Sorry, I couldn't understand the voice note. Please try again or type your message.",
+                  `[couldn't transcribe the voice note — try again or type the message]`,
                   0,
                 );
                 continue;

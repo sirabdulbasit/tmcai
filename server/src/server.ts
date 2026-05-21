@@ -285,6 +285,14 @@ const server = app.listen(env.port, async () => {
     startWikiLintWorker();
   }).catch((e) => console.warn('[wikiLint] start failed:', e.message));
 
+  // Quality Sprint 5c finish — Reflection worker (every 6h): scans
+  // recent WhatsApp turns per active user, proposes INFERRED user
+  // preferences as memories awaiting confirmation in Settings UI.
+  // Auditable, never silently applied.
+  import('./jobs/reflectionJob').then(({ startReflectionWorker }) => {
+    startReflectionWorker();
+  }).catch((e) => console.warn('[reflection] start failed:', e.message));
+
   // Brain Cognitive Engine — every 30 min, produce observations + a
   // mind_state per user. This is the "thinking on top of feed + wiki"
   // loop: open loops, stale threads, new contacts, rising topics,

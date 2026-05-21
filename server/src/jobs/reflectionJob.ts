@@ -164,6 +164,25 @@ ${existing.length === 0 ? '(none)' : existing.map((m) => `- ${m.key}: ${JSON.str
   return { proposedCount, skippedCount };
 }
 
+/** Schedule the reflection worker. First tick 15 min after boot
+ *  (to let the server warm up), then every 6 hours. Per-tick cost
+ *  is bounded by runReflectionForAllUsers's 200-user cap. */
+export function startReflectionWorker(): void {
+  const FIRST_TICK_MS = 15 * 60_000;
+  const INTERVAL_MS = 6 * 60 * 60_000;
+  setTimeout(() => {
+    runReflectionForAllUsers().catch((e) =>
+      console.warn('[reflection] first cycle failed', { error: e?.message }),
+    );
+    setInterval(() => {
+      runReflectionForAllUsers().catch((e) =>
+        console.warn('[reflection] cycle failed', { error: e?.message }),
+      );
+    }, INTERVAL_MS);
+  }, FIRST_TICK_MS);
+  console.info('[reflection] worker scheduled', { firstTickMs: FIRST_TICK_MS, intervalMs: INTERVAL_MS });
+}
+
 /** Run reflection for every active user. Suitable for a cron tick.
  *  Returns aggregate counts. */
 export async function runReflectionForAllUsers(): Promise<{
