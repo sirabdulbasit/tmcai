@@ -2178,13 +2178,18 @@ ${calLines.join('\n')}`;
         || /\b(delegated|added)\s+(?:"[^"]+"|to\s+\w+)\s+(?:to|in)\s+\w/.test(historyText);
 
       if (!seenArtifact && wasActionTurn) {
-        // Override with an honest message. Keep the original answer
-        // appended so the user sees what Brain TRIED to say if needed.
+        // 2026-05-22: diagnostic override instead of the generic
+        // "I didn't actually complete that". The previous message
+        // was indistinguishable across all failure modes and read as
+        // Brain breaking. Now we describe what Brain TRIED to do so
+        // the user knows their intent was understood — Brain just
+        // couldn't ground the action.
         console.warn('[brain-chat] empty-promise guard triggered', {
           userId, clientNumber,
           attemptedAnswer: answer.slice(0, 200),
         });
-        answer = `I didn't actually complete that — no action went through on my side. Tell me which item and which person and I'll act on it now.`;
+        const diagnosticHead = describeAttemptForUser(answer, question);
+        answer = `${diagnosticHead}\n\nWhat I'd need to make it actually happen: ${describeMissingPiece(question)}`;
         actionResult = { ok: false, message: 'empty_promise_blocked' };
       } else if (!seenArtifact && !wasActionTurn) {
         // Log so we can tune further — but don't override innocent prose.
@@ -3660,6 +3665,64 @@ async function dispatchPendingDirect(
     }
   }
   return { ok: false, message: `[Unknown pending action kind: ${pending.actionKind}]` };
+}
+
+/** Describe what Brain attempted in the previous (rejected) response,
+ *  in honest first-person terms. Used by the empty-promise guard to
+ *  give the user a diagnostic message instead of the generic
+ *  "I didn't actually complete that" — which read as Brain breaking
+ *  no matter what intent was. Per Basit 2026-05-22: trust loss when
+ *  every failure looks the same. */
+function describeAttemptForUser(attemptedAnswer: string, userQuestion: string): string {
+  const q = userQuestion.trim().toLowerCase();
+  // Detect the most likely action class from the user's wording so
+  // the diagnostic message frames Brain's understanding correctly.
+  if (/\b(reply|respond|answer)\b.*(?:to|on)\b.*(?:email|thread|message)/i.test(q) ||
+      /\breply\s+(to\s+)?(all|him|her|them)/i.test(q)) {
+    return `I understood the ask — reply to that thread — and tried to compose it, but I didn't actually send anything. The draft never made it to a structured action this turn.`;
+  }
+  if (/\bsend\s+(an?\s+)?email\b/i.test(q)) {
+    return `I understood: send an email. I tried to compose it but didn't actually emit the send — nothing went out.`;
+  }
+  if (/\b(schedule|book|set\s+up)\b.*(?:meeting|call|sync)/i.test(q)) {
+    return `I understood: schedule a meeting. I tried to draft it but the calendar invite didn't actually emit — nothing was created.`;
+  }
+  if (/\bcancel\b.*(?:meeting|invite|event)/i.test(q)) {
+    return `I understood: cancel a meeting. I tried but didn't actually cancel anything on your calendar — the event is still there.`;
+  }
+  if (/\b(reschedule|move|push|shift)\b.*(?:meeting|invite|to)/i.test(q)) {
+    return `I understood: reschedule. I tried but didn't actually move the meeting — it's at the original time.`;
+  }
+  if (/\bdelegate\b/i.test(q)) {
+    return `I understood: delegate. I tried but didn't actually transition the item to anyone — it's still on you.`;
+  }
+  if (/\bremind|add\s+(?:to|that|this).*(?:open\s+items?|list|todo)/i.test(q)) {
+    return `I understood: add it to your open items. I tried but didn't actually create the row — nothing was added.`;
+  }
+  // Fallback: generic but still acknowledging the attempt.
+  return `I understood what you wanted and tried to act on it, but the structured action didn't actually emit. Nothing went through.`;
+}
+
+/** Name the specific missing piece so the user can supply it on the
+ *  next turn and Brain can dispatch successfully. */
+function describeMissingPiece(userQuestion: string): string {
+  const q = userQuestion.trim().toLowerCase();
+  if (/\b(reply|respond)\b.*(?:email|thread)/i.test(q)) {
+    return `the specific email I should reply to — share the sender's name, the subject line, or forward me the thread.`;
+  }
+  if (/\bsend\s+(an?\s+)?email\b/i.test(q)) {
+    return `the recipient's email address (not just their name), and a short note on what to write.`;
+  }
+  if (/\b(schedule|book|set\s+up)\b.*(?:meeting|call)/i.test(q)) {
+    return `the attendee's email address and the exact date + time (in your timezone).`;
+  }
+  if (/\bcancel\b.*(?:meeting|invite)/i.test(q)) {
+    return `the meeting title or time so I can find it on your calendar.`;
+  }
+  if (/\bdelegate\b/i.test(q)) {
+    return `which open item (by title) and the delegatee's email.`;
+  }
+  return `which specific item / person you mean, and any details I should use.`;
 }
 
 interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
