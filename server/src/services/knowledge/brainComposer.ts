@@ -941,6 +941,7 @@ function assembleSystemPrompt(args: {
   instructionsBlock: string;
   prefsBlock: string;
   memoriesBlock: string;
+  replyContextBlock: string;
   openItemsBlock: string;
   todayCalendarBlock: string;
   attentionBlock: string;
@@ -954,7 +955,7 @@ function assembleSystemPrompt(args: {
 }): string {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
-    radarBlock, instructionsBlock, prefsBlock, memoriesBlock, openItemsBlock, todayCalendarBlock,
+    radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
     attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
   } = args;
 
@@ -1020,6 +1021,7 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   if (instructionsBlock) parts.push(instructionsBlock);
   if (prefsBlock) parts.push(`# Learned user preferences (bias behaviour toward these)\n${prefsBlock}`);
   if (memoriesBlock) parts.push(memoriesBlock);
+  if (replyContextBlock) parts.push(replyContextBlock);
 
   // Delegation matrix and risk radar — relevant for actions and for
   // day_brief / introspective. Skip on casual factual to keep prompt
@@ -1456,6 +1458,34 @@ export async function compose(
   // meeting the user references — not just ones it scheduled in-session.
   // Without (b), a meeting scheduled in a prior session (or manually on
   // Calendar) had no resolvable eventId and Brain self-disabled.
+  // 2026-05-22: reply context — when the user's message looks like
+  // "reply to X's email about Y" or "ask same as Z did", search
+  // feed_events for the target thread + body source so the action-
+  // decider can emit send_email with replyToFeedEventId properly
+  // grounded. Without this, Brain composed prose claiming to reply
+  // but had no thread ID and no actual content to quote — empty-
+  // promise guard caught it (correctly) but Brain failed at the
+  // task. Per Basit's 12:55 AM session: the diagnostic message
+  // helps, actually doing the work helps more.
+  const replyContextBlock = await (async () => {
+    if (!isActionTurn) return '';
+    try {
+      const { buildReplyContext, renderReplyContextBlock } = await import('./replyContextBuilder');
+      const ctx = await buildReplyContext({ userId, clientNumber, question });
+      if (ctx) {
+        console.info('[brain-chat] reply-context built', {
+          userId, clientNumber,
+          targetThreadId: ctx.targetThread?.feedEventId,
+          bodySourcePerson: ctx.bodySource?.sourcePersonName,
+        });
+      }
+      return renderReplyContextBlock(ctx);
+    } catch (e: any) {
+      console.warn('[brain-chat] reply-context build failed (non-fatal)', { userId, error: e?.message });
+      return '';
+    }
+  })();
+
   // Quality Sprint 2: long-term memory block. Brain remembers
   // user-confirmed preferences (sign-off, default duration, working
   // hours, etc.) and applies them without re-asking. Only EXPLICIT
@@ -1497,6 +1527,7 @@ ${calLines.join('\n')}`;
     instructionsBlock,
     prefsBlock,
     memoriesBlock,
+    replyContextBlock,
     openItemsBlock,
     todayCalendarBlock,
     attentionBlock,
