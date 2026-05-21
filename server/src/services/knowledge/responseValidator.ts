@@ -210,38 +210,42 @@ export function validateBeforeRender(
     });
   }
 
-  // 8. VAGUE FILLER — promises action without specific timeline/artifact.
+  // Phase 9 (2026-05-22): the three style rules below — vague_filler,
+  // over_hedging, no_next_move — were post-hoc regex checks for
+  // style compliance. With the persona-level communication contract
+  // (Phase A/2) + reasoning-first composer (Phase 6), the LLM should
+  // produce compliant output upstream. These remain as DIAGNOSTIC
+  // TELEMETRY ONLY: log when they fire so we can measure how often
+  // the upstream layers fail to enforce style; do NOT add a
+  // violation (which would surface in the caller's response).
+  //
+  // If observation over time shows these patterns still appear, the
+  // fix is to strengthen the persona block or examples — not to
+  // re-enable post-hoc rewrites. The whole refactor's point is
+  // "Brain reasons its way to good output", not "regex catches bad
+  // output after the fact".
+
   if (VAGUE_FILLER_RE.test(answer)) {
-    violations.push({
-      rule: 'style_vague_filler',
-      severity: 'warn',
-      description: 'Answer uses vague-filler phrasing ("let me look into that", "I\'ll see what I can do") without a specific timeline or artifact.',
-      // No auto-rewrite — caller decides. Flag only.
+    console.info('[style] vague_filler detected (diagnostic only)', {
+      head: answer.slice(0, 120),
     });
   }
 
-  // 9. OVER-HEDGING — 3+ hedge words in the answer.
   const hedgeMatches = answer.match(HEDGE_WORDS_RE);
   if (hedgeMatches && hedgeMatches.length >= 3) {
-    violations.push({
-      rule: 'style_over_hedging',
-      severity: 'warn',
-      description: `Answer contains ${hedgeMatches.length} hedge words (${Array.from(new Set(hedgeMatches.map((s) => s.toLowerCase()))).slice(0, 5).join(', ')}). Per the communication contract: only hedge when there's genuine uncertainty; commit otherwise.`,
+    console.info('[style] over_hedging detected (diagnostic only)', {
+      count: hedgeMatches.length,
+      unique: Array.from(new Set(hedgeMatches.map((s) => s.toLowerCase()))).slice(0, 5),
     });
   }
 
-  // 10. NO NEXT MOVE — substantive answers (>200 chars, not a question)
-  //     should offer a next step. Detection: no terminal "?", no "want me",
-  //     no "next step", no "shall I".
   if (
     answer.length > 200 &&
     !/\?\s*$/.test(answer.trim()) &&
     !/\b(want me to|shall i|should i|next step|next move|let me know|tell me|reply ["'])/i.test(answer)
   ) {
-    violations.push({
-      rule: 'style_no_next_move',
-      severity: 'warn',
-      description: 'Substantive reply (>200 chars) ends without offering a next step or asking a question. Per the communication contract: end with the next move, not a dangling thread.',
+    console.info('[style] no_next_move detected (diagnostic only)', {
+      head: answer.slice(0, 120),
     });
   }
 

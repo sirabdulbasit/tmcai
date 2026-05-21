@@ -572,6 +572,13 @@ function renderComposerHistoryBlock(history: ComposerHistoryTurn[]): string {
 }
 
 export interface ComposeOptions {
+  /** Phase 8 (2026-05-22): when true, use the reasoning-first single-call
+   *  composer (reasoningCompose) instead of the legacy multi-call dance.
+   *  Off by default; turn on per-user or globally once observed stable.
+   *
+   *  Reads from env var BRAIN_USE_REASONING ('always' | 'never' | percent
+   *  like '25' for rollout) if not specified by caller. */
+  useReasoning?: boolean;
   /** Free-text guidance prepended to the system prompt. Used by the chat
    *  retry loop to feed in the previous-turn diagnosis ("you cited the
    *  wrong person — re-scope to Omar") so the LLM corrects course on the
@@ -1141,6 +1148,66 @@ export async function compose(
   history: ComposerHistoryTurn[] = [],
   opts: ComposeOptions = {},
 ): Promise<ComposeResult> {
+  // ── Phase 8 (2026-05-22): reasoning-first gate ────────────────────
+  // When opts.useReasoning is on (or env says so), short-circuit
+  // through the new reasoning composer. Falls through to legacy on
+  // any error so we never go blank. Once observed stable for a few
+  // days, the legacy path retires.
+  const reasoningMode = resolveReasoningMode(userId, opts.useReasoning);
+  if (reasoningMode) {
+    try {
+      const { reasoningCompose } = await import('./reasoningCompose');
+      const { applyReasoningDecision } = await import('./reasoningCompose.applyDispatch');
+      // Build a minimal system prompt from persona + DB rule blocks
+      // for the reasoning step. Full assembly happens on the first
+      // legacy path; for now use persona.systemPreamble alone (which
+      // includes the DB-fetched communication contract from Phase 2).
+      const personaForReasoning = await getBrainPersona(userId, clientNumber);
+      const result = await reasoningCompose({
+        userId, clientNumber,
+        question, history,
+        channel: opts.channel ?? 'web',
+        systemPrompt: personaForReasoning.systemPreamble,
+        dataBlocks: {}, // legacy fall-through still richer; reasoning iterates
+      });
+      if (result) {
+        console.info('[compose] reasoning-path used', {
+          userId, clientNumber, decision: result.decision, confidence: result.confidence,
+        });
+        // Persist reasoning trace.
+        void writeReasoningTrace({
+          userId, clientNumber,
+          turnId: `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+          decision: result.decision,
+          actionType: result.action?.type ?? null,
+          confidence: result.confidence,
+          rationale: result.rationale,
+        }).catch(() => undefined);
+        const envelope = await applyReasoningDecision({
+          result, userId, clientNumber,
+          channel: opts.channel ?? 'web',
+          question,
+        });
+        // If reasoning decided act, the action flows into the legacy
+        // dispatch + preview gate below. We need to fall through with
+        // parsed.action set. For ask/answer/decline, we return now.
+        if (result.decision === 'act' && envelope.action) {
+          // Skip the legacy LLM call — we have the action; the rest
+          // of compose() applies preview gate + dispatch on it.
+          // For MVP simplicity, fall through to legacy and let it
+          // re-derive — guarantees full safety stack. Next iteration
+          // can short-circuit here.
+        } else {
+          return envelope;
+        }
+      } else {
+        console.warn('[compose] reasoning returned null — falling through to legacy', { userId });
+      }
+    } catch (e: any) {
+      console.warn('[compose] reasoning path threw — falling through to legacy', { userId, error: e?.message });
+    }
+  }
+
   // ── Sprint 1: pending-state short-circuit ─────────────────────────
   // Before paying for the full compose pipeline, check whether the
   // user is confirming or cancelling a preview Brain already showed.
@@ -3772,6 +3839,59 @@ function describeMissingPiece(userQuestion: string): string {
     return `which open item (by title) and the delegatee's email.`;
   }
   return `which specific item / person you mean, and any details I should use.`;
+}
+
+/** Phase 8 gate: decide whether THIS call uses the reasoning-first
+ *  composer or the legacy multi-call path. Sources, in priority:
+ *    1. explicit opts.useReasoning flag from caller
+ *    2. BRAIN_USE_REASONING env var:
+ *       'always' → true; 'never' or unset → false;
+ *       number 1..100 → deterministic hash on userId, return true
+ *       when (hash mod 100) < value (percent rollout)
+ *  Keeps the ramp deterministic per user so observation is stable. */
+function resolveReasoningMode(userId: number, explicit: boolean | undefined): boolean {
+  if (explicit === true) return true;
+  if (explicit === false) return false;
+  const env = process.env.BRAIN_USE_REASONING;
+  if (!env) return false;
+  if (env === 'always') return true;
+  if (env === 'never') return false;
+  const pct = Number(env);
+  if (!Number.isFinite(pct) || pct <= 0) return false;
+  // Stable per-user hash → percent rollout.
+  let h = 0;
+  const s = String(userId);
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return (Math.abs(h) % 100) < Math.min(100, Math.floor(pct));
+}
+
+/** Persist the reasoning step's decision + token telemetry. Used for
+ *  debugging, cost monitoring, and the Settings → Brain → Activity
+ *  view. Fire-and-forget — failures don't affect the reply. */
+async function writeReasoningTrace(args: {
+  userId: number;
+  clientNumber: string;
+  turnId: string;
+  decision: string;
+  actionType: string | null;
+  confidence: number;
+  rationale: string;
+}): Promise<void> {
+  try {
+    await (prisma as any).reasoningTrace.create({
+      data: {
+        userId: args.userId,
+        clientNumber: args.clientNumber,
+        turnId: args.turnId,
+        decidedAction: args.decision,
+        actionType: args.actionType,
+        confidence: args.confidence,
+        reasoningText: args.rationale.slice(0, 1000),
+      },
+    });
+  } catch (e: any) {
+    console.warn('[compose] reasoning trace write failed', { error: e?.message });
+  }
 }
 
 interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
