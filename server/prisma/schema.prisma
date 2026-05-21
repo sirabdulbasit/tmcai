@@ -151,10 +151,11 @@ model User {
   scheduledTasks     ScheduledTask[]
   personalDocuments  PersonalDocument[]
   whatsappConnection WhatsAppConnection?
-  brainUserMessages  BrainUserMessage[]
-  brainPromptQueue   BrainPromptQueue[]
-  promptOverlay      UserPromptOverlay[]
-  retrievalFeedback  RetrievalFeedback[]
+  brainUserMessages    BrainUserMessage[]
+  brainPromptQueue     BrainPromptQueue[]
+  brainPendingActions  BrainPendingAction[]
+  promptOverlay        UserPromptOverlay[]
+  retrievalFeedback    RetrievalFeedback[]
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -528,6 +529,53 @@ model WhatsAppSession {
 
   @@index([userId])
   @@map("whatsapp_sessions")
+}
+
+/**
+ * BrainPendingAction — durable working memory for a multi-turn action.
+ *
+ * Sprint 1 (2026-05-21) addresses the "Brain forgets what we were doing"
+ * failure: previously, every turn re-derived state from raw chat history
+ * and the LLM had to re-figure-out "we're scheduling X with Y at Z" each
+ * time. With this table, Brain holds the in-progress action explicitly
+ * and a deterministic reducer (turnRelationReducer) decides whether the
+ * user's current message continues / confirms / corrects / cancels it.
+ *
+ * Invariant: at most one ACTIVE row per (userId, channel). When a new
+ * task begins mid-flow, the existing pending is replaced or carried
+ * over as the reducer decides. Rows expire after 1h of inactivity.
+ *
+ * Status lifecycle:
+ *   collecting_slots → preview_shown → confirmed → completed
+ *                                                ↘ failed
+ *                    → cancelled (any time)
+ *
+ * slots is action-specific JSON; missingSlots names the remaining
+ * required fields so the slot-filler can ask for the next one
+ * deterministically (no "ask all questions at once" prose).
+ */
+model BrainPendingAction {
+  id           String    @id @default(cuid())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  channel      String    @db.VarChar(20) // 'web' | 'whatsapp'
+  actionKind   String    @map("action_kind") @db.VarChar(40) // 'schedule_meeting' | 'send_email' | etc
+  status       String    @db.VarChar(30) // see lifecycle above
+  slots        Json      @default("{}")
+  missingSlots String[]  @default([]) @map("missing_slots")
+  previewHash  String?   @map("preview_hash") @db.VarChar(64)
+  previewedAt  DateTime? @map("previewed_at")
+  artifactId   String?   @map("artifact_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  expiresAt    DateTime  @map("expires_at")
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel, status], name: "one_active_pending_per_channel")
+  @@index([clientNumber, expiresAt])
+  @@index([userId, channel, updatedAt])
+  @@map("brain_pending_actions")
 }
 
 // ─── Scheduled Tasks ───────────────────────────────────────────

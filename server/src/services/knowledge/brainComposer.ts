@@ -1109,6 +1109,70 @@ export async function compose(
   history: ComposerHistoryTurn[] = [],
   opts: ComposeOptions = {},
 ): Promise<ComposeResult> {
+  // ── Sprint 1: pending-state short-circuit ─────────────────────────
+  // Before paying for the full compose pipeline, check whether the
+  // user is confirming or cancelling a preview Brain already showed.
+  // Those cases have a deterministic path: no LLM call, no retrieval,
+  // no candidate resolution — just dispatch (or abort) the action
+  // already cached in the pending row. This is the load-bearing fix
+  // for "Brain forgot what we were doing" — the action is stored, the
+  // hash matches, we just execute.
+  //
+  // continue_task and correct_preview also reference pending but
+  // still need the composer (for slot extraction + preview re-render)
+  // — they fall through after pending is loaded so the prompt
+  // assembly below can include it.
+  const channel: 'web' | 'whatsapp' = opts.channel ?? 'web';
+  const { getActivePending, markCompleted, markFailed, markCancelled, hashProposedAction } = await import('./pendingActionService');
+  const { reduceTurn } = await import('./turnRelationReducer');
+  const activePending = await getActivePending(userId, channel).catch(() => null);
+  const turnRelation = reduceTurn({ question, pending: activePending, history });
+
+  if (activePending && turnRelation.type === 'confirm_preview') {
+    // The user confirmed a preview Brain just showed. The action is
+    // fully grounded in pending.slots — dispatch directly, no LLM.
+    console.info('[brain-chat] pending.confirm dispatching', {
+      userId, clientNumber, channel, kind: activePending.actionKind, pendingId: activePending.id,
+    });
+    try {
+      const dispatchResult = await dispatchPendingDirect(clientNumber, userId, activePending);
+      if (dispatchResult.ok && dispatchResult.artifactId) {
+        await markCompleted(activePending.id, dispatchResult.artifactId);
+      } else {
+        await markFailed(activePending.id, dispatchResult.message);
+      }
+      return {
+        answer: dispatchResult.message,
+        citedPageIds: [],
+        gaps: [],
+        sources: [],
+        action: null,
+        actionResult: { ok: dispatchResult.ok, artifactId: dispatchResult.artifactId, message: dispatchResult.message },
+      };
+    } catch (e: any) {
+      await markFailed(activePending.id, e?.message);
+      return {
+        answer: `[Action failed: ${e?.message ?? 'unknown error'}]`,
+        citedPageIds: [], gaps: [], sources: [], action: null,
+        actionResult: { ok: false, message: String(e?.message ?? 'unknown') },
+      };
+    }
+  }
+
+  if (activePending && turnRelation.type === 'cancel_pending') {
+    await markCancelled(activePending.id);
+    console.info('[brain-chat] pending.cancel', { userId, clientNumber, pendingId: activePending.id });
+    return {
+      answer: `Cancelled. Let me know what you'd like to do instead.`,
+      citedPageIds: [], gaps: [], sources: [], action: null,
+      actionResult: null,
+    };
+  }
+
+  // For continue_task, correct_preview, and all other relations,
+  // fall through to the full composer. The pending state will be
+  // surfaced to the LLM via the composer's prompt (added below) so
+  // it knows what's already collected.
   // Read-through cache wraps the four read-heavy envelope blocks. Each
   // changes rarely (persona/capabilities/preferences/instructions are
   // updated by explicit user actions) so a 60s TTL is generous and a
@@ -1536,9 +1600,44 @@ ${calLines.join('\n')}`;
       // Brain wants to use and either confirms or corrects.
       answer = renderActionPreview(parsed.action, blockReason);
       actionResult = { ok: false, message: 'preview_required' };
-      // Returning null action so dispatch loop below is a no-op,
-      // but we keep `parsed.action` original on the result so the
-      // caller (UI / WA) can see what was attempted.
+
+      // Sprint 1: persist as PendingAction so the next-turn confirm
+      // can short-circuit straight to dispatch (no LLM, no risk of
+      // the slots drifting). The hash matches the proposed slots so
+      // any divergence between what was previewed and what would be
+      // dispatched is detectable.
+      try {
+        const { startPending, hashProposedAction, markPreviewShown } = await import('./pendingActionService');
+        const actionKindLookup: Record<string, import('./pendingActionService').PendingActionKind | null> = {
+          schedule_meeting: 'schedule_meeting',
+          reschedule_meeting: 'reschedule_meeting',
+          cancel_meeting: 'cancel_meeting',
+          send_email: 'send_email',
+          notify_via_whatsapp: 'notify_via_whatsapp',
+          delegate_open_item: 'delegate_open_item',
+        };
+        const kind = actionKindLookup[parsed.action.type];
+        if (kind) {
+          const { type: _t, ...slots } = parsed.action as any;
+          const pending = await startPending({
+            clientNumber, userId, channel,
+            actionKind: kind,
+            slots,
+            missingSlots: [],
+          });
+          const hash = hashProposedAction(kind, slots);
+          await markPreviewShown(pending.id, hash);
+          console.info('[brain-chat] pending.preview persisted', {
+            userId, clientNumber, pendingId: pending.id, kind, hashPrefix: hash.slice(0, 8),
+          });
+        }
+      } catch (e: any) {
+        // Pending persistence failure is non-fatal — the preview still
+        // ships, the user can still confirm; next-turn dispatch will
+        // go through the main composer's slower path.
+        console.warn('[brain-chat] pending.preview persist failed', { userId, error: e?.message });
+      }
+
       return {
         answer, citedPageIds, gaps: parsed.gaps, sources,
         action: parsed.action, actionResult,
@@ -3049,6 +3148,153 @@ function renderMissingSlotPrompt(actionType: string | null, slot: string): strin
   };
   const ask = SLOT_PROMPTS[slot] ?? `I need one more detail (${slot}) before I can proceed.`;
   return ask;
+}
+
+/** Dispatch a pending action directly from its stored slots.
+ *  Used by the Sprint 1 confirm_preview short-circuit — bypasses
+ *  the LLM entirely because the action is fully grounded already.
+ *  Returns {ok, artifactId, message} mirroring the existing
+ *  dispatcher contract so the caller can persist the artifact and
+ *  reply to the user uniformly. */
+async function dispatchPendingDirect(
+  clientNumber: string,
+  userId: number,
+  pending: import('./pendingActionService').PendingAction,
+): Promise<{ ok: boolean; artifactId?: string; message: string }> {
+  const slots = pending.slots as any;
+  const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+
+  switch (pending.actionKind) {
+    case 'schedule_meeting': {
+      const res = await dispatchInstruction({
+        clientNumber, userId,
+        instruction: {
+          intent: 'schedule_meeting', confidence: 1,
+          summary: String(slots.title ?? 'Meeting'),
+          params: {
+            meetingTitle: slots.title,
+            meetingWhen: slots.whenIso,
+            meetingDurationMin: slots.durationMin,
+            meetingAttendees: [
+              ...(Array.isArray(slots.attendeeEmails) ? slots.attendeeEmails : []),
+              ...(Array.isArray(slots.attendeeNames) ? slots.attendeeNames : []),
+            ],
+          },
+        } as any,
+      });
+      return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+    }
+    case 'reschedule_meeting': {
+      const res = await dispatchInstruction({
+        clientNumber, userId,
+        instruction: {
+          intent: 'reschedule_meeting', confidence: 1,
+          summary: `reschedule ${slots.titleHint ?? slots.eventId}`,
+          params: {
+            eventId: slots.eventId,
+            titleHint: slots.titleHint,
+            newWhenIso: slots.newWhenIso,
+            newDurationMin: slots.newDurationMin,
+            reason: slots.reason,
+          },
+        } as any,
+      });
+      return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+    }
+    case 'cancel_meeting': {
+      const res = await dispatchInstruction({
+        clientNumber, userId,
+        instruction: {
+          intent: 'cancel_meeting', confidence: 1,
+          summary: `cancel ${slots.titleHint ?? slots.eventId}`,
+          params: {
+            eventId: slots.eventId,
+            titleHint: slots.titleHint,
+            reason: slots.reason,
+          },
+        } as any,
+      });
+      return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+    }
+    case 'send_email': {
+      // Reuse the inline send_email path's logic by importing gmailService
+      // directly. The dispatcher doesn't have a send_email case (intent
+      // values are tied to instructionExtractor's older taxonomy); the
+      // brainComposer's existing send_email branch is the canonical path.
+      // Keep parity by mirroring its body.
+      const { sendUserEmail } = await import('../gmailService');
+      const { getBrainPersona } = await import('./brainPersonaService');
+      const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
+      const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
+      const footer = `\n\n— Sent by Nexeo, ${userName}'s AI assistant`;
+      const fullBody = `${slots.body ?? ''}${footer}`;
+      const toArr = Array.isArray(slots.to) ? slots.to : [];
+      const ccArr = Array.isArray(slots.cc) ? slots.cc : undefined;
+      try {
+        const r = await sendUserEmail(
+          userId,
+          toArr.join(', '),
+          String(slots.subject ?? ''),
+          fullBody,
+          ccArr && ccArr.length ? ccArr.join(', ') : undefined,
+        );
+        if (r.success) {
+          return {
+            ok: true,
+            artifactId: r.messageId,
+            message: `Sent email to ${toArr.join(', ')} — subject: "${slots.subject}".`,
+          };
+        }
+        return { ok: false, message: `Email send failed: ${r.error ?? 'unknown'}` };
+      } catch (e: any) {
+        return { ok: false, message: `Email send failed: ${e?.message ?? 'unknown'}` };
+      }
+    }
+    case 'notify_via_whatsapp': {
+      const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+      const { getBrainPersona } = await import('./brainPersonaService');
+      const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
+      const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
+      const intro = `Hi ${slots.recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+      try {
+        const r = await sendTenantWhatsAppText(clientNumber, String(slots.recipientPhone), `${intro}${slots.message}`, userId);
+        if (r.ok) {
+          return {
+            ok: true,
+            artifactId: r.waMessageId,
+            message: `Sent WhatsApp to ${slots.recipientName} (${slots.recipientPhone}) from the Nexeo number.`,
+          };
+        }
+        return { ok: false, message: `WhatsApp send failed: ${r.error ?? 'tenant notifier not paired'}` };
+      } catch (e: any) {
+        return { ok: false, message: `WhatsApp send failed: ${e?.message ?? 'unknown'}` };
+      }
+    }
+    case 'delegate_open_item': {
+      // Delegation has its own existence-check path in the inline branch;
+      // for direct dispatch we trust the slot data (it came from a
+      // previously-shown preview that the user just confirmed).
+      const { delegateItem } = await import('../openItemsService');
+      try {
+        const r = await delegateItem(
+          String(slots.openItemId),
+          clientNumber,
+          null, // delegateeId — unknown from pending slots; service accepts null
+          String(slots.delegateeName),
+          slots.delegateeEmail ? String(slots.delegateeEmail) : undefined,
+          slots.note ? String(slots.note) : undefined,
+        );
+        return {
+          ok: !!r,
+          artifactId: String(slots.openItemId),
+          message: `Delegated "${slots.titleHint ?? slots.openItemId}" to ${slots.delegateeName} <${slots.delegateeEmail}>.`,
+        };
+      } catch (e: any) {
+        return { ok: false, message: `Delegate failed: ${e?.message ?? 'unknown'}` };
+      }
+    }
+  }
+  return { ok: false, message: `[Unknown pending action kind: ${pending.actionKind}]` };
 }
 
 interface ParsedCompose { answer: string; cites: string[]; gaps: string[]; action: ComposedAction | null; }
