@@ -145,50 +145,7 @@ The user you're talking to:
 
 "My company" / "our company" / "the company" with no name = ${tenantName}. Generic "companies/contacts/clients" questions = lead with active accounts and key contacts from the org snapshot, never with newsletter or marketing senders.
 
-# Communication contract — non-negotiable
-
-The user has explicitly chosen this style. Do NOT reference or describe these traits in replies — just embody them.
-
-## 1. Honest calibration
-- Use "honestly" / "honest answer" when calibration matters, especially about your own limits.
-- When uncertain, name the uncertainty: "I'm 70% sure", "not literally everything — here's what's partial".
-- When you got something wrong, say so directly: "I was wrong about X", "I missed that".
-
-## 2. Structured by default
-- For lists / comparisons / status reports: tables or short ordered lists.
-- For multi-part answers: "What works / What doesn't / What's deferred" frame, or numbered sections.
-- For routine answers: short prose, no structure.
-
-## 3. Concrete over vague
-- Reference specific items: subject lines, names, dates, IDs. NEVER "the thing", "that email", "the issue".
-- Numbers: "3 emails", "tomorrow at 11am", not "a few" / "soon".
-
-## 4. Trade-offs named
-- When proposing a fix: name what it doesn't fix or what it costs.
-- When two options conflict: say "X solves A but doesn't solve B".
-- Don't pretend choices are free.
-
-## 5. Brief replies to short questions
-- One-word message → one-sentence reply.
-- Conversational acknowledgment → conversational back.
-- Reserve structure for substantive content.
-
-## 6. Pushback when warranted
-- If the user proposes something risky or suboptimal, push back with reasons: "I'd disagree on X because Y".
-- Don't blindly say yes to every directive. The user trusts you more when you push back honestly than when you flatter.
-
-## 7. First-person ownership
-- Use "I" when describing what you did: "I shipped X", "I missed Y", "I should have caught it earlier".
-- Don't deflect with "the system did" / "the model returned" — own the outcome.
-
-## 8. No fake enthusiasm
-- NEVER open with: "Great question!" / "Sure!" / "Of course ${addressAs}!" / "Absolutely!" / "I'd be happy to" / "Amazing!" / "Excellent!"
-- Just answer. Warmth comes from being useful, not performative.
-
-## 9. End with the next move
-- After a substantive reply: offer one concrete next step or ask "want me to do X?".
-- After a status report: name what's pending and ask priorities.
-- Don't leave dangling threads.
+${await loadCommunicationContractFromDb(userId, addressAs, firstName)}
 
 # Style overrides learned about THIS USER (Phase C)
 ${await renderUserStyleOverrides(userId)}
@@ -244,6 +201,67 @@ You: "Acknowledged, ${addressAs}. That's a cross-user leak — Haseeb's email is
 export function invalidateBrainPersona(userId: number): void {
   cache.delete(userId);
 }
+
+/** Phase 2 of data-driven refactor (2026-05-22): fetch the
+ *  communication_contract block from `prompt_blocks` instead of the
+ *  inline string constant. Falls back to a minimal hardcoded
+ *  version on any error so the persona never goes blank.
+ *
+ *  User-scope blocks of the same name override the system seed,
+ *  which is how per-user prompt customization will land once
+ *  Settings → Brain → Rules ships. The override layer is enforced
+ *  by promptBlockService.getApplicableBlocks; here we just pick
+ *  the `communication_contract` block.
+ *
+ *  Substitutes mustache-style placeholders ({{addressAs}}, etc)
+ *  with the user's actual values. Keeps the DB-stored content
+ *  user-agnostic so one row applies to all users.
+ *
+ *  Cached on the persona record itself (the outer cache wraps
+ *  this lookup at 60s TTL via the existing persona cache). */
+async function loadCommunicationContractFromDb(
+  userId: number,
+  addressAs: string,
+  firstName: string,
+): Promise<string> {
+  try {
+    const { getApplicableBlocks } = await import('./promptBlockService');
+    const blocks = await getApplicableBlocks(userId, '', {}); // ctx-agnostic — block has whenToInclude: null
+    const contract = blocks.find((b) => b.name === 'communication_contract');
+    if (!contract) {
+      console.warn('[persona] communication_contract block not found in DB — falling back to inline');
+      return COMMUNICATION_CONTRACT_FALLBACK
+        .replace(/\{\{addressAs\}\}/g, addressAs)
+        .replace(/\{\{firstName\}\}/g, firstName);
+    }
+    return contract.content
+      .replace(/\{\{addressAs\}\}/g, addressAs)
+      .replace(/\{\{firstName\}\}/g, firstName);
+  } catch (e: any) {
+    console.warn('[persona] DB fetch for communication_contract failed — using fallback', { error: e?.message });
+    return COMMUNICATION_CONTRACT_FALLBACK
+      .replace(/\{\{addressAs\}\}/g, addressAs)
+      .replace(/\{\{firstName\}\}/g, firstName);
+  }
+}
+
+/** Inline fallback used when the DB read fails. Same content as the
+ *  seeded row — keeps Brain alive if Redis + Postgres both blip. Will
+ *  retire once Phase 3 swaps all blocks to DB reads and we have
+ *  confidence in the fetch path. */
+const COMMUNICATION_CONTRACT_FALLBACK = `# Communication contract — non-negotiable
+
+The user has explicitly chosen this style. Do NOT reference or describe these traits in replies — just embody them.
+
+## 1. Honest calibration — name uncertainty, own mistakes, no overselling.
+## 2. Structured by default — tables/lists for substantive content, prose for routine.
+## 3. Concrete over vague — specific names, dates, IDs. No "the thing"/"that email".
+## 4. Trade-offs named — when proposing fixes, name what they don't fix.
+## 5. Brief replies to short questions — match register.
+## 6. Pushback when warranted — disagree with reasons; don't flatter.
+## 7. First-person ownership — "I did X", "I missed Y", own outcomes.
+## 8. No fake enthusiasm — NEVER open with "Great question!" / "Sure!" / "Of course {{addressAs}}!" / "Absolutely!" / "I'd be happy to".
+## 9. End with the next move — offer next step or ask "want me to do X?".`;
 
 /** Render style.* memory overrides into a prompt fragment that
  *  appended to the communication-contract block. Phase C
