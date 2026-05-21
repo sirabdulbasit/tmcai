@@ -66,7 +66,8 @@ export type ComposedAction =
   | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenIso?: string; newDurationMin?: number; reason?: string }
   | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
   | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string }
-  | { type: 'set_brain_name'; name: string };
+  | { type: 'set_brain_name'; name: string }
+  | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -822,6 +823,10 @@ Schema:
             "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it.
         | { "type": "set_brain_name",
             "name": string }                         // The new name the user chose. Empty string / "reset" / "none" clears the custom name (you go back to "your AI assistant"). Examples: "Suzi", "Friday", "Atlas". Length cap 40 chars.
+        | { "type": "record_preference",
+            "key": string,                            // canonical keys: email_signoff, email_signature, email_tone, default_meeting_duration, working_hours, preferred_channel_for, meeting_notification_lead_min — or free-form when the user expresses a preference not in this list
+            "value": any,                             // type matches the key: string for signoff/tone, number for duration, object {start, end} for working_hours, etc.
+            "description"?: string }                  // optional one-line summary of what was learned
 \`\`\`
 
 When to emit \`action\`:
@@ -873,6 +878,13 @@ Forbidden alternatives in ALL three cases:
 - **"I've sent / scheduled / delegated / added [X]"** as prose without an action JSON — that's the empty-promise failure mode. The system has a regex guard that will catch this and overwrite your reply with an honest "I didn't actually do that". You're not fooling the dispatcher and you're not fooling the user; you're just wasting a turn.
 - **"I'll send it shortly / send the invite in a moment"** as a deferral — there is no shortly. Either emit \`action\` now or don't claim the work is happening.
 - **Asking ANOTHER clarifying question** — only valid if you genuinely have a new missing slot you didn't ask about before. Don't loop.
+
+- **record_preference — capture user-stated preferences durably.** When the user expresses a preference that should persist across sessions, emit \`record_preference\` with a canonical key and the stated value. Examples that should fire:
+  - "remember I sign off as Best regards" → \`{ type: "record_preference", key: "email_signoff", value: "Best regards" }\`
+  - "default my meetings to 45 minutes" → \`{ type: "record_preference", key: "default_meeting_duration", value: 45 }\`
+  - "I work 9 to 6" → \`{ type: "record_preference", key: "working_hours", value: { start: "09:00", end: "18:00" } }\`
+  - "always WhatsApp Asad, never email" → \`{ type: "record_preference", key: "preferred_channel_for", value: { "asad": "whatsapp" } }\`
+  Confirm with a one-line acknowledgement ("Got it — I'll use 'Best regards' going forward."). Don't ask for confirmation BEFORE recording — explicit user statements like these are themselves the confirmation.
 
 - **set_brain_name — the user can rename you through conversation.** When the user says "your name is X", "call yourself X", "I'll call you X", "let's name you X" — emit \`set_brain_name\` with \`name\` = the proposed name. Examples that should fire:
   - "your name is Suzi" → \`{ type: "set_brain_name", name: "Suzi" }\`
@@ -928,6 +940,7 @@ function assembleSystemPrompt(args: {
   radarBlock: string;
   instructionsBlock: string;
   prefsBlock: string;
+  memoriesBlock: string;
   openItemsBlock: string;
   todayCalendarBlock: string;
   attentionBlock: string;
@@ -941,7 +954,7 @@ function assembleSystemPrompt(args: {
 }): string {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
-    radarBlock, instructionsBlock, prefsBlock, openItemsBlock, todayCalendarBlock,
+    radarBlock, instructionsBlock, prefsBlock, memoriesBlock, openItemsBlock, todayCalendarBlock,
     attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
   } = args;
 
@@ -1006,6 +1019,7 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // Standing instructions and learned preferences — always when present.
   if (instructionsBlock) parts.push(instructionsBlock);
   if (prefsBlock) parts.push(`# Learned user preferences (bias behaviour toward these)\n${prefsBlock}`);
+  if (memoriesBlock) parts.push(memoriesBlock);
 
   // Delegation matrix and risk radar — relevant for actions and for
   // day_brief / introspective. Skip on casual factual to keep prompt
@@ -1409,6 +1423,18 @@ export async function compose(
   // meeting the user references — not just ones it scheduled in-session.
   // Without (b), a meeting scheduled in a prior session (or manually on
   // Calendar) had no resolvable eventId and Brain self-disabled.
+  // Quality Sprint 2: long-term memory block. Brain remembers
+  // user-confirmed preferences (sign-off, default duration, working
+  // hours, etc.) and applies them without re-asking. Only EXPLICIT
+  // + SYSTEM + confirmed-INFERRED memories make it through; pending
+  // inferred memories live in Settings UI for review.
+  const memoriesBlock = await (async () => {
+    try {
+      const { renderMemoriesBlock } = await import('./userMemoryService');
+      return await renderMemoriesBlock(userId);
+    } catch { return ''; }
+  })();
+
   let artifactsBlock = renderArtifactsBlock(history);
   if (isActionTurn && /\b(cancel|reschedule|postpone|move|push|shift|change|update|delete|remove)\b/i.test(question)) {
     try {
@@ -1437,6 +1463,7 @@ ${calLines.join('\n')}`;
     radarBlock,
     instructionsBlock,
     prefsBlock,
+    memoriesBlock,
     openItemsBlock,
     todayCalendarBlock,
     attentionBlock,
@@ -1836,6 +1863,25 @@ ${calLines.join('\n')}`;
         });
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         answer = res.message;
+      } else if (act.type === 'record_preference') {
+        try {
+          const { recordExplicitMemory } = await import('./userMemoryService');
+          await recordExplicitMemory({
+            clientNumber, userId,
+            key: act.key,
+            value: act.value,
+          });
+          const valStr = typeof act.value === 'string' ? act.value : JSON.stringify(act.value);
+          actionResult = {
+            ok: true,
+            artifactId: `pref:${act.key}`,
+            message: `Got it — I'll remember "${act.key}" as ${valStr} going forward. You can change or remove this in Settings → Brain → Memories.`,
+          };
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `Couldn't save preference: ${e?.message ?? 'unknown'}` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'set_brain_name') {
         // User renamed Brain through chat ("call yourself Suzi" /
         // "your name is Friday" / "reset your name"). Persisted via
@@ -3684,6 +3730,20 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const phoneOk = !recipientPhone.includes('@') && /^[+\d][\d\s().-]{6,}$/.test(recipientPhone);
     if (!recipientName || !phoneOk || !message) return null;
     return { type: 'notify_via_whatsapp', recipientName, recipientPhone, message };
+  }
+  if (type === 'record_preference') {
+    // User stated a preference Brain should remember across sessions.
+    // Quality Sprint 2 (2026-05-21). Key is free-form but should
+    // typically match one of CANONICAL_KEYS in userMemoryService for
+    // automatic prompt rendering. Value can be any JSON-serializable
+    // type; the prompt rule below tells the LLM what shapes are
+    // expected per canonical key.
+    const key = typeof r.key === 'string' ? r.key.trim() : '';
+    if (!key || key.length > 80) return reject('record_preference:invalid-key');
+    const value = r.value;
+    if (value === undefined || value === null) return reject('record_preference:no-value');
+    const description = typeof r.description === 'string' && r.description.trim() ? r.description.trim() : undefined;
+    return { type: 'record_preference', key, value, description };
   }
   if (type === 'set_brain_name') {
     // User-controlled rename: "call yourself X", "your name is Y".

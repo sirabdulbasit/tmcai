@@ -541,6 +541,50 @@ model WhatsAppSession {
 }
 
 /**
+ * UserMemory — durable per-user preferences and facts.
+ * Quality Sprint 2 (2026-05-21).
+ *
+ * Holds preferences and self-described facts that Brain should
+ * remember across sessions:
+ *   - email_signoff: "Best regards"
+ *   - default_meeting_duration: 30 (min)
+ *   - working_hours: { start: "09:00", end: "18:00" }
+ *   - preferred_channel_for: { "asad": "whatsapp" }
+ *   - email_tone: "formal" | "casual"
+ *   - signature: free-text block
+ *
+ * Source values:
+ *   - 'explicit'  — user directly told Brain ("remember I sign off as X")
+ *   - 'inferred'  — background reflection job extracted from prior turns
+ *                   (REQUIRES user confirmation before applying)
+ *   - 'system'    — set by Brain itself (e.g., brain_name auto-set)
+ *
+ * Inferred memories with confirmedAt=NULL are HOLD-only: visible in
+ * Settings for review but NOT injected into the composer prompt
+ * until the user confirms them. Per third-party review #2 on long-
+ * term memory: silent learning is dangerous; explicit auditable
+ * preferences only.
+ */
+model UserMemory {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  key          String    @db.VarChar(80)
+  value        Json
+  category     String    @default("preference") @db.VarChar(30) // 'preference' | 'fact' | 'context'
+  source       String    @db.VarChar(20)
+  confidence   Float     @default(1.0)
+  confirmedAt  DateTime? @map("confirmed_at")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, key])
+  @@index([clientNumber, userId])
+  @@map("user_memories")
+}
+
+/**
  * UserResolutionAlias — per-user mapping from a short name / nickname
  * to a specific identifier (email or phone) the user has resolved
  * before. Sprint 2 (2026-05-21).
