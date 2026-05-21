@@ -85,10 +85,51 @@ export async function answerAsBrain(
       .filter((h): h is { role: 'user' | 'brain'; text: string } => h.role !== 'artifact'),
   );
   const opened = await openPagesForPlan(clientNumber, userId, plan, question);
-  const result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
-    steeringHint: opts.steeringHint ?? null,
-    channel: opts.channel,
-  });
+
+  // Quality Sprint 4: agentic read-only multi-step reader.
+  // Triggers on chained-reasoning questions ("check X and tell me Y"
+  // / "if so do Z"). Read-only: writes still go through linear path.
+  const { looksLikeAgenticTurn, runAgenticReader } = await import('../services/knowledge/agenticReader');
+  const useAgentic = looksLikeAgenticTurn(question);
+  let result: Awaited<ReturnType<typeof compose>>;
+  if (useAgentic) {
+    try {
+      const { getBrainPersona } = await import('../services/knowledge/brainPersonaService');
+      const persona = await getBrainPersona(userId, clientNumber).catch(() => null);
+      const agenticOut = await runAgenticReader({
+        question, userId, clientNumber,
+        systemPrompt: persona?.systemPreamble ?? '',
+        history: trimmedHistory.filter((h): h is { role: 'user' | 'brain'; text: string } => h.role !== 'artifact'),
+      });
+      console.info('[brain-chat] agentic.completed', {
+        userId, clientNumber,
+        toolCallsExecuted: agenticOut.toolCallsExecuted,
+        toolsUsed: agenticOut.toolsUsed,
+        budgetExceeded: agenticOut.budgetExceeded,
+      });
+      result = {
+        answer: agenticOut.answer,
+        citedPageIds: [],
+        gaps: [],
+        sources: [],
+        action: null,
+        actionResult: null,
+      };
+    } catch (e: any) {
+      console.warn('[brain-chat] agentic.failed - falling back to linear compose', {
+        userId, error: e?.message,
+      });
+      result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
+        steeringHint: opts.steeringHint ?? null,
+        channel: opts.channel,
+      });
+    }
+  } else {
+    result = await compose(clientNumber, userId, question, plan, opened, trimmedHistory, {
+      steeringHint: opts.steeringHint ?? null,
+      channel: opts.channel,
+    });
+  }
 
   // Sprint 4B: validateBeforeRender — single consolidated safety pass.
   // Catches the runtime patterns that have caused user-visible failures
