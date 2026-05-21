@@ -89,6 +89,35 @@ export async function answerAsBrain(
     steeringHint: opts.steeringHint ?? null,
     channel: opts.channel,
   });
+
+  // Sprint 4B: validateBeforeRender — single consolidated safety pass.
+  // Catches the runtime patterns that have caused user-visible failures
+  // (empty promises, fabricated escalations, raw JSON leaks, raw LLM
+  // provider error strings). Any block-severity violation rewrites
+  // the answer with a bracketed status marker before it reaches the
+  // channel renderer. Cheap (regex only); deterministic.
+  try {
+    const { validateBeforeRender } = await import('../services/knowledge/responseValidator');
+    const validation = validateBeforeRender(result);
+    if (!validation.ok && validation.replacement) {
+      console.warn('[brain-chat] validateBeforeRender block', {
+        userId, clientNumber,
+        rules: validation.violations.filter((v) => v.severity === 'block').map((v) => v.rule),
+        originalHead: result.answer.slice(0, 120),
+      });
+      result.answer = validation.replacement;
+    } else if (validation.violations.length > 0) {
+      // Warn-only: log but ship.
+      console.info('[brain-chat] validateBeforeRender warn', {
+        userId, clientNumber,
+        rules: validation.violations.map((v) => v.rule),
+      });
+    }
+  } catch (e: any) {
+    // Validator failure must not break user reply. Log and ship as-is.
+    console.warn('[brain-chat] validateBeforeRender threw', { userId, error: e?.message });
+  }
+
   // Channel render — wraps the composer output in the per-channel
   // formatter so WhatsApp sees a terse one-paragraph answer while
   // web sees the full markdown.

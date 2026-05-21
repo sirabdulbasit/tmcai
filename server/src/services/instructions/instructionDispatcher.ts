@@ -331,10 +331,12 @@ export async function dispatchInstruction(args: {
         // 11:00 UTC = 16:00 PKT. User got a 4 PM invite instead of 11 AM.
         //
         // Fix: ALWAYS normalize whenIso to include an explicit timezone
-        // offset (Asia/Karachi = +05:00, no DST). Then `new Date()`
-        // parses it as a specific instant, and Google Calendar
-        // interprets it correctly regardless of the timeZone field.
-        const normalizedWhenIso = normalizeWhenIsoToLocalTz(whenIso, '+05:00');
+        // offset derived from the USER's tz (not a hardcoded +05:00).
+        // Sprint 4A (2026-05-21): swapped to per-user lookup so users
+        // outside Pakistan get correct local times.
+        const { getUserTimezoneOffset } = await import('../userTimezoneService');
+        const userOffset = await getUserTimezoneOffset(userId).catch(() => '+05:00');
+        const normalizedWhenIso = normalizeWhenIsoToLocalTz(whenIso, userOffset);
         const startDate = new Date(normalizedWhenIso);
         if (Number.isNaN(startDate.getTime())) {
           return { ok: false, message: `Schedule failed: I couldn't parse the time "${whenIso}". Tell me the date and time clearly (e.g. "tomorrow 3pm" or "2026-05-21 15:00").` };
@@ -412,7 +414,9 @@ export async function dispatchInstruction(args: {
       try {
         const patch: { startTime?: string; endTime?: string } = {};
         if (newWhenIso) {
-          const normalizedNewIso = normalizeWhenIsoToLocalTz(newWhenIso, '+05:00');
+          const { getUserTimezoneOffset } = await import('../userTimezoneService');
+          const userOffset = await getUserTimezoneOffset(userId).catch(() => '+05:00');
+          const normalizedNewIso = normalizeWhenIsoToLocalTz(newWhenIso, userOffset);
           const startDate = new Date(normalizedNewIso);
           if (Number.isNaN(startDate.getTime())) {
             return { ok: false, message: `Reschedule failed: couldn't parse new time "${newWhenIso}".` };

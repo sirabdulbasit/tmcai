@@ -130,6 +130,15 @@ model User {
   integrationError        String?   @map("integration_error") @db.Text // last error message if any
   integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
 
+  // ── Per-user timezone (Sprint 4A, 2026-05-21) ──
+  // IANA timezone name, e.g., 'Asia/Karachi', 'America/New_York'.
+  // Drives todayDate in compose (so "tomorrow" resolves correctly
+  // in the user's local frame) and whenIso normalization in the
+  // dispatcher (so meetings land at the user's local time). Default
+  // 'Asia/Karachi' for backward compatibility with the original
+  // hardcode; new users in other regions set it explicitly.
+  timezone               String? @default("Asia/Karachi") @db.VarChar(50)
+
   // ── HaseebOS v15 — per-user risk + agent config (M11) ──
   riskTolerance          String? @map("risk_tolerance") @db.VarChar(10) // conservative | balanced | aggressive
   agentConfigOverrides   Json?   @map("agent_config_overrides") // per-user agent tweaks

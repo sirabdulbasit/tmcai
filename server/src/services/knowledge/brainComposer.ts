@@ -1276,19 +1276,12 @@ export async function compose(
   // ask a clean disambiguation question. Without this, MD says "delegate
   // to Asad" → LLM picks one Asad at random or says "I don't see them".
   const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
-  // Compute today's date in the USER's local timezone, not UTC. At
-  // 02:23 PKT on May 21, UTC is still May 20 — anchoring "today" to
-  // UTC made "tomorrow" resolve to May 21 (the same day the user was
-  // already on) instead of May 22. Observed 2026-05-21 in Basit's
-  // meeting-invite session. For TMC users (Asia/Karachi, +05:00, no
-  // DST) we shift forward 5h before slicing. Multi-timezone support
-  // is a follow-up — when user.timezone is added to the schema, this
-  // function reads it per-user.
-  const todayDate = (() => {
-    const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
-    const localNow = new Date(Date.now() + PKT_OFFSET_MS);
-    return localNow.toISOString().slice(0, 10);
-  })();
+  // Today's date in the USER's local timezone, not UTC.
+  // Sprint 4A (2026-05-21): swapped to per-user lookup via
+  // userTimezoneService. Existing rows default to Asia/Karachi
+  // (back-compat); new users in other zones get correct anchoring.
+  const { getUserLocalDate } = await import('../userTimezoneService');
+  const todayDate = await getUserLocalDate(userId).catch(() => new Date().toISOString().slice(0, 10));
 
   // ── Today's calendar ──
   // Only built for day_brief intent. Pulls today's gcal feed_events so
