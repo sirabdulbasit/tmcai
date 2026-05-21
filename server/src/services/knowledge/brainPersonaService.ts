@@ -190,6 +190,9 @@ The user has explicitly chosen this style. Do NOT reference or describe these tr
 - After a status report: name what's pending and ask priorities.
 - Don't leave dangling threads.
 
+# Style overrides learned about THIS USER (Phase C)
+${await renderUserStyleOverrides(userId)}
+
 # Style examples (study the patterns — match this voice)
 
 User: "thanks"
@@ -240,6 +243,50 @@ You: "Acknowledged, ${addressAs}. That's a cross-user leak — Haseeb's email is
  *  sees the new name immediately. */
 export function invalidateBrainPersona(userId: number): void {
   cache.delete(userId);
+}
+
+/** Render style.* memory overrides into a prompt fragment that
+ *  appended to the communication-contract block. Phase C
+ *  (2026-05-22): the reflection job proposes style preferences as
+ *  inferred memories; once the user confirms them in Settings,
+ *  they appear here and tune Brain's voice dynamically. */
+async function renderUserStyleOverrides(userId: number): Promise<string> {
+  try {
+    const { getStyleMemories } = await import('./userMemoryService');
+    const styles = await getStyleMemories(userId);
+    const keys = Object.keys(styles);
+    if (keys.length === 0) {
+      return '(none learned yet — the base communication contract applies as-is)';
+    }
+    const lines: string[] = [];
+    for (const key of keys) {
+      const v = styles[key];
+      const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+      // Translate canonical keys into actionable English so the LLM
+      // applies the override naturally rather than parsing a tag.
+      if (key === 'style.reply_length_preference') {
+        if (v === 'terse') lines.push(`- Reply length: TERSE. Skip "What works/doesn't" frames unless the user asks for them. Default to 1-3 sentences. Use lists only for genuinely listable content.`);
+        else if (v === 'detailed') lines.push(`- Reply length: DETAILED. Default to fuller explanations + structured frames even for moderate questions.`);
+        else lines.push(`- Reply length: BALANCED. (default)`);
+      } else if (key === 'style.greeting_preference') {
+        if (v === 'no_opener') lines.push(`- Greeting: SKIP openers entirely. Don't address the user by name unless answering an identity question. Start with the substantive content.`);
+        else if (v === 'first_name_only') lines.push(`- Greeting: Use first name only, not the title form. E.g. "${(styles as any)['_user_first_name'] ?? 'Basit'}" instead of "Sir".`);
+        // 'title_form' is the default — no override needed
+      } else if (key === 'style.hedge_tolerance') {
+        if (v === 'low') lines.push(`- Hedging: LOW TOLERANCE. Commit to a recommendation instead of saying "might" / "possibly" / "could". If genuinely uncertain, name the confidence ("70% sure") rather than hedging vaguely.`);
+      } else if (key === 'style.structure_preference') {
+        if (v === 'plain_prose') lines.push(`- Structure: PLAIN PROSE preferred. Avoid tables and bullets unless content is genuinely listable (5+ items). Default to flowing prose.`);
+        else if (v === 'structured') lines.push(`- Structure: STRUCTURED preferred. Use tables/bullets even for shorter content; the user scans rather than reads.`);
+      } else if (key === 'style.next_move_preference') {
+        if (v === 'minimal') lines.push(`- Next-move offer: MINIMAL. Skip "want me to do X?" at the end of routine replies. Offer next steps only when there's a clear decision pending.`);
+      } else {
+        lines.push(`- ${key}: ${valStr}`);
+      }
+    }
+    return lines.join('\n');
+  } catch {
+    return '(style memory lookup failed — using base contract)';
+  }
 }
 
 /** Update Brain's custom name. Pass '' or null to reset to default. */

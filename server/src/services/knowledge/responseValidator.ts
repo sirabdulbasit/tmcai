@@ -67,6 +67,29 @@ const PROVIDER_ERROR_LEAK_RE =
 const DONE_CLAIM_RE =
   /\b(sent|scheduled|delivered|completed|done|dispatched|invited|notified|cancelled|rescheduled|updated)\b/i;
 
+// ──────────────────────────────────────────────────────────────────
+// STYLE RULES (Phase B of the Communication Contract, 2026-05-22).
+// Per user: "the way you talk to me, i want my brain to do the same".
+// These are WARN-severity — logged so we can tune, optionally
+// rewritten via the suggested replacement. Style is softer than
+// safety: a reply that hedges is annoying; a reply that lies is
+// dangerous. The block-vs-warn distinction matters.
+// ──────────────────────────────────────────────────────────────────
+
+// Fake-enthusiasm openers. Detection is at line start (^) after
+// optional whitespace so we don't false-positive mid-sentence.
+const FAKE_ENTHUSIASM_RE =
+  /^\s*(great question|sure thing|sure!|of course[, ]|of course sir|absolutely[!,]|i'?d be happy to|i'?d love to|amazing|excellent|fantastic|wonderful|happy to help|no problem at all)\b/i;
+
+// Vague-filler — promises action without a specific timeline / artifact.
+const VAGUE_FILLER_RE =
+  /\b(let me look into (that|this|it)|i'?ll see what i can do|i'?ll check on (that|this|it)|i'?ll get back to you|i'?ll figure it out|i'?ll get on (that|it)|i'?ll do my best|i'?ll try (to|my best))\b(?!.*\b(now|today|tomorrow|in \d|by \d|\d ?(min|hour|day))\b)/i;
+
+// Over-hedging — three or more hedge words in close proximity.
+// Counted across the whole answer; threshold 3+.
+const HEDGE_WORDS_RE =
+  /\b(might|maybe|perhaps|possibly|could|seems|seem|likely|probably|i think|i believe|i guess|i suppose|appears|appear|fairly|somewhat|kind of|sort of|might possibly|probably maybe)\b/gi;
+
 /** Run all checks against a composed result. Returns the outcome
  *  with violations sorted by severity (block first). Caller acts on
  *  the first block-severity violation if any.
@@ -167,6 +190,58 @@ export function validateBeforeRender(
       severity: 'block',
       description: 'Pending action is still preview_shown but answer uses completion language ("sent", "scheduled", "done").',
       suggestedReplacement: `[Preview not yet confirmed. Reply "send" to dispatch, or tell me what to change.]`,
+    });
+  }
+
+  // ── STYLE RULES (Phase B Communication Contract) ────────────────
+  // All warn-severity. Logged + optionally rewritten. Style is softer
+  // than safety; we don't block a reply that hedges, only flag it.
+
+  // 7. FAKE ENTHUSIASM — opens with banned phrase.
+  if (FAKE_ENTHUSIASM_RE.test(answer)) {
+    const stripped = answer.replace(FAKE_ENTHUSIASM_RE, '').trimStart()
+      // After removing the opener, often a comma/space remains — clean up.
+      .replace(/^[,.;:!?\s]+/, '');
+    violations.push({
+      rule: 'style_fake_enthusiasm',
+      severity: 'warn',
+      description: 'Answer opens with banned fake-enthusiasm phrase (e.g., "Great question!", "Sure!", "Absolutely!").',
+      suggestedReplacement: stripped.length > 10 ? stripped : answer,
+    });
+  }
+
+  // 8. VAGUE FILLER — promises action without specific timeline/artifact.
+  if (VAGUE_FILLER_RE.test(answer)) {
+    violations.push({
+      rule: 'style_vague_filler',
+      severity: 'warn',
+      description: 'Answer uses vague-filler phrasing ("let me look into that", "I\'ll see what I can do") without a specific timeline or artifact.',
+      // No auto-rewrite — caller decides. Flag only.
+    });
+  }
+
+  // 9. OVER-HEDGING — 3+ hedge words in the answer.
+  const hedgeMatches = answer.match(HEDGE_WORDS_RE);
+  if (hedgeMatches && hedgeMatches.length >= 3) {
+    violations.push({
+      rule: 'style_over_hedging',
+      severity: 'warn',
+      description: `Answer contains ${hedgeMatches.length} hedge words (${Array.from(new Set(hedgeMatches.map((s) => s.toLowerCase()))).slice(0, 5).join(', ')}). Per the communication contract: only hedge when there's genuine uncertainty; commit otherwise.`,
+    });
+  }
+
+  // 10. NO NEXT MOVE — substantive answers (>200 chars, not a question)
+  //     should offer a next step. Detection: no terminal "?", no "want me",
+  //     no "next step", no "shall I".
+  if (
+    answer.length > 200 &&
+    !/\?\s*$/.test(answer.trim()) &&
+    !/\b(want me to|shall i|should i|next step|next move|let me know|tell me|reply ["'])/i.test(answer)
+  ) {
+    violations.push({
+      rule: 'style_no_next_move',
+      severity: 'warn',
+      description: 'Substantive reply (>200 chars) ends without offering a next step or asking a question. Per the communication contract: end with the next move, not a dangling thread.',
     });
   }
 

@@ -35,7 +35,12 @@ export interface UserMemory {
 
 /** Canonical preference keys Brain understands. Free-form keys are
  *  allowed, but these are the ones the prompt + dispatcher explicitly
- *  reason about. Keep in sync with what the composer renders. */
+ *  reason about. Keep in sync with what the composer renders.
+ *
+ *  Style.* keys (Phase C, 2026-05-22): communication-style learnings
+ *  from the reflection job. Confirmed values are injected into the
+ *  persona's communication-contract block so Brain tunes its voice
+ *  to the user's observed preference over time. */
 export const CANONICAL_KEYS = {
   EMAIL_SIGNOFF: 'email_signoff',
   EMAIL_SIGNATURE: 'email_signature',
@@ -45,7 +50,25 @@ export const CANONICAL_KEYS = {
   PREFERRED_CHANNEL_FOR: 'preferred_channel_for', // map: name → channel
   TIMEZONE: 'timezone', // shadow of User.timezone for convenience
   MEETING_NOTIFICATION_LEAD: 'meeting_notification_lead_min',
+  // Phase C style keys
+  STYLE_REPLY_LENGTH: 'style.reply_length_preference',
+  STYLE_GREETING: 'style.greeting_preference',
+  STYLE_HEDGE_TOLERANCE: 'style.hedge_tolerance',
+  STYLE_STRUCTURE: 'style.structure_preference',
+  STYLE_NEXT_MOVE: 'style.next_move_preference',
 } as const;
+
+/** Get just the style.* memories — the ones the persona uses to tune
+ *  the communication contract dynamically. Returns a map for easy
+ *  lookup by key. */
+export async function getStyleMemories(userId: number): Promise<Record<string, unknown>> {
+  const all = await getApplicableMemories(userId);
+  const out: Record<string, unknown> = {};
+  for (const m of all) {
+    if (m.key.startsWith('style.')) out[m.key] = m.value;
+  }
+  return out;
+}
 
 /** Return all APPLICABLE memories — explicit + inferred-AND-confirmed +
  *  system. Inferred-but-unconfirmed memories are intentionally

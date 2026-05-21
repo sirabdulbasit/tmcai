@@ -90,7 +90,7 @@ Output strictly JSON:
   ]
 }
 
-Canonical preference keys:
+Canonical preference keys (work patterns):
 - email_signoff (string)
 - email_signature (string)
 - email_tone ("formal" | "casual" | "warm")
@@ -99,10 +99,33 @@ Canonical preference keys:
 - preferred_channel_for ({"<name lowercase>": "email" | "whatsapp"})
 - meeting_notification_lead_min (integer)
 
+Canonical preference keys (COMMUNICATION STYLE — Phase C):
+- style.reply_length_preference ("terse" | "balanced" | "detailed")
+  Evidence: user repeatedly asks Brain to shorten replies, OR
+  consistently sends one-line questions and gets long replies they
+  truncate, OR explicitly asks for "shorter answers" / "brief".
+- style.greeting_preference ("no_opener" | "first_name_only" | "title_form")
+  Evidence: user shortens Brain's greeting ("just answer", "skip
+  the Sir"), OR consistently uses a particular form themselves.
+- style.hedge_tolerance ("low" | "moderate")
+  Evidence: user pushes back on Brain hedging ("just commit",
+  "don't say maybe", "be direct"), OR repeatedly asks Brain to be
+  more decisive.
+- style.structure_preference ("plain_prose" | "structured")
+  Evidence: user reformats Brain's output into bullets/tables, OR
+  asks for "in a table" / "as a list", OR conversely says "skip
+  the formatting".
+- style.next_move_preference ("always_offered" | "minimal")
+  Evidence: user ignores Brain's "want me to do X?" prompts
+  consistently OR explicitly asks Brain to stop offering options.
+
 Rules:
 - ONLY propose preferences that are clearly evidenced by the conversation. Don't guess.
 - Skip a key if it's already in the existing-memories list.
-- Skip if you have less than 2 instances of supporting evidence (e.g., user changing 'Thanks' to 'Best regards' only once is not enough).
+- Require ≥2 instances of supporting evidence for a proposal — a
+  single corrective ("be shorter") is feedback, not a pattern.
+- Style keys are STRONGER signals than work-pattern keys; for style,
+  require 3+ corroborating instances.
 - Output an empty array if nothing solid emerges.
 - No prose outside the JSON.
 

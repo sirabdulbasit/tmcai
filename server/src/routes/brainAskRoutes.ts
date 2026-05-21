@@ -153,11 +153,26 @@ export async function answerAsBrain(
       });
       result.answer = validation.replacement;
     } else if (validation.violations.length > 0) {
-      // Warn-only: log but ship.
+      // Warn-only: log + optionally rewrite for style-rule violations
+      // whose suggestedReplacement is a safe in-place edit (e.g.
+      // style_fake_enthusiasm strips the banned opener).
+      const warns = validation.violations;
       console.info('[brain-chat] validateBeforeRender warn', {
         userId, clientNumber,
-        rules: validation.violations.map((v) => v.rule),
+        rules: warns.map((v) => v.rule),
       });
+      // Phase B: auto-apply the fake-enthusiasm strip. Other style
+      // warns (vague_filler, over_hedging, no_next_move) are flagged
+      // only — they need composer changes, not post-hoc rewrites.
+      const fakeEnth = warns.find((v) => v.rule === 'style_fake_enthusiasm' && v.suggestedReplacement);
+      if (fakeEnth?.suggestedReplacement && fakeEnth.suggestedReplacement.length > 10) {
+        console.info('[brain-chat] auto-strip fake_enthusiasm opener', {
+          userId, clientNumber,
+          originalHead: result.answer.slice(0, 60),
+          newHead: fakeEnth.suggestedReplacement.slice(0, 60),
+        });
+        result.answer = fakeEnth.suggestedReplacement;
+      }
     }
   } catch (e: any) {
     // Validator failure must not break user reply. Log and ship as-is.
