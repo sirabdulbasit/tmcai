@@ -929,7 +929,7 @@ For casual / small-talk turns: cites=[], gaps=[], action=null. Answer from perso
  *  Always returns a complete prompt; never throws. Dynamic blocks (open
  *  items, candidates, opened pages, etc.) are passed in as strings;
  *  empty strings are skipped. */
-function assembleSystemPrompt(args: {
+async function assembleSystemPrompt(args: {
   intent: 'casual' | 'factual' | 'introspective' | 'day_brief' | string;
   isActionTurn: boolean;
   persona: { systemPreamble: string };
@@ -952,7 +952,9 @@ function assembleSystemPrompt(args: {
   steeringHint: string | null | undefined;
   channel: 'web' | 'whatsapp';
   todayDate: string;
-}): string {
+  userId?: number;       // Phase 3: passed through for prompt_blocks user-scope override
+  clientNumber?: string;
+}): Promise<string> {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
@@ -996,10 +998,29 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
     return buildCasualPrompt({ persona, todayBlock, capsBlock, channelRule });
   }
 
+  // Phase 3 of data-driven refactor (2026-05-22): fetch rule blocks
+  // from prompt_blocks table once per assembly. Each constant-push
+  // below uses ruleBlock(name, fallback) which prefers the DB content
+  // but falls back to the inline constant on miss. User-scope blocks
+  // of the same name override the system seed.
+  const { getApplicableBlocks } = await import('./promptBlockService');
+  const blockMap = new Map<string, string>();
+  try {
+    const fetched = await getApplicableBlocks(args.userId ?? -1, args.clientNumber ?? '', {
+      intent,
+      isActionTurn,
+      channel,
+    });
+    for (const b of fetched) blockMap.set(b.name, b.content);
+  } catch (e: any) {
+    console.warn('[assembleSystemPrompt] DB prompt-block fetch failed — using inline fallbacks', { error: e?.message });
+  }
+  const ruleBlock = (name: string, fallback: string): string => blockMap.get(name) ?? fallback;
+
   // Build the variant prompt in pieces, then join.
   const parts: string[] = [];
   parts.push(persona.systemPreamble);
-  parts.push(CORE_CONVERSATIONAL_RULES);
+  parts.push(ruleBlock('core_conversational_rules', CORE_CONVERSATIONAL_RULES));
   parts.push(channelRule);
 
   // Schema — only for introspective questions (about Brain/Nexeo/tenant)
@@ -1078,7 +1099,7 @@ ${steeringHint.slice(0, 1000)}`);
   }
 
   parts.push(todayBlock);
-  parts.push(OUTPUT_SHAPE_RULES);
+  parts.push(ruleBlock('output_shape_rules', OUTPUT_SHAPE_RULES));
 
   // Honesty rule for open-items + candidates surface — relevant when
   // either is shown.
@@ -1087,30 +1108,25 @@ ${steeringHint.slice(0, 1000)}`);
 If the "Open items snapshot" block above contains a row whose title fragment matches what the user is referring to, that item EXISTS. Don't say "I don't see any open items with that name" when the snapshot literally lists one. Same for candidates: if the block shows two Asads, don't reply "I can't find any Asad" — say "which one?" with their distinguishing reasons.`);
   }
 
-  // Intent-specific rule blocks — flattened from the old H1-H15.
+  // Intent-specific rule blocks — Phase 3: prefer DB row, fallback to constant.
   if (intent === 'factual' || intent === 'introspective') {
-    parts.push(FACTUAL_HONESTY_RULES);
-    parts.push(AUTHORITY_RULES);
+    parts.push(ruleBlock('factual_honesty_rules', FACTUAL_HONESTY_RULES));
+    parts.push(ruleBlock('authority_rules', AUTHORITY_RULES));
   }
 
   // Action rules — only when the user's text looked like an imperative.
   if (isActionTurn) {
-    parts.push(ACTION_RULES);
+    parts.push(ruleBlock('action_emission_rules', ACTION_RULES));
   }
 
   // Day Brief format — only on day_brief intent.
   if (intent === 'day_brief') {
-    parts.push(DAY_BRIEF_FORMAT_RULES);
+    parts.push(ruleBlock('day_brief_format_rules', DAY_BRIEF_FORMAT_RULES));
   }
 
-  // Surface exclusivity — non-negotiable on factual / day_brief / action
-  // turns. Casual chat skips it (no entity questions). This block is the
-  // structural guard against the "19 vs 2" hallucination: the LLM had
-  // the right snapshot in front of it and still invented items from
-  // wiki_pages. Goes last so it's the LAST set of rules in the model's
-  // context window — best position for adherence.
+  // Surface exclusivity — non-negotiable on factual / day_brief / action turns.
   if (intent === 'factual' || intent === 'day_brief' || intent === 'introspective' || isActionTurn) {
-    parts.push(SURFACE_EXCLUSIVITY_RULES);
+    parts.push(ruleBlock('surface_exclusivity_rules', SURFACE_EXCLUSIVITY_RULES));
   }
 
   return parts.join('\n\n');
@@ -1515,7 +1531,7 @@ ${calLines.join('\n')}`;
       console.warn('[brain-chat] upcoming calendar fetch failed', { userId, error: e?.message });
     }
   }
-  const systemPrompt = assembleSystemPrompt({
+  const systemPrompt = await assembleSystemPrompt({
     intent: effectiveIntent,
     isActionTurn,
     persona,
@@ -1538,6 +1554,8 @@ ${calLines.join('\n')}`;
     steeringHint: opts.steeringHint,
     channel: opts.channel ?? 'web',
     todayDate,
+    userId,
+    clientNumber,
   });
 
   // Recent dialogue prepended so the LLM can resolve follow-ups like
