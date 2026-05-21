@@ -1055,6 +1055,19 @@ model Entity {
   lastInteraction      DateTime? @map("last_interaction")
   clientNumber         String    @map("client_number") @db.VarChar(20)
   createdBy            Int?      @map("created_by")
+
+  // CRITICAL — added 2026-05-22 P0 after cross-user data leak.
+  // ownerUserId: the user this row belongs to. For scope='user'
+  //   rows, queries MUST filter ownerUserId = currentUser. For
+  //   scope='tenant' rows, all users in the tenant can see them.
+  // scope: 'user' (private contact, default for auto-discovered)
+  //        | 'tenant' (org-shared employee/account/project)
+  // Without this, ANY user in a tenant could see ANY contact created
+  // from another user's email/WhatsApp ingestion — exactly what
+  // happened 2026-05-21 when Basit saw Ali Numan from Haseeb's inbox.
+  ownerUserId          Int?      @map("owner_user_id")
+  scope                String    @default("user") @db.VarChar(20)
+
   // Per user 2026-05-13: an executive's contact often has multiple
   // identifiers (work email + personal email + phone). Path B = keep
   // one row per identifier, but link them under a shared id so Brain
@@ -1072,6 +1085,9 @@ model Entity {
   @@index([clientNumber, entityType])
   @@index([clientNumber, name])
   @@index([clientNumber, linkedPersonId])
+  // P0: indexes for owner-scoped reads, the hot path post-fix.
+  @@index([clientNumber, ownerUserId, entityType])
+  @@index([clientNumber, scope, entityType])
   @@map("entities")
 }
 

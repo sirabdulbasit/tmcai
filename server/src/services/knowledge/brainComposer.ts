@@ -2157,6 +2157,18 @@ ${calLines.join('\n')}`;
     // EMPTY_PROMISE_RE near the top) so the post-compose retry
     // (Option A) can use the same detector.
     if (EMPTY_PROMISE_RE.test(answer)) {
+      // P0 (2026-05-22): narrow the guard. Previously it fired on ANY
+      // turn where the regex matched, including conversational
+      // acknowledgments like "I've noted that" / "I've removed that
+      // from my reading list". Observed at 12:08-12:09 PKT on Basit's
+      // session — guard rewrote three innocuous replies with the
+      // honest-no-op marker, breaking trust mid-conversation.
+      //
+      // Tighter gate: only fire when THIS TURN was an action-likely
+      // turn AND there's no successful actionResult. Conversational
+      // turns are exempt because there was nothing to do anyway.
+      const wasActionTurn = isActionTurn;
+
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
       // see Brain previously confirmed dispatch of this kind of action
@@ -2164,7 +2176,8 @@ ${calLines.join('\n')}`;
       const historyText = history.map((h) => h.text || '').join('\n');
       const seenArtifact = /artifact[Ii]d[\s:=]+\w/.test(historyText)
         || /\b(delegated|added)\s+(?:"[^"]+"|to\s+\w+)\s+(?:to|in)\s+\w/.test(historyText);
-      if (!seenArtifact) {
+
+      if (!seenArtifact && wasActionTurn) {
         // Override with an honest message. Keep the original answer
         // appended so the user sees what Brain TRIED to say if needed.
         console.warn('[brain-chat] empty-promise guard triggered', {
@@ -2173,6 +2186,11 @@ ${calLines.join('\n')}`;
         });
         answer = `I didn't actually complete that — no action went through on my side. Tell me which item and which person and I'll act on it now.`;
         actionResult = { ok: false, message: 'empty_promise_blocked' };
+      } else if (!seenArtifact && !wasActionTurn) {
+        // Log so we can tune further — but don't override innocent prose.
+        console.info('[brain-chat] empty-promise regex matched on non-action turn, leaving prose unchanged', {
+          userId, clientNumber, head: answer.slice(0, 120),
+        });
       }
     }
   }

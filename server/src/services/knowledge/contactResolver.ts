@@ -115,6 +115,10 @@ export async function resolveContact(
       select: { id: true, name: true, email: true, department: true, jobDescription: true },
       take: 20,
     }).catch(() => [] as any[]),
+    // P0 (2026-05-22): user-owned entities ONLY, plus tenant-shared
+    // ones. Without this filter, contacts created from Haseeb's email
+    // ingestion (scope='user', ownerUserId=Haseeb.id) would leak into
+    // Basit's resolver results. The cross-user leak Basit reported.
     prisma.entity.findMany({
       where: {
         clientNumber,
@@ -123,6 +127,15 @@ export async function resolveContact(
           { name: { contains: q, mode: 'insensitive' as any } },
           { email: { contains: q, mode: 'insensitive' as any } },
         ],
+        AND: [{
+          OR: [
+            { scope: 'tenant' },                           // tenant-shared
+            { scope: 'user', ownerUserId: userId },         // user-owned
+            // Legacy rows with createdBy but no ownerUserId yet — fall back
+            // to createdBy for back-compat until backfill completes.
+            { ownerUserId: null, createdBy: userId },
+          ],
+        }],
       },
       select: { id: true, name: true, email: true, lastInteraction: true, relationshipStrength: true },
       take: 30,
