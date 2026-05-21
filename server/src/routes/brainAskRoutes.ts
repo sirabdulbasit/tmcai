@@ -599,6 +599,96 @@ router.post('/ask', async (req: Request, res: Response) => {
 });
 
 /**
+ * Quality Sprint 5e (2026-05-21): Server-Sent Events streaming
+ * endpoint for the web Brain Chat.
+ *
+ * Streams the FINAL composed answer in chunks for a "progressive"
+ * UX. The compose pipeline still runs in full (preview gate,
+ * idempotency, validateBeforeRender, etc.) before any token streams
+ * — those guarantees can't safely be bypassed for write actions.
+ *
+ * Event types emitted:
+ *   - thinking: { stage: string }       // status updates during compose
+ *   - chunk:    { text: string }        // incremental answer text
+ *   - meta:     { sources, intent, panel } // sent before done
+ *   - done:     {}                      // stream complete
+ *   - error:    { message: string }
+ *
+ * Web UI consumes via EventSource. For action turns, the full
+ * answer is sent in fewer / larger chunks (the user's already past
+ * the "show me you're working" point). For read turns, smaller
+ * chunks give the typing feel.
+ *
+ * Note: Gemini's true token-streaming would require refactoring
+ * compose to emit tokens. That's a bigger change — this endpoint
+ * delivers the streaming-UX win without the architectural risk.
+ */
+router.post('/ask-stream', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const question = String(req.body?.question ?? '').trim();
+  if (!question) return res.status(400).json({ error: 'question required' });
+  const rawHistory: any[] = Array.isArray(req.body?.history) ? req.body.history : [];
+  const history: BrainHistoryTurn[] = rawHistory
+    .filter((t) => t && (t.role === 'user' || t.role === 'brain') && typeof t.text === 'string')
+    .map((t) => ({ role: t.role, text: String(t.text).slice(0, 2000) }));
+  const channel = (String(req.body?.channel ?? 'web') === 'whatsapp') ? 'whatsapp' : 'web';
+
+  // SSE headers.
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // nginx: don't buffer SSE
+  res.flushHeaders?.();
+
+  const sendEvent = (event: string, data: unknown) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    (res as any).flush?.();
+  };
+
+  try {
+    sendEvent('thinking', { stage: 'planning' });
+    const out = await answerAsBrain(user.clientNumber, user.id, question, history, { channel });
+
+    // Send metadata first so UI can hydrate cites/panel as the
+    // text streams.
+    sendEvent('meta', {
+      intent: out.intent,
+      sources: out.sources,
+      panel: out.panel ?? null,
+    });
+
+    // Chunk the answer. For prose-heavy responses, 40-60 chars per
+    // chunk feels natural. For very short answers (<200 chars), a
+    // single chunk avoids artificial chop.
+    const answer = out.answer ?? '';
+    if (answer.length < 200) {
+      sendEvent('chunk', { text: answer });
+    } else {
+      // Split at sentence boundaries when possible; fall back to word.
+      const sentences = answer.split(/(?<=[.!?])\s+/);
+      let buf = '';
+      for (const s of sentences) {
+        buf += (buf ? ' ' : '') + s;
+        if (buf.length >= 60) {
+          sendEvent('chunk', { text: buf });
+          buf = '';
+          // Tiny inter-chunk pause to make it feel natural.
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
+      if (buf) sendEvent('chunk', { text: buf });
+    }
+
+    sendEvent('done', {});
+    res.end();
+  } catch (err: any) {
+    sendEvent('error', { message: err?.message ?? 'unknown' });
+    res.end();
+  }
+});
+
+/**
  * Delegatee picker — returns a ranked list of internal people + known
  * external contacts matching either a free-text search (`q`) or a work-item
  * archetype (`archetype` + `senderDomain`). Powers the Delegate modal.

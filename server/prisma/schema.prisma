@@ -541,6 +541,56 @@ model WhatsAppSession {
 }
 
 /**
+ * BrainActionArtifact — canonical lifecycle record for every
+ * action Brain has attempted. Quality Sprint 5b (2026-05-21).
+ *
+ * Replaces the spread-across-three-tables debugging pain (state
+ * currently lives in PendingAction + ActionIdempotencyLog + WA
+ * session-history role='artifact'). One row per action attempt
+ * with explicit status transitions; the other tables remain for
+ * their primary purposes (pending = working memory, idempotency
+ * = dedupe lock).
+ *
+ * Status lifecycle:
+ *   previewed (gate fired)
+ *     → confirmed (user said send)
+ *       → dispatching (handler started)
+ *         → succeeded (handler returned ok)
+ *         → failed   (handler returned !ok / threw)
+ *     → cancelled  (user said cancel)
+ *     → expired    (no response within preview TTL)
+ *
+ * Direct-emit paths (no preview gate — internal actions, canonical
+ * test email) skip 'previewed' and go straight 'dispatching' → result.
+ *
+ * Indexed for "what did Brain do recently?" queries on a per-user,
+ * per-channel basis.
+ */
+model BrainActionArtifact {
+  id              String   @id @default(cuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  channel         String   @db.VarChar(20)   // 'web' | 'whatsapp'
+  pendingActionId String?  @map("pending_action_id") @db.VarChar(40)
+  previewHash     String?  @map("preview_hash") @db.VarChar(64)
+  idempotencyKey  String?  @map("idempotency_key") @db.VarChar(128)
+  actionType      String   @map("action_type") @db.VarChar(40)
+  status          String   @db.VarChar(30)
+  payload         Json
+  result          Json?
+  errorCode       String?  @map("error_code") @db.VarChar(40)
+  errorMessage    String?  @map("error_message") @db.Text
+  artifactExtId   String?  @map("artifact_ext_id") @db.VarChar(200) // external id (gmail messageId, calendar eventId, openItemId)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([userId, channel, createdAt])
+  @@index([clientNumber, createdAt])
+  @@index([artifactExtId])
+  @@map("brain_action_artifacts")
+}
+
+/**
  * Person — unified per-user identity for someone the user
  * communicates with. Quality Sprint 3 (2026-05-21).
  *

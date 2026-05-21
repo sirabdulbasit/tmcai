@@ -1681,6 +1681,36 @@ ${calLines.join('\n')}`;
       // is skipped entirely; the user sees the exact slot values
       // Brain wants to use and either confirms or corrects.
       answer = renderActionPreview(parsed.action, blockReason);
+
+      // Q5a: availability check for meeting previews. Before storing
+      // the pending, look at the user's own calendar; if the
+      // requested time conflicts with an existing event, prepend a
+      // warning to the preview so the user can decide before
+      // confirming. We don't auto-pick a new time — that's the
+      // user's call.
+      if (parsed.action.type === 'schedule_meeting' || parsed.action.type === 'reschedule_meeting') {
+        try {
+          const { checkUserAvailability } = await import('./availabilityService');
+          const whenIso = parsed.action.type === 'schedule_meeting'
+            ? parsed.action.whenIso
+            : (parsed.action.newWhenIso ?? '');
+          const durationMin = parsed.action.type === 'schedule_meeting'
+            ? (parsed.action.durationMin ?? 30)
+            : (parsed.action.newDurationMin ?? 30);
+          if (whenIso) {
+            const conflicts = await checkUserAvailability(userId, whenIso, durationMin);
+            if (conflicts.length > 0) {
+              const conflictLines = conflicts.slice(0, 3).map((c) =>
+                `  • "${c.title}" at ${c.start}`,
+              ).join('\n');
+              answer = `⚠️ Heads up — you already have ${conflicts.length === 1 ? 'a meeting' : 'meetings'} at that time:\n${conflictLines}\n\n${answer}`;
+            }
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] availability check failed (non-fatal)', { userId, error: e?.message });
+        }
+      }
+
       actionResult = { ok: false, message: 'preview_required' };
 
       // Sprint 1: persist as PendingAction so the next-turn confirm
@@ -1712,6 +1742,21 @@ ${calLines.join('\n')}`;
           console.info('[brain-chat] pending.preview persisted', {
             userId, clientNumber, pendingId: pending.id, kind, hashPrefix: hash.slice(0, 8),
           });
+
+          // Q5b: record artifact lifecycle row for the preview.
+          try {
+            const { recordArtifact } = await import('./brainActionArtifactService');
+            await recordArtifact({
+              clientNumber, userId, channel,
+              actionType: kind,
+              status: 'previewed',
+              payload: slots,
+              pendingActionId: pending.id,
+              previewHash: hash,
+            });
+          } catch (e2: any) {
+            console.warn('[brain-chat] artifact record failed (non-fatal)', { error: e2?.message });
+          }
         }
       } catch (e: any) {
         // Pending persistence failure is non-fatal — the preview still
