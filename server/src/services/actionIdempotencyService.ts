@@ -19,7 +19,17 @@ import { REDIS_KEY_PATTERNS, REDIS_TTL } from '../config/redis';
 
 export type ActionType =
   | 'REPLY' | 'DELEGATE' | 'SCHEDULE' | 'CLOSE'
-  | 'ERP' | 'OKR_ALERT' | 'DELEGATE_MSG';
+  | 'ERP' | 'OKR_ALERT' | 'DELEGATE_MSG'
+  // Sprint 3 additions: Brain's full action set so the composer can
+  // dispatch through withIdempotency() — prevents duplicate sends on
+  // webhook retries, pm2 restarts, user double-taps.
+  | 'BRAIN_SCHEDULE_MEETING'
+  | 'BRAIN_RESCHEDULE_MEETING'
+  | 'BRAIN_CANCEL_MEETING'
+  | 'BRAIN_SEND_EMAIL'
+  | 'BRAIN_NOTIFY_WA'
+  | 'BRAIN_DELEGATE_OPEN_ITEM'
+  | 'BRAIN_ADD_OPEN_ITEM';
 
 export interface IdempotencyKeyParams {
   actionType: ActionType;

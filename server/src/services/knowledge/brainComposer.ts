@@ -1131,14 +1131,30 @@ export async function compose(
   if (activePending && turnRelation.type === 'confirm_preview') {
     // The user confirmed a preview Brain just showed. The action is
     // fully grounded in pending.slots — dispatch directly, no LLM.
+    // Wrapped in withIdempotency: if the user double-taps "send" or
+    // the webhook retries, the second call replays the first result
+    // instead of dispatching twice. Per Sprint 3 hardening (reviewer's
+    // #18) — duplicate sends are a real risk on WhatsApp where the
+    // user can re-press fast.
     console.info('[brain-chat] pending.confirm dispatching', {
       userId, clientNumber, channel, kind: activePending.actionKind, pendingId: activePending.id,
     });
     try {
-      const dispatchResult = await dispatchPendingDirect(clientNumber, userId, activePending);
+      const { withIdempotency } = await import('../actionIdempotencyService');
+      const idemActionType = brainActionTypeToIdem(activePending.actionKind);
+      const idemReferenceId = activePending.id; // pendingId is unique per (user, channel, preview)
+      const { result: dispatchResult, replayed } = await wrapDispatchIdem(
+        idemActionType, clientNumber, userId, idemReferenceId,
+        () => dispatchPendingDirect(clientNumber, userId, activePending),
+      );
+      if (replayed) {
+        console.info('[brain-chat] pending.confirm idempotency replay', {
+          userId, clientNumber, pendingId: activePending.id,
+        });
+      }
       if (dispatchResult.ok && dispatchResult.artifactId) {
         await markCompleted(activePending.id, dispatchResult.artifactId);
-      } else {
+      } else if (!dispatchResult.ok) {
         await markFailed(activePending.id, dispatchResult.message);
       }
       return {
@@ -3246,6 +3262,45 @@ async function recordAliasesFromDispatch(
   } catch (e: any) {
     console.warn('[brain-chat] alias recording failed (non-fatal)', { userId, error: e?.message });
   }
+}
+
+/** Map a Brain action kind to the idempotency service's ActionType
+ *  union. Used by the Sprint 3 idempotency wrap so duplicate dispatches
+ *  (webhook retries, double-taps) replay instead of re-executing. */
+function brainActionTypeToIdem(kind: string): import('../actionIdempotencyService').ActionType {
+  switch (kind) {
+    case 'schedule_meeting':    return 'BRAIN_SCHEDULE_MEETING';
+    case 'reschedule_meeting':  return 'BRAIN_RESCHEDULE_MEETING';
+    case 'cancel_meeting':      return 'BRAIN_CANCEL_MEETING';
+    case 'send_email':          return 'BRAIN_SEND_EMAIL';
+    case 'notify_via_whatsapp': return 'BRAIN_NOTIFY_WA';
+    case 'delegate_open_item':  return 'BRAIN_DELEGATE_OPEN_ITEM';
+    case 'add_open_item':       return 'BRAIN_ADD_OPEN_ITEM';
+    default:                    return 'REPLY'; // safe fallback
+  }
+}
+
+/** Wrap a dispatch thunk with the existing actionIdempotencyService.
+ *  Returns {result, replayed} so the caller can log replay events.
+ *  On cache hit, returns the prior result without invoking dispatchFn. */
+async function wrapDispatchIdem(
+  actionType: import('../actionIdempotencyService').ActionType,
+  clientNumber: string,
+  userId: number,
+  referenceId: string,
+  dispatchFn: () => Promise<{ ok: boolean; artifactId?: string; message: string }>,
+): Promise<{ result: { ok: boolean; artifactId?: string; message: string }; replayed: boolean }> {
+  const { generateKey, checkKey, withIdempotency: existingWithIdem } = await import('../actionIdempotencyService');
+  const key = generateKey({ actionType, clientNumber, userId, referenceId });
+  const cached = await checkKey(key);
+  if (cached !== null) {
+    return { result: cached as any, replayed: true };
+  }
+  const result = await existingWithIdem(
+    { actionType, clientNumber, userId, referenceId },
+    dispatchFn,
+  );
+  return { result, replayed: false };
 }
 
 /** Dispatch a pending action directly from its stored slots.
