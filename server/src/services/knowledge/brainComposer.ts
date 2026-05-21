@@ -1124,9 +1124,55 @@ export async function compose(
   // assembly below can include it.
   const channel: 'web' | 'whatsapp' = opts.channel ?? 'web';
   const { getActivePending, markCompleted, markFailed, markCancelled, hashProposedAction } = await import('./pendingActionService');
-  const { reduceTurn } = await import('./turnRelationReducer');
+  const { reduceTurn, resolveAmbiguousWithLlm } = await import('./turnRelationReducer');
   const activePending = await getActivePending(userId, channel).catch(() => null);
-  const turnRelation = reduceTurn({ question, pending: activePending, history });
+  let turnRelation = reduceTurn({ question, pending: activePending, history });
+
+  // Quality Sprint 1: Flash tiebreaker for ambiguous cases. The
+  // deterministic reducer covers obvious patterns ("yes", "cancel",
+  // "actually change to 4pm" etc.) but misses natural-language nuance
+  // like "ship it" / "looks good fire it off" / "yes but make it 4".
+  // When deterministic returns 'ambiguous' AND a pending exists,
+  // burn ~80 tokens on a Flash classifier rather than dropping into
+  // the slow full-composer path. Bounded cost; better UX.
+  // Quality Sprint 1: expired-preview detection. If the user sends a
+  // bare confirmation ("yes" / "send") with NO active pending, look
+  // for a pending that just expired in the last 24h. If found, reply
+  // honestly that the preview lapsed — don't silently re-derive as
+  // a new task.
+  if (!activePending) {
+    const { getRecentlyExpiredPending } = await import('./pendingActionService');
+    const q = question.trim().toLowerCase();
+    const looksLikeBareConfirm = q.length <= 30 && /^(yes|yep|yeah|send|go\s+ahead|do\s+it|confirm|ok|okay|proceed)\.?$/i.test(q);
+    if (looksLikeBareConfirm) {
+      const expired = await getRecentlyExpiredPending(userId, channel).catch(() => null);
+      if (expired) {
+        console.info('[brain-chat] pending.expired-confirmation', {
+          userId, clientNumber, expiredId: expired.id, kind: expired.actionKind,
+        });
+        return {
+          answer: `That ${expired.actionKind.replace(/_/g, ' ')} preview expired (more than an hour old). Tell me the details again and I'll set it up.`,
+          citedPageIds: [], gaps: [], sources: [], action: null,
+          actionResult: { ok: false, message: 'pending_expired' },
+        };
+      }
+    }
+  }
+
+  if (turnRelation.type === 'ambiguous' && activePending) {
+    const lastBrain = [...history].reverse().find((h) => h.role === 'brain');
+    const resolved = await resolveAmbiguousWithLlm({
+      question, pending: activePending,
+      lastBrainText: lastBrain?.text ?? '',
+    });
+    if (resolved.type !== 'ambiguous') {
+      console.info('[brain-chat] reducer.tiebreaker', {
+        userId, clientNumber, channel,
+        original: 'ambiguous', resolved: resolved.type,
+      });
+      turnRelation = resolved;
+    }
+  }
 
   if (activePending && turnRelation.type === 'confirm_preview') {
     // The user confirmed a preview Brain just showed. The action is
@@ -3187,16 +3233,47 @@ async function recordAliasesFromDispatch(
   try {
     const { recordResolution } = await import('./userResolutionAliasService');
     const qLower = question.toLowerCase();
+
+    // Quality Sprint 1: stopword filter — don't record generic terms
+    // as aliases. "send to boss" / "email the vendor" / "message him"
+    // would otherwise silently teach Brain the wrong identifier and
+    // misroute future requests. Per third-party review.
+    const ALIAS_STOPWORDS = new Set([
+      'him', 'her', 'them', 'they', 'he', 'she',
+      'boss', 'manager', 'team', 'admin', 'support',
+      'vendor', 'client', 'customer', 'partner',
+      'the team', 'my team', 'our team',
+      'the guy', 'the lady', 'the person',
+      'someone', 'anyone', 'everyone', 'nobody',
+      'mr', 'mrs', 'ms', 'dr', 'prof',
+    ]);
+    const looksLikeProperName = (raw: string): boolean => {
+      // Originally-capitalized in the user's message — pull from
+      // question (not the action's resolved name) to check what the
+      // user actually typed.
+      const re = new RegExp(`\\b${raw.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\b`, 'i');
+      const m = question.match(re);
+      if (!m) return false;
+      // First character must be uppercase in the user's original text.
+      const idx = question.toLowerCase().indexOf(raw.toLowerCase());
+      if (idx < 0) return false;
+      const original = question.slice(idx, idx + raw.length);
+      return /^[A-Z]/.test(original);
+    };
+
     const aliasCandidates = (full: string, first: string): string[] => {
       const out = new Set<string>();
       const fullLc = full.toLowerCase().trim();
       const firstLc = first.toLowerCase().trim();
+      // Skip if the alias is a stopword (generic term, pronoun, title).
+      if (ALIAS_STOPWORDS.has(fullLc) || ALIAS_STOPWORDS.has(firstLc)) return [];
       // Record the full name + first name as aliases (whichever the
       // user typed will match). Skip alias if the user didn't
-      // actually mention this name (avoids recording for slots
-      // resolved purely from candidates without user mention).
-      if (qLower.includes(fullLc)) out.add(fullLc);
-      if (firstLc && qLower.includes(firstLc)) out.add(firstLc);
+      // actually mention this name in their CURRENT message (avoids
+      // recording for slots resolved purely from candidates without
+      // user mention).
+      if (qLower.includes(fullLc) && looksLikeProperName(fullLc)) out.add(fullLc);
+      if (firstLc && qLower.includes(firstLc) && looksLikeProperName(firstLc)) out.add(firstLc);
       return Array.from(out);
     };
 

@@ -89,6 +89,29 @@ export async function getActivePending(
   return row ? rowToPending(row) : null;
 }
 
+/** Quality Sprint 1: look for a pending that was active until recently
+ *  but has now expired. Used when the user sends a short confirmation
+ *  ("yes" / "send") after the 1h window has passed — instead of
+ *  silently re-deriving as a new task, Brain should say "that preview
+ *  expired" and offer to redo it. Returns null if no such row in the
+ *  last 24h. */
+export async function getRecentlyExpiredPending(
+  userId: number,
+  channel: 'web' | 'whatsapp',
+): Promise<PendingAction | null> {
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const row = await (prisma as any).brainPendingAction.findFirst({
+    where: {
+      userId,
+      channel,
+      status: 'preview_shown',
+      expiresAt: { lte: new Date(), gt: dayAgo },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+  return row ? rowToPending(row) : null;
+}
+
 /** Create or replace the pending action. If an active pending exists
  *  for (user, channel), it's marked cancelled before the new one is
  *  inserted — enforces the one-active-per-channel invariant. */

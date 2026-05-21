@@ -61,10 +61,23 @@ const RAW_JSON_LEAK_RE =
 const PROVIDER_ERROR_LEAK_RE =
   /\b(gemini\[try\d+\]|claude\[try\d+\]|gemini-flash\[try\d+\]|All\s+LLM\s+providers\s+failed|Anthropic\s+API|Your\s+credit\s+balance|Budget\s+\d+\s+is\s+invalid)/i;
 
+// "I sent / scheduled / done" claim while pending is still
+// preview_shown (i.e., user hasn't confirmed). Brain shouldn't say
+// "done" before the action actually dispatches.
+const DONE_CLAIM_RE =
+  /\b(sent|scheduled|delivered|completed|done|dispatched|invited|notified|cancelled|rescheduled|updated)\b/i;
+
 /** Run all checks against a composed result. Returns the outcome
  *  with violations sorted by severity (block first). Caller acts on
- *  the first block-severity violation if any. */
-export function validateBeforeRender(result: ComposeResult): ValidationOutcome {
+ *  the first block-severity violation if any.
+ *
+ *  Optional `context` carries pending-state info so the validator can
+ *  check preview_vs_done_confusion (Brain saying "done" while the
+ *  pending is still preview_shown). */
+export function validateBeforeRender(
+  result: ComposeResult,
+  context?: { pendingStatus?: string | null },
+): ValidationOutcome {
   const violations: ResponseViolation[] = [];
   const answer = result.answer ?? '';
 
@@ -112,6 +125,51 @@ export function validateBeforeRender(result: ComposeResult): ValidationOutcome {
     });
   }
 
+  // 5. RECIPIENT MISMATCH — action says to=[X] but answer says
+  //    "I'll send to Y" with Y not in the action's identifier list.
+  //    Catches the worst sin in outbound: telling the user a different
+  //    recipient than what's actually being dispatched. We compare
+  //    name tokens in the answer against the action's identifiers.
+  if (result.action && result.actionResult?.ok === true) {
+    const action: any = result.action;
+    const actionIdentifiers = collectActionIdentifiers(action);
+    // Pull "to X" / "with X" / "for X" mentions from answer.
+    // Targets: name tokens of length ≥3 starting with uppercase.
+    const mentionRe = /\b(?:to|with|for|cc|inviting)\s+([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]+){0,2})\b/g;
+    const mentionedNames = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = mentionRe.exec(answer)) !== null) {
+      mentionedNames.add(m[1].toLowerCase());
+    }
+    // Each mentioned name must appear in at least one identifier (the
+    // action's email/phone string usually contains the name as the
+    // local part, OR the action's displayName field matches).
+    for (const mentioned of mentionedNames) {
+      const inIdentifiers = actionIdentifiers.some((id) => id.includes(mentioned) || id.includes(mentioned.replace(/\s+/g, '.')));
+      if (!inIdentifiers) {
+        violations.push({
+          rule: 'recipient_mismatch',
+          severity: 'block',
+          description: `Answer mentions recipient "${mentioned}" but the action dispatches to ${actionIdentifiers.join(', ')} — these don't match.`,
+          suggestedReplacement: `[Action dispatched but the prose mentioned a different recipient. Please re-issue the request clearly.]`,
+        });
+        break;
+      }
+    }
+  }
+
+  // 6. PREVIEW vs DONE CONFUSION — pending is preview_shown but
+  //    answer claims completion. The user hasn't confirmed yet; Brain
+  //    shouldn't say "scheduled" / "sent" / "done".
+  if (context?.pendingStatus === 'preview_shown' && DONE_CLAIM_RE.test(answer)) {
+    violations.push({
+      rule: 'preview_vs_done_confusion',
+      severity: 'block',
+      description: 'Pending action is still preview_shown but answer uses completion language ("sent", "scheduled", "done").',
+      suggestedReplacement: `[Preview not yet confirmed. Reply "send" to dispatch, or tell me what to change.]`,
+    });
+  }
+
   // Sort blocks first, warns second.
   violations.sort((a, b) => (a.severity === 'block' && b.severity !== 'block' ? -1 : 1));
   const firstBlock = violations.find((v) => v.severity === 'block');
@@ -120,4 +178,20 @@ export function validateBeforeRender(result: ComposeResult): ValidationOutcome {
     violations,
     replacement: firstBlock?.suggestedReplacement,
   };
+}
+
+/** Collect every identifier (email / phone) from an action's slots
+ *  for recipient-mismatch checking. Returns lowercased strings. */
+function collectActionIdentifiers(action: any): string[] {
+  const out: string[] = [];
+  if (!action || typeof action !== 'object') return out;
+  if (Array.isArray(action.to)) out.push(...action.to);
+  if (Array.isArray(action.cc)) out.push(...action.cc);
+  if (Array.isArray(action.attendeeEmails)) out.push(...action.attendeeEmails);
+  if (Array.isArray(action.attendeeNames)) out.push(...action.attendeeNames);
+  if (typeof action.delegateeEmail === 'string') out.push(action.delegateeEmail);
+  if (typeof action.delegateeName === 'string') out.push(action.delegateeName);
+  if (typeof action.recipientPhone === 'string') out.push(action.recipientPhone);
+  if (typeof action.recipientName === 'string') out.push(action.recipientName);
+  return out.map((s) => String(s).toLowerCase());
 }

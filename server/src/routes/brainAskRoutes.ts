@@ -98,7 +98,12 @@ export async function answerAsBrain(
   // channel renderer. Cheap (regex only); deterministic.
   try {
     const { validateBeforeRender } = await import('../services/knowledge/responseValidator');
-    const validation = validateBeforeRender(result);
+    // Look up active pending status so preview_vs_done_confusion can fire.
+    const { getActivePending } = await import('../services/knowledge/pendingActionService');
+    const pendingForValidator = await getActivePending(userId, (opts.channel ?? 'web') as 'web' | 'whatsapp').catch(() => null);
+    const validation = validateBeforeRender(result, {
+      pendingStatus: pendingForValidator?.status ?? null,
+    });
     if (!validation.ok && validation.replacement) {
       console.warn('[brain-chat] validateBeforeRender block', {
         userId, clientNumber,

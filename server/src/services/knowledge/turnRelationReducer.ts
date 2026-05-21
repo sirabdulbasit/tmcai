@@ -126,3 +126,80 @@ export function reduceTurn(args: {
 export function needsFullComposer(rel: TurnRelation): boolean {
   return rel.type === 'new_task' || rel.type === 'answer_question' || rel.type === 'ambiguous';
 }
+
+/** LLM-assisted tiebreaker for 'ambiguous' classifications. Used when
+ *  deterministic reduceTurn returns 'ambiguous' AND a pending exists —
+ *  the relation matters enough to spend a small Flash call disambiguating.
+ *
+ *  Examples this catches that regex doesn't:
+ *    "yes but change to 4"      → correct_preview (not confirm)
+ *    "ship it"                  → confirm_preview
+ *    "looks good, fire it off"  → confirm_preview
+ *    "actually hold on"         → cancel_pending
+ *    "make it 30 mins instead"  → correct_preview
+ *    "do it but loop in Asad"   → correct_preview (slot added)
+ *
+ *  Output schema is ONLY the relation type — the slot extraction
+ *  happens elsewhere. This keeps the call tight (~80 tokens) and
+ *  the JSON narrow. */
+export async function resolveAmbiguousWithLlm(args: {
+  question: string;
+  pending: import('./pendingActionService').PendingAction;
+  lastBrainText: string;
+}): Promise<TurnRelation> {
+  try {
+    const { callGemini } = await import('../geminiService');
+    const systemPrompt = `You are a turn classifier. Given:
+- a user's current message
+- the in-progress pending action's status and slots
+- Brain's last message (likely a preview or question)
+
+decide which of these relations best fits the user's message:
+
+- "confirm_preview": user is approving the previewed action as-is
+- "correct_preview": user is approving but wants ONE OR MORE slots changed
+- "cancel_pending": user wants to abort the pending action entirely
+- "continue_task": user is providing a missing slot Brain asked about
+- "new_task": user has switched to a new, unrelated request
+- "answer_question": user is asking Brain a question (not acting on the pending)
+
+Examples:
+- "yes" + status=preview_shown → confirm_preview
+- "ship it" → confirm_preview
+- "yes but make it 4" → correct_preview
+- "actually hold on" → cancel_pending
+- "what's on my calendar tomorrow?" → answer_question
+- "schedule another with Bob" → new_task
+
+Output ONLY a JSON object:
+{ "relation": "confirm_preview" | "correct_preview" | "cancel_pending" | "continue_task" | "new_task" | "answer_question", "rationale": "<one short sentence>" }`;
+
+    const userPayload = `User's message: ${args.question}
+
+Pending action: ${args.pending.actionKind} (status=${args.pending.status})
+Pending slots: ${JSON.stringify(args.pending.slots)}
+
+Brain's last message: ${args.lastBrainText.slice(0, 600)}`;
+
+    const raw = await callGemini(systemPrompt, userPayload, {
+      maxTokens: 256,
+      flash: true,
+      responseMimeType: 'application/json',
+    });
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    const relation = String(parsed.relation ?? '').trim();
+    const valid = ['confirm_preview', 'correct_preview', 'cancel_pending', 'continue_task', 'new_task', 'answer_question'];
+    if (!valid.includes(relation)) return { type: 'ambiguous' };
+    if (relation === 'new_task') return { type: 'new_task' };
+    if (relation === 'answer_question') return { type: 'answer_question' };
+    if (relation === 'cancel_pending') return { type: 'cancel_pending', pendingId: args.pending.id };
+    if (relation === 'confirm_preview') return { type: 'confirm_preview', pendingId: args.pending.id };
+    if (relation === 'correct_preview') return { type: 'correct_preview', pendingId: args.pending.id };
+    if (relation === 'continue_task') return { type: 'continue_task', pendingId: args.pending.id };
+    return { type: 'ambiguous' };
+  } catch (e: any) {
+    console.warn('[turn-reducer] llm tiebreaker failed', { error: e?.message });
+    return { type: 'ambiguous' };
+  }
+}
