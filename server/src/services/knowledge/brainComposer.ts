@@ -68,6 +68,7 @@ export interface ComposeResult {
  *  prompt entry telling the LLM when to emit it. */
 export type ComposedAction =
   | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
+  | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDate?: string; note?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
@@ -1147,6 +1148,49 @@ If the "Open items snapshot" block above contains a row whose title fragment mat
   return parts.join('\n\n');
 }
 
+/** Build a compact open-items snapshot for the reasoning prompt.
+ *  Reasoning needs this to: (a) recognise slot-fill turns ("priority
+ *  normal, due date monday" right after a DRAFT was created), (b)
+ *  emit update_open_item with a real id, (c) avoid hallucinating
+ *  counts ("two items with that title") when there's only one.
+ *
+ *  Format is intentionally terse — id + title + status + missing
+ *  slots are the load-bearing fields; priority and due give reasoning
+ *  enough context to know what's already filled. */
+async function buildOpenItemsBlockForReasoning(
+  userId: number,
+  clientNumber: string,
+): Promise<string> {
+  try {
+    const rows = await prisma.openItem.findMany({
+      where: {
+        clientNumber, userId, ownerId: userId,
+        status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT'] },
+      },
+      select: {
+        id: true, title: true, status: true, priority: true, dueDate: true,
+        delegateeName: true, metadata: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+    });
+    if (rows.length === 0) return '';
+    const lines = rows.map((r) => {
+      const md = (r.metadata as any)?.draft;
+      const missing = Array.isArray(md?.missingSlots) ? (md.missingSlots as string[]) : [];
+      const due = r.dueDate ? new Date(r.dueDate).toISOString().slice(0, 10) : '—';
+      const deleg = r.delegateeName ? ` delegated_to=${r.delegateeName}` : '';
+      const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
+      return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${missStr}`;
+    });
+    return `# Your active open items (use id to update/delegate)\n${lines.join('\n')}`;
+  } catch (e: any) {
+    console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
+    return '';
+  }
+}
+
 export async function compose(
   clientNumber: string,
   userId: number,
@@ -1181,12 +1225,18 @@ export async function compose(
       // legacy path; for now use persona.systemPreamble alone (which
       // includes the DB-fetched communication contract from Phase 2).
       const personaForReasoning = await getBrainPersona(userId, clientNumber);
+      // Scoped dataBlocks for reasoning. Started with open_items only
+      // (commit 2026-05-22) — every action that needs real context to
+      // avoid hallucination gets its own slice added as we audit it.
+      const openItemsBlockForReasoning = await buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => '');
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
         channel: opts.channel ?? 'web',
         systemPrompt: personaForReasoning.systemPreamble,
-        dataBlocks: {}, // legacy fall-through still richer; reasoning iterates
+        dataBlocks: {
+          openItems: openItemsBlockForReasoning || undefined,
+        },
       });
       if (result) {
         console.info('[compose] reasoning-path used', {
@@ -2040,6 +2090,86 @@ ${calLines.join('\n')}`;
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         if (!res.ok) answer = res.message;
         else if (!/added|added to|noted|done|got it/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+      } else if (act.type === 'update_open_item') {
+        // Update fields on an existing open item — typically used to
+        // complete a DRAFT (priority + dueDate) the user just provided
+        // in a follow-up turn. Reasoning passes the openItemId from
+        // the open-items context block we feed it.
+        try {
+          const existing = await prisma.openItem.findFirst({
+            where: { id: act.openItemId, clientNumber, userId },
+            select: { id: true, title: true, status: true, priority: true, dueDate: true },
+          });
+          if (!existing) {
+            actionResult = {
+              ok: false,
+              message: `[update_open_item: id not found — reference may be stale, retry by title]`,
+            };
+            answer = actionResult.message;
+          } else {
+            const data: any = {};
+            if (act.title) data.title = act.title;
+            if (act.note != null) data.description = act.note;
+            // Normalise priority — accept the LLM's free-form words.
+            // 'normal' is the most common synonym the user types for medium.
+            if (act.priority) {
+              const p = act.priority.toLowerCase().trim();
+              const valid = new Set(['critical', 'high', 'medium', 'low']);
+              const normalised = valid.has(p) ? p : (p === 'normal' ? 'medium' : null);
+              if (normalised) data.priority = normalised;
+            }
+            // dueDate: tolerate ISO date, "monday", "next friday" etc — the
+            // dispatcher's add_open_item path parses similarly. Try Date first,
+            // then a chrono-style parse via a small helper if available; else
+            // accept only ISO-parseable strings here.
+            if (act.dueDate) {
+              const parsed = new Date(act.dueDate);
+              if (!Number.isNaN(parsed.getTime())) {
+                data.dueDate = parsed;
+              } else {
+                // Defer to a relative-date parser if/when wired. For now,
+                // surface as a soft failure so the user sees what we got.
+                actionResult = { ok: false, message: `[update_open_item: couldn't parse dueDate "${act.dueDate}" — provide ISO or absolute date]` };
+                answer = actionResult.message;
+              }
+            }
+            // If we have at least one field to update, do it. Also
+            // transition DRAFT → NEW once required slots are present.
+            if (!actionResult && Object.keys(data).length > 0) {
+              // Detect if this update completes DRAFT requirements.
+              const md = (existing as any).metadata?.draft;
+              const willHavePriority = data.priority || (existing.priority && existing.priority !== 'medium');
+              const willHaveDueDate = data.dueDate || existing.dueDate;
+              if (existing.status === 'DRAFT' && willHavePriority && willHaveDueDate) {
+                data.status = 'NEW';
+                // Clear the draft metadata block.
+                data.metadata = { ...(md ? { draft: null } : {}) };
+              }
+              await prisma.openItem.update({
+                where: { id: existing.id },
+                data,
+              });
+              const changes: string[] = [];
+              if (data.priority) changes.push(`priority=${data.priority}`);
+              if (data.dueDate) changes.push(`due=${data.dueDate.toISOString().slice(0, 10)}`);
+              if (data.title) changes.push(`title="${data.title}"`);
+              if (data.status === 'NEW') changes.push(`status=NEW (DRAFT completed)`);
+              actionResult = {
+                ok: true,
+                artifactId: existing.id,
+                message: `Updated "${existing.title}": ${changes.join(', ')}.`,
+              };
+              answer = actionResult.message;
+            } else if (!actionResult) {
+              actionResult = { ok: false, message: `[update_open_item: no recognised fields to update]` };
+              answer = actionResult.message;
+            }
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] update_open_item failed', { error: e?.message, openItemId: act.openItemId, userId });
+          actionResult = { ok: false, message: `[update_open_item failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'delegate_open_item') {
         // Transition the existing open_item to DELEGATED with the
         // resolved delegatee. We do this directly via the lifecycle
@@ -3364,6 +3494,7 @@ function gateHumanFacingAction(
 ): string | null {
   // Internal-only actions — skip the gate.
   if (act.type === 'add_open_item') return null;
+  if (act.type === 'update_open_item') return null;
   if (act.type === 'delegate_open_item') return null;
   if (act.type === 'set_brain_name') return null;
 

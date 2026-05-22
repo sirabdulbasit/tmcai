@@ -53,6 +53,26 @@ const ACTIONS: Seed[] = [
     isHumanFacing: false, // internal — no preview gate
   },
   {
+    type: 'update_open_item',
+    displayName: 'Update open item',
+    description: 'Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend title/note/dueDate on any active item. Reasoning must reference the item by openItemId from the open-items context block.',
+    schema: {
+      type: 'object',
+      required: ['openItemId'],
+      properties: {
+        openItemId: { type: 'string' },
+        title: { type: 'string' },
+        priority: { type: 'string' }, // 'critical' | 'high' | 'medium' | 'low' — reasoning normalises "normal" → "medium"
+        dueDate: { type: 'string' },
+        note: { type: 'string' },
+      },
+    },
+    handlerModule: 'openItemsService',
+    handlerFunction: 'updateItem',
+    requiresCapability: 'manage_open_items',
+    isHumanFacing: false,
+  },
+  {
     type: 'delegate_open_item',
     displayName: 'Delegate open item',
     description: 'Transition an existing open item to DELEGATED status with a delegatee.',
