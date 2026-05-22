@@ -37,13 +37,13 @@ const ACTIONS: Seed[] = [
   {
     type: 'add_open_item',
     displayName: 'Add open item',
-    description: 'Create a new open item (follow-up / task) on the user\'s list.',
+    description: "Create a new open item (follow-up / task) on the user's list. dueDate must be an ISO 8601 date string (YYYY-MM-DD); resolve relative dates like 'monday', 'tomorrow', 'next friday', 'in 3 days' to absolute ISO BEFORE emitting the action — use today's date from the system prompt as the reference point.",
     schema: {
       type: 'object',
       required: ['title'],
       properties: {
         title: { type: 'string' },
-        dueDate: { type: 'string' },
+        dueDate: { type: 'string' /* ISO 8601 YYYY-MM-DD; resolve relative dates before emitting */ },
         note: { type: 'string' },
       },
     },
@@ -55,15 +55,15 @@ const ACTIONS: Seed[] = [
   {
     type: 'update_open_item',
     displayName: 'Update open item',
-    description: 'Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend title/note/dueDate on any active item. Reasoning must reference the item by openItemId from the open-items context block.',
+    description: "Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend title/note/dueDate on any active item. Reference the item by openItemId from the open-items context block. priority must be one of: critical | high | medium | low (normalise 'normal' → 'medium'). dueDate must be ISO 8601 YYYY-MM-DD; resolve relative dates ('monday', 'tomorrow', 'next friday') to absolute ISO using today's date from the system prompt.",
     schema: {
       type: 'object',
       required: ['openItemId'],
       properties: {
         openItemId: { type: 'string' },
         title: { type: 'string' },
-        priority: { type: 'string' }, // 'critical' | 'high' | 'medium' | 'low' — reasoning normalises "normal" → "medium"
-        dueDate: { type: 'string' },
+        priority: { type: 'string' /* critical | high | medium | low */ },
+        dueDate: { type: 'string' /* ISO 8601 YYYY-MM-DD; resolve relative dates before emitting */ },
         note: { type: 'string' },
       },
     },
@@ -95,13 +95,13 @@ const ACTIONS: Seed[] = [
   {
     type: 'schedule_meeting',
     displayName: 'Schedule meeting',
-    description: 'Create a Google Calendar event and send invites to attendees.',
+    description: "Create a Google Calendar event and send invites to attendees. whenIso must be an ISO 8601 datetime string (e.g., 2026-05-25T18:00:00+05:00); resolve relative phrasing ('today 6pm', 'tomorrow at 10', 'next monday 9am') to absolute ISO using today's date + the user's timezone from the system prompt.",
     schema: {
       type: 'object',
       required: ['title', 'whenIso', 'attendeeEmails', 'attendeeNames'],
       properties: {
         title: { type: 'string' },
-        whenIso: { type: 'string' },
+        whenIso: { type: 'string' /* ISO 8601 datetime with timezone offset */ },
         durationMin: { type: 'integer' },
         attendeeEmails: { type: 'array', items: { type: 'string' } },
         attendeeNames: { type: 'array', items: { type: 'string' } },
