@@ -105,7 +105,39 @@ export function validateBeforeRender(
   const answer = result.answer ?? '';
 
   // 1. EMPTY PROMISE — completion claim without successful action.
+  //
+  // Skip this check when the turn was decided by reasoning. Reasoning
+  // emits structured output — its answer text is either a clarifying
+  // question, a preview template, a templated decline, or an
+  // act-fallback string. Phrases like "I delegate" or "should I
+  // schedule" can legitimately appear in those (e.g. "Which Yousaf
+  // should I delegate to?") and they are NOT hallucinated completion
+  // claims. Observed 2026-05-22: reasoning emitted a perfectly valid
+  // ask question for yousaf-delegate clarification; this regex
+  // overwrote it with the generic empty-promise message. The regex
+  // was tuned for the legacy LLM's free-form prose, not reasoning's
+  // structured output — gate accordingly.
+  //
+  // Additional skip: actionResult.message ∈ structured states from
+  // reasoning or inline guards (clarification_needed, preview_required,
+  // schema_violation, declined, empty_promise_blocked). These are
+  // honest "no action attempted / preview shown" signals, not empty
+  // promises.
+  const sourceIsReasoning = result.source === 'reasoning';
+  const structuredStates = new Set([
+    'clarification_needed', 'preview_required', 'declined',
+    'empty_promise_blocked', 'malformed_action',
+  ]);
+  const hasStructuredState =
+    !!result.actionResult &&
+    typeof result.actionResult.message === 'string' &&
+    (
+      structuredStates.has(result.actionResult.message) ||
+      result.actionResult.message.startsWith('schema_violation')
+    );
+  const emptyPromiseEligible = !sourceIsReasoning && !hasStructuredState;
   if (
+    emptyPromiseEligible &&
     EMPTY_PROMISE_RE.test(answer) &&
     (!result.actionResult || result.actionResult.ok !== true)
   ) {

@@ -53,6 +53,14 @@ export interface ComposeResult {
   /** Set when an action was attempted. The dispatch outcome is folded
    *  into the answer text; this is here for callers/logs. */
   actionResult?: { ok: boolean; artifactId?: string; message: string } | null;
+  /** Which composer path produced this result. Used by
+   *  validateBeforeRender to skip empty-promise regex checks on
+   *  reasoning-decided turns — those have structured output
+   *  (clarifying question / preview text / templated act answer) that
+   *  shouldn't be regex-gated for "I delegated"-style verbs. The regex
+   *  was designed to catch legacy LLM hallucinations, not reasoning's
+   *  legitimate questions and preview templates. */
+  source?: 'reasoning' | 'legacy';
 }
 
 /** The chat composer's structured action surface. Keep this list tight —
@@ -1199,9 +1207,12 @@ export async function compose(
           question,
         });
         // For ask / answer / decline, return reasoning's envelope as-is
-        // (these surfaces never needed the legacy LLM).
+        // (these surfaces never needed the legacy LLM). Mark source so
+        // downstream validateBeforeRender skips the empty-promise
+        // regex check — reasoning's questions and answers shouldn't be
+        // regex-gated for "I delegate / I send" verbs (legacy LLM era).
         if (result.decision !== 'act') {
-          return envelope;
+          return { ...envelope, source: 'reasoning' };
         }
         // For act: short-circuit the legacy LLM round-trip. The
         // legacy LLM doesn't have the cross-turn clarification context
@@ -1244,6 +1255,7 @@ export async function compose(
               citedPageIds: [], gaps: [], sources: [],
               action: null,
               actionResult: { ok: false, message: `schema_violation: ${validationErrors.join('; ')}` },
+              source: 'reasoning',
             };
           }
           reasoningOverride = {
@@ -2002,6 +2014,7 @@ ${calLines.join('\n')}`;
       return {
         answer, citedPageIds, gaps: parsed.gaps, sources,
         action: parsed.action, actionResult,
+        source: reasoningOverride ? 'reasoning' : 'legacy',
       };
     }
   }
@@ -2417,6 +2430,9 @@ ${calLines.join('\n')}`;
     sources,
     action: parsed.action,
     actionResult,
+    // If reasoning supplied the action (act path), mark source so
+    // validateBeforeRender skips the empty-promise regex check.
+    source: reasoningOverride ? 'reasoning' : 'legacy',
   };
 }
 
