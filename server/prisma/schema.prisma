@@ -985,7 +985,14 @@ model BrainPendingAction {
 
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, channel, status], name: "one_active_pending_per_channel")
+  // Note: the database has a PARTIAL unique index on (user_id, channel)
+  // WHERE status IN ('collecting_slots','preview_shown','confirmed')
+  // — see migration 20260522_pending_partial_unique. The original
+  // @@unique([userId, channel, status]) accidentally enforced
+  // "one terminal row per status" too, which broke the cancel-then-
+  // create flow whenever the user had any prior pending history.
+  // Prisma can't express partial unique indexes inline, so it's
+  // applied via raw SQL migration.
   @@index([clientNumber, expiresAt])
   @@index([userId, channel, updatedAt])
   @@map("brain_pending_actions")

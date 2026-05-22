@@ -145,7 +145,11 @@ export function validateBeforeRender(
       rule: 'empty_promise',
       severity: 'block',
       description: 'Answer claims completion ("I sent/scheduled/delegated/cancelled...") but no action was successfully dispatched this turn.',
-      suggestedReplacement: `I didn't actually complete that — no action went through on my side. Tell me which item and which person and I'll act on it now.`,
+      // Bracketed system marker per no-hardcoded-fake-Brain-replies rule.
+      // Previous text was an English sentence masquerading as Brain prose
+      // ("I didn't actually complete that..."), which violated the rule
+      // and read as robotic to the user (Basit, 2026-05-22).
+      suggestedReplacement: `[no action dispatched — retry with the action and target named explicitly]`,
     });
   }
 
@@ -156,7 +160,8 @@ export function validateBeforeRender(
       rule: 'fabricated_process',
       severity: 'block',
       description: 'Answer references a "support team" / "engineering team" / escalation channel that does not exist.',
-      suggestedReplacement: `I don't have a way to do that directly. Tell me what you'd like, and I'll handle whichever piece I can.`,
+      // Bracketed marker (no-hardcoded-fake-Brain-replies rule).
+      suggestedReplacement: `[fabricated escalation path — that team/channel doesn't exist in the system; name the concrete task]`,
     });
   }
 

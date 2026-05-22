@@ -1251,7 +1251,8 @@ export async function compose(
               errors: validationErrors,
             });
             return {
-              answer: `I can't ${envelope.action.type.replace(/_/g, ' ')} yet — ${validationErrors[0]}. Tell me that and I'll proceed.`,
+              // Bracketed system marker (no-hardcoded-fake-Brain-replies rule).
+              answer: `[${envelope.action.type} validation failed: ${validationErrors[0]}]`,
               citedPageIds: [], gaps: [], sources: [],
               action: null,
               actionResult: { ok: false, message: `schema_violation: ${validationErrors.join('; ')}` },
@@ -1325,7 +1326,8 @@ export async function compose(
           userId, clientNumber, expiredId: expired.id, kind: expired.actionKind,
         });
         return {
-          answer: `That ${expired.actionKind.replace(/_/g, ' ')} preview expired (more than an hour old). Tell me the details again and I'll set it up.`,
+          // Bracketed system marker (no-hardcoded-fake-Brain-replies rule).
+          answer: `[${expired.actionKind} preview expired — re-issue the request]`,
           citedPageIds: [], gaps: [], sources: [], action: null,
           actionResult: { ok: false, message: 'pending_expired' },
         };
@@ -1432,7 +1434,8 @@ export async function compose(
     await markCancelled(activePending.id);
     console.info('[brain-chat] pending.cancel', { userId, clientNumber, pendingId: activePending.id });
     return {
-      answer: `Cancelled. Let me know what you'd like to do instead.`,
+      // Bracketed system marker (no-hardcoded-fake-Brain-replies rule).
+      answer: `[cancelled]`,
       citedPageIds: [], gaps: [], sources: [], action: null,
       actionResult: null,
     };
