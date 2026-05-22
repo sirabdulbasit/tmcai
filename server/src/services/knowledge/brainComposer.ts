@@ -1219,6 +1219,33 @@ export async function compose(
         // legacy as a safety net — better one extra LLM call than
         // a confidently-wrong action.
         if (envelope.action && result.confidence >= 0.7) {
+          // Validate reasoning's action against the data-driven
+          // action_definitions schema. This is the AUTHORITATIVE
+          // validation — not normaliseAction (which is tuned for the
+          // legacy LLM's quirks and can reject perfectly valid
+          // reasoning payloads, e.g. observed 2026-05-22 with the
+          // Asad meeting flow). If reasoning's payload is malformed
+          // (missing required slot, wrong type), tell the user
+          // exactly what's missing instead of falling through to a
+          // generic "I didn't actually complete that".
+          const { validateReasoningAction } = await import('./reasoningCompose');
+          const validationErrors = await validateReasoningAction({
+            type: envelope.action.type,
+            payload: envelope.action as any,
+          });
+          if (validationErrors && validationErrors.length > 0) {
+            console.warn('[compose] reasoning act failed schema validation', {
+              userId, clientNumber,
+              actionType: envelope.action.type,
+              errors: validationErrors,
+            });
+            return {
+              answer: `I can't ${envelope.action.type.replace(/_/g, ' ')} yet — ${validationErrors[0]}. Tell me that and I'll proceed.`,
+              citedPageIds: [], gaps: [], sources: [],
+              action: null,
+              actionResult: { ok: false, message: `schema_violation: ${validationErrors.join('; ')}` },
+            };
+          }
           reasoningOverride = {
             action: envelope.action,
             answer: envelope.answer,
@@ -1720,6 +1747,18 @@ ${calLines.join('\n')}`;
   }
 
   const parsed = parseCompose(raw);
+
+  // If reasoning supplied the action, it's already been validated
+  // against the data-driven action_definitions schema upstream — it's
+  // authoritative. Override parseCompose's normaliseAction output
+  // (which is tuned for the legacy LLM's quirks and was observed
+  // dropping perfectly valid reasoning payloads, leaving parsed.action
+  // null and triggering the empty-promise guard). Reasoning's emission
+  // is the source of truth on this turn.
+  if (reasoningOverride) {
+    parsed.action = reasoningOverride.action;
+    parsed.answer = reasoningOverride.answer;
+  }
 
   // Diagnostic — what did the LLM actually emit on this turn? Without
   // this we can't tell whether a "Sending email now" prose without an
