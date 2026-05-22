@@ -1148,6 +1148,60 @@ If the "Open items snapshot" block above contains a row whose title fragment mat
   return parts.join('\n\n');
 }
 
+/** Build a compact contacts/candidates snapshot for the reasoning
+ *  prompt. Reasoning needs this so it doesn't hallucinate emails
+ *  when emitting send_email / delegate_open_item / notify_via_whatsapp
+ *  / schedule_meeting attendees. Observed 2026-05-22: reasoning
+ *  emitted `yousaf@tmcltd.com` for "delegate to Yousaf" when the
+ *  user's contacts actually had `muhammad.yousuf@tmcltd.com`,
+ *  `yousuf.muhammad@tmcltd.ai`, etc. With contacts in its context,
+ *  reasoning can either resolve unambiguously OR ask with the real
+ *  options. Filtered by user scope (the userScopeGuard P0 fix).
+ *
+ *  Format: name + email/phone + strength signal. Capped at 60 rows
+ *  so the prompt stays bounded. We include rows where ownerUserId
+ *  matches this user OR scope='tenant' OR createdBy matches this
+ *  user (the same filter contactResolver uses post-leak-fix). */
+async function buildCandidatesBlockForReasoning(
+  userId: number,
+  clientNumber: string,
+): Promise<string> {
+  try {
+    const rows = await prisma.entity.findMany({
+      where: {
+        clientNumber,
+        entityType: 'contact',
+        OR: [
+          { scope: 'tenant' as any },
+          { ownerUserId: userId } as any,
+          { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+        ],
+      } as any,
+      select: {
+        id: true, name: true, email: true, phone: true,
+        relationshipStrength: true,
+      },
+      orderBy: [
+        { relationshipStrength: 'desc' as any },
+        { lastInteraction: 'desc' },
+      ],
+      take: 60,
+    });
+    if (rows.length === 0) return '';
+    const lines = rows.map((r) => {
+      const id = (r.email ?? r.phone ?? '').toString();
+      const strength = r.relationshipStrength != null
+        ? ` strength=${Math.round((r.relationshipStrength as number) * 100)}%`
+        : '';
+      return `- "${r.name}" ${id}${strength}`;
+    });
+    return `# Your contacts (use exact email/phone when emitting actions; ask if multiple match a name)\n${lines.join('\n')}`;
+  } catch (e: any) {
+    console.warn('[reasoning] buildCandidatesBlock failed', { error: e?.message, userId });
+    return '';
+  }
+}
+
 /** Build a compact open-items snapshot for the reasoning prompt.
  *  Reasoning needs this to: (a) recognise slot-fill turns ("priority
  *  normal, due date monday" right after a DRAFT was created), (b)
@@ -1228,7 +1282,10 @@ export async function compose(
       // Scoped dataBlocks for reasoning. Started with open_items only
       // (commit 2026-05-22) — every action that needs real context to
       // avoid hallucination gets its own slice added as we audit it.
-      const openItemsBlockForReasoning = await buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => '');
+      const [openItemsBlockForReasoning, candidatesBlockForReasoning] = await Promise.all([
+        buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
+        buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+      ]);
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -1236,6 +1293,7 @@ export async function compose(
         systemPrompt: personaForReasoning.systemPreamble,
         dataBlocks: {
           openItems: openItemsBlockForReasoning || undefined,
+          candidates: candidatesBlockForReasoning || undefined,
         },
       });
       if (result) {
@@ -2172,18 +2230,9 @@ ${calLines.join('\n')}`;
         }
       } else if (act.type === 'delegate_open_item') {
         // Transition the existing open_item to DELEGATED with the
-        // resolved delegatee. We do this directly via the lifecycle
-        // service (the instructionDispatcher 'delegate' case is for
-        // forwarding a Gmail message, not transitioning an existing
-        // open_item — different shape).
+        // resolved delegatee.
         try {
-          // Defensive existence check. Per MD 2026-05-12: a previous
-          // delegate emission leaked a raw Prisma error to chat
-          // ("No record was found for an update") because the LLM
-          // emitted an openItemId that didn't exist (hallucinated id
-          // or stale snapshot reference to an already-closed item).
-          // Verify the item before update; on miss, give MD a useful
-          // message and let them retry with a clearer reference.
+          // (1) Item existence check.
           const existing = await prisma.openItem.findFirst({
             where: { id: act.openItemId, clientNumber, userId },
             select: { id: true, title: true, status: true },
@@ -2191,13 +2240,54 @@ ${calLines.join('\n')}`;
           if (!existing) {
             actionResult = {
               ok: false,
-              message: `I couldn't find that open item to delegate (id ${act.openItemId}). It may have been closed or the reference got stale — tell me by title and I'll re-find it.`,
+              message: `[delegate_open_item: openItemId not found — reference stale; retry by title]`,
             };
             answer = actionResult.message;
           } else if (existing.status === 'CLOSED' || existing.status === 'INFORMED') {
             actionResult = {
               ok: false,
-              message: `"${existing.title}" is already ${existing.status.toLowerCase()} — nothing to delegate. Want me to reopen it first?`,
+              message: `[delegate_open_item: item already ${existing.status.toLowerCase()} — nothing to delegate]`,
+            };
+            answer = actionResult.message;
+          } else {
+          // (2) Email-existence guard. Per Basit 2026-05-22 ("if brain
+          // don't have any information in contacts then he should
+          // ask, doing wrong action with wrong information is very
+          // bad"). Reasoning has been observed emitting hallucinated
+          // emails (e.g. yousaf@tmcltd.com when contacts had
+          // muhammad.yousuf@tmcltd.com). Verify the email is an
+          // actual user-scoped contact before dispatching. If not,
+          // surface a bracketed marker WITH name-token-matched
+          // suggestions so the user can clarify on the next turn.
+          const matched = await prisma.entity.findFirst({
+            where: {
+              clientNumber, entityType: 'contact',
+              email: { equals: act.delegateeEmail, mode: 'insensitive' as any },
+              OR: [
+                { scope: 'tenant' as any },
+                { ownerUserId: userId } as any,
+                { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+              ],
+            } as any,
+            select: { id: true, name: true, email: true },
+          }).catch(() => null);
+          if (!matched) {
+            const nameTokens = String(act.delegateeName || '')
+              .split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 3);
+            const hints = nameTokens.length > 0 ? await prisma.entity.findMany({
+              where: {
+                clientNumber, entityType: 'contact',
+                OR: nameTokens.map((t) => ({ name: { contains: t, mode: 'insensitive' as any } } as any)),
+              } as any,
+              select: { name: true, email: true },
+              take: 5,
+            }).catch(() => []) : [];
+            const hintStr = hints.length > 0
+              ? ` Real matches: ${hints.map((h) => `${h.name} <${h.email}>`).join('; ')}`
+              : ' (no name-match in your contacts either — confirm the recipient)';
+            actionResult = {
+              ok: false,
+              message: `[delegate_open_item: ${act.delegateeEmail} is not in your contacts.${hintStr}]`,
             };
             answer = actionResult.message;
           } else {
@@ -2224,11 +2314,11 @@ ${calLines.join('\n')}`;
             actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${act.delegateeName} <${act.delegateeEmail}>.` };
             if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
           }
+          } // close outer else opened for matched-email branch
         } catch (e: any) {
-          // Never leak a raw Prisma stack to chat. Log it server-side
-          // for diagnosis; tell MD something they can act on.
           console.warn('[brain-chat] delegate_open_item failed', { error: e?.message, openItemId: act.openItemId, userId });
-          actionResult = { ok: false, message: `I hit an error trying to delegate — the item id may be stale. Tell me which item by title and I'll retry.` };
+          // Bracketed marker per no-hardcoded-fake-Brain-replies rule.
+          actionResult = { ok: false, message: `[delegate_open_item failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       } else if (act.type === 'schedule_meeting') {
@@ -3495,7 +3585,13 @@ function gateHumanFacingAction(
   // Internal-only actions — skip the gate.
   if (act.type === 'add_open_item') return null;
   if (act.type === 'update_open_item') return null;
-  if (act.type === 'delegate_open_item') return null;
+  // NOTE — delegate_open_item is INTENTIONALLY NOT skipped here.
+  // It used to be (hardcoded skip), but action_definitions has
+  // isHumanFacing=true for delegate and reasoning was observed
+  // dispatching to a hallucinated email (`yousaf@tmcltd.com` when
+  // the user's contacts had different addresses) — no preview meant
+  // the bad email went out silently. Treat delegations like every
+  // other outbound human action: preview-by-default, user confirms.
   if (act.type === 'set_brain_name') return null;
 
   // Exception 1: prior turn was a preview AND user is confirming.

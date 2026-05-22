@@ -75,7 +75,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'delegate_open_item',
     displayName: 'Delegate open item',
-    description: 'Transition an existing open item to DELEGATED status with a delegatee.',
+    description: "Transition an existing open item to DELEGATED status with a delegatee. CRITICAL: delegateeEmail MUST be an email that appears in the user's contacts (see the contacts block in your context). DO NOT invent or guess emails. If the user named someone but you can't find their email in contacts, emit decision='ask' with a clarifying question — NEVER act with a guessed email. If multiple contacts match the name, also emit ask listing the real candidates inline.",
     schema: {
       type: 'object',
       required: ['openItemId', 'delegateeEmail', 'delegateeName'],
@@ -95,7 +95,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'schedule_meeting',
     displayName: 'Schedule meeting',
-    description: "Create a Google Calendar event and send invites to attendees. whenIso must be an ISO 8601 datetime string (e.g., 2026-05-25T18:00:00+05:00); resolve relative phrasing ('today 6pm', 'tomorrow at 10', 'next monday 9am') to absolute ISO using today's date + the user's timezone from the system prompt.",
+    description: "Create a Google Calendar event and send invites to attendees. whenIso must be an ISO 8601 datetime string (e.g., 2026-05-25T18:00:00+05:00); resolve relative phrasing ('today 6pm', 'tomorrow at 10', 'next monday 9am') to absolute ISO using today's date + the user's timezone from the system prompt. CRITICAL: every attendeeEmails entry MUST be a real email from the user's contacts (see the contacts block). DO NOT invent emails. If you can't find a named attendee in contacts, emit decision='ask' instead of guessing.",
     schema: {
       type: 'object',
       required: ['title', 'whenIso', 'attendeeEmails', 'attendeeNames'],
@@ -157,7 +157,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'send_email',
     displayName: 'Send email',
-    description: 'Send an email from the user\'s connected Gmail. Footer "Sent by Nexeo, <user>\'s AI assistant" appended automatically.',
+    description: "Send an email from the user's connected Gmail. Footer \"Sent by Nexeo, <user>'s AI assistant\" appended automatically. CRITICAL: every `to` and `cc` entry MUST be a real email — either explicitly given in the user's current message, OR present in the user's contacts (see the contacts block). DO NOT invent or guess emails. If the user named a recipient but the email isn't in contacts and isn't in the user's message, emit decision='ask' to clarify — never guess. If multiple contacts match a named recipient, ask with the real options inline.",
     schema: {
       type: 'object',
       required: ['to', 'subject', 'body'],
