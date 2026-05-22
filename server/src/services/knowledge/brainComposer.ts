@@ -1148,6 +1148,16 @@ export async function compose(
   history: ComposerHistoryTurn[] = [],
   opts: ComposeOptions = {},
 ): Promise<ComposeResult> {
+  // When the reasoning gate (below) emits a confident `act`, it sets
+  // this override and falls through. The legacy LLM call is skipped
+  // and a synthetic `parsed` is built from the action so the rest of
+  // the function (preview gate, idempotency, dispatcher) runs unchanged.
+  let reasoningOverride: {
+    action: ComposedAction;
+    answer: string;
+    confidence: number;
+  } | null = null;
+
   // ── Phase 8 (2026-05-22): reasoning-first gate ────────────────────
   // When opts.useReasoning is on (or env says so), short-circuit
   // through the new reasoning composer. Falls through to legacy on
@@ -1188,17 +1198,43 @@ export async function compose(
           channel: opts.channel ?? 'web',
           question,
         });
-        // If reasoning decided act, the action flows into the legacy
-        // dispatch + preview gate below. We need to fall through with
-        // parsed.action set. For ask/answer/decline, we return now.
-        if (result.decision === 'act' && envelope.action) {
-          // Skip the legacy LLM call — we have the action; the rest
-          // of compose() applies preview gate + dispatch on it.
-          // For MVP simplicity, fall through to legacy and let it
-          // re-derive — guarantees full safety stack. Next iteration
-          // can short-circuit here.
-        } else {
+        // For ask / answer / decline, return reasoning's envelope as-is
+        // (these surfaces never needed the legacy LLM).
+        if (result.decision !== 'act') {
           return envelope;
+        }
+        // For act: short-circuit the legacy LLM round-trip. The
+        // legacy LLM doesn't have the cross-turn clarification context
+        // that reasoning does — calling it on a follow-up like
+        // "Asad Taj" produces empty-promise prose ("got it Sir, I've
+        // scheduled it…") with no action JSON, and the empty-promise
+        // guard then overwrites Brain's reply.
+        //
+        // Set `reasoningOverride` and fall through; the LLM call
+        // below sees the override and skips, building a synthetic
+        // `parsed` so the rest of the function (preview gate,
+        // idempotency, dispatcher, artifact tracking) runs unchanged.
+        //
+        // Threshold: confidence >= 0.7. Below that, fall through to
+        // legacy as a safety net — better one extra LLM call than
+        // a confidently-wrong action.
+        if (envelope.action && result.confidence >= 0.7) {
+          reasoningOverride = {
+            action: envelope.action,
+            answer: envelope.answer,
+            confidence: result.confidence,
+          };
+          console.info('[compose] reasoning act short-circuit', {
+            userId, clientNumber,
+            actionType: envelope.action.type,
+            confidence: result.confidence,
+          });
+          // fall through
+        } else {
+          // Low confidence — fall through to legacy as a safety net.
+          console.info('[compose] reasoning act low-confidence, falling through to legacy', {
+            userId, clientNumber, confidence: result.confidence,
+          });
         }
       } else {
         console.warn('[compose] reasoning returned null — falling through to legacy', { userId });
@@ -1645,32 +1681,42 @@ ${calLines.join('\n')}`;
   const userMessage = `${historyBlock}User question: ${question}\n\nPlanner rationale: ${plan.rationale}\nPlanner scopeLean: ${lean}\n\n# CRITICAL — Reply language\nMD's current message is in: **${detectedLanguage}**.\nYour reply MUST be entirely in this language. Do NOT switch languages mid-reply. Do NOT pick a different language than the user. The full conversation history may show language drift in earlier turns; ignore that and match THIS message's language.`;
 
   let raw = '';
-  try {
-    const r = await callLLM(systemPrompt, userMessage, {
-      maxTokens: 2048,
-      userId, clientNumber, purpose: 'chat_compose',
-    });
-    raw = r.text;
-  } catch (err: any) {
-    // Provider failure: LOG the full chain (Gemini Pro thinking-budget
-    // errors, Anthropic credit-balance copy, timeouts) for diagnosis,
-    // but NEVER ship err.message to the user. It contains provider
-    // names, model error codes, even Anthropic's billing text — that's
-    // an internal-infra leak on a phone screen. Replace with a single
-    // bracketed system marker (the only non-LLM string the user is
-    // allowed to see). Per Basit 2026-05-20 — "don't hardcode anything
-    // this is the crime in building AI". The previous code emitted
-    // "I can't reach my reasoning service right now — ${err.message}…"
-    // as fake-Brain prose; that's the exact pattern the rule forbids.
-    console.warn('[brain-chat] LLM call failed', { error: err?.message, userId, clientNumber });
-    return {
-      answer: `[Brain unavailable — reasoning service down, retry shortly]`,
-      citedPageIds: [],
+  if (reasoningOverride) {
+    // Reasoning already decided this turn is an `act` with a validated
+    // payload. Build a synthetic compose envelope so parseCompose
+    // returns the reasoning action, and the rest of the function
+    // (preview gate, idempotency, dispatch) runs on it unchanged.
+    raw = JSON.stringify({
+      answer: reasoningOverride.answer,
+      cites: [],
       gaps: [],
-      sources: [],
-      action: null,
-      actionResult: null,
-    };
+      action: reasoningOverride.action,
+    });
+  } else {
+    try {
+      const r = await callLLM(systemPrompt, userMessage, {
+        maxTokens: 2048,
+        userId, clientNumber, purpose: 'chat_compose',
+      });
+      raw = r.text;
+    } catch (err: any) {
+      // Provider failure: LOG the full chain (Gemini Pro thinking-budget
+      // errors, Anthropic credit-balance copy, timeouts) for diagnosis,
+      // but NEVER ship err.message to the user. It contains provider
+      // names, model error codes, even Anthropic's billing text — that's
+      // an internal-infra leak on a phone screen. Replace with a single
+      // bracketed system marker (the only non-LLM string the user is
+      // allowed to see).
+      console.warn('[brain-chat] LLM call failed', { error: err?.message, userId, clientNumber });
+      return {
+        answer: `[Brain unavailable — reasoning service down, retry shortly]`,
+        citedPageIds: [],
+        gaps: [],
+        sources: [],
+        action: null,
+        actionResult: null,
+      };
+    }
   }
 
   const parsed = parseCompose(raw);
