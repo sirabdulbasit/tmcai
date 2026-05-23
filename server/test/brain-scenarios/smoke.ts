@@ -16,7 +16,7 @@
  * The runner prints expected vs actual side-by-side on every step so
  * regressions are obvious.
  */
-import axios from 'axios';
+// Uses Node 18+ native fetch — no axios dep required.
 
 const BRAIN_API_URL = process.env.BRAIN_API_URL ?? 'http://localhost:4002';
 const BRAIN_API_TOKEN = process.env.BRAIN_API_TOKEN ?? '';
@@ -398,19 +398,29 @@ interface SmokeResult {
 }
 
 async function callBrain(message: string): Promise<{ answer: string; actionResult?: any; action?: any }> {
-  const r = await axios.post(
-    `${BRAIN_API_URL}/api/v1/brain/ask`,
-    { question: message, channel: 'web', userId: SMOKE_USER_ID },
-    {
-      headers: BRAIN_API_TOKEN ? { Authorization: `Bearer ${BRAIN_API_TOKEN}` } : {},
-      timeout: 60_000,
-    },
-  );
-  return {
-    answer: r.data?.answer ?? '',
-    actionResult: r.data?.actionResult,
-    action: r.data?.action,
-  };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (BRAIN_API_TOKEN) headers['Authorization'] = `Bearer ${BRAIN_API_TOKEN}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const r = await fetch(`${BRAIN_API_URL}/api/v1/brain/ask`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ question: message, channel: 'web', userId: SMOKE_USER_ID }),
+      signal: controller.signal,
+    });
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status} ${r.statusText}: ${await r.text().catch(() => '')}`);
+    }
+    const data: any = await r.json();
+    return {
+      answer: data?.answer ?? '',
+      actionResult: data?.actionResult,
+      action: data?.action,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function checkAny(text: string, patterns?: (RegExp | string)[]): boolean {
