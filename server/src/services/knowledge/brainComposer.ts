@@ -74,6 +74,7 @@ export type ComposedAction =
   // via chrono with the user's timezone. The LLM does NOT do date math.
   | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string }
   | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDateRaw?: string; note?: string }
+  | { type: 'mark_open_item_done'; openItemId: string; completionNote?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
@@ -1236,21 +1237,23 @@ async function buildOpenItemsBlockForReasoning(
       select: {
         id: true, title: true, status: true, priority: true, dueDate: true,
         delegateeName: true, metadata: true,
+        delegationFollowupCount: true, delegationLastFollowupAt: true,
         createdAt: true,
-      },
+      } as any,
       orderBy: { createdAt: 'desc' },
       take: 30,
     });
     if (rows.length === 0) return '';
-    const lines = rows.map((r) => {
+    const lines = rows.map((r: any) => {
       const md = (r.metadata as any)?.draft;
       const missing = Array.isArray(md?.missingSlots) ? (md.missingSlots as string[]) : [];
       const due = r.dueDate ? new Date(r.dueDate).toISOString().slice(0, 10) : '—';
       const deleg = r.delegateeName ? ` delegated_to=${r.delegateeName}` : '';
+      const followups = (r.delegationFollowupCount ?? 0) > 0 ? ` followups_sent=${r.delegationFollowupCount}` : '';
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
-      return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${missStr}`;
+      return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    return `# Your active open items (use id to update/delegate)\n${lines.join('\n')}`;
+    return `# Your active open items (use id to update/delegate/mark_done)\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';
@@ -2258,6 +2261,57 @@ ${calLines.join('\n')}`;
           actionResult = { ok: false, message: `[update_open_item failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
+      } else if (act.type === 'mark_open_item_done') {
+        // Mark DONE + closure summary to user. If the item was
+        // DELEGATED with a follow-up trail, the user gets the
+        // accumulated trail (per Basit 2026-05-23 spec step 5).
+        try {
+          const existing = await prisma.openItem.findFirst({
+            where: { id: act.openItemId, clientNumber, userId },
+            select: {
+              id: true, title: true, status: true,
+              delegateeName: true, delegateeEmail: true,
+              delegationFollowupTrail: true, delegationFollowupCount: true,
+            } as any,
+          });
+          if (!existing) {
+            actionResult = { ok: false, message: `[mark_open_item_done: openItemId not found]` };
+            answer = actionResult.message;
+          } else if ((existing as any).status === 'CLOSED' || (existing as any).status === 'INFORMED') {
+            actionResult = { ok: false, message: `[mark_open_item_done: item already ${(existing as any).status.toLowerCase()}]` };
+            answer = actionResult.message;
+          } else {
+            const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+            await transitionStatus((existing as any).id, 'CLOSED', {
+              clientNumber,
+              actor: `user:${userId}`,
+              reason: act.completionNote || 'Marked done via Brain Chat',
+            });
+            // Build closure summary
+            const wasDelegated = !!(existing as any).delegateeName;
+            const trail = Array.isArray((existing as any).delegationFollowupTrail) ? (existing as any).delegationFollowupTrail as any[] : [];
+            let summary = `Marked "${(existing as any).title}" done.`;
+            if (act.completionNote) summary += ` ${act.completionNote}`;
+            if (wasDelegated) {
+              summary += `\n\n— Delegation summary —`;
+              summary += `\nDelegated to: ${(existing as any).delegateeName} <${(existing as any).delegateeEmail}>`;
+              summary += `\nFollow-ups sent: ${(existing as any).delegationFollowupCount ?? 0}`;
+              if (trail.length > 0) {
+                summary += `\nTrail:`;
+                trail.slice(-5).forEach((t: any) => {
+                  const time = t.at ? new Date(t.at).toISOString().slice(0, 16).replace('T', ' ') : '?';
+                  summary += `\n  • [${time}] ${t.channel} ${t.direction}: ${String(t.content ?? '').slice(0, 80)}${(t.content?.length ?? 0) > 80 ? '…' : ''}`;
+                });
+              }
+            }
+            actionResult = { ok: true, artifactId: (existing as any).id, message: summary };
+            answer = summary;
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] mark_open_item_done failed', { error: e?.message, openItemId: act.openItemId, userId });
+          actionResult = { ok: false, message: `[mark_open_item_done failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'delegate_open_item') {
         try {
           // (1) Item existence check.
@@ -2317,8 +2371,54 @@ ${calLines.join('\n')}`;
               actor: `user:${userId}`,
               reason: act.note || `Delegated via Brain Chat to ${matched.name}`,
             });
-            actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${matched.name} <${matched.email}>.` };
-            if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
+
+            // Delegation-lifecycle step 1 (per Basit 2026-05-23 spec):
+            // queue an email preview to the delegatee. Per default Q2
+            // = preview-first, we render the preview the user must
+            // confirm BEFORE the email goes out. This populates a
+            // pending action so the next-turn "send" confirms it.
+            // The actual email is sent through send_email's V2 path
+            // — toAdHoc receives the resolved email (delegatee may
+            // not be in candidates as a separate row).
+            try {
+              const { startPending, hashProposedAction, markPreviewShown } = await import('./pendingActionService');
+              const userName = persona.userFirstName || persona.userFullName || 'the user';
+              const draftSubject = `Task for you: ${existing.title}`;
+              const dueLine = (existing as any).dueDate
+                ? `\n\nDue: ${new Date((existing as any).dueDate).toISOString().slice(0, 10)}`
+                : '';
+              const draftBody = `Hi ${matched.name.split(/\s+/)[0]},\n\n${userName} has delegated this task to you:\n\n"${existing.title}"${dueLine}${act.note ? `\n\nNote from ${userName}: ${act.note}` : ''}\n\nPlease let me know once it's done, or reply if you need anything to get started.\n\nThanks,\n${userName}`;
+              const emailSlots = {
+                toCandidateIds: [],
+                toAdHoc: [matched.email],
+                subject: draftSubject,
+                body: draftBody,
+                // Internal slot — dispatchPendingDirect uses this to
+                // link the messageId to the open_item after send so
+                // the follow-up worker knows the email landed.
+                _delegationOpenItemId: existing.id,
+              };
+              const channel: 'web' | 'whatsapp' = opts.channel ?? 'web';
+              const pending = await startPending({
+                clientNumber, userId, channel,
+                actionKind: 'send_email',
+                slots: emailSlots,
+                missingSlots: [],
+              });
+              const hash = hashProposedAction('send_email', emailSlots);
+              await markPreviewShown(pending.id, hash);
+              actionResult = {
+                ok: true,
+                artifactId: existing.id,
+                message: `Delegated "${existing.title}" to ${matched.name} <${matched.email}>. I've drafted an email to let them know:\n\nTo: ${matched.email}\nSubject: ${draftSubject}\nBody:\n${draftBody}\n\nReply "send" to fire the email, or tell me what to change. (You can also skip the email — just say "skip".)`,
+              };
+              answer = actionResult.message;
+            } catch (emailErr: any) {
+              // Delegation already succeeded; email queue is non-fatal.
+              console.warn('[brain-chat] delegation auto-email queue failed', { error: emailErr?.message, openItemId: existing.id });
+              actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${matched.name} <${matched.email}>. (Couldn't auto-draft the email — try "email ${matched.name.split(/\s+/)[0]} about it".)` };
+              answer = actionResult.message;
+            }
           }
           } // close candidate-resolution else
         } catch (e: any) {
@@ -3667,6 +3767,7 @@ function gateHumanFacingAction(
   // Internal-only actions — skip the gate.
   if (act.type === 'add_open_item') return null;
   if (act.type === 'update_open_item') return null;
+  if (act.type === 'mark_open_item_done') return null;
   // NOTE — delegate_open_item is INTENTIONALLY NOT skipped here.
   // It used to be (hardcoded skip), but action_definitions has
   // isHumanFacing=true for delegate and reasoning was observed
@@ -4114,6 +4215,19 @@ async function dispatchPendingDirect(
           ccEmails.length ? ccEmails.join(', ') : undefined,
         );
         if (r.success) {
+          // Delegation-lifecycle link: if this email was queued by a
+          // delegate_open_item dispatch, record the messageId on the
+          // open_item so the follow-up worker knows the email landed.
+          const linkedOpenItemId = typeof slots._delegationOpenItemId === 'string' ? slots._delegationOpenItemId : null;
+          if (linkedOpenItemId && r.messageId) {
+            await prisma.openItem.update({
+              where: { id: linkedOpenItemId },
+              data: {
+                delegationEmailedAt: new Date(),
+                delegationEmailMessageId: r.messageId,
+              } as any,
+            }).catch((e) => console.warn('[brain-chat] delegation email link write failed', { error: (e as any)?.message }));
+          }
           return {
             ok: true,
             artifactId: r.messageId,
@@ -4378,6 +4492,12 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const dueDateRaw = typeof r.dueDateRaw === 'string' && r.dueDateRaw.trim() ? r.dueDateRaw.trim() : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
     return { type: 'update_open_item', openItemId, title, priority, dueDateRaw, note };
+  }
+  if (type === 'mark_open_item_done') {
+    const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';
+    if (!openItemId) return null;
+    const completionNote = typeof r.completionNote === 'string' && r.completionNote.trim() ? r.completionNote.trim() : undefined;
+    return { type: 'mark_open_item_done', openItemId, completionNote };
   }
   if (type === 'delegate_open_item') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';

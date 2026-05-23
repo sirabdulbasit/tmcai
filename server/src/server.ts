@@ -284,6 +284,18 @@ const server = app.listen(env.port, async () => {
     scheduleBrainResetArchiveCleanup();
   }).catch((e) => console.warn('[brainResetArchiveCleanup] start failed:', e.message));
 
+  // Delegatee follow-up worker (Brain → delegatee on due date).
+  // Per Basit 2026-05-23 delegation lifecycle spec step 4.
+  import('./services/openItems/delegateeFollowupWorker').then(({ scheduleDelegateeFollowupWorker }) => {
+    scheduleDelegateeFollowupWorker();
+  }).catch((e) => console.warn('[delegateeFollowup] start failed:', e.message));
+
+  // Stale-connector proactive ping. Detects sync_stale connectors and
+  // surfaces a Brain message asking the user to reconnect.
+  import('./jobs/staleConnectorPing').then(({ scheduleStaleConnectorPing }) => {
+    scheduleStaleConnectorPing();
+  }).catch((e) => console.warn('[staleConnectorPing] start failed:', e.message));
+
   // Phase F — Wiki lint (hourly): orphans, stale pages, open gaps,
   // contradictions, missing entity pages. Files a Wiki Lint Report page
   // per user so the MD can skim what Brain has flagged.

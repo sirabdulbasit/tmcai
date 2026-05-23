@@ -73,6 +73,23 @@ const ACTIONS: Seed[] = [
     isHumanFacing: false,
   },
   {
+    type: 'mark_open_item_done',
+    displayName: 'Mark open item done',
+    description: "Mark an existing open item as DONE/CLOSED. Reference by openItemId from the open-items context block. If the item was DELEGATED, the system also sends a closure summary to the user via WhatsApp/web (with the trail of delegatee follow-up updates).",
+    schema: {
+      type: 'object',
+      required: ['openItemId'],
+      properties: {
+        openItemId: { type: 'string' },
+        completionNote: { type: 'string', description: 'Optional note about how it was completed' },
+      },
+    },
+    handlerModule: 'openItemsService',
+    handlerFunction: 'markDone',
+    requiresCapability: 'manage_open_items',
+    isHumanFacing: false,
+  },
+  {
     type: 'delegate_open_item',
     displayName: 'Delegate open item',
     description: "Transition an existing open item to DELEGATED with a delegatee. Emit `delegateeCandidateId` = the EXACT candidateId from the contacts block. NEVER emit raw emails or names — the server resolves candidateId → email + name. If you can't find a matching contact, emit decision='ask' with a clarifying question listing the real candidates. If multiple candidates match the user's named recipient, emit ask too.",

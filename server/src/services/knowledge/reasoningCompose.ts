@@ -47,7 +47,23 @@ export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline';
 
 export interface ReasoningResult {
   decision: ReasoningDecision;
+  /** Single-action emission (legacy/simple case). When the user says
+   *  "add open item X" reasoning emits ONE action here and actionPlan
+   *  stays empty. */
   action?: { type: string; payload: Record<string, unknown> } | null;
+  /** Multi-action emission (2026-05-23). When the user says "create
+   *  open item X AND delegate to Yousuf" reasoning emits a sequence
+   *  here. Dispatcher runs them in order; stops on first failure
+   *  (subsequent steps may depend on the previous succeeding).
+   *  Each step can reference outputs from prior steps via
+   *  `{previousStepArtifact}` template strings the dispatcher resolves. */
+  actionPlan?: Array<{
+    type: string;
+    payload: Record<string, unknown>;
+    description?: string;
+    /** When true, subsequent steps still run even if this one fails. */
+    optional?: boolean;
+  }> | null;
   question?: {
     text: string;
     slotBeingFilled: string;
@@ -102,6 +118,10 @@ Output strictly this JSON shape — no prose outside the object, no markdown fen
 {
   "decision": "act" | "ask" | "answer" | "decline",
   "action": { "type": "<one of the registry types>", "payload": { ... } } | null,
+  "action_plan": [
+    { "type": "<registry type>", "payload": { ... }, "description": "<one-line>", "optional": false },
+    ...
+  ] | null,
   "question": { "text": "<the clarifying question>", "slotBeingFilled": "<canonical slot name>", "contextTokens": ["<tokens that identify what we're resolving>"] } | null,
   "answer_text": "<the user-visible reply>" | null,
   "decline_reason": "<one-line honest reason>" | null,
@@ -110,10 +130,12 @@ Output strictly this JSON shape — no prose outside the object, no markdown fen
 }
 
 Rules:
-- Exactly ONE of {action, question, answer_text, decline_reason} is non-null, matching decision.
-- For action: payload MUST validate against the registry schema (required fields present, types correct).
-- For ask: slotBeingFilled is a canonical name like "attendee_email", "due_date", "which_thread"; contextTokens are stable identifiers that future similar turns can match against (e.g., person name + topic + action_kind).
+- Exactly ONE of {action, action_plan, question, answer_text, decline_reason} is non-null, matching decision.
+- Use action for single-step asks. Use action_plan ONLY when the user asked for multiple steps in one turn ("create open item AND delegate to Yousuf AND email him") AND each step is independently emissible. Steps run sequentially; later steps can reference {previousStepArtifact} in their payload (the dispatcher resolves).
+- For action / action_plan: every payload MUST validate against the registry schema (required fields present, types correct).
+- For ask: slotBeingFilled is a canonical name like "which_contact", "due_date", "which_thread"; contextTokens are stable identifiers future similar turns can match against (e.g., person name + topic + action_kind).
 - Confidence: how sure you are about the decision. <0.5 → consider switching to ask.
+- If you can't complete a plan step (e.g., recipient not in candidates), emit decision='ask' for the missing piece instead of guessing.
 
 # Action registry (the only types you can emit)
 
@@ -190,9 +212,20 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
     const obj = JSON.parse(cleaned);
     const decision = String(obj.decision ?? '').toLowerCase();
     if (!['act', 'ask', 'answer', 'decline'].includes(decision)) return null;
+    const actionPlan = Array.isArray(obj.action_plan)
+      ? obj.action_plan
+          .filter((s: any) => s && typeof s.type === 'string' && s.payload && typeof s.payload === 'object')
+          .map((s: any) => ({
+            type: s.type,
+            payload: s.payload,
+            description: typeof s.description === 'string' ? s.description : undefined,
+            optional: !!s.optional,
+          }))
+      : null;
     return {
       decision: decision as ReasoningDecision,
       action: obj.action ?? null,
+      actionPlan: actionPlan && actionPlan.length > 0 ? actionPlan : null,
       question: obj.question ?? null,
       answerText: obj.answer_text ?? null,
       declineReason: obj.decline_reason ?? null,

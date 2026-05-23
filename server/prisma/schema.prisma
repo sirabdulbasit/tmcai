@@ -1147,6 +1147,15 @@ model OpenItem {
   shadowScore         Float?   @map("shadow_score") // score from shadow rules (no UI action)
   sourceFeedEventId   String?  @map("source_feed_event_id") // FK → feed_events.id (soft ref)
   archetype           String?  @db.VarChar(30) // reply_needed | delegate | inform_only | schedule_meeting | review_risk | acknowledge
+
+  // Delegation lifecycle tracking — populated after a DELEGATED transition.
+  // The follow-up worker reads these to decide what to chase and when.
+  delegationEmailedAt        DateTime? @map("delegation_emailed_at")
+  delegationEmailMessageId   String?   @map("delegation_email_message_id")
+  delegationFollowupCount    Int       @default(0) @map("delegation_followup_count")
+  delegationLastFollowupAt   DateTime? @map("delegation_last_followup_at")
+  delegationFollowupTrail    Json      @default("[]") @map("delegation_followup_trail")
+
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
