@@ -2052,7 +2052,7 @@ ${calLines.join('\n')}`;
       // Convert to a preview the user must confirm. Action dispatch
       // is skipped entirely; the user sees the exact slot values
       // Brain wants to use and either confirms or corrects.
-      answer = renderActionPreview(parsed.action, blockReason);
+      answer = await renderActionPreview(parsed.action, userId, clientNumber, blockReason);
 
       // Q5a: availability check for meeting previews. Before storing
       // the pending, look at the user's own calendar; if the
@@ -3836,22 +3836,51 @@ function isCanonicalTestEmail(act: ComposedAction, _question: string): boolean {
 
 /** Render a structured preview when the verification gate blocks an
  *  action. The user sees the slot values; either confirm or correct.
- *  V2: previews show candidate IDs along with names so the user can
- *  visually verify the right person is selected. */
-function renderActionPreview(act: ComposedAction, _blockReason: string): string {
+ *
+ *  V2 (2026-05-23 — second pass): NEVER show raw candidateIds to the
+ *  user. Resolve each candidateId to "Name <email>" via candidateResolver
+ *  before rendering. Per Basit 2026-05-23: "U should not show ur internal
+ *  ids to me these are meaningless for me show his email to whom test
+ *  email has to send". The IDs are internal references; the user sees
+ *  the resolved person.
+ *
+ *  Async because resolution hits the DB. Callers must await. */
+async function renderActionPreview(
+  act: ComposedAction,
+  userId: number,
+  clientNumber: string,
+  _blockReason: string,
+): Promise<string> {
+  const { resolveCandidates, resolveCandidate } = await import('./candidateResolver');
+
+  function fmt(r: { name: string; email: string | null; phone: string | null } | null, fallbackId: string): string {
+    if (!r) return `[unknown contact ${fallbackId}]`;
+    const ident = r.email ?? r.phone ?? '';
+    return ident ? `${r.name} <${ident}>` : r.name;
+  }
+
   if (act.type === 'send_email') {
-    const toIds = act.toCandidateIds.length > 0 ? act.toCandidateIds.join(', ') : '(none)';
-    const adHoc = act.toAdHoc && act.toAdHoc.length ? `\nTo (ad-hoc): ${act.toAdHoc.join(', ')}` : '';
-    const cc = act.ccCandidateIds && act.ccCandidateIds.length ? `\nCc candidates: ${act.ccCandidateIds.join(', ')}` : '';
-    return `Before I send, please confirm — I'm about to send:\n\nTo candidates: ${toIds}${adHoc}${cc}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
+    const resolvedTo = await resolveCandidates(act.toCandidateIds, userId, clientNumber);
+    const toLines = act.toCandidateIds.map((id, i) => fmt(resolvedTo[i], id));
+    const adHocLines = act.toAdHoc && act.toAdHoc.length ? act.toAdHoc : [];
+    const allTo = [...toLines, ...adHocLines];
+    const toStr = allTo.length > 0 ? allTo.join(', ') : '(no recipient)';
+    const ccPart = act.ccCandidateIds && act.ccCandidateIds.length ? await (async () => {
+      const r = await resolveCandidates(act.ccCandidateIds!, userId, clientNumber);
+      return `\nCc: ${act.ccCandidateIds!.map((id, i) => fmt(r[i], id)).join(', ')}`;
+    })() : '';
+    return `Before I send, please confirm — I'm about to send:\n\nTo: ${toStr}${ccPart}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'schedule_meeting') {
-    const attendees = act.attendeeCandidateIds.join(', ');
+    const resolved = await resolveCandidates(act.attendeeCandidateIds, userId, clientNumber);
+    const attendees = act.attendeeCandidateIds.map((id, i) => fmt(resolved[i], id)).join(', ');
     const dur = act.durationMin ? ` (${act.durationMin} min)` : '';
-    return `Before I send the invite, please confirm — meeting:\n\nAttendees (candidateIds): ${attendees}\nWhen: ${act.whenRaw}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
+    return `Before I send the invite, please confirm — meeting:\n\nWith: ${attendees}\nWhen: ${act.whenRaw}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'notify_via_whatsapp') {
-    return `Before I send the WhatsApp, please confirm — message to candidateId ${act.recipientCandidateId}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
+    const r = await resolveCandidate(act.recipientCandidateId, userId, clientNumber);
+    const who = fmt(r, act.recipientCandidateId);
+    return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
   return `Before I proceed, please confirm the details and reply "send".`;
 }

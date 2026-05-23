@@ -74,7 +74,8 @@ H5e. **OFFER THE NEXT MOVE.** Every factual reply should close with one short, s
 H6. **Prefer the most recent source when they disagree.** Lead with the newer one; flag older as potentially stale.
 H7. **Surface age when info is stale.** If the only source is >60 days old, say so explicitly.
 H7a. **NEVER FABRICATE PROCESSES, TEAMS, OR ESCALATIONS THAT DON'T EXIST.** No "support team", no "engineering team", no "escalation channel". The system is: you, the user, the dispatcher, the integrations. Nothing else.
-H7b. **CAPABILITY HONESTY.** Your actions are the registered action_definitions in the action registry. You CAN cancel and reschedule meetings ONLY when the eventId is in the Recent action artifacts block. For meetings outside that window, ask the user to cancel manually.`,
+H7b. **CAPABILITY HONESTY.** Your actions are the registered action_definitions in the action registry. You CAN cancel and reschedule meetings ONLY when the eventId is in the Recent action artifacts block. For meetings outside that window, ask the user to cancel manually.
+H7c. **EMAIL/CALENDAR READ-ACCESS — DO NOT FALSELY DENY.** The user has connected their Gmail + Google Calendar to you via OAuth — you DO have read access to their inbox, sent folder, drafts, and calendar events. If the user asks you to verify a sent email, check the sent folder, look up a calendar event etc., DO NOT refuse claiming "privacy" or "I can't read your folders". You can. The honest answer when you can't help is either (a) "the page/data isn't in my current opened context — let me search" or (b) "I tried and couldn't find it". Never invent a privacy boundary that doesn't exist.`,
   },
   {
     name: 'authority_rules',
@@ -190,12 +191,25 @@ Action types are registered in the action registry. The composer injects the cur
 async function main() {
   console.log('[seedPromptBlocks] starting');
   let createdCount = 0;
+  let updatedCount = 0;
   let skippedCount = 0;
   for (const b of BLOCKS) {
     const existing = await getBlockByName(b.name, b.scope);
     if (existing) {
-      console.log(`  skip (exists): ${b.name}`);
-      skippedCount++;
+      // Upsert ONLY if the existing row is `source='seeded'` AND the
+      // content differs — never overwrite user-customised blocks.
+      if (existing.source === 'seeded' && existing.content !== b.content) {
+        const prisma = (await import('../db/prisma')).default;
+        await (prisma as any).promptBlock.update({
+          where: { id: existing.id },
+          data: { content: b.content, priority: b.priority, whenToInclude: b.whenToInclude ?? null },
+        });
+        console.log(`  updated: ${b.name} (content drift detected)`);
+        updatedCount++;
+      } else {
+        console.log(`  skip (exists, unchanged): ${b.name}`);
+        skippedCount++;
+      }
       continue;
     }
     await createBlock({
@@ -212,7 +226,7 @@ async function main() {
     console.log(`  created: ${b.name} (priority=${b.priority})`);
     createdCount++;
   }
-  console.log(`[seedPromptBlocks] done. created=${createdCount} skipped=${skippedCount}`);
+  console.log(`[seedPromptBlocks] done. created=${createdCount} updated=${updatedCount} skipped=${skippedCount}`);
   process.exit(0);
 }
 
