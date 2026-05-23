@@ -87,6 +87,95 @@ router.get('/pages/:id', async (req: Request, res: Response) => {
   res.json(page);
 });
 
+/**
+ * PATCH /api/v1/wiki/pages/:id/archive — soft-archive a wiki page.
+ * Per Basit 2026-05-23: user needs to manage wiki — delete/archive pages
+ * so they're not part of Brain. Archived pages are excluded from
+ * Brain's retrieval (composer + retrievalPlanner skip status!='active')
+ * but stay in the DB for restoration.
+ *
+ * Owner-only: only the user who owns the page (page.userId) can archive
+ * it. Tenant-shared pages need admin (separate flow).
+ */
+router.patch('/pages/:id/archive', async (req: Request, res: Response) => {
+  const ctx = resolveTargetUser(req);
+  if (!ctx) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true, status: true },
+  });
+  if (!existing || existing.clientNumber !== ctx.clientNumber) {
+    return res.status(404).json({ error: 'page not found' });
+  }
+  if (existing.scope === 'user' && existing.userId !== ctx.userId) {
+    return res.status(403).json({ error: 'only the owner can archive this page' });
+  }
+  if (existing.status === 'archived') {
+    return res.json({ id, status: 'archived', alreadyArchived: true });
+  }
+  await prisma.wikiPage.update({
+    where: { id },
+    data: { status: 'archived' as any, lastUpdatedAt: new Date() } as any,
+  });
+  res.json({ id, status: 'archived' });
+});
+
+/**
+ * PATCH /api/v1/wiki/pages/:id/restore — un-archive a page.
+ */
+router.patch('/pages/:id/restore', async (req: Request, res: Response) => {
+  const ctx = resolveTargetUser(req);
+  if (!ctx) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true, status: true },
+  });
+  if (!existing || existing.clientNumber !== ctx.clientNumber) {
+    return res.status(404).json({ error: 'page not found' });
+  }
+  if (existing.scope === 'user' && existing.userId !== ctx.userId) {
+    return res.status(403).json({ error: 'only the owner can restore this page' });
+  }
+  await prisma.wikiPage.update({
+    where: { id },
+    data: { status: 'active' as any, lastUpdatedAt: new Date() } as any,
+  });
+  res.json({ id, status: 'active' });
+});
+
+/**
+ * DELETE /api/v1/wiki/pages/:id — hard-delete a wiki page.
+ * IRREVERSIBLE. The row is removed and Brain forgets it entirely.
+ * Caller should typed-phrase confirm in the UI; backend trusts the
+ * caller's intent but logs the operation.
+ *
+ * For entity_person pages, this leaves the underlying entities row
+ * intact (those are managed separately via /entity-catalog).
+ */
+router.delete('/pages/:id', async (req: Request, res: Response) => {
+  const ctx = resolveTargetUser(req);
+  if (!ctx) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true, title: true, pageType: true },
+  });
+  if (!existing || existing.clientNumber !== ctx.clientNumber) {
+    return res.status(404).json({ error: 'page not found' });
+  }
+  if (existing.scope === 'user' && existing.userId !== ctx.userId) {
+    return res.status(403).json({ error: 'only the owner can delete this page' });
+  }
+  await prisma.wikiPage.delete({ where: { id } });
+  console.warn('[wiki] page hard-deleted', {
+    id, title: existing.title, pageType: existing.pageType,
+    actor: ctx.userId, clientNumber: ctx.clientNumber,
+  });
+  res.json({ id, deleted: true });
+});
+
 router.get('/index', async (req: Request, res: Response) => {
   const ctx = resolveTargetUser(req);
   if (!ctx) return res.status(401).json({ error: 'unauthenticated' });

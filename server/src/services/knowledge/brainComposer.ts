@@ -82,6 +82,8 @@ export type ComposedAction =
   | { type: 'send_email'; toCandidateIds: string[]; ccCandidateIds?: string[]; toAdHoc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
   | { type: 'notify_via_whatsapp'; recipientCandidateId: string; message: string }
   | { type: 'set_brain_name'; name: string }
+  | { type: 'archive_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
+  | { type: 'delete_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
@@ -2521,6 +2523,53 @@ ${calLines.join('\n')}`;
           actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
           answer = res.message;
         }
+      } else if (act.type === 'archive_wiki_page') {
+        try {
+          const existing = await prisma.wikiPage.findUnique({
+            where: { id: act.wikiPageId },
+            select: { id: true, clientNumber: true, userId: true, scope: true, title: true, status: true },
+          });
+          if (!existing || existing.clientNumber !== clientNumber) {
+            actionResult = { ok: false, message: `[archive_wiki_page: page not found]` };
+          } else if (existing.scope === 'user' && existing.userId !== userId) {
+            actionResult = { ok: false, message: `[archive_wiki_page: only the owner can archive this page]` };
+          } else if (existing.status === 'archived') {
+            actionResult = { ok: true, artifactId: existing.id, message: `"${existing.title}" was already archived.` };
+          } else {
+            await prisma.wikiPage.update({
+              where: { id: existing.id },
+              data: { status: 'archived' as any, lastUpdatedAt: new Date() } as any,
+            });
+            actionResult = { ok: true, artifactId: existing.id, message: `Archived wiki page "${existing.title}". Brain won't surface it until you restore it.` };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[archive_wiki_page failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
+      } else if (act.type === 'delete_wiki_page') {
+        try {
+          const existing = await prisma.wikiPage.findUnique({
+            where: { id: act.wikiPageId },
+            select: { id: true, clientNumber: true, userId: true, scope: true, title: true, pageType: true },
+          });
+          if (!existing || existing.clientNumber !== clientNumber) {
+            actionResult = { ok: false, message: `[delete_wiki_page: page not found]` };
+          } else if (existing.scope === 'user' && existing.userId !== userId) {
+            actionResult = { ok: false, message: `[delete_wiki_page: only the owner can delete this page]` };
+          } else {
+            await prisma.wikiPage.delete({ where: { id: existing.id } });
+            console.warn('[brain-chat] wiki page hard-deleted via Brain', {
+              id: existing.id, title: existing.title, pageType: existing.pageType,
+              actor: userId, clientNumber,
+            });
+            actionResult = { ok: true, artifactId: existing.id, message: `Deleted wiki page "${existing.title}". Brain has forgotten it.` };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[delete_wiki_page failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'record_preference') {
         try {
           const { recordExplicitMemory } = await import('./userMemoryService');
@@ -3882,6 +3931,12 @@ async function renderActionPreview(
     const who = fmt(r, act.recipientCandidateId);
     return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
+  if (act.type === 'archive_wiki_page') {
+    return `Before I archive, please confirm — I'm about to archive wiki page:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nArchiving hides it from Brain's retrieval. It stays in the DB and can be restored. Reply "send" to confirm, or tell me what to change.`;
+  }
+  if (act.type === 'delete_wiki_page') {
+    return `⚠️ PERMANENT DELETE — please confirm:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nThis is IRREVERSIBLE. Brain will forget this page entirely. If you just want Brain to ignore it temporarily, say "archive instead". Reply "send" to confirm permanent deletion.`;
+  }
   return `Before I proceed, please confirm the details and reply "send".`;
 }
 
@@ -4594,6 +4649,20 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const message = typeof r.message === 'string' ? r.message.trim() : '';
     if (!recipientCandidateId || !message) return reject('notify_via_whatsapp:missing-required');
     return { type: 'notify_via_whatsapp', recipientCandidateId, message };
+  }
+  if (type === 'archive_wiki_page') {
+    const wikiPageId = typeof r.wikiPageId === 'string' ? r.wikiPageId.trim() : '';
+    if (!wikiPageId) return reject('archive_wiki_page:no-id');
+    const titleHint = typeof r.titleHint === 'string' && r.titleHint.trim() ? r.titleHint.trim() : undefined;
+    const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
+    return { type: 'archive_wiki_page', wikiPageId, titleHint, reason };
+  }
+  if (type === 'delete_wiki_page') {
+    const wikiPageId = typeof r.wikiPageId === 'string' ? r.wikiPageId.trim() : '';
+    if (!wikiPageId) return reject('delete_wiki_page:no-id');
+    const titleHint = typeof r.titleHint === 'string' && r.titleHint.trim() ? r.titleHint.trim() : undefined;
+    const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
+    return { type: 'delete_wiki_page', wikiPageId, titleHint, reason };
   }
   if (type === 'record_preference') {
     // User stated a preference Brain should remember across sessions.

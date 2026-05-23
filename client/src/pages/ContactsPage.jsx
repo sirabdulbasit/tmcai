@@ -764,9 +764,12 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
   return (
     <div style={{
       border: '1px solid var(--border, #28323e)', borderRadius: 10,
-      overflow: 'hidden', background: 'var(--panel, #141a22)',
+      // overflowX:auto so the action buttons on the right (Public/Normal/
+      // Private/Mark inactive/Delete) stay reachable on narrower
+      // viewports. Previous `overflow: hidden` was clipping them off.
+      overflowX: 'auto', background: 'var(--panel, #141a22)',
     }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <table style={{ minWidth: 980, width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: 'var(--panel-2, #1b232d)', textAlign: 'left' }}>
             <Th>Stars</Th>
