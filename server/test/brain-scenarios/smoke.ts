@@ -17,9 +17,21 @@
  * regressions are obvious.
  */
 // Uses Node 18+ native fetch — no axios dep required.
+//
+// Auth: prefers the agent bearer (PLATFORM_API_TOKEN + X-Tenant-Id),
+// which is how the agent worker hits the server. Falls back to a
+// user JWT in BRAIN_API_TOKEN (extracted from a browser session
+// cookie) if you'd rather test as a specific user.
+//
+// Easiest path on the prod host:
+//   export PLATFORM_API_TOKEN=$(grep '^PLATFORM_API_TOKEN=' .env | cut -d= -f2-)
+//   SMOKE_USER_ID=2 BRAIN_API_URL=http://127.0.0.1:4002 \
+//     SMOKE_TENANT=TMC-0001 npm run smoke
 
 const BRAIN_API_URL = process.env.BRAIN_API_URL ?? 'http://localhost:4002';
 const BRAIN_API_TOKEN = process.env.BRAIN_API_TOKEN ?? '';
+const PLATFORM_API_TOKEN = process.env.PLATFORM_API_TOKEN ?? '';
+const SMOKE_TENANT = process.env.SMOKE_TENANT ?? 'TMC-0001';
 const SMOKE_USER_ID = Number(process.env.SMOKE_USER_ID ?? '2');
 const RUN_LIVE = process.argv.includes('--live');
 
@@ -399,7 +411,13 @@ interface SmokeResult {
 
 async function callBrain(message: string): Promise<{ answer: string; actionResult?: any; action?: any }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (BRAIN_API_TOKEN) headers['Authorization'] = `Bearer ${BRAIN_API_TOKEN}`;
+  if (PLATFORM_API_TOKEN) {
+    headers['Authorization'] = `Bearer ${PLATFORM_API_TOKEN}`;
+    headers['X-Tenant-Id'] = SMOKE_TENANT;
+    headers['X-Agent-Id'] = 'brain-smoke-harness';
+  } else if (BRAIN_API_TOKEN) {
+    headers['Authorization'] = `Bearer ${BRAIN_API_TOKEN}`;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
@@ -502,6 +520,8 @@ async function main(): Promise<void> {
   console.log(`\n┌─ Brain smoke harness ───────────────────────────────────────`);
   console.log(`│ API:       ${BRAIN_API_URL}`);
   console.log(`│ User:      ${SMOKE_USER_ID}`);
+  console.log(`│ Tenant:    ${SMOKE_TENANT}`);
+  console.log(`│ Auth:      ${PLATFORM_API_TOKEN ? 'platform-bearer + X-Tenant-Id' : (BRAIN_API_TOKEN ? 'user-bearer' : 'NONE (expect 401)')}`);
   console.log(`│ Live mode: ${RUN_LIVE ? 'YES — external side effects WILL fire' : 'no (--live to enable)'}`);
   console.log(`│ Scenarios: ${SCENARIOS.length}`);
   console.log(`└─────────────────────────────────────────────────────────────\n`);
