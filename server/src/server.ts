@@ -278,6 +278,12 @@ const server = app.listen(env.port, async () => {
     startAttachmentBackfillWorker();
   }).catch((e) => console.warn('[attachmentBackfill] start failed:', e.message));
 
+  // Settings → Brain → Reset & Cleanup archive table TTL.
+  // Drops *_wipe_<suffix> tables after the 7-day window.
+  import('./jobs/brainResetArchiveCleanup').then(({ scheduleBrainResetArchiveCleanup }) => {
+    scheduleBrainResetArchiveCleanup();
+  }).catch((e) => console.warn('[brainResetArchiveCleanup] start failed:', e.message));
+
   // Phase F — Wiki lint (hourly): orphans, stale pages, open gaps,
   // contradictions, missing entity pages. Files a Wiki Lint Report page
   // per user so the MD can skim what Brain has flagged.

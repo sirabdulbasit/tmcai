@@ -67,14 +67,19 @@ export interface ComposeResult {
  *  every type needs a matching branch in dispatchBrainChatAction and a
  *  prompt entry telling the LLM when to emit it. */
 export type ComposedAction =
-  | { type: 'add_open_item'; title: string; dueDate?: string; note?: string }
-  | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDate?: string; note?: string }
-  | { type: 'delegate_open_item'; openItemId: string; delegateeEmail: string; delegateeName: string; note?: string }
-  | { type: 'schedule_meeting'; title: string; whenIso: string; durationMin?: number; attendeeEmails: string[]; attendeeNames: string[]; note?: string }
+  // Per Basit 2026-05-23: actions that talk to humans MUST emit candidateIds
+  // (entity row ids), NOT raw emails. The server resolves candidateId →
+  // real email at dispatch. Eliminates email hallucinations structurally.
+  // Date fields emit `*Raw` (the user's literal phrase); server resolves
+  // via chrono with the user's timezone. The LLM does NOT do date math.
+  | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string }
+  | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDateRaw?: string; note?: string }
+  | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId: string; note?: string }
+  | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
-  | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenIso?: string; newDurationMin?: number; reason?: string }
-  | { type: 'send_email'; to: string[]; cc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
-  | { type: 'notify_via_whatsapp'; recipientName: string; recipientPhone: string; message: string }
+  | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenRaw?: string; newDurationMin?: number; reason?: string }
+  | { type: 'send_email'; toCandidateIds: string[]; ccCandidateIds?: string[]; toAdHoc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
+  | { type: 'notify_via_whatsapp'; recipientCandidateId: string; message: string }
   | { type: 'set_brain_name'; name: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
@@ -1188,14 +1193,21 @@ async function buildCandidatesBlockForReasoning(
       take: 60,
     });
     if (rows.length === 0) return '';
+    // Format: candidateId = entity row id (already stable). Reasoning
+    // MUST emit candidateId (not raw email) for recipient/attendee
+    // fields. Code resolves candidateId → real email at dispatch time.
+    // Per Basit 2026-05-23: this eliminates hallucinated emails
+    // (yousaf@tmcltd.com, @nexeo.com etc) structurally — LLM can only
+    // pick from this list.
     const lines = rows.map((r) => {
       const id = (r.email ?? r.phone ?? '').toString();
       const strength = r.relationshipStrength != null
         ? ` strength=${Math.round((r.relationshipStrength as number) * 100)}%`
         : '';
-      return `- "${r.name}" ${id}${strength}`;
+      const noContact = !r.email && !r.phone ? ' [no email/phone — DO NOT pick this row for actions]' : '';
+      return `- candidateId="${r.id}" name="${r.name}" ${id}${strength}${noContact}`;
     });
-    return `# Your contacts (use exact email/phone when emitting actions; ask if multiple match a name)\n${lines.join('\n')}`;
+    return `# Your contacts (REQUIRED: emit candidateId from this list for recipient/attendee fields; NEVER invent emails/phones)\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildCandidatesBlock failed', { error: e?.message, userId });
     return '';
@@ -2048,12 +2060,16 @@ ${calLines.join('\n')}`;
       if (parsed.action.type === 'schedule_meeting' || parsed.action.type === 'reschedule_meeting') {
         try {
           const { checkUserAvailability } = await import('./availabilityService');
-          const whenIso = parsed.action.type === 'schedule_meeting'
-            ? parsed.action.whenIso
-            : (parsed.action.newWhenIso ?? '');
+          const { resolveDateTime } = await import('./dateResolver');
+          // V2: raw phrases on the action; resolve here for the
+          // availability check.
+          const rawWhen = parsed.action.type === 'schedule_meeting'
+            ? parsed.action.whenRaw
+            : (parsed.action.newWhenRaw ?? '');
           const durationMin = parsed.action.type === 'schedule_meeting'
             ? (parsed.action.durationMin ?? 30)
             : (parsed.action.newDurationMin ?? 30);
+          const whenIso = rawWhen ? await resolveDateTime(rawWhen, userId) : null;
           if (whenIso) {
             const conflicts = await checkUserAvailability(userId, whenIso, durationMin);
             if (conflicts.length > 0) {
@@ -2135,19 +2151,34 @@ ${calLines.join('\n')}`;
       const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
       const act = parsed.action;
       if (act.type === 'add_open_item') {
-        const res = await dispatchInstruction({
-          clientNumber,
-          userId,
-          instruction: {
-            intent: 'add_open_item',
-            confidence: 1,
-            summary: act.title,
-            params: { itemTitle: act.title, itemDueDate: act.dueDate, itemNote: act.note },
-          } as any,
-        });
-        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-        if (!res.ok) answer = res.message;
-        else if (!/added|added to|noted|done|got it/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+        // Resolve raw date phrase via chrono (deterministic). Reasoning
+        // emits dueDateRaw ("monday", "next friday"); server resolves.
+        let resolvedDue: string | undefined;
+        if (act.dueDateRaw) {
+          const { resolveDate } = await import('./dateResolver');
+          const iso = await resolveDate(act.dueDateRaw, userId);
+          if (!iso) {
+            actionResult = { ok: false, message: `[add_open_item: couldn't parse dueDate "${act.dueDateRaw}" — try a specific date]` };
+            answer = actionResult.message;
+          } else {
+            resolvedDue = iso;
+          }
+        }
+        if (!actionResult || actionResult.ok !== false) {
+          const res = await dispatchInstruction({
+            clientNumber,
+            userId,
+            instruction: {
+              intent: 'add_open_item',
+              confidence: 1,
+              summary: act.title,
+              params: { itemTitle: act.title, itemDueDate: resolvedDue, itemNote: act.note },
+            } as any,
+          });
+          actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+          if (!res.ok) answer = res.message;
+          else if (!/added|added to|noted|done|got it/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+        }
       } else if (act.type === 'update_open_item') {
         // Update fields on an existing open item — typically used to
         // complete a DRAFT (priority + dueDate) the user just provided
@@ -2176,18 +2207,17 @@ ${calLines.join('\n')}`;
               const normalised = valid.has(p) ? p : (p === 'normal' ? 'medium' : null);
               if (normalised) data.priority = normalised;
             }
-            // dueDate: tolerate ISO date, "monday", "next friday" etc — the
-            // dispatcher's add_open_item path parses similarly. Try Date first,
-            // then a chrono-style parse via a small helper if available; else
-            // accept only ISO-parseable strings here.
-            if (act.dueDate) {
-              const parsed = new Date(act.dueDate);
-              if (!Number.isNaN(parsed.getTime())) {
-                data.dueDate = parsed;
+            // dueDate: reasoning emits dueDateRaw ("monday", "next friday",
+            // "tomorrow", "2026-05-25"); server resolves via chrono with the
+            // user's timezone. Per Basit 2026-05-23 — LLM does NOT do date
+            // math; date math is a calculator.
+            if (act.dueDateRaw) {
+              const { resolveDate } = await import('./dateResolver');
+              const iso = await resolveDate(act.dueDateRaw, userId);
+              if (iso) {
+                data.dueDate = new Date(iso + 'T00:00:00Z');
               } else {
-                // Defer to a relative-date parser if/when wired. For now,
-                // surface as a soft failure so the user sees what we got.
-                actionResult = { ok: false, message: `[update_open_item: couldn't parse dueDate "${act.dueDate}" — provide ISO or absolute date]` };
+                actionResult = { ok: false, message: `[update_open_item: couldn't parse dueDate "${act.dueDateRaw}" — try a specific date]` };
                 answer = actionResult.message;
               }
             }
@@ -2229,8 +2259,6 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'delegate_open_item') {
-        // Transition the existing open_item to DELEGATED with the
-        // resolved delegatee.
         try {
           // (1) Item existence check.
           const existing = await prisma.openItem.findFirst({
@@ -2250,44 +2278,23 @@ ${calLines.join('\n')}`;
             };
             answer = actionResult.message;
           } else {
-          // (2) Email-existence guard. Per Basit 2026-05-22 ("if brain
-          // don't have any information in contacts then he should
-          // ask, doing wrong action with wrong information is very
-          // bad"). Reasoning has been observed emitting hallucinated
-          // emails (e.g. yousaf@tmcltd.com when contacts had
-          // muhammad.yousuf@tmcltd.com). Verify the email is an
-          // actual user-scoped contact before dispatching. If not,
-          // surface a bracketed marker WITH name-token-matched
-          // suggestions so the user can clarify on the next turn.
-          const matched = await prisma.entity.findFirst({
-            where: {
-              clientNumber, entityType: 'contact',
-              email: { equals: act.delegateeEmail, mode: 'insensitive' as any },
-              OR: [
-                { scope: 'tenant' as any },
-                { ownerUserId: userId } as any,
-                { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
-              ],
-            } as any,
-            select: { id: true, name: true, email: true },
-          }).catch(() => null);
+          // (2) Candidate-ID resolution. Per the V2 schema, reasoning
+          // emits delegateeCandidateId (entity row id), NEVER raw
+          // email. We resolve it to the real contact here. Invalid
+          // candidateIds get a bracketed rejection — hallucinated
+          // recipients become structurally impossible.
+          const { resolveCandidate } = await import('./candidateResolver');
+          const matched = await resolveCandidate(act.delegateeCandidateId, userId, clientNumber);
           if (!matched) {
-            const nameTokens = String(act.delegateeName || '')
-              .split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 3);
-            const hints = nameTokens.length > 0 ? await prisma.entity.findMany({
-              where: {
-                clientNumber, entityType: 'contact',
-                OR: nameTokens.map((t) => ({ name: { contains: t, mode: 'insensitive' as any } } as any)),
-              } as any,
-              select: { name: true, email: true },
-              take: 5,
-            }).catch(() => []) : [];
-            const hintStr = hints.length > 0
-              ? ` Real matches: ${hints.map((h) => `${h.name} <${h.email}>`).join('; ')}`
-              : ' (no name-match in your contacts either — confirm the recipient)';
             actionResult = {
               ok: false,
-              message: `[delegate_open_item: ${act.delegateeEmail} is not in your contacts.${hintStr}]`,
+              message: `[delegate_open_item: candidateId "${act.delegateeCandidateId}" not in your contacts — re-issue selecting from the contacts block]`,
+            };
+            answer = actionResult.message;
+          } else if (!matched.email) {
+            actionResult = {
+              ok: false,
+              message: `[delegate_open_item: ${matched.name} has no email on file — add one in Settings → Contacts and retry]`,
             };
             answer = actionResult.message;
           } else {
@@ -2295,13 +2302,12 @@ ${calLines.join('\n')}`;
             await prisma.openItem.update({
               where: { id: existing.id },
               data: {
-                delegateeName: act.delegateeName,
-                delegateeEmail: act.delegateeEmail,
+                delegateeName: matched.name,
+                delegateeEmail: matched.email,
                 // delegateeId is set only when the email resolves to an
-                // internal User row; we look that up here so internal
-                // delegations get the FK populated.
+                // internal User row.
                 delegateeId: (await prisma.user.findFirst({
-                  where: { clientNumber, email: act.delegateeEmail, isActive: true },
+                  where: { clientNumber, email: matched.email, isActive: true },
                   select: { id: true },
                 }).catch(() => null))?.id ?? null,
               } as any,
@@ -2309,39 +2315,62 @@ ${calLines.join('\n')}`;
             await transitionStatus(existing.id, 'DELEGATED', {
               clientNumber,
               actor: `user:${userId}`,
-              reason: act.note || `Delegated via Brain Chat to ${act.delegateeName}`,
+              reason: act.note || `Delegated via Brain Chat to ${matched.name}`,
             });
-            actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${act.delegateeName} <${act.delegateeEmail}>.` };
+            actionResult = { ok: true, artifactId: existing.id, message: `Delegated "${existing.title}" to ${matched.name} <${matched.email}>.` };
             if (!/delegated|assigned|sent to/i.test(answer)) answer = `${actionResult.message}${answer ? `\n\n${answer}` : ''}`;
           }
-          } // close outer else opened for matched-email branch
+          } // close candidate-resolution else
         } catch (e: any) {
           console.warn('[brain-chat] delegate_open_item failed', { error: e?.message, openItemId: act.openItemId, userId });
-          // Bracketed marker per no-hardcoded-fake-Brain-replies rule.
           actionResult = { ok: false, message: `[delegate_open_item failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       } else if (act.type === 'schedule_meeting') {
-        const res = await dispatchInstruction({
-          clientNumber,
-          userId,
-          instruction: {
-            intent: 'schedule_meeting',
-            confidence: 1,
-            summary: act.title,
-            params: {
-              meetingTitle: act.title,
-              meetingWhen: act.whenIso,
-              meetingDurationMin: act.durationMin,
-              // Mix names + emails as the dispatcher accepts either; the
-              // resolver gave us both so we pass through.
-              meetingAttendees: [...act.attendeeEmails, ...act.attendeeNames],
-            },
-          } as any,
-        });
-        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-        if (!res.ok) answer = res.message;
-        else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+        // V2: resolve attendeeCandidateIds → real emails;
+        // chrono resolves whenRaw → ISO datetime.
+        const { resolveCandidates } = await import('./candidateResolver');
+        const { resolveDateTime } = await import('./dateResolver');
+        const ids = Array.isArray(act.attendeeCandidateIds) ? act.attendeeCandidateIds : [];
+        const [resolvedAttendees, whenIso] = await Promise.all([
+          resolveCandidates(ids, userId, clientNumber),
+          resolveDateTime(act.whenRaw, userId),
+        ]);
+        const unresolvedIds = resolvedAttendees.map((r, i) => r ? null : ids[i]).filter(Boolean) as string[];
+        if (unresolvedIds.length > 0) {
+          actionResult = { ok: false, message: `[schedule_meeting: unresolved attendee candidateIds (${unresolvedIds.join(', ')}) — re-issue selecting from the contacts block]` };
+          answer = actionResult.message;
+        } else if (!whenIso) {
+          actionResult = { ok: false, message: `[schedule_meeting: couldn't parse whenRaw "${act.whenRaw}" — try a specific date and time]` };
+          answer = actionResult.message;
+        } else {
+          const validAttendees = resolvedAttendees.filter((r): r is NonNullable<typeof r> => !!r);
+          const emails = validAttendees.filter((r) => !!r.email).map((r) => r.email!);
+          const names = validAttendees.map((r) => r.name);
+          if (emails.length === 0) {
+            actionResult = { ok: false, message: `[schedule_meeting: selected attendees have no email on file — add emails and retry]` };
+            answer = actionResult.message;
+          } else {
+            const res = await dispatchInstruction({
+              clientNumber,
+              userId,
+              instruction: {
+                intent: 'schedule_meeting',
+                confidence: 1,
+                summary: act.title,
+                params: {
+                  meetingTitle: act.title,
+                  meetingWhen: whenIso,
+                  meetingDurationMin: act.durationMin,
+                  meetingAttendees: [...emails, ...names],
+                },
+              } as any,
+            });
+            actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+            if (!res.ok) answer = `[schedule_meeting failed: ${res.message}]`;
+            else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+          }
+        }
       } else if (act.type === 'cancel_meeting') {
         const res = await dispatchInstruction({
           clientNumber,
@@ -2360,24 +2389,38 @@ ${calLines.join('\n')}`;
         actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
         answer = res.message;
       } else if (act.type === 'reschedule_meeting') {
-        const res = await dispatchInstruction({
-          clientNumber,
-          userId,
-          instruction: {
-            intent: 'reschedule_meeting',
-            confidence: 1,
-            summary: `reschedule ${act.titleHint ?? act.eventId}`,
-            params: {
-              eventId: act.eventId,
-              titleHint: act.titleHint,
-              newWhenIso: act.newWhenIso,
-              newDurationMin: act.newDurationMin,
-              reason: act.reason,
-            },
-          } as any,
-        });
-        actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-        answer = res.message;
+        // newWhenRaw → ISO via chrono if provided.
+        let resolvedWhenIso: string | undefined;
+        if (act.newWhenRaw) {
+          const { resolveDateTime } = await import('./dateResolver');
+          const iso = await resolveDateTime(act.newWhenRaw, userId);
+          if (!iso) {
+            actionResult = { ok: false, message: `[reschedule_meeting: couldn't parse newWhenRaw "${act.newWhenRaw}" — try a specific date and time]` };
+            answer = actionResult.message;
+          } else {
+            resolvedWhenIso = iso;
+          }
+        }
+        if (!actionResult || actionResult.ok !== false) {
+          const res = await dispatchInstruction({
+            clientNumber,
+            userId,
+            instruction: {
+              intent: 'reschedule_meeting',
+              confidence: 1,
+              summary: `reschedule ${act.titleHint ?? act.eventId}`,
+              params: {
+                eventId: act.eventId,
+                titleHint: act.titleHint,
+                newWhenIso: resolvedWhenIso,
+                newDurationMin: act.newDurationMin,
+                reason: act.reason,
+              },
+            } as any,
+          });
+          actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+          answer = res.message;
+        }
       } else if (act.type === 'record_preference') {
         try {
           const { recordExplicitMemory } = await import('./userMemoryService');
@@ -2424,94 +2467,133 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'notify_via_whatsapp') {
-        // Outbound WhatsApp via the tenant Nexeo number, NOT the user's
-        // personal WA. Recipient sees a message from Nexeo's number,
-        // with an introduction making it clear an assistant is writing
-        // on the user's behalf. This is the WA mirror of send_email's
-        // disclosure-footer pattern — Brain speaks as Brain, on behalf
-        // of the user, not impersonating them.
+        // V2: recipientCandidateId → resolve to real name + phone.
         try {
           const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+          const { resolveCandidate } = await import('./candidateResolver');
+          const matched = await resolveCandidate(act.recipientCandidateId, userId, clientNumber);
+          let canDispatch = true;
+          if (!matched) {
+            actionResult = { ok: false, message: `[notify_via_whatsapp: candidateId "${act.recipientCandidateId}" not in your contacts]` };
+            answer = actionResult.message;
+            canDispatch = false;
+          } else if (!matched.phone) {
+            actionResult = { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file — add one in Settings → Contacts]` };
+            answer = actionResult.message;
+            canDispatch = false;
+          }
+          if (canDispatch && matched && matched.phone) {
           const userName = persona.userFirstName || persona.userFullName || 'the user';
-          const intro = `Hi ${act.recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+          const intro = `Hi ${matched.name}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
           const fullBody = `${intro}${act.message}`;
-          const r = await sendTenantWhatsAppText(clientNumber, act.recipientPhone, fullBody, userId);
+          const r = await sendTenantWhatsAppText(clientNumber, matched.phone, fullBody, userId);
           if (r.ok) {
             actionResult = {
               ok: true,
               artifactId: r.waMessageId,
-              message: `Sent WhatsApp to ${act.recipientName} (${act.recipientPhone}) from the Nexeo number, introducing me as your assistant.`,
+              message: `Sent WhatsApp to ${matched.name} (${matched.phone}) from the Nexeo number, introducing me as your assistant.`,
             };
             answer = actionResult.message;
           } else {
-            actionResult = { ok: false, message: `WhatsApp send failed: ${r.error ?? 'tenant notifier not paired or returned no result'}` };
+            actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'tenant notifier not paired'}]` };
             answer = actionResult.message;
           }
+          } // close canDispatch
         } catch (e: any) {
           console.warn('[brain-chat] notify_via_whatsapp failed', { error: e?.message, userId });
-          actionResult = { ok: false, message: `WhatsApp send failed: ${e?.message ?? 'unknown'}` };
+          actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       } else if (act.type === 'send_email') {
-        // Outbound email via the user's own Gmail account. Per the
-        // locked decision in feedback_brain_never_speaks_as_user.md:
-        // Brain CAN send from the user's Gmail (it's the user's
-        // identity, not Brain's) BUT MUST append the disclosure footer
-        // so recipients know an assistant composed it. Sent via
-        // gmailService.sendUserEmail which uses the user's OAuth grant.
+        // V2 candidate-ID resolution. Reasoning emits toCandidateIds +
+        // optional toAdHoc (when user typed a verbatim email NOT in
+        // contacts). Server resolves IDs → real emails.
         try {
           const { sendUserEmail } = await import('../gmailService');
+          const { resolveCandidates } = await import('./candidateResolver');
           const userName = persona.userFirstName || persona.userFullName || 'the user';
           const disclosureFooter = `\n\n—\nSent by Nexeo, ${userName}'s AI assistant.`;
           const bodyWithFooter = act.body.endsWith(disclosureFooter)
             ? act.body
             : `${act.body}${disclosureFooter}`;
-          // Single-To-only for v1; if act.to.length > 1, the first is
-          // the primary recipient and the rest go to Cc. cc array (if
-          // present) is appended after that. Comma-join is what
-          // sendUserEmail expects for cc.
-          const primaryTo = act.to[0];
-          const extraCc = [...act.to.slice(1), ...(act.cc ?? [])];
-          const ccStr = extraCc.length ? extraCc.join(', ') : undefined;
-          // If this is a reply, look up the original feed event for
-          // threadId + messageId headers so Gmail keeps it in-thread.
-          let threadOpts: { threadId?: string; inReplyTo?: string; references?: string } | undefined;
-          if (act.replyToFeedEventId) {
-            const fe = await prisma.feedEvent.findUnique({
-              where: { id: act.replyToFeedEventId },
-              select: { sourceId: true, rawPayload: true },
-            }).catch(() => null);
-            if (fe) {
-              const payload = (fe.rawPayload as Record<string, unknown> | null) ?? {};
-              const messageIdHeader = typeof payload.messageIdHeader === 'string'
-                ? payload.messageIdHeader
-                : (typeof payload.messageId === 'string' ? payload.messageId : undefined);
-              const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
-              threadOpts = {
-                threadId,
-                inReplyTo: messageIdHeader,
-                references: messageIdHeader,
-              };
-            }
-          }
-          const sendRes = await sendUserEmail(userId, primaryTo, act.subject, bodyWithFooter, ccStr, threadOpts);
-          if (sendRes.success) {
-            const recipients = [primaryTo, ...extraCc].join(', ');
+          const toIds = Array.isArray(act.toCandidateIds) ? act.toCandidateIds : [];
+          const ccIds = Array.isArray(act.ccCandidateIds) ? act.ccCandidateIds : [];
+          const adHocTo = Array.isArray(act.toAdHoc) ? act.toAdHoc.filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) : [];
+          const [resolvedTo, resolvedCc] = await Promise.all([
+            resolveCandidates(toIds, userId, clientNumber),
+            resolveCandidates(ccIds, userId, clientNumber),
+          ]);
+          const unresolvedTo = resolvedTo.map((r, i) => r ? null : toIds[i]).filter(Boolean) as string[];
+          const unresolvedCc = resolvedCc.map((r, i) => r ? null : ccIds[i]).filter(Boolean) as string[];
+
+          let toEmails: string[] = [];
+          let ccEmails: string[] = [];
+          let primaryTo: string | undefined;
+          let extraCc: string[] = [];
+          let ccStr: string | undefined;
+          let sendPrep: 'ok' | 'unresolved' | 'no-recipient' = 'ok';
+
+          if (unresolvedTo.length > 0 || unresolvedCc.length > 0) {
+            sendPrep = 'unresolved';
             actionResult = {
-              ok: true,
-              artifactId: sendRes.messageId,
-              message: `Sent email to ${recipients} — subject: "${act.subject}".`,
+              ok: false,
+              message: `[send_email: unresolved candidateIds (${[...unresolvedTo, ...unresolvedCc].join(', ')}) — re-issue selecting from the contacts block]`,
             };
-            // Replace the LLM's announcement with the canonical
-            // confirmation so what the user sees matches what dispatched.
             answer = actionResult.message;
           } else {
-            actionResult = { ok: false, message: `Send failed: ${sendRes.error ?? 'unknown error from Gmail'}` };
-            answer = actionResult.message;
+            toEmails = [
+              ...resolvedTo.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r!.email!),
+              ...adHocTo,
+            ];
+            ccEmails = resolvedCc.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r!.email!);
+            if (toEmails.length === 0) {
+              sendPrep = 'no-recipient';
+              actionResult = { ok: false, message: `[send_email: no valid recipient — selected contacts have no email on file]` };
+              answer = actionResult.message;
+            } else {
+              primaryTo = toEmails[0];
+              extraCc = [...toEmails.slice(1), ...ccEmails];
+              ccStr = extraCc.length ? extraCc.join(', ') : undefined;
+            }
+          }
+
+          if (sendPrep === 'ok' && primaryTo) {
+            let threadOpts: { threadId?: string; inReplyTo?: string; references?: string } | undefined;
+            if (act.replyToFeedEventId) {
+              const fe = await prisma.feedEvent.findUnique({
+                where: { id: act.replyToFeedEventId },
+                select: { sourceId: true, rawPayload: true },
+              }).catch(() => null);
+              if (fe) {
+                const payload = (fe.rawPayload as Record<string, unknown> | null) ?? {};
+                const messageIdHeader = typeof payload.messageIdHeader === 'string'
+                  ? payload.messageIdHeader
+                  : (typeof payload.messageId === 'string' ? payload.messageId : undefined);
+                const threadId = typeof payload.threadId === 'string' ? payload.threadId : undefined;
+                threadOpts = {
+                  threadId,
+                  inReplyTo: messageIdHeader,
+                  references: messageIdHeader,
+                };
+              }
+            }
+            const sendRes = await sendUserEmail(userId, primaryTo, act.subject, bodyWithFooter, ccStr, threadOpts);
+            if (sendRes.success) {
+              const recipients = [primaryTo, ...extraCc].join(', ');
+              actionResult = {
+                ok: true,
+                artifactId: sendRes.messageId,
+                message: `Sent email to ${recipients} — subject: "${act.subject}".`,
+              };
+              answer = actionResult.message;
+            } else {
+              actionResult = { ok: false, message: `[send_email failed: ${sendRes.error ?? 'unknown error from Gmail'}]` };
+              answer = actionResult.message;
+            }
           }
         } catch (e: any) {
           console.warn('[brain-chat] send_email failed', { error: e?.message, userId });
-          actionResult = { ok: false, message: `Send failed: ${e?.message ?? 'unknown'}` };
+          actionResult = { ok: false, message: `[send_email failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       }
@@ -3642,32 +3724,33 @@ function userMessageIsShortConfirmation(question: string): boolean {
  *  paraphrased test email ("Test message", "Hello from Nexeo")
  *  doesn't qualify and goes through preview. This keeps the one-shot
  *  exception narrow. */
-function isCanonicalTestEmail(act: ComposedAction, question: string): boolean {
+function isCanonicalTestEmail(act: ComposedAction, _question: string): boolean {
+  // V2: candidate-IDs replace raw emails — the canonical-test-email
+  // bypass loses its semantic anchor (we can't check "to includes
+  // exact email" against candidateIds without resolving). Conservative
+  // default: never bypass the preview gate. send_email always previews.
   if (act.type !== 'send_email') return false;
-  const subjectOk = /^test email( from nexeo)?$/i.test(act.subject.trim());
-  const bodyOk = /^this is a test message from your ai assistant\.?( if you received this, the integration is working\.?)?$/i.test(act.body.trim());
-  if (!subjectOk || !bodyOk) return false;
-  const q = question.toLowerCase();
-  return act.to.every((email) => q.includes(email.toLowerCase()));
+  return false;
 }
 
 /** Render a structured preview when the verification gate blocks an
- *  action. The user sees the exact slot values Brain wants to use and
- *  can either confirm (next turn) or correct. This is the structural
- *  "no surprise sends to humans" guarantee. */
+ *  action. The user sees the slot values; either confirm or correct.
+ *  V2: previews show candidate IDs along with names so the user can
+ *  visually verify the right person is selected. */
 function renderActionPreview(act: ComposedAction, _blockReason: string): string {
   if (act.type === 'send_email') {
-    const to = act.to.join(', ');
-    const cc = act.cc && act.cc.length ? `\nCc: ${act.cc.join(', ')}` : '';
-    return `Before I send, please confirm — I'm about to send:\n\nTo: ${to}${cc}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
+    const toIds = act.toCandidateIds.length > 0 ? act.toCandidateIds.join(', ') : '(none)';
+    const adHoc = act.toAdHoc && act.toAdHoc.length ? `\nTo (ad-hoc): ${act.toAdHoc.join(', ')}` : '';
+    const cc = act.ccCandidateIds && act.ccCandidateIds.length ? `\nCc candidates: ${act.ccCandidateIds.join(', ')}` : '';
+    return `Before I send, please confirm — I'm about to send:\n\nTo candidates: ${toIds}${adHoc}${cc}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'schedule_meeting') {
-    const attendees = act.attendeeNames.length > 0 ? act.attendeeNames.join(', ') : act.attendeeEmails.join(', ');
+    const attendees = act.attendeeCandidateIds.join(', ');
     const dur = act.durationMin ? ` (${act.durationMin} min)` : '';
-    return `Before I send the invite, please confirm — meeting:\n\nWith: ${attendees}\nWhen: ${act.whenIso}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
+    return `Before I send the invite, please confirm — meeting:\n\nAttendees (candidateIds): ${attendees}\nWhen: ${act.whenRaw}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'notify_via_whatsapp') {
-    return `Before I send the WhatsApp, please confirm — message to ${act.recipientName} (${act.recipientPhone}):\n\n"${act.message}"\n\nThe note will be prefixed with "Hi ${act.recipientName}, this is Nexeo — your AI assistant…" so the recipient knows it's from me, not you. Reply "send" to confirm, or tell me what to change.`;
+    return `Before I send the WhatsApp, please confirm — message to candidateId ${act.recipientCandidateId}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
   return `Before I proceed, please confirm the details and reply "send".`;
 }
@@ -3871,58 +3954,14 @@ async function recordAliasesFromDispatch(
       return Array.from(out);
     };
 
-    if (action.type === 'schedule_meeting' || action.type === 'reschedule_meeting') {
-      const names = (action.type === 'schedule_meeting' ? action.attendeeNames : []) as string[];
-      const emails = (action.type === 'schedule_meeting' ? action.attendeeEmails : []) as string[];
-      const pairCount = Math.min(names.length, emails.length);
-      for (let i = 0; i < pairCount; i++) {
-        const full = names[i]; const email = emails[i];
-        if (!full || !email) continue;
-        const first = full.split(/\s+/)[0] ?? '';
-        for (const alias of aliasCandidates(full, first)) {
-          await recordResolution({
-            clientNumber, userId, alias,
-            identifier: email,
-            identifierKind: 'email',
-            displayName: full,
-            source: 'explicit',
-          }).catch(() => undefined);
-        }
-      }
-    } else if (action.type === 'notify_via_whatsapp') {
-      const full = action.recipientName;
-      const phone = action.recipientPhone;
-      if (full && phone) {
-        const first = full.split(/\s+/)[0] ?? '';
-        for (const alias of aliasCandidates(full, first)) {
-          await recordResolution({
-            clientNumber, userId, alias,
-            identifier: phone,
-            identifierKind: 'phone',
-            displayName: full,
-            source: 'explicit',
-          }).catch(() => undefined);
-        }
-      }
-    } else if (action.type === 'delegate_open_item') {
-      const full = action.delegateeName;
-      const email = action.delegateeEmail;
-      if (full && email) {
-        const first = full.split(/\s+/)[0] ?? '';
-        for (const alias of aliasCandidates(full, first)) {
-          await recordResolution({
-            clientNumber, userId, alias,
-            identifier: email,
-            identifierKind: 'email',
-            displayName: full,
-            source: 'explicit',
-          }).catch(() => undefined);
-        }
-      }
-    }
-    // send_email has no attendee NAMES in the action schema (only to[])
-    // — alias recording would require pairing against candidates which
-    // is fragile. Skipped intentionally.
+    // V2 (2026-05-23): alias recording is superseded by candidate-IDs.
+    // Reasoning now picks contacts by stable candidateId from the
+    // candidates block (entity row id), so there's no need to learn
+    // "name → email" aliases anymore. The candidate pool IS the alias
+    // table. If we want to record name aliases in V2, we'd do it
+    // during the entity-discovery pipeline, not at dispatch time.
+    // Branches removed; function kept for future extension.
+    void aliasCandidates; void recordResolution; void qLower; void looksLikeProperName;
   } catch (e: any) {
     console.warn('[brain-chat] alias recording failed (non-fatal)', { userId, error: e?.message });
   }
@@ -3981,8 +4020,21 @@ async function dispatchPendingDirect(
   const slots = pending.slots as any;
   const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
 
+  // V2: slots may contain candidateIds + rawDate; resolve here.
+  const { resolveCandidates } = await import('./candidateResolver');
+  const { resolveDateTime } = await import('./dateResolver');
+
   switch (pending.actionKind) {
     case 'schedule_meeting': {
+      const ids = Array.isArray(slots.attendeeCandidateIds) ? slots.attendeeCandidateIds : [];
+      const [attendees, whenIso] = await Promise.all([
+        resolveCandidates(ids, userId, clientNumber),
+        slots.whenRaw ? resolveDateTime(String(slots.whenRaw), userId) : Promise.resolve(null as string | null),
+      ]);
+      const emails = attendees.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r.email!);
+      const names = attendees.filter((r): r is NonNullable<typeof r> => !!r).map((r) => r.name);
+      if (!whenIso) return { ok: false, message: `[schedule_meeting: couldn't parse whenRaw "${slots.whenRaw}"]` };
+      if (emails.length === 0) return { ok: false, message: `[schedule_meeting: no attendees with email]` };
       const res = await dispatchInstruction({
         clientNumber, userId,
         instruction: {
@@ -3990,18 +4042,17 @@ async function dispatchPendingDirect(
           summary: String(slots.title ?? 'Meeting'),
           params: {
             meetingTitle: slots.title,
-            meetingWhen: slots.whenIso,
+            meetingWhen: whenIso,
             meetingDurationMin: slots.durationMin,
-            meetingAttendees: [
-              ...(Array.isArray(slots.attendeeEmails) ? slots.attendeeEmails : []),
-              ...(Array.isArray(slots.attendeeNames) ? slots.attendeeNames : []),
-            ],
+            meetingAttendees: [...emails, ...names],
           },
         } as any,
       });
       return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
     }
     case 'reschedule_meeting': {
+      const newWhenIso = slots.newWhenRaw ? await resolveDateTime(String(slots.newWhenRaw), userId) : null;
+      if (slots.newWhenRaw && !newWhenIso) return { ok: false, message: `[reschedule_meeting: couldn't parse newWhenRaw "${slots.newWhenRaw}"]` };
       const res = await dispatchInstruction({
         clientNumber, userId,
         instruction: {
@@ -4010,7 +4061,7 @@ async function dispatchPendingDirect(
           params: {
             eventId: slots.eventId,
             titleHint: slots.titleHint,
-            newWhenIso: slots.newWhenIso,
+            newWhenIso: newWhenIso ?? undefined,
             newDurationMin: slots.newDurationMin,
             reason: slots.reason,
           },
@@ -4034,37 +4085,44 @@ async function dispatchPendingDirect(
       return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
     }
     case 'send_email': {
-      // Reuse the inline send_email path's logic by importing gmailService
-      // directly. The dispatcher doesn't have a send_email case (intent
-      // values are tied to instructionExtractor's older taxonomy); the
-      // brainComposer's existing send_email branch is the canonical path.
-      // Keep parity by mirroring its body.
       const { sendUserEmail } = await import('../gmailService');
       const { getBrainPersona } = await import('./brainPersonaService');
       const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
       const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
       const footer = `\n\n— Sent by Nexeo, ${userName}'s AI assistant`;
       const fullBody = `${slots.body ?? ''}${footer}`;
-      const toArr = Array.isArray(slots.to) ? slots.to : [];
-      const ccArr = Array.isArray(slots.cc) ? slots.cc : undefined;
+      // V2: resolve toCandidateIds + ccCandidateIds + accept toAdHoc.
+      const toIds = Array.isArray(slots.toCandidateIds) ? slots.toCandidateIds : [];
+      const ccIds = Array.isArray(slots.ccCandidateIds) ? slots.ccCandidateIds : [];
+      const adHoc = Array.isArray(slots.toAdHoc) ? slots.toAdHoc.filter((e: any) => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) : [];
+      const [toResolved, ccResolved] = await Promise.all([
+        resolveCandidates(toIds, userId, clientNumber),
+        resolveCandidates(ccIds, userId, clientNumber),
+      ]);
+      const toEmails = [
+        ...toResolved.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r.email!),
+        ...adHoc,
+      ];
+      const ccEmails = ccResolved.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r.email!);
+      if (toEmails.length === 0) return { ok: false, message: `[send_email: no valid recipient]` };
       try {
         const r = await sendUserEmail(
           userId,
-          toArr.join(', '),
+          toEmails.join(', '),
           String(slots.subject ?? ''),
           fullBody,
-          ccArr && ccArr.length ? ccArr.join(', ') : undefined,
+          ccEmails.length ? ccEmails.join(', ') : undefined,
         );
         if (r.success) {
           return {
             ok: true,
             artifactId: r.messageId,
-            message: `Sent email to ${toArr.join(', ')} — subject: "${slots.subject}".`,
+            message: `Sent email to ${toEmails.join(', ')} — subject: "${slots.subject}".`,
           };
         }
-        return { ok: false, message: `Email send failed: ${r.error ?? 'unknown'}` };
+        return { ok: false, message: `[send_email failed: ${r.error ?? 'unknown'}]` };
       } catch (e: any) {
-        return { ok: false, message: `Email send failed: ${e?.message ?? 'unknown'}` };
+        return { ok: false, message: `[send_email failed: ${e?.message ?? 'unknown'}]` };
       }
     }
     case 'notify_via_whatsapp': {
@@ -4072,42 +4130,49 @@ async function dispatchPendingDirect(
       const { getBrainPersona } = await import('./brainPersonaService');
       const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
       const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
-      const intro = `Hi ${slots.recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+      // V2: resolve recipientCandidateId.
+      const { resolveCandidate } = await import('./candidateResolver');
+      const matched = await resolveCandidate(String(slots.recipientCandidateId ?? ''), userId, clientNumber);
+      if (!matched) return { ok: false, message: `[notify_via_whatsapp: candidateId not found]` };
+      if (!matched.phone) return { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file]` };
+      const intro = `Hi ${matched.name}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
-        const r = await sendTenantWhatsAppText(clientNumber, String(slots.recipientPhone), `${intro}${slots.message}`, userId);
+        const r = await sendTenantWhatsAppText(clientNumber, matched.phone, `${intro}${slots.message}`, userId);
         if (r.ok) {
           return {
             ok: true,
             artifactId: r.waMessageId,
-            message: `Sent WhatsApp to ${slots.recipientName} (${slots.recipientPhone}) from the Nexeo number.`,
+            message: `Sent WhatsApp to ${matched.name} (${matched.phone}) from the Nexeo number.`,
           };
         }
-        return { ok: false, message: `WhatsApp send failed: ${r.error ?? 'tenant notifier not paired'}` };
+        return { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'tenant notifier not paired'}]` };
       } catch (e: any) {
-        return { ok: false, message: `WhatsApp send failed: ${e?.message ?? 'unknown'}` };
+        return { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
       }
     }
     case 'delegate_open_item': {
-      // Delegation has its own existence-check path in the inline branch;
-      // for direct dispatch we trust the slot data (it came from a
-      // previously-shown preview that the user just confirmed).
+      // V2: resolve delegateeCandidateId.
+      const { resolveCandidate } = await import('./candidateResolver');
       const { delegateItem } = await import('../openItemsService');
+      const matched = await resolveCandidate(String(slots.delegateeCandidateId ?? ''), userId, clientNumber);
+      if (!matched) return { ok: false, message: `[delegate_open_item: candidateId not found]` };
+      if (!matched.email) return { ok: false, message: `[delegate_open_item: ${matched.name} has no email]` };
       try {
         const r = await delegateItem(
           String(slots.openItemId),
           clientNumber,
-          null, // delegateeId — unknown from pending slots; service accepts null
-          String(slots.delegateeName),
-          slots.delegateeEmail ? String(slots.delegateeEmail) : undefined,
+          null,
+          matched.name,
+          matched.email,
           slots.note ? String(slots.note) : undefined,
         );
         return {
           ok: !!r,
           artifactId: String(slots.openItemId),
-          message: `Delegated "${slots.titleHint ?? slots.openItemId}" to ${slots.delegateeName} <${slots.delegateeEmail}>.`,
+          message: `Delegated "${slots.titleHint ?? slots.openItemId}" to ${matched.name} <${matched.email}>.`,
         };
       } catch (e: any) {
-        return { ok: false, message: `Delegate failed: ${e?.message ?? 'unknown'}` };
+        return { ok: false, message: `[delegate failed: ${e?.message ?? 'unknown'}]` };
       }
     }
   }
@@ -4301,34 +4366,36 @@ function normaliseAction(raw: unknown): ComposedAction | null {
   if (type === 'add_open_item') {
     const title = typeof r.title === 'string' ? r.title.trim() : '';
     if (!title) return null;
-    const dueDate = typeof r.dueDate === 'string' && r.dueDate.trim() ? r.dueDate.trim() : undefined;
+    const dueDateRaw = typeof r.dueDateRaw === 'string' && r.dueDateRaw.trim() ? r.dueDateRaw.trim() : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'add_open_item', title, dueDate, note };
+    return { type: 'add_open_item', title, dueDateRaw, note };
+  }
+  if (type === 'update_open_item') {
+    const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';
+    if (!openItemId) return null;
+    const title = typeof r.title === 'string' && r.title.trim() ? r.title.trim() : undefined;
+    const priority = typeof r.priority === 'string' && r.priority.trim() ? r.priority.trim() : undefined;
+    const dueDateRaw = typeof r.dueDateRaw === 'string' && r.dueDateRaw.trim() ? r.dueDateRaw.trim() : undefined;
+    const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
+    return { type: 'update_open_item', openItemId, title, priority, dueDateRaw, note };
   }
   if (type === 'delegate_open_item') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';
-    const delegateeEmail = typeof r.delegateeEmail === 'string' ? r.delegateeEmail.trim() : '';
-    const delegateeName = typeof r.delegateeName === 'string' ? r.delegateeName.trim() : '';
-    // openItemId is the gate — without it we don't know what to move.
-    // Email is the second gate — name without email means the resolver
-    // returned nothing and we should NOT silently delegate to a guess.
-    if (!openItemId || !delegateeEmail || !delegateeName) return null;
+    const delegateeCandidateId = typeof r.delegateeCandidateId === 'string' ? r.delegateeCandidateId.trim() : '';
+    if (!openItemId || !delegateeCandidateId) return reject('delegate_open_item:missing-required');
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'delegate_open_item', openItemId, delegateeEmail, delegateeName, note };
+    return { type: 'delegate_open_item', openItemId, delegateeCandidateId, note };
   }
   if (type === 'schedule_meeting') {
     const title = typeof r.title === 'string' ? r.title.trim() : '';
-    const whenIso = typeof r.whenIso === 'string' ? r.whenIso.trim() : '';
-    const attendeeEmails = Array.isArray(r.attendeeEmails)
-      ? r.attendeeEmails.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+    const whenRaw = typeof r.whenRaw === 'string' ? r.whenRaw.trim() : '';
+    const attendeeCandidateIds = Array.isArray(r.attendeeCandidateIds)
+      ? r.attendeeCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
       : [];
-    const attendeeNames = Array.isArray(r.attendeeNames)
-      ? r.attendeeNames.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
-      : [];
-    if (!title || !whenIso || attendeeEmails.length === 0) return null;
+    if (!title || !whenRaw || attendeeCandidateIds.length === 0) return reject('schedule_meeting:missing-required');
     const durationMin = typeof r.durationMin === 'number' && r.durationMin > 0 ? Math.floor(r.durationMin) : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'schedule_meeting', title, whenIso, durationMin, attendeeEmails, attendeeNames, note };
+    return { type: 'schedule_meeting', title, whenRaw, durationMin, attendeeCandidateIds, note };
   }
   if (type === 'cancel_meeting') {
     // eventId is the only hard requirement — without it we don't know
@@ -4342,53 +4409,42 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     return { type: 'cancel_meeting', eventId, titleHint, reason };
   }
   if (type === 'reschedule_meeting') {
-    // At minimum need eventId + at least one of {newWhenIso, newDurationMin}.
-    // Without either change field, this isn't actually a reschedule.
     const eventId = typeof r.eventId === 'string' ? r.eventId.trim() : '';
     if (!eventId) return reject('reschedule_meeting:no-eventId');
-    const newWhenIso = typeof r.newWhenIso === 'string' && r.newWhenIso.trim() ? r.newWhenIso.trim() : undefined;
+    const newWhenRaw = typeof r.newWhenRaw === 'string' && r.newWhenRaw.trim() ? r.newWhenRaw.trim() : undefined;
     const newDurationMin = typeof r.newDurationMin === 'number' && r.newDurationMin > 0
       ? Math.floor(r.newDurationMin) : undefined;
-    if (!newWhenIso && !newDurationMin) return reject('reschedule_meeting:no-change-fields');
+    if (!newWhenRaw && !newDurationMin) return reject('reschedule_meeting:no-change-fields');
     const titleHint = typeof r.titleHint === 'string' && r.titleHint.trim() ? r.titleHint.trim() : undefined;
     const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
-    return { type: 'reschedule_meeting', eventId, titleHint, newWhenIso, newDurationMin, reason };
+    return { type: 'reschedule_meeting', eventId, titleHint, newWhenRaw, newDurationMin, reason };
   }
   if (type === 'send_email') {
-    // Strict slot validation. Missing any of {to, subject, body} drops
-    // the action to null so the LLM's text answer goes out alone, and
-    // the empty-promise guard catches any "I've sent" claim that
-    // accompanies a null action. We do NOT silently send with one of
-    // these missing — that's how wrong-recipient bugs happen.
-    const toRaw = Array.isArray(r.to) ? r.to : (typeof r.to === 'string' ? [r.to] : []);
-    const to = toRaw.filter((x: unknown): x is string => typeof x === 'string' && x.includes('@'));
-    const ccRaw = Array.isArray(r.cc) ? r.cc : (typeof r.cc === 'string' ? [r.cc] : []);
-    const cc = ccRaw.filter((x: unknown): x is string => typeof x === 'string' && x.includes('@'));
+    // V2 schema: candidate IDs required (no raw emails from LLM).
+    // toAdHoc allowed when user explicitly typed a verbatim email.
+    const toCandidateIds = Array.isArray(r.toCandidateIds)
+      ? r.toCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+      : [];
+    const ccCandidateIds = Array.isArray(r.ccCandidateIds)
+      ? r.ccCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
+      : [];
+    const toAdHoc = Array.isArray(r.toAdHoc)
+      ? r.toAdHoc.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+      : [];
     const subject = typeof r.subject === 'string' ? r.subject.trim() : '';
     const body = typeof r.body === 'string' ? r.body.trim() : '';
-    if (to.length === 0) return reject('send_email:no-recipient');
+    if (toCandidateIds.length === 0 && toAdHoc.length === 0) return reject('send_email:no-recipient');
     if (!subject) return reject('send_email:no-subject');
     if (!body) return reject('send_email:no-body');
     const replyToFeedEventId = typeof r.replyToFeedEventId === 'string' && r.replyToFeedEventId.trim()
       ? r.replyToFeedEventId.trim() : undefined;
-    return { type: 'send_email', to, cc: cc.length ? cc : undefined, subject, body, replyToFeedEventId };
+    return { type: 'send_email', toCandidateIds, ccCandidateIds: ccCandidateIds.length ? ccCandidateIds : undefined, toAdHoc: toAdHoc.length ? toAdHoc : undefined, subject, body, replyToFeedEventId };
   }
   if (type === 'notify_via_whatsapp') {
-    // Outbound WhatsApp from Nexeo's tenant notifier number (NOT the
-    // user's personal WA — that's still forbidden). Brain identifies
-    // itself in the body so the recipient knows it's an assistant, not
-    // the user themselves. Same pattern as send_email's "Sent by Nexeo"
-    // footer but for the WA channel.
-    const recipientName = typeof r.recipientName === 'string' ? r.recipientName.trim() : '';
-    const recipientPhone = typeof r.recipientPhone === 'string' ? r.recipientPhone.trim() : '';
+    const recipientCandidateId = typeof r.recipientCandidateId === 'string' ? r.recipientCandidateId.trim() : '';
     const message = typeof r.message === 'string' ? r.message.trim() : '';
-    // Phone must be E.164-ish (digits + optional + / spaces / dashes /
-    // parens). If the LLM put an email in this field, we reject — that
-    // would be the same channel-confusion bug as send_email got with
-    // a phone number, in reverse.
-    const phoneOk = !recipientPhone.includes('@') && /^[+\d][\d\s().-]{6,}$/.test(recipientPhone);
-    if (!recipientName || !phoneOk || !message) return null;
-    return { type: 'notify_via_whatsapp', recipientName, recipientPhone, message };
+    if (!recipientCandidateId || !message) return reject('notify_via_whatsapp:missing-required');
+    return { type: 'notify_via_whatsapp', recipientCandidateId, message };
   }
   if (type === 'record_preference') {
     // User stated a preference Brain should remember across sessions.

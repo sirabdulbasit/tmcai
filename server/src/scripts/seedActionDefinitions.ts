@@ -37,13 +37,13 @@ const ACTIONS: Seed[] = [
   {
     type: 'add_open_item',
     displayName: 'Add open item',
-    description: "Create a new open item (follow-up / task) on the user's list. dueDate must be an ISO 8601 date string (YYYY-MM-DD); resolve relative dates like 'monday', 'tomorrow', 'next friday', 'in 3 days' to absolute ISO BEFORE emitting the action — use today's date from the system prompt as the reference point.",
+    description: "Create a new open item (follow-up / task) on the user's list. For dueDate, emit the user's RAW DATE PHRASE in `dueDateRaw` (e.g. 'monday', 'tomorrow', 'next friday', 'in 3 days', '2026-05-25'). The server resolves it to an absolute date using the user's timezone — DO NOT compute the date yourself. Leave dueDateRaw empty/omitted if the user didn't specify a date.",
     schema: {
       type: 'object',
       required: ['title'],
       properties: {
         title: { type: 'string' },
-        dueDate: { type: 'string' /* ISO 8601 YYYY-MM-DD; resolve relative dates before emitting */ },
+        dueDateRaw: { type: 'string' /* user's raw date phrase — server resolves */ },
         note: { type: 'string' },
       },
     },
@@ -55,7 +55,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'update_open_item',
     displayName: 'Update open item',
-    description: "Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend title/note/dueDate on any active item. Reference the item by openItemId from the open-items context block. priority must be one of: critical | high | medium | low (normalise 'normal' → 'medium'). dueDate must be ISO 8601 YYYY-MM-DD; resolve relative dates ('monday', 'tomorrow', 'next friday') to absolute ISO using today's date from the system prompt.",
+    description: "Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend any field on an active item. Reference the item by openItemId from the open-items context block (use the exact id shown there). priority must be one of: critical | high | medium | low (normalise 'normal' → 'medium'). For dueDate, emit the user's RAW DATE PHRASE in `dueDateRaw` (e.g. 'monday', 'tomorrow', 'next friday', '2026-05-25'); the server resolves it. DO NOT compute or invent ISO dates yourself.",
     schema: {
       type: 'object',
       required: ['openItemId'],
@@ -63,7 +63,7 @@ const ACTIONS: Seed[] = [
         openItemId: { type: 'string' },
         title: { type: 'string' },
         priority: { type: 'string' /* critical | high | medium | low */ },
-        dueDate: { type: 'string' /* ISO 8601 YYYY-MM-DD; resolve relative dates before emitting */ },
+        dueDateRaw: { type: 'string' /* user's raw date phrase — server resolves */ },
         note: { type: 'string' },
       },
     },
@@ -75,14 +75,13 @@ const ACTIONS: Seed[] = [
   {
     type: 'delegate_open_item',
     displayName: 'Delegate open item',
-    description: "Transition an existing open item to DELEGATED status with a delegatee. CRITICAL: delegateeEmail MUST be an email that appears in the user's contacts (see the contacts block in your context). DO NOT invent or guess emails. If the user named someone but you can't find their email in contacts, emit decision='ask' with a clarifying question — NEVER act with a guessed email. If multiple contacts match the name, also emit ask listing the real candidates inline.",
+    description: "Transition an existing open item to DELEGATED with a delegatee. Emit `delegateeCandidateId` = the EXACT candidateId from the contacts block. NEVER emit raw emails or names — the server resolves candidateId → email + name. If you can't find a matching contact, emit decision='ask' with a clarifying question listing the real candidates. If multiple candidates match the user's named recipient, emit ask too.",
     schema: {
       type: 'object',
-      required: ['openItemId', 'delegateeEmail', 'delegateeName'],
+      required: ['openItemId', 'delegateeCandidateId'],
       properties: {
         openItemId: { type: 'string' },
-        delegateeEmail: { type: 'string' },
-        delegateeName: { type: 'string' },
+        delegateeCandidateId: { type: 'string' /* MUST match a candidateId from the contacts block */ },
         note: { type: 'string' },
       },
     },
@@ -95,16 +94,15 @@ const ACTIONS: Seed[] = [
   {
     type: 'schedule_meeting',
     displayName: 'Schedule meeting',
-    description: "Create a Google Calendar event and send invites to attendees. whenIso must be an ISO 8601 datetime string (e.g., 2026-05-25T18:00:00+05:00); resolve relative phrasing ('today 6pm', 'tomorrow at 10', 'next monday 9am') to absolute ISO using today's date + the user's timezone from the system prompt. CRITICAL: every attendeeEmails entry MUST be a real email from the user's contacts (see the contacts block). DO NOT invent emails. If you can't find a named attendee in contacts, emit decision='ask' instead of guessing.",
+    description: "Create a Google Calendar event and invite attendees. Emit `whenRaw` = the user's raw date+time phrase ('today 6pm', 'tomorrow 10am', 'next monday 9am'); the server resolves to ISO. Emit `attendeeCandidateIds` = exact candidateIds from the contacts block — NEVER raw emails. DO NOT compute the ISO time yourself. If a named attendee isn't in contacts, emit decision='ask'.",
     schema: {
       type: 'object',
-      required: ['title', 'whenIso', 'attendeeEmails', 'attendeeNames'],
+      required: ['title', 'whenRaw', 'attendeeCandidateIds'],
       properties: {
         title: { type: 'string' },
-        whenIso: { type: 'string' /* ISO 8601 datetime with timezone offset */ },
+        whenRaw: { type: 'string' /* user's raw date+time phrase — server resolves */ },
         durationMin: { type: 'integer' },
-        attendeeEmails: { type: 'array', items: { type: 'string' } },
-        attendeeNames: { type: 'array', items: { type: 'string' } },
+        attendeeCandidateIds: { type: 'array', items: { type: 'string' /* candidateIds from contacts block */ } },
         note: { type: 'string' },
       },
     },
@@ -136,14 +134,14 @@ const ACTIONS: Seed[] = [
   {
     type: 'reschedule_meeting',
     displayName: 'Reschedule meeting',
-    description: 'Update an existing event\'s time/duration and re-notify attendees.',
+    description: "Update an existing event's time/duration and re-notify attendees. Emit `newWhenRaw` = the user's raw date+time phrase; server resolves. DO NOT compute ISO yourself.",
     schema: {
       type: 'object',
       required: ['eventId'],
       properties: {
         eventId: { type: 'string' },
         titleHint: { type: 'string' },
-        newWhenIso: { type: 'string' },
+        newWhenRaw: { type: 'string' /* user's raw date+time phrase — server resolves */ },
         newDurationMin: { type: 'integer' },
         reason: { type: 'string' },
       },
@@ -157,13 +155,14 @@ const ACTIONS: Seed[] = [
   {
     type: 'send_email',
     displayName: 'Send email',
-    description: "Send an email from the user's connected Gmail. Footer \"Sent by Nexeo, <user>'s AI assistant\" appended automatically. CRITICAL: every `to` and `cc` entry MUST be a real email — either explicitly given in the user's current message, OR present in the user's contacts (see the contacts block). DO NOT invent or guess emails. If the user named a recipient but the email isn't in contacts and isn't in the user's message, emit decision='ask' to clarify — never guess. If multiple contacts match a named recipient, ask with the real options inline.",
+    description: "Send an email from the user's connected Gmail. Footer \"Sent by Nexeo, <user>'s AI assistant\" appended automatically. Emit `toCandidateIds` and `ccCandidateIds` = exact candidateIds from the contacts block. NEVER emit raw emails. If the user explicitly typed an email NOT in contacts, emit it in `toAdHoc` (the server validates format and asks user to confirm in the preview). If a named recipient isn't in contacts and the user didn't type a full email, emit decision='ask'.",
     schema: {
       type: 'object',
-      required: ['to', 'subject', 'body'],
+      required: ['toCandidateIds', 'subject', 'body'],
       properties: {
-        to: { type: 'array', items: { type: 'string' } },
-        cc: { type: 'array', items: { type: 'string' } },
+        toCandidateIds: { type: 'array', items: { type: 'string' /* candidateIds from contacts block */ } },
+        ccCandidateIds: { type: 'array', items: { type: 'string' } },
+        toAdHoc: { type: 'array', items: { type: 'string' /* email the user typed explicitly */ } },
         subject: { type: 'string' },
         body: { type: 'string' },
         replyToFeedEventId: { type: 'string' },
@@ -178,13 +177,12 @@ const ACTIONS: Seed[] = [
   {
     type: 'notify_via_whatsapp',
     displayName: 'Notify via WhatsApp',
-    description: 'Send a WhatsApp message FROM the tenant Nexeo notifier number with an auto-prepended introduction. NOT from the user\'s personal WhatsApp identity.',
+    description: "Send a WhatsApp message FROM the tenant Nexeo notifier number with auto-prepended introduction. NOT the user's personal WhatsApp. Emit `recipientCandidateId` = candidateId from contacts block; server resolves to phone. NEVER emit raw phone numbers. If the named recipient isn't in contacts (or has no phone), emit decision='ask'.",
     schema: {
       type: 'object',
-      required: ['recipientName', 'recipientPhone', 'message'],
+      required: ['recipientCandidateId', 'message'],
       properties: {
-        recipientName: { type: 'string' },
-        recipientPhone: { type: 'string' },
+        recipientCandidateId: { type: 'string' /* candidateId from contacts block */ },
         message: { type: 'string' },
       },
     },

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
@@ -185,7 +185,10 @@ export default function SettingsPage() {
         )}
 
         {tab === 'brain' && (
-          <BrainChannelSection user={user} />
+          <>
+            <BrainChannelSection user={user} />
+            <BrainResetSection />
+          </>
         )}
 
         {tab === 'openItems' && (
@@ -1289,6 +1292,169 @@ function PurgePanel({ isSuperAdmin = false, clientNumber = '' }) {
       </div>
 
       {msg && <div style={{ fontSize: 12, color: msg.startsWith('Purged') ? '#4ade80' : '#fca5a5', marginTop: 10 }}>{msg}</div>}
+    </section>
+  );
+}
+
+/**
+ * BrainResetSection — Settings → Brain → Reset & Cleanup.
+ *
+ * Per Basit 2026-05-23: user controls own data lifecycle, no dev
+ * dependency for future wipes. Three tiers with typed-phrase
+ * confirmation (per no-browser-dialogs rule).
+ */
+function BrainResetSection() {
+  const [tier, setTier] = React.useState('refresh');
+  const [counts, setCounts] = React.useState(null);
+  const [typed, setTyped] = React.useState('');
+  const [working, setWorking] = React.useState(false);
+  const [msg, setMsg] = React.useState('');
+  const [history, setHistory] = React.useState([]);
+
+  const TIER_PHRASES = { quick: 'QUICK RESET', refresh: 'BRAIN REFRESH', full: 'BRAIN RESET' };
+  const expectedPhrase = TIER_PHRASES[tier];
+
+  React.useEffect(() => {
+    api.get('/brain/reset/preview').then((r) => setCounts(r.data)).catch(() => setCounts(null));
+    api.get('/brain/reset/history').then((r) => setHistory(r.data?.resets ?? [])).catch(() => setHistory([]));
+  }, []);
+
+  const tierDescriptions = {
+    quick:   { label: 'Quick Reset',       blurb: 'Clears stuck previews / confirmation loops. Nothing else touched.' },
+    refresh: { label: 'Brain Refresh',     blurb: 'Wipes working memory: pending actions, clarifications Brain has learned, reasoning traces, dispatch artifacts. Brain may re-ask questions you\'ve answered once or twice as memory rebuilds.' },
+    full:    { label: 'Full Brain Reset',  blurb: 'Brain Refresh + removes empty-contact rows (the @nexeo.com hallucination source) + promotes orphan contacts to tenant scope so reasoning can see them. Factory-fresh feeling.' },
+  };
+
+  function wipedForTier(t) {
+    if (!counts) return null;
+    const c = counts.counts;
+    if (t === 'quick') return { brain_pending_actions: c.brain_pending_actions };
+    if (t === 'refresh') {
+      return {
+        brain_pending_actions: c.brain_pending_actions,
+        clarification_memory: c.clarification_memory,
+        reasoning_traces: c.reasoning_traces,
+        brain_action_artifacts: c.brain_action_artifacts,
+      };
+    }
+    if (t === 'full') {
+      return {
+        brain_pending_actions: c.brain_pending_actions,
+        clarification_memory: c.clarification_memory,
+        reasoning_traces: c.reasoning_traces,
+        brain_action_artifacts: c.brain_action_artifacts,
+        empty_contact_entities: c.empty_contact_entities,
+      };
+    }
+    return null;
+  }
+
+  async function runReset() {
+    if (typed !== expectedPhrase) {
+      setMsg(`Type "${expectedPhrase}" exactly to confirm`);
+      return;
+    }
+    setWorking(true);
+    setMsg('');
+    try {
+      const r = await api.post('/brain/reset', { tier, confirmation: typed });
+      const wiped = r.data?.wipedCounts ?? {};
+      const total = Object.values(wiped).reduce((a, b) => a + Number(b || 0), 0);
+      setMsg(`Reset complete. ${total} row${total === 1 ? '' : 's'} wiped. Archives kept for 7 days.`);
+      setTyped('');
+      // refresh counts + history
+      const preview = await api.get('/brain/reset/preview').catch(() => null);
+      if (preview) setCounts(preview.data);
+      const hist = await api.get('/brain/reset/history').catch(() => null);
+      if (hist) setHistory(hist.data?.resets ?? []);
+    } catch (e) {
+      setMsg(`Reset failed: ${e?.response?.data?.error ?? e?.message ?? 'unknown'}`);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  const wipeMap = wipedForTier(tier);
+  return (
+    <section className="settings-section" style={{ marginTop: 20 }}>
+      <h2>Reset & Cleanup</h2>
+      <p style={{ fontSize: 13, color: '#aaa', marginTop: -6 }}>
+        Wipe Brain's working memory when iterations have left it confused. Open items, contacts, OAuth grants, and the foundation (prompt blocks, action definitions) are NEVER wiped. Archive tables retained for 7 days — restore via support if needed.
+      </p>
+
+      <div style={{ marginTop: 12 }}>
+        {Object.keys(tierDescriptions).map((t) => (
+          <label key={t} style={{ display: 'block', padding: 8, marginBottom: 4, background: tier === t ? '#2a2a2a' : 'transparent', borderRadius: 6, cursor: 'pointer', border: tier === t ? '1px solid #cc6b4a' : '1px solid transparent' }}>
+            <input
+              type="radio"
+              name="reset-tier"
+              checked={tier === t}
+              onChange={() => { setTier(t); setTyped(''); setMsg(''); }}
+              style={{ marginRight: 8 }}
+            />
+            <strong>{tierDescriptions[t].label}</strong>
+            <div style={{ fontSize: 12, color: '#999', marginLeft: 24, marginTop: 4 }}>{tierDescriptions[t].blurb}</div>
+          </label>
+        ))}
+      </div>
+
+      {wipeMap && (
+        <div style={{ marginTop: 12, padding: 12, background: '#1a1a1a', borderRadius: 8, border: '1px solid #444' }}>
+          <div style={{ fontSize: 13, color: '#ddd', marginBottom: 6 }}><strong>What will be wiped:</strong></div>
+          {Object.entries(wipeMap).map(([k, v]) => (
+            <div key={k} style={{ fontSize: 12, color: v > 0 ? '#fbbf24' : '#666' }}>
+              {k.replace(/_/g, ' ')}: <strong>{v}</strong>
+            </div>
+          ))}
+          <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>
+            Preserved: open items ({counts?.preserved?.open_items ?? '?'}), OAuth grants, contacts with real emails/phones, prompt blocks, action definitions.
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16 }}>
+        <div style={{ fontSize: 13, color: '#fca5a5', marginBottom: 6 }}>
+          Type <code style={{ background: '#2a2a2a', padding: '2px 6px', borderRadius: 4 }}>{expectedPhrase}</code> to confirm
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={expectedPhrase}
+            style={{ flex: '1 1 220px', minWidth: 200, padding: 8, background: '#2a2a2a', border: '1px solid #dc2626', color: '#eee', borderRadius: 8, fontFamily: 'monospace', fontSize: 13 }}
+          />
+          <button
+            className="settings-btn danger"
+            onClick={runReset}
+            disabled={working || typed !== expectedPhrase}
+          >
+            {working ? 'Resetting…' : `Confirm ${tierDescriptions[tier].label}`}
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div style={{ fontSize: 13, color: msg.startsWith('Reset complete') ? '#4ade80' : '#fca5a5', marginTop: 12 }}>
+          {msg}
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h3 style={{ fontSize: 14, marginBottom: 8 }}>Recent resets</h3>
+          {history.slice(0, 10).map((h) => (
+            <div key={h.id} style={{ fontSize: 12, color: '#999', padding: '4px 0', borderBottom: '1px solid #2a2a2a' }}>
+              <span style={{ color: '#ddd' }}>{new Date(h.createdAt).toLocaleString()}</span>
+              {' — '}
+              <span style={{ color: '#cc6b4a' }}>{h.tier}</span>
+              {' — '}
+              {Object.entries(h.wipedCounts ?? {}).map(([k, v]) => `${k.replace(/_/g, ' ')}=${v}`).join(', ')}
+              {h.archiveSuffix && <span style={{ color: '#666', marginLeft: 8 }}>(archive {h.archiveSuffix})</span>}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

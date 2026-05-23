@@ -165,9 +165,27 @@ model User {
   brainPendingActions  BrainPendingAction[]
   promptOverlay        UserPromptOverlay[]
   retrievalFeedback    RetrievalFeedback[]
+  brainResets          BrainReset[]
 
   @@unique([clientNumber, empcode])
   @@map("users")
+}
+
+// Settings → Brain → Reset & Cleanup audit log
+model BrainReset {
+  id                String    @id @default(cuid())
+  userId            Int       @map("user_id")
+  clientNumber      String?   @map("client_number") @db.VarChar(20)
+  tier              String    @db.VarChar(30) // 'quick' | 'refresh' | 'full' | 'full_with_contacts'
+  wipedCounts       Json      @default("{}") @map("wiped_counts")
+  archiveSuffix     String?   @map("archive_suffix") @db.VarChar(80)
+  archiveExpiresAt  DateTime? @map("archive_expires_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("brain_resets")
 }
 
 // ─── Sessions ──────────────────────────────────────────────────
