@@ -72,14 +72,16 @@ WHERE entity_type = 'contact'
   AND (email IS NULL OR email = '')
   AND (phone IS NULL OR phone = '');
 
--- ── Promote orphan contacts to tenant scope so V2 candidates block sees them ──
+-- ── Assign orphan contacts to user 2 (Basit) — KEEP PRIVATE ──
+-- Per Basit's "contacts private by default" rule, do NOT promote to
+-- tenant scope. owner_user_id=2 makes them visible to him via the
+-- candidates block's owner-scoped filter.
 UPDATE entities
-SET scope = 'tenant'
+SET owner_user_id = 2
 WHERE entity_type = 'contact'
   AND client_number = 'TMC-0001'
   AND owner_user_id IS NULL
-  AND created_by IS NULL
-  AND scope = 'user';
+  AND created_by IS NULL;
 
 -- ── Post-wipe verification ──
 \echo '── POST-WIPE COUNTS ──'

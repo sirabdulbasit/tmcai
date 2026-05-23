@@ -213,13 +213,19 @@ async function runReset(
       );
       wipedCounts.empty_contact_entities = Number(entDel);
 
-      // (4) promote orphan contacts to tenant scope
-      const promoted = await tx.$executeRawUnsafe(
-        `UPDATE entities SET scope='tenant'
+      // (4) assign orphan contacts to the current user (keep them PRIVATE).
+      // Per Basit's "contacts private by default" rule — do NOT promote
+      // to tenant scope (Public). Orphan contacts get owner_user_id=userId
+      // so the requesting user can see them via candidateResolver's
+      // owner-scoped filter, but other users in the tenant don't.
+      // Future multi-tenant: replace this with a proper per-user backfill
+      // (best guess from feed event sender ownership).
+      const assigned = await tx.$executeRawUnsafe(
+        `UPDATE entities SET owner_user_id=${userId}
          WHERE entity_type='contact' AND client_number='${clientNumber}'
-           AND owner_user_id IS NULL AND created_by IS NULL AND scope='user'`,
+           AND owner_user_id IS NULL AND created_by IS NULL`,
       );
-      wipedCounts.contacts_promoted_to_tenant = Number(promoted);
+      wipedCounts.orphan_contacts_assigned_to_user = Number(assigned);
     }
   });
 

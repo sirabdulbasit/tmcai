@@ -184,8 +184,11 @@ export default function ContactsPage() {
   // (content-dedup at ingest is structural so the rebuild won't
   // recreate duplicates).
   const [resetFlow, setResetFlow] = useState(null);
+  const [resetBusy, setResetBusy] = useState(false);
   const onResetRebuild = useCallback(async (confirmPhrase) => {
+    setResetBusy(true);
     try {
+      notify('info', 'Resetting & rebuilding contacts from feed… this can take 1-2 minutes.');
       const { data } = await api.post('/entity-catalog/reset-and-rebuild', {
         confirmPhrase,
         lookbackDays: 90,
@@ -194,6 +197,8 @@ export default function ContactsPage() {
       load();
     } catch (err) {
       notify('error', `Reset failed: ${err.response?.data?.error ?? err.message}`);
+    } finally {
+      setResetBusy(false);
     }
   }, [load, notify]);
 
@@ -459,21 +464,21 @@ export default function ContactsPage() {
             <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
               <button
                 type="button"
-                disabled={resetFlow.typed.trim().toLowerCase() !== String(user?.email ?? '').toLowerCase()}
+                disabled={resetBusy || resetFlow.typed.trim().toLowerCase() !== String(user?.email ?? '').toLowerCase()}
                 onClick={async () => {
                   const ok = resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase();
-                  if (!ok) return;
+                  if (!ok || resetBusy) return;
                   await onResetRebuild(resetFlow.typed.trim());
                   setResetFlow(null);
                 }}
                 style={{
-                  padding: '6px 12px', background: '#dc2626', color: '#fff',
+                  padding: '6px 12px', background: resetBusy ? '#7a1f1f' : '#dc2626', color: '#fff',
                   border: 0, borderRadius: 4, fontSize: 13,
-                  cursor: resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 'pointer' : 'not-allowed',
-                  opacity: resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 1 : 0.4,
+                  cursor: resetBusy ? 'wait' : (resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 'pointer' : 'not-allowed'),
+                  opacity: resetBusy ? 0.7 : (resetFlow.typed.trim().toLowerCase() === String(user?.email ?? '').toLowerCase() ? 1 : 0.4),
                 }}
               >
-                Delete all &amp; rebuild
+                {resetBusy ? 'Rebuilding… (1-2 min)' : 'Delete all & rebuild'}
               </button>
               <button
                 type="button"
