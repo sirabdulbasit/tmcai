@@ -1322,7 +1322,7 @@ function BrainResetSection() {
   const tierDescriptions = {
     quick:   { label: 'Quick Reset',       blurb: 'Clears stuck previews / confirmation loops. Nothing else touched.' },
     refresh: { label: 'Brain Refresh',     blurb: 'Wipes working memory: pending actions, clarifications Brain has learned, reasoning traces, dispatch artifacts. Brain may re-ask questions you\'ve answered once or twice as memory rebuilds.' },
-    full:    { label: 'Full Brain Reset',  blurb: 'Brain Refresh + removes empty-contact rows (the @nexeo.com hallucination source) + promotes orphan contacts to tenant scope so reasoning can see them. Factory-fresh feeling.' },
+    full:    { label: 'Full Brain Reset',  blurb: 'FACTORY RESET. Brain Refresh + wipes ALL your open items + ALL your contacts (entity rows + contact wiki pages). After this you re-run "Reset & rebuild" on Contacts to pull from your feeds. NEVER touches OAuth, feed events, FACL docs, or your account.' },
   };
 
   function wipedForTier(t) {
@@ -1343,7 +1343,9 @@ function BrainResetSection() {
         clarification_memory: c.clarification_memory,
         reasoning_traces: c.reasoning_traces,
         brain_action_artifacts: c.brain_action_artifacts,
-        empty_contact_entities: c.empty_contact_entities,
+        open_items: c.full_only_open_items,
+        contact_entities: c.full_only_contact_entities,
+        contact_wiki_pages: c.full_only_contact_wiki_pages,
       };
     }
     return null;
@@ -1407,7 +1409,12 @@ function BrainResetSection() {
             </div>
           ))}
           <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>
-            Preserved: open items ({counts?.preserved?.open_items ?? '?'}), OAuth grants, contacts with real emails/phones, prompt blocks, action definitions.
+            Preserved: account + OAuth grants, feed events (so you can re-ingest contacts via "Reset & rebuild" on Contacts), FACL docs and non-contact wiki pages, prompt blocks, action definitions.
+            {tier === 'full' && (
+              <div style={{ marginTop: 4, color: '#fbbf24' }}>
+                ⚠️ Full Reset wipes open items + contacts. Re-run "Reset & rebuild" on Contacts page after to re-pull from feeds.
+              </div>
+            )}
           </div>
         </div>
       )}

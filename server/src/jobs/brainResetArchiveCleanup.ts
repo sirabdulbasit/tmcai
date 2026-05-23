@@ -16,6 +16,10 @@ const ARCHIVE_TABLE_PREFIXES = [
   'reasoning_traces_wipe_',
   'brain_action_artifacts_wipe_',
   'entities_emptycontact_wipe_',
+  // 2026-05-23: Full-tier additions per Basit's revised spec
+  'open_items_wipe_',
+  'wiki_pages_contacts_wipe_',
+  'entities_contacts_wipe_',
 ];
 
 /** Run a single sweep. Looks up brain_resets rows past their archive
@@ -37,7 +41,11 @@ export async function runBrainResetArchiveCleanup(): Promise<{
         continue;
       }
       for (const prefix of ARCHIVE_TABLE_PREFIXES) {
-        const tbl = `${prefix.replace(/_wipe_$/, '')}_${suffix}`;
+        // Tables are named `<prefix><suffix>` where prefix already includes
+        // the trailing `_wipe_` separator (e.g. `brain_pending_actions_wipe_`
+        // + `rst_2026_05_23_abc123`). Previous version did a bogus replace
+        // that produced a name that never matched any real archive table.
+        const tbl = `${prefix}${suffix}`;
         try {
           await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS ${tbl}`);
           out.tablesDropped += 1;

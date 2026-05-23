@@ -53,21 +53,23 @@ router.get('/brain/reset/preview', async (req, res) => {
   const clientNumber = (req as any).user?.clientNumber as string | undefined;
   if (!userId || !clientNumber) return res.status(401).json({ error: 'unauthorized' });
   try {
-    const [pendingCount, clarCount, tracesCount, artifactsCount, emptyContactsCount, openItemsCount] = await Promise.all([
+    const [pendingCount, clarCount, tracesCount, artifactsCount, openItemsCount, contactEntCount, contactWikiCount] = await Promise.all([
       prisma.brainPendingAction.count({ where: { userId } as any }).catch(() => 0),
       (prisma as any).clarificationMemory?.count?.({ where: { userId } }).catch(() => 0) ?? 0,
       (prisma as any).reasoningTrace?.count?.({ where: { userId } }).catch(() => 0) ?? 0,
       (prisma as any).brainActionArtifact?.count?.({ where: { userId } }).catch(() => 0) ?? 0,
+      prisma.openItem.count({ where: { ownerId: userId } as any }).catch(() => 0),
       prisma.entity.count({
         where: {
           clientNumber, entityType: 'contact',
-          AND: [
-            { OR: [{ email: null }, { email: '' }] },
-            { OR: [{ phone: null }, { phone: '' }] },
-          ],
+          OR: [{ ownerUserId: userId } as any, { ownerUserId: null } as any],
         } as any,
       }).catch(() => 0),
-      prisma.openItem.count({ where: { ownerId: userId } as any }).catch(() => 0),
+      prisma.wikiPage.count({
+        where: {
+          clientNumber, pageType: 'entity_person', userId,
+        } as any,
+      }).catch(() => 0),
     ]);
     res.json({
       counts: {
@@ -75,13 +77,19 @@ router.get('/brain/reset/preview', async (req, res) => {
         clarification_memory: clarCount,
         reasoning_traces: tracesCount,
         brain_action_artifacts: artifactsCount,
-        empty_contact_entities: emptyContactsCount,
+        // Full-tier wipes — show separately so the UI can disclose
+        // "open_items + contacts wiped" only on Full
+        full_only_open_items: openItemsCount,
+        full_only_contact_entities: contactEntCount,
+        full_only_contact_wiki_pages: contactWikiCount,
       },
       preserved: {
-        open_items: openItemsCount,
+        users: 'never wiped',
+        oauth_grants: 'never wiped',
+        feed_events: 'never wiped (so contacts can re-ingest from feed)',
+        wiki_pages_non_contacts: 'never wiped (FACL docs, opspages, etc)',
         prompt_blocks: 'never wiped',
         action_definitions: 'never wiped',
-        oauth_grants: 'never wiped',
       },
     });
   } catch (e: any) {
@@ -196,36 +204,58 @@ async function runReset(
     }
 
     if (tier === 'full') {
-      // (3) empty-contact entities — delete + archive
+      // Per Basit 2026-05-23: Full Reset wipes open_items + contacts +
+      // entity_person wiki pages too. User explicitly opted in to
+      // factory-reset semantics — "i will do then pull it again". The
+      // expected workflow: Full Reset → re-run "Reset & rebuild" on
+      // Contacts → re-ingest open items via feed activity.
+      //
+      // NEVER touched even by Full: users, OAuth grants, feed_events,
+      // wiki_pages where pageType != 'entity_person' (FACL docs etc),
+      // prompt_blocks, action_definitions, capability_registry.
+
+      // (3) open_items — wipe THIS user's open items.
       await tx.$executeRawUnsafe(
-        `CREATE TABLE IF NOT EXISTS entities_emptycontact_${archiveSuffix} AS SELECT * FROM entities WHERE FALSE`,
+        `CREATE TABLE IF NOT EXISTS open_items_wipe_${archiveSuffix} AS SELECT * FROM open_items WHERE FALSE`,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO entities_emptycontact_${archiveSuffix}
+        `INSERT INTO open_items_wipe_${archiveSuffix} SELECT * FROM open_items WHERE owner_id = ${userId}`,
+      );
+      const openItemsDel = await tx.$executeRawUnsafe(`DELETE FROM open_items WHERE owner_id = ${userId}`);
+      wipedCounts.open_items = Number(openItemsDel);
+
+      // (4) entity_person wiki pages owned by this user.
+      await tx.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS wiki_pages_contacts_wipe_${archiveSuffix} AS SELECT * FROM wiki_pages WHERE FALSE`,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO wiki_pages_contacts_wipe_${archiveSuffix}
+         SELECT * FROM wiki_pages
+         WHERE client_number='${clientNumber}' AND page_type='entity_person' AND user_id=${userId}`,
+      );
+      const wpDel = await tx.$executeRawUnsafe(
+        `DELETE FROM wiki_pages
+         WHERE client_number='${clientNumber}' AND page_type='entity_person' AND user_id=${userId}`,
+      );
+      wipedCounts.contact_wiki_pages = Number(wpDel);
+
+      // (5) entities (contact type) — wipe the user's contact entities
+      // AND the orphan/empty-contact rows.
+      await tx.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS entities_contacts_wipe_${archiveSuffix} AS SELECT * FROM entities WHERE FALSE`,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO entities_contacts_wipe_${archiveSuffix}
          SELECT * FROM entities
          WHERE entity_type='contact' AND client_number='${clientNumber}'
-           AND (email IS NULL OR email='') AND (phone IS NULL OR phone='')`,
+           AND (owner_user_id=${userId} OR owner_user_id IS NULL)`,
       );
       const entDel = await tx.$executeRawUnsafe(
         `DELETE FROM entities
          WHERE entity_type='contact' AND client_number='${clientNumber}'
-           AND (email IS NULL OR email='') AND (phone IS NULL OR phone='')`,
+           AND (owner_user_id=${userId} OR owner_user_id IS NULL)`,
       );
-      wipedCounts.empty_contact_entities = Number(entDel);
-
-      // (4) assign orphan contacts to the current user (keep them PRIVATE).
-      // Per Basit's "contacts private by default" rule — do NOT promote
-      // to tenant scope (Public). Orphan contacts get owner_user_id=userId
-      // so the requesting user can see them via candidateResolver's
-      // owner-scoped filter, but other users in the tenant don't.
-      // Future multi-tenant: replace this with a proper per-user backfill
-      // (best guess from feed event sender ownership).
-      const assigned = await tx.$executeRawUnsafe(
-        `UPDATE entities SET owner_user_id=${userId}
-         WHERE entity_type='contact' AND client_number='${clientNumber}'
-           AND owner_user_id IS NULL AND created_by IS NULL`,
-      );
-      wipedCounts.orphan_contacts_assigned_to_user = Number(assigned);
+      wipedCounts.contact_entities = Number(entDel);
     }
   });
 
