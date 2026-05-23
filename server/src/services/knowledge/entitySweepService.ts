@@ -397,6 +397,14 @@ export async function sweepForTenant(
   // the array_agg the sweep-created rows fall back to "Auto" in the
   // UI — the channel field was empty because sweep didn't pass
   // sourceType to ensureEntityForSender.
+  // 2026-05-23 cross-user leak fix: when forceOwnerUserId is set
+  // (reset-and-rebuild called by a specific user), ALSO scope the
+  // feed_events query to that user's events. Otherwise contacts from
+  // OTHER users' feeds (Haseeb's Gmail/Calendar) get surfaced and
+  // owned by the caller (Basit). Observed 2026-05-23 21:08 — Basit's
+  // rebuild claimed 7+ contacts that only existed because Haseeb had
+  // received emails from them.
+  const userFilter = opts.forceOwnerUserId ? `AND user_id = ${Math.floor(opts.forceOwnerUserId)}` : '';
   const senders = await prisma.$queryRawUnsafe<any[]>(
     `SELECT sender_email,
             MAX(sender_name) AS sender_name,
@@ -409,6 +417,7 @@ export async function sweepForTenant(
       WHERE client_number = $1
         AND created_at >= NOW() - (INTERVAL '1 day' * $2)
         AND (sender_email IS NOT NULL OR sender_phone IS NOT NULL)
+        ${userFilter}
       GROUP BY sender_email
       ORDER BY event_count DESC
       LIMIT 2000`,
