@@ -113,6 +113,13 @@ export interface ReasoningInput {
     recentEmails?: string;
     recentWhatsApp?: string;
     contactProvenance?: string;   // origin trail for a specific contact
+    // 2026-05-25 — canonical Day Brief data. When this is present, the
+    // composer should NOT also inject openItems/calendar/recentEmails/
+    // recentWhatsApp separately (the brief contains them all in a
+    // single coherent block matching the Page surface byte-for-byte).
+    // Reasoning is required to narrate IN ORDER, no re-ranking,
+    // no drops, no additions.
+    dayBrief?: string;
   };
 }
 
@@ -257,10 +264,17 @@ function renderUserMessage(input: ReasoningInput): string {
   if (input.dataBlocks.pendingAction) parts.push(`Pending action: ${input.dataBlocks.pendingAction}`);
   if (input.dataBlocks.memories) parts.push(input.dataBlocks.memories);
   if (input.dataBlocks.candidates) parts.push(input.dataBlocks.candidates);
-  if (input.dataBlocks.openItems) parts.push(input.dataBlocks.openItems);
-  if (input.dataBlocks.todayCalendar) parts.push(input.dataBlocks.todayCalendar);
-  if (input.dataBlocks.recentEmails) parts.push(input.dataBlocks.recentEmails);
-  if (input.dataBlocks.recentWhatsApp) parts.push(input.dataBlocks.recentWhatsApp);
+  // Day Brief is comprehensive — when present, it supersedes the
+  // individual openItems/calendar/recentEmails/recentWhatsApp blocks
+  // so the chat narration matches the Page surface exactly.
+  if (input.dataBlocks.dayBrief) {
+    parts.push(input.dataBlocks.dayBrief);
+  } else {
+    if (input.dataBlocks.openItems) parts.push(input.dataBlocks.openItems);
+    if (input.dataBlocks.todayCalendar) parts.push(input.dataBlocks.todayCalendar);
+    if (input.dataBlocks.recentEmails) parts.push(input.dataBlocks.recentEmails);
+    if (input.dataBlocks.recentWhatsApp) parts.push(input.dataBlocks.recentWhatsApp);
+  }
   if (input.dataBlocks.contactProvenance) parts.push(input.dataBlocks.contactProvenance);
   if (input.dataBlocks.artifacts) parts.push(input.dataBlocks.artifacts);
   if (input.dataBlocks.replyContext) parts.push(input.dataBlocks.replyContext);

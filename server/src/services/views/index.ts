@@ -17,3 +17,6 @@ export type { CalendarEventRow, GetTodayCalendarOpts } from './calendar';
 
 export { getAttentionSurface, countAttentionSurface } from './attention';
 export type { AttentionRow, GetAttentionSurfaceOpts } from './attention';
+
+export { getDayBrief, renderDayBriefBlock } from './dayBrief';
+export type { DayBriefData, GetDayBriefOpts } from './dayBrief';

@@ -1357,27 +1357,55 @@ export async function compose(
       const mentionsEmail = /\b(email|mail|inbox|reply|gmail)\b/i.test(question);
       const mentionsWA    = /\b(whatsapp|wa|message|messaged|texted|text)\b/i.test(question);
       const wantsDayBrief = dayBriefishRe.test(question);
-      const [
-        openItemsBlockForReasoning,
-        candidatesBlockForReasoning,
-        recentEmailsBlock,
-        recentWhatsAppBlock,
-        todayCalendarBlockForReasoning,
-        contactProvenanceBlock,
-      ] = await Promise.all([
-        buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
-        buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
-        (wantsDayBrief || mentionsEmail)
-          ? buildRecentEmailsBlock(clientNumber, userId).catch(() => '')
-          : Promise.resolve(''),
-        (wantsDayBrief || mentionsWA)
-          ? buildRecentWhatsAppBlock(clientNumber, userId).catch(() => '')
-          : Promise.resolve(''),
-        wantsDayBrief
-          ? buildTodayCalendarBlock(clientNumber, userId).catch(() => '')
-          : Promise.resolve(''),
-        buildContactProvenanceBlock(clientNumber, userId, question).catch(() => ''),
-      ]);
+
+      // When the user wants a Day Brief, build the CANONICAL view that
+      // the Page also reads. The chat narration is then locked to the
+      // same data structure — no re-ranking, no drops, no additions
+      // (enforced by anti-fabrication rules + the strict instruction
+      // baked into renderDayBriefBlock).
+      // For non-day-brief turns, build the fragmented blocks on demand
+      // (cheaper than always fetching the full brief).
+      let dayBriefBlock = '';
+      let openItemsBlockForReasoning = '';
+      let candidatesBlockForReasoning = '';
+      let recentEmailsBlock = '';
+      let recentWhatsAppBlock = '';
+      let todayCalendarBlockForReasoning = '';
+      let contactProvenanceBlock = '';
+      if (wantsDayBrief) {
+        const [brief, cands, prov] = await Promise.all([
+          (async () => {
+            const { getDayBrief, renderDayBriefBlock } = await import('../views');
+            const data = await getDayBrief({ clientNumber, userId });
+            return renderDayBriefBlock(data);
+          })().catch(() => ''),
+          buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+          buildContactProvenanceBlock(clientNumber, userId, question).catch(() => ''),
+        ]);
+        dayBriefBlock = brief;
+        candidatesBlockForReasoning = cands;
+        contactProvenanceBlock = prov;
+      } else {
+        [
+          openItemsBlockForReasoning,
+          candidatesBlockForReasoning,
+          recentEmailsBlock,
+          recentWhatsAppBlock,
+          todayCalendarBlockForReasoning,
+          contactProvenanceBlock,
+        ] = await Promise.all([
+          buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
+          buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+          mentionsEmail
+            ? buildRecentEmailsBlock(clientNumber, userId).catch(() => '')
+            : Promise.resolve(''),
+          mentionsWA
+            ? buildRecentWhatsAppBlock(clientNumber, userId).catch(() => '')
+            : Promise.resolve(''),
+          Promise.resolve(''),
+          buildContactProvenanceBlock(clientNumber, userId, question).catch(() => ''),
+        ]);
+      }
 
       // Tone-matching dataBlock (2026-05-25): when the user's message
       // suggests an email action, identify the likely recipient(s)
@@ -1430,6 +1458,7 @@ export async function compose(
           recentWhatsApp: recentWhatsAppBlock || undefined,
           todayCalendar: todayCalendarBlockForReasoning || undefined,
           contactProvenance: contactProvenanceBlock || undefined,
+          dayBrief: dayBriefBlock || undefined,
         },
       });
       if (result) {
