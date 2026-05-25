@@ -61,11 +61,16 @@ const RAW_JSON_LEAK_RE =
 const PROVIDER_ERROR_LEAK_RE =
   /\b(gemini\[try\d+\]|claude\[try\d+\]|gemini-flash\[try\d+\]|All\s+LLM\s+providers\s+failed|Anthropic\s+API|Your\s+credit\s+balance|Budget\s+\d+\s+is\s+invalid)/i;
 
-// "I sent / scheduled / done" claim while pending is still
-// preview_shown (i.e., user hasn't confirmed). Brain shouldn't say
-// "done" before the action actually dispatches.
+// "I sent / I scheduled / I done" — FIRST-PERSON claim of completing
+// the pending. Previously this regex matched any verb anywhere,
+// including legitimate third-person calendar descriptions ("you have
+// a meeting scheduled tomorrow"). Observed 2026-05-25: user asked
+// "do I have any meeting tomorrow?" and the answer "you have a
+// meeting scheduled at 11am" got rewritten to "[Preview not yet
+// confirmed]" because "scheduled" matched and there was a stale
+// pending. Tightened to require an "I" pronoun before the verb.
 const DONE_CLAIM_RE =
-  /\b(sent|scheduled|delivered|completed|done|dispatched|invited|notified|cancelled|rescheduled|updated)\b/i;
+  /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:sent|scheduled|delivered|completed|done|dispatched|invited|notified|cancelled|rescheduled|updated)\b/i;
 
 // ──────────────────────────────────────────────────────────────────
 // STYLE RULES (Phase B of the Communication Contract, 2026-05-22).
@@ -219,13 +224,24 @@ export function validateBeforeRender(
   }
 
   // 6. PREVIEW vs DONE CONFUSION — pending is preview_shown but
-  //    answer claims completion. The user hasn't confirmed yet; Brain
-  //    shouldn't say "scheduled" / "sent" / "done".
-  if (context?.pendingStatus === 'preview_shown' && DONE_CLAIM_RE.test(answer)) {
+  //    answer claims FIRST-PERSON completion ("I sent", "I scheduled").
+  //    The user hasn't confirmed yet; Brain shouldn't say it did it.
+  //
+  //    Skip when source='reasoning' — reasoning's structured outputs
+  //    (questions, factual answers about calendar state, declines)
+  //    aren't done-claims even if they contain phrases like "you have
+  //    a meeting scheduled". The DONE_CLAIM_RE now requires "I" prefix
+  //    but reasoning is double-belt-and-braces trusted here.
+  const sourceIsReasoningForPreview = result.source === 'reasoning';
+  if (
+    !sourceIsReasoningForPreview &&
+    context?.pendingStatus === 'preview_shown' &&
+    DONE_CLAIM_RE.test(answer)
+  ) {
     violations.push({
       rule: 'preview_vs_done_confusion',
       severity: 'block',
-      description: 'Pending action is still preview_shown but answer uses completion language ("sent", "scheduled", "done").',
+      description: 'Pending action is still preview_shown but answer uses first-person completion language.',
       suggestedReplacement: `[Preview not yet confirmed. Reply "send" to dispatch, or tell me what to change.]`,
     });
   }
