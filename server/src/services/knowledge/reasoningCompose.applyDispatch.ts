@@ -109,6 +109,18 @@ export async function applyReasoningDecision(args: {
         actionResult: null, // dispatch happens in compose's outer flow
       };
     }
+
+    case 'tool_call':
+      // Unreachable in practice: reasoningComposeWithTools loops on
+      // tool_call internally and only returns non-tool_call decisions.
+      // If a caller invokes the lower-level reasoningCompose directly
+      // and a tool_call bubbles up to here, surface it as an error so
+      // we notice the wiring bug instead of silently dropping the turn.
+      return {
+        answer: 'Internal: reasoning emitted tool_call but no tool runner was wired. Falling back to legacy composer.',
+        citedPageIds: [], gaps: [], sources: [], action: null,
+        actionResult: { ok: false, message: 'tool_call_unhandled' },
+      };
   }
 }
 

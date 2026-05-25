@@ -41,12 +41,28 @@
  */
 import { callGemini } from '../geminiService';
 import { listActiveActions, validateActionPayload, getActionDefinition } from './actionRegistryService';
+import { renderToolCatalogue, executeBrainTool, BRAIN_TOOLS } from './brainTools';
 import type { ComposerHistoryTurn } from './brainComposer';
 
-export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline';
+export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline' | 'tool_call';
+
+/** Max sequential tool calls per turn. Reasoning that keeps requesting
+ *  data without converging gets forced into a final answer with
+ *  whatever was collected. Prevents runaway loops + budget blowouts. */
+const MAX_TOOL_ITERATIONS = 3;
+
+/** Tool invocation emitted by reasoning. The orchestrator executes
+ *  the named tool, appends its output as a new dataBlock, and re-calls
+ *  reasoning. Loops up to MAX_TOOL_ITERATIONS. */
+export interface ReasoningToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  rationale?: string;
+}
 
 export interface ReasoningResult {
   decision: ReasoningDecision;
+  toolCall?: ReasoningToolCall | null;
   /** Single-action emission (legacy/simple case). When the user says
    *  "add open item X" reasoning emits ONE action here and actionPlan
    *  stays empty. */
@@ -115,6 +131,7 @@ export async function reasoningCompose(input: ReasoningInput): Promise<Reasoning
 
 Read the user's message + all the context above. Decide ONE of these:
 
+- **tool_call**: you need to fetch DATA (calendar / emails / WhatsApp thread / sent items / contact info / user profile / tenant users / open items by filter / recent messages) to ground your answer. Emit a tool_call. The orchestrator runs the tool and feeds the result back; you'll re-decide with real data. Use this BEFORE answer/act whenever the user's question references data you don't see in the existing dataBlocks. NEVER fabricate when you could tool_call instead.
 - **act**: you have enough context to perform a structured action right now (one of the action types in the registry below). Emit the action JSON with payload that validates against its schema.
 - **ask**: you need ONE specific piece of information from the user before you can act. Emit a clarifying question naming exactly what's missing. The question SHOULD include the actual options when there are 2-3 candidates (e.g., "Which Asad — Asad Ahmed Taj or Asad Shafique?"). Avoid open-ended questions when constrained ones work.
 - **answer**: the user asked a question rather than requesting an action; just answer from the context.
@@ -123,7 +140,8 @@ Read the user's message + all the context above. Decide ONE of these:
 Output strictly this JSON shape — no prose outside the object, no markdown fencing:
 
 {
-  "decision": "act" | "ask" | "answer" | "decline",
+  "decision": "tool_call" | "act" | "ask" | "answer" | "decline",
+  "tool_call": { "name": "<tool name>", "input": { ... }, "rationale": "<why this tool, one line>" } | null,
   "action": { "type": "<one of the registry types>", "payload": { ... } } | null,
   "action_plan": [
     { "type": "<registry type>", "payload": { ... }, "description": "<one-line>", "optional": false },
@@ -158,7 +176,26 @@ Rules:
 
 NEVER offer to "mark as inactive", "block this contact", "add to exclusion", "ignore messages from this person", or any variant. The exclusion list is user-managed; Brain provides only neutral provenance and observations. If a user says they don't recognize a contact, your answer reports what you know (provenance block, channels seen on) and stops — no suggested action.
 
-# Action registry (the only types you can emit)
+# Tool catalogue (use these to FETCH data — read-only)
+
+You may emit decision='tool_call' to retrieve data you don't see in the existing dataBlocks. The orchestrator will run the tool and call you again with the result. Tools are READ-ONLY — for any mutation use the action registry below.
+
+When to tool_call:
+- "any meetings tomorrow / this week" → fetch_calendar
+- "any email from <X>" / "did <X> reply" → fetch_emails (with from=<X>)
+- "what did I send <X>" / "did I email <X>" → fetch_sent_emails
+- "what did <X> say last on WhatsApp" → fetch_whatsapp_thread
+- "who is <X>" / "tell me about <X>" → fetch_contact_full
+- "what's my phone / WhatsApp number" → fetch_user_profile
+- "anything new" / "latest activity" → fetch_recent_messages
+- "what items are due this week" → fetch_open_items (with filters)
+- "who else is on Brain" / "who can I delegate to" → fetch_tenant_users
+
+Limits: at most ${MAX_TOOL_ITERATIONS} tool calls per turn. After that, answer with whatever was collected. If a tool returns "(no … found)", report that truthfully — don't tool_call again hoping for different data.
+
+${renderToolCatalogue()}
+
+# Action registry (the only types you can emit for WRITES)
 
 ${actionsBlock}`;
 
@@ -235,7 +272,7 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const obj = JSON.parse(cleaned);
     const decision = String(obj.decision ?? '').toLowerCase();
-    if (!['act', 'ask', 'answer', 'decline'].includes(decision)) return null;
+    if (!['tool_call', 'act', 'ask', 'answer', 'decline'].includes(decision)) return null;
     const actionPlan = Array.isArray(obj.action_plan)
       ? obj.action_plan
           .filter((s: any) => s && typeof s.type === 'string' && s.payload && typeof s.payload === 'object')
@@ -246,8 +283,16 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
             optional: !!s.optional,
           }))
       : null;
+    const toolCall = (obj.tool_call && typeof obj.tool_call.name === 'string')
+      ? {
+          name: String(obj.tool_call.name),
+          input: (obj.tool_call.input && typeof obj.tool_call.input === 'object') ? obj.tool_call.input : {},
+          rationale: typeof obj.tool_call.rationale === 'string' ? obj.tool_call.rationale : undefined,
+        }
+      : null;
     return {
       decision: decision as ReasoningDecision,
+      toolCall,
       action: obj.action ?? null,
       actionPlan: actionPlan && actionPlan.length > 0 ? actionPlan : null,
       question: obj.question ?? null,
@@ -271,4 +316,92 @@ export async function validateReasoningAction(
   const def = await getActionDefinition(action.type);
   if (!def) return [`Unknown action type: ${action.type}`];
   return validateActionPayload(def, action.payload);
+}
+
+/**
+ * Wrapper around reasoningCompose that resolves any decision='tool_call'
+ * by executing the named tool and re-calling reasoning with the result
+ * appended as a new dataBlock. Loops up to MAX_TOOL_ITERATIONS.
+ *
+ * Returns the FINAL non-tool_call result (act/ask/answer/decline). If
+ * reasoning keeps returning tool_calls past the limit, the final call
+ * is made with a "no more tool calls — answer with what you have"
+ * instruction and the result returned.
+ *
+ * Trace: every tool call is logged with name, input, byte size of
+ * result, and elapsed ms.
+ */
+export async function reasoningComposeWithTools(input: ReasoningInput): Promise<ReasoningResult | null> {
+  // Tool-call results accumulate into a private dataBlock slot so the
+  // model sees them on the next iteration. We DON'T mutate the caller's
+  // dataBlocks object — keep the function pure.
+  let collected: string[] = [];
+  let workingInput: ReasoningInput = input;
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS + 1; i += 1) {
+    const isFinal = i === MAX_TOOL_ITERATIONS;
+    // On the final pass, blank out the tool catalogue so reasoning
+    // can't keep emitting tool_calls. Easiest way: append a sentinel
+    // to artifacts that the model can read.
+    const blocksForThisPass: ReasoningInput['dataBlocks'] = { ...workingInput.dataBlocks };
+    if (collected.length > 0) {
+      const prev = blocksForThisPass.artifacts ?? '';
+      blocksForThisPass.artifacts = `${prev}${prev ? '\n\n' : ''}# Tool call results (from prior steps this turn)\n${collected.join('\n\n')}`;
+    }
+    if (isFinal) {
+      blocksForThisPass.artifacts = `${blocksForThisPass.artifacts ?? ''}\n\n# NO MORE TOOL CALLS\nYou've used the maximum of ${MAX_TOOL_ITERATIONS} tool calls this turn. Answer with the data you have — even if incomplete, report truthfully what you found and what's missing.`;
+    }
+
+    const result = await reasoningCompose({ ...workingInput, dataBlocks: blocksForThisPass });
+    if (!result) return null;
+
+    if (result.decision !== 'tool_call') {
+      // Final answer — bubble up.
+      if (collected.length > 0) {
+        console.info('[reasoning.tools] loop ended', {
+          userId: input.userId, iterations: i, finalDecision: result.decision,
+        });
+      }
+      return result;
+    }
+
+    // Execute the tool call.
+    if (isFinal || !result.toolCall) {
+      // Reasoning emitted tool_call but we're at the limit OR no tool
+      // specified — coerce to answer with what we have.
+      console.warn('[reasoning.tools] forced answer after max iterations', {
+        userId: input.userId, iterations: i,
+      });
+      return {
+        decision: 'answer',
+        action: null,
+        actionPlan: null,
+        toolCall: null,
+        question: null,
+        answerText: result.answerText ?? 'I gathered partial data but couldn\'t resolve the question fully — please rephrase or ask a more specific follow-up.',
+        declineReason: null,
+        confidence: 0.3,
+        rationale: 'forced answer after tool-call iteration limit',
+      };
+    }
+
+    const t0 = Date.now();
+    const out = await executeBrainTool(
+      result.toolCall.name,
+      result.toolCall.input,
+      { userId: input.userId, clientNumber: input.clientNumber },
+    );
+    const elapsed = Date.now() - t0;
+    console.info('[reasoning.tools] tool ran', {
+      userId: input.userId,
+      tool: result.toolCall.name,
+      inputKeys: Object.keys(result.toolCall.input ?? {}),
+      outputBytes: out.length,
+      elapsedMs: elapsed,
+      rationale: result.toolCall.rationale,
+    });
+    collected.push(out);
+  }
+  // Unreachable in practice but TypeScript needs it.
+  return null;
 }

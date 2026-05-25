@@ -1336,7 +1336,7 @@ export async function compose(
   const reasoningMode = resolveReasoningMode(userId, opts.useReasoning);
   if (reasoningMode) {
     try {
-      const { reasoningCompose } = await import('./reasoningCompose');
+      const { reasoningComposeWithTools: reasoningCompose } = await import('./reasoningCompose');
       const { applyReasoningDecision } = await import('./reasoningCompose.applyDispatch');
       // Build a minimal system prompt from persona + DB rule blocks
       // for the reasoning step. Full assembly happens on the first
