@@ -1219,6 +1219,51 @@ async function buildCandidatesBlockForReasoning(
   }
 }
 
+/** Pick the recipient(s) the user is likely emailing in this turn,
+ *  for tone-sample prefetch. Matches name tokens (first/last name) from
+ *  the user's message against entities (contacts) scoped to this user.
+ *
+ *  Returns up to 3 candidates so we don't burn Gmail API quota fetching
+ *  tone for everyone in the user's contacts on every turn. */
+async function pickToneRecipientsFromMessage(
+  question: string,
+  userId: number,
+  clientNumber: string,
+): Promise<Array<{ email: string; name: string }>> {
+  if (!question || question.length < 4) return [];
+  // Extract candidate name tokens — uppercase-or-after-keyword words.
+  // Lowercase the question for matching but preserve original tokens.
+  const lc = question.toLowerCase();
+  // Common patterns: "send email to <Name>", "email <Name>", "reply to <Name>"
+  const m = lc.match(/(?:to|email|message|reply|draft|notify)\s+([a-z][a-z\s.-]{2,40})/i);
+  if (!m) return [];
+  const namePhrase = m[1].trim().split(/\s+(?:about|regarding|re|for|on|that|saying|with|—|-)\b/)[0].trim();
+  const tokens = namePhrase.split(/\s+/).filter((t) => t.length >= 3);
+  if (tokens.length === 0) return [];
+  try {
+    const rows = await prisma.entity.findMany({
+      where: {
+        clientNumber, entityType: 'contact',
+        email: { not: null } as any,
+        OR: [
+          { scope: 'tenant' as any },
+          { ownerUserId: userId } as any,
+          { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+        ],
+        AND: tokens.map((t) => ({ name: { contains: t, mode: 'insensitive' as any } } as any)),
+      } as any,
+      select: { name: true, email: true, relationshipStrength: true },
+      orderBy: { relationshipStrength: 'desc' as any },
+      take: 3,
+    }).catch(() => [] as any[]);
+    return rows
+      .filter((r: any) => !!r.email)
+      .map((r: any) => ({ email: r.email as string, name: r.name as string }));
+  } catch {
+    return [];
+  }
+}
+
 /** Build a compact open-items snapshot for the reasoning prompt.
  *  Reasoning needs this to: (a) recognise slot-fill turns ("priority
  *  normal, due date monday" right after a DRAFT was created), (b)
@@ -1305,6 +1350,45 @@ export async function compose(
         buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
         buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
       ]);
+
+      // Tone-matching dataBlock (2026-05-25): when the user's message
+      // suggests an email action, identify the likely recipient(s)
+      // from candidates + the message text, fetch the user's recent
+      // sent emails TO those people, and inject as toneContext so
+      // reasoning drafts in the user's voice — not generic prose.
+      // Per Basit "brain should learn and reply in the same tone this
+      // is very important".
+      let toneContextBlock = '';
+      try {
+        const looksLikeEmailDraft = /\b(email|send|reply|draft|write|note|message)\b/i.test(question);
+        if (looksLikeEmailDraft) {
+          const toneCandidates = await pickToneRecipientsFromMessage(
+            question, userId, clientNumber,
+          );
+          if (toneCandidates.length > 0) {
+            const { getToneSamplesForRecipients, renderToneBlock } = await import('./senderToneService');
+            const samples = await getToneSamplesForRecipients(
+              userId,
+              toneCandidates.map((c) => c.email),
+              5,
+            );
+            // Attach display names for nicer rendering
+            samples.forEach((s) => {
+              const match = toneCandidates.find((c) => c.email.toLowerCase() === s.recipientEmail);
+              if (match) s.recipientName = match.name;
+            });
+            toneContextBlock = renderToneBlock(samples);
+            if (toneContextBlock) {
+              console.info('[compose] toneContext attached', {
+                userId, recipients: samples.filter((s) => s.samples.length > 0).map((s) => s.recipientEmail),
+              });
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn('[compose] toneContext build failed (non-fatal)', { error: e?.message });
+      }
+
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -1313,6 +1397,7 @@ export async function compose(
         dataBlocks: {
           openItems: openItemsBlockForReasoning || undefined,
           candidates: candidatesBlockForReasoning || undefined,
+          memories: toneContextBlock || undefined, // reuse memories slot for tone
         },
       });
       if (result) {

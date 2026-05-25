@@ -172,7 +172,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'send_email',
     displayName: 'Send email',
-    description: "Send an email from the user's connected Gmail. Footer \"Sent by Nexeo, <user>'s AI assistant\" appended automatically. Emit `toCandidateIds` and `ccCandidateIds` = exact candidateIds from the contacts block. NEVER emit raw emails. If the user explicitly typed an email NOT in contacts, emit it in `toAdHoc` (the server validates format and asks user to confirm in the preview). If a named recipient isn't in contacts and the user didn't type a full email, emit decision='ask'.",
+    description: "Send an email from the user's connected Gmail. Footer \"Sent by Nexeo, <user>'s AI assistant\" appended automatically. Emit `toCandidateIds` and `ccCandidateIds` = exact candidateIds from the contacts block. NEVER emit raw emails. If the user explicitly typed an email NOT in contacts, emit it in `toAdHoc`. If a named recipient isn't in contacts and the user didn't type a full email, emit decision='ask'. TONE MATCHING: when the context includes a `# Your writing voice` block with the user's recent emails to this recipient, MIRROR the user's actual opening / closing / formality / language mix shown in those samples. Do NOT use generic openings ('Hope this finds you well') unless the samples show the user uses them. Match the user's voice precisely — that's a hard requirement.",
     schema: {
       type: 'object',
       required: ['toCandidateIds', 'subject', 'body'],
