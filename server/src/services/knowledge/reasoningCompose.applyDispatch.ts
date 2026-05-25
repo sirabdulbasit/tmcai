@@ -111,13 +111,16 @@ export async function applyReasoningDecision(args: {
     }
 
     case 'tool_call':
-      // Unreachable in practice: reasoningComposeWithTools loops on
+      // Unreachable in normal flow: reasoningComposeWithTools loops on
       // tool_call internally and only returns non-tool_call decisions.
-      // If a caller invokes the lower-level reasoningCompose directly
-      // and a tool_call bubbles up to here, surface it as an error so
-      // we notice the wiring bug instead of silently dropping the turn.
+      // If we land here it means a caller invoked the lower-level
+      // reasoningCompose directly without wiring the tool runner —
+      // a programming error, not a user-facing case. Use a bracketed
+      // system marker (not a fake Brain reply) so the violation is
+      // visible to operators but the user sees a structural message.
+      // Per feedback_no_hardcoded_brain_replies.md.
       return {
-        answer: 'Internal: reasoning emitted tool_call but no tool runner was wired. Falling back to legacy composer.',
+        answer: '[system: tool_call returned to dispatcher without a runner — programming error]',
         citedPageIds: [], gaps: [], sources: [], action: null,
         actionResult: { ok: false, message: 'tool_call_unhandled' },
       };

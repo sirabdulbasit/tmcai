@@ -381,22 +381,19 @@ export async function reasoningComposeWithTools(input: ReasoningInput): Promise<
 
     // Execute the tool call.
     if (isFinal || !result.toolCall) {
-      // Reasoning emitted tool_call but we're at the limit OR no tool
-      // specified — coerce to answer with what we have.
-      console.warn('[reasoning.tools] forced answer after max iterations', {
-        userId: input.userId, iterations: i,
+      // Reasoning emitted tool_call past the iteration cap OR no tool
+      // specified. Don't fabricate a Brain reply — return null so the
+      // caller falls through to the legacy composer (which will retry
+      // the turn with the full context) OR surface a bracketed system
+      // marker. We return null here because the upstream composer
+      // already has a legacy fallback that produces a real LLM-generated
+      // answer; we never want a hardcoded English sentence pretending
+      // to be Brain. Per feedback_no_hardcoded_brain_replies.md.
+      console.warn('[reasoning.tools] reasoning failed to converge — falling back to legacy composer', {
+        userId: input.userId, iterations: i, lastDecision: result.decision,
+        lastToolName: result.toolCall?.name,
       });
-      return {
-        decision: 'answer',
-        action: null,
-        actionPlan: null,
-        toolCall: null,
-        question: null,
-        answerText: result.answerText ?? 'I gathered partial data but couldn\'t resolve the question fully — please rephrase or ask a more specific follow-up.',
-        declineReason: null,
-        confidence: 0.3,
-        rationale: 'forced answer after tool-call iteration limit',
-      };
+      return null;
     }
 
     const t0 = Date.now();
