@@ -530,9 +530,17 @@ export default function ConnectorsPage() {
     return `${Math.floor(hrs / 24)}d ago`;
   }
 
-  // Group by category
+  // "Connected only" filter (per Basit 2026-05-25: "there should be
+  // filter to see only connected connector"). Default off — shows
+  // every available connector; toggle filters to status='connected'.
+  const [connectedOnly, setConnectedOnly] = useState(false);
+
+  // Group by category — respects the connectedOnly filter.
   const grouped = {};
-  connectors.forEach(c => { const cat = c.category || 'other'; if (!grouped[cat]) grouped[cat] = []; grouped[cat].push(c); });
+  const visibleConnectors = connectedOnly
+    ? connectors.filter((c) => c.userConnector?.status === 'connected')
+    : connectors;
+  visibleConnectors.forEach(c => { const cat = c.category || 'other'; if (!grouped[cat]) grouped[cat] = []; grouped[cat].push(c); });
 
   const STATUS_LABEL = { connected: { text: 'Connected', color: '#4ade80' }, configured: { text: 'Configured', color: '#f59e0b' }, error: { text: 'Error', color: '#ef4444' } };
 
@@ -544,8 +552,20 @@ export default function ConnectorsPage() {
           <div>
             <button style={{ ...s.btn, ...s.btnOutline, marginRight: 10 }} onClick={() => navigate('/')}>← Back to Chat</button>
             <span style={{ fontSize: 20, fontWeight: 700, color: '#eee' }}>My Connectors</span>
-            <span style={s.badge('#4ade80')}>{connectors.filter(c => c.userConnector?.status === 'connected').length} Connected</span>
-            <span style={s.badge('#888')}>{connectors.length} Available</span>
+            <span
+              style={{ ...s.badge('#4ade80'), cursor: 'pointer', outline: connectedOnly ? '2px solid #4ade80' : 'none' }}
+              onClick={() => setConnectedOnly(true)}
+              title="Show only connected connectors"
+            >
+              {connectors.filter(c => c.userConnector?.status === 'connected').length} Connected
+            </span>
+            <span
+              style={{ ...s.badge('#888'), cursor: 'pointer', outline: !connectedOnly ? '2px solid #888' : 'none' }}
+              onClick={() => setConnectedOnly(false)}
+              title="Show all connectors"
+            >
+              {connectors.length} Available
+            </span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button

@@ -97,22 +97,29 @@ export async function resolveDateTime(
 }
 
 // ─── Internal ─────────────────────────────────────────────────────
+//
+// Fix 2026-05-25: previous formatters added the offset hours TO the
+// parsed time, producing "11am + 5h = 4pm labeled as PKT". Wrong.
+//
+// The right behavior: read d's LOCAL clock components (Y/M/D/H/M/S)
+// — these are what chrono parsed as ("11am" → getHours()===11
+// regardless of server TZ — chrono parses in the server's local frame
+// but the value the USER said is captured in the LOCAL fields). Then
+// stamp the user's TZ offset on the end. Result: "11am" → 11:00+05:00.
 
-function formatLocalDate(d: Date, offsetStr: string): string {
-  const offsetMin = parseOffsetMinutes(offsetStr);
-  const shifted = new Date(d.getTime() + offsetMin * 60 * 1000);
-  return shifted.toISOString().slice(0, 10);
+function formatLocalDate(d: Date, _offsetStr: string): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-function formatLocalDateTime(d: Date, offsetStr: string): string {
-  const offsetMin = parseOffsetMinutes(offsetStr);
-  const shifted = new Date(d.getTime() + offsetMin * 60 * 1000);
-  return shifted.toISOString().slice(0, 19);
-}
-
-function parseOffsetMinutes(s: string): number {
-  const m = s.match(/^([+-])(\d{2}):(\d{2})$/);
-  if (!m) return 5 * 60; // PKT default
-  const sign = m[1] === '-' ? -1 : 1;
-  return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+function formatLocalDateTime(d: Date, _offsetStr: string): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day}T${h}:${mi}:${s}`;
 }

@@ -971,6 +971,64 @@ router.get('/wiki/pages/:id', async (req: Request, res: Response) => {
   res.json(page);
 });
 
+/** PATCH /brain/wiki/pages/:id/archive — soft-hide from Brain retrieval.
+ *  Per Basit 2026-05-23 "manage wiki — delete/archive any page".
+ *  Owner-only (page.userId == requester). Reversible. */
+router.patch('/wiki/pages/:id/archive', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user?.id) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true, status: true },
+  });
+  if (!existing || existing.clientNumber !== user.clientNumber) return res.status(404).json({ error: 'page not found' });
+  if (existing.scope === 'user' && existing.userId !== user.id) {
+    return res.status(403).json({ error: 'only the owner can archive this page' });
+  }
+  if (existing.status === 'archived') return res.json({ id, status: 'archived', alreadyArchived: true });
+  await prisma.wikiPage.update({ where: { id }, data: { status: 'archived' as any, lastUpdatedAt: new Date() } as any });
+  res.json({ id, status: 'archived' });
+});
+
+/** PATCH /brain/wiki/pages/:id/restore — un-archive. */
+router.patch('/wiki/pages/:id/restore', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user?.id) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true },
+  });
+  if (!existing || existing.clientNumber !== user.clientNumber) return res.status(404).json({ error: 'page not found' });
+  if (existing.scope === 'user' && existing.userId !== user.id) {
+    return res.status(403).json({ error: 'only the owner can restore this page' });
+  }
+  await prisma.wikiPage.update({ where: { id }, data: { status: 'active' as any, lastUpdatedAt: new Date() } as any });
+  res.json({ id, status: 'active' });
+});
+
+/** DELETE /brain/wiki/pages/:id — irreversible. */
+router.delete('/wiki/pages/:id', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user?.id) return res.status(401).json({ error: 'unauthenticated' });
+  const id = String(req.params.id);
+  const existing = await prisma.wikiPage.findUnique({
+    where: { id },
+    select: { id: true, clientNumber: true, userId: true, scope: true, title: true, pageType: true },
+  });
+  if (!existing || existing.clientNumber !== user.clientNumber) return res.status(404).json({ error: 'page not found' });
+  if (existing.scope === 'user' && existing.userId !== user.id) {
+    return res.status(403).json({ error: 'only the owner can delete this page' });
+  }
+  await prisma.wikiPage.delete({ where: { id } });
+  console.warn('[wiki] page hard-deleted', {
+    id, title: existing.title, pageType: existing.pageType,
+    actor: user.id, clientNumber: user.clientNumber,
+  });
+  res.json({ id, deleted: true });
+});
+
 /** List wiki pages for the current user (+ tenant-shared types).
  *  Query params:
  *    type     — filter by pageType (e.g. 'org_doc', 'sender_history')

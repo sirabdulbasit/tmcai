@@ -84,6 +84,8 @@ export type ComposedAction =
   | { type: 'set_brain_name'; name: string }
   | { type: 'archive_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
   | { type: 'delete_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
+  | { type: 'set_contact_scope'; contactCandidateId: string; scope: 'tenant' | 'normal' | 'private'; nameHint?: string }
+  | { type: 'mark_contact_inactive'; contactCandidateId: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
@@ -2523,6 +2525,89 @@ ${calLines.join('\n')}`;
           actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
           answer = res.message;
         }
+      } else if (act.type === 'set_contact_scope') {
+        try {
+          // contactCandidateId is the entities.id, but the visibility
+          // lives on wiki_pages.metadata.scope for the corresponding
+          // entity_person page. Lookup by entity → wiki page via email.
+          const ent = await prisma.entity.findFirst({
+            where: { id: act.contactCandidateId, clientNumber },
+            select: { id: true, name: true, email: true, phone: true },
+          });
+          if (!ent) {
+            actionResult = { ok: false, message: `[set_contact_scope: contact not found in your contacts]` };
+          } else {
+            // Locate the wiki_page (entity_person) for this contact
+            const pageRows = await prisma.$queryRawUnsafe<any[]>(
+              `SELECT id, metadata, user_id FROM wiki_pages
+               WHERE client_number = $1 AND page_type = 'entity_person'
+                 AND (
+                   ($2 <> '' AND lower(metadata->>'email') = $2)
+                   OR ($3 <> '' AND regexp_replace(COALESCE(metadata->>'phone',''),'[^0-9+]','','g') = $3)
+                 ) LIMIT 1`,
+              clientNumber,
+              (ent.email ?? '').toLowerCase(),
+              (ent.phone ?? '').replace(/[^\d+]/g, ''),
+            ).catch(() => []);
+            const page = pageRows[0];
+            if (!page) {
+              actionResult = { ok: false, message: `[set_contact_scope: no wiki page for ${ent.name}]` };
+            } else if (page.user_id !== userId) {
+              actionResult = { ok: false, message: `[set_contact_scope: only the owner can change scope]` };
+            } else {
+              const newMeta = { ...(page.metadata as object), scope: act.scope };
+              if (act.scope === 'tenant') {
+                (newMeta as any).publicSince = new Date().toISOString();
+                (newMeta as any).publicSetBy = userId;
+              }
+              await prisma.$executeRawUnsafe(
+                `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+                JSON.stringify(newMeta), page.id,
+              );
+              actionResult = { ok: true, artifactId: page.id, message: `Set "${ent.name}" scope to ${act.scope}.` };
+            }
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[set_contact_scope failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
+      } else if (act.type === 'mark_contact_inactive') {
+        try {
+          const ent = await prisma.entity.findFirst({
+            where: { id: act.contactCandidateId, clientNumber },
+            select: { id: true, name: true, email: true, phone: true },
+          });
+          if (!ent) {
+            actionResult = { ok: false, message: `[mark_contact_inactive: contact not found]` };
+          } else {
+            // Locate wiki page and set status='inactive' + metadata.markedInactiveByUser=true
+            const pageRows = await prisma.$queryRawUnsafe<any[]>(
+              `SELECT id, metadata, user_id FROM wiki_pages
+               WHERE client_number = $1 AND page_type = 'entity_person'
+                 AND (
+                   ($2 <> '' AND lower(metadata->>'email') = $2)
+                   OR ($3 <> '' AND regexp_replace(COALESCE(metadata->>'phone',''),'[^0-9+]','','g') = $3)
+                 ) LIMIT 1`,
+              clientNumber,
+              (ent.email ?? '').toLowerCase(),
+              (ent.phone ?? '').replace(/[^\d+]/g, ''),
+            ).catch(() => []);
+            const page = pageRows[0];
+            if (page && page.user_id === userId) {
+              const newMeta = { ...(page.metadata as object), markedInactiveByUser: true, markedInactiveAt: new Date().toISOString() };
+              await prisma.$executeRawUnsafe(
+                `UPDATE wiki_pages SET metadata = $1::jsonb, status = 'inactive', last_updated_at = NOW() WHERE id = $2`,
+                JSON.stringify(newMeta), page.id,
+              );
+            }
+            actionResult = { ok: true, artifactId: ent.id, message: `Marked "${ent.name}" inactive. Brain will skip them.` };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[mark_contact_inactive failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'archive_wiki_page') {
         try {
           const existing = await prisma.wikiPage.findUnique({
@@ -3931,6 +4016,17 @@ async function renderActionPreview(
     const who = fmt(r, act.recipientCandidateId);
     return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
+  if (act.type === 'set_contact_scope') {
+    const r = await resolveCandidate(act.contactCandidateId, userId, clientNumber);
+    const who = r?.name ?? act.nameHint ?? act.contactCandidateId;
+    const label = act.scope === 'tenant' ? 'Public (tenant-shared)' : act.scope === 'private' ? 'Private (Brain-muted)' : 'Normal (default)';
+    return `Before I change visibility, please confirm — set "${who}" to ${label}? Reply "send" to confirm.`;
+  }
+  if (act.type === 'mark_contact_inactive') {
+    const r = await resolveCandidate(act.contactCandidateId, userId, clientNumber);
+    const who = r?.name ?? act.nameHint ?? act.contactCandidateId;
+    return `Before I mark inactive, please confirm — "${who}" will be hidden and Brain will skip them. Reply "send" to confirm.`;
+  }
   if (act.type === 'archive_wiki_page') {
     return `Before I archive, please confirm — I'm about to archive wiki page:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nArchiving hides it from Brain's retrieval. It stays in the DB and can be restored. Reply "send" to confirm, or tell me what to change.`;
   }
@@ -4649,6 +4745,20 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     const message = typeof r.message === 'string' ? r.message.trim() : '';
     if (!recipientCandidateId || !message) return reject('notify_via_whatsapp:missing-required');
     return { type: 'notify_via_whatsapp', recipientCandidateId, message };
+  }
+  if (type === 'set_contact_scope') {
+    const contactCandidateId = typeof r.contactCandidateId === 'string' ? r.contactCandidateId.trim() : '';
+    const scopeRaw = typeof r.scope === 'string' ? r.scope.trim().toLowerCase() : '';
+    if (!contactCandidateId) return reject('set_contact_scope:no-id');
+    if (!['tenant', 'normal', 'private'].includes(scopeRaw)) return reject('set_contact_scope:bad-scope');
+    const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
+    return { type: 'set_contact_scope', contactCandidateId, scope: scopeRaw as any, nameHint };
+  }
+  if (type === 'mark_contact_inactive') {
+    const contactCandidateId = typeof r.contactCandidateId === 'string' ? r.contactCandidateId.trim() : '';
+    if (!contactCandidateId) return reject('mark_contact_inactive:no-id');
+    const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
+    return { type: 'mark_contact_inactive', contactCandidateId, nameHint };
   }
   if (type === 'archive_wiki_page') {
     const wikiPageId = typeof r.wikiPageId === 'string' ? r.wikiPageId.trim() : '';

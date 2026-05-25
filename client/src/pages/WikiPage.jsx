@@ -59,6 +59,10 @@ export default function WikiPage() {
   const [loading, setLoading] = useState(false);
   const [searchMode, setSearchMode] = useState('browse');
   const [detailId, setDetailId] = useState(null);
+  // Archive/Delete confirmation state (inline panel per no-browser-dialogs rule).
+  const [archiveFlow, setArchiveFlow] = useState(null); // { page }
+  const [deleteFlow, setDeleteFlow] = useState(null);   // { page, typed }
+  const [opMsg, setOpMsg] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -192,8 +196,102 @@ export default function WikiPage() {
               </div>
             )}
             {items.map((p) => (
-              <WikiRow key={p.id} page={p} onOpen={() => setDetailId(p.id)} />
+              <WikiRow
+                key={p.id}
+                page={p}
+                onOpen={() => setDetailId(p.id)}
+                onArchive={(page) => { setArchiveFlow({ page }); setOpMsg(''); }}
+                onDelete={(page) => { setDeleteFlow({ page, typed: '' }); setOpMsg(''); }}
+              />
             ))}
+            {opMsg && (
+              <div style={{ fontSize: 12, color: opMsg.startsWith('Error') ? '#fca5a5' : '#4ade80', padding: '8px 12px' }}>
+                {opMsg}
+              </div>
+            )}
+            {archiveFlow && (
+              <div style={{
+                marginTop: 12, padding: '12px 14px',
+                background: 'rgba(245,158,11,0.08)',
+                border: '1px solid rgba(245,158,11,0.35)',
+                borderRadius: 8, fontSize: 13,
+              }}>
+                <div style={{ marginBottom: 8 }}>
+                  <strong>Archive "{archiveFlow.page.title}"?</strong> Brain will stop surfacing this page. Reversible from the API.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await api.patch(`/brain/wiki/pages/${archiveFlow.page.id}/archive`);
+                        setOpMsg(`Archived "${archiveFlow.page.title}".`);
+                        setArchiveFlow(null);
+                        load();
+                      } catch (err) {
+                        setOpMsg(`Error: ${err?.response?.data?.error ?? err?.message ?? 'unknown'}`);
+                      }
+                    }}
+                    style={{ padding: '6px 12px', background: '#f59e0b', color: '#000', border: 0, borderRadius: 4, fontSize: 13, cursor: 'pointer', fontWeight: 600 }}
+                  >Archive</button>
+                  <button
+                    onClick={() => setArchiveFlow(null)}
+                    style={{ padding: '6px 12px', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13, cursor: 'pointer' }}
+                  >Cancel</button>
+                </div>
+              </div>
+            )}
+            {deleteFlow && (
+              <div style={{
+                marginTop: 12, padding: '14px 16px',
+                background: 'rgba(220,38,38,0.08)',
+                border: '1px solid rgba(220,38,38,0.35)',
+                borderRadius: 8, fontSize: 13,
+              }}>
+                <div style={{ marginBottom: 6, fontWeight: 600, color: '#fca5a5' }}>
+                  ⚠️ PERMANENT DELETE — irreversible
+                </div>
+                <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12 }}>
+                  Brain will forget "{deleteFlow.page.title}" entirely. To confirm, type the page title exactly:
+                </div>
+                <input
+                  type="text"
+                  value={deleteFlow.typed}
+                  onChange={(ev) => setDeleteFlow({ ...deleteFlow, typed: ev.target.value })}
+                  placeholder={deleteFlow.page.title}
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '6px 8px',
+                    background: 'var(--bg-1, #0d1117)', border: '1px solid var(--border, #28323e)',
+                    borderRadius: 4, color: 'var(--text)', fontSize: 13, fontFamily: 'monospace',
+                  }}
+                />
+                <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                  <button
+                    disabled={deleteFlow.typed.trim() !== deleteFlow.page.title.trim()}
+                    onClick={async () => {
+                      try {
+                        await api.delete(`/brain/wiki/pages/${deleteFlow.page.id}`);
+                        setOpMsg(`Deleted "${deleteFlow.page.title}".`);
+                        setDeleteFlow(null);
+                        load();
+                      } catch (err) {
+                        setOpMsg(`Error: ${err?.response?.data?.error ?? err?.message ?? 'unknown'}`);
+                      }
+                    }}
+                    style={{
+                      padding: '6px 12px', background: '#dc2626', color: '#fff', border: 0, borderRadius: 4,
+                      fontSize: 13, fontWeight: 600,
+                      cursor: deleteFlow.typed.trim() === deleteFlow.page.title.trim() ? 'pointer' : 'not-allowed',
+                      opacity: deleteFlow.typed.trim() === deleteFlow.page.title.trim() ? 1 : 0.4,
+                    }}
+                  >Delete permanently</button>
+                  <button
+                    onClick={() => setDeleteFlow(null)}
+                    style={{ padding: '6px 12px', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13, cursor: 'pointer' }}
+                  >Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -225,7 +323,7 @@ function TypeButton({ active, label, count, onClick }) {
   );
 }
 
-function WikiRow({ page, onOpen }) {
+function WikiRow({ page, onOpen, onArchive, onDelete }) {
   const snippet = (page.snippet ?? '')
     .replace(/^#+\s+.+?\n/, '')      // drop leading markdown heading
     .replace(/\*\*/g, '')             // strip bold markers
@@ -234,8 +332,10 @@ function WikiRow({ page, onOpen }) {
     .slice(0, 180);
   const date = page.lastUpdatedAt ? new Date(page.lastUpdatedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
   return (
-    <button
+    <div
       onClick={onOpen}
+      role="button"
+      tabIndex={0}
       style={{
         display: 'block', textAlign: 'left', width: '100%',
         padding: '12px 14px', marginBottom: 8,
@@ -296,10 +396,40 @@ function WikiRow({ page, onOpen }) {
           {snippet}
         </div>
       )}
-      <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
-        {page.sourceCount > 0 && `${page.sourceCount} source${page.sourceCount === 1 ? '' : 's'} · `}
-        updated {date}
+      <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+          {page.sourceCount > 0 && `${page.sourceCount} source${page.sourceCount === 1 ? '' : 's'} · `}
+          updated {date}
+        </span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {onArchive && (
+            <button
+              onClick={(ev) => { ev.stopPropagation(); onArchive(page); }}
+              style={{
+                fontSize: 11, padding: '3px 9px', borderRadius: 6,
+                background: 'transparent', color: 'var(--text-muted)',
+                border: '1px solid var(--border)', cursor: 'pointer',
+              }}
+              title="Archive — Brain stops surfacing this page. Reversible."
+            >
+              Archive
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={(ev) => { ev.stopPropagation(); onDelete(page); }}
+              style={{
+                fontSize: 11, padding: '3px 9px', borderRadius: 6,
+                background: 'transparent', color: '#fca5a5',
+                border: '1px solid rgba(220,38,38,0.4)', cursor: 'pointer',
+              }}
+              title="Delete — IRREVERSIBLE. Brain forgets this page entirely."
+            >
+              Delete
+            </button>
+          )}
+        </div>
       </div>
-    </button>
+    </div>
   );
 }

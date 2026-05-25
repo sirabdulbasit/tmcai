@@ -55,7 +55,7 @@ const ACTIONS: Seed[] = [
   {
     type: 'update_open_item',
     displayName: 'Update open item',
-    description: "Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend any field on an active item. Reference the item by openItemId from the open-items context block (use the exact id shown there). priority must be one of: critical | high | medium | low (normalise 'normal' → 'medium'). For dueDate, emit the user's RAW DATE PHRASE in `dueDateRaw` (e.g. 'monday', 'tomorrow', 'next friday', '2026-05-25'); the server resolves it. DO NOT compute or invent ISO dates yourself.",
+    description: "Update fields on an existing open item — typically used to complete DRAFT items by filling priority/dueDate, or to amend any field on an active item. Reference the item by openItemId from the open-items context block (use the exact id shown there). priority must be one of: critical | high | medium | low (normalise 'normal' → 'medium'). For dueDate, emit the user's RAW DATE PHRASE in `dueDateRaw` (e.g. 'monday', 'tomorrow', 'next friday', '2026-05-25'); the server resolves it. DO NOT compute or invent ISO dates yourself. CRITICAL — TITLE RULE: ONLY emit a `title` field if the user EXPLICITLY asked to rename the item ('rename it to X', 'change the title to Y', 'call it Z'). Do NOT auto-translate the title from Roman-Urdu/Urdu to English. Do NOT 'clean up' the title for grammar. Do NOT 'standardise' it. The user's original phrasing is the canonical title; preserve it unless they explicitly say otherwise.",
     schema: {
       type: 'object',
       required: ['openItemId'],
@@ -224,6 +224,43 @@ const ACTIONS: Seed[] = [
     handlerFunction: 'setBrainName',
     requiresCapability: null,
     isHumanFacing: false,
+  },
+  {
+    type: 'set_contact_scope',
+    displayName: 'Set contact scope (public/normal/private)',
+    description: "Change a contact's visibility scope. Emit `contactCandidateId` (entity row id from the contacts context block) and `scope` (one of: 'tenant', 'normal', 'private'). 'tenant' = Public (visible to all users in the tenant), 'normal' = default (Brain on, owner-only), 'private' = Brain-muted (Brain ignores this contact entirely). Per Basit 2026-05-23 rule: contacts default to 'normal' on auto-discovery; this action is the ONLY way Brain can change a contact's scope, and it ALWAYS previews before applying.",
+    schema: {
+      type: 'object',
+      required: ['contactCandidateId', 'scope'],
+      properties: {
+        contactCandidateId: { type: 'string' },
+        scope: { type: 'string' /* tenant | normal | private */ },
+        nameHint: { type: 'string' },
+      },
+    },
+    handlerModule: 'entityCatalogService',
+    handlerFunction: 'setContactScope',
+    requiresCapability: 'manage_contacts',
+    isHumanFacing: true,
+    previewTemplate: 'Set "{nameHint}" scope to {scope}?',
+  },
+  {
+    type: 'mark_contact_inactive',
+    displayName: 'Mark contact inactive',
+    description: "Mark a contact as inactive — Brain stops processing them entirely and they're hidden from the default Contacts view. Emit `contactCandidateId` from the contacts block. Preview-by-default. Soft-delete; row remains in DB.",
+    schema: {
+      type: 'object',
+      required: ['contactCandidateId'],
+      properties: {
+        contactCandidateId: { type: 'string' },
+        nameHint: { type: 'string' },
+      },
+    },
+    handlerModule: 'entityCatalogService',
+    handlerFunction: 'markContactInactive',
+    requiresCapability: 'manage_contacts',
+    isHumanFacing: true,
+    previewTemplate: 'Mark "{nameHint}" inactive?',
   },
   {
     type: 'archive_wiki_page',
