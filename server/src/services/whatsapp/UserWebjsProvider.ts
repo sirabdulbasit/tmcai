@@ -192,6 +192,48 @@ export function recordWhatsAppFetchError(userId: number, reason: string): void {
     w.timestamps.shift();
   }
   errorWindows.set(userId, w);
+  // Eagerly trigger the degraded flip when threshold is hit. Without
+  // this, the only consumer was stampWhatsAppSync inside the heartbeat
+  // loop — but the heartbeat is gated on client.getState()==='CONNECTED',
+  // and a fully-broken WA client never reaches CONNECTED, so the
+  // degraded check never ran even though errors were piling up.
+  // (Detected 2026-05-25 — Basit saw status='connected' while logs
+  // showed 108 waitForChatLoading errors.) Throttled to once per minute
+  // per user so we don't churn DB writes; markConnectorDegraded is
+  // itself idempotent on identical reason but the throttle avoids
+  // even attempting writes more often than necessary.
+  const lastFlip = lastDegradedFlipAt.get(userId) ?? 0;
+  if (now - lastFlip < 60_000) return;
+  const degradedReason = peekDegradedReason(userId);
+  if (degradedReason) {
+    lastDegradedFlipAt.set(userId, now);
+    void (async () => {
+      try {
+        const row = await getUserConnector(userId);
+        if (!row) return;
+        const { markConnectorDegraded } = await import('../connectorHealthService');
+        await markConnectorDegraded(row.id, degradedReason);
+      } catch { /* best-effort */ }
+    })();
+  }
+}
+
+const lastDegradedFlipAt = new Map<number, number>();
+
+/** Like consumeDegradedReason but non-destructive — used by the
+ *  eager flip in recordWhatsAppFetchError so the same window can
+ *  trigger heal-on-recovery later via stampWhatsAppSync. */
+function peekDegradedReason(userId: number): string | null {
+  const w = errorWindows.get(userId);
+  if (!w) return null;
+  const now = Date.now();
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  if (w.timestamps.length < ERROR_COUNT_THRESHOLD) return null;
+  const minutes = new Set(w.timestamps.map((t) => Math.floor(t / 60_000)));
+  if (minutes.size < ERROR_DISTINCT_MINUTES) return null;
+  return `WhatsApp ingest degraded (${w.timestamps.length} fetch errors in last 5min): ${w.lastReason}`;
 }
 
 /** Returns a degradation reason if the user has crossed the threshold,
