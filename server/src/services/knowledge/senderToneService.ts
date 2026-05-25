@@ -7,6 +7,16 @@
  * i do email or reply him? so brain should learn and reply in the
  * same tone this is very important".
  *
+ * CHANNEL SEPARATION RULE (Basit 2026-05-25, locked):
+ * Email tone samples are ONLY for send_email drafts.
+ * WhatsApp tone samples are ONLY for notify_via_whatsapp drafts.
+ * NEVER pool samples across channels — even for the same recipient,
+ * the user's WhatsApp voice ≠ email voice. The dedicated functions
+ * below all query Gmail's Sent folder; do NOT add a generic
+ * "getSentSamples" that pools across channels. WhatsApp gets its own
+ * service (whatsappToneService.ts when wired) with the SAME
+ * channel-isolated rule.
+ *
  * Why this exists: a generic "Hi {firstName}, hope this finds you
  * well…" drafted in textbook English doesn't sound like Basit. Basit's
  * actual emails to Asad might open "Asad bhai" or "Asad sb" and switch
@@ -132,7 +142,7 @@ export function renderToneBlock(
   const usable = samplesByRecipient.filter((s) => s.samples.length > 0);
   if (usable.length === 0) return '';
   const lines: string[] = [];
-  lines.push(`# Your writing voice — recent emails YOU sent (mirror this tone for the matching recipient when drafting):`);
+  lines.push(`# Your writing voice — EMAIL samples (recent emails YOU sent). Use these ONLY when drafting send_email actions; DO NOT use them when drafting notify_via_whatsapp — WhatsApp voice is separate per the channel-separation rule.`);
   for (const rec of usable) {
     const who = rec.recipientName ? `${rec.recipientName} <${rec.recipientEmail}>` : rec.recipientEmail;
     lines.push(`\n## To: ${who} (${rec.samples.length} samples)`);
