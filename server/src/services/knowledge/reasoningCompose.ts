@@ -90,6 +90,13 @@ export interface ReasoningInput {
     memories?: string;
     replyContext?: string;
     pendingAction?: string;       // serialized PendingAction summary if any
+    // 2026-05-25 — added so reasoning has actual recent inbox/WA data
+    // instead of bridging gaps with fabrication (the Naveed "Ok sir"
+    // failure). Each block lists real feed_events; if empty, reasoning
+    // MUST say "no recent <X>" rather than inventing one.
+    recentEmails?: string;
+    recentWhatsApp?: string;
+    contactProvenance?: string;   // origin trail for a specific contact
   };
 }
 
@@ -136,6 +143,20 @@ Rules:
 - For ask: slotBeingFilled is a canonical name like "which_contact", "due_date", "which_thread"; contextTokens are stable identifiers future similar turns can match against (e.g., person name + topic + action_kind).
 - Confidence: how sure you are about the decision. <0.5 → consider switching to ask.
 - If you can't complete a plan step (e.g., recipient not in candidates), emit decision='ask' for the missing piece instead of guessing.
+
+# Anti-fabrication rules (load-bearing — violating these = wrong action by Brain)
+
+- When the user asks about a SPECIFIC message ("latest WhatsApp message", "what email came in", "any reply from X"), you may ONLY cite from the relevant dataBlock above (# Recent WhatsApp messages, # Recent emails). If the block is absent or empty, your answer MUST be one of:
+  - "I don't see any <channel> messages in the last 24h." (when the block exists and is empty)
+  - "I wasn't given <channel> data for this turn — I can check if you ask again." (when the block is absent)
+  NEVER invent a sender, message body, or timestamp. NEVER bridge from a contact's existence to "they sent a message".
+- When the user asks "where did X come from" / "why is X in my contacts", you may ONLY cite from the # Where this contact came from block. If absent, say "I don't have provenance info for this contact." Do NOT guess origin ("you probably emailed them"); do NOT confuse "contact exists" with "user corresponded with them".
+- When the user names a person you don't see in the candidates block, say "I don't see <name> in your contacts" and stop. Do NOT pick the closest-sounding name and pretend it matched.
+- When the user asks for a Day Brief and a relevant block (calendar / emails / WhatsApp / open items / attention) is empty, say so per channel — "no meetings today", "no new emails", etc. Do NOT collapse the whole brief to "I don't have access" when only some sources are empty.
+
+# Exclusion-suggestion rule (locked per Basit 2026-05-25)
+
+NEVER offer to "mark as inactive", "block this contact", "add to exclusion", "ignore messages from this person", or any variant. The exclusion list is user-managed; Brain provides only neutral provenance and observations. If a user says they don't recognize a contact, your answer reports what you know (provenance block, channels seen on) and stops — no suggested action.
 
 # Action registry (the only types you can emit)
 
@@ -201,6 +222,9 @@ function renderUserMessage(input: ReasoningInput): string {
   if (input.dataBlocks.candidates) parts.push(input.dataBlocks.candidates);
   if (input.dataBlocks.openItems) parts.push(input.dataBlocks.openItems);
   if (input.dataBlocks.todayCalendar) parts.push(input.dataBlocks.todayCalendar);
+  if (input.dataBlocks.recentEmails) parts.push(input.dataBlocks.recentEmails);
+  if (input.dataBlocks.recentWhatsApp) parts.push(input.dataBlocks.recentWhatsApp);
+  if (input.dataBlocks.contactProvenance) parts.push(input.dataBlocks.contactProvenance);
   if (input.dataBlocks.artifacts) parts.push(input.dataBlocks.artifacts);
   if (input.dataBlocks.replyContext) parts.push(input.dataBlocks.replyContext);
   return parts.join('\n\n');

@@ -1346,9 +1346,37 @@ export async function compose(
       // Scoped dataBlocks for reasoning. Started with open_items only
       // (commit 2026-05-22) — every action that needs real context to
       // avoid hallucination gets its own slice added as we audit it.
-      const [openItemsBlockForReasoning, candidatesBlockForReasoning] = await Promise.all([
+      //
+      // 2026-05-25: added recentEmails / recentWhatsApp / calendar /
+      // contactProvenance after the Naveed "Ok sir" hallucination —
+      // Brain had no actual inbox/WA data and bridged the gap with
+      // fiction. These blocks make ground truth available; anti-
+      // fabrication rules in reasoningCompose.ts forbid invention when
+      // they're absent or empty.
+      const dayBriefishRe = /\b(brief|brief\s+me|catch\s+me\s+up|fill\s+me\s+in|anything\s+(for|new)|what'?s\s+(on|up|new|pending|next)|my\s+day)\b/i;
+      const mentionsEmail = /\b(email|mail|inbox|reply|gmail)\b/i.test(question);
+      const mentionsWA    = /\b(whatsapp|wa|message|messaged|texted|text)\b/i.test(question);
+      const wantsDayBrief = dayBriefishRe.test(question);
+      const [
+        openItemsBlockForReasoning,
+        candidatesBlockForReasoning,
+        recentEmailsBlock,
+        recentWhatsAppBlock,
+        todayCalendarBlockForReasoning,
+        contactProvenanceBlock,
+      ] = await Promise.all([
         buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
         buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+        (wantsDayBrief || mentionsEmail)
+          ? buildRecentEmailsBlock(clientNumber, userId).catch(() => '')
+          : Promise.resolve(''),
+        (wantsDayBrief || mentionsWA)
+          ? buildRecentWhatsAppBlock(clientNumber, userId).catch(() => '')
+          : Promise.resolve(''),
+        wantsDayBrief
+          ? buildTodayCalendarBlock(clientNumber, userId).catch(() => '')
+          : Promise.resolve(''),
+        buildContactProvenanceBlock(clientNumber, userId, question).catch(() => ''),
       ]);
 
       // Tone-matching dataBlock (2026-05-25): when the user's message
@@ -1398,6 +1426,10 @@ export async function compose(
           openItems: openItemsBlockForReasoning || undefined,
           candidates: candidatesBlockForReasoning || undefined,
           memories: toneContextBlock || undefined, // reuse memories slot for tone
+          recentEmails: recentEmailsBlock || undefined,
+          recentWhatsApp: recentWhatsAppBlock || undefined,
+          todayCalendar: todayCalendarBlockForReasoning || undefined,
+          contactProvenance: contactProvenanceBlock || undefined,
         },
       });
       if (result) {
@@ -3428,6 +3460,153 @@ async function buildTodayCalendarBlock(clientNumber: string, userId: number): Pr
     return `- ${e.localTime} ${e.title}${att}`;
   });
   return `# Today's calendar (times in ${tz})\n${lines.join('\n')}`;
+}
+
+/** Recent inbound emails (last 24h) — ground truth for "any email
+ *  from X", "what came in", and the Day Brief inbox summary. Each row
+ *  is one feed_event of source_type='gmail'. Empty list → reasoning
+ *  says "no new emails", not "I don't have access". */
+async function buildRecentEmailsBlock(clientNumber: string, userId: number, max = 10): Promise<string> {
+  const prisma = (await import('../../db/prisma')).default;
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    sender_name: string | null;
+    sender_email: string | null;
+    raw_payload: any;
+    created_at: Date;
+  }>>(
+    `SELECT sender_name, sender_email, raw_payload, created_at
+       FROM feed_events
+      WHERE client_number = $1 AND user_id = $2
+        AND source_type = 'gmail'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    clientNumber, userId, max,
+  ).catch(() => [] as any[]);
+  if (rows.length === 0) return '# Recent emails (last 24h)\n(no emails received in the last 24 hours)';
+  const lines = rows.map((r) => {
+    const fromEmail = r.sender_email
+      ? (r.sender_email.match(/<([^>]+)>/)?.[1] ?? r.sender_email)
+      : '(unknown)';
+    const fromName = r.sender_name?.trim() || '';
+    const subj = String(r.raw_payload?.subject ?? r.raw_payload?.headers?.subject ?? '').slice(0, 120) || '(no subject)';
+    const snippet = String(r.raw_payload?.snippet ?? '').replace(/\s+/g, ' ').slice(0, 140);
+    const when = new Date(r.created_at).toISOString().slice(11, 16) + ' UTC';
+    return `- [${when}] From: ${fromName ? `${fromName} <${fromEmail}>` : fromEmail} · Subject: ${subj}${snippet ? `\n    ${snippet}` : ''}`;
+  });
+  return `# Recent emails (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
+}
+
+/** Recent WhatsApp messages (last 24h) the user actually received.
+ *  Source: feed_events where source_type='whatsapp_personal' AND user
+ *  is the receiver (not fromMe). Names resolved through entity_person
+ *  for known senders; unknown numbers labelled as such. Empty list →
+ *  reasoning says "no recent WhatsApp", not invents a sender. */
+async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, max = 10): Promise<string> {
+  const prisma = (await import('../../db/prisma')).default;
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    sender_phone: string | null;
+    sender_name: string | null;
+    raw_payload: any;
+    created_at: Date;
+  }>>(
+    `SELECT sender_phone, sender_name, raw_payload, created_at
+       FROM feed_events
+      WHERE client_number = $1 AND user_id = $2
+        AND source_type = 'whatsapp_personal'
+        AND COALESCE((raw_payload->>'fromMe')::boolean, FALSE) = FALSE
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    clientNumber, userId, max,
+  ).catch(() => [] as any[]);
+  if (rows.length === 0) return '# Recent WhatsApp messages (last 24h)\n(no WhatsApp messages received in the last 24 hours)';
+  // Resolve known names by phone match against entity_person rows the
+  // user can see — keeps the rule "only people in your contacts get
+  // named" honest while still surfacing the raw phone for unknowns.
+  const phones = Array.from(new Set(rows.map((r) => (r.sender_phone ?? '').replace(/[^\d+]/g, '')).filter(Boolean)));
+  const known = new Map<string, string>();
+  if (phones.length > 0) {
+    const wikiRows = await prisma.$queryRawUnsafe<Array<{ title: string; phone: string }>>(
+      `SELECT title, regexp_replace(coalesce(metadata->>'phone',''), '[^0-9+]','','g') AS phone
+         FROM wiki_pages
+        WHERE client_number = $1 AND page_type='entity_person'
+          AND user_id = $2
+          AND status NOT IN ('archived','inactive','deleted','contradicted')
+          AND regexp_replace(coalesce(metadata->>'phone',''), '[^0-9+]','','g') = ANY($3::text[])`,
+      clientNumber, userId, phones,
+    ).catch(() => [] as any[]);
+    for (const w of wikiRows) known.set(w.phone, w.title);
+  }
+  const lines = rows.map((r) => {
+    const phone = (r.sender_phone ?? '').replace(/[^\d+]/g, '');
+    const sender = known.get(phone) ?? r.sender_name?.trim() ?? '(unknown sender)';
+    const body = String(r.raw_payload?.body ?? r.raw_payload?.text ?? '').replace(/\s+/g, ' ').slice(0, 200);
+    const when = new Date(r.created_at).toISOString().slice(11, 16) + ' UTC';
+    const knownTag = known.has(phone) ? '' : ' [not in your contacts]';
+    return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
+  });
+  return `# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
+}
+
+/** Contact provenance block — ONLY built when the user's question
+ *  references a specific contact identifier (email, phone, or name
+ *  with a clear identity question). Surfaces the actual feed_events
+ *  history so reasoning can answer "where did X come from" with truth
+ *  instead of a guess. */
+async function buildContactProvenanceBlock(
+  clientNumber: string, userId: number, question: string,
+): Promise<string> {
+  // Trigger only on origin/identity questions to avoid bloating every
+  // turn. The "where/how/why/who" + contact-name pattern catches:
+  //   "where did rfurnivall come from"
+  //   "why do I have katja in my contacts"
+  //   "who is naveed"
+  //   "from where this contact"
+  const originPattern = /\b(where|why|who|how|from where)\b.*\b(contact|sender|email|whatsapp|added|come from|came from|in my)\b/i;
+  if (!originPattern.test(question)) return '';
+  // Extract emails + phone-like patterns from the question; if none,
+  // pull the last-mentioned candidate from history (handled upstream).
+  const emails = (question.match(/[\w.+\-]+@[\w.\-]+/g) ?? []).map((e) => e.toLowerCase());
+  if (emails.length === 0) return '';
+  const prisma = (await import('../../db/prisma')).default;
+  const blocks: string[] = [];
+  for (const email of emails.slice(0, 3)) {
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      user_id: number;
+      user_email: string | null;
+      source_type: string;
+      first_seen: Date;
+      last_seen: Date;
+      events: number;
+    }>>(
+      `SELECT fe.user_id,
+              (SELECT u.email FROM users u WHERE u.id = fe.user_id) AS user_email,
+              fe.source_type,
+              MIN(fe.created_at) AS first_seen,
+              MAX(fe.created_at) AS last_seen,
+              COUNT(*)::int       AS events
+         FROM feed_events fe
+        WHERE fe.client_number = $1
+          AND lower(COALESCE(substring(fe.sender_email FROM '<([^>]+)>'), fe.sender_email)) = $2
+        GROUP BY fe.user_id, fe.source_type
+        ORDER BY MAX(fe.created_at) DESC`,
+      clientNumber, email,
+    ).catch(() => [] as any[]);
+    if (rows.length === 0) {
+      blocks.push(`## ${email}\n- No feed_events recorded for this address in this tenant.`);
+      continue;
+    }
+    const lines = rows.map((r) => {
+      const youOrThem = r.user_id === userId ? '(your inbox)' : `(${r.user_email ?? 'another user'}'s inbox)`;
+      const first = new Date(r.first_seen).toISOString().slice(0, 10);
+      const last  = new Date(r.last_seen).toISOString().slice(0, 10);
+      return `  - ${r.source_type}: ${r.events} event(s), ${first} → ${last} ${youOrThem}`;
+    });
+    blocks.push(`## ${email}\n${lines.join('\n')}`);
+  }
+  if (blocks.length === 0) return '';
+  return `# Where this contact came from (feed_events evidence)\n${blocks.join('\n\n')}\n\n(If a row is in "another user's inbox", you have NOT corresponded with this sender — they came into your contacts list via a separate path. Say so plainly when asked.)`;
 }
 
 /** Build the contact candidates block for this turn. Scans names, runs
