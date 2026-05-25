@@ -157,9 +157,32 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   const mdUser = await pickTenantScope(clientNumber);
   if (!mdUser) return null;
 
+  // Per Basit 2026-05-25 (locked rule): contacts default to 'normal'.
+  // 'tenant' (Public) is ONLY set when the user explicitly publishes
+  // via /entity-catalog/:id/publish or the set_contact_scope chat action.
+  // Concept synthesizer must NEVER auto-promote entity_person pages.
+  //
+  // This was the root cause of the recurring Public-badge bug: this
+  // synthesizer ran on every entity-discovery turn and wrote
+  // scope: 'tenant' into the metadata, blowing away user opt-ins and
+  // promoting auto-discovered contacts that should stay private.
+
+  // Load existing scope + publish-audit fields so we preserve them
+  // when updating an entity_person page (so the user's manual
+  // Make-Public / Make-Private opt-ins survive synthesis).
+  const existing = await prisma.wikiPage.findFirst({
+    where: { clientNumber, userId: mdUser, pageType: 'entity_person', title },
+    select: { id: true, metadata: true },
+  }).catch(() => null);
+
+  const existingMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
+  const preservedScope = typeof existingMeta.scope === 'string' && ['tenant', 'normal', 'private'].includes(existingMeta.scope as string)
+    ? (existingMeta.scope as string)
+    : 'normal';
+
   const metadata: any = {
     schemaVersion: BRAIN_SCHEMA_VERSION,
-    scope: 'tenant',
+    scope: preservedScope,
     personScope: scope,
     authoredBy: 'concept_synthesizer',
     entityId: entity.id,
@@ -170,11 +193,15 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
     linkedPageCount: linkedPages.length,
     lastSynthesizedAt: new Date().toISOString(),
   };
-
-  const existing = await prisma.wikiPage.findFirst({
-    where: { clientNumber, userId: mdUser, pageType: 'entity_person', title },
-    select: { id: true },
-  }).catch(() => null);
+  // Preserve publish-audit fields if they exist (so /entity-catalog/:id
+  // /publish opt-ins aren't erased by every synth run).
+  if (existingMeta.publicSetBy !== undefined) metadata.publicSetBy = existingMeta.publicSetBy;
+  if (existingMeta.publicSince !== undefined) metadata.publicSince = existingMeta.publicSince;
+  if (existingMeta.brainMutedBy !== undefined) metadata.brainMutedBy = existingMeta.brainMutedBy;
+  if (existingMeta.brainMutedAt !== undefined) metadata.brainMutedAt = existingMeta.brainMutedAt;
+  // Also preserve any user-set fields like stars + linked-person link.
+  if (existingMeta.user_stars !== undefined) metadata.user_stars = existingMeta.user_stars;
+  if (existingMeta.linkedPersonId !== undefined) metadata.linkedPersonId = existingMeta.linkedPersonId;
 
   let pageId: string;
   if (existing) {
