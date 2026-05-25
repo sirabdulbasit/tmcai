@@ -54,6 +54,9 @@ export default function ContactsPage() {
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupPreview, setCleanupPreview] = useState(null);
   const [cleanupApplying, setCleanupApplying] = useState(false);
+  // Advanced section hidden by default — Brain handles reclaim + reset
+  // autonomously via Smart cleanup, so these are escape hatches only.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Inline toast queue (replaces alert()). Each toast auto-dismisses
   // after 6s; click-to-dismiss is also wired.
@@ -241,12 +244,15 @@ export default function ContactsPage() {
     setCleanupBusy(true);
     setCleanupPreview(null);
     try {
-      const r = await api.post('/entity-catalog/cleanup-junk', { dryRun: true });
-      const total = r.data?.total ?? 0;
-      if (total === 0) {
-        notify('ok', 'Nothing to clean up — all contacts look like real humans.');
+      const r = await api.post('/entity-catalog/smart-cleanup', { dryRun: true });
+      const total = (r.data?.leakedRepointed ?? 0)
+                  + (r.data?.leakedArchivedDuplicate ?? 0)
+                  + (r.data?.noEvidenceArchived ?? 0)
+                  + (r.data?.junkArchived ?? 0);
+      if (total === 0 && (r.data?.mergesSuggested?.length ?? 0) === 0) {
+        notify('ok', 'Nothing to clean up — your contacts list looks healthy.');
       } else {
-        setCleanupPreview(r.data);
+        setCleanupPreview({ ...r.data, total });
       }
     } catch (err) {
       notify('error', `Cleanup scan failed: ${err.response?.data?.error ?? err.message}`);
@@ -258,8 +264,17 @@ export default function ContactsPage() {
   const applyCleanup = useCallback(async () => {
     setCleanupApplying(true);
     try {
-      const r = await api.post('/entity-catalog/cleanup-junk', { dryRun: false });
-      notify('ok', `Archived ${r.data?.archived ?? 0} junk contact${(r.data?.archived ?? 0) === 1 ? '' : 's'}.`);
+      const r = await api.post('/entity-catalog/smart-cleanup', { dryRun: false });
+      const total = (r.data?.leakedRepointed ?? 0)
+                  + (r.data?.leakedArchivedDuplicate ?? 0)
+                  + (r.data?.noEvidenceArchived ?? 0)
+                  + (r.data?.junkArchived ?? 0);
+      notify('ok',
+        `Smart cleanup: ${r.data?.leakedRepointed ?? 0} repointed · `
+        + `${r.data?.leakedArchivedDuplicate ?? 0} dup archived · `
+        + `${r.data?.noEvidenceArchived ?? 0} no-evidence archived · `
+        + `${r.data?.junkArchived ?? 0} junk archived · `
+        + `${r.data?.mergesSuggested?.length ?? 0} merges suggested. Total ${total}.`);
       setCleanupPreview(null);
       await load();
     } catch (err) {
@@ -340,25 +355,43 @@ export default function ContactsPage() {
               onClick={startCleanup}
               disabled={cleanupBusy}
               style={btnStyle(cleanupBusy, 'subtle')}
-              title="Find no-reply / newsletter / postmaster contacts and archive them. You'll see a preview before anything is archived."
+              title="Brain reviews your contacts: repoints anything misowned, archives junk + no-evidence rows, suggests merges. Brain also runs this nightly — manual is just for an instant refresh."
             >
-              {cleanupBusy ? 'Scanning…' : '🧹 Smart cleanup'}
+              {cleanupBusy ? 'Scanning…' : '🧠 Smart cleanup'}
             </button>
             <button
-              onClick={() => setReclaimFlow({ typed: '' })}
-              style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(167,139,250,0.45)', color: '#c4b5fd' }}
-              title="Take ownership of every contact you can see so you can change their scope (Normal/Public/Private). Non-destructive — only repoints user_id."
+              onClick={() => setShowAdvanced((v) => !v)}
+              style={{ ...btnStyle(false, 'subtle'), opacity: 0.7 }}
+              title="Manual escape hatches. Smart cleanup handles the same things automatically — only use these if Brain's autonomous cleanup hasn't run yet."
             >
-              👤 Reclaim ownership
-            </button>
-            <button
-              onClick={() => setResetFlow({ typed: '' })}
-              style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(220,38,38,0.4)', color: '#fca5a5' }}
-              title="Delete ALL your contacts and re-discover them from feed. Destructive."
-            >
-              ⟲ Reset &amp; rebuild
+              {showAdvanced ? '▴ Advanced' : '▾ Advanced'}
             </button>
           </div>
+          {showAdvanced && (
+            <div style={{
+              marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap',
+              paddingTop: 8, borderTop: '1px dashed var(--border, #28323e)',
+              opacity: 0.85,
+            }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted, #98a0a8)', alignSelf: 'center', marginRight: 4 }}>
+                Manual tools (Brain handles these automatically):
+              </span>
+              <button
+                onClick={() => setReclaimFlow({ typed: '' })}
+                style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(167,139,250,0.45)', color: '#c4b5fd' }}
+                title="Take ownership of every contact you can see. Brain does this automatically per evidence — only use if you want to override."
+              >
+                👤 Reclaim ownership
+              </button>
+              <button
+                onClick={() => setResetFlow({ typed: '' })}
+                style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(220,38,38,0.4)', color: '#fca5a5' }}
+                title="Delete ALL your contacts and re-discover them from feed. Destructive."
+              >
+                ⟲ Reset &amp; rebuild
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Reclaim ownership panel — non-destructive, types login email */}
@@ -506,22 +539,35 @@ export default function ContactsPage() {
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 280 }}>
-                About to archive <strong>{cleanupPreview.total}</strong> contact{cleanupPreview.total === 1 ? '' : 's'} that look like newsletter / no-reply / system addresses. Reversible — they're soft-archived, not deleted.
-                {cleanupPreview.samples?.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-                    Examples:&nbsp;
-                    {cleanupPreview.samples.slice(0, 3).map((s, i) => (
-                      <span key={i}>{i > 0 ? ' · ' : ''}{s.email}</span>
-                    ))}
-                    {cleanupPreview.samples.length > 3 && <span> · … and {cleanupPreview.total - 3} more</span>}
-                  </div>
-                )}
+                <div style={{ marginBottom: 6 }}>
+                  Brain's Smart Cleanup found:
+                </div>
+                <ul style={{ margin: '4px 0 4px 18px', padding: 0, fontSize: 12.5, lineHeight: 1.6 }}>
+                  {(cleanupPreview.leakedRepointed ?? 0) > 0 && (
+                    <li><strong>{cleanupPreview.leakedRepointed}</strong> contact{cleanupPreview.leakedRepointed === 1 ? '' : 's'} owned by you with no evidence — repoint to actual owner.</li>
+                  )}
+                  {(cleanupPreview.leakedArchivedDuplicate ?? 0) > 0 && (
+                    <li><strong>{cleanupPreview.leakedArchivedDuplicate}</strong> duplicate{cleanupPreview.leakedArchivedDuplicate === 1 ? '' : 's'} of the real-owner row — archive.</li>
+                  )}
+                  {(cleanupPreview.noEvidenceArchived ?? 0) > 0 && (
+                    <li><strong>{cleanupPreview.noEvidenceArchived}</strong> contact{cleanupPreview.noEvidenceArchived === 1 ? '' : 's'} with no evidence from anyone (older than 30 days) — archive.</li>
+                  )}
+                  {(cleanupPreview.junkArchived ?? 0) > 0 && (
+                    <li><strong>{cleanupPreview.junkArchived}</strong> no-reply / newsletter / postmaster address{cleanupPreview.junkArchived === 1 ? '' : 'es'} — archive.</li>
+                  )}
+                  {(cleanupPreview.mergesSuggested?.length ?? 0) > 0 && (
+                    <li><strong>{cleanupPreview.mergesSuggested.length}</strong> merge candidate{cleanupPreview.mergesSuggested.length === 1 ? '' : 's'} (same email/phone, distinct rows) — <em>suggested only, you confirm each</em>.</li>
+                  )}
+                </ul>
+                <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--text-muted)' }}>
+                  All archives are reversible. Brain re-runs nightly — clicking now just refreshes immediately.
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   onClick={applyCleanup} disabled={cleanupApplying}
                   style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #f59e0b', background: '#f59e0b', color: '#000', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
-                >{cleanupApplying ? 'Archiving…' : 'Yes, archive them'}</button>
+                >{cleanupApplying ? 'Applying…' : 'Apply'}</button>
                 <button
                   onClick={() => setCleanupPreview(null)}
                   style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}

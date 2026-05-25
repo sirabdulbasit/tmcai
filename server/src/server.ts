@@ -190,21 +190,34 @@ const server = app.listen(env.port, async () => {
     }, 30 * 60 * 1000);
   }, 6 * 60 * 1000);
 
-  // Junk contact cleanup — daily at ~3am UTC (with first run ~10 min
-  // after boot to seed coverage). Soft-archives entity_person pages
-  // whose email matches the same isLikelyAutomated() filter that gates
-  // new auto-discovery: no-reply / mailer-daemon / postmaster /
-  // newsletter@ / marketing@ / tracking-token prefixes. Reversible —
-  // status flips 'active' → 'archived', not deleted. Real humans never
-  // get touched (filter is conservative; support@ / help@ excluded).
+  // Smart Cleanup — Brain's autonomous contact maintenance, daily.
+  // First run ~10 min after boot, then every 24h. Per-user per-tenant,
+  // evidence-based: repoints cross-user-leaked rows, archives no-
+  // evidence + junk-pattern contacts, surfaces (but never auto-applies)
+  // duplicate-merge candidates. Per 2026-05-25 Basit rule: Brain
+  // maintains the contacts list intelligently so the user doesn't have
+  // to click cleanup buttons. Replaces the old junk-only daily cron;
+  // junk filter is now one branch inside smart cleanup.
   setTimeout(() => {
-    import('./jobs/junkContactCleanupJob')
-      .then(({ runJunkContactCleanup }) => runJunkContactCleanup())
-      .catch((err) => console.warn('Junk contact cleanup failed:', err.message));
+    import('./services/knowledge/smartCleanupService')
+      .then(({ runSmartCleanupAllUsers }) => runSmartCleanupAllUsers())
+      .then((r) => console.log(`[SmartCleanup] tenants=${r.tenants} users=${r.users}`,
+        `repointed=${r.aggregate.leakedRepointed}`,
+        `archived_dup=${r.aggregate.leakedArchivedDuplicate}`,
+        `archived_no_ev=${r.aggregate.noEvidenceArchived}`,
+        `archived_junk=${r.aggregate.junkArchived}`,
+        `errors=${r.aggregate.errors}`))
+      .catch((err) => console.warn('Smart cleanup failed:', err.message));
     setInterval(() => {
-      import('./jobs/junkContactCleanupJob')
-        .then(({ runJunkContactCleanup }) => runJunkContactCleanup())
-        .catch((err) => console.warn('Junk contact cleanup failed:', err.message));
+      import('./services/knowledge/smartCleanupService')
+        .then(({ runSmartCleanupAllUsers }) => runSmartCleanupAllUsers())
+        .then((r) => console.log(`[SmartCleanup] tenants=${r.tenants} users=${r.users}`,
+          `repointed=${r.aggregate.leakedRepointed}`,
+          `archived_dup=${r.aggregate.leakedArchivedDuplicate}`,
+          `archived_no_ev=${r.aggregate.noEvidenceArchived}`,
+          `archived_junk=${r.aggregate.junkArchived}`,
+          `errors=${r.aggregate.errors}`))
+        .catch((err) => console.warn('Smart cleanup failed:', err.message));
     }, 24 * 60 * 60 * 1000);
   }, 10 * 60 * 1000);
 

@@ -512,24 +512,46 @@ router.post('/manual', async (req: Request, res: Response) => {
 });
 
 /**
- * POST /contacts/cleanup-junk
+ * POST /entity-catalog/smart-cleanup
  *
- * Two-step ergonomics matching the Open Items Smart cleanup pattern:
- *   - dryRun: true   → return preview { total, samples[] } without
- *                       changing anything. UI shows "About to archive
- *                       N contacts" banner.
- *   - dryRun: false  → archive flagged rows. Reversible: status flips
- *                       from 'active' → 'archived'; flipping back via
- *                       SQL or future "Show archived" view restores.
+ * Brain's autonomous contact maintenance. Replaces the old cleanup-junk
+ * endpoint (which only handled isLikelyAutomated patterns). Now also:
+ *   - Repoints cross-user-leaked rows (evidence-based ownership)
+ *   - Archives no-evidence rows (no feed + no user action + grace expired)
+ *   - Surfaces merge candidates (same email/phone, distinct rows)
+ *   - Applies isLikelyAutomated junk filter (legacy behaviour)
  *
- * Tenant-scoped — only operates on the caller's tenant. Admin role NOT
- * required: any user can clean their own visible contacts (the listing
- * filter already scopes by user/tenant visibility).
- *
- * Conservative criteria — uses isLikelyAutomated() pattern checks, the
- * same gate that blocks NEW junk on auto-discovery. We do NOT use the
- * signal-based shouldCreateContact pass-2 here because that would
- * archive low-frequency real contacts the user hasn't replied to yet.
+ * Two-step: dryRun:true returns a plan, dryRun:false applies it.
+ * Per-user — only operates on the caller's tenant; ownership decisions
+ * are evidence-based so other users' contacts can't be touched without
+ * actual feed_events backing the move.
+ */
+router.post('/smart-cleanup', async (req: Request, res: Response) => {
+  try {
+    const dryRun = (req.body?.dryRun ?? true) === true;
+    const { runSmartCleanupForUser } = await import('../services/knowledge/smartCleanupService');
+    const result = await runSmartCleanupForUser(
+      req.user!.clientNumber,
+      req.user!.id,
+      { dryRun, cronMode: false },
+    );
+    res.json({
+      dryRun,
+      ...result,
+      // For UI banner — keep the existing 'samples' shape for back-compat
+      // with ContactsPage's cleanupPreview state.
+      total: result.leakedRepointed + result.leakedArchivedDuplicate
+           + result.noEvidenceArchived + result.junkArchived,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /entity-catalog/cleanup-junk — legacy alias for /smart-cleanup.
+ * Existing clients keep working; new clients should call smart-cleanup
+ * directly. (TODO: remove after 2026-07-01 once UI is fully migrated.)
  */
 router.post('/cleanup-junk', async (req: Request, res: Response) => {
   const dryRun = (req.body?.dryRun ?? true) === true;
