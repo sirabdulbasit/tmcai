@@ -143,13 +143,79 @@ async function stampWhatsAppSync(userId: number): Promise<void> {
       where: { id: row.id },
       data: { lastSyncAt: new Date() },
     });
-    // If the row was in a degraded state, this stamp proves the
-    // channel is alive — heal status + clear stale-error metadata.
+    // Check the recent-error tracker before deciding status. If
+    // fetchThreadContext / fetchMessages keep throwing, the channel is
+    // technically alive (heartbeat fires, this stamp runs) but
+    // functionally broken — status should reflect 'degraded', not
+    // 'connected'. Per memory feedback_connector_status_is_truth.md.
+    const degradedReason = consumeDegradedReason(userId);
+    if (degradedReason) {
+      const { markConnectorDegraded } = await import('../connectorHealthService');
+      await markConnectorDegraded(row.id, degradedReason);
+      return;
+    }
+    // No recent errors — heal if previously degraded / errored.
     if (row.status && row.status !== 'connected' && row.status !== 'pending') {
       const { markConnectorConnected } = await import('../connectorHealthService');
       await markConnectorConnected(row.id, 'whatsapp_alive_signal');
     }
   } catch { /* best-effort; never block the message path */ }
+}
+
+// ─── Per-user error counter for "lying status" detection ──────────
+//
+// 2026-05-25 (whatsapp-web.js broken vs WhatsApp internals): the
+// fetchThreadContext / chat.fetchMessages calls throw repeatedly on
+// @lid chats with `waitForChatLoading undefined`. The heartbeat still
+// fires (session is "alive" from WA Web's point of view), so without
+// this tracker the connector reads status='connected' while ingest is
+// completely dead.
+//
+// We track errors in a sliding 5-minute window per userId. When >=10
+// errors arrive within the window AND >=3 distinct minutes have seen
+// errors (so a one-off burst doesn't flip the badge), we mark the
+// next stampWhatsAppSync as degraded. Reset on the next clean success.
+
+interface ErrorWindow { timestamps: number[]; lastReason: string; }
+const errorWindows = new Map<number, ErrorWindow>();
+const ERROR_WINDOW_MS = 5 * 60 * 1000;          // 5 minutes
+const ERROR_COUNT_THRESHOLD = 10;
+const ERROR_DISTINCT_MINUTES = 3;
+
+export function recordWhatsAppFetchError(userId: number, reason: string): void {
+  const now = Date.now();
+  const w = errorWindows.get(userId) ?? { timestamps: [], lastReason: '' };
+  w.timestamps.push(now);
+  w.lastReason = reason;
+  // Trim old entries outside the window.
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  errorWindows.set(userId, w);
+}
+
+/** Returns a degradation reason if the user has crossed the threshold,
+ *  else null. Called from stampWhatsAppSync. Resets if the window
+ *  cleared since the last sync. */
+function consumeDegradedReason(userId: number): string | null {
+  const w = errorWindows.get(userId);
+  if (!w) return null;
+  const now = Date.now();
+  // Trim window
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  if (w.timestamps.length < ERROR_COUNT_THRESHOLD) return null;
+  // Distinct-minutes guard
+  const minutes = new Set(w.timestamps.map((t) => Math.floor(t / 60_000)));
+  if (minutes.size < ERROR_DISTINCT_MINUTES) return null;
+  return `WhatsApp ingest degraded (${w.timestamps.length} fetch errors in last 5min): ${w.lastReason}`;
+}
+
+/** Test helper / explicit recovery — clear the error window so a
+ *  successful subsequent fetch can heal the status. */
+export function clearWhatsAppErrorWindow(userId: number): void {
+  errorWindows.delete(userId);
 }
 
 /**
@@ -868,7 +934,10 @@ export async function startPairing(userId: number, clientNumber: string): Promis
               timestamp: m.timestamp ? m.timestamp * 1000 : Date.now(),
             } as ThreadTurn));
         }
-      } catch (e: any) { log.warn('threadContext fetch failed', { error: e.message }); }
+      } catch (e: any) {
+        log.warn('threadContext fetch failed', { error: e.message });
+        recordWhatsAppFetchError(userId, e?.message ?? 'inline threadContext fetch failed');
+      }
 
       // Back-catch-up of outbound messages — for each fromMe message in
       // the recent fetch, ensure it's in whatsapp_outbound_messages.
@@ -1374,6 +1443,11 @@ export async function fetchThreadContext(userId: number, chatId: string, limit =
     return turns;
   } catch (e: any) {
     log.warn('[fetchThreadContext] threw', { userId, chatId, error: e?.message });
+    // Feed the lying-status detector. When this throws repeatedly
+    // (e.g. waitForChatLoading undefined for @lid chats), the next
+    // stampWhatsAppSync flips connector status='degraded' so the UI
+    // and Brain itself stop pretending WA ingest is healthy.
+    recordWhatsAppFetchError(userId, e?.message ?? 'fetchThreadContext threw');
     return [];
   }
 }

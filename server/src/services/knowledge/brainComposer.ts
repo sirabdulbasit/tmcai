@@ -3530,9 +3530,33 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
  *  Source: feed_events where source_type='whatsapp' AND user
  *  is the receiver (not fromMe). Names resolved through entity_person
  *  for known senders; unknown numbers labelled as such. Empty list →
- *  reasoning says "no recent WhatsApp", not invents a sender. */
+ *  reasoning says "no recent WhatsApp", not invents a sender.
+ *
+ *  2026-05-25: prepends a degraded-status warning when the WA
+ *  connector is in status='degraded' (lying-status fix). Without it,
+ *  Brain would correctly report "no messages" but the user has no
+ *  idea WHY — distinguishing "no WA in last 24h" from "WA ingest is
+ *  broken, can't see messages" matters for trust. */
 async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, max = 10): Promise<string> {
   const prisma = (await import('../../db/prisma')).default;
+  // Connector health probe — if WA is degraded, surface that to
+  // reasoning as a header on the block so Brain doesn't say
+  // "no messages" when the truth is "I can't read messages".
+  const connStatus = await prisma.$queryRawUnsafe<Array<{ status: string; error_message: string | null; metadata: any }>>(
+    `SELECT uc.status, uc.error_message, uc.metadata
+       FROM user_connectors uc
+       JOIN connector_types ct ON ct.id = uc.connector_type_id
+      WHERE uc.user_id = $1 AND ct.slug = 'whatsapp_personal'
+      LIMIT 1`,
+    userId,
+  ).catch(() => [] as any[]);
+  let degradedHeader = '';
+  if (connStatus[0]?.status === 'degraded' || connStatus[0]?.status === 'error') {
+    const reason = connStatus[0]?.metadata?.degradedReason
+                || connStatus[0]?.error_message
+                || 'WhatsApp ingest is currently degraded';
+    degradedHeader = `# ⚠️ WhatsApp ingest is DEGRADED right now\n${reason}\nThis means I cannot see WhatsApp messages received after the connector started degrading. When the user asks about recent WhatsApp activity, ALWAYS tell them the ingest is degraded and you can only see messages up to the last-good timestamp shown below. Do NOT say "no messages" without this caveat.\n\n`;
+  }
   const rows = await prisma.$queryRawUnsafe<Array<{
     sender_phone: string | null;
     sender_name: string | null;
@@ -3549,7 +3573,7 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
       LIMIT $3`,
     clientNumber, userId, max,
   ).catch(() => [] as any[]);
-  if (rows.length === 0) return '# Recent WhatsApp messages (last 24h)\n(no WhatsApp messages received in the last 24 hours)';
+  if (rows.length === 0) return `${degradedHeader}# Recent WhatsApp messages (last 24h)\n(no WhatsApp messages received in the last 24 hours)`;
   // Resolve known names by phone match against entity_person rows the
   // user can see — keeps the rule "only people in your contacts get
   // named" honest while still surfacing the raw phone for unknowns.
@@ -3575,7 +3599,7 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     const knownTag = known.has(phone) ? '' : ' [not in your contacts]';
     return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
   });
-  return `# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
+  return `${degradedHeader}# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
 }
 
 /** Contact provenance block — ONLY built when the user's question

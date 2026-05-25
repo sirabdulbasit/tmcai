@@ -103,6 +103,53 @@ export async function markConnectorConnected(
   });
 }
 
+/**
+ * Mark a connector as `degraded` — session looks alive (last_sync_at
+ * stays current) but actual data retrieval is failing. Used by the
+ * WhatsApp provider when fetchThreadContext / chat.fetchMessages keep
+ * throwing while the heartbeat still fires (the classic "lying status"
+ * pattern: status='connected' while ingest is functionally dead).
+ *
+ * Sets:
+ *   status        = 'degraded'
+ *   errorMessage  = caller-supplied reason
+ *   metadata.degradedAt    = now
+ *   metadata.degradedReason
+ *
+ * The Connectors UI renders 'degraded' with a yellow/red badge, and
+ * the Day Brief composer can surface "WhatsApp ingest is degraded —
+ * I can only see messages from before <last good sync>" when relevant.
+ *
+ * Reversible: any subsequent markConnectorConnected() call clears the
+ * status + STALE_ERROR_META_KEYS atomically.
+ */
+export async function markConnectorDegraded(
+  connectorId: string,
+  reason: string,
+): Promise<void> {
+  const existing = await prisma.userConnector.findUnique({
+    where: { id: connectorId },
+    select: { metadata: true, status: true },
+  }).catch(() => null);
+  if (!existing) return;
+  // Idempotent — don't churn DB writes if already degraded with same reason.
+  const meta = ((existing.metadata as Record<string, unknown> | null) ?? {});
+  if (existing.status === 'degraded' && meta.degradedReason === reason) return;
+  const m: Record<string, unknown> = { ...meta };
+  m.degradedAt = new Date().toISOString();
+  m.degradedReason = reason;
+  await prisma.userConnector.update({
+    where: { id: connectorId },
+    data: {
+      status: 'degraded',
+      errorMessage: reason.slice(0, 500),
+      metadata: m as any,
+    },
+  }).catch((e: any) => {
+    log.warn('markConnectorDegraded failed', { connectorId, error: e.message });
+  });
+}
+
 export async function markConnectorConnectedByType(
   userId: number,
   connectorTypeId: string,
