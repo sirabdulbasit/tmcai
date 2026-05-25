@@ -4824,28 +4824,33 @@ function describeMissingPiece(userQuestion: string): string {
   return `which specific item / person you mean, and any details I should use.`;
 }
 
-/** Phase 8 gate: decide whether THIS call uses the reasoning-first
- *  composer or the legacy multi-call path. Sources, in priority:
- *    1. explicit opts.useReasoning flag from caller
- *    2. BRAIN_USE_REASONING env var:
- *       'always' → true; 'never' or unset → false;
- *       number 1..100 → deterministic hash on userId, return true
- *       when (hash mod 100) < value (percent rollout)
- *  Keeps the ramp deterministic per user so observation is stable. */
-function resolveReasoningMode(userId: number, explicit: boolean | undefined): boolean {
+/** Decide whether THIS call uses the reasoning-first composer or the
+ *  legacy multi-call path.
+ *
+ *  Default = reasoning ON (changed 2026-05-25 after Basit's
+ *  data-parity test: UI chat hit the reasoning path and got real
+ *  WhatsApp data, WhatsApp Nexeo hit the legacy path and falsely
+ *  said "no messages in last 24h" because the legacy composer doesn't
+ *  inject the new recentEmails / recentWhatsApp / contactProvenance /
+ *  dayBrief blocks or have access to brain tools).
+ *
+ *  Sources, in priority:
+ *    1. explicit opts.useReasoning=false → force legacy (escape hatch
+ *       for incidents or A/B comparison)
+ *    2. explicit opts.useReasoning=true → force reasoning
+ *    3. BRAIN_USE_REASONING env var:
+ *       'never' → false (override default for emergency rollback);
+ *       any other value → reasoning ON (default).
+ *
+ *  The percent-rollout mode (numeric env) is removed — once the
+ *  reasoning path became the only path with current visibility data,
+ *  splitting a tenant's users across paths creates the very parity
+ *  bug we're trying to eliminate. */
+function resolveReasoningMode(_userId: number, explicit: boolean | undefined): boolean {
   if (explicit === true) return true;
   if (explicit === false) return false;
-  const env = process.env.BRAIN_USE_REASONING;
-  if (!env) return false;
-  if (env === 'always') return true;
-  if (env === 'never') return false;
-  const pct = Number(env);
-  if (!Number.isFinite(pct) || pct <= 0) return false;
-  // Stable per-user hash → percent rollout.
-  let h = 0;
-  const s = String(userId);
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return (Math.abs(h) % 100) < Math.min(100, Math.floor(pct));
+  if (process.env.BRAIN_USE_REASONING === 'never') return false;
+  return true;
 }
 
 /** Persist the reasoning step's decision + token telemetry. Used for
