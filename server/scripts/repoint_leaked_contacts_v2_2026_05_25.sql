@@ -71,7 +71,7 @@ ORDER BY 1, 2;
 -- new_owner). Stamp metadata so we can recover or audit.
 UPDATE wiki_pages w
    SET status = 'archived',
-       metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+       metadata = COALESCE(w.metadata, '{}'::jsonb) || jsonb_build_object(
          'archivedReason', 'leaked_duplicate_of_real_owner',
          'archivedAt',     NOW()::text,
          'archivedBy',     'repoint_v2_2026_05_25',
