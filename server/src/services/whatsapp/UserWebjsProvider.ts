@@ -830,8 +830,41 @@ export async function startPairing(userId: number, clientNumber: string): Promis
         return;
       }
 
+      // Resolve the sender's display name PLUS preserve which source
+      // each piece came from, so Brain can distinguish "this is in my
+      // contacts" (contact.name) from "this is just what they call
+      // themselves on WhatsApp" (contact.pushname). Per Basit 2026-05-25:
+      // "you said Za is a pushname but i saved this contact" — the
+      // previous extraction `pushname || name || verifiedName` lost
+      // the source info and Brain mislabeled a saved contact as a
+      // stranger.
       let senderName: string | undefined;
-      try { const c = await message.getContact(); senderName = c?.pushname || c?.name || c?.verifiedName; } catch {}
+      let contactNames: {
+        savedName: string | null;        // contact.name — YOUR phone's saved label
+        savedShortName: string | null;   // contact.shortName
+        pushname: string | null;          // sender's WhatsApp display name
+        verifiedName: string | null;      // verified business name
+        isUserSavedContact: boolean;      // true ⇔ savedName is non-empty
+      } = {
+        savedName: null, savedShortName: null,
+        pushname: null, verifiedName: null,
+        isUserSavedContact: false,
+      };
+      try {
+        const c = await message.getContact();
+        contactNames.savedName      = (c?.name || '').trim() || null;
+        contactNames.savedShortName = (c?.shortName || '').trim() || null;
+        contactNames.pushname       = (c?.pushname || '').trim() || null;
+        contactNames.verifiedName   = (c?.verifiedName || '').trim() || null;
+        contactNames.isUserSavedContact = !!contactNames.savedName;
+        // Display-name precedence: trust YOUR saved name first, then
+        // verified business name, then pushname as last resort.
+        senderName = contactNames.savedName
+                  || contactNames.savedShortName
+                  || contactNames.verifiedName
+                  || contactNames.pushname
+                  || undefined;
+      } catch {}
 
       // ── Voice note handling ──
       // Voice notes (ptt) and audio messages used to ingest with an
@@ -984,6 +1017,13 @@ export async function startPairing(userId: number, clientNumber: string): Promis
         chatId: rawFrom,
         phoneNumber: phone,
         senderName: senderName || null,
+        // 2026-05-25 — preserve the full name-source breakdown so
+        // downstream (entity_person enrichment, Brain reasoning,
+        // contact-identity questions) can distinguish "saved in your
+        // contacts" from "pushname only". Without this, Brain can't
+        // tell whether a sender named "X" is someone you know or
+        // someone calling themselves X on WhatsApp.
+        contactNames,
         body: formattedBody,
         type: message.type || 'chat',
         hasMedia: !!message.hasMedia,

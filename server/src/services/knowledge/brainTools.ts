@@ -407,6 +407,18 @@ const fetchContactFull: BrainToolDefinition = {
       `First seen: ${md.first_seen_at ?? row.createdAt?.toString?.()?.slice(0, 10) ?? '(unknown)'}`,
       `Source: ${md.source ?? md.imported_from ?? '(unrecorded)'}`,
     ];
+    // Saved-vs-pushname distinction (WA-sourced contacts). When
+    // isUserSavedContact=true, the user has this person in their
+    // phone's address book — Brain can confidently say "you have them
+    // in your contacts". When false, Brain should say "they're on
+    // WhatsApp as <pushname> but I don't see them in your saved
+    // contacts."
+    if (md.isUserSavedContact !== undefined) {
+      lines.push(`In user's phone contacts: ${md.isUserSavedContact ? 'YES' : 'NO'}`);
+      if (md.contactNames_savedName)   lines.push(`Saved name (user's phonebook): ${md.contactNames_savedName}`);
+      if (md.contactNames_pushname)    lines.push(`WhatsApp pushname (sender's choice): ${md.contactNames_pushname}`);
+      if (md.contactNames_verifiedName) lines.push(`Verified business name: ${md.contactNames_verifiedName}`);
+    }
     if (md.publicSetBy) lines.push(`Published by: user ${md.publicSetBy} on ${md.publicSince ?? '?'}`);
     if (md.brainMutedBy) lines.push(`Muted by: user ${md.brainMutedBy}`);
     return `# Contact: ${row.title}\n${lines.map((l) => `- ${l}`).join('\n')}`;

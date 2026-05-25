@@ -173,6 +173,17 @@ export async function ensureEntityForSender(input: {
   /** Manual / google_import / microsoft_import bypass the junk filter.
    *  Default unset = ingest path = filter applies. */
   importSource?: string;
+  /** WhatsApp contact-name breakdown captured at ingest time. When
+   *  present, persisted to metadata.contactNames so Brain can tell
+   *  the user-saved name from the sender's WhatsApp pushname. The
+   *  isUserSavedContact flag drives "is X in my contacts" answers. */
+  contactNames?: {
+    savedName: string | null;
+    savedShortName: string | null;
+    pushname: string | null;
+    verifiedName: string | null;
+    isUserSavedContact: boolean;
+  } | null;
 }): Promise<{ id: string; created: boolean } | null> {
   // Always normalise to the bare canonical address — strips
   // "Name <addr@x>" / "<addr@x>" wrapping, lowercases, trims. Single
@@ -317,12 +328,31 @@ export async function ensureEntityForSender(input: {
     const fillEmail = email && !meta.email;
     const fillPhone = phone && !meta.phone;
 
-    if (newChannel || newDiscoverer || fillEmail || fillPhone) {
+    // Refresh WA name-source breakdown on every sweep — captures
+    // "user has now saved this contact" or "pushname changed". The
+    // isUserSavedContact flag in particular drives Brain's answer to
+    // "is X in my contacts" so it must reflect the latest reality.
+    const cn = input.contactNames as any;
+    const newContactNames = cn && (
+      cn.savedName !== meta.contactNames_savedName
+      || cn.pushname !== meta.contactNames_pushname
+      || cn.verifiedName !== meta.contactNames_verifiedName
+      || cn.isUserSavedContact !== meta.isUserSavedContact
+    );
+    if (newChannel || newDiscoverer || fillEmail || fillPhone || newContactNames) {
       const next: Record<string, unknown> = { ...meta };
       if (newChannel) next.channels = [...channels, ...channelsToAdd];
       if (newDiscoverer) next.discovered_by_users = [...discoveredBy, input.userId];
       if (fillEmail) next.email = email;
       if (fillPhone) next.phone = phone;
+      if (cn) {
+        next.contactNames_savedName = cn.savedName ?? null;
+        next.contactNames_savedShortName = cn.savedShortName ?? null;
+        next.contactNames_pushname = cn.pushname ?? null;
+        next.contactNames_verifiedName = cn.verifiedName ?? null;
+        next.isUserSavedContact = !!cn.isUserSavedContact;
+        next.contactNamesUpdatedAt = new Date().toISOString();
+      }
       // Use the existing row's id, NOT the deterministic id — the
       // content-match path can find a CUID-id row that needs updating.
       await prisma.$executeRawUnsafe(
@@ -364,6 +394,15 @@ export async function ensureEntityForSender(input: {
       discovered_by_users: [input.userId],
       first_seen_at: new Date().toISOString(),
       last_enriched_at: null,
+      // WhatsApp name-source breakdown (when this row originated from a
+      // WA event). isUserSavedContact = true ⇔ contact.name was non-null
+      // at ingest time = "user has this person in their phonebook".
+      contactNames_savedName:      (input.contactNames as any)?.savedName ?? null,
+      contactNames_savedShortName: (input.contactNames as any)?.savedShortName ?? null,
+      contactNames_pushname:       (input.contactNames as any)?.pushname ?? null,
+      contactNames_verifiedName:   (input.contactNames as any)?.verifiedName ?? null,
+      isUserSavedContact:          !!((input.contactNames as any)?.isUserSavedContact),
+      contactNamesUpdatedAt:       input.contactNames ? new Date().toISOString() : null,
     }),
   );
   return { id, created: true };
@@ -411,6 +450,11 @@ export async function sweepForTenant(
             MAX(sender_phone) AS sender_phone,
             MIN(user_id) AS first_user_id,
             array_agg(DISTINCT source_type) FILTER (WHERE source_type IS NOT NULL) AS channels,
+            -- 2026-05-25: preserve the WA name-source breakdown for the
+            -- newest event of this sender so entity_person knows whether
+            -- the contact is in the user's phonebook (savedName !== null)
+            -- vs a pushname-only stranger.
+            (array_agg(raw_payload->'contactNames' ORDER BY created_at DESC) FILTER (WHERE raw_payload ? 'contactNames'))[1] AS latest_contact_names,
             COUNT(*)::int AS event_count,
             MAX(created_at) AS last_seen
        FROM feed_events
@@ -438,6 +482,7 @@ export async function sweepForTenant(
         senderName: s.sender_name,
         senderPhone: s.sender_phone,
         channels,
+        contactNames: s.latest_contact_names ?? null,
       });
       if (!ensured) continue;
       if (ensured.created) result.created += 1;
