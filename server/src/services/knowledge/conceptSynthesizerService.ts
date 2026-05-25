@@ -202,6 +202,23 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   // Also preserve any user-set fields like stars + linked-person link.
   if (existingMeta.user_stars !== undefined) metadata.user_stars = existingMeta.user_stars;
   if (existingMeta.linkedPersonId !== undefined) metadata.linkedPersonId = existingMeta.linkedPersonId;
+  // Preserve ingest-time provenance written by entitySweepService /
+  // ensureEntityForSender. These fields answer "where did this contact
+  // come from?" — without them we lose the audit trail (which is what
+  // surfaced as 36/96 contacts showing NULL provenance on 2026-05-25
+  // when Basit asked about katja.kuhn@sap.com). Synthesizer must not
+  // overwrite provenance written by ingest.
+  if (existingMeta.source !== undefined) metadata.source = existingMeta.source;
+  if (existingMeta.imported_from !== undefined) metadata.imported_from = existingMeta.imported_from;
+  if (existingMeta.channels !== undefined) metadata.channels = existingMeta.channels;
+  if (existingMeta.discovered_by_users !== undefined) metadata.discovered_by_users = existingMeta.discovered_by_users;
+  if (existingMeta.first_seen_at !== undefined) metadata.first_seen_at = existingMeta.first_seen_at;
+  // User-managed lifecycle flags (Mark Inactive, rename, etc.) must
+  // also survive — these are user choices, not synth output.
+  if (existingMeta.markedInactiveByUser !== undefined) metadata.markedInactiveByUser = existingMeta.markedInactiveByUser;
+  if (existingMeta.markedInactiveAt !== undefined) metadata.markedInactiveAt = existingMeta.markedInactiveAt;
+  if (existingMeta.markedInactiveBy !== undefined) metadata.markedInactiveBy = existingMeta.markedInactiveBy;
+  if (existingMeta.userRenamed !== undefined) metadata.userRenamed = existingMeta.userRenamed;
 
   let pageId: string;
   if (existing) {
