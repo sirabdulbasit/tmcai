@@ -104,7 +104,7 @@ export async function getDayBrief(args: {
     }>>(
       `SELECT sender_phone, sender_name, raw_payload, created_at
          FROM feed_events
-        WHERE client_number = $1 AND user_id = $2 AND source_type='whatsapp_personal'
+        WHERE client_number = $1 AND user_id = $2 AND source_type='whatsapp'
           AND COALESCE((raw_payload->>'fromMe')::boolean, FALSE) = FALSE
           AND created_at >= NOW() - INTERVAL '24 hours'
         ORDER BY created_at DESC LIMIT 10`,

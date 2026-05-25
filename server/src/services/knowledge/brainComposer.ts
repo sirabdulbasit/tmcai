@@ -3527,7 +3527,7 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
 }
 
 /** Recent WhatsApp messages (last 24h) the user actually received.
- *  Source: feed_events where source_type='whatsapp_personal' AND user
+ *  Source: feed_events where source_type='whatsapp' AND user
  *  is the receiver (not fromMe). Names resolved through entity_person
  *  for known senders; unknown numbers labelled as such. Empty list →
  *  reasoning says "no recent WhatsApp", not invents a sender. */
@@ -3542,7 +3542,7 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     `SELECT sender_phone, sender_name, raw_payload, created_at
        FROM feed_events
       WHERE client_number = $1 AND user_id = $2
-        AND source_type = 'whatsapp_personal'
+        AND source_type = 'whatsapp'
         AND COALESCE((raw_payload->>'fromMe')::boolean, FALSE) = FALSE
         AND created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY created_at DESC

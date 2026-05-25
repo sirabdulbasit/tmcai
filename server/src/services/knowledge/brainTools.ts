@@ -280,7 +280,7 @@ const fetchWhatsAppThread: BrainToolDefinition = {
               COALESCE((raw_payload->>'fromMe')::boolean, FALSE) AS from_me
          FROM feed_events
         WHERE client_number = $1 AND user_id = $2
-          AND source_type = 'whatsapp_personal'
+          AND source_type = 'whatsapp'
           AND regexp_replace(coalesce(sender_phone,''), '[^0-9+]','','g') = ANY($3::text[])
         ORDER BY created_at DESC
         LIMIT $4`,
@@ -452,7 +452,7 @@ const fetchRecentMessages: BrainToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      channel:          { type: 'string', enum: ['any', 'gmail', 'whatsapp_personal', 'gcal'], description: 'default any' },
+      channel:          { type: 'string', enum: ['any', 'gmail', 'whatsapp', 'gcal'], description: 'default any' },
       last_n_hours:     { type: 'integer', description: 'lookback window in hours (default 24, max 168)' },
       limit:            { type: 'integer', description: 'max rows (default 15, max 50)' },
     },
@@ -477,7 +477,7 @@ const fetchRecentMessages: BrainToolDefinition = {
     ).catch(() => [] as any[]);
     if (rows.length === 0) return `# Recent messages (last ${hours}h${ch ? `, ${ch}` : ''})\n(nothing in this window)`;
     const lines = rows.map((r) => {
-      const who = r.source_type === 'whatsapp_personal'
+      const who = r.source_type === 'whatsapp'
         ? (r.sender_name?.trim() || r.sender_phone || 'unknown')
         : `${r.sender_name?.trim() || ''} <${unwrapEmail(r.sender_email)}>`;
       const subj = String(r.raw_payload?.subject ?? '').slice(0, 80);
