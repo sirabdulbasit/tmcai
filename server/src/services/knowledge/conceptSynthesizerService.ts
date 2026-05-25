@@ -151,12 +151,6 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   // Title — prefer full name, fall back to email/phone
   const title = (entity.name || entity.email || entity.phone || entityId).slice(0, 300);
 
-  // Store under a stable tenant user. We use the MD's userId so the page
-  // is written in their scope, but since entity_person is a tenant-shared
-  // concept page, every user's Brain reads it.
-  const mdUser = await pickTenantScope(clientNumber);
-  if (!mdUser) return null;
-
   // Per Basit 2026-05-25 (locked rule): contacts default to 'normal'.
   // 'tenant' (Public) is ONLY set when the user explicitly publishes
   // via /entity-catalog/:id/publish or the set_contact_scope chat action.
@@ -167,12 +161,25 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   // scope: 'tenant' into the metadata, blowing away user opt-ins and
   // promoting auto-discovered contacts that should stay private.
 
-  // Load existing scope + publish-audit fields so we preserve them
-  // when updating an entity_person page (so the user's manual
-  // Make-Public / Make-Private opt-ins survive synthesis).
+  // Look up existing entity_person row WITHOUT filtering by user_id.
+  // Before 2026-05-25, this used `userId: pickTenantScope(clientNumber)`
+  // which returns the lowest-active-user.id — so the lookup missed rows
+  // owned by any other user in the tenant and fell through to creating
+  // a NEW row owned by the lowest user. That's how 29 of Basit's
+  // contacts ended up being Haseeb's Gmail contacts. Lookup is now
+  // tenant-scoped + by stable identity (entityId or title) so the right
+  // row is updated regardless of who currently owns it.
   const existing = await prisma.wikiPage.findFirst({
-    where: { clientNumber, userId: mdUser, pageType: 'entity_person', title },
-    select: { id: true, metadata: true },
+    where: {
+      clientNumber,
+      pageType: 'entity_person',
+      OR: [
+        { metadata: { path: ['entityId'], equals: entity.id } as any },
+        ...(entity.email ? [{ metadata: { path: ['email'], equals: entity.email } as any }] : []),
+        { title },
+      ],
+    } as any,
+    select: { id: true, metadata: true, userId: true },
   }).catch(() => null);
 
   const existingMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
@@ -222,15 +229,36 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
 
   let pageId: string;
   if (existing) {
+    // Preserve existing ownership. Synthesizer must NEVER repoint a
+    // contact to a different user — ownership is set by ingest (whoever
+    // received from this sender) and only changed by explicit user
+    // action (reclaim-ownership, scope=tenant). Earlier code passed
+    // mdUser=lowest-active-user here, which silently transferred every
+    // contact to the system user and surfaced as the 2026-05-25
+    // cross-user leak.
     await prisma.wikiPage.update({
       where: { id: existing.id },
       data: { bodyMarkdown: body, metadata, lastUpdatedAt: new Date(), lastUpdatedBy: 'concept_synthesizer', status: 'active' },
     });
     pageId = existing.id;
   } else {
+    // Derive new-row owner from linkedPages — the user_id of the most
+    // recent source page that surfaced this entity. Fall back to
+    // pickTenantScope only when linkedPages have no user_id (shouldn't
+    // happen in practice but keeps the function total). DO NOT default
+    // to the lowest-active-user — that's the leak we just fixed.
+    const ownerFromLinked = (() => {
+      for (const p of linkedPages) {
+        const uid = Number((p as any).userId);
+        if (uid && Number.isFinite(uid)) return uid;
+      }
+      return null;
+    })();
+    const ownerUserId = ownerFromLinked ?? await pickTenantScope(clientNumber);
+    if (!ownerUserId) return null;
     const created = await prisma.wikiPage.create({
       data: {
-        clientNumber, userId: mdUser,
+        clientNumber, userId: ownerUserId,
         pageType: 'entity_person', title,
         bodyMarkdown: body, metadata,
         storage: 'postgres', status: 'active',
@@ -242,8 +270,19 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   }
 
   // Wire person → every source page (one direction; source pages already
-  // carry metadata.entityId, so we don't need the reverse link for lookup)
-  await linkFromPersonToSources(clientNumber, mdUser, pageId, linkedPages);
+  // carry metadata.entityId, so we don't need the reverse link for lookup).
+  // Link rows use the page's current owner; pickTenantScope as a fallback
+  // only when the row is brand-new and linkedPages had no user_id.
+  const linkOwner = existing?.userId ?? (() => {
+    for (const p of linkedPages) {
+      const uid = Number((p as any).userId);
+      if (uid && Number.isFinite(uid)) return uid;
+    }
+    return null;
+  })();
+  if (linkOwner) {
+    await linkFromPersonToSources(clientNumber, linkOwner, pageId, linkedPages);
+  }
 
   // Embed so semantic search "tell me about X" lands on this page
   void (async () => {
