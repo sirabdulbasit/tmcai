@@ -111,9 +111,23 @@ router.get('/webhooks/whatsapp/:clientNumber', async (req, res) => {
   ) as any[];
 
   if (mode === 'subscribe' && rows.length && rows[0].provider === 'meta' && token === rows[0].meta_webhook_secret) {
-    log.info('Webhook verified', { clientNumber });
-    res.status(200).send(challenge);
+    log.info('Webhook verified', { clientNumber, challenge });
+    // Meta is strict about the verify response: must be plain text, exactly
+    // the challenge value, status 200. Default Express res.send sends as
+    // text/html which Meta sometimes rejects with "couldn't be validated"
+    // even though our handler logic is correct.
+    res.status(200).type('text/plain').send(String(challenge));
   } else {
+    // Log WHY it failed so we can diagnose if Meta complains
+    log.warn('Webhook verify failed', {
+      clientNumber,
+      mode,
+      hasRow: rows.length > 0,
+      providerInDb: rows[0]?.provider,
+      tokenMatch: token === rows[0]?.meta_webhook_secret,
+      receivedTokenLen: typeof token === 'string' ? token.length : 0,
+      expectedTokenLen: rows[0]?.meta_webhook_secret?.length ?? 0,
+    });
     res.sendStatus(403);
   }
 });
