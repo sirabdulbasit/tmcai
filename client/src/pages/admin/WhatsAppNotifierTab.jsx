@@ -16,6 +16,13 @@ export default function WhatsAppNotifierTab() {
   const [test, setTest] = useState({ phone: '', msg: 'MyOS notifier test — ignore', userId: '' });
   const [msg, setMsg] = useState(null);
   const [confirmDisable, setConfirmDisable] = useState(false);
+  // Webhook config state — separate from notifier credentials. The
+  // verifyToken is shown plaintext ONCE right after generation so the
+  // operator can copy it into Meta's webhook config UI; afterwards we
+  // only show a masked preview (first 6 + last 4 chars).
+  const [webhookSecret, setWebhookSecret] = useState(null);   // plaintext, transient
+  const [generatingSecret, setGeneratingSecret] = useState(false);
+  const [copied, setCopied] = useState(null);                  // which value just got copied
 
   const load = async () => {
     setState({ loading: true });
@@ -115,6 +122,39 @@ export default function WhatsAppNotifierTab() {
     load();
   };
 
+  // Generate + store a fresh webhook verify token. Shown plaintext ONCE
+  // — operator copies it, pastes into Meta's webhook config page, and
+  // clicks "Verify and save" there. On any subsequent page reload we
+  // only show the masked preview from the GET response.
+  const generateWebhookSecret = async () => {
+    setGeneratingSecret(true);
+    setMsg(null);
+    try {
+      const { data } = await api.post('/admin/whatsapp-notifier/webhook-secret');
+      setWebhookSecret(data.verifyToken);
+      setMsg({
+        ok: true,
+        text: 'Webhook verify token generated. Copy it now, paste into Meta\'s webhook config — Meta only verifies if the token matches.',
+      });
+      load();
+    } catch (e) {
+      setMsg({ ok: false, text: e?.response?.data?.error ?? e.message });
+    } finally {
+      setGeneratingSecret(false);
+    }
+  };
+
+  const copyToClipboard = async (label, value) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      // clipboard API may be blocked — show inline so operator can manual-select
+      setMsg({ ok: false, text: 'Clipboard blocked — select the value manually and copy.' });
+    }
+  };
+
   return (
     <div>
       {/* Header + status live in the parent merged tab. This panel only
@@ -176,6 +216,76 @@ export default function WhatsAppNotifierTab() {
           <Button variant="primary" onClick={save} disabled={!form.displayNumber || !form.phoneNumberId || (!form.accessToken && !state.hasToken)}>
             Save
           </Button>
+        </div>
+      </Card>
+
+      {/* ── Webhook (inbound from Meta) ─────────────────────────────────
+          The above credentials let Brain SEND. To RECEIVE incoming user
+          messages, Meta needs a webhook URL + verify token. Both must
+          match exactly between this page and the Meta dashboard. */}
+      <h3 style={{ marginTop: 'var(--s-6)', marginBottom: 'var(--s-3)', textTransform: 'uppercase', fontSize: 'var(--fs-md)', color: 'var(--accent)', letterSpacing: '.5px' }}>
+        Inbound webhook
+      </h3>
+      <Card>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 'var(--s-3)', lineHeight: 1.5 }}>
+          Configure these two values on Meta's webhook page:&nbsp;
+          <code style={{ color: 'var(--accent)' }}>WhatsApp → Configuration → Webhook</code>.
+          The verify token must match what's stored here — Meta calls our endpoint with it
+          to confirm we own the URL, then starts delivering incoming messages.
+        </div>
+
+        <Field label="Callback URL — paste this in Meta's webhook config" helper="Public endpoint Meta posts incoming messages to. Same value, every save.">
+          <div style={{ display: 'flex', gap: 'var(--s-2)' }}>
+            <Input value={state.webhook?.callbackUrl ?? ''} readOnly style={{ flex: 1 }} />
+            <Button variant="secondary" size="sm" onClick={() => copyToClipboard('callbackUrl', state.webhook?.callbackUrl ?? '')}>
+              {copied === 'callbackUrl' ? '✓ Copied' : 'Copy'}
+            </Button>
+          </div>
+        </Field>
+
+        <div style={{ marginTop: 'var(--s-3)' }}>
+          <Field
+            label="Verify token — paste this in Meta's webhook config"
+            helper={state.webhook?.hasSecret
+              ? `Stored (preview: ${state.webhook.secretPreview}). Generate a new one to rotate — old one stops working immediately, you'll need to update Meta to match.`
+              : 'No webhook secret yet. Click Generate to create one — you can copy it ONCE, then it\'s stored hashed.'}
+          >
+            {webhookSecret ? (
+              // Plaintext shown only just after generation
+              <div>
+                <div style={{ display: 'flex', gap: 'var(--s-2)' }}>
+                  <Input value={webhookSecret} readOnly style={{ flex: 1, fontFamily: 'monospace' }} />
+                  <Button variant="primary" size="sm" onClick={() => copyToClipboard('verifyToken', webhookSecret)}>
+                    {copied === 'verifyToken' ? '✓ Copied' : 'Copy'}
+                  </Button>
+                </div>
+                <div style={{ marginTop: 6, padding: 'var(--s-2)', background: 'var(--warning-dim, rgba(245,158,11,0.1))', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 'var(--r-md)', fontSize: 'var(--fs-xs)', lineHeight: 1.5 }}>
+                  ⚠ Copy this NOW — once you leave this page, only a masked preview will be shown.
+                  Paste into Meta's <code>Verify token</code> field, then click <code>Verify and save</code> there.
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'center' }}>
+                <Input value={state.webhook?.secretPreview ?? '(none generated yet)'} readOnly style={{ flex: 1, fontFamily: 'monospace', color: 'var(--text-dim)' }} />
+                <Button variant={state.webhook?.hasSecret ? 'secondary' : 'primary'} size="sm" onClick={generateWebhookSecret} disabled={generatingSecret}>
+                  {generatingSecret ? 'Generating…' : (state.webhook?.hasSecret ? 'Rotate' : 'Generate')}
+                </Button>
+              </div>
+            )}
+          </Field>
+        </div>
+
+        <div style={{ marginTop: 'var(--s-4)', padding: 'var(--s-3)', background: 'var(--bg-1, #0d1117)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', fontSize: 'var(--fs-xs)', lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 'var(--fw-semibold)', color: 'var(--accent)', marginBottom: 6 }}>Setup steps on Meta side (do these once)</div>
+          <ol style={{ margin: 0, paddingLeft: 18 }}>
+            <li>Click <b>Generate</b> above → copy the verify token</li>
+            <li>In Meta developer console → your app → <b>WhatsApp → Configuration → Webhook</b></li>
+            <li>Paste the <b>Callback URL</b> (above) into Meta's "Callback URL" field</li>
+            <li>Paste the <b>Verify token</b> into Meta's "Verify token" field</li>
+            <li>Click <b>Verify and save</b> in Meta — if green check, webhook is wired</li>
+            <li>Subscribe to the <code>messages</code> webhook field (and <code>message_status</code> if you want delivery receipts)</li>
+            <li>Test: send any message to your business number — should appear in <b>Brain Chat</b> within a few seconds</li>
+          </ol>
         </div>
       </Card>
 
