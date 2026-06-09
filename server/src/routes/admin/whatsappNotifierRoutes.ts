@@ -43,7 +43,7 @@ router.get('/whatsapp-notifier', requireAdmin, async (req: Request, res: Respons
   ).catch(() => [] as any[]);
 
   const webhook = {
-    callbackUrl: `${publicBaseUrl(req)}/api/webhooks/whatsapp/${u.clientNumber}`,
+    callbackUrl: `${publicBaseUrl(req)}/api/v1/webhooks/whatsapp/${u.clientNumber}`,
     hasSecret: !!cfg[0]?.meta_webhook_secret,
     secretPreview: cfg[0]?.meta_webhook_secret
       ? `${cfg[0].meta_webhook_secret.slice(0, 6)}…${cfg[0].meta_webhook_secret.slice(-4)}`
@@ -143,7 +143,7 @@ router.post('/whatsapp-notifier/webhook-secret', requireAdmin, async (req: Reque
     res.json({
       ok: true,
       verifyToken: secret,
-      callbackUrl: `${publicBaseUrl(req)}/api/webhooks/whatsapp/${u.clientNumber}`,
+      callbackUrl: `${publicBaseUrl(req)}/api/v1/webhooks/whatsapp/${u.clientNumber}`,
       hint: 'Paste verifyToken into Meta\'s "Verify token" field on the webhook config page. Once you click "Verify and save" there, the GET handshake will succeed (our handler echoes back the challenge if the token matches what is stored).',
     });
   } catch (err: any) {
