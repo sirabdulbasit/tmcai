@@ -133,6 +133,20 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
       } catch { /* fall through */ }
     }
 
+    // Failure throttle — if a previous attempt failed within the last
+    // hour, skip this tick. Without this, persistent failures (Meta
+    // not configured, webjs broken on @lid, daily cap hit, etc.) cause
+    // the cron to retry every minute and spam the Brain→User audit log
+    // with FAILED entries. 1h backoff is a tradeoff: noise drops 60×
+    // and the user still gets the brief within an hour of any recovery.
+    const attemptKey = `day_brief_attempt:${u.id}:${wall.ymd}`;
+    if (redis) {
+      try {
+        const recent = await redis.get(attemptKey);
+        if (recent) { result.skipped += 1; continue; }
+      } catch { /* fall through */ }
+    }
+
     // Compose the brief via the unified Brain composer. channel=whatsapp
     // gives us the WA-rendered terse body. Empty history — Day Brief
     // is a fresh ask, not a continuation of any conversation.
@@ -142,7 +156,12 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
       const body = (out.answer || '').trim();
       if (!body) {
         // Composer returned empty — don't mark fired so tomorrow tries
-        // again. Log so we can investigate.
+        // again. Throttle attempts to 1h so we don't re-compose every
+        // minute. Log so we can investigate.
+        if (redis) {
+          try { await redis.set(attemptKey, '1', 'EX', 60 * 60); }
+          catch { /* non-critical */ }
+        }
         log.warn('day brief composer returned empty', { userId: u.id });
         result.errors += 1;
         continue;
@@ -167,6 +186,13 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
         // Common legitimate reasons: opt_in_required (race vs settings
         // change), user_paused_outbound, daily_cap. Don't mark fired —
         // a transient block today shouldn't permanently skip the user.
+        // BUT we DO stamp the attempt key (1h TTL) so the cron doesn't
+        // retry every single minute and flood the audit log. After 1h
+        // the throttle clears and the next tick will try again.
+        if (redis) {
+          try { await redis.set(attemptKey, '1', 'EX', 60 * 60); }
+          catch { /* non-critical */ }
+        }
         log.warn('day brief not sent', { userId: u.id, reason: dispatch.reason });
         result.errors += 1;
         continue;
@@ -180,6 +206,12 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
       }
       result.fired += 1;
     } catch (err: any) {
+      // Same throttle on thrown errors — keeps the cron from re-running
+      // a failing composer/dispatcher every minute.
+      if (redis) {
+        try { await redis.set(attemptKey, '1', 'EX', 60 * 60); }
+        catch { /* non-critical */ }
+      }
       log.warn('day brief dispatch failed', { userId: u.id, error: err.message });
       result.errors += 1;
     }
