@@ -132,6 +132,20 @@ const server = app.listen(env.port, async () => {
   // Cleanup expired context memories every hour
   cleanupExpiredContextMemories().catch(() => {});
   setInterval(() => cleanupExpiredContextMemories().catch(() => {}), 60 * 60 * 1000);
+  // Demo-user expiry sweep — every hour. Flips is_active=false on
+  // users whose users.expires_at has passed. First sweep fires 60s
+  // after boot so a stale demo doesn't sit live until the first hour
+  // mark. Per Basit 2026-06-10.
+  setTimeout(() => {
+    import('./jobs/demoExpirySuspendJob')
+      .then(({ runDemoExpirySweep }) => runDemoExpirySweep())
+      .catch((err) => console.warn('Demo expiry sweep failed:', err.message));
+    setInterval(() => {
+      import('./jobs/demoExpirySuspendJob')
+        .then(({ runDemoExpirySweep }) => runDemoExpirySweep())
+        .catch((err) => console.warn('Demo expiry sweep failed:', err.message));
+    }, 60 * 60 * 1000);
+  }, 60 * 1000);
   // Personal GDrive sync every 30 minutes (Phase 3.1)
   runPersonalDriveSyncJob().catch(() => {});
   setInterval(() => runPersonalDriveSyncJob().catch(() => {}), 30 * 60 * 1000);

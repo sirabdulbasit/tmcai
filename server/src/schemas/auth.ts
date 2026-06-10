@@ -22,6 +22,10 @@ export const createUserSchema = z.object({
   userType: z.enum(['SA', 'AD', 'ST', 'BS'], { message: 'Invalid userType. Must be: SA, AD, ST, or BS' }),
   department: z.string().max(100).optional(),
   clientNumber: z.string().max(20).optional(),
+  // Demo expiry — optional. Non-null means demoExpirySuspendJob will
+  // auto-suspend (is_active=false) at this time. ISO-8601 string;
+  // the route parses to Date before persisting. NULL = permanent account.
+  expiresAt: z.string().datetime().optional().nullable(),
 });
 
 export const setupPasswordSchema = z.object({

@@ -99,7 +99,7 @@ router.post('/change-password', requireAuth, validate(changePasswordSchema), asy
 // ─── Admin: Create User ────────────────────────────────────────
 
 router.post('/users', requireAuth, requireAdmin, validate(createUserSchema), async (req: Request, res: Response) => {
-  const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber } = req.body;
+  const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber, expiresAt } = req.body;
 
   // Validate password complexity from system_config
   const targetClient = req.user!.isSuperAdmin && reqClientNumber ? reqClientNumber : req.user!.clientNumber;
@@ -121,8 +121,8 @@ router.post('/users', requireAuth, requireAdmin, validate(createUserSchema), asy
   if (!seatCheck.allowed) { res.status(403).json({ error: seatCheck.error }); return; }
 
   try {
-    const user = await createUser({ clientNumber: targetClient, empcode, name, email, password, userType, department });
-    res.status(201).json({ success: true, user: { id: user.id, empcode: user.empcode, name: user.name, email: user.email, userType: user.userType } });
+    const user = await createUser({ clientNumber: targetClient, empcode, name, email, password, userType, department, expiresAt });
+    res.status(201).json({ success: true, user: { id: user.id, empcode: user.empcode, name: user.name, email: user.email, userType: user.userType, expiresAt: user.expiresAt } });
   } catch (error: any) {
     if (error.code === 'P2002') { res.status(409).json({ error: 'User with this empcode or email already exists' }); return; }
     res.status(500).json({ error: error.message });

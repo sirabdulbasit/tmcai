@@ -36,7 +36,13 @@ function ClientManagementTab({ user, msg, setMsg }) {
   const [availableTiers, setAvailableTiers] = useState([]);
 
   // ─── New User form ───────────────────────────────────────────
-  const [newUser, setNewUser] = useState({ empcode: '', name: '', email: '', password: '', userType: 'ST', department: '', clientNumber: '' });
+  const [newUser, setNewUser] = useState({ empcode: '', name: '', email: '', password: '', userType: 'ST', department: '', clientNumber: '', expiresAt: '' });
+  // "Is this a demo user?" toggle. When ON, expiresAt becomes required
+  // and the date picker is revealed. demoExpirySuspendJob auto-suspends
+  // the user at the chosen time.
+  const [isDemo, setIsDemo] = useState(false);
+  const [demoExpiryDate, setDemoExpiryDate] = useState(''); // YYYY-MM-DD format from <input type="date">
+  const [demoDays, setDemoDays] = useState(7); // quick-pick days from now
   // Invitation toggle — true (default) means user sets own password
   // via emailed link, so the password input is hidden + skipped.
   // (Named with "Toggle" suffix to avoid colliding with the existing
@@ -107,14 +113,36 @@ function ClientManagementTab({ user, msg, setMsg }) {
         return `Tmp-${rand}9!`;
       };
       const password = newUser.password || (shouldInvite ? makeThrowaway() : '');
-      const res = await api.post('/user/users', { ...newUser, password, clientNumber: targetClient });
+      // Resolve expiresAt: when "Demo" is on, prefer the explicit date
+      // picker; if blank, fall back to days-from-now quick-pick. Final
+      // value sent as ISO-8601 datetime (server expects .datetime()).
+      let expiresAt = null;
+      if (isDemo) {
+        if (demoExpiryDate) {
+          // Date picker is YYYY-MM-DD — set to end-of-day UTC so admin
+          // gets a full day of access on the chosen date.
+          expiresAt = new Date(`${demoExpiryDate}T23:59:59.000Z`).toISOString();
+        } else if (demoDays > 0) {
+          const d = new Date(Date.now() + demoDays * 24 * 60 * 60 * 1000);
+          expiresAt = d.toISOString();
+        } else {
+          setMsg('Demo user needs an expiry date or days-from-now value'); return;
+        }
+      }
+      const res = await api.post('/user/users', {
+        ...newUser, password, clientNumber: targetClient,
+        ...(expiresAt ? { expiresAt } : {}),
+      });
       if (shouldInvite && res.data.user?.id) {
         await api.post(`/user/users/${res.data.user.id}/invite`, { baseUrl: window.location.origin }).catch(() => {});
-        setMsg('User created and invitation sent');
+        setMsg(isDemo ? 'Demo user created, invitation sent — will auto-suspend at expiry' : 'User created and invitation sent');
       } else {
-        setMsg('User created');
+        setMsg(isDemo ? 'Demo user created — will auto-suspend at expiry' : 'User created');
       }
-      setNewUser({ empcode: '', name: '', email: '', password: '', userType: 'ST', department: '', clientNumber: '' });
+      setNewUser({ empcode: '', name: '', email: '', password: '', userType: 'ST', department: '', clientNumber: '', expiresAt: '' });
+      setIsDemo(false);
+      setDemoExpiryDate('');
+      setDemoDays(7);
       setShowCreateUser(false);
       loadAll();
     } catch (err) { setMsg(err.response?.data?.error || 'Failed'); }
@@ -287,6 +315,55 @@ function ClientManagementTab({ user, msg, setMsg }) {
                 />
                 Send invitation email (user sets their own password)
               </label>
+              {/* Demo user toggle — when on, account auto-suspends at the
+                  chosen expiry (reversible; admin can extend or hard-delete). */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#bbb', marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  id="isDemo"
+                  checked={isDemo}
+                  onChange={(e) => setIsDemo(e.target.checked)}
+                  style={{ accentColor: '#f59e0b' }}
+                />
+                Demo user (auto-suspend at expiry)
+              </label>
+              {isDemo && (
+                <div style={{ background: '#1a1610', border: '1px solid #f59e0b44', borderRadius: 8, padding: 10, marginTop: 6 }}>
+                  <div style={{ fontSize: 12, color: '#f59e0b', marginBottom: 8 }}>
+                    Expires at — pick a date OR set days from now. Account auto-suspends at this time (reversible).
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <div className="settings-field" style={{ flex: '1 1 180px', marginBottom: 0 }}>
+                      <label style={{ fontSize: 11 }}>Exact date</label>
+                      <input
+                        type="date"
+                        value={demoExpiryDate}
+                        min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
+                        onChange={(e) => { setDemoExpiryDate(e.target.value); setDemoDays(0); }}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+                    <div style={{ color: '#666', fontSize: 12, padding: '0 4px 6px' }}>or</div>
+                    <div className="settings-field" style={{ flex: '0 0 140px', marginBottom: 0 }}>
+                      <label style={{ fontSize: 11 }}>Days from now</label>
+                      <select
+                        value={demoDays}
+                        onChange={(e) => { setDemoDays(Number(e.target.value)); setDemoExpiryDate(''); }}
+                        style={{ width: '100%' }}
+                      >
+                        <option value={0}>—</option>
+                        <option value={1}>1 day</option>
+                        <option value={3}>3 days</option>
+                        <option value={7}>7 days</option>
+                        <option value={14}>14 days</option>
+                        <option value={30}>30 days</option>
+                        <option value={60}>60 days</option>
+                        <option value={90}>90 days</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
               <button className="settings-btn" onClick={async () => { await createUser(); }} style={{ width: '100%', marginTop: 8 }}>Create User</button>
             </div>
           )}
@@ -305,6 +382,21 @@ function ClientManagementTab({ user, msg, setMsg }) {
                       {u.isActive
                         ? <span style={{ color: '#4ade80', fontSize: 11, fontWeight: 600 }}>● Active</span>
                         : <span style={{ color: '#f59e0b', fontSize: 11, fontWeight: 600 }}>◌ Suspended</span>}
+                      {u.expiresAt && (() => {
+                        const ms = new Date(u.expiresAt).getTime() - Date.now();
+                        const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+                        const expired = ms <= 0;
+                        return (
+                          <div style={{
+                            fontSize: 10, marginTop: 2,
+                            color: expired ? '#ef4444' : days <= 3 ? '#f59e0b' : '#888',
+                          }}>
+                            {expired
+                              ? `⌛ Demo expired ${Math.abs(days)}d ago`
+                              : `⌛ Demo: ${days}d left (${new Date(u.expiresAt).toLocaleDateString()})`}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button className="admin-action" onClick={() => setEditUser(editUser?.id === u.id ? null : u)}>

@@ -24,7 +24,7 @@ router.get('/users', async (req: Request, res: Response) => {
     select: {
       id: true, empcode: true, name: true, email: true,
       userType: true, department: true, isActive: true,
-      lastLoginAt: true, createdAt: true,
+      lastLoginAt: true, createdAt: true, expiresAt: true,
       city: true, contactNumber: true, jobDescription: true,
       integrationProvider: true, integrationEmail: true,
       integrationScopes: true, integrationStatus: true,
@@ -32,6 +32,43 @@ router.get('/users', async (req: Request, res: Response) => {
     orderBy: { name: 'asc' },
   });
   res.json({ users });
+});
+
+// ─── Update demo expiry (extend / clear) ──────────────────────────
+// PATCH /admin/users/:id/expiry { expiresAt: '2026-12-31T23:59:59Z' | null }
+// - null clears expiry (promotes a demo user to permanent)
+// - future ISO timestamp extends or sets it
+// - past timestamp is rejected (use Suspend if you want to deactivate now)
+router.patch('/users/:id/expiry', async (req: Request, res: Response) => {
+  const userId = parseInt(req.params.id as string);
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { clientNumber: true, id: true },
+  });
+  if (!target || target.clientNumber !== req.user!.clientNumber) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  const { expiresAt } = req.body ?? {};
+  let nextExpiry: Date | null = null;
+  if (expiresAt !== null && expiresAt !== undefined && expiresAt !== '') {
+    const d = new Date(expiresAt);
+    if (Number.isNaN(d.getTime())) {
+      res.status(400).json({ error: 'Invalid expiresAt — must be ISO-8601 datetime or null' });
+      return;
+    }
+    if (d.getTime() < Date.now()) {
+      res.status(400).json({ error: 'Expiry must be in the future. To deactivate now, use Suspend.' });
+      return;
+    }
+    nextExpiry = d;
+  }
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { expiresAt: nextExpiry },
+    select: { id: true, expiresAt: true },
+  });
+  res.json({ success: true, expiresAt: updated.expiresAt });
 });
 
 // Update user details (admin can edit any user in their tenant)

@@ -58,6 +58,9 @@ export async function createUser(data: {
   password: string;
   userType: string;
   department?: string;
+  /** Optional ISO-8601 string for demo accounts. demoExpirySuspendJob
+   *  auto-suspends the user once this passes. NULL = permanent. */
+  expiresAt?: string | null;
 }) {
   const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
   return prisma.user.create({
@@ -69,6 +72,7 @@ export async function createUser(data: {
       passwordHash,
       userType: data.userType,
       department: data.department,
+      expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
     },
   });
 }
