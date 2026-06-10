@@ -515,8 +515,33 @@ async function testCredentials(
     return { success: true };
   }
 
-  // ── Credentials (username/password, e.g. SAP) ──────────────
+  // ── Credentials (username/password) ────────────────────────
   if (authMethod === 'credentials') {
+    // imap_smtp — for tenants whose email is NOT Gmail / Microsoft.
+    // Validates both an IMAP login and an SMTP verify so the user
+    // gets a single yes/no instead of one passing and the other
+    // failing silently later when Brain tries to send a reply.
+    // Password encryption is handled by the shared encryptConnector-
+    // Config chokepoint (`password` is in its sensitive-keys list).
+    if (slug === 'imap_smtp') {
+      const { testConnection } = await import('./imapSmtpService');
+      const result = await testConnection({
+        imapHost: String(config.imapHost ?? ''),
+        imapPort: Number(config.imapPort ?? 993),
+        imapTls: config.imapTls !== false,
+        smtpHost: String(config.smtpHost ?? ''),
+        smtpPort: Number(config.smtpPort ?? 465),
+        smtpTls: config.smtpTls !== false,
+        username: String(config.username ?? ''),
+        password: String(config.password ?? ''),
+      });
+      if (!result.ok) {
+        return { success: false, error: result.error ?? 'IMAP/SMTP test failed' };
+      }
+      return { success: true, email: String(config.username ?? '') };
+    }
+
+    // Legacy generic credentials (SAP-style baseUrl + creds).
     const baseUrl = config.baseUrl as string;
     const username = config.username as string;
     const password = config.password as string;

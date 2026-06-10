@@ -48,6 +48,14 @@ const FIELDS = {
   notion_org: [{ n: 'apiKey', l: 'Integration Token', t: 'password', r: true }],
   telegram: [{ n: 'botToken', l: 'Bot Token', t: 'password', r: true }, { n: 'chatId', l: 'Chat ID', t: 'text', r: true }],
   whatsapp: [{ n: 'phoneNumber', l: 'Your Phone Number (with country code, e.g. +923001234567)', t: 'tel', r: true }, { n: 'phoneNumberId', l: 'WhatsApp Phone Number ID (from Meta Developer Portal)', t: 'text', r: true }, { n: 'accessToken', l: 'Permanent Access Token (from Meta Business Settings)', t: 'password', r: true }, { n: 'businessAccountId', l: 'WhatsApp Business Account ID', t: 'text', r: false }],
+  imap_smtp: [
+    { n: 'username', l: 'Email Address', t: 'email', r: true, placeholder: 'you@yourdomain.com' },
+    { n: 'password', l: 'Password (or App Password)', t: 'password', r: true, placeholder: 'App password recommended (gmail/outlook block normal passwords)' },
+    { n: 'imapHost', l: 'IMAP Host', t: 'text', r: true, placeholder: 'e.g. imap.zoho.com / mail.yourdomain.com' },
+    { n: 'imapPort', l: 'IMAP Port', t: 'number', r: true, placeholder: '993' },
+    { n: 'smtpHost', l: 'SMTP Host', t: 'text', r: true, placeholder: 'e.g. smtp.zoho.com / mail.yourdomain.com' },
+    { n: 'smtpPort', l: 'SMTP Port', t: 'number', r: true, placeholder: '465' },
+  ],
   sap: [{ n: 'baseUrl', l: 'SAP API URL', t: 'url', r: true }, { n: 'username', l: 'Username', t: 'text', r: true }, { n: 'password', l: 'Password', t: 'password', r: true }, { n: 'client', l: 'Client Number', t: 'text', r: false }],
   odoo: [{ n: 'baseUrl', l: 'Odoo URL', t: 'url', r: true }, { n: 'database', l: 'Database', t: 'text', r: true }, { n: 'apiKey', l: 'API Key', t: 'password', r: true }],
   _api_key: [{ n: 'apiKey', l: 'API Key', t: 'password', r: true }],
@@ -1000,7 +1008,7 @@ export default function ConnectorsPage() {
                     {getFields(modal).map(f => (
                       <div key={f.n}>
                         <label style={s.label}>{f.l} {f.r && <span style={{ color: '#ef4444' }}>*</span>}</label>
-                        <input style={s.input} type={f.t} value={form[f.n] || ''} onChange={e => setForm({ ...form, [f.n]: e.target.value })} placeholder={f.l} />
+                        <input style={s.input} type={f.t} value={form[f.n] || ''} onChange={e => setForm({ ...form, [f.n]: e.target.value })} placeholder={f.placeholder || f.l} />
                       </div>
                     ))}
                     {testError && <div style={s.error}>{testError}</div>}
