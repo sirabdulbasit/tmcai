@@ -203,7 +203,7 @@ model Session {
   ipAddress String?  @map("ip_address") @db.VarChar(50)
   createdAt DateTime @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
 }
@@ -273,7 +273,7 @@ model Conversation {
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant   Tenant    @relation(fields: [clientNumber], references: [clientNumber])
-  user     User      @relation(fields: [userId], references: [id])
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages Message[]
 
   @@map("conversations")
@@ -1037,7 +1037,7 @@ model ScheduledTask {
   updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("scheduled_tasks")
 }
