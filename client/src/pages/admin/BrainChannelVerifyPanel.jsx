@@ -26,6 +26,10 @@ export default function BrainChannelVerifyPanel({ user }) {
   const [running, setRunning] = useState(null);   // which test is in flight
   const [results, setResults] = useState({});      // testKey -> { ok, message }
   const [targetUserId, setTargetUserId] = useState(user?.id ?? 1);
+  // The user's configured Brain name (Nexeo, Brain, custom — whatever
+  // they set in Settings). Used in every test body so the recipient sees
+  // their own assistant's name, not a hardcoded "MyOS verify" prefix.
+  const [brainName, setBrainName] = useState('Brain');
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -36,6 +40,20 @@ export default function BrainChannelVerifyPanel({ user }) {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Load the configured Brain name once so the test bodies read with
+  // the recipient's own assistant identity. Falls back to 'Brain' on
+  // any error — the panel still works, just without per-user branding.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get('/profile/brain-name');
+        if (!cancelled && data?.name) setBrainName(String(data.name));
+      } catch { /* keep default */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const runTest = async (key, body, urgency) => {
     setRunning(key);
@@ -58,29 +76,32 @@ export default function BrainChannelVerifyPanel({ user }) {
     }
   };
 
+  // Bodies are built off the configured Brain name so the recipient sees
+  // their own assistant's identity (Nexeo / Brain / custom) — not a
+  // hardcoded brand. Memoizing keeps stable references during render.
   const TESTS = [
     {
       key: 'text-en', label: 'Text · English',
-      desc: 'Proactive Brain ping in English (urgency = normal → text only).',
-      body: 'MyOS verify · English text channel. If you see this, Brain can write to you.',
+      desc: `Proactive ${brainName} ping in English (urgency = normal → text only).`,
+      body: `${brainName} verify · English text channel. If you see this, ${brainName} can write to you.`,
       urgency: 'normal', icon: '💬',
     },
     {
       key: 'text-ur', label: 'Text · Urdu',
       desc: 'Same path, Urdu body. Validates UTF-8 + RTL rendering on the recipient.',
-      body: 'MyOS verify · Brain ne aap se baat karne ki koshish ki. Yeh test message hai. اردو اور انگریزی دونوں زبانوں کو سپورٹ کرتا ہے۔',
+      body: `${brainName} verify · ${brainName} ne aap se baat karne ki koshish ki. Yeh test message hai. اردو اور انگریزی دونوں زبانوں کو سپورٹ کرتا ہے۔`,
       urgency: 'normal', icon: '💬',
     },
     {
       key: 'voice-en', label: 'Voice note · English',
-      desc: 'urgency=high → text + TTS voice note (Google TTS English voice).',
-      body: 'MyOS verify · English voice channel. If you hear this, Brain can speak to you.',
+      desc: `urgency=high → text + TTS voice note (Google TTS English voice).`,
+      body: `${brainName} verify · English voice channel. If you hear this, ${brainName} can speak to you.`,
       urgency: 'high', icon: '🎤',
     },
     {
       key: 'voice-ur', label: 'Voice note · Urdu',
       desc: 'urgency=high with Urdu body → Urdu TTS voice (ur-PK-Standard-A).',
-      body: 'یہ مائی او ایس کا اردو وائس ٹیسٹ ہے۔ اگر آپ یہ سن سکتے ہیں تو دماغ آپ سے اردو میں بات کر سکتا ہے۔',
+      body: `${brainName} verify · یہ اردو وائس ٹیسٹ ہے۔ اگر آپ یہ سن سکتے ہیں تو ${brainName} آپ سے اردو میں بات کر سکتا ہے۔`,
       urgency: 'high', icon: '🎤',
     },
   ];
