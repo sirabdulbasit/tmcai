@@ -425,6 +425,113 @@ export class WebjsProvider implements IWhatsAppProvider {
       }
     });
 
+    // ─── Incoming call auto-reject ────────────────────────────────────
+    // Policy (Basit, 2026-06-10): "only brain will call user, where user
+    // will not call to brain, if user calls, that will not be entertained".
+    // whatsapp-web.js emits a 'call' event when someone tries to call the
+    // tenant number. We:
+    //   1. Reject the call immediately so the caller hears the cancel tone
+    //      instead of a stuck ring
+    //   2. Log to PM2 only — NEVER write a "missed call" record the user
+    //      might later mistake for an alert
+    //   3. Send a one-time courtesy text via the inbound chat ("calls
+    //      aren't supported, please message me") — throttled per-from-
+    //      number to 1h so repeated call attempts don't spam the chat
+    //   4. The courtesy text body is composed via the Brain composer
+    //      (NOT a hardcoded string) per the no-hardcoded-fake-Brain rule
+    client.on('call', async (call: any) => {
+      const fromRaw = call?.from ?? '';
+      try {
+        // Always reject first — never let the call hang waiting.
+        if (typeof call?.reject === 'function') {
+          await call.reject().catch(() => {});
+        }
+        log.info('inbound WA call auto-rejected', {
+          clientNumber, from: fromRaw, isVideo: !!call?.isVideo,
+        });
+
+        // Resolve the from-number to a phone for chat-send fallback.
+        const fromPhone = fromRaw.includes('@c.us')
+          ? '+' + fromRaw.replace('@c.us', '')
+          : fromRaw.includes('@lid')
+            ? '+' + fromRaw.replace('@lid', '')
+            : '+' + fromRaw.replace(/@.*$/, '');
+
+        // 1h throttle so a repeated caller doesn't get spammed with the
+        // same courtesy text. Per-from-number Redis key.
+        const throttleKey = `wa_call_courtesy:${clientNumber}:${fromPhone}`;
+        try {
+          const { getRedis } = await import('../../utils/redisClient');
+          const redis = getRedis();
+          if (redis) {
+            const recent = await redis.get(throttleKey);
+            if (recent) {
+              log.info('inbound call courtesy text throttled (sent <1h ago)', { from: fromPhone });
+              return;
+            }
+            await redis.set(throttleKey, '1', 'EX', 60 * 60);
+          }
+        } catch { /* if Redis is down, send anyway — single text is fine */ }
+
+        // Confirm the caller is a registered user before sending courtesy
+        // text — per the unregistered-drop rule, randoms shouldn't even
+        // get a courtesy reply (it confirms automation to scrapers).
+        const tenantOk = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT 1 FROM whatsapp_connections wc
+             JOIN users u ON u.id = wc.user_id
+            WHERE u.client_number = $1
+              AND wc.status = 'active'
+              AND u.is_active = TRUE
+              AND wc.phone_number = $2
+            LIMIT 1`,
+          clientNumber, fromPhone,
+        ).catch(() => [] as any[]);
+        if (!tenantOk.length) {
+          log.info('inbound call from unregistered number — no courtesy text', {
+            from: fromPhone, clientNumber,
+          });
+          return;
+        }
+
+        // LLM-composed courtesy via the same Brain primitive used for
+        // regular replies. Not a hardcoded English string — per the
+        // no-hardcoded-fake-Brain rule the courtesy body must come from
+        // Brain itself with the call-decline context in the prompt.
+        try {
+          const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+          const { answerAsBrain } = await import('../../routes/brainAskRoutes');
+          // Look up the registered user id for this caller so Brain
+          // can match language preference and gender.
+          const userRow = await prisma.$queryRawUnsafe<any[]>(
+            `SELECT wc.user_id FROM whatsapp_connections wc
+              WHERE wc.phone_number = $1 AND wc.status = 'active'
+              LIMIT 1`,
+            fromPhone,
+          ).catch(() => [] as any[]);
+          const userId = userRow[0]?.user_id ?? null;
+          let body = '';
+          if (userId) {
+            const r = await answerAsBrain(
+              clientNumber, userId,
+              '[system: user just tried to voice-call you. Calls are not supported on this channel. Compose a short, warm 1-sentence reply asking them to message you instead — match the language they normally use (English or Urdu/Roman-Urdu).]',
+              [], { channel: 'whatsapp' },
+            );
+            body = (r.answer || '').trim();
+          }
+          // Bracketed system fallback if Brain composer fails — honest,
+          // not pretending to be Brain.
+          if (!body) body = `[calls aren't supported — please message me instead]`;
+          await sendTenantWhatsAppText(clientNumber, fromPhone, body, userId ?? 0);
+        } catch (e: any) {
+          log.warn('inbound call courtesy text send failed', {
+            from: fromPhone, error: e.message,
+          });
+        }
+      } catch (e: any) {
+        log.warn('inbound call handler error', { error: e.message });
+      }
+    });
+
     client.on('disconnected', async (reason: string) => {
       statusMap.set(clientNumber, 'disconnected');
       clients.delete(clientNumber);
