@@ -6,10 +6,11 @@ import api from '../services/api';
 export default function SettingsPage() {
   const { user, logout, fontScale, appDefaultFontScale, fontScaleIsOverride, setFontScale, resetFontScaleToDefault } = useAuth();
   const navigate = useNavigate();
-  // `gender` retired from UI 2026-05-18 (replaced by preferredTitle for
-  // address tone). Field stays on the User model so legacy data is
-  // preserved; just no longer surfaced in Settings.
-  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', preferredTitle: '' });
+  // `gender` re-added 2026-06-10 — but with a different purpose than the
+  // 2026-05-18 retired version. This is GRAMMATICAL gender (drives
+  // English pronouns + Urdu verb endings in Brain's replies), not a
+  // demographic profile field. Default 'female' per user request.
+  const [profile, setProfile] = useState({ city: '', contactNumber: '', aboutMe: '', instructions: '', preferredTitle: '', gender: 'female' });
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '' });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -17,7 +18,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.get('/profile').then(res => {
       const p = res.data.profile || {};
-      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', preferredTitle: p.preferredTitle || '' });
+      setProfile({ city: p.city || '', contactNumber: p.contactNumber || '', aboutMe: p.aboutMe || '', instructions: p.instructions || '', preferredTitle: p.preferredTitle || '', gender: p.gender || 'female' });
     }).catch(() => {});
   }, []);
 
@@ -170,6 +171,30 @@ export default function SettingsPage() {
               <div className="settings-field">
                 <label>How Brain should address you</label>
                 <input value={profile.preferredTitle} onChange={e => setProfile(p => ({ ...p, preferredTitle: e.target.value }))} placeholder="e.g. Sir, Boss, Ma'am, or your first name" />
+              </div>
+              <div className="settings-field">
+                <label>Gender (drives pronouns + Urdu verb endings)</label>
+                <div style={{ display: 'flex', gap: 16, marginTop: 4 }}>
+                  {[
+                    { value: 'female', label: 'Female — she/her · feminine Urdu verbs (آئیں / آئی)' },
+                    { value: 'male',   label: 'Male — he/him · masculine Urdu verbs (آئے / آیا)' },
+                    { value: 'unspecified', label: 'Unspecified — they/them · plural Urdu forms (آپ ہیں)' },
+                  ].map(opt => (
+                    <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="gender"
+                        value={opt.value}
+                        checked={profile.gender === opt.value}
+                        onChange={() => setProfile(p => ({ ...p, gender: opt.value }))}
+                      />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
+                  Brain uses this to pick correct pronouns ("she" / "he") and Urdu verb endings ("aap aayi" / "aap aaye") when referring to you. Default: female.
+                </div>
               </div>
               <div className="settings-field">
                 <label>Background</label>

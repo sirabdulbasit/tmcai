@@ -24,6 +24,12 @@ export interface BrainPersona {
    *  userFirstName when unset. Use this for greetings and direct
    *  address; userFirstName remains the canonical identifier. */
   addressAs: string;
+  /** Grammatical gender Brain uses when referring to the user — drives
+   *  pronoun selection in English ("she/her" vs "he/him" vs "they/them")
+   *  and verb-ending selection in Urdu / Roman-Urdu ("aap aayi" vs
+   *  "aap aaye"; "آپ آئیں" vs "آپ آئے"). Stored under notification-
+   *  Preferences.profile.gender; defaults to 'female' when unset. */
+  userGender: 'female' | 'male' | 'unspecified';
   /** Tenant ID — used in responses like "in TMC-0001 we have…" */
   clientNumber: string;
   /** Tenant's own company name — the one the USER works at. When asked
@@ -86,6 +92,13 @@ export async function getBrainPersona(userId: number, clientNumber: string): Pro
   // 2026-05-20: utilize the "HOW BRAIN SHOULD ADDRESS YOU" setting.
   const rawTitle = String(prefs?.profile?.preferredTitle ?? '').trim();
   const addressAs = rawTitle.length > 0 ? rawTitle : firstName;
+  // Per-user grammatical gender — drives English pronouns and Urdu verb
+  // endings in every Brain reply. Default 'female' per user request
+  // 2026-06-10 ("default is female"). Override via Settings → Profile.
+  const storedGender = prefs?.profile?.gender;
+  const userGender: 'female' | 'male' | 'unspecified' = (
+    storedGender === 'male' || storedGender === 'female' || storedGender === 'unspecified'
+  ) ? storedGender : 'female';
   const email = user?.email ?? '';
   const tenantName = tenant?.name ?? clientNumber;
   const tenantDomain = tenant?.domain ?? null;
@@ -143,6 +156,20 @@ The user you're talking to:
 
 **CRITICAL identity rule — never violate.** You are speaking with **${firstName}** (full name: ${fullName || firstName}, email: ${email}). They prefer to be addressed as **"${addressAs}"** (from Settings → Profile). When you greet, refer to them, or say "you" in this conversation, it is ALWAYS ${firstName} — address them with "${addressAs}". Other names you see in the wiki (Abdul, Asad, Umair, Fahim, anyone else) are TOPICS OF CONVERSATION, not the person you're talking to. Never confuse another sender with the user.
 
+**Pronoun & gendered-verb rule — NON-NEGOTIABLE.** ${addressAs}'s grammatical gender is **${userGender === 'female' ? 'female (she / her)' : userGender === 'male' ? 'male (he / him)' : 'unspecified — use they / them and gender-neutral verb forms'}**.
+${userGender === 'female'
+  ? `- English: use **she / her / hers** whenever you refer to ${addressAs} in third person (e.g. "I'll let her know", "her calendar", "she's free after 3pm").
+- Urdu (script): use **feminine verb endings** — "آپ آئیں" (not "آپ آئے"), "آپ نے کہا" → "آپ نے کہی" / "آپ نے کہا تھا" → "آپ نے کہا تھا" for past-feminine. Stems: "گئی / آئی / کی / لی / دی" (feminine) NOT "گیا / آیا / کیا / لیا / دیا" (masculine). Adjectives: "اچھی / بڑی / چھوٹی" not "اچھا / بڑا / چھوٹا".
+- Roman-Urdu: use **feminine forms** — "aap aayi", "aap ne kahi", "aap kr rahi hain", "achi", "thori" (not "aaye / kaha / kr rahe / acha / thora"). When the verb is gender-neutral plural ("aap hain", "aap karte hain") that's fine — the rule applies only where the form is gendered.`
+  : userGender === 'male'
+  ? `- English: use **he / him / his** whenever you refer to ${addressAs} in third person.
+- Urdu (script): use **masculine verb endings** — "آپ آئے", "آپ نے کہا", "آپ کر رہے ہیں". Stems: "گیا / آیا / کیا / لیا / دیا". Adjectives: "اچھا / بڑا / چھوٹا".
+- Roman-Urdu: use **masculine forms** — "aap aaye", "aap ne kaha", "aap kr rahe hain", "acha", "thora".`
+  : `- English: use **they / them / their**.
+- Urdu / Roman-Urdu: prefer plural-respectful forms which avoid gender altogether — "آپ ہیں", "آپ کرتے ہیں" / "aap hain", "aap karte hain". When a singular gendered form is unavoidable, default to masculine (the unmarked form in Urdu grammar) but minimise its use.`
+}
+Apply this rule on EVERY turn, in every channel (Chat, WhatsApp text, voice-note transcript). Mis-gendering is treated as a fabrication-class error — same severity as inventing a contact name.
+
 "My company" / "our company" / "the company" with no name = ${tenantName}. Generic "companies/contacts/clients" questions = lead with active accounts and key contacts from the org snapshot, never with newsletter or marketing senders.
 
 ${await loadCommunicationContractFromDb(userId, addressAs, firstName)}
@@ -186,6 +213,7 @@ You: "Acknowledged, ${addressAs}. That's a cross-user leak — Haseeb's email is
     userFullName: fullName,
     userEmail: email,
     addressAs,
+    userGender,
     clientNumber,
     tenantName,
     tenantDomain,
