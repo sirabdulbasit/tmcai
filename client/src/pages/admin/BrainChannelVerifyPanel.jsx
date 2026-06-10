@@ -55,12 +55,13 @@ export default function BrainChannelVerifyPanel({ user }) {
     return () => { cancelled = true; };
   }, []);
 
-  const runTest = async (key, body, urgency) => {
+  const runTest = async (key, body, urgency, channel) => {
     setRunning(key);
     setResults((prev) => ({ ...prev, [key]: null }));
     try {
       const { data } = await api.post('/admin/whatsapp-notifier/test-brain', {
         toUserId: Number(targetUserId), body, urgency,
+        ...(channel ? { channel } : {}),
       });
       setResults((prev) => ({
         ...prev,
@@ -103,6 +104,18 @@ export default function BrainChannelVerifyPanel({ user }) {
       desc: 'urgency=high with Urdu body → Urdu TTS voice (ur-PK-Standard-A).',
       body: `${brainName} verify · یہ اردو وائس ٹیسٹ ہے۔ اگر آپ یہ سن سکتے ہیں تو ${brainName} آپ سے اردو میں بات کر سکتا ہے۔`,
       urgency: 'high', icon: '🎤',
+    },
+    {
+      key: 'call-en', label: 'Voice call · English',
+      desc: 'Tries WhatsApp Business Call (Meta) — if tenant not enrolled, falls back to a tap-to-call CTA.',
+      body: `${brainName} verify · Voice-call channel test (English). If your tenant number is enrolled in WhatsApp Business Calling, your phone rings; otherwise you receive a tap-to-call message.`,
+      urgency: 'emergency', channel: 'call_business', icon: '📞',
+    },
+    {
+      key: 'call-ur', label: 'Voice call · Urdu',
+      desc: 'Same path, Urdu preamble for the CTA fallback.',
+      body: `${brainName} verify · وائس کال چینل ٹیسٹ۔ اگر آپ کا نمبر واٹس ایپ بزنس کالنگ کے لیے انرول ہے تو آپ کا فون بجے گا، ورنہ آپ کو ٹیپ ٹو کال میسج ملے گا۔`,
+      urgency: 'emergency', channel: 'call_business', icon: '📞',
     },
   ];
 
@@ -173,7 +186,7 @@ export default function BrainChannelVerifyPanel({ user }) {
                 {t.desc}
               </div>
               <button
-                onClick={() => runTest(t.key, t.body, t.urgency)}
+                onClick={() => runTest(t.key, t.body, t.urgency, t.channel)}
                 disabled={!!running || !targetUserId}
                 style={{
                   padding: '6px 12px', fontSize: 12, fontWeight: 500,

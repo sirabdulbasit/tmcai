@@ -283,7 +283,7 @@ router.get('/brain-outbound/recent', requireAdmin, async (req: Request, res: Res
  */
 router.post('/whatsapp-notifier/test-brain', requireAdmin, async (req: Request, res: Response) => {
   const u = (req as any).user;
-  const { toUserId, body, urgency } = req.body ?? {};
+  const { toUserId, body, urgency, channel } = req.body ?? {};
   if (!toUserId) return res.status(400).json({ error: 'toUserId required' });
   const { brainContactsUser } = await import('../../services/notifications/brainOutboundService');
   const r = await brainContactsUser({
@@ -292,11 +292,16 @@ router.post('/whatsapp-notifier/test-brain', requireAdmin, async (req: Request, 
     summary: 'Admin → Brain → user end-to-end test',
     body: String(body ?? '🔴 Brain test (criticality channel): this came from a non-WhatsApp source.'),
     urgency: (urgency ?? 'normal') as any,
+    // Optional explicit channel override for verify-panel tests that
+    // need to exercise a specific path regardless of urgency mapping.
+    // Accepts: 'text' | 'voicenote' | 'call_cta' | 'call_business' | 'auto'
+    // If absent, channelsForUrgency() picks based on urgency.
+    ...(channel ? { channel: String(channel) as any } : {}),
     dedupKey: `admin_test_${Date.now()}`,
-    // The verify panel fires up to 4 cards back-to-back. The 60s
+    // The verify panel fires up to 6 cards back-to-back. The 60s
     // per-kind rate limit is meant for production criticality bundling,
     // not for admin probing — bypass so each card can land its own
-    // outbound message + audit row instead of suppressing 3 of 4.
+    // outbound message + audit row instead of suppressing 5 of 6.
     bypassRateLimit: true,
   });
   res.json(r);
