@@ -6,6 +6,7 @@ import TierManagementTab from './admin/TierManagementTab';
 import ConfigTab from './admin/ConfigTab';
 import WhatsAppMergedTab from './admin/WhatsAppMergedTab';
 import LlmSpendTab from './admin/LlmSpendTab';
+import ConnectorsAdminTab from './admin/ConnectorsAdminTab';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -36,6 +37,7 @@ export default function AdminPage() {
     { key: 'tiers', label: 'User Tiers' },
     { key: 'config', label: 'Application Configuration' },
     { key: 'whatsapp', label: 'WhatsApp' },
+    { key: 'connectors', label: 'Connectors' },
     { key: 'llm-spend', label: 'LLM Spend' },
   ];
 
@@ -71,6 +73,7 @@ export default function AdminPage() {
         {activeTab === 'tiers' && <TierManagementTab msg={msg} setMsg={setMsg} />}
         {activeTab === 'config' && <ConfigTab user={user} />}
         {activeTab === 'whatsapp' && <WhatsAppMergedTab msg={msg} setMsg={setMsg} />}
+        {activeTab === 'connectors' && <ConnectorsAdminTab user={user} msg={msg} setMsg={setMsg} />}
         {activeTab === 'llm-spend' && <LlmSpendTab user={user} />}
       </div>
     </div>

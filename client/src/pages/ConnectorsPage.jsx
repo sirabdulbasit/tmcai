@@ -530,10 +530,12 @@ export default function ConnectorsPage() {
     return `${Math.floor(hrs / 24)}d ago`;
   }
 
-  // "Connected only" filter (per Basit 2026-05-25: "there should be
-  // filter to see only connected connector"). Default off — shows
-  // every available connector; toggle filters to status='connected'.
-  const [connectedOnly, setConnectedOnly] = useState(false);
+  // "Connected only" filter (per Basit 2026-05-25 "there should be
+  // filter to see only connected connector"; default flipped to ON
+  // 2026-06-10 "there should be default filter which will show only
+  // connected connectors"). Default ON — the page opens to the
+  // user's connected set; tapping "Available" reveals the rest.
+  const [connectedOnly, setConnectedOnly] = useState(true);
 
   // Group by category — respects the connectedOnly filter.
   const grouped = {};
