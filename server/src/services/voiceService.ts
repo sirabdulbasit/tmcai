@@ -258,9 +258,17 @@ export async function textToVoiceNote(text: string, language?: string): Promise<
       const tts = await import('@google-cloud/text-to-speech');
       const client = new tts.TextToSpeechClient();
 
-      const isUrdu = /[\u0600-\u06FF]/.test(text) || language === 'ur-PK';
+      // Google Cloud TTS only ships Urdu under the IN locale \u2014
+      // 'ur-PK-*' voices do NOT exist in their catalogue and any request
+      // for one returns 3 INVALID_ARGUMENT ("Voice ... does not exist.
+      // Is it misspelled?") which makes voicenote outbound fall back to
+      // text-only without any audio reaching the recipient. Use the
+      // IN-locale equivalent; the language model is the same Urdu \u2014
+      // the locale tag only affects voice ID lookup, not pronunciation.
+      const isUrdu = /[\u0600-\u06FF]/.test(text)
+        || language === 'ur-PK' || language === 'ur-IN' || language === 'ur';
       const voiceConfig = isUrdu
-        ? { languageCode: 'ur-PK', name: 'ur-PK-Standard-A', ssmlGender: 'FEMALE' as any }
+        ? { languageCode: 'ur-IN', name: 'ur-IN-Standard-A', ssmlGender: 'FEMALE' as any }
         : { languageCode: 'en-US', name: 'en-US-Neural2-F', ssmlGender: 'FEMALE' as any };
 
       const [response] = await client.synthesizeSpeech({

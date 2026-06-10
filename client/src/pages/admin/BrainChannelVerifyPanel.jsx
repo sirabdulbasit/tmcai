@@ -101,21 +101,21 @@ export default function BrainChannelVerifyPanel({ user }) {
     },
     {
       key: 'voice-ur', label: 'Voice note · Urdu',
-      desc: 'urgency=high with Urdu body → Urdu TTS voice (ur-PK-Standard-A).',
+      desc: 'urgency=high with Urdu body → Urdu TTS voice (ur-IN-Standard-A).',
       body: `${brainName} verify · یہ اردو وائس ٹیسٹ ہے۔ اگر آپ یہ سن سکتے ہیں تو ${brainName} آپ سے اردو میں بات کر سکتا ہے۔`,
       urgency: 'high', icon: '🎤',
     },
     {
       key: 'call-en', label: 'Voice call · English',
-      desc: 'Tries WhatsApp Business Call (Meta) — if tenant not enrolled, falls back to a tap-to-call CTA.',
-      body: `${brainName} verify · Voice-call channel test (English). If your tenant number is enrolled in WhatsApp Business Calling, your phone rings; otherwise you receive a tap-to-call message.`,
-      urgency: 'emergency', channel: 'call_business', icon: '📞',
+      desc: 'Sends a tap-to-call CTA — taps your tenant business number. Works without Meta enrollment.',
+      body: `${brainName} verify · Voice-call channel test (English). Tap the number below to call ${brainName} back.`,
+      urgency: 'emergency', channel: 'call_cta', icon: '📞',
     },
     {
       key: 'call-ur', label: 'Voice call · Urdu',
-      desc: 'Same path, Urdu preamble for the CTA fallback.',
-      body: `${brainName} verify · وائس کال چینل ٹیسٹ۔ اگر آپ کا نمبر واٹس ایپ بزنس کالنگ کے لیے انرول ہے تو آپ کا فون بجے گا، ورنہ آپ کو ٹیپ ٹو کال میسج ملے گا۔`,
-      urgency: 'emergency', channel: 'call_business', icon: '📞',
+      desc: 'Same path, Urdu preamble for the CTA.',
+      body: `${brainName} verify · وائس کال چینل ٹیسٹ۔ نیچے دیے گئے نمبر پر ٹیپ کر کے ${brainName} کو واپس کال کریں۔`,
+      urgency: 'emergency', channel: 'call_cta', icon: '📞',
     },
   ];
 
