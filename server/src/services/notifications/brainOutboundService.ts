@@ -141,12 +141,23 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const user = await prisma.user.findUnique({
     where: { id: req.userId },
     select: {
-      id: true, name: true, clientNumber: true,
+      id: true, name: true, clientNumber: true, isActive: true,
       contactNumber: true, notificationPreferences: true,
     },
   });
   if (!user) {
     return { sent: false, reason: 'user_not_found', channelsUsed: [], waMessageIds: [] };
+  }
+  // Suspended user — refuse to deliver. Critical safeguard so an
+  // admin who suspends a user knows for sure that NO Brain outbound
+  // (Day Brief, criticality bundle, watchpoint fire, manual ping)
+  // can ever reach that user's phone or email until they're
+  // reactivated. Per Basit 2026-06-10: "after deletion, will that
+  // user receive any email or whatsapp communication?" — answer
+  // must be a structural NO, not "depends if the dispatcher
+  // happens to remember to check".
+  if (!user.isActive) {
+    return { sent: false, reason: 'user_suspended', channelsUsed: [], waMessageIds: [] };
   }
 
   const prefs = (user.notificationPreferences as any) ?? {};

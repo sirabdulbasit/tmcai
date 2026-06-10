@@ -291,26 +291,41 @@ function ClientManagementTab({ user, msg, setMsg }) {
             </div>
           )}
           <table className="admin-table" style={{ marginTop: 12 }}>
-            <thead><tr><th>Empcode</th><th>Name</th><th>Email</th><th>Type</th><th>Dept</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Empcode</th><th>Name</th><th>Email</th><th>Type</th><th>Dept</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
               {users.map(u => (
                 <React.Fragment key={u.id}>
-                  <tr>
+                  <tr style={u.isActive ? {} : { opacity: 0.55 }}>
                     <td>{u.empcode}</td>
                     <td>{u.name}</td>
                     <td>{u.email}</td>
                     <td><span className={`badge-type type-${u.userType}`}>{u.userType}</span></td>
                     <td>{u.department || '—'}</td>
-                    <td style={{ display: 'flex', gap: 4 }}>
+                    <td>
+                      {u.isActive
+                        ? <span style={{ color: '#4ade80', fontSize: 11, fontWeight: 600 }}>● Active</span>
+                        : <span style={{ color: '#f59e0b', fontSize: 11, fontWeight: 600 }}>◌ Suspended</span>}
+                    </td>
+                    <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button className="admin-action" onClick={() => setEditUser(editUser?.id === u.id ? null : u)}>
                         {editUser?.id === u.id ? 'Close' : 'Edit'}
                       </button>
                       <InviteButton userId={u.id} onInvite={sendInvite} />
                       <button className="admin-action" onClick={() => resetPassword(u.empcode)}>Reset</button>
+                      {u.id !== user?.id && (
+                        u.isActive ? (
+                          <SuspendButton userId={u.id} userName={u.name} onAfter={loadAll} setMsg={setMsg} />
+                        ) : (
+                          <ReactivateButton userId={u.id} userName={u.name} onAfter={loadAll} setMsg={setMsg} />
+                        )
+                      )}
+                      {u.id !== user?.id && u.userType !== 'SA' && (
+                        <DeleteUserButton user={u} onAfter={loadAll} setMsg={setMsg} />
+                      )}
                     </td>
                   </tr>
                   {editUser?.id === u.id && (
-                    <tr><td colSpan={6} style={{ padding: 0 }}>
+                    <tr><td colSpan={7} style={{ padding: 0 }}>
                       <EditUserPanel user={u} availableTiers={availableTiers} isSuperAdmin={user?.isSuperAdmin} onUpdate={() => { loadAll(); setMsg('User updated'); }} onMsg={setMsg} />
                     </td></tr>
                   )}
@@ -331,6 +346,127 @@ function ClientManagementTab({ user, msg, setMsg }) {
         <ClientConnectorsSection user={user} tenants={tenants} />
       )}
     </>
+  );
+}
+
+// ─── Suspend / Reactivate / Delete buttons ────────────────────────
+//
+// Inline typed-phrase confirmation pattern per [[feedback_no_browser_dialogs]]
+// — never window.confirm; the confirm step is rendered IN the row so
+// the admin sees exactly what they're about to do.
+
+function SuspendButton({ userId, userName, onAfter, setMsg }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!confirming) {
+    return (
+      <button
+        className="admin-action"
+        onClick={() => setConfirming(true)}
+        title="Block login + stop all Brain → user communication (reversible)"
+      >
+        Suspend
+      </button>
+    );
+  }
+  return (
+    <>
+      <button
+        className="admin-action"
+        style={{ borderColor: '#f59e0b', color: '#f59e0b' }}
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.post(`/admin/users/${userId}/suspend`);
+            setMsg(`${userName} suspended — login blocked, all comms stopped. Reversible.`);
+            setConfirming(false);
+            onAfter?.();
+          } catch (e) {
+            setMsg(`Suspend failed: ${e?.response?.data?.error ?? e.message}`);
+          } finally { setBusy(false); }
+        }}
+      >
+        {busy ? '…' : 'Yes, Suspend'}
+      </button>
+      <button className="admin-action" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+    </>
+  );
+}
+
+function ReactivateButton({ userId, userName, onAfter, setMsg }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      className="admin-action"
+      style={{ borderColor: '#4ade80', color: '#4ade80' }}
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await api.post(`/admin/users/${userId}/reactivate`);
+          setMsg(`${userName} reactivated — login restored.`);
+          onAfter?.();
+        } catch (e) {
+          setMsg(`Reactivate failed: ${e?.response?.data?.error ?? e.message}`);
+        } finally { setBusy(false); }
+      }}
+    >
+      {busy ? '…' : 'Reactivate'}
+    </button>
+  );
+}
+
+function DeleteUserButton({ user, onAfter, setMsg }) {
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const expected = `DELETE ${user.email}`;
+  if (!open) {
+    return (
+      <button
+        className="admin-action"
+        style={{ borderColor: '#ef4444', color: '#ef4444' }}
+        onClick={() => setOpen(true)}
+        title="Permanently delete user + all data (NOT reversible)"
+      >
+        Delete
+      </button>
+    );
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <input
+        value={confirmText}
+        onChange={e => setConfirmText(e.target.value)}
+        placeholder={expected}
+        style={{ fontSize: 11, padding: '2px 6px', minWidth: 220, background: '#1a1010', border: '1px solid #ef4444', color: '#fca5a5' }}
+      />
+      <button
+        className="admin-action"
+        style={{
+          borderColor: '#ef4444',
+          color: '#ef4444',
+          opacity: confirmText === expected && !busy ? 1 : 0.4,
+        }}
+        disabled={confirmText !== expected || busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.delete(`/admin/users/${user.id}`, { data: { confirm: confirmText } });
+            setMsg(`${user.name} deleted permanently. All their data removed.`);
+            setOpen(false);
+            setConfirmText('');
+            onAfter?.();
+          } catch (e) {
+            setMsg(`Delete failed: ${e?.response?.data?.error ?? e.message}`);
+          } finally { setBusy(false); }
+        }}
+      >
+        {busy ? '…' : 'Delete'}
+      </button>
+      <button className="admin-action" disabled={busy} onClick={() => { setOpen(false); setConfirmText(''); }}>Cancel</button>
+    </span>
   );
 }
 
