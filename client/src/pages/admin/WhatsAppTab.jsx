@@ -169,6 +169,50 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
     finally { setDisconnecting(false); }
   }
 
+  // ── Reset Pairing (change WhatsApp number) ──────────────────────
+  // Destroys the in-memory client + deletes LocalAuth session on disk
+  // + clears DB columns + re-initializes so a fresh QR is shown. This
+  // is what you use to SWAP the company WhatsApp number — without
+  // this, scanning a new QR silently reconnects to the OLD account
+  // because the saved session on disk is still valid.
+  //
+  // Typed-phrase confirmation per the "no browser dialogs" rule —
+  // requires the admin to type RESET so it can't be triggered by an
+  // accidental click. Workflow expects the admin to FIRST log out from
+  // the old phone's WhatsApp → Linked Devices, then press this.
+  const [showResetPairing, setShowResetPairing] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetting, setResetting] = useState(false);
+  async function handleResetPairing() {
+    if (resetConfirmText.trim().toUpperCase() !== 'RESET') return;
+    setResetting(true);
+    try {
+      const res = await api.post(`/admin/whatsapp/reset-pairing${q}`);
+      setMsg(res.data?.message || 'Pairing reset — scan the new QR code with your new phone.');
+      setShowResetPairing(false);
+      setResetConfirmText('');
+      // Start QR polling — fresh QR will appear within ~3-8s
+      if (qrPollRef.current) { clearInterval(qrPollRef.current); }
+      qrPollRef.current = setInterval(async () => {
+        try {
+          const qrRes = await api.get(`/admin/whatsapp/qr${q}`);
+          if (qrRes.data?.qrCode) setQrCode(qrRes.data.qrCode);
+          if (qrRes.data?.status === 'connected') {
+            clearInterval(qrPollRef.current); qrPollRef.current = null;
+            setQrCode(null);
+            loadAll();
+          }
+        } catch {}
+      }, 3000);
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Reset failed: ${detail}`);
+    } finally {
+      setResetting(false);
+    }
+  }
+
   // ── Test message ────────────────────────────────────────────────
   async function handleTestSend() {
     if (!testNumber) return;
@@ -351,9 +395,63 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
                   </button>
                 </>
               )}
+              <button
+                style={{ ...s.btn, ...s.btnOutline, borderColor: '#f59e0b', color: '#f59e0b' }}
+                onClick={() => setShowResetPairing(true)}
+                disabled={disconnecting || resetting}
+                title="Change the paired WhatsApp number"
+              >
+                Change Number / Reset Pairing
+              </button>
             </>
           )}
         </div>
+
+        {/* ── Reset Pairing — typed-phrase confirmation panel ────── */}
+        {showResetPairing && (
+          <div style={{
+            marginTop: 12, padding: 12, background: '#1a1410',
+            border: '1px solid #f59e0b', borderRadius: 6,
+          }}>
+            <div style={{ color: '#f59e0b', fontWeight: 600, marginBottom: 6 }}>
+              Change WhatsApp Number
+            </div>
+            <div style={{ color: '#ccc', fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+              This unpairs the current phone ({status?.connected_number || 'unknown'}) and clears the saved session
+              so a fresh QR code can be scanned with a new phone.
+              <br /><br />
+              <strong style={{ color: '#fbbf24' }}>BEFORE pressing Reset:</strong> on the currently-paired phone,
+              open WhatsApp → Settings → Linked Devices → tap the Nexeo entry → <strong>Log out</strong>.
+              <br /><br />
+              Type <strong style={{ color: '#fbbf24' }}>RESET</strong> below to confirm.
+            </div>
+            <input
+              style={{ ...s.input, maxWidth: 200, marginRight: 8 }}
+              value={resetConfirmText}
+              onChange={e => setResetConfirmText(e.target.value)}
+              placeholder="Type RESET"
+              disabled={resetting}
+            />
+            <button
+              style={{
+                ...s.btn, ...s.btnDanger,
+                opacity: (resetConfirmText.trim().toUpperCase() === 'RESET' && !resetting) ? 1 : 0.5,
+              }}
+              onClick={handleResetPairing}
+              disabled={resetConfirmText.trim().toUpperCase() !== 'RESET' || resetting}
+            >
+              {resetting && <span className="btn-spinner" />}
+              {resetting ? 'Resetting…' : 'Reset Pairing'}
+            </button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline, marginLeft: 6 }}
+              onClick={() => { setShowResetPairing(false); setResetConfirmText(''); }}
+              disabled={resetting}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Test Message Modal ─────────────────────────────────── */}

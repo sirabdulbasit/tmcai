@@ -194,6 +194,78 @@ router.post('/disconnect', async (req: Request, res: Response) => {
   }
 });
 
+// ─── POST /reset-pairing — change WhatsApp number / unpair completely ─────────
+//
+// What this does (in order):
+//   1. client.logout()  → tells WhatsApp to unlink this device from the
+//      paired phone. Without this, the old phone keeps showing the entry
+//      under Linked Devices and can re-grab the session.
+//   2. client.destroy() → kills the in-memory webjs client + Chromium.
+//   3. rm -rf the LocalAuth session folder on disk. WITHOUT THIS, the
+//      next initialize() finds the saved session and silently reconnects
+//      to the OLD account — no QR is ever shown. This is THE bug that
+//      forced the user to SSH and delete the folder manually.
+//   4. Clear DB columns so the admin UI knows it needs a fresh pair.
+//   5. Re-initialize the provider → fresh QR appears on next /qr poll.
+//
+// Idempotent: safe to call even when not currently paired.
+router.post('/reset-pairing', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const fs = await import('fs');
+  const path = await import('path');
+  try {
+    // Step 1: destroy the live client (best-effort — tolerate
+    // "already disconnected" case). The UI flow tells the admin to log
+    // out from the phone's Linked Devices BEFORE pressing this button,
+    // so the WhatsApp-side session is already invalidated; here we just
+    // tear down the local Chromium / webjs Client so the next initialize
+    // starts clean.
+    try {
+      const provider = await getProvider(cn);
+      await provider.disconnect(cn);
+      clearProviderCache(cn);
+    } catch (e: any) {
+      log.warn('reset-pairing: provider tear-down errored, continuing', { cn, error: e.message });
+    }
+
+    // Step 3: delete LocalAuth session folder so next initialize()
+    // shows a fresh QR instead of silently re-pairing to the old account.
+    const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
+    const sessionDir = path.join(sessionPath, `session-${cn}`);
+    try {
+      if (fs.existsSync(sessionDir)) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        log.info('reset-pairing: session dir deleted', { cn, sessionDir });
+      }
+    } catch (e: any) {
+      log.warn('reset-pairing: session dir delete failed', { cn, sessionDir, error: e.message });
+    }
+
+    // Step 4: clear DB so the admin UI surfaces "needs pairing" state.
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config
+         SET status            = 'disconnected',
+             connected_number  = NULL,
+             qr_code           = NULL,
+             qr_expires_at     = NULL,
+             connected_at      = NULL,
+             last_error        = 'reset for re-pair (admin)',
+             last_error_at     = NOW(),
+             updated_at        = NOW()
+       WHERE client_number = $1`, cn,
+    );
+
+    // Step 5: re-initialize so a fresh QR is generated for the next /qr poll.
+    const freshProvider = await getProvider(cn);
+    await freshProvider.initialize(cn);
+
+    res.json({ success: true, message: 'Pairing reset — scan the new QR code with the phone you want to use.' });
+  } catch (err: any) {
+    log.error('reset-pairing failed', { cn, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── PUT /limits — update daily/monthly limits ───────────────────────────────
 router.put('/limits', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
