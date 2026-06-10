@@ -257,6 +257,45 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
     try { await api.post(`/admin/whatsapp/messages/${id}/reject`); setMsg('Rejected'); loadAll(); } catch { setMsg('Reject failed'); }
   }
 
+  // ── Delete a single message row from the log ────────────────────
+  // No browser dialogs (per the no-browser-dialogs rule); the row
+  // shows an inline "Confirm?" affordance instead. Tracked per id so
+  // confirming one row doesn't open every row.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  async function handleDeleteMessage(id) {
+    try {
+      const res = await api.delete(`/admin/whatsapp/messages/${id}${q}`);
+      setMsg(res.data?.deleted ? 'Deleted' : 'Nothing to delete');
+      setConfirmDeleteId(null);
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Delete failed: ${detail}`);
+    }
+  }
+
+  // ── Clear ALL message logs for this tenant ──────────────────────
+  // Destructive — uses typed-phrase confirmation (type CLEAR).
+  const [showClearLog, setShowClearLog] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
+  const [clearing, setClearing] = useState(false);
+  async function handleClearLog() {
+    if (clearConfirmText.trim().toUpperCase() !== 'CLEAR') return;
+    setClearing(true);
+    try {
+      const res = await api.delete(`/admin/whatsapp/messages${q}`);
+      setMsg(`Cleared — deleted ${res.data?.deleted ?? 0} rows.`);
+      setShowClearLog(false);
+      setClearConfirmText('');
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Clear failed: ${detail}`);
+    } finally {
+      setClearing(false);
+    }
+  }
+
   if (loading) return <div style={{ color: '#888', padding: 20 }}>Loading WhatsApp config...</div>;
 
   const st = status?.status || 'not_configured';
@@ -487,8 +526,56 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
       <div style={s.section}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={s.sectionTitle}>Recent Messages</div>
-          <button style={{ ...s.btn, ...s.btnOutline, fontSize: 11 }} onClick={loadAll}>Refresh</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...s.btn, ...s.btnOutline, fontSize: 11 }} onClick={loadAll}>Refresh</button>
+            {messages.length > 0 && (
+              <button
+                style={{ ...s.btn, ...s.btnOutline, fontSize: 11, borderColor: '#ef4444', color: '#ef4444' }}
+                onClick={() => setShowClearLog(true)}
+                disabled={clearing}
+                title="Delete all message logs for this tenant"
+              >
+                Clear All
+              </button>
+            )}
+          </div>
         </div>
+        {showClearLog && (
+          <div style={{
+            marginTop: 8, padding: 10, background: '#1a1010',
+            border: '1px solid #ef4444', borderRadius: 6,
+          }}>
+            <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 8 }}>
+              Permanently delete <strong>all {messages.length}+ message logs</strong> for this tenant.
+              Type <strong style={{ color: '#fca5a5' }}>CLEAR</strong> to confirm.
+            </div>
+            <input
+              style={{ ...s.input, maxWidth: 160, marginRight: 6 }}
+              value={clearConfirmText}
+              onChange={e => setClearConfirmText(e.target.value)}
+              placeholder="Type CLEAR"
+              disabled={clearing}
+            />
+            <button
+              style={{
+                ...s.btn, ...s.btnDanger, fontSize: 11,
+                opacity: (clearConfirmText.trim().toUpperCase() === 'CLEAR' && !clearing) ? 1 : 0.5,
+              }}
+              onClick={handleClearLog}
+              disabled={clearConfirmText.trim().toUpperCase() !== 'CLEAR' || clearing}
+            >
+              {clearing && <span className="btn-spinner" />}
+              {clearing ? 'Clearing…' : 'Clear All'}
+            </button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline, fontSize: 11, marginLeft: 6 }}
+              onClick={() => { setShowClearLog(false); setClearConfirmText(''); }}
+              disabled={clearing}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {messages.length === 0 ? (
           <p style={{ color: '#555', fontSize: 12 }}>No messages yet</p>
         ) : (
@@ -525,8 +612,32 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
                       {m.status === 'queued' && m.requires_approval && (
                         <>
                           <button style={{ ...s.btn, ...s.btnPrimary, fontSize: 10, padding: '2px 8px', marginRight: 4 }} onClick={() => handleApprove(m.id)}>Approve</button>
-                          <button style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px' }} onClick={() => handleReject(m.id)}>Reject</button>
+                          <button style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px', marginRight: 4 }} onClick={() => handleReject(m.id)}>Reject</button>
                         </>
+                      )}
+                      {confirmDeleteId === m.id ? (
+                        <>
+                          <button
+                            style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px', marginRight: 4 }}
+                            onClick={() => handleDeleteMessage(m.id)}
+                          >
+                            Confirm?
+                          </button>
+                          <button
+                            style={{ ...s.btn, ...s.btnOutline, fontSize: 10, padding: '2px 8px' }}
+                            onClick={() => setConfirmDeleteId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          style={{ ...s.btn, ...s.btnOutline, fontSize: 10, padding: '2px 8px', borderColor: '#666', color: '#999' }}
+                          onClick={() => setConfirmDeleteId(m.id)}
+                          title="Delete this row from the log"
+                        >
+                          Delete
+                        </button>
                       )}
                     </td>
                   </tr>

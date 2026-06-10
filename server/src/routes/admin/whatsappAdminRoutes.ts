@@ -312,6 +312,45 @@ router.post('/messages/:id/reject', async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
+// ─── DELETE /messages/:id — remove a single row from the log ─────────────────
+//
+// Tenant-scoped: an admin can only delete rows belonging to their own
+// tenant. Returns deleted-count so the UI can toast "Deleted" only on
+// actual delete (vs silent no-op if the id doesn't exist or belongs
+// to a different tenant).
+router.delete('/messages/:id', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const id = parseInt(req.params.id as string, 10);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const result: any = await prisma.$executeRawUnsafe(
+    `DELETE FROM whatsapp_messages WHERE id = $1 AND client_number = $2`, id, cn,
+  );
+  log.info('admin deleted whatsapp_messages row', {
+    cn, id, adminId: req.user?.id, deletedRows: Number(result) || 0,
+  });
+  res.json({ success: true, deleted: Number(result) || 0 });
+});
+
+// ─── DELETE /messages — clear the entire log for this tenant ─────────────────
+//
+// Destructive. Tenant-scoped (only this tenant's rows). The UI uses a
+// typed-phrase confirmation (type CLEAR) so it can't be triggered by
+// an accidental click. Returns the deleted-count so the admin sees
+// proof of action.
+router.delete('/messages', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const result: any = await prisma.$executeRawUnsafe(
+    `DELETE FROM whatsapp_messages WHERE client_number = $1`, cn,
+  );
+  log.warn('admin cleared whatsapp_messages log', {
+    cn, adminId: req.user?.id, deletedRows: Number(result) || 0,
+  });
+  res.json({ success: true, deleted: Number(result) || 0 });
+});
+
 // ─── GET /sessions — active WhatsApp sessions ────────────────────────────────
 router.get('/sessions', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
