@@ -47,30 +47,18 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   log.info('Inbound', { clientNumber: params.clientNumber, from: params.fromNumber, type: params.messageType });
 
-  // Log inbound message. We don't have the resolved userId yet (that's
-  // the next step), so fall back to a tenant SA to satisfy the
-  // NOT NULL constraint. The resolution-based update-to-correct-user_id
-  // is a nice-to-have follow-up but not essential — the from_number is
-  // the authoritative identity signal anyway.
-  try {
-    const sa = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
-         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
-      params.clientNumber,
-    ).catch(() => [] as any[]);
-    const logUserId = sa[0]?.id;
-    if (logUserId) {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, message_type, status, created_at)
-         VALUES ($1, $2, 'inbound', $3, '', $4, $5, 'received', NOW())`,
-        params.clientNumber, logUserId, params.fromNumber, params.messageBody, params.messageType,
-      );
-    }
-  } catch (err: any) {
-    log.warn('inbound log insert failed', { error: err.message });
-  }
-
   // ── Step 1: Check if sender's number is registered ────────────────────────
+  //
+  // Per Basit 2026-06-10: "anyone who sends message to brain through
+  // whatsapp will not be saved or entertain if user is not registered".
+  // The registration check MUST run BEFORE any DB write. Previously we
+  // inserted the inbound message into whatsapp_messages here (with a
+  // fallback SA user_id) before doing the lookup — so unregistered
+  // senders' messages were getting saved to the audit table even though
+  // Brain never replied. Now: lookup first, drop without writing if
+  // unregistered. PM2 log line is the ONLY persisted record of
+  // unregistered traffic — admins can grep it if they need to audit.
+  //
   // Normalize number for matching: strip +, leading 0, try multiple formats
   const rawNum = params.fromNumber.replace(/[^\d]/g, ''); // digits only
   const numVariants = [
@@ -94,21 +82,22 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   // Unknown number — silently drop the message.
   //
-  // Why ignore instead of replying with a registration prompt:
-  //   1. Privacy — replying confirms to the sender that this is an
-  //      automated business number, attracting spam/scrapers.
-  //   2. Quota — every reply consumes a slot from the tenant's daily
-  //      cap; auto-replying to wrong-number / spam senders burns it.
-  //   3. UX — a real user who needs to register will be onboarded by
-  //      their admin via the Settings page; they don't need a reply
-  //      from the bot to figure that out.
+  // Why ignore + don't save:
+  //   1. Privacy / data-hygiene — unregistered senders' bodies stay out
+  //      of whatsapp_messages, whatsapp_sessions, feed_events.
+  //   2. Replying confirms to the sender that this is an automated
+  //      business number, attracting spam/scrapers.
+  //   3. Every reply consumes a slot from the tenant's daily cap;
+  //      auto-replying to wrong-number / spam senders burns it.
+  //   4. A real user who needs access gets onboarded by their admin
+  //      via the Settings page; they don't need a reply from the bot.
   //
-  // Still logged so admins can audit unknown-number traffic in the
-  // server log if they ever need to investigate.
+  // PM2 log line is the only persisted record — admins can grep it.
   if (!connections.length) {
-    log.info('Unregistered number — ignored', {
+    log.info('Unregistered number — dropped (no save, no reply)', {
       from: params.fromNumber,
       clientNumber: params.clientNumber,
+      bodyPrefix: params.messageBody.slice(0, 60),
     });
     return;
   }
@@ -117,6 +106,19 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   const userId = conn.user_id;
   const userName = conn.display_name || conn.user_name || 'there';
   let queryText = params.messageBody;
+
+  // Now that registration is confirmed, log the inbound to
+  // whatsapp_messages with the resolved user_id (no more SA fallback).
+  // This row is the audit trail for the conversation we ARE entertaining.
+  try {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, message_type, status, created_at)
+       VALUES ($1, $2, 'inbound', $3, '', $4, $5, 'received', NOW())`,
+      params.clientNumber, userId, params.fromNumber, params.messageBody, params.messageType,
+    );
+  } catch (err: any) {
+    log.warn('inbound log insert failed', { error: err.message });
+  }
 
   // Thread the resolved userId onto params so sendReply's log insert
   // carries it — whatsapp_messages.user_id is NOT NULL and the outbound
