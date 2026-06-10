@@ -49,16 +49,17 @@ function ClientManagementTab({ user, msg, setMsg }) {
   useEffect(() => { loadAll(); }, []);
 
   const loadAll = async () => {
-    try {
-      if (user?.isSuperAdmin) {
-        const [tRes, pRes] = await Promise.all([api.get('/tenants'), api.get('/licenses/prices')]);
-        setTenants(tRes.data.tenants || []);
-        setPrices(pRes.data.prices || []);
-      }
-      const [uRes, tRes2] = await Promise.all([api.get('/admin/users'), api.get('/tiers')]);
-      setUsers(uRes.data.users || []);
-      setAvailableTiers(tRes2.data.tiers || []);
-    } catch {}
+    // Each fetch handles its own failure so one broken endpoint can't
+    // wipe the rest of the page. Previously a single failing call
+    // (e.g. /tiers 401 or /licenses/prices 500) rejected the whole
+    // Promise.all and the empty catch swallowed it — leaving Users (0)
+    // even though /admin/users had returned 3 users. Per Basit 2026-06-10.
+    if (user?.isSuperAdmin) {
+      api.get('/tenants').then(r => setTenants(r.data.tenants || [])).catch(() => {});
+      api.get('/licenses/prices').then(r => setPrices(r.data.prices || [])).catch(() => {});
+    }
+    api.get('/admin/users').then(r => setUsers(r.data.users || [])).catch(() => {});
+    api.get('/tiers').then(r => setAvailableTiers(r.data.tiers || [])).catch(() => {});
   };
 
   const priceMap = {};
