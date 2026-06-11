@@ -100,6 +100,20 @@ router.post(
 );
 
 // ─── Meta WhatsApp webhook verification (GET) ─────────────────────────────────
+//
+// Token-only check — does NOT require provider='meta' in whatsapp_config.
+// Rationale (Basit 2026-06-11): "decouple webhook verification from the
+// system-wide provider switch". The verify_token is a shared secret only
+// we and Meta know; matching it is sufficient proof. Coupling acceptance
+// to a separate `provider` column meant we had to flip the system over
+// to Meta before we could even prove the connection works — bad
+// engineering. Now: token match → verify passes. Switching the system
+// to actually USE Meta for inbound/outbound is a separate, later step
+// (tenant_whatsapp_notifier config + provider field flip + webjs
+// disconnect, all explicit and reversible).
+//
+// Still gated on token presence + match. A row without meta_webhook_secret
+// still cannot pass (no shared secret to match against).
 router.get('/webhooks/whatsapp/:clientNumber', async (req, res) => {
   const { clientNumber } = req.params;
   const mode = req.query['hub.mode'];
@@ -109,9 +123,10 @@ router.get('/webhooks/whatsapp/:clientNumber', async (req, res) => {
   const rows = await prisma.$queryRawUnsafe(
     `SELECT meta_webhook_secret, provider FROM whatsapp_config WHERE client_number = $1`, clientNumber,
   ) as any[];
+  const secret = rows[0]?.meta_webhook_secret;
 
-  if (mode === 'subscribe' && rows.length && rows[0].provider === 'meta' && token === rows[0].meta_webhook_secret) {
-    log.info('Webhook verified', { clientNumber, challenge });
+  if (mode === 'subscribe' && secret && token === secret) {
+    log.info('Webhook verified', { clientNumber, challenge, providerInDb: rows[0]?.provider });
     // Meta is strict about the verify response: must be plain text, exactly
     // the challenge value, status 200. Default Express res.send sends as
     // text/html which Meta sometimes rejects with "couldn't be validated"
@@ -124,9 +139,10 @@ router.get('/webhooks/whatsapp/:clientNumber', async (req, res) => {
       mode,
       hasRow: rows.length > 0,
       providerInDb: rows[0]?.provider,
-      tokenMatch: token === rows[0]?.meta_webhook_secret,
+      hasSecret: !!secret,
+      tokenMatch: !!secret && token === secret,
       receivedTokenLen: typeof token === 'string' ? token.length : 0,
-      expectedTokenLen: rows[0]?.meta_webhook_secret?.length ?? 0,
+      expectedTokenLen: secret?.length ?? 0,
     });
     res.sendStatus(403);
   }
