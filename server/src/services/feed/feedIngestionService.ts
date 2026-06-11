@@ -7,7 +7,8 @@ import { REDIS_KEY_PATTERNS, REDIS_TTL } from '../../config/redis';
 import { extractSourceEventTime } from './feedEventTime';
 
 export type FeedSourceType = 'gmail' | 'whatsapp' | 'gchat' | 'gcal' | 'gtasks' | 'slack' | 'crm'
-  | 'outlook' | 'outlook_calendar' | 'ms_teams' | 'onedrive_personal' | 'manual';
+  | 'outlook' | 'outlook_calendar' | 'ms_teams' | 'onedrive_personal' | 'manual'
+  | 'imap_smtp';
 
 /**
  * HaseebOS v15 FeedEvent canonical event types (§3.2 F-4).

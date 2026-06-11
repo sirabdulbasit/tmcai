@@ -151,7 +151,35 @@ export async function sendUserEmail(
   opts?: { threadId?: string; inReplyTo?: string; references?: string },
 ): Promise<{ success: boolean; messageId?: string; threadId?: string; error?: string }> {
   const { client, error } = await getAuthenticatedClient(userId);
-  if (!client) return { success: false, error };
+  if (!client) {
+    // Gmail unavailable. Per Basit 2026-06-11 "anyone email should be
+    // configured either gmail, microsoft, imap smtp" — fall back to
+    // the user's IMAP/SMTP connector if they have one connected. This
+    // means callers (instructionDispatcher, delegationFollowUpJob,
+    // conversationalHandler, etc.) DON'T need to branch by provider —
+    // sendUserEmail picks the right route automatically.
+    try {
+      const { sendEmail: imapSmtpSend } = await import('./imapSmtpService');
+      const r = await imapSmtpSend({
+        userId,
+        to,
+        subject,
+        bodyText: body.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(),
+        bodyHtml: body,
+        inReplyTo: opts?.inReplyTo,
+      });
+      if (r.ok) {
+        return { success: true, messageId: r.messageId };
+      }
+      // No imap_smtp either — return the more informative Gmail error.
+      if (/no connected imap_smtp/i.test(r.error || '')) {
+        return { success: false, error };
+      }
+      return { success: false, error: r.error };
+    } catch (fallbackErr: any) {
+      return { success: false, error };
+    }
+  }
 
   try {
     const gmail = google.gmail({ version: 'v1', auth: client });

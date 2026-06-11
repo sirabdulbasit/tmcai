@@ -71,6 +71,7 @@ import outlookFeedAdapter from './services/adapters/impl/outlookFeedAdapter';
 import outlookCalendarFeedAdapter from './services/adapters/impl/outlookCalendarFeedAdapter';
 import onedriveFeedAdapter from './services/adapters/impl/onedriveFeedAdapter';
 import msTeamsFeedAdapter from './services/adapters/impl/msTeamsFeedAdapter';
+import imapSmtpFeedAdapter from './services/adapters/impl/imapSmtpFeedAdapter';
 
 validateEnv();
 // HaseebOS v15 — register action handlers on boot
@@ -83,6 +84,7 @@ registerFeedAdapter(outlookFeedAdapter);
 registerFeedAdapter(outlookCalendarFeedAdapter);
 registerFeedAdapter(onedriveFeedAdapter);
 registerFeedAdapter(msTeamsFeedAdapter);
+registerFeedAdapter(imapSmtpFeedAdapter);
 
 // L1 — track interval/timeout handles so SIGTERM can clear them cleanly.
 // Every setInterval/setTimeout below that is assigned-for-cleanup gets
