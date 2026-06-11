@@ -35,17 +35,21 @@ export class ImapSmtpFeedAdapter extends FeedAdapter {
    *  imap_smtp connector in this tenant. Each item is annotated with
    *  the source user id so normalise() can attribute it correctly. */
   async receive(tenantId: string, _since?: Date, limit = 50): Promise<unknown[]> {
-    const users = await prisma.user.findMany({
+    // User model has no back-relation to UserConnector, so we query
+    // user_connectors first, get the userIds, then filter active users
+    // to those ids. Two-hop instead of one nested `where some`.
+    const ucs = await prisma.userConnector.findMany({
       where: {
         clientNumber: tenantId,
-        isActive: true,
-        userConnectors: {
-          some: {
-            status: 'connected',
-            connectorType: { slug: 'imap_smtp' },
-          },
-        },
+        status: 'connected',
+        connectorType: { slug: 'imap_smtp' },
       },
+      select: { userId: true },
+    });
+    if (!ucs.length) return [];
+    const userIds = Array.from(new Set(ucs.map((c) => c.userId)));
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds }, isActive: true, clientNumber: tenantId },
       select: { id: true },
     });
     if (!users.length) return [];
