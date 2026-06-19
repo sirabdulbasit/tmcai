@@ -1,0 +1,126 @@
+/**
+ * Nexeo Self-Learning — Risk Scoring Service (Phase 1)
+ *
+ * Per spec §14: every AI action must be risk-scored. The four levels
+ * decide whether Brain can auto-execute, must draft-only, must
+ * recommend-only, or must NOT execute at all.
+ *
+ * This service is the single source of truth for risk classification —
+ * called from interaction logging, governed-memory creation, and
+ * (later in Phase 2) gap proposals + development requests. By keeping
+ * the classification rules HERE (not scattered across services),
+ * every risk decision stays auditable and uniform.
+ */
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export interface RiskInput {
+  surface?: string;                 // 'web_chat' | 'whatsapp_brain' | etc.
+  interactionType?: string;          // 'ask' | 'compose' | 'send' | 'delegate' | etc.
+  /** Will the action send a message FROM the user's identity? Highest signal. */
+  sendsAsUser?: boolean;
+  /** Will the action send via Brain's tenant channel? */
+  sendsAsBrain?: boolean;
+  /** Will the action mutate user data (open items, calendar)? */
+  mutatesUserData?: boolean;
+  /** Will the action mutate connector credentials / auth / tenant isolation? */
+  mutatesSecurityState?: boolean;
+  /** Does the action touch private/sensitive memory creation? */
+  touchesSensitiveMemory?: boolean;
+  /** Does the action involve cross-user or cross-tenant data? */
+  touchesCrossUserData?: boolean;
+  /** Will the action deploy code or modify production state? */
+  deploysProductionCode?: boolean;
+}
+
+export interface RiskResult {
+  level: RiskLevel;
+  reasons: string[];
+  /** Whether Brain can auto-execute without confirmation. */
+  canAutoExecute: boolean;
+  /** Whether human approval is required before execution. */
+  requiresApproval: boolean;
+  /** Whether Brain MUST refuse to execute regardless of approval. */
+  mustNotExecute: boolean;
+}
+
+/**
+ * Classify an action's risk level + the gates that apply.
+ *
+ * Hierarchy (per §14):
+ *   - Critical → must not execute. Examples: deploy code, change
+ *     auth/tenant logic, send as user without explicit chain.
+ *   - High → recommend only. Examples: send as user (with chain),
+ *     delegate task to another person, change connector config.
+ *   - Medium → draft + confirm. Examples: send from Brain's tenant
+ *     channel, create inferred open item, suggest triage rule.
+ *   - Low → auto-execute + log. Examples: summarize email, suggest
+ *     reply text (no send), propose reminder.
+ */
+export function scoreRisk(input: RiskInput): RiskResult {
+  const reasons: string[] = [];
+  let level: RiskLevel = 'low';
+
+  // ── Critical signals ──────────────────────────────────────────
+  if (input.deploysProductionCode) {
+    reasons.push('deploys production code');
+    level = 'critical';
+  }
+  if (input.mutatesSecurityState) {
+    reasons.push('mutates security state (auth, tenant isolation, credentials)');
+    level = 'critical';
+  }
+  if (input.touchesCrossUserData) {
+    reasons.push('touches cross-user or cross-tenant data');
+    level = 'critical';
+  }
+  if (input.sendsAsUser && !reasons.some((r) => r.includes('user-initiated chain'))) {
+    // Sending as user is critical UNLESS explicitly part of a
+    // user-initiated chain (caller signals that via interactionType).
+    if (input.interactionType !== 'user_initiated_send') {
+      reasons.push('sends as user identity outside user-initiated chain');
+      level = 'critical';
+    }
+  }
+
+  // ── High signals (only escalate if not already critical) ─────
+  if (level !== 'critical') {
+    if (input.interactionType === 'delegate' || input.interactionType === 'schedule') {
+      reasons.push(`${input.interactionType} affects another person`);
+      level = 'high';
+    }
+    if (input.touchesSensitiveMemory) {
+      reasons.push('creates/modifies sensitive memory');
+      level = level === 'low' ? 'high' : level;
+    }
+    if (input.mutatesUserData && input.interactionType === 'follow_up') {
+      reasons.push('automated follow-up against another party');
+      level = level === 'low' || level === 'medium' ? 'high' : level;
+    }
+  }
+
+  // ── Medium signals ────────────────────────────────────────────
+  if (level === 'low') {
+    if (input.sendsAsBrain) {
+      reasons.push('sends from Brain tenant channel');
+      level = 'medium';
+    }
+    if (input.mutatesUserData) {
+      reasons.push('creates/updates user-owned data (open item, calendar, etc.)');
+      level = 'medium';
+    }
+  }
+
+  // ── Default reasoning when no escalation triggers fired ──────
+  if (reasons.length === 0) {
+    reasons.push('read-only / suggestion-only — no state change');
+  }
+
+  return {
+    level,
+    reasons,
+    canAutoExecute: level === 'low' || level === 'medium',
+    requiresApproval: level === 'high',
+    mustNotExecute: level === 'critical',
+  };
+}

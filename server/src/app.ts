@@ -60,6 +60,7 @@ import entityCatalogRoutes from './routes/entityCatalogRoutes';
 // MyOS routes
 import connectorRoutes from './routes/connectorRoutes';
 import connectorAdminRoutes from './routes/admin/connectorAdminRoutes';
+import learningRoutes from './routes/learningRoutes';
 import openItemsRoutes from './routes/openItemsRoutes';
 import entityRoutes from './routes/entityRoutes';
 import brainConfigRoutes from './routes/brainConfigRoutes';
@@ -187,6 +188,7 @@ v1.use('/usage', tokenUsageRoutes);
 v1.use('/analytics', analyticsRoutes);
 v1.use('/personal-drive', personalDriveRoutes);
 v1.use('/uploads', fileUploadRoutes);
+v1.use('/learning', learningRoutes);
 v1.use('/knowledge', knowledgeBaseRoutes);
 v1.use('/agents', agentRoutes);
 v1.use('/admin/whatsapp', whatsappAdminRoutes);

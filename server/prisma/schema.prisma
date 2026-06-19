@@ -29,6 +29,11 @@ model Tenant {
   auditLogs      AuditLog[]
   scheduledTasks ScheduledTask[]
 
+  // Phase 1 — Self-Learning back-relations
+  brainLearningLogs BrainInteractionLearningLog[]
+  brainFeedback     BrainFeedback[]
+  brainMemories     GovernedBrainMemory[]
+
   @@map("tenants")
 }
 
@@ -169,6 +174,13 @@ model User {
   promptOverlay        UserPromptOverlay[]
   retrievalFeedback    RetrievalFeedback[]
   brainResets          BrainReset[]
+
+  // Phase 1 — Self-Learning back-relations (named where ambiguous)
+  brainLearningLogs    BrainInteractionLearningLog[]
+  brainFeedback        BrainFeedback[]
+  ownedMemories        GovernedBrainMemory[] @relation("MemoryUser")
+  approvedMemories     GovernedBrainMemory[] @relation("MemoryApprover")
+  rejectedMemories     GovernedBrainMemory[] @relation("MemoryRejecter")
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -2303,4 +2315,94 @@ model WhatsAppOutboundMessage {
   @@unique([userId, waMessageId])
   @@index([clientNumber, userId, chatId, sentAt])
   @@map("whatsapp_outbound_messages")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Nexeo AI Self-Learning & Controlled Self-Development — Phase 1 Foundation
+//
+// Adds three tables that capture every Brain interaction, user feedback on
+// those interactions, and Brain-proposed memories that require human
+// approval before influencing future replies.
+//
+// Per nexeo_self_learning&development.md spec and Basit 2026-06-19.
+// Phase 2 (gap detection + product proposals) operates on the data
+// accumulated here, so this MUST run first.
+// ═════════════════════════════════════════════════════════════════════════════
+
+model BrainInteractionLearningLog {
+  id              String   @id @default(uuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  surface         String   @db.VarChar(50)
+  interactionType String   @map("interaction_type") @db.VarChar(100)
+  userPrompt      String?  @map("user_prompt") @db.Text
+  brainResponse   String?  @map("brain_response") @db.Text
+  contextSnapshot Json?    @map("context_snapshot")
+  dataBlocksUsed  Json?    @map("data_blocks_used")
+  modelProvider   String?  @map("model_provider") @db.VarChar(100)
+  modelName       String?  @map("model_name") @db.VarChar(100)
+  tokensUsed      Int?     @map("tokens_used")
+  riskLevel       String   @default("low") @map("risk_level") @db.VarChar(50)
+  status          String   @default("success") @db.VarChar(50)
+  userOutcome     String?  @map("user_outcome") @db.VarChar(100)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant   Tenant   @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  feedback BrainFeedback[]
+
+  @@index([clientNumber, userId, surface, createdAt(sort: Desc)])
+  @@map("brain_interaction_learning_logs")
+}
+
+model BrainFeedback {
+  id              String   @id @default(uuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  interactionId   String?  @map("interaction_id")
+  feedbackType    String   @map("feedback_type") @db.VarChar(100)
+  feedbackComment String?  @map("feedback_comment") @db.Text
+  correctedOutput String?  @map("corrected_output") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user        User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant      Tenant                       @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  interaction BrainInteractionLearningLog? @relation(fields: [interactionId], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, userId, createdAt(sort: Desc)])
+  @@index([clientNumber, feedbackType, createdAt(sort: Desc)])
+  @@map("brain_feedback")
+}
+
+model GovernedBrainMemory {
+  id                 String    @id @default(uuid())
+  clientNumber       String    @map("client_number") @db.VarChar(20)
+  userId             Int?      @map("user_id")
+  memoryScope        String    @map("memory_scope") @db.VarChar(50)
+  scopeReferenceId   String?   @map("scope_reference_id")
+  memoryType         String    @map("memory_type") @db.VarChar(100)
+  title              String    @db.Text
+  content            String    @db.Text
+  sourceType         String?   @map("source_type") @db.VarChar(100)
+  sourceReferenceId  String?   @map("source_reference_id")
+  confidenceScore    Decimal   @default(0) @map("confidence_score") @db.Decimal(5, 2)
+  sensitivityLevel   String    @default("normal") @map("sensitivity_level") @db.VarChar(50)
+  status             String    @default("pending_approval") @db.VarChar(50)
+  createdByBrain     Boolean   @default(true) @map("created_by_brain")
+  approvedBy         Int?      @map("approved_by")
+  approvedAt         DateTime? @map("approved_at")
+  rejectedBy         Int?      @map("rejected_by")
+  rejectedAt         DateTime? @map("rejected_at")
+  rejectionReason    String?   @map("rejection_reason") @db.Text
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user      User?  @relation("MemoryUser", fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  approver  User?  @relation("MemoryApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  rejecter  User?  @relation("MemoryRejecter", fields: [rejectedBy], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, status, sensitivityLevel, createdAt(sort: Desc)])
+  @@index([clientNumber, userId, memoryScope, status])
+  @@map("governed_brain_memories")
 }
