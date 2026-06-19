@@ -278,6 +278,37 @@ export async function answerAsBrain(
     };
   }
 
+  // Phase 1 Self-Learning — log every Brain interaction so Phase 2's
+  // gap detection + product proposal agents have data to analyze.
+  // Fire-and-forget; logInteraction is internally safe (never throws
+  // back into the reply path). Per nexeo_self_learning&development.md.
+  void (async () => {
+    try {
+      const { logInteraction } = await import('../services/learning/learningService');
+      await logInteraction({
+        clientNumber, userId,
+        surface: opts.channel === 'whatsapp' ? 'whatsapp_brain' : 'web_chat',
+        interactionType: result.action ? 'compose_with_action' : 'compose',
+        userPrompt: question.slice(0, 4000),
+        brainResponse: result.answer.slice(0, 8000),
+        contextSnapshot: {
+          intent: plan.intent,
+          gaps: result.gaps,
+          openedPageCount: opened?.length ?? 0,
+          historyTurns: trimmedHistory.length,
+          channel: opts.channel ?? 'web',
+        },
+        dataBlocksUsed: { citedPageIds: result.citedPageIds, sourceCount: result.sources?.length ?? 0 },
+        riskInput: {
+          surface: opts.channel === 'whatsapp' ? 'whatsapp_brain' : 'web_chat',
+          interactionType: result.action ? String(result.action.kind || 'action') : 'ask',
+          mutatesUserData: !!result.action,
+          sendsAsBrain: false, // composing only — actual send happens downstream
+        },
+      });
+    } catch { /* learning log never blocks the reply */ }
+  })();
+
   return {
     answer: result.answer,
     sources: result.sources,

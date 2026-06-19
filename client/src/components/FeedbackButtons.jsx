@@ -57,6 +57,15 @@ export default function FeedbackButtons({
         reason: providedReason,
         context,
       });
+      // Phase 1 Self-Learning — also record into the governance feed.
+      // Parallel POST (non-blocking). Maps the legacy {rating, reason}
+      // shape into the learning feedback_type taxonomy. Failure here
+      // never breaks the user-facing feedback flow.
+      void api.post('/learning/feedback', {
+        interactionId: context?.interactionId ?? null,
+        feedbackType: rating === 'up' ? 'helpful' : (providedReason || 'incorrect'),
+        feedbackComment: providedReason ?? null,
+      }).catch(() => {});
       // Server returns diagnosis only for chat_answer 👎 (sync diagnosis)
       const diag = r?.data?.diagnosis ?? null;
       if (rating === 'down' && diag) setDiagnosis(diag);
