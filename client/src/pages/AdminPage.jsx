@@ -8,6 +8,7 @@ import WhatsAppMergedTab from './admin/WhatsAppMergedTab';
 import LlmSpendTab from './admin/LlmSpendTab';
 import ConnectorsAdminTab from './admin/ConnectorsAdminTab';
 import BrainLearningTab from './admin/BrainLearningTab';
+import BrainImprovementTab from './admin/BrainImprovementTab';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -40,6 +41,7 @@ export default function AdminPage() {
     { key: 'whatsapp', label: 'WhatsApp' },
     { key: 'connectors', label: 'Connectors' },
     { key: 'learning', label: 'Brain Learning' },
+    { key: 'improvement', label: 'Brain Improvement' },
     { key: 'llm-spend', label: 'LLM Spend' },
   ];
 
@@ -77,6 +79,7 @@ export default function AdminPage() {
         {activeTab === 'whatsapp' && <WhatsAppMergedTab msg={msg} setMsg={setMsg} />}
         {activeTab === 'connectors' && <ConnectorsAdminTab user={user} msg={msg} setMsg={setMsg} />}
         {activeTab === 'learning' && <BrainLearningTab user={user} msg={msg} setMsg={setMsg} />}
+        {activeTab === 'improvement' && <BrainImprovementTab user={user} msg={msg} setMsg={setMsg} />}
         {activeTab === 'llm-spend' && <LlmSpendTab user={user} />}
       </div>
     </div>

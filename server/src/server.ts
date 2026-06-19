@@ -148,6 +148,21 @@ const server = app.listen(env.port, async () => {
         .catch((err) => console.warn('Demo expiry sweep failed:', err.message));
     }, 60 * 60 * 1000);
   }, 60 * 1000);
+
+  // Phase 2 Self-Learning — Gap Detection sweep every 24h. First
+  // run 5 min after boot so the system has time to settle. The job
+  // mines patterns from accumulated Phase 1 interaction logs +
+  // feedback to propose product gaps for admin review.
+  setTimeout(() => {
+    import('./jobs/gapDetectionJob')
+      .then(({ runGapDetectionForAllTenants }) => runGapDetectionForAllTenants())
+      .catch((err) => console.warn('Gap detection sweep failed:', err.message));
+    setInterval(() => {
+      import('./jobs/gapDetectionJob')
+        .then(({ runGapDetectionForAllTenants }) => runGapDetectionForAllTenants())
+        .catch((err) => console.warn('Gap detection sweep failed:', err.message));
+    }, 24 * 60 * 60 * 1000);
+  }, 5 * 60 * 1000);
   // Personal GDrive sync every 30 minutes (Phase 3.1)
   runPersonalDriveSyncJob().catch(() => {});
   setInterval(() => runPersonalDriveSyncJob().catch(() => {}), 30 * 60 * 1000);

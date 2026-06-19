@@ -34,6 +34,11 @@ model Tenant {
   brainFeedback     BrainFeedback[]
   brainMemories     GovernedBrainMemory[]
 
+  // Phase 2 — Gap/Proposal/DevRequest back-relations
+  detectedGaps        BrainDetectedGap[]
+  productProposals    BrainProductProposal[]
+  developmentRequests BrainDevelopmentRequest[]
+
   @@map("tenants")
 }
 
@@ -181,6 +186,15 @@ model User {
   ownedMemories        GovernedBrainMemory[] @relation("MemoryUser")
   approvedMemories     GovernedBrainMemory[] @relation("MemoryApprover")
   rejectedMemories     GovernedBrainMemory[] @relation("MemoryRejecter")
+
+  // Phase 2 — Gap/Proposal/DevRequest back-relations
+  detectedGaps         BrainDetectedGap[]        @relation("GapUser")
+  reviewedGaps         BrainDetectedGap[]        @relation("GapReviewer")
+  productProposals     BrainProductProposal[]    @relation("ProposalUser")
+  approvedProposals    BrainProductProposal[]    @relation("ProposalApprover")
+  devRequestsAsUser    BrainDevelopmentRequest[] @relation("DevReqUser")
+  requestedDevRequests BrainDevelopmentRequest[] @relation("DevReqRequester")
+  approvedDevRequests  BrainDevelopmentRequest[] @relation("DevReqApprover")
 
   @@unique([clientNumber, empcode])
   @@map("users")
@@ -2405,4 +2419,110 @@ model GovernedBrainMemory {
   @@index([clientNumber, status, sensitivityLevel, createdAt(sort: Desc)])
   @@index([clientNumber, userId, memoryScope, status])
   @@map("governed_brain_memories")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Nexeo Phase 2 — Gap Detection → Product Proposal → Development Request
+// Pipeline tables. Every transition gated by human approval.
+// ═════════════════════════════════════════════════════════════════════════════
+
+model BrainDetectedGap {
+  id                String    @id @default(uuid())
+  clientNumber      String    @map("client_number") @db.VarChar(20)
+  userId            Int?      @map("user_id")
+  gapType           String    @map("gap_type") @db.VarChar(100)
+  title             String    @db.Text
+  description       String    @db.Text
+  evidence          Json
+  affectedSurfaces  String[]  @map("affected_surfaces")
+  affectedConnectors String[] @map("affected_connectors")
+  affectedRoles     String[]  @map("affected_roles")
+  frequencyCount    Int       @default(0) @map("frequency_count")
+  businessImpact    String?   @map("business_impact") @db.VarChar(50)
+  riskLevel         String?   @map("risk_level") @db.VarChar(50)
+  brainConfidence   Decimal?  @map("brain_confidence") @db.Decimal(5, 2)
+  suggestedAction   String?   @map("suggested_action") @db.Text
+  status            String    @default("new") @db.VarChar(50)
+  reviewedBy        Int?      @map("reviewed_by")
+  reviewedAt        DateTime? @map("reviewed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user      User?    @relation("GapUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant    Tenant   @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  reviewer  User?    @relation("GapReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  proposals BrainProductProposal[]
+  devRequests BrainDevelopmentRequest[]
+
+  @@index([clientNumber, status, gapType, createdAt(sort: Desc)])
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@map("brain_detected_gaps")
+}
+
+model BrainProductProposal {
+  id                  String    @id @default(uuid())
+  clientNumber        String    @map("client_number") @db.VarChar(20)
+  userId              Int?      @map("user_id")
+  gapId               String?   @map("gap_id")
+  title               String    @db.Text
+  problemStatement    String    @map("problem_statement") @db.Text
+  businessImpact      String?   @map("business_impact") @db.Text
+  userImpact          String?   @map("user_impact") @db.Text
+  affectedSurfaces    String[]  @map("affected_surfaces")
+  affectedConnectors  String[]  @map("affected_connectors")
+  affectedServices    String[]  @map("affected_services")
+  proposalMarkdown    String    @map("proposal_markdown") @db.Text
+  riskLevel           String    @default("medium") @map("risk_level") @db.VarChar(50)
+  priority            String    @default("medium") @db.VarChar(50)
+  estimatedComplexity String    @default("medium") @map("estimated_complexity") @db.VarChar(50)
+  status              String    @default("draft") @db.VarChar(50)
+  createdByBrain      Boolean   @default(true) @map("created_by_brain")
+  approvedBy          Int?      @map("approved_by")
+  approvedAt          DateTime? @map("approved_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user        User?              @relation("ProposalUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant      Tenant             @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  gap         BrainDetectedGap?  @relation(fields: [gapId], references: [id], onDelete: SetNull)
+  approver    User?              @relation("ProposalApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  devRequests BrainDevelopmentRequest[]
+
+  @@index([clientNumber, status, createdAt(sort: Desc)])
+  @@map("brain_product_proposals")
+}
+
+model BrainDevelopmentRequest {
+  id                       String    @id @default(uuid())
+  clientNumber             String    @map("client_number") @db.VarChar(20)
+  userId                   Int?      @map("user_id")
+  gapId                    String?   @map("gap_id")
+  proposalId               String?   @map("proposal_id")
+  title                    String    @db.Text
+  description              String    @db.Text
+  requirementMarkdown      String    @map("requirement_markdown") @db.Text
+  technicalSpecMarkdown    String?   @map("technical_spec_markdown") @db.Text
+  targetRepository         String?   @map("target_repository") @db.Text
+  targetBranch             String?   @map("target_branch") @db.Text
+  generatedBranch          String?   @map("generated_branch") @db.Text
+  pullRequestUrl           String?   @map("pull_request_url") @db.Text
+  testStatus               String    @default("not_started") @map("test_status") @db.VarChar(50)
+  securityStatus           String    @default("not_started") @map("security_status") @db.VarChar(50)
+  status                   String    @default("draft") @db.VarChar(50)
+  riskLevel                String    @default("high") @map("risk_level") @db.VarChar(50)
+  requestedBy              Int?      @map("requested_by")
+  approvedBy               Int?      @map("approved_by")
+  approvedAt               DateTime? @map("approved_at")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user      User?                 @relation("DevReqUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant    Tenant                @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  gap       BrainDetectedGap?     @relation(fields: [gapId], references: [id], onDelete: SetNull)
+  proposal  BrainProductProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  requester User?                 @relation("DevReqRequester", fields: [requestedBy], references: [id], onDelete: SetNull)
+  approver  User?                 @relation("DevReqApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, status, createdAt(sort: Desc)])
+  @@map("brain_development_requests")
 }
