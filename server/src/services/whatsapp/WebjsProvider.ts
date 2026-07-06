@@ -270,30 +270,88 @@ export class WebjsProvider implements IWhatsAppProvider {
       try {
         // Extract real phone number — handle both @c.us and @lid formats
         let fromNumber = '';
+        // synthLidPhone tracks the @lid-derived synthetic phone (if the
+        // message came from an @lid chat). If getContact resolves a real
+        // phone AND synthLidPhone is different, we auto-insert the
+        // synthetic as a connection alias so future messages from the
+        // same @lid chat match instantly — even if getContact later
+        // fails (which happens after any webjs library disruption).
+        // This is the AUTO-HEAL LAYER per Basit 2026-07-06 request.
+        let synthLidPhone: string | null = null;
 
         if (rawFrom.includes('@c.us')) {
           // Standard format: 923226288256@c.us → +923226288256
           fromNumber = '+' + rawFrom.replace('@c.us', '');
         } else if (rawFrom.includes('@lid')) {
-          // LID format: doesn't contain phone number directly
-          // Try to get it from the contact info
+          // LID format: doesn't contain phone number directly. Compute
+          // the synthetic AND try to resolve the real phone from contact.
+          synthLidPhone = '+' + rawFrom.replace('@lid', '');
           try {
             const contact = await message.getContact();
             const contactNumber = contact?.number || contact?.id?.user || '';
             if (contactNumber && !contactNumber.includes('@')) {
               fromNumber = '+' + contactNumber;
             } else {
-              // Fallback: try _data.notifyName or author
-              fromNumber = '+' + rawFrom.replace('@lid', '');
+              // Fallback: use synthetic as identity
+              fromNumber = synthLidPhone;
             }
           } catch {
-            fromNumber = '+' + rawFrom.replace('@lid', '');
+            fromNumber = synthLidPhone;
           }
         } else {
           fromNumber = '+' + rawFrom.replace(/@.*$/, '');
         }
 
-        log.info('Message received', { rawFrom, resolvedNumber: fromNumber });
+        // ── AUTO-HEAL @lid alias mapping ─────────────────────────
+        // When getContact resolved a REAL phone AND it differs from the
+        // @lid synthetic, ensure a connection row exists for the
+        // synthetic pointing to the same user_id. Future messages from
+        // the same @lid chat then match directly via the phone-variants
+        // lookup in WhatsAppInbound, no getContact required. This is
+        // the fix for the recurring "@lid broke Brain replies" bug
+        // (project_wa_lid_lookup_bug memory + subsequent regressions).
+        if (synthLidPhone && fromNumber !== synthLidPhone) {
+          void (async () => {
+            try {
+              // Check if the real phone maps to a registered user in this tenant.
+              const rows = await prisma.$queryRawUnsafe<any[]>(
+                `SELECT wc.user_id FROM whatsapp_connections wc
+                   JOIN users u ON u.id = wc.user_id
+                  WHERE u.client_number = $1
+                    AND wc.status = 'active'
+                    AND u.is_active = TRUE
+                    AND wc.phone_number = $2
+                  LIMIT 1`,
+                clientNumber, fromNumber,
+              );
+              const userId = rows[0]?.user_id;
+              if (!userId) return; // real phone not registered — nothing to alias
+              // Check if the synthetic alias already exists for this user.
+              const existingAlias = await prisma.$queryRawUnsafe<any[]>(
+                `SELECT id FROM whatsapp_connections
+                  WHERE user_id = $1 AND phone_number = $2 LIMIT 1`,
+                userId, synthLidPhone,
+              );
+              if (existingAlias.length) return; // alias already learned
+              // Insert the @lid synthetic as a new alias row for this user.
+              await prisma.$executeRawUnsafe(
+                `INSERT INTO whatsapp_connections
+                   (user_id, phone_number, status, provider, client_number, display_name)
+                 VALUES ($1, $2, 'active', 'webjs', $3, $4)
+                 ON CONFLICT DO NOTHING`,
+                userId, synthLidPhone, clientNumber,
+                `auto-learned LID alias (${synthLidPhone.slice(-6)})`,
+              );
+              log.info('AUTO-HEAL @lid alias learned', {
+                userId, realPhone: fromNumber, synthLidPhone, clientNumber,
+              });
+            } catch (e: any) {
+              log.warn('AUTO-HEAL @lid alias insert failed (non-blocking)', { error: e.message });
+            }
+          })();
+        }
+
+        log.info('Message received', { rawFrom, resolvedNumber: fromNumber, synthLidPhone });
 
         // React with ⏳ to show we're processing
         try { await message.react('⏳'); } catch {}
