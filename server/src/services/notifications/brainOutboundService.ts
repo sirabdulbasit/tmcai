@@ -141,7 +141,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const user = await prisma.user.findUnique({
     where: { id: req.userId },
     select: {
-      id: true, name: true, clientNumber: true, isActive: true,
+      id: true, name: true, email: true, clientNumber: true, isActive: true,
       contactNumber: true, notificationPreferences: true,
     },
   });
@@ -357,6 +357,48 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }
   }
 
+  // ── EMAIL FALLBACK — last-resort when WhatsApp is unreachable ──
+  // Per Basit 2026-07-06: "ensure it will keep connected". Even with
+  // auto-heal + watchdog + auto-reinit, there are still failure modes
+  // (Meta outage, network partition, WA account temporarily locked)
+  // where all WA channels fail. Rather than lose the message entirely,
+  // route through email so critical bundles + Day Briefs still reach
+  // the user. The tenant's outbound-email channel (Gmail / IMAP-SMTP
+  // via sendUserEmail's auto-fallback) is our safety net.
+  //
+  // Gates:
+  //   - All prior WA channels FAILED (channelsUsed.length === 0)
+  //   - User has an email address on file
+  //   - Not an admin_test / smoke run (metadata check)
+  // Body is plain-text; the recipient's mail client renders it.
+  if (channelsUsed.length === 0 && user.email && req.kind !== 'admin_test_brain') {
+    try {
+      const { sendUserEmail } = await import('../gmailService');
+      const emailSubject = `[${req.kind}] ${req.summary}`.slice(0, 200);
+      const emailBody = [
+        `<div style="font-family: -apple-system, system-ui, sans-serif;">`,
+        `<p><em>Delivered via email fallback — WhatsApp channel unavailable.</em></p>`,
+        `<hr />`,
+        `<div style="white-space: pre-wrap;">${escapeHtml(req.body)}</div>`,
+        `</div>`,
+      ].join('\n');
+      const emailResult = await sendUserEmail(user.id, user.email, emailSubject, emailBody);
+      if (emailResult.success) {
+        channelsUsed.push('email');
+        log.info('email fallback succeeded after WA failure', {
+          userId: user.id, kind: req.kind, waError: lastError,
+        });
+        lastError = null;
+      } else {
+        log.warn('email fallback also failed', {
+          userId: user.id, waError: lastError, emailError: emailResult.error,
+        });
+      }
+    } catch (err: any) {
+      log.warn('email fallback threw', { userId: user.id, error: err.message });
+    }
+  }
+
   const status: 'sent' | 'partial' | 'failed' =
     channelsUsed.length === channels.length ? 'sent'
     : channelsUsed.length > 0 ? 'partial'
@@ -526,4 +568,13 @@ async function record(
     waMessageIds: o.waMessageIds ?? [],
     recordId: row ? String(row.id) : undefined,
   };
+}
+
+/** Escape HTML for the email fallback body — plain text goes into a
+ *  pre-wrap div so newlines survive; this prevents accidental HTML
+ *  injection when Brain's body contains angle brackets / ampersands. */
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
