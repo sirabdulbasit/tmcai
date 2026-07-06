@@ -57,6 +57,13 @@ export interface RiskResult {
  *   - Low → auto-execute + log. Examples: summarize email, suggest
  *     reply text (no send), propose reminder.
  */
+/** Numeric rank so we can `escalateTo` without TS narrowing pain. */
+const RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+const BY_RANK: RiskLevel[] = ['low', 'medium', 'high', 'critical'];
+function escalateTo(current: RiskLevel, candidate: RiskLevel): RiskLevel {
+  return RANK[candidate] > RANK[current] ? candidate : current;
+}
+
 export function scoreRisk(input: RiskInput): RiskResult {
   const reasons: string[] = [];
   let level: RiskLevel = 'low';
@@ -64,51 +71,43 @@ export function scoreRisk(input: RiskInput): RiskResult {
   // ── Critical signals ──────────────────────────────────────────
   if (input.deploysProductionCode) {
     reasons.push('deploys production code');
-    level = 'critical';
+    level = escalateTo(level, 'critical');
   }
   if (input.mutatesSecurityState) {
     reasons.push('mutates security state (auth, tenant isolation, credentials)');
-    level = 'critical';
+    level = escalateTo(level, 'critical');
   }
   if (input.touchesCrossUserData) {
     reasons.push('touches cross-user or cross-tenant data');
-    level = 'critical';
+    level = escalateTo(level, 'critical');
   }
-  if (input.sendsAsUser && !reasons.some((r) => r.includes('user-initiated chain'))) {
-    // Sending as user is critical UNLESS explicitly part of a
-    // user-initiated chain (caller signals that via interactionType).
-    if (input.interactionType !== 'user_initiated_send') {
-      reasons.push('sends as user identity outside user-initiated chain');
-      level = 'critical';
-    }
+  if (input.sendsAsUser && input.interactionType !== 'user_initiated_send') {
+    reasons.push('sends as user identity outside user-initiated chain');
+    level = escalateTo(level, 'critical');
   }
 
-  // ── High signals (only escalate if not already critical) ─────
-  if (level !== 'critical') {
-    if (input.interactionType === 'delegate' || input.interactionType === 'schedule') {
-      reasons.push(`${input.interactionType} affects another person`);
-      level = 'high';
-    }
-    if (input.touchesSensitiveMemory) {
-      reasons.push('creates/modifies sensitive memory');
-      level = level === 'low' ? 'high' : level;
-    }
-    if (input.mutatesUserData && input.interactionType === 'follow_up') {
-      reasons.push('automated follow-up against another party');
-      level = level === 'low' || level === 'medium' ? 'high' : level;
-    }
+  // ── High signals ──────────────────────────────────────────────
+  if (input.interactionType === 'delegate' || input.interactionType === 'schedule') {
+    reasons.push(`${input.interactionType} affects another person`);
+    level = escalateTo(level, 'high');
+  }
+  if (input.touchesSensitiveMemory) {
+    reasons.push('creates/modifies sensitive memory');
+    level = escalateTo(level, 'high');
+  }
+  if (input.mutatesUserData && input.interactionType === 'follow_up') {
+    reasons.push('automated follow-up against another party');
+    level = escalateTo(level, 'high');
   }
 
   // ── Medium signals ────────────────────────────────────────────
-  if (level === 'low') {
-    if (input.sendsAsBrain) {
-      reasons.push('sends from Brain tenant channel');
-      level = 'medium';
-    }
-    if (input.mutatesUserData) {
-      reasons.push('creates/updates user-owned data (open item, calendar, etc.)');
-      level = 'medium';
-    }
+  if (input.sendsAsBrain) {
+    reasons.push('sends from Brain tenant channel');
+    level = escalateTo(level, 'medium');
+  }
+  if (input.mutatesUserData && !(input.mutatesUserData && input.interactionType === 'follow_up')) {
+    reasons.push('creates/updates user-owned data (open item, calendar, etc.)');
+    level = escalateTo(level, 'medium');
   }
 
   // ── Default reasoning when no escalation triggers fired ──────

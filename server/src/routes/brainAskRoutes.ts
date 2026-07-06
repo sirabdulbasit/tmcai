@@ -301,7 +301,7 @@ export async function answerAsBrain(
         dataBlocksUsed: { citedPageIds: result.citedPageIds, sourceCount: result.sources?.length ?? 0 },
         riskInput: {
           surface: opts.channel === 'whatsapp' ? 'whatsapp_brain' : 'web_chat',
-          interactionType: result.action ? String(result.action.kind || 'action') : 'ask',
+          interactionType: result.action ? String(result.action.type || 'action') : 'ask',
           mutatesUserData: !!result.action,
           sendsAsBrain: false, // composing only — actual send happens downstream
         },
