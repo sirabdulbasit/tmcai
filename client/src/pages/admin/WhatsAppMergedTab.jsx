@@ -21,6 +21,7 @@ import api from '../../services/api';
 import WhatsAppTab from './WhatsAppTab';
 import WhatsAppNotifierTab from './WhatsAppNotifierTab';
 import BrainChannelVerifyPanel from './BrainChannelVerifyPanel';
+import WhatsAppHealthPanel from './WhatsAppHealthPanel';
 import { useAuth } from '../../context/AuthContext';
 
 export default function WhatsAppMergedTab({ msg, setMsg }) {
@@ -76,6 +77,7 @@ export default function WhatsAppMergedTab({ msg, setMsg }) {
 
   return (
     <div style={{ padding: 'var(--s-6)' }}>
+      <WhatsAppHealthPanel />
       <h1 style={{ margin: 0 }}>WhatsApp — Brain ↔ User channel</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 'var(--s-2)', maxWidth: 760, lineHeight: 1.55 }}>
         The tenant's WhatsApp number is <strong>the</strong> way Brain communicates with users

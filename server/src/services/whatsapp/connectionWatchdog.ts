@@ -25,8 +25,77 @@ import { sendEmail } from '../emailService';
 
 const log = createLogger('whatsapp:watchdog');
 
-const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+// Tightened from 5 min → 60s per Basit 2026-07-06 "ensure it will
+// keep connected". A missed heartbeat now costs at most 60s of
+// silent-drop window instead of 5 min. Cost is ~1 probe per tenant
+// per minute; at <20 tenants this is nothing.
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 let heartbeatHandle: NodeJS.Timeout | null = null;
+
+// ─── Health metrics (in-memory ring buffer per tenant) ──────────
+// Feeds the resilience dashboard (commit 3). Every probe appends a
+// sample; we keep the last N=200 (~200 minutes) per tenant which is
+// enough for a 3-hour view without unbounded memory growth.
+
+interface HealthSample {
+  at: number;         // Date.now()
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+  action?: 'noop' | 'reinit_success' | 'reinit_failed';
+}
+const HEALTH_HISTORY_CAP = 200;
+const healthByTenant = new Map<string, HealthSample[]>();
+
+function pushHealth(clientNumber: string, sample: HealthSample): void {
+  const arr = healthByTenant.get(clientNumber) ?? [];
+  arr.push(sample);
+  if (arr.length > HEALTH_HISTORY_CAP) arr.splice(0, arr.length - HEALTH_HISTORY_CAP);
+  healthByTenant.set(clientNumber, arr);
+}
+
+/** Exposed for the dashboard route to read the ring buffer. */
+export function getHealthHistory(clientNumber: string): HealthSample[] {
+  return healthByTenant.get(clientNumber) ?? [];
+}
+
+/** Aggregate stats for the dashboard header row (uptime %, avg
+ *  latency, last error) — computed once per read from the ring buffer. */
+export function getHealthStats(clientNumber: string): {
+  totalSamples: number;
+  okCount: number;
+  uptimePct: number;
+  avgLatencyMs: number | null;
+  lastError: string | null;
+  lastProbeAt: number | null;
+  reinitSuccessCount: number;
+  reinitFailedCount: number;
+} {
+  const arr = healthByTenant.get(clientNumber) ?? [];
+  if (!arr.length) {
+    return {
+      totalSamples: 0, okCount: 0, uptimePct: 0,
+      avgLatencyMs: null, lastError: null, lastProbeAt: null,
+      reinitSuccessCount: 0, reinitFailedCount: 0,
+    };
+  }
+  const okCount = arr.filter((s) => s.ok).length;
+  const withLatency = arr.filter((s) => typeof s.latencyMs === 'number');
+  const avgLatencyMs = withLatency.length
+    ? Math.round(withLatency.reduce((a, s) => a + (s.latencyMs || 0), 0) / withLatency.length)
+    : null;
+  const lastErrSample = [...arr].reverse().find((s) => !s.ok);
+  return {
+    totalSamples: arr.length,
+    okCount,
+    uptimePct: Math.round((okCount / arr.length) * 100),
+    avgLatencyMs,
+    lastError: lastErrSample?.error ?? null,
+    lastProbeAt: arr[arr.length - 1].at,
+    reinitSuccessCount: arr.filter((s) => s.action === 'reinit_success').length,
+    reinitFailedCount: arr.filter((s) => s.action === 'reinit_failed').length,
+  };
+}
 
 /**
  * Start the heartbeat. Idempotent — safe to call multiple times during
@@ -51,12 +120,17 @@ async function probeAllTenants(): Promise<void> {
 
   for (const row of rows) {
     const cn = row.client_number;
+    const t0 = Date.now();
     try {
       const { getProvider } = await import('./WhatsAppManager');
       const provider = await getProvider(cn);
       const t = await provider.testConnection(cn).catch(() => ({ success: false, error: 'probe threw' }));
+      const latencyMs = Date.now() - t0;
 
-      if (t.success) continue;
+      if (t.success) {
+        pushHealth(cn, { at: Date.now(), ok: true, latencyMs, action: 'noop' });
+        continue;
+      }
 
       // DB says connected, in-memory says no. Self-heal by re-initializing.
       log.warn('heartbeat detected drift — re-initializing', { clientNumber: cn, probeError: t.error });
@@ -71,6 +145,14 @@ async function probeAllTenants(): Promise<void> {
         await new Promise((r) => setTimeout(r, 1000));
       }
 
+      pushHealth(cn, {
+        at: Date.now(),
+        ok: recovered,
+        latencyMs: Date.now() - t0,
+        error: recovered ? undefined : (t.error ?? 'probe failed + reinit did not recover'),
+        action: recovered ? 'reinit_success' : 'reinit_failed',
+      });
+
       if (!recovered) {
         log.error('heartbeat self-heal failed', { clientNumber: cn });
         await alertWhatsAppDisconnect({
@@ -81,6 +163,12 @@ async function probeAllTenants(): Promise<void> {
         });
       }
     } catch (err: any) {
+      pushHealth(cn, {
+        at: Date.now(), ok: false,
+        latencyMs: Date.now() - t0,
+        error: err.message,
+        action: 'noop',
+      });
       log.error('heartbeat probe error', { clientNumber: cn, error: err.message });
     }
   }
