@@ -75,8 +75,8 @@ export type ComposedAction =
   | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string }
   | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDateRaw?: string; note?: string }
   | { type: 'mark_open_item_done'; openItemId: string; completionNote?: string }
-  | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId: string; note?: string }
-  | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; note?: string }
+  | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string; note?: string }
+  | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; attendeeAdHocEmails?: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
   | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenRaw?: string; newDurationMin?: number; reason?: string }
   | { type: 'send_email'; toCandidateIds: string[]; ccCandidateIds?: string[]; toAdHoc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
@@ -2484,17 +2484,27 @@ ${calLines.join('\n')}`;
             };
             answer = actionResult.message;
           } else {
-          // (2) Candidate-ID resolution. Per the V2 schema, reasoning
-          // emits delegateeCandidateId (entity row id), NEVER raw
-          // email. We resolve it to the real contact here. Invalid
-          // candidateIds get a bracketed rejection — hallucinated
-          // recipients become structurally impossible.
+          // (2) Recipient resolution — two paths (structural fix 2026-07-07):
+          //   (a) delegateeCandidateId → resolve entity row → real contact.
+          //   (b) delegateeAdHocEmail  → raw email user typed for a
+          //       person not yet in contacts. Synthesise a matched-like
+          //       object so the rest of the flow works uniformly.
           const { resolveCandidate } = await import('./candidateResolver');
-          const matched = await resolveCandidate(act.delegateeCandidateId, userId, clientNumber);
+          let matched: { name: string; email: string | null; phone: string | null } | null = null;
+          if (act.delegateeAdHocEmail) {
+            matched = {
+              name: act.delegateeAdHocEmail.split('@')[0],
+              email: act.delegateeAdHocEmail,
+              phone: null,
+            };
+          } else if (act.delegateeCandidateId) {
+            matched = await resolveCandidate(act.delegateeCandidateId, userId, clientNumber);
+          }
           if (!matched) {
+            const label = act.delegateeAdHocEmail ?? act.delegateeCandidateId ?? '(missing recipient)';
             actionResult = {
               ok: false,
-              message: `[delegate_open_item: candidateId "${act.delegateeCandidateId}" not in your contacts — re-issue selecting from the contacts block]`,
+              message: `[delegate_open_item: recipient "${label}" not resolved — re-issue with a valid contact or email]`,
             };
             answer = actionResult.message;
           } else if (!matched.email) {
@@ -2579,11 +2589,15 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'schedule_meeting') {
-        // V2: resolve attendeeCandidateIds → real emails;
-        // chrono resolves whenRaw → ISO datetime.
+        // Two attendee paths (structural fix 2026-07-07):
+        //   (a) attendeeCandidateIds → resolve to contact emails
+        //   (b) attendeeAdHocEmails  → raw emails user typed for
+        //       people not yet in contacts (e.g. "set meeting with
+        //       rafayfrasat02@gmail.com"). Union of both is sent.
         const { resolveCandidates } = await import('./candidateResolver');
         const { resolveDateTime } = await import('./dateResolver');
         const ids = Array.isArray(act.attendeeCandidateIds) ? act.attendeeCandidateIds : [];
+        const adHocEmails = Array.isArray(act.attendeeAdHocEmails) ? act.attendeeAdHocEmails : [];
         const [resolvedAttendees, whenIso] = await Promise.all([
           resolveCandidates(ids, userId, clientNumber),
           resolveDateTime(act.whenRaw, userId),
@@ -2597,10 +2611,14 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         } else {
           const validAttendees = resolvedAttendees.filter((r): r is NonNullable<typeof r> => !!r);
-          const emails = validAttendees.filter((r) => !!r.email).map((r) => r.email!);
-          const names = validAttendees.map((r) => r.name);
+          const contactEmails = validAttendees.filter((r) => !!r.email).map((r) => r.email!);
+          const emails = Array.from(new Set([...contactEmails, ...adHocEmails]));
+          const names = [
+            ...validAttendees.map((r) => r.name),
+            ...adHocEmails.filter((e) => !contactEmails.includes(e)).map((e) => e.split('@')[0]),
+          ];
           if (emails.length === 0) {
-            actionResult = { ok: false, message: `[schedule_meeting: selected attendees have no email on file — add emails and retry]` };
+            actionResult = { ok: false, message: `[schedule_meeting: no attendee emails resolved — add them and retry]` };
             answer = actionResult.message;
           } else {
             const res = await dispatchInstruction({
@@ -4355,8 +4373,14 @@ async function renderActionPreview(
     return `Before I send, please confirm — I'm about to send:\n\nTo: ${toStr}${ccPart}\nSubject: ${act.subject}\nBody:\n${act.body}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'schedule_meeting') {
+    // Preview merges both attendee paths (structural fix 2026-07-07):
+    // resolved contacts + ad-hoc emails the user typed directly.
+    // Empty "With:" was a real bug (Rafay case, 2026-07-07).
     const resolved = await resolveCandidates(act.attendeeCandidateIds, userId, clientNumber);
-    const attendees = act.attendeeCandidateIds.map((id, i) => fmt(resolved[i], id)).join(', ');
+    const contactLines = act.attendeeCandidateIds.map((id, i) => fmt(resolved[i], id));
+    const adHocLines = (act.attendeeAdHocEmails ?? []).map((e) => e);
+    const allAttendees = [...contactLines, ...adHocLines];
+    const attendees = allAttendees.length > 0 ? allAttendees.join(', ') : '(no attendee)';
     const dur = act.durationMin ? ` (${act.durationMin} min)` : '';
     return `Before I send the invite, please confirm — meeting:\n\nWith: ${attendees}\nWhen: ${act.whenRaw}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
   }
@@ -4667,13 +4691,22 @@ async function dispatchPendingDirect(
 
   switch (pending.actionKind) {
     case 'schedule_meeting': {
+      // Union contact-resolved emails with ad-hoc emails the user
+      // typed directly (structural fix 2026-07-07).
       const ids = Array.isArray(slots.attendeeCandidateIds) ? slots.attendeeCandidateIds : [];
+      const adHocEmails = Array.isArray(slots.attendeeAdHocEmails)
+        ? slots.attendeeAdHocEmails.filter((x: any) => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+        : [];
       const [attendees, whenIso] = await Promise.all([
         resolveCandidates(ids, userId, clientNumber),
         slots.whenRaw ? resolveDateTime(String(slots.whenRaw), userId) : Promise.resolve(null as string | null),
       ]);
-      const emails = attendees.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r.email!);
-      const names = attendees.filter((r): r is NonNullable<typeof r> => !!r).map((r) => r.name);
+      const contactEmails = attendees.filter((r): r is NonNullable<typeof r> => !!r && !!r.email).map((r) => r.email!);
+      const emails = Array.from(new Set([...contactEmails, ...adHocEmails]));
+      const names = [
+        ...attendees.filter((r): r is NonNullable<typeof r> => !!r).map((r) => r.name),
+        ...adHocEmails.filter((e: string) => !contactEmails.includes(e)).map((e: string) => e.split('@')[0]),
+      ];
       if (!whenIso) return { ok: false, message: `[schedule_meeting: couldn't parse whenRaw "${slots.whenRaw}"]` };
       if (emails.length === 0) return { ok: false, message: `[schedule_meeting: no attendees with email]` };
       const res = await dispatchInstruction({
@@ -4832,11 +4865,19 @@ async function dispatchPendingDirect(
       }
     }
     case 'delegate_open_item': {
-      // V2: resolve delegateeCandidateId.
+      // Two recipient paths (structural fix 2026-07-07):
+      //   (a) delegateeCandidateId → resolveCandidate
+      //   (b) delegateeAdHocEmail  → synthesize a matched-like row
       const { resolveCandidate } = await import('./candidateResolver');
       const { delegateItem } = await import('../openItemsService');
-      const matched = await resolveCandidate(String(slots.delegateeCandidateId ?? ''), userId, clientNumber);
-      if (!matched) return { ok: false, message: `[delegate_open_item: candidateId not found]` };
+      const adHocEmail = typeof slots.delegateeAdHocEmail === 'string' ? slots.delegateeAdHocEmail.trim() : '';
+      let matched: { name: string; email: string | null; phone: string | null } | null = null;
+      if (adHocEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adHocEmail)) {
+        matched = { name: adHocEmail.split('@')[0], email: adHocEmail, phone: null };
+      } else {
+        matched = await resolveCandidate(String(slots.delegateeCandidateId ?? ''), userId, clientNumber);
+      }
+      if (!matched) return { ok: false, message: `[delegate_open_item: recipient not resolved]` };
       if (!matched.email) return { ok: false, message: `[delegate_open_item: ${matched.name} has no email]` };
       try {
         const r = await delegateItem(
@@ -5072,22 +5113,50 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     return { type: 'mark_open_item_done', openItemId, completionNote };
   }
   if (type === 'delegate_open_item') {
+    // Accept THREE input shapes (structural fix 2026-07-07):
+    //   (a) delegateeCandidateId — new schema, existing contact
+    //   (b) delegateeAdHocEmail  — new schema, ad-hoc email
+    //   (c) delegateeEmail       — legacy schema still emitted by
+    //       the LLM prompt at line ~820 / ~4467. Treat any legacy
+    //       email as an ad-hoc email so the flow works.
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';
-    const delegateeCandidateId = typeof r.delegateeCandidateId === 'string' ? r.delegateeCandidateId.trim() : '';
-    if (!openItemId || !delegateeCandidateId) return reject('delegate_open_item:missing-required');
+    const delegateeCandidateId = typeof r.delegateeCandidateId === 'string' && r.delegateeCandidateId.trim()
+      ? r.delegateeCandidateId.trim() : undefined;
+    const rawAdHoc = typeof r.delegateeAdHocEmail === 'string' ? r.delegateeAdHocEmail.trim() : '';
+    const rawLegacy = typeof r.delegateeEmail === 'string' ? r.delegateeEmail.trim() : '';
+    const candidateEmail = rawAdHoc || rawLegacy;
+    const delegateeAdHocEmail = candidateEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail)
+      ? candidateEmail : undefined;
+    if (!openItemId) return reject('delegate_open_item:no-openItemId');
+    if (!delegateeCandidateId && !delegateeAdHocEmail) return reject('delegate_open_item:no-recipient');
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'delegate_open_item', openItemId, delegateeCandidateId, note };
+    return { type: 'delegate_open_item', openItemId, delegateeCandidateId, delegateeAdHocEmail, note };
   }
   if (type === 'schedule_meeting') {
+    // Accept multiple input shapes (structural fix 2026-07-07):
+    //   • attendeeCandidateIds — new-schema contact IDs
+    //   • attendeeAdHocEmails  — new-schema raw emails
+    //   • attendeeEmails       — legacy-schema (still in LLM prompt);
+    //     treat as ad-hoc emails
+    //   • whenRaw / whenIso    — accept either as the time phrase
     const title = typeof r.title === 'string' ? r.title.trim() : '';
-    const whenRaw = typeof r.whenRaw === 'string' ? r.whenRaw.trim() : '';
+    const whenRaw = typeof r.whenRaw === 'string' && r.whenRaw.trim()
+      ? r.whenRaw.trim()
+      : (typeof r.whenIso === 'string' ? r.whenIso.trim() : '');
     const attendeeCandidateIds = Array.isArray(r.attendeeCandidateIds)
       ? r.attendeeCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
       : [];
-    if (!title || !whenRaw || attendeeCandidateIds.length === 0) return reject('schedule_meeting:missing-required');
+    const legacyEmails = Array.isArray(r.attendeeEmails)
+      ? r.attendeeEmails.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+      : [];
+    const newAdHocEmails = Array.isArray(r.attendeeAdHocEmails)
+      ? r.attendeeAdHocEmails.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+      : [];
+    const attendeeAdHocEmails = Array.from(new Set([...newAdHocEmails, ...legacyEmails]));
+    if (!title || !whenRaw || (attendeeCandidateIds.length === 0 && attendeeAdHocEmails.length === 0)) return reject('schedule_meeting:missing-required');
     const durationMin = typeof r.durationMin === 'number' && r.durationMin > 0 ? Math.floor(r.durationMin) : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'schedule_meeting', title, whenRaw, durationMin, attendeeCandidateIds, note };
+    return { type: 'schedule_meeting', title, whenRaw, durationMin, attendeeCandidateIds, attendeeAdHocEmails: attendeeAdHocEmails.length ? attendeeAdHocEmails : undefined, note };
   }
   if (type === 'cancel_meeting') {
     // eventId is the only hard requirement — without it we don't know
@@ -5112,17 +5181,24 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     return { type: 'reschedule_meeting', eventId, titleHint, newWhenRaw, newDurationMin, reason };
   }
   if (type === 'send_email') {
-    // V2 schema: candidate IDs required (no raw emails from LLM).
-    // toAdHoc allowed when user explicitly typed a verbatim email.
+    // Accept multiple input shapes (structural fix 2026-07-07):
+    //   • toCandidateIds / ccCandidateIds — new-schema contact IDs
+    //   • toAdHoc — new-schema raw emails
+    //   • to / cc  — legacy schema (LLM prompt still uses these);
+    //     treat as toAdHoc so the flow works
     const toCandidateIds = Array.isArray(r.toCandidateIds)
       ? r.toCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
       : [];
     const ccCandidateIds = Array.isArray(r.ccCandidateIds)
       ? r.ccCandidateIds.filter((x: unknown): x is string => typeof x === 'string' && !!x.trim())
       : [];
-    const toAdHoc = Array.isArray(r.toAdHoc)
+    const legacyTo = Array.isArray(r.to)
+      ? r.to.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+      : [];
+    const newToAdHoc = Array.isArray(r.toAdHoc)
       ? r.toAdHoc.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
       : [];
+    const toAdHoc = Array.from(new Set([...newToAdHoc, ...legacyTo]));
     const subject = typeof r.subject === 'string' ? r.subject.trim() : '';
     const body = typeof r.body === 'string' ? r.body.trim() : '';
     if (toCandidateIds.length === 0 && toAdHoc.length === 0) return reject('send_email:no-recipient');
@@ -5133,10 +5209,27 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     return { type: 'send_email', toCandidateIds, ccCandidateIds: ccCandidateIds.length ? ccCandidateIds : undefined, toAdHoc: toAdHoc.length ? toAdHoc : undefined, subject, body, replyToFeedEventId };
   }
   if (type === 'notify_via_whatsapp') {
-    const recipientCandidateId = typeof r.recipientCandidateId === 'string' ? r.recipientCandidateId.trim() : '';
+    // Accept multiple input shapes (structural fix 2026-07-07):
+    //   • recipientCandidateId — new-schema contact ID
+    //   • recipientAdHocPhone  — new-schema raw phone
+    //   • recipientPhone       — legacy schema (still in some paths);
+    //     treat as ad-hoc phone
+    // Silent-bug fix: earlier parser dropped recipientAdHocPhone
+    // even though type + dispatch supported it, so LLM's ad-hoc
+    // phone was silently ignored.
+    const recipientCandidateId = typeof r.recipientCandidateId === 'string' && r.recipientCandidateId.trim()
+      ? r.recipientCandidateId.trim() : undefined;
+    const rawNew = typeof r.recipientAdHocPhone === 'string' ? r.recipientAdHocPhone.trim() : '';
+    const rawLegacy = typeof r.recipientPhone === 'string' ? r.recipientPhone.trim() : '';
+    const rawPhone = rawNew || rawLegacy;
+    const cleaned = rawPhone.replace(/[\s\-()]/g, '');
+    const recipientAdHocPhone = cleaned && /^\+?\d{10,15}$/.test(cleaned)
+      ? (cleaned.startsWith('+') ? cleaned : `+${cleaned}`)
+      : undefined;
     const message = typeof r.message === 'string' ? r.message.trim() : '';
-    if (!recipientCandidateId || !message) return reject('notify_via_whatsapp:missing-required');
-    return { type: 'notify_via_whatsapp', recipientCandidateId, message };
+    if (!message) return reject('notify_via_whatsapp:no-message');
+    if (!recipientCandidateId && !recipientAdHocPhone) return reject('notify_via_whatsapp:no-recipient');
+    return { type: 'notify_via_whatsapp', recipientCandidateId, recipientAdHocPhone, message };
   }
   if (type === 'set_contact_scope') {
     const contactCandidateId = typeof r.contactCandidateId === 'string' ? r.contactCandidateId.trim() : '';
