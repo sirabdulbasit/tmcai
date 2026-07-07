@@ -100,6 +100,11 @@ const MARKERS: MarkerRule[] = [
     replace: "I didn't come up with a response — try asking a different way?",
     whole: true,
   },
+  {
+    match: /^\s*\[declined:\s*([^\]]+)\]\s*$/i,
+    replace: "I can't do that: $1",
+    whole: true,
+  },
 ];
 
 /**

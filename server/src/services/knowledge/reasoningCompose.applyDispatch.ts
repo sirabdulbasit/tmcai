@@ -42,8 +42,15 @@ export async function applyReasoningDecision(args: {
       };
 
     case 'decline':
+      // If the decider didn't fill in declineReason, emit a bracketed
+      // system marker instead of a hardcoded English fallback. Per
+      // memory rule feedback_no_hardcoded_brain_replies: every
+      // Brain-surface reply must be LLM-generated OR a bracketed
+      // system marker; hardcoded English pretending to be Brain is
+      // forbidden. The answerSanitizer rewrites the marker to
+      // human-readable text on the way out.
       return {
-        answer: result.declineReason || `I can't do that, and I want to be honest about it instead of pretending.`,
+        answer: result.declineReason || `[declined: no reason captured from decider]`,
         citedPageIds: [],
         gaps: [],
         sources: [],

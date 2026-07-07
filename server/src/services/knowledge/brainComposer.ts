@@ -1063,6 +1063,17 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
     parts.push(`# System capabilities (what you can actually access right now — answer questions about yourself from this)\n${capsBlock}`);
   }
 
+  // Capability truth-table — a static list of what Brain can/cannot
+  // do at the action layer. Injected on every turn to stop the LLM
+  // fabricating limitations ("I can't add contacts yet" — false;
+  // POST /entities exists). Kept short; text is stable so it caches.
+  // Added 2026-07-07 after Basit Rafay chat where Brain refused a
+  // real capability and asked the user to work around it.
+  try {
+    const { renderCapabilityBlock } = require('./brainCapabilityRegistry');
+    parts.push(renderCapabilityBlock());
+  } catch { /* registry missing = non-fatal, drop the block */ }
+
   // Overlay — tenant policy. Always when present; it can affect any turn.
   if (overlayBlock) parts.push(overlayBlock);
 
@@ -1575,7 +1586,7 @@ export async function compose(
   const channel: 'web' | 'whatsapp' = opts.channel ?? 'web';
   const { getActivePending, markCompleted, markFailed, markCancelled, hashProposedAction } = await import('./pendingActionService');
   const { reduceTurn, resolveAmbiguousWithLlm } = await import('./turnRelationReducer');
-  const activePending = await getActivePending(userId, channel).catch(() => null);
+  let activePending = await getActivePending(userId, channel).catch(() => null);
   let turnRelation = reduceTurn({ question, pending: activePending, history });
 
   // Quality Sprint 1: Flash tiebreaker for ambiguous cases. The
@@ -1585,27 +1596,28 @@ export async function compose(
   // When deterministic returns 'ambiguous' AND a pending exists,
   // burn ~80 tokens on a Flash classifier rather than dropping into
   // the slow full-composer path. Bounded cost; better UX.
-  // Quality Sprint 1: expired-preview detection. If the user sends a
-  // bare confirmation ("yes" / "send") with NO active pending, look
-  // for a pending that just expired in the last 24h. If found, reply
-  // honestly that the preview lapsed — don't silently re-derive as
-  // a new task.
+  // Structural fix 2026-07-07: bare confirmation on expired pending
+  // now REVIVES + DISPATCHES instead of returning an "expired" marker.
+  // Reasoning: the user's intent is unambiguous — they saw a preview
+  // in Brain's last turn (or a few minutes ago), typed "send". Telling
+  // them "that draft expired, re-issue" is machine-shrug UX; the state
+  // machine's TTL is our internal problem, not the user's. If the
+  // expired pending is the SAME kind and was previewed within 24h,
+  // treat it as active and dispatch.
   if (!activePending) {
     const { getRecentlyExpiredPending } = await import('./pendingActionService');
     const q = question.trim().toLowerCase();
-    const looksLikeBareConfirm = q.length <= 30 && /^(yes|yep|yeah|send|go\s+ahead|do\s+it|confirm|ok|okay|proceed)\.?$/i.test(q);
+    const looksLikeBareConfirm = q.length <= 30 && /^(yes|yep|yeah|send|go\s+ahead|do\s+it|confirm|ok|okay|proceed|sure|approve|approved|ship\s+it|please\s+do)\.?$/i.test(q);
     if (looksLikeBareConfirm) {
       const expired = await getRecentlyExpiredPending(userId, channel).catch(() => null);
       if (expired) {
-        console.info('[brain-chat] pending.expired-confirmation', {
+        console.info('[brain-chat] pending.reviving-expired-on-confirm', {
           userId, clientNumber, expiredId: expired.id, kind: expired.actionKind,
         });
-        return {
-          // Bracketed system marker (no-hardcoded-fake-Brain-replies rule).
-          answer: `[${expired.actionKind} preview expired — re-issue the request]`,
-          citedPageIds: [], gaps: [], sources: [], action: null,
-          actionResult: { ok: false, message: 'pending_expired' },
-        };
+        // Treat as active for the remainder of this turn — falls
+        // through to the confirm_preview branch below.
+        activePending = expired;
+        turnRelation = { type: 'confirm_preview', pendingId: expired.id };
       }
     }
   }

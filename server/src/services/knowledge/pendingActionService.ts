@@ -49,9 +49,12 @@ export type PendingActionStatus =
 const ACTIVE_STATUSES: PendingActionStatus[] = ['collecting_slots', 'preview_shown', 'confirmed'];
 const TERMINAL_STATUSES: PendingActionStatus[] = ['completed', 'failed', 'cancelled'];
 
-/** Default TTL — 1 hour from last update. Old pendings are stale by
- *  any reasonable conversational measure; the user has moved on. */
-const PENDING_TTL_MS = 60 * 60 * 1000;
+/** Default TTL — 4 hours from last update. Users routinely check a
+ *  detail and come back to confirm; the old 1h window failed too
+ *  many "yes"/"send" turns as "expired". If the user really has
+ *  moved on, replacement by a new pending (startPending cancels the
+ *  prior one) still handles that path. */
+const PENDING_TTL_MS = 4 * 60 * 60 * 1000;
 
 export interface PendingAction {
   id: string;
