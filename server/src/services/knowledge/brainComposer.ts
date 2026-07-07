@@ -2849,38 +2849,68 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'notify_via_whatsapp') {
-        // V2: recipientCandidateId → resolve to real name + phone.
+        // Two dispatch paths (per Basit 2026-07-07 fix):
+        //   (a) recipientCandidateId → resolve to contact name+phone
+        //   (b) recipientAdHocPhone  → send to explicit raw number
+        // Ad-hoc path exists so the user can send to a number that
+        // isn't in Candidates without Brain silently substituting
+        // a similarly-named contact (the wrong-Ahmad-Sheikh bug).
         try {
           const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
-          const { resolveCandidate } = await import('./candidateResolver');
-          const matched = await resolveCandidate(act.recipientCandidateId, userId, clientNumber);
-          let canDispatch = true;
-          if (!matched) {
-            actionResult = { ok: false, message: `[notify_via_whatsapp: candidateId "${act.recipientCandidateId}" not in your contacts]` };
-            answer = actionResult.message;
-            canDispatch = false;
-          } else if (!matched.phone) {
-            actionResult = { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file — add one in Settings → Contacts]` };
-            answer = actionResult.message;
-            canDispatch = false;
-          }
-          if (canDispatch && matched && matched.phone) {
           const userName = persona.userFirstName || persona.userFullName || 'the user';
-          const intro = `Hi ${matched.name}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
-          const fullBody = `${intro}${act.message}`;
-          const r = await sendTenantWhatsAppText(clientNumber, matched.phone, fullBody, userId);
-          if (r.ok) {
-            actionResult = {
-              ok: true,
-              artifactId: r.waMessageId,
-              message: `Sent WhatsApp to ${matched.name} (${matched.phone}) from the Nexeo number, introducing me as your assistant.`,
-            };
-            answer = actionResult.message;
+          let recipientName: string;
+          let recipientPhone: string;
+          let canDispatch = true;
+
+          const adHoc = String(act.recipientAdHocPhone ?? '').trim();
+          if (adHoc) {
+            const cleaned = adHoc.replace(/[\s\-()]/g, '');
+            if (!/^\+?\d{10,15}$/.test(cleaned)) {
+              actionResult = { ok: false, message: `[notify_via_whatsapp: adHoc phone "${adHoc}" isn't a valid E.164 number]` };
+              answer = actionResult.message;
+              canDispatch = false;
+              recipientName = ''; recipientPhone = '';
+            } else {
+              recipientPhone = cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
+              recipientName = `contact at ${recipientPhone}`;
+            }
           } else {
-            actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'tenant notifier not paired'}]` };
-            answer = actionResult.message;
+            const { resolveCandidate } = await import('./candidateResolver');
+            const matched = await resolveCandidate(String(act.recipientCandidateId ?? ''), userId, clientNumber);
+            if (!matched) {
+              actionResult = { ok: false, message: `[notify_via_whatsapp: candidateId "${act.recipientCandidateId ?? '(missing)'}" not in your contacts]` };
+              answer = actionResult.message;
+              canDispatch = false;
+              recipientName = ''; recipientPhone = '';
+            } else if (!matched.phone) {
+              actionResult = { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file — add one in Settings → Contacts]` };
+              answer = actionResult.message;
+              canDispatch = false;
+              recipientName = matched.name; recipientPhone = '';
+            } else {
+              recipientName = matched.name;
+              recipientPhone = matched.phone;
+            }
           }
-          } // close canDispatch
+
+          if (canDispatch && recipientPhone) {
+            const introName = recipientName.startsWith('contact at') ? 'there' : recipientName;
+            const intro = `Hi ${introName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+            const fullBody = `${intro}${act.message}`;
+            const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, fullBody, userId);
+            if (r.ok && r.waMessageId) {
+              actionResult = {
+                ok: true,
+                artifactId: r.waMessageId,
+                message: `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number.`,
+              };
+              answer = actionResult.message;
+            } else {
+              // No messageId = fabrication-guard: don't claim sent.
+              actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'send returned no message id — likely the tenant notifier isn\'t connected or the recipient number isn\'t on WhatsApp'}]` };
+              answer = actionResult.message;
+            }
+          }
         } catch (e: any) {
           console.warn('[brain-chat] notify_via_whatsapp failed', { error: e?.message, userId });
           actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
@@ -4331,8 +4361,19 @@ async function renderActionPreview(
     return `Before I send the invite, please confirm — meeting:\n\nWith: ${attendees}\nWhen: ${act.whenRaw}${dur}\nTitle: ${act.title}${act.note ? `\nNote: ${act.note}` : ''}\n\nReply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'notify_via_whatsapp') {
-    const r = await resolveCandidate(act.recipientCandidateId, userId, clientNumber);
-    const who = fmt(r, act.recipientCandidateId);
+    // Ad-hoc phone path takes precedence when set (Basit 2026-07-07):
+    // if the user typed a raw number, we send to THAT number and never
+    // substitute a similarly-named contact. Preview must reflect the
+    // same behavior so the user sees exactly what will happen.
+    const adHoc = String(act.recipientAdHocPhone ?? '').trim();
+    let who: string;
+    if (adHoc) {
+      who = `+${adHoc.replace(/^\+/, '')}`;
+    } else {
+      const candId = String(act.recipientCandidateId ?? '');
+      const r = candId ? await resolveCandidate(candId, userId, clientNumber) : null;
+      who = fmt(r, candId || '(no recipient)');
+    }
     return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
   if (act.type === 'set_contact_scope') {
