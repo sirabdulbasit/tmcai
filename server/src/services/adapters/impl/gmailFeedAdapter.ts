@@ -15,7 +15,14 @@ export class GmailFeedAdapter extends FeedAdapter {
   readonly displayName = 'Gmail';
 
   async receive(tenantId: string, _since?: Date, limit = 500): Promise<unknown[]> {
-    // Pull recent inbox for every active Google-integrated user in this tenant.
+    // Pull recent inbox + sent for every active Google-integrated user
+    // in this tenant. SENT ingestion is what powers Brain's
+    // "user already replied on this thread → don't nag them" logic.
+    // Per Basit 2026-07-07: "if brain read my email will it also read
+    // my sent items? so it can come to know that what I have already
+    // responded". Without sent ingest, gmailReadStateSyncJob's
+    // thread-latest-md-send lookup had no data and userRepliedThread
+    // was never true — Brain kept surfacing handled emails.
     const users = await prisma.user.findMany({
       where: { clientNumber: tenantId, isActive: true, integrationProvider: 'google', integrationStatus: 'active' },
       select: { id: true },
@@ -29,9 +36,26 @@ export class GmailFeedAdapter extends FeedAdapter {
     // Historical backfill goes through Re-scribe All, NOT this path.
     // Dedup via contentHash means overlap on adjacent ticks is free.
     const perUserCap = Math.min(limit, 100);
+    // Sent-items cap is deliberately lower — the user's own outbound
+    // rate is a fraction of inbound, and we only need the recent tail
+    // for thread-state ("has user replied in last N days?"). 30 is
+    // enough to cover a busy user's daily outbound without eating
+    // Gmail quota.
+    const SENT_CAP = 30;
     for (const u of users) {
-      const r = await getInbox(u.id, perUserCap);
-      for (const e of r.emails ?? []) {
+      // ── Inbox ──
+      const inbox = await getInbox(u.id, perUserCap);
+      for (const e of inbox.emails ?? []) {
+        all.push({ ...e, __userId: u.id });
+      }
+      // ── Sent — SAME normaliser handles them (from-header = user's
+      // own email so sender_email lands as mdEmail, which is exactly
+      // what gmailReadStateSyncJob's mdSentRows query filters on).
+      // isUnread will always be false (SENT never has UNREAD label);
+      // labels array will include 'SENT' so triage can distinguish.
+      // Dedup via contentHash prevents re-inserts on overlapping ticks.
+      const sent = await getInbox(u.id, SENT_CAP, 'in:sent');
+      for (const e of sent.emails ?? []) {
         all.push({ ...e, __userId: u.id });
       }
       // Stamp regardless of whether new mail arrived — an idle pull
