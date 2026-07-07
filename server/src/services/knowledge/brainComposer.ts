@@ -80,7 +80,7 @@ export type ComposedAction =
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
   | { type: 'reschedule_meeting'; eventId: string; titleHint?: string; newWhenRaw?: string; newDurationMin?: number; reason?: string }
   | { type: 'send_email'; toCandidateIds: string[]; ccCandidateIds?: string[]; toAdHoc?: string[]; subject: string; body: string; replyToFeedEventId?: string }
-  | { type: 'notify_via_whatsapp'; recipientCandidateId: string; message: string }
+  | { type: 'notify_via_whatsapp'; recipientCandidateId?: string; recipientAdHocPhone?: string; message: string }
   | { type: 'set_brain_name'; name: string }
   | { type: 'archive_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
   | { type: 'delete_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
@@ -844,9 +844,9 @@ Schema:
             "body": string,                          // Full email body in the user's voice. Disclosure footer "Sent by Nexeo, <user>'s AI assistant" appended automatically by the dispatcher — do NOT include it yourself.
             "replyToFeedEventId"?: string }          // When replying to an existing inbound, the feed_event id so Gmail keeps it threaded. Omit for fresh outbound.
         | { "type": "notify_via_whatsapp",
-            "recipientName": string,                 // The person's display name. Used in the auto-prepended introduction.
-            "recipientPhone": string,                // E.164 phone (e.g. "+923001234567"). MUST be a real phone from a Candidates block. Never an email; never a guess.
-            "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it.
+            "recipientCandidateId"?: string,         // candidateId from the Candidates block — use this when the user names an existing contact.
+            "recipientAdHocPhone"?: string,          // E.164 phone (e.g. "+923710042740") — use ONLY when the user explicitly provided a raw phone number that isn't in Candidates. Never guess; never substitute a contact.
+            "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it. EXACTLY ONE of recipientCandidateId / recipientAdHocPhone MUST be present.
         | { "type": "set_brain_name",
             "name": string }                         // The new name the user chose. Empty string / "reset" / "none" clears the custom name (you go back to "your AI assistant"). Examples: "Suzi", "Friday", "Atlas". Length cap 40 chars.
         | { "type": "record_preference",
@@ -867,6 +867,8 @@ When to emit \`action\`:
 - **CRITICAL: action.payload must mirror your answer text.** Every name, recipient, title, and identifier you mention in \`answer\` MUST appear verbatim in \`action.payload\`, and every field in \`action.payload\` must be named in \`answer\`. If your text says "I'll email Numair about Google credits" but your action's title is "EXIM solution", that's a lie — rewrite both until they match.
 - **NEVER source action subjects from the Open Items snapshot for items the user hasn't named.** The snapshot is for RESOLVING references the user made; it's not a menu to pick from. If you can't quote a recent line containing the action subject (recipient, delegatee, item title), do NOT emit an action — ask for the missing detail in text.
 - **If the user's ask maps to an action TYPE not in the list above** (making a phone call, posting to Slack, sending SMS, sending a WhatsApp message AS the user from their personal WhatsApp identity), do NOT pick the nearest type that "sort of" fits. Say so plainly and offer the closest legitimate alternative or ask the user to clarify.
+
+- **NO CLOSEST-MATCH SUBSTITUTION — SAFETY-CRITICAL, ZERO EXCEPTIONS.** When the user provides an EXACT target (raw phone number, exact email address, or a name that doesn't appear verbatim in the Candidates block), you MUST NOT substitute a "closest match" or "similarly-named" contact. Silent substitution has caused real harm — sending a test message to the wrong person (Ahmad Sheikh received an unsolicited "Suzi-Smoke test" when the user meant a different number). If the exact target isn't in Candidates, respond: *"I don't have <exact target> in your contacts. Give me the correct email/number, or tell me who exactly you mean."* Never guess. Never pick "the closest one". Never assume the user meant someone else just because their query is close to another contact's name. This applies to send_email, notify_via_whatsapp, schedule_meeting, delegate_open_item — every action that dispatches to a human.
 
 - **WhatsApp from the user's personal number is FORBIDDEN. WhatsApp from the Nexeo notifier number on the user's behalf is ALLOWED via \`notify_via_whatsapp\`.** Distinction matters and the user can tell:
   - Forbidden: replying to a contact AS the user, from the user's paired WhatsApp number — recipient would see the user's number and assume the user wrote it. Hard rule, no exceptions, ever.
@@ -4741,22 +4743,49 @@ async function dispatchPendingDirect(
       const { getBrainPersona } = await import('./brainPersonaService');
       const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
       const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
-      // V2: resolve recipientCandidateId.
-      const { resolveCandidate } = await import('./candidateResolver');
-      const matched = await resolveCandidate(String(slots.recipientCandidateId ?? ''), userId, clientNumber);
-      if (!matched) return { ok: false, message: `[notify_via_whatsapp: candidateId not found]` };
-      if (!matched.phone) return { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file]` };
-      const intro = `Hi ${matched.name}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+
+      // Two paths: (a) resolve a candidateId from contacts, or (b)
+      // send ad-hoc to a raw phone the user explicitly named.
+      // Ad-hoc path is required so Brain can honour "send to
+      // +923710042740" without silently substituting a contact.
+      // Per Basit 2026-07-07: closest-match substitution caused a
+      // wrong-recipient send (Ahmad Sheikh); the fix at the prompt
+      // layer refuses substitution, and this dispatch path gives
+      // Brain a legitimate way to fulfil the request.
+      let recipientName: string;
+      let recipientPhone: string;
+      const adHoc = String(slots.recipientAdHocPhone ?? '').trim();
+      if (adHoc) {
+        // Validate E.164-ish shape and normalise.
+        const cleaned = adHoc.replace(/[\s\-()]/g, '');
+        if (!/^\+?\d{10,15}$/.test(cleaned)) {
+          return { ok: false, message: `[notify_via_whatsapp: adHoc phone "${adHoc}" isn't a valid E.164 number]` };
+        }
+        recipientPhone = cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
+        recipientName = `contact at ${recipientPhone}`;
+      } else {
+        const { resolveCandidate } = await import('./candidateResolver');
+        const matched = await resolveCandidate(String(slots.recipientCandidateId ?? ''), userId, clientNumber);
+        if (!matched) return { ok: false, message: `[notify_via_whatsapp: candidateId not found]` };
+        if (!matched.phone) return { ok: false, message: `[notify_via_whatsapp: ${matched.name} has no phone on file]` };
+        recipientName = matched.name;
+        recipientPhone = matched.phone;
+      }
+
+      const intro = `Hi ${recipientName.startsWith('contact at') ? 'there' : recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
-        const r = await sendTenantWhatsAppText(clientNumber, matched.phone, `${intro}${slots.message}`, userId);
-        if (r.ok) {
+        const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, `${intro}${slots.message}`, userId);
+        if (r.ok && r.waMessageId) {
           return {
             ok: true,
             artifactId: r.waMessageId,
-            message: `Sent WhatsApp to ${matched.name} (${matched.phone}) from the Nexeo number.`,
+            message: `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number. waMessageId=${r.waMessageId}`,
           };
         }
-        return { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'tenant notifier not paired'}]` };
+        // No waMessageId returned = actual failure. Do not claim sent.
+        // Per Basit 2026-07-07: fabrication class error — Brain used
+        // to say "message sent" when send silently failed.
+        return { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'send did not return a message id — likely the tenant notifier isn\'t connected or the recipient number isn\'t on WhatsApp'}]` };
       } catch (e: any) {
         return { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
       }
