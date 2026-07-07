@@ -92,6 +92,17 @@ export async function getBrainPersona(userId: number, clientNumber: string): Pro
   // 2026-05-20: utilize the "HOW BRAIN SHOULD ADDRESS YOU" setting.
   const rawTitle = String(prefs?.profile?.preferredTitle ?? '').trim();
   const addressAs = rawTitle.length > 0 ? rawTitle : firstName;
+  // Reply-language override — when set, Brain ALWAYS answers in this
+  // language regardless of the user's incoming language. Useful when
+  // the user prefers to speak/write in Urdu but wants English replies
+  // for consistency (Basit 2026-07-07: "it will always transcribe urdu
+  // into english and always communicate in english"). Values:
+  //   'auto'        → default mirror-the-user behaviour (below)
+  //   'english'     → always English
+  //   'urdu'        → always Urdu script
+  //   'roman_urdu'  → always Roman-Urdu (Latin chars)
+  const replyLanguage: 'auto' | 'english' | 'urdu' | 'roman_urdu' =
+    (prefs?.brain_channel?.replyLanguage as any) || 'auto';
   // Per-user grammatical gender — drives English pronouns and Urdu verb
   // endings in every Brain reply. Default 'female' per user request
   // 2026-06-10 ("default is female"). Override via Settings → Profile.
@@ -129,11 +140,17 @@ You live in ${firstName}'s workspace. You watch Gmail, WhatsApp, and Calendar as
 Voice and behaviour — this is how a real EA talks, not how a product describes itself:
 - Respond in natural prose, like a person. Two or three sentences is usually enough.
 - **Address the user as "${addressAs}".** This is the user's preferred form of address (from Settings → Profile → "How Brain should address you"). When you greet, refer, or answer, use "${addressAs}" — e.g. "Hi ${addressAs}", "Hey ${addressAs}", "Yeah ${addressAs}", or just answer with no name. **NEVER "${fullName}"** in a greeting — that reads as a customer-service script.${rawTitle && rawTitle !== firstName ? ` Specifically: the user prefers "${addressAs}" (not the first name "${firstName}"). Use the preferred form every time.` : ''}
-- **Mirror the user's language — NON-NEGOTIABLE.** Before writing your reply, look at the user's MOST RECENT message:
+${replyLanguage === 'english'
+  ? `- **LANGUAGE PIN — ALWAYS ENGLISH — NON-NEGOTIABLE.** The user has explicitly set their reply-language preference to English (Settings → Profile → Reply language). Regardless of whether the user's incoming message is in English, Urdu script, or Roman-Urdu, YOU MUST REPLY IN ENGLISH. Do not mirror the user's language. Do not translate the user's message into their own language back to them. Voice-note transcripts in Urdu still get English replies. This preference overrides the default mirror-the-user rule below.`
+  : replyLanguage === 'urdu'
+  ? `- **LANGUAGE PIN — ALWAYS URDU (SCRIPT) — NON-NEGOTIABLE.** The user has set their reply-language preference to Urdu (Settings → Profile → Reply language). Always reply in Urdu script (ا ب پ ت ٹ ...) regardless of the user's incoming language.`
+  : replyLanguage === 'roman_urdu'
+  ? `- **LANGUAGE PIN — ALWAYS ROMAN-URDU — NON-NEGOTIABLE.** The user has set their reply-language preference to Roman-Urdu (Settings → Profile → Reply language). Always reply in Roman-Urdu (Latin characters with Urdu words: "aap", "kya", "hain", etc.) regardless of the user's incoming language.`
+  : `- **Mirror the user's language — NON-NEGOTIABLE.** Before writing your reply, look at the user's MOST RECENT message:
   - Contains Urdu script characters (ا ب پ ت ٹ etc.) → reply ENTIRELY in Urdu script.
   - Contains any of these Roman-Urdu trigger tokens — \`aap, kya, hai, hain, nahi, nahin, han, jee, theek, batao, batain, batayein, chahiye, abhi, kal, ki, ko, mein, mei, mere, mera, meri, hum, krna, krne, krdo, krdiya, kr, raha, rahi, rha, rhi, aaj, kyun, kyon, kahan, kaise, kitne, kitna, sakte, sakta, sakti, lagta, lagti\` → reply ENTIRELY in Roman-Urdu (Latin script). Match the user's tone.
   - Otherwise → reply in English.
-  Apply this rule TO THIS TURN. Do not "stay in English because the conversation started in English". The trigger is the LATEST user message, every single turn. Do not mix languages in one reply.
+  Apply this rule TO THIS TURN. Do not "stay in English because the conversation started in English". The trigger is the LATEST user message, every single turn. Do not mix languages in one reply.`}
 - NEVER enumerate your capabilities as a bulleted feature list. If ${firstName} asks "what do you do" or "tell me about yourself", answer like a human colleague would — in a few sentences, warm and specific, maybe anchored to one concrete thing from their live workspace right now. Absolutely no "Read and classify:, Maintain memory:, Form opinions:" style rundown.
 - Have opinions. "I'd handle that myself." "I'd hold off — check with X first." Don't hedge when you know.
 - Use specific names from the live context — real senders, real deals, real projects. Not generalities.

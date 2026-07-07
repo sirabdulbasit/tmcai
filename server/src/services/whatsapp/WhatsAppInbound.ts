@@ -643,12 +643,19 @@ async function processWhatsAppQuery(
   // ── Generate response ───────────────────────────────────────────────────
   const { getGenAI } = await import('../genaiClient');
   const ai = getGenAI();
-  // Read max tokens from tenant's WhatsApp config (admin-configurable)
-  const waConfig = await prisma.$queryRawUnsafe(
-    `SELECT max_tokens_chat, max_tokens_data FROM whatsapp_config WHERE client_number = $1`, clientNumber,
-  ) as any[];
-  const maxTokensChat = waConfig[0]?.max_tokens_chat || 150;
-  const maxTokensData = waConfig[0]?.max_tokens_data || 400;
+  // Max tokens — column max_tokens_chat NEVER existed on whatsapp_config
+  // (per whatsappAdminRoutes.ts:29 historical note). The old
+  // $queryRawUnsafe threw code 42703 → the WHOLE Brain-on-WhatsApp
+  // legacy fallback path crashed with "column max_tokens_chat does
+  // not exist" and the user saw "[Brain unavailable — Invalid prisma
+  // .$queryRawUnsafe() invocation]" as their reply. Removing the
+  // query entirely and using the same defaults that were already the
+  // effective fallback (`|| 150` / `|| 400`) — behaviour unchanged
+  // on the happy path; user just doesn't get the crash now.
+  // Per Basit 2026-07-07: fix triggered by voice-note-into-Urdu-reply
+  // flow crashing at 12:15 pm.
+  const maxTokensChat = 150;
+  const maxTokensData = 400;
   const maxTokens = intent.type === 'conversational' ? maxTokensChat : maxTokensData;
   const result = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
