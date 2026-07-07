@@ -708,9 +708,51 @@ export class WebjsProvider implements IWhatsAppProvider {
       return { success: false, error: 'WhatsApp not connected' };
     }
     try {
-      const chatId = params.to.replace('+', '') + '@c.us';
+      // Pre-flight: verify the target is actually on WhatsApp before
+      // attempting to send. Per Basit 2026-07-07: silent send failures
+      // to unknown numbers left Brain reporting "sent" while nothing
+      // arrived — 20+ minutes of user confusion in the 2:39–3:03 pm
+      // exchange. getNumberId returns null when the number isn't a
+      // WhatsApp user, letting us fail LOUDLY with an honest error
+      // instead of trying to send into the void.
+      //
+      // Extra bonus: getNumberId returns the canonical @c.us WA
+      // identifier that WORKS for sends even when the naïve
+      // "<digits>@c.us" construction fails (some regional numbers
+      // have oddities).
+      const digitsOnly = String(params.to).replace(/[^\d]/g, '');
+      if (!digitsOnly || digitsOnly.length < 8) {
+        return { success: false, error: `invalid phone number "${params.to}"` };
+      }
+      let chatId: string;
+      try {
+        const numberId = await client.getNumberId(digitsOnly);
+        if (!numberId) {
+          return {
+            success: false,
+            error: `+${digitsOnly} is not registered on WhatsApp (getNumberId returned null)`,
+          };
+        }
+        chatId = numberId._serialized;
+      } catch (err: any) {
+        // getNumberId itself failed — fall back to naive chatId construction
+        // rather than blocking. Log so we can see when this happens.
+        log.warn('getNumberId threw, falling back to naive chatId', { to: params.to, err: err.message });
+        chatId = digitsOnly + '@c.us';
+      }
+
       const msg = await client.sendMessage(chatId, params.message);
-      return { success: true, messageId: msg.id.id };
+      // The wwebjs Message object has id._serialized (the full WA id)
+      // and id.id (the short id). Track both — some downstream code
+      // uses one or the other.
+      const waMessageId = msg?.id?._serialized || msg?.id?.id;
+      if (!waMessageId) {
+        // Send didn't throw but returned no id — treat as failure so
+        // callers don't claim "sent" without proof. Per Basit 2026-07-07
+        // no-fabrication rule.
+        return { success: false, error: 'sendMessage returned no message id — send likely failed silently' };
+      }
+      return { success: true, messageId: waMessageId };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
@@ -741,10 +783,31 @@ export class WebjsProvider implements IWhatsAppProvider {
       // @ts-ignore optional dep — already loaded during initialize()
       const wwebjs = await import('whatsapp-web.js' as string);
       const MessageMedia = wwebjs.MessageMedia || wwebjs.default?.MessageMedia;
-      const chatId = to.replace('+', '') + '@c.us';
+      // Pre-flight validation — same reasoning as sendMessage.
+      const digitsOnly = String(to).replace(/[^\d]/g, '');
+      if (!digitsOnly || digitsOnly.length < 8) {
+        return { success: false, error: `invalid phone number "${to}"` };
+      }
+      let chatId: string;
+      try {
+        const numberId = await client.getNumberId(digitsOnly);
+        if (!numberId) {
+          return {
+            success: false,
+            error: `+${digitsOnly} is not registered on WhatsApp`,
+          };
+        }
+        chatId = numberId._serialized;
+      } catch {
+        chatId = digitsOnly + '@c.us';
+      }
       const media = new MessageMedia(mimeType, audio.toString('base64'), `voice-${Date.now()}.ogg`);
       const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
-      return { success: true, messageId: msg.id.id };
+      const waMessageId = msg?.id?._serialized || msg?.id?.id;
+      if (!waMessageId) {
+        return { success: false, error: 'sendMessage returned no message id — send likely failed silently' };
+      }
+      return { success: true, messageId: waMessageId };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
