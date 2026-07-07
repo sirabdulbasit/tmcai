@@ -309,8 +309,17 @@ export async function answerAsBrain(
     } catch { /* learning log never blocks the reply */ }
   })();
 
+  // Last-mile sanitization — rewrite bracketed system markers into
+  // human-readable text before returning to any surface. Per Basit
+  // 2026-07-07: the chat showed "[no action dispatched — retry with
+  // the action and target named explicitly]" and "[notify_via_whatsapp
+  // preview expired — re-issue the request]" landing verbatim on
+  // WhatsApp. Those are internal signals meant for downstream
+  // re-composition, not user prose. This sanitizer rewrites known
+  // markers to plain language and strips unknown ones.
+  const { sanitizeAnswerForUser } = await import('../services/knowledge/answerSanitizer');
   return {
-    answer: result.answer,
+    answer: sanitizeAnswerForUser(result.answer),
     sources: result.sources,
     gaps: result.gaps,
     intent: plan.intent,
