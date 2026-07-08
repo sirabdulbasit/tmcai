@@ -28,6 +28,18 @@ export class UpdatePriorityHandler extends ActionHandler {
     await prisma.openItem.update({ where: { id: ctx.openItemId! }, data: { priorityScore: newScore } });
     return { ok: true, output: { openItemId: ctx.openItemId, previousScore: item.priorityScore, newScore } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: "priority updated" only counts if the OpenItem row now
+    // carries the exact score execute() wrote, in this tenant. Fail closed on
+    // a missing row or a mismatched score (e.g. a concurrent writer raced us).
+    const o = output as { openItemId?: string; newScore?: number } | null;
+    if (!o?.openItemId || typeof o.newScore !== 'number') return false;
+    const row = await prisma.openItem.findFirst({
+      where: { id: o.openItemId, clientNumber: ctx.clientNumber },
+      select: { priorityScore: true },
+    });
+    return row !== null && row.priorityScore === o.newScore;
+  }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousScore: number | null };
     return { handler: 'update_priority', payload: { openItemId: ctx.openItemId, priorityScore: o.previousScore ?? 0.5 } };

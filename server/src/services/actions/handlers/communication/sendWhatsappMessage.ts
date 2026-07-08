@@ -1,3 +1,4 @@
+import prisma from '../../../../db/prisma';
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
 import { sendWhatsAppToPhone } from '../../../adapters/whatsappAdapter';
 
@@ -51,6 +52,36 @@ export class SendWhatsappMessageHandler extends ActionHandler {
     } catch (err: any) {
       return { ok: false, error: err.message };
     }
+  }
+  /** B2 trust invariant — whatsappService.sendWhatsAppToPhone mirrors every
+   *  accepted send into whatsapp_messages (direction 'out', status 'sent',
+   *  messageId = Meta-assigned wamid) whenever the destination phone maps
+   *  to a whatsapp_connections row, so a DB read-back on that row is the
+   *  cheapest system-of-record check. For external phones with no
+   *  connection row the service skips the mirror by design ("Meta is
+   *  source of truth"), so we drop to a receipt check on the wamid. Fail
+   *  closed when neither holds. */
+  async confirm(_ctx: HandlerContext, output: unknown): Promise<boolean> {
+    const o = output as { messageId?: unknown } | undefined;
+    const messageId = o?.messageId;
+    // Meta only assigns a wamid on an accepted send — no id, nothing stuck.
+    if (typeof messageId !== 'string' || !messageId) return false;
+    try {
+      // status may already be upgraded by a delivery webhook (sent →
+      // delivered → read), so only exclude the explicit failure log rows.
+      const row = await prisma.whatsAppMessage.findFirst({
+        where: { messageId, direction: 'out', status: { not: 'failed' } },
+        select: { id: true },
+      });
+      if (row) return true;
+    } catch {
+      // DB unreachable — cannot verify the mirror, fail closed.
+      return false;
+    }
+    // CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back
+    // (external phone with no whatsapp_connections row: the DB mirror is
+    // skipped by design and the Meta Cloud API has no cheap message-get).
+    return /^wamid\./.test(messageId);
   }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { messageId: string };

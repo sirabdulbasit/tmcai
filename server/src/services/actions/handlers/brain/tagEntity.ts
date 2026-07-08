@@ -28,6 +28,18 @@ export class TagEntityHandler extends ActionHandler {
     await prisma.openItem.update({ where: { id: ctx.openItemId! }, data: { entityId: newEntityId } });
     return { ok: true, output: { openItemId: ctx.openItemId, previousEntityId: item.entityId, newEntityId } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: the tag only counts if the OpenItem row in this tenant now
+    // points at the exact entity execute() wrote. Fail closed on a missing row
+    // or a different entityId (concurrent re-tag or a write that never landed).
+    const o = output as { openItemId?: string; newEntityId?: string } | null;
+    if (!o?.openItemId || !o.newEntityId) return false;
+    const row = await prisma.openItem.findFirst({
+      where: { id: o.openItemId, clientNumber: ctx.clientNumber },
+      select: { entityId: true },
+    });
+    return row !== null && row.entityId === o.newEntityId;
+  }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousEntityId: string | null };
     return { handler: 'tag_entity', payload: { openItemId: ctx.openItemId, entityId: o.previousEntityId ?? null } };

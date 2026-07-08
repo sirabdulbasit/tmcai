@@ -1,5 +1,9 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
 import { pushThought } from '../../../adapters/notionAdapter';
+// Direct connector import for the confirm() read-back only — the adapter layer
+// exists to circuit-break the WRITE path; a one-shot existence read after a
+// successful write doesn't need (or want) breaker state.
+import { fetchPageContent } from '../../../connectors/NotionConnector';
 import prisma from '../../../../db/prisma';
 
 export class SyncThoughtToNotionHandler extends ActionHandler {
@@ -65,6 +69,27 @@ export class SyncThoughtToNotionHandler extends ActionHandler {
       };
     } catch (err: any) {
       return { ok: false, error: err.message };
+    }
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back, two systems of record:
+    //  1. DB mirror — the ThoughtEntry must carry the notion linkage
+    //     execute() wrote (publishedTo/publishedAt), tenant-scoped.
+    //  2. Provider — the Notion page id must actually be readable via the
+    //     tenant's Notion client. A page we cannot retrieve is not synced,
+    //     whatever the push call claimed. Fail closed on any API error.
+    const o = output as { thoughtEntryId?: string; notionPageId?: string } | null;
+    if (!o?.thoughtEntryId || !o.notionPageId) return false;
+    const row = await prisma.thoughtEntry.findFirst({
+      where: { id: o.thoughtEntryId, clientNumber: ctx.clientNumber, publishedTo: 'notion' },
+      select: { publishedAt: true },
+    });
+    if (!row?.publishedAt) return false;
+    try {
+      await fetchPageContent(ctx.clientNumber, o.notionPageId);
+      return true;
+    } catch {
+      return false; // 404 / revoked token / network — unverifiable ≠ confirmed
     }
   }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {

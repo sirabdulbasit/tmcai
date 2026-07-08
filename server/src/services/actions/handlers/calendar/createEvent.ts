@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { createEvent as createEventBreakered } from '../../../adapters/calendarAdapter';
+import { createEvent as createEventBreakered, getEvents } from '../../../adapters/calendarAdapter';
 
 export class CreateEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -68,6 +68,25 @@ export class CreateEventHandler extends ActionHandler {
       return { ok: true, output: { eventId: r.event.id, htmlLink: (r.event as any).htmlLink, createdAt: new Date().toISOString() } };
     } catch (err: any) {
       return { ok: false, error: err.message };
+    }
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: list events in the booked window and require the
+    // returned eventId to be present and not cancelled. Fail closed on any
+    // read error — an unverifiable booking is not a confirmed booking.
+    const o = output as { eventId?: string } | null | undefined;
+    const eventId = o?.eventId;
+    if (typeof eventId !== 'string' || eventId.length === 0) return false;
+    try {
+      const start = new Date(String(ctx.payload.startTime));
+      const end = new Date(String(ctx.payload.endTime));
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return false;
+      // Pad the window by a minute so boundary-exact events are included.
+      const r = await getEvents(ctx.userId, new Date(start.getTime() - 60_000), new Date(end.getTime() + 60_000), 50);
+      if (r.error) return false;
+      return r.events.some(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
+    } catch {
+      return false;
     }
   }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {

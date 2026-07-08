@@ -1,4 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { getEvents } from '../../../adapters/calendarAdapter';
 
 export class CancelEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -26,6 +27,28 @@ export class CancelEventHandler extends ActionHandler {
   }
   async execute(ctx: HandlerContext): Promise<ExecutionOutput> {
     return { ok: true, output: { eventId: ctx.payload.eventId, cancelledAt: new Date().toISOString() } };
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back where ABSENCE is the success state: scan the user's
+    // calendar (now → +180 days; the payload carries no event time, and there
+    // is no single-event get in the adapter) and confirm the event is either
+    // gone or status=cancelled. Finding it still live means the cancellation
+    // did not stick → false. A read error means we cannot verify → false.
+    const o = output as { eventId?: string } | null | undefined;
+    const eventId = o?.eventId ?? (ctx.payload.eventId as string | undefined);
+    if (typeof eventId !== 'string' || eventId.length === 0) return false;
+    try {
+      const now = new Date();
+      const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
+      const r = await getEvents(ctx.userId, now, horizon, 250);
+      if (r.error) return false;
+      const stillLive = r.events.some(
+        e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled',
+      );
+      return !stillLive;
+    } catch {
+      return false;
+    }
   }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { eventId: string };

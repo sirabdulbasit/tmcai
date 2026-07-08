@@ -1,4 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { getEvents } from '../../../adapters/calendarAdapter';
 
 export class RescheduleEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -34,6 +35,31 @@ export class RescheduleEventHandler extends ActionHandler {
   }
   async execute(ctx: HandlerContext): Promise<ExecutionOutput> {
     return { ok: true, output: { eventId: ctx.payload.eventId, previousStart: null, newStart: ctx.payload.newStartTime, newEnd: ctx.payload.newEndTime } };
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: the event must exist at the NEW time window with a
+    // non-cancelled status. NOTE: execute() is currently a stub (no Calendar
+    // API write), so this read-back will return false until the real move
+    // lands — that is the intended fail-closed behaviour, not a bug.
+    const o = output as { eventId?: string; newStart?: string; newEnd?: string } | null | undefined;
+    if (!o || typeof o.eventId !== 'string' || o.eventId.length === 0) return false;
+    const eventId = o.eventId;
+    try {
+      const newStart = new Date(String(o.newStart));
+      const newEnd = new Date(String(o.newEnd));
+      if (isNaN(newStart.getTime()) || isNaN(newEnd.getTime())) return false;
+      const r = await getEvents(ctx.userId, new Date(newStart.getTime() - 60_000), new Date(newEnd.getTime() + 60_000), 50);
+      if (r.error) return false;
+      return r.events.some(e => {
+        if (e.id !== eventId && !e.id.startsWith(`${eventId}_`)) return false;
+        if (e.status === 'cancelled') return false;
+        // Start must actually be the new start (±60s tolerance for formatting)
+        const start = new Date(e.start).getTime();
+        return Math.abs(start - newStart.getTime()) <= 60_000;
+      });
+    } catch {
+      return false;
+    }
   }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { eventId: string; previousStart: string | null };

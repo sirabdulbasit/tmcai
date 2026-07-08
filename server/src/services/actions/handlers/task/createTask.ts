@@ -30,6 +30,15 @@ export class CreateTaskHandler extends ActionHandler {
   async execute(_ctx: HandlerContext): Promise<ExecutionOutput> {
     return { ok: true, output: { taskId: `stub_task_${Date.now()}`, createdAt: new Date().toISOString() } };
   }
+  async confirm(_ctx: HandlerContext, _output: unknown): Promise<boolean> {
+    // Read-back (B2): execute() is still a stub — it fabricates a taskId
+    // without writing to Google Tasks or any local table, so there is NO
+    // system of record to verify against. A stub receipt must never read
+    // as a confirmed side effect; fail closed until the real write +
+    // read-back path exists.
+    return false;
+  }
+
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { taskId: string };
     return { handler: 'delete_task', payload: { taskId: o.taskId } };

@@ -138,6 +138,26 @@ export class ParallelFanOutHandler extends ActionHandler {
       error: ok ? undefined : `published ${publishedMessageIds.length}/${children.length} — check per-child status`,
     };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: the fan-out's own side effect is the set of QUEUED child
+    // AgentAction rows — so confirm() verifies every child row exists in this
+    // tenant, was created by this handler, and none flipped to 'error'
+    // (execute() marks publish failures that way). It deliberately does NOT
+    // wait for child completion — executing the children is the Action
+    // Executor agent's job, and each child gets its own confirm() when it runs.
+    const o = output as { childrenCount?: number; childActionIds?: number[] } | null;
+    if (!o || !Array.isArray(o.childActionIds) || o.childActionIds.length === 0) return false;
+    if (o.childActionIds.length !== o.childrenCount) return false;
+    const found = await prisma.agentAction.count({
+      where: {
+        id: { in: o.childActionIds },
+        clientNumber: ctx.clientNumber,
+        executedByAgent: 'parallel_fan_out',
+        status: { not: 'error' },
+      },
+    });
+    return found === o.childActionIds.length;
+  }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { childActionIds: number[] };
     return {

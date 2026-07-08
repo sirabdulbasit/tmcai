@@ -68,6 +68,32 @@ export class UpdateOdooOpportunityHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: re-read the changed keys from crm.lead and require
+    // the opportunity to exist with the written values in place. many2one
+    // fields (e.g. stage_id) read back as [id, name] tuples, so numeric
+    // writes are compared against the tuple's id. Missing record or read
+    // error → false (fail closed).
+    const o = output as { opportunityId?: number; changedKeys?: string[] } | null | undefined;
+    if (!o || typeof o.opportunityId !== 'number') return false;
+    const written = (ctx.payload.fields as Record<string, unknown>) ?? {};
+    const keys = Array.isArray(o.changedKeys) && o.changedKeys.length > 0 ? o.changedKeys : Object.keys(written);
+    try {
+      const record = await readRecord(ctx.clientNumber, 'crm.lead', o.opportunityId, keys);
+      if (!record) return false;
+      return keys.every(key => {
+        const wrote = written[key];
+        const read = (record as Record<string, unknown>)[key];
+        if (Array.isArray(read) && typeof wrote === 'number') return read[0] === wrote; // many2one [id, name]
+        if (['string', 'number', 'boolean'].includes(typeof wrote) && ['string', 'number', 'boolean'].includes(typeof read)) {
+          return String(read) === String(wrote);
+        }
+        return true; // non-comparable shapes — existence check already passed
+      });
+    } catch {
+      return false;
+    }
+  }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { opportunityId: number; previous: Record<string, unknown> | null };
     return {

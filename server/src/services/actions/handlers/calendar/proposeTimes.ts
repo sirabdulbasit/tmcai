@@ -41,4 +41,21 @@ export class ProposeTimesHandler extends ActionHandler {
     });
     return { ok: true, output: { suggestions, generatedAt: new Date().toISOString() } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Pure computation — execute() performs no external write (no event is
+    // created, nothing is sent), so there is no system of record to read
+    // back. The legitimate confirmation here is that the proposal payload is
+    // well-formed: a non-empty suggestions array of valid, correctly-ordered
+    // ISO slots matching the requested duration.
+    const o = output as { suggestions?: Array<{ start?: string; end?: string }> } | null | undefined;
+    if (!o || !Array.isArray(o.suggestions) || o.suggestions.length === 0) return false;
+    const durationMs = (ctx.payload.durationMinutes as number) * 60_000;
+    return o.suggestions.every(s => {
+      const start = new Date(String(s?.start)).getTime();
+      const end = new Date(String(s?.end)).getTime();
+      if (isNaN(start) || isNaN(end) || start >= end) return false;
+      // Each slot must match the requested duration (±1s for rounding)
+      return !Number.isFinite(durationMs) || Math.abs(end - start - durationMs) <= 1000;
+    });
+  }
 }

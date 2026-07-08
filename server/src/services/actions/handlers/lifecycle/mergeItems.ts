@@ -57,6 +57,25 @@ export class MergeItemsHandler extends ActionHandler {
     }
     return { ok: true, output: { keepItemId: keepId, mergedIds: dups, previousStatuses } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): the survivor must still exist, and every item
+    // execute() claims it merged (previousStatuses keys — the duplicates
+    // it actually found) must now sit at CLOSED. Zero merged rows means
+    // no side effect happened, which must never read as a confirmed
+    // merge — fail closed.
+    const o = output as { keepItemId?: string; previousStatuses?: Record<string, string> } | null;
+    const keepId = o?.keepItemId ?? (ctx.payload.keepItemId as string | undefined);
+    const mergedIds = Object.keys(o?.previousStatuses ?? {});
+    if (!keepId || mergedIds.length === 0) return false;
+    const survivor = await openItemsService.getItem(keepId, ctx.clientNumber);
+    if (!survivor) return false;
+    for (const id of mergedIds) {
+      const row = await openItemsService.getItem(id, ctx.clientNumber);
+      if (row?.status !== 'CLOSED') return false;
+    }
+    return true;
+  }
+
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { mergedIds: string[]; previousStatuses: Record<string, string> };
     return { handler: 'merge_items.revert', payload: { restore: o.previousStatuses }, note: 'restore each merged item to its previous status' };

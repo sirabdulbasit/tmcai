@@ -31,6 +31,16 @@ export class ForwardEmailHandler extends ActionHandler {
   async execute(_ctx: HandlerContext): Promise<ExecutionOutput> {
     return { ok: true, output: { messageId: `stub_fwd_${Date.now()}`, sentAt: new Date().toISOString(), deliveryStatus: 'stub' } };
   }
+  /** B2 trust invariant — execute() is still a stub (no Gmail write ever
+   *  happens; output carries deliveryStatus 'stub'), so there is NO system
+   *  of record to read back against. The old `return true` default marked
+   *  stub forwards as done — exactly the lie the abstract confirm() exists
+   *  to prevent. Fail closed unconditionally until execute() performs a
+   *  real Gmail forward, at which point this must become a
+   *  users.messages.get read-back (see SendEmailHandler.confirm). */
+  async confirm(_ctx: HandlerContext, _output: unknown): Promise<boolean> {
+    return false;
+  }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { messageId: string };
     return { handler: 'forward_email.retract', payload: { messageId: o.messageId }, note: 'cannot unsend' };

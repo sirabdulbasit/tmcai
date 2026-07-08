@@ -229,6 +229,12 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
         await handler.prepare(ctx);
         const out = await handler.execute(ctx);
         if (out.ok) {
+          // B2: fail closed — a handler that somehow lacks confirm()
+          // (JS-level gap the abstract base can't catch at runtime) is
+          // UNCONFIRMED, never implicitly successful.
+          if (typeof handler.confirm !== 'function') {
+            throw new Error(`handler "${input.actionType}" has no confirm() — action cannot be verified`);
+          }
           const confirmed = await handler.confirm(ctx, out.output);
           if (!confirmed) throw new Error(`confirm() returned false for handler "${input.actionType}"`);
         }
