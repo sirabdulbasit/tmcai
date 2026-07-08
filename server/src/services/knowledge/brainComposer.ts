@@ -642,7 +642,59 @@ export interface ComposeOptions {
  *  "I've sent", "I'll send", "I'm sending", "I sent", "I just sent",
  *  "Done — delegated", "kar diya hai", "ho gaya". False positives are
  *  cheap (one extra LLM call) — false negatives ship a lie. */
-const EMPTY_PROMISE_RE = /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+// Verb lemmas used across the branches. Past-tense forms only for the
+// bare-"I" branch (which otherwise false-positives on habitual present
+// tense like "I schedule my day at 8am"). Verb list is intentionally
+// closed — every entry corresponds to a ComposedAction the composer
+// can actually dispatch, so we only intercept claims about real actions.
+const _COMPLETION_VERBS_ANY = 'delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting';
+const _COMPLETION_VERBS_PAST = 'delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set';
+export const EMPTY_PROMISE_RE = new RegExp(
+  [
+    // (1) First-person WITH auxiliary — safe to match any verb form.
+    //     Matches: "I've sent", "I have scheduled", "I'll delegate",
+    //     "I'm sending", "I just added", "I already emailed".
+    `\\bi(?:'ve|\\s+have|'ll|\\s+will|'m|\\s+am|\\s+just|\\s+already)\\s+(?:${_COMPLETION_VERBS_ANY})\\b`,
+
+    // (2) First-person BARE — restricted to past-tense verbs only, to
+    //     avoid habitual-present false positives ("I schedule my day
+    //     at 8am" must NOT match).
+    `\\bi\\s+(?:${_COMPLETION_VERBS_PAST})\\b`,
+
+    // (3) Passive voice — "has been sent", "was delivered", "were dispatched".
+    //     This is the Basit-chat-2 failing phrasing: "The email has
+    //     been sent to Asad." Slipped past the old first-person-only
+    //     regex and let a fabricated completion claim reach the user.
+    `\\b(?:has|have|had|was|were|is|are|been)\\s+(?:been\\s+)?(?:${_COMPLETION_VERBS_ANY})\\b`,
+
+    // (4) Third-person impersonal subject — "The email has been sent",
+    //     "The invite went out", "It was scheduled", "Done — it's with X now".
+    //     Requires the subject phrase to disambiguate from unrelated
+    //     uses of "the message/task/etc." elsewhere in prose.
+    `\\b(?:the\\s+(?:email|message|invite|reminder|task|meeting|note|reply|nudge|follow-up|followup|thread|item)|it)\\s+(?:has\\s+been|had\\s+been|was|were|is|are)\\s+(?:${_COMPLETION_VERBS_ANY})\\b`,
+
+    // (5) Idiomatic completion — "done — <verb>", "Done." at clause end.
+    //     Both em-dash and period follow-through count; the LLM often
+    //     writes "Done. Delegated to X." as two adjacent sentences.
+    `\\bdone[\\s.!:—-]`,
+    // (6) Roman-Urdu / Hindi completion idioms.
+    `\\b(?:kar\\s+diya|kar\\s+di\\s+hai|ho\\s+gaya|ho\\s+gai|ho\\s+gayi|kar\\s+diye)\\b`,
+
+    // (7) Headless past-tense at clause start followed by target/preposition —
+    //     "Delegated to Yousuf.", "Scheduled for Friday.", "Sent to Asad.",
+    //     "Emailed him.", "Forwarded that to Fahim." The past-tense-only
+    //     verb list is used deliberately so habitual-present forms
+    //     ("Schedule your day at 8am" as a suggestion) don't false-positive.
+    `(?:^|[.!?]\\s+)(?:${_COMPLETION_VERBS_PAST})\\s+(?:to|for|it|him|her|them|that|this|those|the)\\b`,
+  ].join('|'),
+  'i',
+);
+
+/** Semantic wrapper so tests + call sites can express intent
+ *  ("does this claim completion?") without knowing the regex. */
+export function claimsCompletion(text: string): boolean {
+  return EMPTY_PROMISE_RE.test(text ?? '');
+}
 
 /** Cheap heuristic for "the user is asking me to DO something." Used to
  *  gate the action vocabulary + emission rules — they shouldn't ride
@@ -1497,7 +1549,29 @@ export async function compose(
         // downstream validateBeforeRender skips the empty-promise
         // regex check — reasoning's questions and answers shouldn't be
         // regex-gated for "I delegate / I send" verbs (legacy LLM era).
+        //
+        // EXCEPT: block the reasoning-answer-decision-with-completion-
+        // claim case. If reasoning decided 'answer' but the answer_text
+        // contains a completion claim ("has been sent", "delegated to
+        // X", etc.), that decision was invalid per the reasoning
+        // prompt contract (see reasoningCompose.ts anti-fabrication
+        // rules). Fabricated completion prose must never ship, even on
+        // the ask/answer/decline early-return path. Replace with a
+        // bracketed marker; answerSanitizer converts to honest text.
+        // (Basit 2026-07-08 fix pass, chat 2 "has been sent to Asad".)
         if (result.decision !== 'act') {
+          if (result.decision === 'answer' && claimsCompletion(envelope.answer)) {
+            console.warn('[compose] reasoning answer_text contained completion claim — intercepting', {
+              userId, clientNumber,
+              head: (envelope.answer || '').slice(0, 120),
+            });
+            return {
+              ...envelope,
+              answer: `[no action dispatched — the assistant claimed completion but no action ran; retry with the action and target named explicitly]`,
+              actionResult: { ok: false, message: 'fabricated_completion_intercepted' },
+              source: 'reasoning',
+            };
+          }
           return { ...envelope, source: 'reasoning' };
         }
         // For act: short-circuit the legacy LLM round-trip. The
@@ -2156,10 +2230,36 @@ ${calLines.join('\n')}`;
         // "what did you want?" question.
         parsed.answer = renderMissingSlotPrompt(null, decision.missingSlot);
         parsed.action = null;
+      } else if (isActionTurn && claimsCompletion(parsed.answer)) {
+        // Structural safety net (Basit 2026-07-08 fix pass).
+        // The decider gave up (no action, no missing slot) BUT the
+        // original LLM prose asserted the action was done. This is the
+        // "has been sent" fabrication class — completion language must
+        // NEVER reach the user unless dispatch actually ran. Replace
+        // with a bracketed system marker; answerSanitizer converts it
+        // to an honest non-completion offer.
+        //
+        // Gated on isActionTurn because conversational Brain replies
+        // like "I've noted that" (Basit 2026-05-22 false-positive) can
+        // trigger the regex even though there's nothing to dispatch.
+        // isActionTurn === true means the user's message uses an
+        // imperative verb — a genuine action request. Only then do we
+        // insist that completion language be backed by a real dispatch.
+        //
+        // Invariant enforced by this branch: completion prose on an
+        // action turn reaches the user ONLY when built from a real
+        // provider response (see the sendRes.messageId assembly at
+        // ~:3022-3030 for the send_email case).
+        console.warn('[brain-chat] intercepted completion claim (decider produced no action)', {
+          userId, clientNumber,
+          claimedHead: parsed.answer.slice(0, 120),
+        });
+        parsed.answer = `[no action dispatched — the assistant claimed completion but no action ran; retry with the action and target named explicitly]`;
+        parsed.action = null;
       }
-      // If both action and missingSlot are null, the decider concluded
-      // no action intent — leave the first attempt's prose unchanged
-      // and let the post-guard handle any lingering empty-promise.
+      // If neither action, missingSlot, nor completion claim: decider
+      // concluded no action intent AND the prose is innocuous. Leave
+      // it alone.
     }
   }
 
