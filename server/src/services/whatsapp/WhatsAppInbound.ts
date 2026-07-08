@@ -7,6 +7,7 @@
 
 import prisma from '../../db/prisma';
 import { sendWhatsAppMessage } from './WhatsAppManager';
+import { askBrainWithRetry } from './brainRetry';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('whatsapp:inbound');
@@ -360,24 +361,30 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // user-scope instructions, private knowledge, open items, calendar.
   // Client-scope instructions apply tenant-wide. This is the same
   // pipeline `POST /brain/ask` uses on the web surface.
-  let responseText: string;
-  try {
-    const { answerAsBrain } = await import('../../routes/brainAskRoutes');
-    // Map WA session history (role:user|assistant, content) to Brain's
-    // shape (role:user|brain, text). Without this, every WA message was
-    // a context-less standalone — Brain just sent a Day Brief listing
-    // "Numair: Google credits email", then on "add the google email to
-    // open items" it ran a fresh Gmail search and asked which Google
-    // email the user meant (security alerts, calendar invites, etc.)
-    // because it couldn't see what it had just said.
-    const brainHistory = history.map((h: any) => {
-      const role = h.role === 'assistant' ? ('brain' as const)
-        : h.role === 'artifact' ? ('artifact' as const)
-        : ('user' as const);
-      return { role, text: String(h.content ?? '') };
-    });
-    const r = await answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' });
-    responseText = r.answer;
+  const { answerAsBrain } = await import('../../routes/brainAskRoutes');
+  // Map WA session history (role:user|assistant, content) to Brain's
+  // shape (role:user|brain, text). Without this, every WA message was
+  // a context-less standalone — Brain just sent a Day Brief listing
+  // "Numair: Google credits email", then on "add the google email to
+  // open items" it ran a fresh Gmail search and asked which Google
+  // email the user meant (security alerts, calendar invites, etc.)
+  // because it couldn't see what it had just said.
+  const brainHistory = history.map((h: any) => {
+    const role = h.role === 'assistant' ? ('brain' as const)
+      : h.role === 'artifact' ? ('artifact' as const)
+      : ('user' as const);
+    return { role, text: String(h.content ?? '') };
+  });
+  // ONE central brain, retried on transient failure — never a degraded
+  // parallel pipeline (legacy processWhatsAppQuery removed 2026-07-08).
+  // The brain degrades in latency, not competence. If BOTH attempts
+  // throw, the user gets a clearly bracketed status marker — not a
+  // hardcoded sentence pretending to be Brain.
+  const { answer, degraded, result: r } = await askBrainWithRetry(
+    () => answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' }),
+  );
+  const responseText = answer;
+  if (!degraded && r) {
     log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
 
     // If this turn dispatched a successful action, persist the artifact
@@ -391,18 +398,6 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     if (r.artifact) {
       history.push({ role: 'artifact', content: JSON.stringify(r.artifact) });
       log.info('Brain artifact persisted to session', { userId, kind: r.artifact.kind, artifactId: r.artifact.artifactId });
-    }
-  } catch (error: any) {
-    log.warn('answerAsBrain failed — falling back to legacy pipeline', { error: error.message, userId });
-    try {
-      responseText = await processWhatsAppQuery(userId, params.clientNumber, queryText, history);
-    } catch (err2: any) {
-      log.error('Query processing failed', { error: err2.message, userId });
-      // System marker, not a fake-Brain apology. When BOTH the primary
-      // Brain composer AND the legacy fallback throw, the user gets a
-      // clearly bracketed status message — not a hardcoded sentence
-      // pretending to be Brain.
-      responseText = `[Brain unavailable — ${err2?.message ?? 'unknown error'}. Try again in a moment or use the web.]`;
     }
   }
 
@@ -524,149 +519,4 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
       logUserId ?? 0,
     );
   }
-}
-
-// ─── Process query through TMCAI pipeline (same AI as web, mobile-optimized output) ──
-
-async function processWhatsAppQuery(
-  userId: number,
-  clientNumber: string,
-  query: string,
-  conversationHistory: any[],
-): Promise<string> {
-  const { classifyIntent, buildIntentDirective } = await import('../intentService');
-  const { getAIConfig } = await import('../aiConfigService');
-  const { retrieveData } = await import('../../controllers/chat/dataRetrieval');
-  const { buildMemoryPromptBlocks } = await import('../memoryService');
-  const { getUserProfile } = await import('../userProfileService');
-  const { getUserLearnings } = await import('../learningService');
-  const { learnFromMessage } = await import('../learningService');
-
-  const aiConfig = await getAIConfig(clientNumber);
-  const recentTurns = conversationHistory.slice(-6);
-
-  // ── Same pipeline as web: intent + memory + profile + learnings ──────────
-  const [intent, memoryBlocks, userProfile, userLearnings] = await Promise.all([
-    classifyIntent(query, undefined, recentTurns.length > 0 ? recentTurns : undefined),
-    buildMemoryPromptBlocks(userId),
-    getUserProfile(userId),
-    getUserLearnings(userId),
-  ]);
-
-  const aiName = memoryBlocks.aiName || 'TMCAI';
-
-  // ── WhatsApp output rules (the ONLY difference from web) ────────────────
-  const WHATSAPP_RULES = [
-    '── WHATSAPP FORMAT ──',
-    'Responding on WhatsApp. Keep it mobile-friendly.',
-    '',
-    'RULES:',
-    '• Be concise but COMPLETE. Never leave a sentence unfinished.',
-    '• Give the key answer first, then brief supporting details.',
-    '• Use plain text. For emphasis: *bold* (single asterisk). No markdown ## or **.',
-    '• For stats: ONLY use exact numbers from the DATA section. Do NOT count rows yourself — use totals stated in the data source.',
-    '• For lists: show top 5 items max. Mention total count.',
-    '• Always finish every sentence. If answer is getting long, summarize and offer:',
-    '  "Want the full report by email? Or check tai.tmcltd.com"',
-    '• Match the user\'s tone — casual or formal.',
-    '• LANGUAGE MATCHING: If user writes in Urdu → respond in Urdu. If English → respond in English. If mixed → respond in the same mix.',
-    '• For Urdu: use Urdu script (نستعلیق). Example: "آپ کے 47 ایکٹو پروجیکٹس ہیں۔"',
-    '• For Roman Urdu: respond in Roman Urdu. Example: "Aap ke 47 active projects hain."',
-    '── END FORMAT ──\n',
-  ].join('\n');
-
-  // ── Build user profile block (same as web) ──────────────────────────────
-  let profileBlock = '';
-  if (userProfile) {
-    const parts: string[] = [];
-    if (userProfile.jobDescription) parts.push(`User's JD: ${userProfile.jobDescription}`);
-    if (userProfile.aboutMe) parts.push(`About user: ${userProfile.aboutMe}`);
-    if (userProfile.instructions) parts.push(`Custom instructions: ${userProfile.instructions}`);
-    if (userProfile.preferredTitle) parts.push(`Address the user as: ${userProfile.preferredTitle}`);
-    if (parts.length > 0) {
-      profileBlock = '── USER PROFILE ──\n' + parts.join('\n') +
-        '\nADAPTIVE TONE: Mirror the user\'s communication style. If casual, be casual. If formal, be formal.\n\n';
-    }
-  }
-
-  // ── Learned patterns (same as web) ──────────────────────────────────────
-  let learningBlock = '';
-  if (userLearnings.length > 0) {
-    learningBlock = '── LEARNED PATTERNS ──\n' + userLearnings.join('\n') + '\nUse these silently.\n\n';
-  }
-
-  // ── Memory blocks (same as web) ─────────────────────────────────────────
-  let memoryBlock = '';
-  if (memoryBlocks.userMemoryBlock) memoryBlock += memoryBlocks.userMemoryBlock + '\n';
-  if (memoryBlocks.aiMemoryBlock) memoryBlock += memoryBlocks.aiMemoryBlock + '\n';
-  if (memoryBlocks.contextBlock) memoryBlock += memoryBlocks.contextBlock + '\n';
-
-  // ── Data retrieval (skip for conversational) ────────────────────────────
-  let dataBlock = '';
-  if (intent.type !== 'conversational') {
-    const { context } = await retrieveData(
-      query, intent, 'gemini-flash', aiConfig, Date.now(),
-      () => {}, () => false, userId, ['org'], recentTurns,
-    );
-
-    // Always include data_summary for accurate total counts (prevents LLM from counting rows)
-    let summaryLine = '';
-    try {
-      const { retrieveContext } = await import('../../pipeline/gcpRetrieval');
-      const summaryResult = await retrieveContext('how many total');
-      if (summaryResult.context && summaryResult.context.includes('Summary')) {
-        summaryLine = summaryResult.context;
-      }
-    } catch {}
-
-    const allContext = [summaryLine, context].filter(Boolean).join('\n\n---\n\n');
-    if (allContext) dataBlock = `── DATA (use ONLY these numbers, do NOT count rows yourself) ──\n${allContext}\n── END DATA ──\n`;
-  }
-
-  // ── Assemble full prompt (same structure as web, with WA rules on top) ──
-  const directive = buildIntentDirective(intent);
-  const systemPrompt = [
-    WHATSAPP_RULES,
-    profileBlock,
-    learningBlock,
-    memoryBlock ? `── MEMORY ──\n${memoryBlock}── END MEMORY ──\n` : '',
-    directive,
-    dataBlock,
-  ].filter(Boolean).join('\n');
-
-  // Conversation turns (same as web)
-  const turns = recentTurns.map((t: any) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`).join('\n');
-  const fullPrompt = turns
-    ? `${systemPrompt}\n── CONVERSATION ──\n${turns}\n\nUser: ${query}`
-    : `${systemPrompt}\nUser: ${query}`;
-
-  // ── Generate response ───────────────────────────────────────────────────
-  const { getGenAI } = await import('../genaiClient');
-  const ai = getGenAI();
-  // Max tokens — column max_tokens_chat NEVER existed on whatsapp_config
-  // (per whatsappAdminRoutes.ts:29 historical note). The old
-  // $queryRawUnsafe threw code 42703 → the WHOLE Brain-on-WhatsApp
-  // legacy fallback path crashed with "column max_tokens_chat does
-  // not exist" and the user saw "[Brain unavailable — Invalid prisma
-  // .$queryRawUnsafe() invocation]" as their reply. Removing the
-  // query entirely and using the same defaults that were already the
-  // effective fallback (`|| 150` / `|| 400`) — behaviour unchanged
-  // on the happy path; user just doesn't get the crash now.
-  // Per Basit 2026-07-07: fix triggered by voice-note-into-Urdu-reply
-  // flow crashing at 12:15 pm.
-  const maxTokensChat = 150;
-  const maxTokensData = 400;
-  const maxTokens = intent.type === 'conversational' ? maxTokensChat : maxTokensData;
-  const result = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: fullPrompt,
-    config: { maxOutputTokens: maxTokens },
-  });
-
-  const response = (result.text ?? '').trim() || `[LLM returned empty response — try again]`;
-
-  // ── Self-learning (same as web — tracks on WhatsApp too) ────────────────
-  learnFromMessage(clientNumber, userId, query, intent.type).catch(() => {});
-
-  return response;
 }
