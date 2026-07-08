@@ -369,11 +369,13 @@ export class WebjsProvider implements IWhatsAppProvider {
             if (media?.data) {
               const audioBuffer = Buffer.from(media.data, 'base64');
               const { transcribeVoiceNote } = await import('../voiceService');
-              // Look up sender's replyLanguage preference — when set to
-              // 'english', we translate the transcript in the same
-              // Gemini call. Basit 2026-07-08: "always transcribe voice
-              // note into english". Non-blocking DB read; if it fails
-              // we fall back to auto-detect (no translation).
+              // A5 (2026-07-08, supersedes "always transcribe voice note
+              // into english"): transcribe in the SPOKEN language so
+              // instructions embedded in the voice note reach the brain
+              // unmangled. replyLanguage='english' still guarantees the
+              // REPLY is English via the persona language pin
+              // (brainPersonaService). Input is translated only on
+              // explicit opt-in (brain_channel.translateVoiceInput).
               let translateTo: 'english' | null = null;
               try {
                 const rows = await prisma.$queryRawUnsafe<any[]>(
@@ -387,10 +389,8 @@ export class WebjsProvider implements IWhatsAppProvider {
                     LIMIT 1`,
                   clientNumber, fromNumber,
                 );
-                const prefs = rows[0]?.prefs ?? {};
-                if (prefs?.brain_channel?.replyLanguage === 'english') {
-                  translateTo = 'english';
-                }
+                const { resolveInputTranslation } = await import('../voiceInputTranslation');
+                translateTo = resolveInputTranslation(rows[0]?.prefs ?? {});
               } catch { /* preference lookup is best-effort */ }
               const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo });
               messageBody = transcription.text;
