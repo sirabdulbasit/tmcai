@@ -267,6 +267,9 @@ export class WebjsProvider implements IWhatsAppProvider {
 
       log.info('Raw message event', { from: rawFrom, body: (message.body || '').slice(0, 50), type: message.type, hasMedia: message.hasMedia });
 
+      // Declared outside the try so the catch can gate the error reply on
+      // _resolvedUserId (set by handleInboundMessage after registration).
+      let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
       try {
         // Extract real phone number — handle both @c.us and @lid formats
         let fromNumber = '';
@@ -409,7 +412,10 @@ export class WebjsProvider implements IWhatsAppProvider {
         }
 
         const { handleInboundMessage } = await import('./WhatsAppInbound');
-        await handleInboundMessage({
+        // Hoisted so the catch below can read _resolvedUserId — the error
+        // reply must only go to REGISTERED senders (A7); unregistered
+        // traffic stays silently dropped by policy.
+        inboundParams = {
           clientNumber,
           fromNumber,
           messageBody,
@@ -442,11 +448,17 @@ export class WebjsProvider implements IWhatsAppProvider {
               await chat.sendStateTyping();
             } catch {}
           },
-        });
+        };
+        await handleInboundMessage(inboundParams);
 
         // Remove ⏳ after all processing + replies are done
         try { await message.react(''); } catch {}
       } catch (e: any) {
+        // A7: tell the user something went wrong (bracketed system
+        // marker, registered senders only) BEFORE clearing the ⏳ —
+        // an unacknowledged instruction reads as a disobeyed one.
+        const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
+        await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
         try { await message.react(''); } catch {} // remove even on error
         log.error('Inbound handler error', { error: e.message });
       }
@@ -472,6 +484,7 @@ export class WebjsProvider implements IWhatsAppProvider {
 
       log.info('message_create event', { from: rawFrom, body: (message.body || '').slice(0, 50) });
 
+      let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
       try {
         let fromNumber = '';
         if (rawFrom.includes('@c.us')) {
@@ -486,7 +499,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         }
 
         const { handleInboundMessage } = await import('./WhatsAppInbound');
-        await handleInboundMessage({
+        inboundParams = {
           clientNumber,
           fromNumber,
           messageBody: message.body,
@@ -498,9 +511,13 @@ export class WebjsProvider implements IWhatsAppProvider {
             const chat = await message.getChat();
             await chat.sendMessage(text);
           },
-        });
+        };
+        await handleInboundMessage(inboundParams);
         try { await message.react(''); } catch {}
       } catch (e: any) {
+        // A7: bracketed error marker to registered senders before clearing ⏳
+        const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
+        await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
         try { await message.react(''); } catch {}
         log.error('message_create handler error', { error: e.message });
       }
