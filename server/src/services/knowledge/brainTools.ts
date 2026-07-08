@@ -209,32 +209,61 @@ const fetchEmails: BrainToolDefinition = {
 
 const fetchSentEmails: BrainToolDefinition = {
   name: 'fetch_sent_emails',
-  description: 'Look up the user\'s SENT emails to a specific recipient. Use for "did I email <X>", "what was the last thing I sent <X>", "did I follow up with <X>".',
+  description: 'Look up the user\'s Gmail SENT folder — proof of what actually went out. Use for "did I email <X>", "did the last email actually send", "check my sent items", "which account did it go from". Optionally filter by recipient. Reports the From: address (so the user can see which Gmail account was used), messageId, subject, and time.',
   inputSchema: {
     type: 'object',
     properties: {
-      to:          { type: 'string', description: 'recipient email (required)' },
-      last_n_days: { type: 'integer', description: 'lookback window (default 30, max 90)' },
+      to:          { type: 'string', description: 'recipient email (optional — omit to list recent sent items across all recipients)' },
+      last_n_days: { type: 'integer', description: 'lookback window (default 7, max 90)' },
+      max:         { type: 'integer', description: 'max items to return (default 10, max 25)' },
     },
-    required: ['to'],
+    required: [],
   },
-  handler: async ({ to, last_n_days }, { userId }) => {
-    const days = Math.max(1, Math.min(90, Number(last_n_days ?? 30)));
-    const target = String(to ?? '').trim().toLowerCase();
-    if (!target.includes('@')) return `# Sent emails — invalid recipient\nReceived "${to}". Need an email address.`;
-    try {
-      const { getToneSamplesForRecipient } = await import('./senderToneService');
-      const samples = await getToneSamplesForRecipient(userId, target, 10);
-      if (!samples || samples.samples.length === 0) {
-        return `# Sent emails to ${target} (last ${days}d via Gmail API)\n(no sent emails to this recipient found)`;
+  handler: async ({ to, last_n_days, max }, { userId }) => {
+    const days = Math.max(1, Math.min(90, Number(last_n_days ?? 7)));
+    const cap = Math.max(1, Math.min(25, Number(max ?? 10)));
+    const target = typeof to === 'string' ? String(to).trim().toLowerCase() : '';
+
+    // Recipient-scoped lookup: use the pre-existing tone-sample path
+    // (has richer per-recipient filtering + body extraction).
+    if (target && target.includes('@')) {
+      try {
+        const { getToneSamplesForRecipient } = await import('./senderToneService');
+        const samples = await getToneSamplesForRecipient(userId, target, cap);
+        if (!samples || samples.samples.length === 0) {
+          return `# Sent emails to ${target} (last ${days}d via Gmail API)\n(no sent emails to this recipient found — this means the message never left, OR it was sent from a different account)`;
+        }
+        const lines = samples.samples.map((s) => {
+          const date = s.sentAt ? new Date(s.sentAt).toISOString().slice(0, 10) : '';
+          return `- ${date} — Subject: ${s.subject}\n  Body excerpt: ${s.body.replace(/\s+/g, ' ').slice(0, 200)}`;
+        });
+        return `# Sent emails to ${target} (newest first, ${samples.samples.length} shown)\n${lines.join('\n')}`;
+      } catch (e: any) {
+        return `# Sent emails to ${target}\n(lookup failed: ${e?.message ?? 'unknown error'})`;
       }
-      const lines = samples.samples.map((s) => {
-        const date = s.sentAt ? new Date(s.sentAt).toISOString().slice(0, 10) : '';
-        return `- ${date} — Subject: ${s.subject}\n  Body excerpt: ${s.body.replace(/\s+/g, ' ').slice(0, 200)}`;
+    }
+
+    // Broad lookup: recent sent items across the account. Used when
+    // the user asks "did the last one actually send" without naming
+    // a recipient, or "show me what you've sent from my account today".
+    try {
+      const { getRecentSentSummary } = await import('../gmailService');
+      const r = await getRecentSentSummary(userId, {
+        max: cap,
+        sinceHoursAgo: days * 24,
       });
-      return `# Sent emails to ${target} (newest first, ${samples.samples.length} shown)\n${lines.join('\n')}`;
+      if (!r.ok) {
+        return `# Recent sent emails\n(Gmail read failed: ${r.error ?? 'unknown'}. This usually means the user\'s Gmail token has expired — ask them to reconnect Google in Settings.)`;
+      }
+      if (r.items.length === 0) {
+        return `# Recent sent emails (last ${days}d)\nNo sent messages found in the connected Google account (${r.fromAddress ?? 'address unknown'}). If the user believes they sent something recently, either the send never landed OR it went from a different account.`;
+      }
+      const lines = r.items.map((m) =>
+        `- ${m.sentAt} — To: ${m.to} — Subject: ${m.subject} — id: ${m.messageId}`,
+      );
+      return `# Recent sent emails from ${r.fromAddress ?? '(account)'} — ${r.items.length} in last ${days}d\n${lines.join('\n')}`;
     } catch (e: any) {
-      return `# Sent emails to ${target}\n(lookup failed: ${e?.message ?? 'unknown error'})`;
+      return `# Recent sent emails\n(lookup failed: ${e?.message ?? 'unknown'})`;
     }
   },
 };

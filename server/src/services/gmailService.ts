@@ -149,7 +149,21 @@ export async function sendUserEmail(
   body: string,
   cc?: string,
   opts?: { threadId?: string; inReplyTo?: string; references?: string },
-): Promise<{ success: boolean; messageId?: string; threadId?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  messageId?: string;
+  threadId?: string;
+  error?: string;
+  /** True when a post-send fetch confirmed the message is in the
+   *  Sent label. False when send API returned OK but the verification
+   *  fetch failed or the message wasn't tagged SENT. */
+  verified?: boolean;
+  /** The From: header of the sent message as recorded by Gmail —
+   *  the account the recipient will actually see. When this doesn't
+   *  match the user's expected Gmail address, that's the smoking
+   *  gun for "Brain sent from the wrong account". */
+  sentFromAddress?: string;
+}> {
   const { client, error } = await getAuthenticatedClient(userId);
   if (!client) {
     // Gmail unavailable. Per Basit 2026-06-11 "anyone email should be
@@ -212,12 +226,14 @@ export async function sendUserEmail(
       requestBody,
     });
 
+    const messageId = response.data.id;
+    const threadId = response.data.threadId;
+
     // Fire-and-forget commitment extraction. Outbound emails often
     // contain "I'll send X by Y" — we file each promise as an open_item
     // so Brain can track and follow up. Idempotent on (channel, sourceRef).
     void (async () => {
       try {
-        const messageId = response.data.id;
         if (!messageId) return;
         const u = await import('../db/prisma').then(m => m.default.user.findUnique({
           where: { id: userId }, select: { clientNumber: true },
@@ -235,13 +251,112 @@ export async function sendUserEmail(
       } catch { /* best-effort; never block the send */ }
     })();
 
+    // POST-SEND VERIFICATION (Basit 2026-07-08).
+    // Root cause of "Brain says sent, user sees nothing":
+    //   (a) OAuth token belongs to a DIFFERENT Google account than the
+    //       user thinks they're using (impersonation via stale refresh).
+    //   (b) Send succeeded but with a From address the user doesn't
+    //       recognise (tenant service account, alt Google account).
+    //   (c) Message was accepted by Gmail then filtered by the
+    //       recipient's server — Sent folder still shows it, but the
+    //       recipient never sees it. We can only distinguish (a)/(b)
+    //       here; (c) needs a bounce watcher.
+    // Fetch the sent message back and read its From: header. Report
+    // it to the caller so downstream Brain can honestly tell the user
+    // "sent from X" instead of just "sent" (which the user then
+    // discovers is wrong 5 minutes later).
+    let sentFromAddress: string | undefined;
+    let verified = false;
+    if (messageId) {
+      try {
+        const verify = await gmail.users.messages.get({
+          userId: 'me', id: messageId, format: 'metadata',
+          metadataHeaders: ['From', 'To', 'Subject'],
+        });
+        const labels = verify.data.labelIds ?? [];
+        verified = labels.includes('SENT');
+        const headers = verify.data.payload?.headers ?? [];
+        const fromH = headers.find((h: any) => (h.name ?? '').toLowerCase() === 'from');
+        sentFromAddress = fromH?.value ?? undefined;
+      } catch (verifyErr: any) {
+        // Verification failed but send API returned OK. Return the
+        // messageId anyway; caller can still surface honest uncertainty.
+        console.warn('[gmail] send-verification failed', { userId, messageId, error: verifyErr?.message });
+      }
+    }
+
     return {
       success: true,
-      messageId: response.data.id || undefined,
-      threadId: response.data.threadId || undefined,
-    };
+      messageId: messageId || undefined,
+      threadId: threadId || undefined,
+      verified,
+      sentFromAddress,
+    } as any;
   } catch (err: any) {
-    return { success: false, error: `Send failed: ${err.message}` };
+    // Surface the ACTUAL Gmail API error, including code + response
+    // body when present. Users had to guess why sends silently failed
+    // because we were logging "Send failed: <generic>" — the real
+    // reason (invalid_grant, quota exceeded, etc.) never reached them.
+    const code = err?.code || err?.status || err?.response?.status;
+    const apiError = err?.response?.data?.error?.message
+      ?? err?.errors?.[0]?.message
+      ?? err?.message
+      ?? 'unknown';
+    const detail = code ? `${code} — ${apiError}` : apiError;
+    console.warn('[gmail] send failed', { userId, code, apiError });
+    return { success: false, error: `Send failed: ${detail}` };
+  }
+}
+
+// ─── Recent Sent items summary (for user "did it go?" queries) ─
+/** Return a compact list of the most recent SENT messages so Brain
+ *  can answer "did my email to X actually go?" honestly. Unlike
+ *  getSentSamples this returns metadata only (subject, to, timestamp,
+ *  messageId) — fast, and doesn't leak email body into logs.
+ *  Added 2026-07-08 after Basit reported Brain saying "sent" while
+ *  the user could see no record of the message in Gmail. */
+export async function getRecentSentSummary(
+  userId: number,
+  opts: { max?: number; sinceHoursAgo?: number; queryPrefix?: string } = {},
+): Promise<{
+  ok: boolean;
+  fromAddress?: string;
+  items: Array<{ messageId: string; threadId?: string; to: string; subject: string; sentAt: string }>;
+  error?: string;
+}> {
+  const max = opts.max ?? 10;
+  const { client, error } = await getAuthenticatedClient(userId);
+  if (!client) return { ok: false, items: [], error };
+  try {
+    const gmail = google.gmail({ version: 'v1', auth: client });
+    const q = [
+      'in:sent',
+      opts.sinceHoursAgo ? `newer_than:${Math.max(1, Math.ceil(opts.sinceHoursAgo / 24))}d` : '',
+      opts.queryPrefix ? opts.queryPrefix : '',
+    ].filter(Boolean).join(' ');
+    const list = await gmail.users.messages.list({ userId: 'me', q, maxResults: max });
+    const items: Array<{ messageId: string; threadId?: string; to: string; subject: string; sentAt: string }> = [];
+    let fromAddress: string | undefined;
+    for (const m of list.data.messages ?? []) {
+      const d = await gmail.users.messages.get({
+        userId: 'me', id: m.id!, format: 'metadata',
+        metadataHeaders: ['To', 'Subject', 'From', 'Date'],
+      }).catch(() => null);
+      if (!d?.data) continue;
+      const headers = d.data.payload?.headers ?? [];
+      const getH = (k: string) => headers.find((h: any) => (h.name ?? '').toLowerCase() === k.toLowerCase())?.value ?? '';
+      if (!fromAddress) fromAddress = getH('From');
+      items.push({
+        messageId: m.id!,
+        threadId: d.data.threadId ?? undefined,
+        to: getH('To'),
+        subject: getH('Subject'),
+        sentAt: getH('Date'),
+      });
+    }
+    return { ok: true, fromAddress, items };
+  } catch (err: any) {
+    return { ok: false, items: [], error: err?.message ?? 'unknown' };
   }
 }
 

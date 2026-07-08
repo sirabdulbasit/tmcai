@@ -3020,13 +3020,28 @@ ${calLines.join('\n')}`;
               }
             }
             const sendRes = await sendUserEmail(userId, primaryTo, act.subject, bodyWithFooter, ccStr, threadOpts);
-            if (sendRes.success) {
+            // Fabrication guard (Basit 2026-07-08): only claim success
+            // when Gmail returned a messageId AND (ideally) the post-
+            // send verification found it in the Sent label. Same
+            // pattern as the WhatsApp send fabrication guard.
+            if (sendRes.success && sendRes.messageId) {
               const recipients = [primaryTo, ...extraCc].join(', ');
+              const fromLine = sendRes.sentFromAddress
+                ? ` (from ${sendRes.sentFromAddress})`
+                : '';
+              const verifyNote = sendRes.verified
+                ? ''
+                : '\n(Note: Gmail accepted the send, but I couldn\'t verify it landed in your Sent folder — please check.)';
               actionResult = {
                 ok: true,
                 artifactId: sendRes.messageId,
-                message: `Sent email to ${recipients} — subject: "${act.subject}".`,
+                message: `Sent email to ${recipients}${fromLine} — subject: "${act.subject}". messageId=${sendRes.messageId}${verifyNote}`,
               };
+              answer = actionResult.message;
+            } else if (sendRes.success && !sendRes.messageId) {
+              // API returned success but no id. Almost never happens
+              // with Gmail, but if it does we must not claim sent.
+              actionResult = { ok: false, message: `[send_email failed: Gmail returned success without a messageId — treat as unsent]` };
               answer = actionResult.message;
             } else {
               actionResult = { ok: false, message: `[send_email failed: ${sendRes.error ?? 'unknown error from Gmail'}]` };
@@ -4799,12 +4814,12 @@ async function dispatchPendingDirect(
           fullBody,
           ccEmails.length ? ccEmails.join(', ') : undefined,
         );
-        if (r.success) {
-          // Delegation-lifecycle link: if this email was queued by a
-          // delegate_open_item dispatch, record the messageId on the
-          // open_item so the follow-up worker knows the email landed.
+        // Fabrication guard + verification report (Basit 2026-07-08):
+        // require messageId AND surface sentFromAddress / verified so
+        // Brain can be honest about "sent from which account".
+        if (r.success && r.messageId) {
           const linkedOpenItemId = typeof slots._delegationOpenItemId === 'string' ? slots._delegationOpenItemId : null;
-          if (linkedOpenItemId && r.messageId) {
+          if (linkedOpenItemId) {
             await prisma.openItem.update({
               where: { id: linkedOpenItemId },
               data: {
@@ -4813,11 +4828,18 @@ async function dispatchPendingDirect(
               } as any,
             }).catch((e) => console.warn('[brain-chat] delegation email link write failed', { error: (e as any)?.message }));
           }
+          const fromLine = (r as any).sentFromAddress ? ` (from ${(r as any).sentFromAddress})` : '';
+          const verifyNote = (r as any).verified === false
+            ? '\n(Note: Gmail accepted the send, but I couldn\'t verify it landed in your Sent folder — please check.)'
+            : '';
           return {
             ok: true,
             artifactId: r.messageId,
-            message: `Sent email to ${toEmails.join(', ')} — subject: "${slots.subject}".`,
+            message: `Sent email to ${toEmails.join(', ')}${fromLine} — subject: "${slots.subject}". messageId=${r.messageId}${verifyNote}`,
           };
+        }
+        if (r.success && !r.messageId) {
+          return { ok: false, message: `[send_email failed: Gmail returned success without a messageId — treat as unsent]` };
         }
         return { ok: false, message: `[send_email failed: ${r.error ?? 'unknown'}]` };
       } catch (e: any) {
