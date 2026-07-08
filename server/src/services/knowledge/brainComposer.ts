@@ -647,8 +647,13 @@ export interface ComposeOptions {
 // tense like "I schedule my day at 8am"). Verb list is intentionally
 // closed — every entry corresponds to a ComposedAction the composer
 // can actually dispatch, so we only intercept claims about real actions.
-const _COMPLETION_VERBS_ANY = 'delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting';
-const _COMPLETION_VERBS_PAST = 'delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set';
+// Verb-list vocabulary — every ComposedAction the composer can dispatch
+// contributes its completion verb here so a fabricated "X has been ___"
+// claim triggers the safety nets. Extended 2026-07-08 (audit round 2)
+// after coverage gaps found for archive_wiki_page, mark_contact_inactive,
+// record_preference, set_brain_name, mark_open_item_done.
+const _COMPLETION_VERBS_ANY = 'delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting|archived|archiving|archive|marked|marking|mark|saved|saving|save|remembered|remembering|remember|renamed|renaming|rename|completed|completing|complete|closed|closing|close';
+const _COMPLETION_VERBS_PAST = 'delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set|archived|marked|saved|remembered|renamed|completed|closed';
 export const EMPTY_PROMISE_RE = new RegExp(
   [
     // (1) First-person WITH auxiliary — safe to match any verb form.
@@ -678,14 +683,41 @@ export const EMPTY_PROMISE_RE = new RegExp(
     //     writes "Done. Delegated to X." as two adjacent sentences.
     `\\bdone[\\s.!:—-]`,
     // (6) Roman-Urdu / Hindi completion idioms.
-    `\\b(?:kar\\s+diya|kar\\s+di\\s+hai|ho\\s+gaya|ho\\s+gai|ho\\s+gayi|kar\\s+diye)\\b`,
+    //     Extended 2026-07-08 (audit round 2): "kar liya", "kar li" and
+    //     "yaad kar liya" / "yaad rakh liya" (remembered/saved) cover
+    //     verbs that the English branch also picks up but the user
+    //     might phrase in Urdu.
+    `\\b(?:kar\\s+diya|kar\\s+di\\s+hai|kar\\s+liya|kar\\s+li\\s+hai|kar\\s+li|ho\\s+gaya|ho\\s+gai|ho\\s+gayi|kar\\s+diye|yaad\\s+kar\\s+liya|yaad\\s+rakh\\s+liya|yaad\\s+kar\\s+li|yaad\\s+rakh\\s+li)\\b`,
 
-    // (7) Headless past-tense at clause start followed by target/preposition —
-    //     "Delegated to Yousuf.", "Scheduled for Friday.", "Sent to Asad.",
-    //     "Emailed him.", "Forwarded that to Fahim." The past-tense-only
-    //     verb list is used deliberately so habitual-present forms
-    //     ("Schedule your day at 8am" as a suggestion) don't false-positive.
-    `(?:^|[.!?]\\s+)(?:${_COMPLETION_VERBS_PAST})\\s+(?:to|for|it|him|her|them|that|this|those|the)\\b`,
+    // (7) Headless past-tense at clause start followed by target/preposition
+    //     OR reflexive OR completion-state adjective — "Delegated to
+    //     Yousuf.", "Scheduled for Friday.", "Renamed myself to Suzi.",
+    //     "Marked Rafay inactive." The past-tense-only verb list is
+    //     used deliberately so habitual-present forms ("Schedule your
+    //     day at 8am" as a suggestion) don't false-positive.
+    //     Broadened 2026-07-08 (audit round 2) to include reflexives
+    //     ("myself"/"yourself"/etc.) and state adjectives
+    //     ("inactive"/"done"/"complete"/"closed"/"archived") — captures
+    //     the mark_contact_inactive + set_brain_name + mark_open_item_done
+    //     phrasings the audit's empirical probe uncovered.
+    `(?:^|[.!?]\\s+)(?:${_COMPLETION_VERBS_PAST})\\s+(?:\\S+\\s+)?(?:to|for|it|him|her|them|that|this|those|the|myself|yourself|himself|herself|itself|themselves|inactive|done|complete|completed|closed|archived|as\\s+\\w+)\\b`,
+
+    // (8) "call myself <name>" / "calling myself <name>" — set_brain_name's
+    //     natural completion phrasing. Verb-list approach doesn't fit
+    //     because "call" is too generic elsewhere; require the exact
+    //     "myself" object to anchor the semantics. Added 2026-07-08.
+    `\\bcall(?:ing|ed)?\\s+myself\\b`,
+    `\\b(?:i'll|i\\s+will|i'm)\\s+call(?:ing|ed)?\\s+myself\\b`,
+
+    // (9) Subject-then-past-verb at end-of-sentence — "Preference saved.",
+    //     "Item closed.", "Meeting rescheduled.", "Note archived." The
+    //     subject is a single word (matches nouns, not entire phrases)
+    //     followed by a past-tense verb and terminal punctuation.
+    //     Added 2026-07-08 (audit round 2) for headless completion
+    //     claims where the LLM omits the "I" or "has been" scaffolding.
+    //     False-positive-tolerant on non-action turns via the composer's
+    //     isActionTurn gate.
+    `(?:^|[.!?]\\s+)[A-Za-z][A-Za-z-]*\\s+(?:${_COMPLETION_VERBS_PAST})[.!](?:\\s|$)`,
   ].join('|'),
   'i',
 );
@@ -2443,8 +2475,14 @@ ${calLines.join('\n')}`;
             } as any,
           });
           actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-          if (!res.ok) answer = res.message;
-          else if (!/added|added to|noted|done|got it/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+          // Always emit the system-built confirmation on both success
+          // and failure — never retain LLM prose that "sounds right".
+          // Retention removed 2026-07-08 (audit round 2): the previous
+          // "keep LLM prose if it mentions added|noted|done|got it"
+          // shortcut allowed the LLM's paraphrase to overshadow the
+          // real dispatcher outcome (e.g. it might invent a title
+          // that differs from the row actually persisted).
+          answer = res.message;
         }
       } else if (act.type === 'update_open_item') {
         // Update fields on an existing open item — typically used to
@@ -2749,8 +2787,13 @@ ${calLines.join('\n')}`;
               } as any,
             });
             actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
-            if (!res.ok) answer = `[schedule_meeting failed: ${res.message}]`;
-            else if (!/scheduled|set|sent invite/i.test(answer)) answer = `${res.message}${answer ? `\n\n${answer}` : ''}`;
+            // Always return the system-built confirmation on success —
+            // never retain LLM prose that "sounds right". Retention
+            // removed 2026-07-08 (audit round 2): LLM prose could
+            // claim a time or attendee list that differs from what
+            // Google Calendar actually recorded via r.event; the user
+            // saw the wrong-details LLM version, not the truth.
+            answer = res.ok ? res.message : `[schedule_meeting failed: ${res.message}]`;
           }
         }
       } else if (act.type === 'cancel_meeting') {
