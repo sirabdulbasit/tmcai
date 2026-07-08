@@ -105,6 +105,36 @@ const MARKERS: MarkerRule[] = [
     replace: "I can't do that: $1",
     whole: true,
   },
+  {
+    match: /^\s*\[noted\]\s*$/i,
+    replace: "Got it — noted.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[note saved\]\s*$/i,
+    replace: "Saved.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[assigned to\s+([^\]]+)\]\s*$/i,
+    replace: "Assigned to $1.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[due date set:\s*([^\]]+)\]\s*$/i,
+    replace: "Due date set: $1.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[owner not identified[^\]]*\]\s*$/i,
+    replace: "I didn't catch who owns that — reply with a name or email.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[couldn't parse\s+"([^"]+)"\s+as a date[^\]]*\]\s*$/i,
+    replace: "I couldn't read \"$1\" as a date — try something like \"Friday\" or \"in 3 days\".",
+    whole: true,
+  },
 ];
 
 /**

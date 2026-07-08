@@ -306,7 +306,12 @@ function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
 
   // Layer 1 — universal new-chat trigger phrases. If MD opens with any
   // of these, they're starting a new request, not answering an old prompt.
-  const newChatTrigger = /^(brief\s+my\s+day|day\s+brief|what'?s\s+(on\s+my\s+plate|critical|urgent|going\s+on)|how\s+(many|much)\s+|how\s+is\s+|list\s+(my|all|the)\s+|show\s+me\s+|tell\s+me\s+about\s+|delegate\s+|forward\s+|reply\s+(to\s+|with\s+)|draft\s+(a\s+)?reply|schedule\s+|set\s+(up\s+)?(a\s+)?meeting|book\s+(a\s+)?meeting|remind\s+me\s+|add\s+(it\s+|this\s+|a\s+task|to\s+my)|track\s+(this|that)|snooze\s+|mute\s+|hide\s+|cancel$|skip$|nevermind$|later$|stop$|bye$|exit$|hi$|hello$|hey$|good\s+(morning|afternoon|evening|night)|salaam|salam|aoa|assalam)\b/i;
+  // Verbs list must stay in sync with the ComposedAction imperatives in
+  // brainComposer.ts. Missing verbs cause the prompt-queue to swallow
+  // real commands with [noted] — Basit 2026-07-08: "send a test email"
+  // was misread as an answer to a stale prompt and got [noted] back
+  // because 'send' wasn't in the allowlist.
+  const newChatTrigger = /^(brief\s+my\s+day|day\s+brief|what'?s\s+(on\s+my\s+plate|critical|urgent|going\s+on)|how\s+(many|much)\s+|how\s+is\s+|list\s+(my|all|the)\s+|show\s+me\s+|tell\s+(me\s+about|him|her|them)\s+|delegate\s+|forward\s+|reply\s+(to\s+|with\s+)|draft\s+(a\s+)?(reply|email|message)|schedule\s+|reschedule\s+|set\s+(up\s+)?(a\s+)?meeting|book\s+(a\s+)?meeting|remind\s+me\s+|add\s+(it\s+|this\s+|a\s+task|to\s+my)|track\s+(this|that)|snooze\s+|mute\s+|hide\s+|send\s+|email\s+|notify\s+|ping\s+|call\s+|message\s+|share\s+|update\s+|fix\s+|edit\s+|change\s+|write\s+|compose\s+|cancel$|skip$|nevermind$|later$|stop$|bye$|exit$|hi$|hello$|hey$|good\s+(morning|afternoon|evening|night)|salaam|salam|aoa|assalam)\b/i;
   if (newChatTrigger.test(t)) return false;
 
   // Layer 2 — shape match per side-effect.

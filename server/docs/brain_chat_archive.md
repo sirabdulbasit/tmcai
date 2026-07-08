@@ -22,6 +22,8 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `pending-prompt-eats-command` | promptReplyHandler swallows a new-chat imperative as an "answer" to a stale prompt (returns `[noted]`) |
+| `two-schema-oauth-mismatch` | `users.integration_*` legacy fields disagree with `user_connectors.config` — one says stale/wrong, the other says fresh |
 
 ---
 
@@ -157,3 +159,27 @@ When the user pastes a new chat:
 2. **If recurring** after a fix commit landed → the patch was insufficient. State this openly and dig deeper: read the fix commit's diff, check whether it covers the exact path this chat hit, and propose a structural rework instead of another patch.
 3. **If new class** → add a new tag to the vocabulary table, then a new entry below.
 4. **Every entry** must include: symptoms tagged from the vocab, root cause (fresh diagnosis, not a guess), the fix commits shipped for it, and a `Verification status` line that flips after the user tests.
+
+---
+
+## Chat 3 — 2026-07-08 5:12pm (test email → `[noted]`)
+
+**Symptoms:**
+- `pending-prompt-eats-command`: "send a test email to sirabdulbasit@gmail.com" → Brain replied `[noted]` instead of rendering an email preview
+- `bracketed-marker-leak`: `[noted]` shipped to WhatsApp verbatim (sanitizer had no rule for it)
+
+**Root cause:**
+- `promptReplyHandler.looksLikeAnswer()` has a "new-chat trigger" allowlist (schedule, delegate, forward, draft, reply, book, remind, add, track, etc.). Missing verbs: **send, email, notify, ping, call, message, share, update, fix, edit, change, write, compose, tell (him/her/them), reschedule, draft (email/message)**. Any input starting with these bypasses layer-1, then layer-2 (noop side-effect) accepts anything ≤200 chars as an "answer" → returns `[noted]`.
+- Prerequisite: a stale prompt was sitting in the user's prompt queue, so the handler ran at all. Without that, the command would have gone straight to the composer.
+- `answerSanitizer` had no rule for `[noted]`, `[note saved]`, `[assigned to X]`, `[due date set: X]`, so bracketed markers leaked user-visible.
+
+**Fix commit:** (this commit) — expanded the new-chat regex to cover every ComposedAction imperative + added sanitizer rules for the 6 promptReplyHandler markers.
+
+**Structural note:** this is a design fragility — the whitelist regex is stateful and grows with every new action verb. Longer-term the prompt-reply queue should require a positive shape-match (date-like, email-like) to fire, not just a fall-through allow. But regex-expand covers today's break; deferring the structural cleanup until we see another verb miss.
+
+**Verification status:** unverified (needs redeploy + retry)
+
+**Also uncovered during diagnosis (not a chat-3 symptom, but relevant):**
+- `two-schema-oauth-mismatch`: `users.integration_token_expiry` = 2026-07-06 (2d ago, stale); `user_connectors` for the same user says fresh (last sync 2h ago). Two token stores exist and drift; `getAuthenticatedClient` reads UserConnector-first (correct), but the stale `users.*` row misleads any diagnostic query that hits the legacy fields.
+- Gmail connector's actual sender account is `basit.ahmed@tmcltd.com` — this IS correct (TMC's Google Workspace runs on .com; logins are .ai). Matches the Asad email correction from chat 2. So `wrong-from-account` is a **false positive** flagged in chat 2 — updating that entry.
+
