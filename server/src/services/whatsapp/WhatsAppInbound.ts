@@ -166,6 +166,17 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       if (r.ackMessage) {
         await sendReply(params, r.ackMessage);
       }
+      // A6: the answer may carry a piggybacked directive ("tomorrow,
+      // and always remind me at 5pm"). The LLM extractor judges the
+      // full message; plain answers return 'none'. Dispatched
+      // directives get their own ack so nothing is silently eaten.
+      const { handlePiggybackedInstruction } = await import('../brainPrompts/piggybackedInstruction');
+      const pb = await handlePiggybackedInstruction({
+        text: queryText, clientNumber: params.clientNumber, userId,
+      });
+      if (pb.dispatched && pb.ackMessage) {
+        await sendReply(params, pb.ackMessage);
+      }
       return;  // do NOT continue to chat router
     }
   } catch (err: any) {
