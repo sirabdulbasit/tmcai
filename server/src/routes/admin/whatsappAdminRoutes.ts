@@ -231,7 +231,9 @@ router.post('/reset-pairing', async (req: Request, res: Response) => {
     // Step 3: delete LocalAuth session folder so next initialize()
     // shows a fresh QR instead of silently re-pairing to the old account.
     const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
-    const sessionDir = path.join(sessionPath, `session-${cn}`);
+    // E2: cn is request-supplied — validate before using it in a path we rm -rf.
+    const { tenantSessionKey } = await import('../../services/whatsapp/waSessionKey');
+    const sessionDir = path.join(sessionPath, `session-${tenantSessionKey(cn)}`);
     try {
       if (fs.existsSync(sessionDir)) {
         fs.rmSync(sessionDir, { recursive: true, force: true });

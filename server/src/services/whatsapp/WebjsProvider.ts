@@ -171,13 +171,21 @@ export class WebjsProvider implements IWhatsAppProvider {
 
     const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
 
+    // E2: validate the key (path-safe), lock the dirs to 0700, and refuse
+    // to initialize on a dir owned by another uid — session state carries
+    // live WhatsApp auth tokens.
+    const { tenantSessionKey, hardenSessionDir } = await import('./waSessionKey');
+    const sessionKey = tenantSessionKey(clientNumber);
+    hardenSessionDir(sessionPath);
+
     // Restart resilience: if the previous process got SIGKILL'd (crash,
     // nodemon SIGTERM grace exceeded, OOM, host reboot), Chromium left
     // SingletonLock files behind in the LocalAuth folder pointing at a
     // dead PID. Without this cleanup, Chromium refuses to launch against
     // that user-data dir and the WhatsApp client never reaches `ready`,
     // forcing the admin to re-scan QR after every hard restart.
-    const sessionDir = path.join(sessionPath, `session-${clientNumber}`);
+    const sessionDir = path.join(sessionPath, `session-${sessionKey}`);
+    hardenSessionDir(sessionDir);
     cleanStaleSingletonLocks(sessionDir);
 
     // Find Chrome/Chromium executable on the system. Honour both names:
@@ -192,7 +200,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         : '/usr/bin/google-chrome-stable');
 
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: clientNumber, dataPath: sessionPath }),
+      authStrategy: new LocalAuth({ clientId: sessionKey, dataPath: sessionPath }),
       restartOnAuthFail: true,
       puppeteer: {
         headless: true,
