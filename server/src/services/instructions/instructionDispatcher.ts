@@ -637,7 +637,34 @@ export async function dispatchInstruction(args: {
     }
 
     case 'none':
-    default:
       return { ok: false, message: '' }; // caller should suppress
+
+    // ── standing_instruction + any unknown non-none intent ─────────────
+    // A8 (2026-07-08): instructions that don't match a structured intent
+    // used to fall through here with ok:false and empty message — the
+    // "acknowledged but not saved" failure mode ("I told it and it
+    // agreed, then ignored it"). If the LLM classified the turn as an
+    // instruction, we persist it as a free-form ACTIVE instruction
+    // (wiki_page pageType='instruction') so it reaches every future
+    // prompt via getActiveInstructions, and the ack names it.
+    // Never ack without persisting.
+    case 'standing_instruction':
+    default: {
+      const text = String(
+        (ix.params as any).instructionText ?? ix.summary ?? '',
+      ).trim();
+      if (!text) return { ok: false, message: '' };
+      try {
+        const { createInstructionFromText } = await import('../knowledge/instructionService');
+        const created = await createInstructionFromText(clientNumber, userId, text, 'user');
+        if (!created) return { ok: false, message: `Couldn't save that instruction — please try again.` };
+        const label = ix.summary || created.structured.title;
+        log.info('free-form instruction persisted', { userId, intent: ix.intent, id: created.id });
+        return { ok: true, artifactId: created.id, message: `Noted: ${label}. I'll apply this going forward.` };
+      } catch (err: any) {
+        log.warn('free-form instruction persist failed', { error: err.message });
+        return { ok: false, message: `Couldn't save that instruction — please try again.` };
+      }
+    }
   }
 }
