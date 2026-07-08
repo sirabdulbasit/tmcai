@@ -6,10 +6,12 @@
 //     run without Drive, just with that feature disabled.
 //   - AI provider keys: warn if none present (at-least-one rule).
 
+// PLATFORM_API_TOKEN removed 2026-07-08 (E1): agent auth now uses
+// tenant-bound tokens in agent_api_tokens (see agentAuthMiddleware.ts);
+// the env token no longer grants anything, so boot must not require it.
 const SECURITY_CRITICAL = [
   'DATABASE_URL',
   'ENCRYPTION_KEY',
-  'PLATFORM_API_TOKEN',
 ] as const;
 
 const FEATURE_REQUIRED = [
@@ -21,9 +23,9 @@ const FEATURE_REQUIRED = [
 
 /**
  * Throws in production when any security-critical env var is missing or too
- * short. In development we only warn, so local setup is ergonomic, but an
- * agent bearer using an unset `PLATFORM_API_TOKEN` is rejected at the
- * middleware layer anyway (see `agentAuthMiddleware.ts`).
+ * short. In development we only warn, so local setup is ergonomic. Agent
+ * bearer tokens are validated against `agent_api_tokens` in the DB
+ * (see `agentAuthMiddleware.ts`), not against env.
  */
 export function validateEnv(): void {
   const isProd = process.env.NODE_ENV === 'production';

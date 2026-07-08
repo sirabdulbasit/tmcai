@@ -146,7 +146,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// HaseebOS v15 — agent auth: accept Bearer PLATFORM_API_TOKEN + X-Tenant-Id
+// Agent auth: tenant-bound Bearer token (agent_api_tokens) + X-Tenant-Id
 // MUST come before cookieParser so it can build req.user without cookie-based auth
 app.use(agentAuthMiddleware);
 app.use(cookieParser());
