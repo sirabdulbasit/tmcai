@@ -490,7 +490,7 @@ model AgentAction {
   clientNumber      String    @map("client_number") @db.VarChar(20)
   userId            Int       @map("user_id")
   actionType        String    @map("action_type") @db.VarChar(50) // draft_email|send_email|create_event|update_project|generate_report
-  status            String    @default("pending") @db.VarChar(20) // pending|approved|rejected|executing|done|error
+  status            String    @default("pending") @db.VarChar(20) // pending|approved|rejected|executing|dispatched|done|error|stale — dispatched=published to agent worker awaiting confirmation; stale=confirmation never arrived (reaper); only executor confirmation writes done/error
   input             Json      @default("{}")
   output            Json?
   requiresApproval  Boolean   @default(true) @map("requires_approval")

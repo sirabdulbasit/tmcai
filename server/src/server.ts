@@ -466,6 +466,19 @@ const server = app.listen(env.port, async () => {
     }
   }, 30 * 60 * 1000);
 
+  // B1 — dispatched-action reaper every 5 min: AgentAction rows published
+  // to the ADK worker that never received a confirmation move to 'stale'
+  // (outcome unknown) — they must NEVER silently read as done.
+  setInterval(async () => {
+    try {
+      const { reapStaleAgentActions } = await import('./jobs/agentActionReaper');
+      const r = await reapStaleAgentActions();
+      if (r.reaped > 0) console.log(`[agentActionReaper] reaped=${r.reaped} dispatched→stale`);
+    } catch (err: any) {
+      console.warn('[agentActionReaper] error:', err.message);
+    }
+  }, 5 * 60 * 1000);
+
   // HaseebOS v15 L2 — snooze timer every 60s: wake SNOOZED items when due
   setInterval(async () => {
     try {
