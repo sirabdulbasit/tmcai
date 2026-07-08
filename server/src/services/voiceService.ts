@@ -13,7 +13,11 @@ const log = createLogger('voice');
 
 // ─── Speech-to-Text: transcribe voice note to text ────────────────────────────
 
-export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string): Promise<{
+export async function transcribeVoiceNote(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  opts?: { translateTo?: 'english' | null },
+): Promise<{
   text: string;
   language: string;
   confidence: number;
@@ -21,8 +25,12 @@ export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string
   // Try Gemini first (always available, supports Urdu + English + mixed).
   // Pass the actual upload mime through — browser MediaRecorder usually
   // sends webm/opus, not ogg/opus, and Gemini rejects mime mismatches.
+  // translateTo='english': Gemini transcribes AND translates in one call.
+  // Per Basit preference 2026-07-08: "always transcribe voice note into
+  // english" — even when the speaker uses Urdu, downstream Brain
+  // reasoning + logs stay in English.
   try {
-    const geminiResult = await transcribeWithGemini(audioBuffer, mimeType);
+    const geminiResult = await transcribeWithGemini(audioBuffer, mimeType, opts?.translateTo === 'english');
     if (geminiResult.text) return geminiResult;
   } catch (e: any) {
     log.error('Gemini transcription failed, trying Google Speech', { error: e.message });
@@ -117,9 +125,37 @@ function looksLikeSilence(text: string): boolean {
   return SILENCE_BOILERPLATE.some((needle) => t.includes(needle));
 }
 
-async function transcribeWithGemini(audioBuffer: Buffer, mimeType?: string): Promise<{ text: string; language: string; confidence: number }> {
+async function transcribeWithGemini(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  translateToEnglish: boolean = false,
+): Promise<{ text: string; language: string; confidence: number }> {
   const { getGenAI } = await import('./genaiClient');
   const ai = getGenAI();
+
+  // English-only path (Basit preference 2026-07-08): skip the Urdu-
+  // script gymnastics entirely. One Gemini call, transcribe + translate.
+  if (translateToEnglish) {
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: `Transcribe this audio and output the result in ENGLISH ONLY. If the speaker uses Urdu, Hindi, or any other language, TRANSLATE their words into natural English — preserve meaning, tone, and any numbers/names verbatim. If the speaker mixes English with another language, translate the non-English parts into English while keeping the English parts as-is. Return ONLY the English transcript — no commentary, no source-language original, no brackets, no labels. If the audio has no clear speech, return an empty response.` },
+            { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
+          ],
+        },
+      ],
+      config: { maxOutputTokens: 500 },
+    });
+    const raw = (result.text ?? '').trim();
+    if (looksLikeSilence(raw)) {
+      log.info('Gemini English-translate transcript looks like silence; returning empty', { raw: raw.slice(0, 80) });
+      return { text: '', language: 'unknown', confidence: 0 };
+    }
+    return { text: raw, language: 'en-US', confidence: 0.8 };
+  }
 
   // The user (Basit, Pakistan) speaks Urdu, English, or a mix. Gemini's
   // default tends to render Urdu speech in Devanagari (Hindi script,

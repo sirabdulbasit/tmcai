@@ -369,9 +369,32 @@ export class WebjsProvider implements IWhatsAppProvider {
             if (media?.data) {
               const audioBuffer = Buffer.from(media.data, 'base64');
               const { transcribeVoiceNote } = await import('../voiceService');
-              const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype);
+              // Look up sender's replyLanguage preference — when set to
+              // 'english', we translate the transcript in the same
+              // Gemini call. Basit 2026-07-08: "always transcribe voice
+              // note into english". Non-blocking DB read; if it fails
+              // we fall back to auto-detect (no translation).
+              let translateTo: 'english' | null = null;
+              try {
+                const rows = await prisma.$queryRawUnsafe<any[]>(
+                  `SELECT u.notification_preferences AS prefs
+                     FROM whatsapp_connections wc
+                     JOIN users u ON u.id = wc.user_id
+                    WHERE u.client_number = $1
+                      AND wc.status = 'active'
+                      AND u.is_active = TRUE
+                      AND wc.phone_number = $2
+                    LIMIT 1`,
+                  clientNumber, fromNumber,
+                );
+                const prefs = rows[0]?.prefs ?? {};
+                if (prefs?.brain_channel?.replyLanguage === 'english') {
+                  translateTo = 'english';
+                }
+              } catch { /* preference lookup is best-effort */ }
+              const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo });
               messageBody = transcription.text;
-              log.info('Voice transcribed', { text: messageBody.slice(0, 80), lang: transcription.language });
+              log.info('Voice transcribed', { text: messageBody.slice(0, 80), lang: transcription.language, translated: translateTo === 'english' });
             }
           } catch (e: any) {
             log.error('Voice transcription failed', { error: e.message });

@@ -56,6 +56,7 @@ const CAPABILITIES: Capability[] = [
   { label: 'Send an email', handle: 'send_email', what: 'Sends via user\'s Gmail (or SMTP fallback) to contacts or ad-hoc addresses.' },
   { label: 'Notify a contact via WhatsApp', handle: 'notify_via_whatsapp', what: 'Sends a message from the Nexeo tenant WhatsApp number, with an "AI assistant on behalf of {user}" prefix.' },
   { label: 'Add a new contact', handle: 'POST /entities', what: 'Creates a person/entity row with name/email/phone; Brain can trigger this itself when the user provides a name and identifier.' },
+  { label: 'Edit a contact\'s details (name, email, phone)', handle: 'PATCH /entities/:id', what: 'Updates any field on an existing contact — email correction, name fix, phone add/change. Do NOT tell the user "I can\'t edit contacts" — this endpoint exists.' },
   { label: 'Change contact visibility (private/normal/tenant)', handle: 'set_contact_scope', what: 'Adjusts whether a contact is user-scoped, shared, or tenant-wide.' },
   { label: 'Mark a contact inactive', handle: 'mark_contact_inactive', what: 'Hides a contact so Brain skips them in future flows.' },
   { label: 'Archive or delete a wiki page', handle: 'archive_wiki_page / delete_wiki_page', what: 'Removes a page from Brain\'s retrieval (archive) or from the DB (delete).' },
