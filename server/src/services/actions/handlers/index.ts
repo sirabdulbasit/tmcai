@@ -40,6 +40,7 @@ import { TagEntityHandler } from './brain/tagEntity';
 import { ExtractInsightHandler } from './brain/extractInsight';
 import { UpdateMemoryHandler } from './brain/updateMemory';
 import { SyncThoughtToNotionHandler } from './brain/syncThoughtToNotion';
+import { NotifyUserRiskHandler } from './brain/notifyUserRisk';
 // Governance
 import { RequestApprovalHandler } from './governance/requestApproval';
 import { LogOverrideHandler } from './governance/logOverride';
@@ -90,6 +91,7 @@ export function registerAllHandlers(): void {
   register(new ExtractInsightHandler());
   register(new UpdateMemoryHandler());
   register(new SyncThoughtToNotionHandler());
+  register(new NotifyUserRiskHandler());
   // Governance (3)
   register(new RequestApprovalHandler());
   register(new LogOverrideHandler());
