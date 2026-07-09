@@ -466,6 +466,17 @@ const server = app.listen(env.port, async () => {
     }
   }, 30 * 60 * 1000);
 
+  // C5 — memory decay daily: expire dated memories, fade stale unconfirmed
+  // inferences (never explicit/confirmed ones), drop below-floor rows.
+  setInterval(async () => {
+    try {
+      const { decayUserMemories } = await import('./jobs/memoryDecayJob');
+      await decayUserMemories();
+    } catch (err: any) {
+      console.warn('[memoryDecay] error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000);
+
   // B1 — dispatched-action reaper every 5 min: AgentAction rows published
   // to the ADK worker that never received a confirmation move to 'stale'
   // (outcome unknown) — they must NEVER silently read as done.
