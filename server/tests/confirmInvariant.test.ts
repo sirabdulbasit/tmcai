@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { registerAllHandlers } from '../src/services/actions/handlers/index';
-import { listAll, reset } from '../src/services/actions/handlerRegistry';
+import { registerAllHandlers, resetAllHandlers } from '../src/services/actions/handlers/index';
+import { listAll } from '../src/services/actions/handlerRegistry';
 import { ActionHandler } from '../src/services/actions/handlerBase';
 
 // B2 — handlerBase.confirm() used to default to `return true`, so a handler
@@ -10,7 +10,11 @@ import { ActionHandler } from '../src/services/actions/handlerBase';
 
 describe('B2 — confirm() invariant', () => {
   it('every registered handler implements its own confirm()', () => {
-    reset();
+    // Fix 6 (2026-07-09): use resetAllHandlers (the "true reset")
+    // instead of raw handlerRegistry.reset — the latter clears the
+    // Map but not registerAllHandlers's module-level once-guard,
+    // which would leave the registry empty after re-registering.
+    resetAllHandlers();
     registerAllHandlers();
     const handlers = listAll();
     expect(handlers.length).toBeGreaterThan(20);

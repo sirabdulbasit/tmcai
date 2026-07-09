@@ -21,8 +21,14 @@ const CORE_VERBS = [
 ];
 
 describe('registry exposes the core executive-assistant verbs', () => {
-  // registerAllHandlers() has a module-level once-guard, so never reset()
-  // between cases — register once and assert against the live registry.
+  // Registering once at describe-time is enough — vitest isolates
+  // modules per file, so this file starts with an empty registry and
+  // the single call populates it. Fix 6 (2026-07-09): if a future
+  // case ever needs a clean intermediate state, use resetAllHandlers()
+  // from handlers/index.ts — it flips the module-level once-guard so
+  // re-registering actually works. The raw handlerRegistry.reset() is
+  // half a reset and will leave the registry empty on the next register
+  // call.
   registerAllHandlers();
 
   it.each(CORE_VERBS)('%s is registered', (verb) => {
