@@ -8,6 +8,7 @@
 import prisma from '../../db/prisma';
 import { sendWhatsAppMessage } from './WhatsAppManager';
 import { askBrainWithRetry } from './brainRetry';
+import { learnFromMessage } from '../learningService';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('whatsapp:inbound');
@@ -397,6 +398,23 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   const responseText = answer;
   if (!degraded && r) {
     log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
+
+    // Fix 4 (2026-07-09) — restore the hot-path learning signal.
+    // Deleting legacy processWhatsAppQuery also deleted its
+    // fire-and-forget learnFromMessage call. Web chat still records
+    // it (controllers/chat/postProcessing.ts:82); WA no longer did —
+    // channel asymmetry in the per-message topic/style signal.
+    // reflectionJob remains the batch layer; this restores the
+    // instant per-message component so both channels feed learning
+    // the same way. Only fires on the true success path — degraded
+    // replies and bracketed markers must not train the model on
+    // "this intent worked" when it didn't.
+    learnFromMessage(
+      params.clientNumber,
+      userId,
+      queryText,
+      r?.intent ?? 'conversational',
+    ).catch(() => { /* fire-and-forget: learning failure must not break the reply */ });
 
     // If this turn dispatched a successful action, persist the artifact
     // into session history so next turn's compose can resolve
