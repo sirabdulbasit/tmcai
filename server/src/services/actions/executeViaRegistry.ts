@@ -289,6 +289,17 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
         }
         return out;
       },
+      {
+        // B3: a cache hit must be re-verified against the system of record
+        // (the handler's own confirm()) before we claim "already done" —
+        // and failed outcomes are never cached, so a transient failure
+        // can't block retries for the TTL window.
+        reconfirm: async (cached) =>
+          cached?.ok === true && typeof handler.confirm === 'function'
+            ? handler.confirm(ctx, cached.output).catch(() => false)
+            : false,
+        shouldCache: (r) => r?.ok === true,
+      },
     );
 
     await prisma.agentAction.update({

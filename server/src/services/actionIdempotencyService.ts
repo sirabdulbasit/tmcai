@@ -111,12 +111,31 @@ export async function cleanupExpiredKeys(): Promise<number> {
 export async function withIdempotency<T>(
   params: IdempotencyKeyParams,
   action: () => Promise<T>,
+  opts: {
+    /** B3 (2026-07-09): a cached success is only as good as the system of
+     *  record it claims to describe. When provided, a cache hit is
+     *  re-confirmed (e.g. handler.confirm() against the stored provider
+     *  message id) before being returned; a false re-confirmation treats
+     *  the cache as a miss and re-executes. */
+    reconfirm?: (cached: T) => Promise<boolean>;
+    /** B3: which results deserve caching. Previously EVERYTHING was cached,
+     *  including {ok:false} outcomes — so a transient failure blocked all
+     *  retries for 7 days by replaying the stale failure. Return false to
+     *  leave the key unset so a retry can actually retry. */
+    shouldCache?: (result: T) => boolean;
+  } = {},
 ): Promise<T> {
   const key = generateKey(params);
 
   // Layer 1: SQL audit — if a previous successful run stored its result, return it
   const cached = await checkKey(key);
-  if (cached !== null) return cached as T;
+  if (cached !== null) {
+    if (!opts.reconfirm) return cached as T;
+    const stillHolds = await opts.reconfirm(cached as T).catch(() => false);
+    if (stillHolds) return cached as T;
+    // Side effect can no longer be verified — fall through and re-execute.
+    console.warn(`[idempotency] cached result failed re-confirmation — re-executing key ${key.slice(0, 16)}…`);
+  }
 
   // Layer 2: Redis distributed lock — prevents two processes from both passing
   // the SQL check simultaneously and double-executing.
@@ -142,6 +161,12 @@ export async function withIdempotency<T>(
 
   try {
     const result = await action();
+    if (opts.shouldCache && !opts.shouldCache(result)) {
+      // Uncacheable outcome (typically ok:false) — release the lock so a
+      // retry can proceed, and store nothing.
+      try { await redis.del(redisKey); } catch { /* ignore */ }
+      return result;
+    }
     await storeKey(key, result, params.userId, params.clientNumber, params.actionType);
     // Upgrade the Redis value from "inflight" to the result so next-layer callers can skip
     try {
