@@ -277,12 +277,20 @@ export async function runForUser(
     void (async () => {
       try {
         const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        // Fix 2 (2026-07-09) — pass the LLM `narrative` in the payload
+        // so the handler can render it as the user-facing question
+        // body. Previously only `summary` (buildSummary()'s hardcoded
+        // template) reached the handler while the real LLM prose lived
+        // here unused, forcing the handler to append hardcoded English
+        // — a rule-4 violation on a user-visible surface. narrative
+        // may be null when config.narrate is off or narration failed;
+        // the handler falls back to a fully-bracketed system digest.
         const r = await executeViaRegistry({
           actionType: 'notify_user_risk',
           clientNumber, userId,
           initiator: 'brain',
           executedByAgent: 'risk_radar',
-          payload: { docId, summary, highSeverityCount },
+          payload: { docId, summary, narrative, highSeverityCount },
           disambiguator: docId,
         });
         log.info('risk outreach dispatched', { docId, ok: r.ok, status: (r.output as any)?.status ?? null });

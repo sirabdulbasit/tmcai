@@ -38,7 +38,6 @@ describe('NotifyUserRiskHandler', () => {
       userId: 2, clientNumber: 'tmc',
       criticality: 'high',
       dedupKey: 'risk-outreach:risk:tmc:2:2026-07-08',
-      question: expect.stringContaining('FACL payment overdue'),
     }));
     expect((out.output as any).dedupKey).toBe('risk-outreach:risk:tmc:2:2026-07-08');
   });
@@ -63,5 +62,61 @@ describe('NotifyUserRiskHandler', () => {
     const h = new NotifyUserRiskHandler();
     const r = await h.validate({ ...ctx, payload: {} } as any);
     expect(r.valid).toBe(false);
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Fix 2 (2026-07-09) — hardcoded prose on a user-facing surface.
+  //
+  // The prior renderQuestion appended "Reply here or open the Day Brief
+  // for details." — hardcoded English pretending to be Brain, violating
+  // NEXEO_SPEC.md rule 4 (every Brain-surface reply is LLM-generated OR
+  // a bracketed system marker). The handler comment ALSO lied — it
+  // claimed the summary was "LLM-narrated upstream", but riskRadar
+  // built the summary via buildSummary()'s hardcoded template while
+  // the real LLM narrative was available (config.narrate) and unused.
+  //
+  // Fix: pass the LLM narrative in the dispatch payload; the handler
+  // prefers it as the question body. When absent, emit a fully bracketed
+  // system digest — no unbracketed trailing prose ever.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('renders the LLM narrative as the question body when present in payload', async () => {
+    const h = new NotifyUserRiskHandler();
+    const narrative = 'Sir, two things need eyes today — Fahim missed the FACL payment window and Haseeb has been quiet for nine days.';
+    const withNarrative = { ...ctx, payload: { ...ctx.payload, narrative } };
+    await h.execute(withNarrative as any);
+    const question = String(enqueueMock.mock.calls[0]?.[0]?.question ?? '');
+    expect(question).toContain(narrative);
+    // No hardcoded English trailer (rule 4).
+    expect(question).not.toMatch(/Reply here or open the Day Brief for details\./);
+  });
+
+  it('falls back to a fully-bracketed system digest when no narrative — no unbracketed prose', async () => {
+    const h = new NotifyUserRiskHandler();
+    const withoutNarrative = { ...ctx, payload: { ...ctx.payload, narrative: null } };
+    await h.execute(withoutNarrative as any);
+    const question = String(enqueueMock.mock.calls[0]?.[0]?.question ?? '');
+    // Fully bracketed prefix — the marker rule.
+    expect(question).toMatch(/^\[risk radar\]/);
+    // Summary and Day Brief pointer stay inside brackets, never free prose.
+    expect(question).toContain(ctx.payload.summary);
+    expect(question).toContain('[details on Day Brief]');
+    // Zero unbracketed sentences following the bracketed portion.
+    expect(question).not.toMatch(/Reply here or open the Day Brief for details\./);
+    expect(question).not.toMatch(/[.!?]\s+[A-Z][^[]+[.!?]\s*$/); // any trailing free sentence
+  });
+
+  it('bracketed fallback also fires when narrative is undefined (missing key)', async () => {
+    const h = new NotifyUserRiskHandler();
+    await h.execute(ctx as any); // ctx.payload has no `narrative` field
+    const question = String(enqueueMock.mock.calls[0]?.[0]?.question ?? '');
+    expect(question).toMatch(/^\[risk radar\]/);
+  });
+
+  it('bracketed fallback also fires when narrative is an empty string (trim guard)', async () => {
+    const h = new NotifyUserRiskHandler();
+    await h.execute({ ...ctx, payload: { ...ctx.payload, narrative: '   ' } } as any);
+    const question = String(enqueueMock.mock.calls[0]?.[0]?.question ?? '');
+    expect(question).toMatch(/^\[risk radar\]/);
   });
 });

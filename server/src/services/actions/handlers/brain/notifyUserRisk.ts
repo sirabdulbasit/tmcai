@@ -26,6 +26,11 @@ export class NotifyUserRiskHandler extends ActionHandler {
       properties: {
         docId: { type: 'string' },
         summary: { type: 'string' },
+        // Fix 2: LLM-generated narrative from riskRadarService when
+        // config.narrate is on and narration succeeded. Optional
+        // because narration may be disabled or fail; the handler
+        // falls back to a fully-bracketed system digest.
+        narrative: { type: ['string', 'null'] },
         highSeverityCount: { type: 'number' },
       },
     };
@@ -43,9 +48,22 @@ export class NotifyUserRiskHandler extends ActionHandler {
     return { wouldSucceed: v.valid, preview: { question: this.renderQuestion(ctx) }, warnings: v.errors };
   }
   private renderQuestion(ctx: HandlerContext): string {
-    // Bracketed framing keeps this an honest radar digest; the summary text
-    // itself is LLM-narrated upstream (riskRadarService), not hardcoded prose.
-    return `⚠️ Risk radar: ${String(ctx.payload.summary)}\n\nReply here or open the Day Brief for details.`;
+    // Fix 2 (2026-07-09) — rule-4 compliance for a user-facing surface.
+    //
+    // Prior version appended hardcoded English trailer ("Reply here or
+    // open the Day Brief for details."), and the comment falsely
+    // claimed the summary was "LLM-narrated upstream". In reality
+    // riskRadar was passing the hardcoded buildSummary() template
+    // while the real LLM narrative sat unused on the caller side.
+    //
+    // Now: prefer the real LLM narrative from the payload; when
+    // narration is disabled or failed (narrative null/empty) emit a
+    // fully bracketed system digest — every character between [ and ]
+    // reads as machine status, never as Brain prose.
+    const narrative = typeof ctx.payload.narrative === 'string' ? ctx.payload.narrative.trim() : '';
+    const summary = String(ctx.payload.summary);
+    if (narrative) return narrative;
+    return `[risk radar] ${summary} [details on Day Brief]`;
   }
   async execute(ctx: HandlerContext): Promise<ExecutionOutput> {
     const dedupKey = `risk-outreach:${String(ctx.payload.docId)}`;
