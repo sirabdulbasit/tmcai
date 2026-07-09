@@ -2048,7 +2048,13 @@ export async function compose(
   const memoriesBlock = await (async () => {
     try {
       const { renderMemoriesBlock } = await import('./userMemoryService');
-      return await renderMemoriesBlock(userId);
+      const inferred = await renderMemoriesBlock(userId);
+      // C1 (2026-07-08): governed memories were approve-only dead storage —
+      // no compose path ever read them. User-approved memories now ride in
+      // the same block slot as inferred ones.
+      const { renderGovernedMemoriesBlock } = await import('../learning/governedMemoriesBlock');
+      const governed = await renderGovernedMemoriesBlock(clientNumber, userId);
+      return [inferred, governed].filter(Boolean).join('\n\n');
     } catch { return ''; }
   })();
 
