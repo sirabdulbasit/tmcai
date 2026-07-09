@@ -24,6 +24,11 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
 | `pending-prompt-eats-command` | promptReplyHandler swallows a new-chat imperative as an "answer" to a stale prompt (returns `[noted]`) |
 | `two-schema-oauth-mismatch` | `users.integration_*` legacy fields disagree with `user_connectors.config` — one says stale/wrong, the other says fresh |
+| `trigger-instruction-as-task` | "when X happens, do Y" becomes a slot-gated open item (asks priority/dueDate) instead of an event-triggered rule; never fires when X happens |
+| `trigger-met-no-follow-through` | Brain narrates the trigger event (e.g. in a brief) without connecting it to its own pending commitment |
+| `ownership-misattribution` | Brain's own follow-through tasks presented as the USER's open items |
+| `time-of-day-drift` | Greeting/wording contradicts actual local time ("Morning, Sir" at 5pm) |
+| `feedback-misread-as-action` | User feedback/correction classified as an action request → `[no action dispatched]` → canned dispatch-error reply |
 
 ---
 
@@ -183,3 +188,27 @@ When the user pastes a new chat:
 - `two-schema-oauth-mismatch`: `users.integration_token_expiry` = 2026-07-06 (2d ago, stale); `user_connectors` for the same user says fresh (last sync 2h ago). Two token stores exist and drift; `getAuthenticatedClient` reads UserConnector-first (correct), but the stale `users.*` row misleads any diagnostic query that hits the legacy fields.
 - Gmail connector's actual sender account is `basit.ahmed@tmcltd.com` — this IS correct (TMC's Google Workspace runs on .com; logins are .ai). Matches the Asad email correction from chat 2. So `wrong-from-account` is a **false positive** flagged in chat 2 — updating that entry.
 
+---
+
+## Chat 4 — 2026-07-09 4:51–5:12pm (Asad meeting + conditional WhatsApp follow-up)
+
+**What worked (for the record):** which-Asad disambiguation, calendar conflict warning, preview→confirm chains for both meeting and email, honest "no phone number" instead of fabrication, provenance (email from Basit only after explicit user chain), messageId receipt.
+
+**Symptoms:**
+- `trigger-instruction-as-task`: "send him whatsapp when you receive contact number from him" → `add_open_item` parked as DRAFT demanding priority + dueDate from the user. A conditional trigger directive was treated as a task with missing slots.
+- `trigger-met-no-follow-through`: 9 minutes later the Day Brief itself reported "a reply from Asad about his contact number" — the trigger condition met and NARRATED — while the parked item sat untouched. Brain observed its own trigger without acting.
+- `ownership-misattribution`: the brief listed the WhatsApp follow-up under "your open items"; Basit corrected: "Whatsapp to Asad is your open item not mine… you should take care of your things."
+- `time-of-day-drift`: "Morning, Sir" at 5:05pm.
+- `feedback-misread-as-action`: Basit's 5:12 ownership correction → reasoning treated it as an action turn → `[no action dispatched]` → sanitizer's canned "Sorry, something didn't dispatch on my end… name the recipient explicitly?" Non-sequitur that ignored the feedback entirely.
+
+**Root causes (fresh diagnosis):**
+1. Trigger directives have no home: the extractor/composer menu offers add_open_item / standing rules, but nothing creates an EVENT-TRIGGERED rule. The machinery exists — `user_action_rules` + `autonomousExecutor.executeIfMatched` fires per inbound feed event — but no bridge from a "when X, do Y" instruction to a rule row. The open-item slot gate (priority/dueDate) then compounds it by interrogating the user about Brain's own follow-through task.
+2. No inbound→commitment linkage: delegationTracker only watches DELEGATED items; a DRAFT open item with a trigger phrase is invisible to every inbound processor. Asad's reply was ingested, classified, even surfaced in the brief — nothing joined it to the commitment.
+3. `brainPersonaService.ts:203` few-shot example opens "Morning, ${addressAs}" and the composer injects today's DATE (`getUserLocalDate`) but not the current TIME — the model has no clock and parrots the example greeting.
+4. `answerSanitizer.ts:35` rewrites `[no action dispatched…]` into a canned English apology — a hardcoded Brain reply layered over an honest marker (rule-4 tension), and upstream, reasoning classified an ownership complaint as an action request instead of feedback (Step-1.4 negativeFeedbackHandler only catches demote-style signals).
+
+**Fix commits:** none yet — logged here first. Pending PR #2 partially helps: C4 (which-Asad won't re-ask), A8 (standing_instruction persistence would at least keep the directive in every prompt). It does NOT create event-triggered firing, fix the greeting clock, or fix feedback misclassification.
+
+**Structural recommendation:** instruction extractor gains a `trigger_rule` intent ("when <event condition>, <action>") that writes a `user_action_rules` row (autonomousExecutor already fires those on ingest, and per the autonomy definition rule-fires are user-authorized). Ownership: items whose executor is Brain get `ownerType: 'brain'` and never appear as user open items in briefs.
+
+**Verification status:** unverified (fixes not yet shipped)
