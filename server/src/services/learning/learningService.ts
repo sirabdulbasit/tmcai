@@ -148,6 +148,27 @@ export async function recordFeedback(input: RecordFeedbackInput): Promise<{ id: 
     },
     select: { id: true },
   });
+
+  // C3 (2026-07-08): correctedOutput was written and never read. A user
+  // rewriting Brain's output is the strongest correction signal there is —
+  // distill it into a governed-memory PROPOSAL (pending_approval; injected
+  // on approval via the C1 read path). Fire-and-forget: learning never
+  // blocks or breaks the feedback write.
+  if (input.correctedOutput?.trim()) {
+    void (async () => {
+      try {
+        const { distillCorrection } = await import('./correctionDistiller');
+        await distillCorrection({
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          feedbackId: row.id,
+          correctedOutput: input.correctedOutput!,
+          feedbackComment: input.feedbackComment ?? null,
+          interactionId: safeInteractionId,
+        });
+      } catch { /* best effort */ }
+    })();
+  }
   return row;
 }
 
