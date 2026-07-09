@@ -34,13 +34,46 @@ export class RescheduleEventHandler extends ActionHandler {
     return { wouldSucceed: v.valid, preview: { eventId: ctx.payload.eventId, newStartTime: ctx.payload.newStartTime, newEndTime: ctx.payload.newEndTime }, warnings: v.errors };
   }
   async execute(ctx: HandlerContext): Promise<ExecutionOutput> {
-    return { ok: true, output: { eventId: ctx.payload.eventId, previousStart: null, newStart: ctx.payload.newStartTime, newEnd: ctx.payload.newEndTime } };
+    // Was a STUB (fabricated receipt, moved nothing) until 2026-07-09 —
+    // exposed when B2's confirm() started failing it (F1 gap-fill, same
+    // class as cancel_event). Real provider patch now. Payload times arrive
+    // as ISO strings WITH offset (registry payloads are normalized upstream;
+    // contrast instructionDispatcher's reschedule_meeting case, which must
+    // normalize raw voice-parsed times itself) — so we pass them through
+    // untouched rather than re-normalizing and double-shifting the event.
+    const eventId = String(ctx.payload.eventId);
+    const newStart = String(ctx.payload.newStartTime);
+    const newEnd = String(ctx.payload.newEndTime);
+    try {
+      // Best-effort capture of the CURRENT start before we overwrite it —
+      // undo() below is useless without it (the stub always returned null,
+      // forcing undo to give up). A failed read must not block the move, so
+      // any error here degrades to previousStart:null. Scan now → +180 days:
+      // the payload carries no event time and the adapter has no
+      // single-event get.
+      let previousStart: string | null = null;
+      try {
+        const now = new Date();
+        const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
+        const pre = await getEvents(ctx.userId, now, horizon, 250);
+        if (!pre.error) {
+          const existing = pre.events.find(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
+          if (existing) previousStart = existing.start;
+        }
+      } catch { /* read-before-write is best-effort only */ }
+
+      const { updateEvent } = await import('../../../calendarService');
+      const r = await updateEvent(ctx.userId, eventId, { startTime: newStart, endTime: newEnd });
+      if (r.error || !r.event) return { ok: false, error: r.error ?? 'calendar update returned no event' };
+      return { ok: true, output: { eventId, previousStart, newStart, newEnd } };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
   }
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back: the event must exist at the NEW time window with a
-    // non-cancelled status. NOTE: execute() is currently a stub (no Calendar
-    // API write), so this read-back will return false until the real move
-    // lands — that is the intended fail-closed behaviour, not a bug.
+    // non-cancelled status. execute() above performs the real Calendar API
+    // patch; this verifies the move actually stuck on the provider side.
     const o = output as { eventId?: string; newStart?: string; newEnd?: string } | null | undefined;
     if (!o || typeof o.eventId !== 'string' || o.eventId.length === 0) return false;
     const eventId = o.eventId;
@@ -64,7 +97,7 @@ export class RescheduleEventHandler extends ActionHandler {
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { eventId: string; previousStart: string | null };
     if (!o.previousStart) {
-      return { handler: 'reschedule_event', payload: { eventId: o.eventId }, note: 'cannot revert — previous start not captured by stub execute' };
+      return { handler: 'reschedule_event', payload: { eventId: o.eventId }, note: 'cannot revert — previous start could not be read before the move' };
     }
     return { handler: 'reschedule_event', payload: { eventId: o.eventId, newStartTime: o.previousStart } };
   }
