@@ -11,8 +11,8 @@
 
 | Connector | Read/Ingest | Draft | Send/Write | Modify | Delete | Schedule |
 |-----------|-------------|-------|-----------|--------|--------|----------|
-| Gmail | REG | — | REG (send); STUB (reply, forward) | — | — | — |
-| Google Calendar | REG | — | REG (create, cancel¹); STUB (propose_times) | STUB (reschedule, add_attendee) | REG¹ | — |
+| Gmail | REG | — | REG (send, reply², forward²) | — | — | — |
+| Google Calendar | REG | — | REG (create, cancel¹, propose_times²) | REG² (reschedule, add_attendee) | REG¹ | — |
 | Google Tasks | DIRECT | — | STUB (all 4 task actions) | STUB | STUB | — |
 | Google Chat | REG | — | REG | — | — | — |
 | Slack | REG | — | REG | — | — | — |
@@ -25,13 +25,14 @@
 | Notion | DIRECT | — | REG (thought sync) | DIRECT (upsert) | — | — |
 | Odoo CRM | REG | — | REG (lead, opportunity) | REG | — | — |
 
+² Filled 2026-07-09 (F1 gap-fill): `send_email_reply` (RFC-threaded via feed_events + getEmailHeadersForReply), `forward_email` (full-original quote, per-recipient), `reschedule_event` (real updateEvent + previousStart capture for undo), `add_attendee` (read-modify-write, idempotent), `propose_times` (real free/busy from getEvents). All with provider read-back confirms.
 ¹ `cancel_event` was a stub in the original audit; its execute() was made real (calendarService.deleteEvent + absence-verifying confirm) on 2026-07-08 when B5 routed voice cancel_meeting through it.
 
 ## Ranked gaps (by EA-product centrality)
 
 1. **Google Tasks closure (CRITICAL)** — all 4 task actions are stubs; real `googleTasksService.createTask/markTaskDone` exist unregistered. Task delegation is the #1 assistant workflow. *(follow-up task chip filed)*
-2. **Email reply & forward (HIGH)** — `send_email_reply`, `forward_email` are stubs; no Gmail write. Brain can't conclude email threads.
-3. **Calendar reschedule & add-attendee (HIGH)** — stubs; real `calendarService.updateEvent` exists uncalled. Blocks meeting coordination.
+2. ~~Email reply & forward~~ — **FILLED 2026-07-09** (see ² above).
+3. ~~Calendar reschedule & add-attendee & propose-times~~ — **FILLED 2026-07-09** (see ² above).
 4. **Teams outbound (MEDIUM)** — read-only channel; no `send_teams_message` handler.
 5. **IMAP/SMTP send registration (MEDIUM)** — `imapSmtpService.sendEmail` real but unregistered; non-Gmail tenants can't send brain-composed mail via the registry.
 6. **Drive/OneDrive file ops (MEDIUM)** — upload/delete exist as services, unreachable from the action menu.

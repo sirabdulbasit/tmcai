@@ -456,23 +456,28 @@ export async function dispatchInstruction(args: {
           // a new time too. Return helpful error.
           return { ok: false, message: `Reschedule failed: please tell me the new time as well as the duration change.` };
         }
-        // B5 EXCEPTION (2026-07-08): reschedule stays a direct
-        // calendarService call for now — the registry's reschedule_event
-        // handler has a STUB execute() (fabricates receipts, writes
-        // nothing; exposed by the B2 confirm() hardening), so routing here
-        // would break a working feature. Move to executeViaRegistry when
-        // the real handler lands (tracked with the task-handler stubs, F1).
-        const { updateEvent } = await import('../calendarService');
-        const r = await updateEvent(userId, eventId, patch);
-        if (r.error || !r.event) {
-          return { ok: false, message: `Reschedule failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        // B5 exception LIFTED (2026-07-09): reschedule_event's execute()
+        // is real now (F1 gap-fill), so voice reschedule routes through the
+        // registry executor like schedule/cancel — AgentAction audit row,
+        // provider read-back confirm(), undo with previousStart.
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        const r = await executeViaRegistry({
+          actionType: 'reschedule_event',
+          clientNumber,
+          userId,
+          executedByAgent: 'voice_instruction',
+          payload: { eventId, newStartTime: patch.startTime!, newEndTime: patch.endTime! },
+          disambiguator: `reschedule:${eventId}:${patch.startTime}`,
+        });
+        if (!r.ok) {
+          return { ok: false, message: `Reschedule failed: ${r.error ?? 'move could not be confirmed on Google Calendar'}` };
         }
         const titleBit = titleHint ? ` "${titleHint}"` : '';
         const reasonBit = reason ? ` (${reason})` : '';
         return {
           ok: true,
-          artifactId: r.event.id,
-          message: `Rescheduled meeting${titleBit} to ${r.event.start}.${reasonBit} Attendees notified.`,
+          artifactId: eventId,
+          message: `Rescheduled meeting${titleBit} to ${patch.startTime}.${reasonBit} Attendees notified.`,
         };
       } catch (err: any) {
         return { ok: false, message: `Reschedule failed: ${err.message}` };

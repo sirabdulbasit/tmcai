@@ -114,6 +114,27 @@ describe('B5 — dispatcher routes human-facing actions through the registry', (
     expect(r.ok).toBe(true);
   });
 
+  it('reschedule_meeting: moves via the reschedule_event handler (B5 exception lifted)', async () => {
+    const r = await dispatchInstruction({
+      ...base,
+      instruction: {
+        intent: 'reschedule_meeting', confidence: 0.9,
+        params: { eventId: 'evt_1', newWhenIso: '2026-07-10T15:00', newDurationMin: 45 } as any,
+        summary: 'Move it',
+      },
+    });
+    expect(executeViaRegistryMock).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: 'reschedule_event',
+      executedByAgent: 'voice_instruction',
+      payload: expect.objectContaining({
+        eventId: 'evt_1',
+        newStartTime: expect.stringContaining('2026-07-10'),
+        newEndTime: expect.any(String),
+      }),
+    }));
+    expect(r.ok).toBe(true);
+  });
+
   it('registry failure surfaces as ok:false — never a fake success message', async () => {
     executeViaRegistryMock.mockResolvedValue({
       ok: false, actionId: 92, handlerName: 'x',
