@@ -26,6 +26,14 @@ export interface RegistryExecutionInput {
    *  user's per-channel threshold, the action is held as a DRAFT for MD review
    *  instead of being executed. Absent = treat as 1.0 (full confidence). */
   confidence?: number;
+  /** D1 (2026-07-08): who initiated this action. 'user' = a user-initiated
+   *  chain (clicked approve, gave a voice/chat instruction, configured a
+   *  standing rule) — never gated. 'brain' = Brain acting on its own
+   *  judgment (proactive outreach, self-directed actions) — gated by the
+   *  user's automationLevel in the executor. Defaults to 'user' so existing
+   *  user-driven call sites keep working; every NEW brain-discretionary
+   *  caller MUST pass 'brain'. */
+  initiator?: 'user' | 'brain';
 }
 
 export interface RegistryExecutionResult {
@@ -120,6 +128,47 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
   }
 
   const riskTier = await handler.riskLevel(ctx);
+
+  // D1 (2026-07-08): automation-level gate — deterministic, in the executor,
+  // BEFORE any dispatch. Brain-initiated actions are held per the user's
+  // automationLevel (observe_only → proposed; drafts_only → draft;
+  // supervised → pending_approval); user-initiated chains pass through.
+  // This is structural enforcement, not a prompt instruction.
+  if ((input.initiator ?? 'user') === 'brain') {
+    const { resolveAutonomyGate } = await import('./autonomyGate');
+    const { getAutomationLevel } = await import('../brainConfigService');
+    const level = await getAutomationLevel(input.userId);
+    const decision = resolveAutonomyGate('brain', level);
+    if (decision !== 'execute') {
+      const held = await prisma.agentAction.create({
+        data: {
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          actionType: input.actionType,
+          status: decision, // proposed | draft | pending_approval
+          input: input.payload as any,
+          output: {
+            heldBy: 'automation_level',
+            level,
+            reason: `Brain-initiated action held: your automation level is "${level}"`,
+          } as any,
+          riskTier,
+          dependencyGraphId: graphId,
+          executedByAgent: input.executedByAgent,
+          requiresApproval: decision !== 'proposed',
+        } as any,
+        select: { id: true },
+      });
+      return {
+        ok: true,
+        actionId: held.id,
+        handlerName: input.actionType,
+        output: { status: decision, heldBy: 'automation_level', level },
+        dependencyGraphId: graphId,
+        traceId,
+      } as any;
+    }
+  }
 
   // Confidence-gated draft mode: if the Brain provided a confidence score and
   // it falls below the user's per-channel threshold, hold as DRAFT for MD
