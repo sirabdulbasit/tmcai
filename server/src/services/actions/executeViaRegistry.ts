@@ -36,6 +36,32 @@ export interface RegistryExecutionInput {
   initiator?: 'user' | 'brain';
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Fix 1 (2026-07-09) — payload seed-vector strip.
+//
+// The B4 reconciler resolves stuck 'executing' AgentAction rows by
+// looking up `input._idempotencyKey` in action_idempotency_logs and
+// copying the recovered outcome back onto the row. The executor stamps
+// that key on the row itself, but the stamping update is wrapped in
+// try/catch (non-fatal by design). If the stamping fails AFTER the
+// initial row create, an attacker-supplied `_idempotencyKey` inside
+// the payload survives and points the reconciler at a foreign log
+// row — a cross-tenant result-spoofing vector.
+//
+// The defence is boring: never let a caller seed the field. This
+// helper produces a shallow copy of the payload with any
+// `_idempotencyKey` removed, no matter its value (null, number,
+// string) — checking `!!key` alone leaves `{ _idempotencyKey: null }`
+// as a bypass. Callers use the returned value for any DB write;
+// the caller's original payload object is left untouched (defensive
+// against downstream code still holding a reference to it).
+// ─────────────────────────────────────────────────────────────────
+export function sanitizePayloadInput(payload: Record<string, unknown>): Record<string, unknown> {
+  const clean = { ...(payload ?? {}) } as Record<string, unknown>;
+  if ('_idempotencyKey' in clean) delete clean._idempotencyKey;
+  return clean;
+}
+
 export interface RegistryExecutionResult {
   ok: boolean;
   actionId: number;
@@ -77,7 +103,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
           userId: input.userId,
           actionType: input.actionType,
           status: 'blocked_by_kill_switch',
-          input: input.payload as any,
+          input: sanitizePayloadInput(input.payload) as any,
           output: {
             reason: 'Kill switch is engaged for this tenant. Action withheld; release the kill switch to retry.',
             actionType: input.actionType,
@@ -146,7 +172,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
           userId: input.userId,
           actionType: input.actionType,
           status: decision, // proposed | draft | pending_approval
-          input: input.payload as any,
+          input: sanitizePayloadInput(input.payload) as any,
           output: {
             heldBy: 'automation_level',
             level,
@@ -183,7 +209,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
           userId: input.userId,
           actionType: input.actionType,
           status: 'draft',
-          input: input.payload as any,
+          input: sanitizePayloadInput(input.payload) as any,
           output: {
             confidence: input.confidence,
             channel,
@@ -231,13 +257,17 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
       data: { status: 'executing', dependencyGraphId: graphId, executedByAgent: input.executedByAgent },
     });
   } else {
+    // Fix 1: strip any caller-supplied `_idempotencyKey` from the
+    // payload before persist. Only the executor's stamping code below
+    // may ever write that field; a caller-seeded value would let the
+    // B4 reconciler resolve this row via a foreign tenant's log entry.
     actionRow = await prisma.agentAction.create({
       data: {
         clientNumber: input.clientNumber,
         userId: input.userId,
         actionType: input.actionType,
         status: 'executing',
-        input: input.payload as any,
+        input: sanitizePayloadInput(input.payload) as any,
         riskTier,
         dependencyGraphId: graphId,
         executedByAgent: input.executedByAgent,
@@ -281,9 +311,12 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
   };
   try {
     const { generateKey } = await import('../actionIdempotencyService');
+    // Fix 1: sanitize BEFORE spreading — otherwise the stamp update
+    // would re-introduce any caller-supplied `_idempotencyKey` that the
+    // initial persist above stripped out.
     await prisma.agentAction.update({
       where: { id: actionRow.id },
-      data: { input: { ...(input.payload as any), _idempotencyKey: generateKey(idemParams) } as any },
+      data: { input: { ...sanitizePayloadInput(input.payload), _idempotencyKey: generateKey(idemParams) } as any },
     });
   } catch (err: any) {
     console.warn(`[executeViaRegistry] could not stamp idempotency key on row ${actionRow.id}: ${err.message}`);

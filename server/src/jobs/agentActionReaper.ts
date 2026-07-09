@@ -60,20 +60,66 @@ export interface ReconcileResult {
 export async function reconcileStuckExecuting(now: Date = new Date()): Promise<ReconcileResult> {
   const result: ReconcileResult = { scanned: 0, recovered: 0, failed: 0, staled: 0 };
   const cutoff = new Date(now.getTime() - DISPATCH_CONFIRM_TIMEOUT_MS);
+  // Fix 1 (2026-07-09) — SECURITY: cross-tenant result spoofing.
+  //
+  // The `_idempotencyKey` we join on lives in the row's input JSON,
+  // which used to be seed-plantable by the caller (the executor's
+  // stamping update was try/catch non-fatal). A stale/crafted key can
+  // point at ANOTHER tenant's log row. Even after we shut the seed
+  // vector at the executor (executeViaRegistry.sanitizePayloadInput),
+  // the reconciler MUST enforce tenant-and-user match at the join —
+  // pre-fix rows and any future misuse must still fail closed here.
+  //
+  // Select clientNumber + userId so we can compare against the log
+  // entry's owner; mismatch → 'stale' with a mismatch-naming error
+  // (surfaces the attempt to Ops without silently swapping tenants).
   const stuck = await prisma.agentAction.findMany({
     where: { status: 'executing', updatedAt: { lt: cutoff } },
-    select: { id: true, input: true },
+    select: { id: true, input: true, clientNumber: true, userId: true },
     take: 100,
-  }).catch(() => [] as Array<{ id: number; input: unknown }>);
+  }).catch(() => [] as Array<{ id: number; input: unknown; clientNumber: string; userId: number }>);
 
   for (const row of stuck) {
     result.scanned += 1;
     try {
       const key = (row.input as Record<string, unknown> | null)?.['_idempotencyKey'];
-      const log = typeof key === 'string' && key
+      const logRow = typeof key === 'string' && key
         ? await prisma.actionIdempotencyLog.findUnique({ where: { idempotencyKey: key } }).catch(() => null)
         : null;
-      const logged = (log?.result ?? null) as { ok?: boolean; output?: unknown; error?: string } | null;
+
+      // Tenant-and-user match required before trusting the log's result.
+      // A key that resolves to a log entry owned by a DIFFERENT tenant
+      // (or a different user in the same tenant) is treated as if the
+      // log entry didn't exist for this row — outcome unknown, stale.
+      const tenantMatches = logRow != null
+        && (logRow as any).clientNumber === row.clientNumber
+        && (logRow as any).userId === row.userId;
+
+      if (logRow != null && !tenantMatches) {
+        const wrongCn = (logRow as any).clientNumber;
+        const wrongUid = (logRow as any).userId;
+        log.warn('reconcile SECURITY: cross-tenant idempotency-log mismatch — spoof rejected', {
+          rowId: row.id,
+          rowClient: row.clientNumber,
+          rowUser: row.userId,
+          logClient: wrongCn,
+          logUser: wrongUid,
+          idempotencyKey: typeof key === 'string' ? key.slice(0, 12) + '…' : null,
+        });
+        await prisma.agentAction.update({
+          where: { id: row.id },
+          data: {
+            status: 'stale',
+            error: `idempotency-log tenant mismatch (row=${row.clientNumber}/u${row.userId}, log=${wrongCn}/u${wrongUid}) — spoof rejected, verify manually`,
+          },
+        });
+        result.staled += 1;
+        continue;
+      }
+
+      const logged = tenantMatches
+        ? ((logRow as any)?.result ?? null) as { ok?: boolean; output?: unknown; error?: string } | null
+        : null;
 
       if (logged?.ok === true) {
         await prisma.agentAction.update({
