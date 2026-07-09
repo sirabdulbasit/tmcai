@@ -493,9 +493,11 @@ const server = app.listen(env.port, async () => {
   // (outcome unknown) — they must NEVER silently read as done.
   setInterval(async () => {
     try {
-      const { reapStaleAgentActions } = await import('./jobs/agentActionReaper');
+      const { reapStaleAgentActions, reconcileStuckExecuting } = await import('./jobs/agentActionReaper');
       const r = await reapStaleAgentActions();
       if (r.reaped > 0) console.log(`[agentActionReaper] reaped=${r.reaped} dispatched→stale`);
+      const rec = await reconcileStuckExecuting();
+      if (rec.scanned > 0) console.log(`[agentActionReaper] reconciled executing: recovered=${rec.recovered} failed=${rec.failed} staled=${rec.staled}`);
     } catch (err: any) {
       console.warn('[agentActionReaper] error:', err.message);
     }

@@ -265,15 +265,33 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
 
   const idempotencyType: IdempotencyActionType = coerceIdempotencyType(input.actionType);
 
+  // B4 (2026-07-09): stamp the idempotency key into the row's input JSON so
+  // the reconciler can join a stuck-'executing' row back to the confirmed
+  // outcome in action_idempotency_log (the log write happens BEFORE the
+  // status write, so it survives a crash between provider ack and DB
+  // update). Stored in JSON, not the unique idempotencyKey column — a
+  // legitimate retry creates a second row with the same key and the unique
+  // constraint would reject it.
+  const idemParams = {
+    actionType: idempotencyType,
+    clientNumber: input.clientNumber,
+    userId: input.userId,
+    referenceId: input.openItemId ?? `action:${actionRow.id}`,
+    disambiguator: input.disambiguator ?? input.actionType,
+  };
+  try {
+    const { generateKey } = await import('../actionIdempotencyService');
+    await prisma.agentAction.update({
+      where: { id: actionRow.id },
+      data: { input: { ...(input.payload as any), _idempotencyKey: generateKey(idemParams) } as any },
+    });
+  } catch (err: any) {
+    console.warn(`[executeViaRegistry] could not stamp idempotency key on row ${actionRow.id}: ${err.message}`);
+  }
+
   try {
     const result = await withIdempotency(
-      {
-        actionType: idempotencyType,
-        clientNumber: input.clientNumber,
-        userId: input.userId,
-        referenceId: input.openItemId ?? `action:${actionRow.id}`,
-        disambiguator: input.disambiguator ?? input.actionType,
-      },
+      idemParams,
       async (): Promise<ExecutionOutput> => {
         await handler.prepare(ctx);
         const out = await handler.execute(ctx);
@@ -302,15 +320,23 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
       },
     );
 
-    await prisma.agentAction.update({
-      where: { id: actionRow.id },
-      data: {
-        status: result.ok ? 'done' : 'error',
-        output: (result.output ?? null) as any,
-        error: result.error,
-        undoStatus: result.ok ? 'undoable' : 'none',
-      },
-    });
+    // B4: this write is non-fatal. The confirmed outcome is already durable
+    // in action_idempotency_log; if this update fails the reconciler
+    // (reconcileStuckExecuting) resolves the row from the log — throwing
+    // here would misreport a confirmed action as failed to the caller.
+    try {
+      await prisma.agentAction.update({
+        where: { id: actionRow.id },
+        data: {
+          status: result.ok ? 'done' : 'error',
+          output: (result.output ?? null) as any,
+          error: result.error,
+          undoStatus: result.ok ? 'undoable' : 'none',
+        },
+      });
+    } catch (err: any) {
+      console.error(`[executeViaRegistry] status write failed for action ${actionRow.id} — reconciler will recover from idempotency log: ${err.message}`);
+    }
 
     // L3.4 — publish outcome on action-executed-events for Brain observability
     // and Reflection's training feed. Best-effort: failure to publish does not
