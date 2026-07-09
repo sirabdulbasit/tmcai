@@ -261,8 +261,15 @@ export async function composeChaseEmail(input: ComposeInput): Promise<ComposeOut
   const samples = await fetchSentToneSamples(input.userId, input.recipientEmail, 8);
   const userPrompt = buildComposeUserPrompt(input, samples);
 
+  // A0-email (2026-07-09): chase emails write in the USER's voice — they
+  // must know what Brain knows (standing instructions, learned prefs,
+  // governed memories) like every other composer. withUserPrompts is the
+  // shared chokepoint; tone samples above stay email-channel-only.
+  const { withUserPrompts } = await import('../knowledge/userPromptService');
+  const system = await withUserPrompts(COMPOSE_SYSTEM, input.userId, 'delegation');
+
   try {
-    const r = await callLLM(COMPOSE_SYSTEM, userPrompt, {
+    const r = await callLLM(system, userPrompt, {
       maxTokens: 700,
       providers: ['claude', 'gemini', 'gemini-flash'],
       userId: input.userId,
@@ -292,7 +299,7 @@ export async function composeChaseEmail(input: ComposeInput): Promise<ComposeOut
       log.info('compose hit forbidden phrase, retrying', { offender, itemTitle: input.itemTitle });
       try {
         const retry = await callLLM(
-          COMPOSE_SYSTEM,
+          system, // same brain-voice-carrying prompt as the first attempt
           userPrompt + `\n\nYour previous reply used the forbidden phrase "${offender}". Rewrite without it. JSON only.`,
           { maxTokens: 700, providers: ['claude', 'gemini', 'gemini-flash'], userId: input.userId, clientNumber: input.clientNumber, purpose: 'delegation_chase_compose_retry', timeoutMs: 20_000 },
         );

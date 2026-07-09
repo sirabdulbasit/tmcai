@@ -41,7 +41,23 @@ export async function activePromptsFor(userId: number, scope: Scope): Promise<st
 
 /** Wrap a system prompt with the user's active rules for this scope. */
 export async function withUserPrompts(basePrompt: string, userId: number, scope: Scope): Promise<string> {
-  const userRules = await activePromptsFor(userId, scope);
-  if (!userRules) return basePrompt;
-  return `${basePrompt}\n\n# User's own rules (follow these exactly; they override defaults where they conflict)\n${userRules}`;
+  // A0-email (2026-07-09): this is the chokepoint every specialized
+  // composer (forward notes, deadline inquiries, chases, WA replies,
+  // triage) already calls — so it now also carries the brain voice
+  // context: standing instructions, learned preferences, governed
+  // memories. Previously those applied in Brain chat but NOT in the
+  // emails Brain wrote in the user's voice — the two-brains fork,
+  // email edition. Tone samples stay per-channel at each call site;
+  // this adds only what Brain KNOWS, never how it sounds.
+  const [userRules, voiceContext] = await Promise.all([
+    activePromptsFor(userId, scope),
+    (async () => {
+      const { renderBrainVoiceContext } = await import('./brainVoiceContext');
+      return renderBrainVoiceContext(userId);
+    })().catch(() => ''),
+  ]);
+  let out = basePrompt;
+  if (userRules) out += `\n\n# User's own rules (follow these exactly; they override defaults where they conflict)\n${userRules}`;
+  if (voiceContext) out += `\n\n${voiceContext}`;
+  return out;
 }
