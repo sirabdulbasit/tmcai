@@ -26,7 +26,18 @@ export class CancelEventHandler extends ActionHandler {
     return { wouldSucceed: true, preview: { eventId: ctx.payload.eventId, notifyAttendees: ctx.payload.notifyAttendees !== false } };
   }
   async execute(ctx: HandlerContext): Promise<ExecutionOutput> {
-    return { ok: true, output: { eventId: ctx.payload.eventId, cancelledAt: new Date().toISOString() } };
+    // Was a STUB (fabricated receipt, deleted nothing) until 2026-07-08 —
+    // exposed when B2's confirm() started failing it and B5 routed voice
+    // cancel_meeting here. Real provider call now; confirm() below verifies
+    // the event is actually gone.
+    try {
+      const { deleteEvent } = await import('../../../calendarService');
+      const r = await deleteEvent(ctx.userId, String(ctx.payload.eventId));
+      if (!r.success) return { ok: false, error: r.error ?? 'calendar delete failed' };
+      return { ok: true, output: { eventId: ctx.payload.eventId, cancelledAt: new Date().toISOString() } };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
   }
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back where ABSENCE is the success state: scan the user's
