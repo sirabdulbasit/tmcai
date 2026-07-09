@@ -129,7 +129,10 @@ export interface ReasoningInput {
 export async function reasoningCompose(input: ReasoningInput): Promise<ReasoningResult | null> {
   // Enumerate the action types Brain can currently dispatch — these
   // come from action_definitions, the data-driven source of truth.
-  const actions = await listActiveActions().catch(() => []);
+  // E3/E5: scoped to the caller's tenant so another tenant's custom
+  // actions never appear in this Brain's capability list (system rows
+  // with clientNumber=NULL always pass the filter).
+  const actions = await listActiveActions(undefined, input.clientNumber).catch(() => []);
   const actionsBlock = renderActionsBlock(actions);
 
   const systemPromptWithDecisionContract = `${input.systemPrompt}
@@ -332,11 +335,14 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
 
 /** Validate that the reasoning step's emitted action matches the
  *  action_definitions registry. Returns array of validation errors
- *  or null on success. */
+ *  or null on success. E3/E5: pass the caller's clientNumber so an
+ *  action pinned to ANOTHER tenant validates as "unknown" here rather
+ *  than leaking its schema; omitted = legacy unscoped lookup. */
 export async function validateReasoningAction(
   action: { type: string; payload: Record<string, unknown> },
+  clientNumber?: string,
 ): Promise<string[] | null> {
-  const def = await getActionDefinition(action.type);
+  const def = await getActionDefinition(action.type, clientNumber);
   if (!def) return [`Unknown action type: ${action.type}`];
   return validateActionPayload(def, action.payload);
 }

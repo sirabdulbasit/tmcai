@@ -1635,7 +1635,7 @@ export async function compose(
           const validationErrors = await validateReasoningAction({
             type: envelope.action.type,
             payload: envelope.action as any,
-          });
+          }, clientNumber); // E3/E5 — tenant-scoped registry lookup
           if (validationErrors && validationErrors.length > 0) {
             console.warn('[compose] reasoning act failed schema validation', {
               userId, clientNumber,

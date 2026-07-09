@@ -360,20 +360,26 @@ model AuditLog {
 // Scoped to userId only — admin queries NEVER touch these tables.
 
 model PersonalDocument {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  source      String   @db.VarChar(20) // 'gdrive' | 'upload'
-  externalId  String?  @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
-  folderId    String?  @map("folder_id") @db.VarChar(255) // GDrive folder ID (null for uploads)
-  fileName    String   @map("file_name") @db.VarChar(255)
-  mimeType    String   @map("mime_type") @db.VarChar(100)
-  sizeBytes   Int?     @map("size_bytes")
-  contentHash String?  @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
-  storagePath String?  @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
-  parseStatus String   @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
-  parseError  String?  @map("parse_error") @db.Text
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  id     Int @id @default(autoincrement())
+  userId Int @map("user_id")
+
+  // E3/E5 tenant defense-in-depth (2026-07-09): personal data was only
+  // user-scoped; a leaked/wrong userId crossed tenants with nothing to
+  // stop it. Nullable — NULL rows predate the backfill and remain
+  // readable; new writers always stamp the owner's tenant.
+  clientNumber String?  @map("client_number") @db.VarChar(50)
+  source       String   @db.VarChar(20) // 'gdrive' | 'upload'
+  externalId   String?  @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
+  folderId     String?  @map("folder_id") @db.VarChar(255) // GDrive folder ID (null for uploads)
+  fileName     String   @map("file_name") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(100)
+  sizeBytes    Int?     @map("size_bytes")
+  contentHash  String?  @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
+  storagePath  String?  @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
+  parseStatus  String   @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
+  parseError   String?  @map("parse_error") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   chunks PersonalChunk[]
@@ -381,24 +387,36 @@ model PersonalDocument {
   @@index([userId])
   @@index([userId, source])
   @@index([userId, externalId])
+  // Tenant-first composite: lets tenant-scoped reads prune by client
+  // before user, and doubles as the audit index for finding rows whose
+  // client_number disagrees with their owner's tenant.
+  @@index([clientNumber, userId])
   @@map("personal_documents")
 }
 
 model PersonalChunk {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  documentId  Int      @map("document_id")
-  content     String   @db.Text
-  embedding   Json     @default("[]")
-  chunkIndex  Int      @map("chunk_index")
-  contentHash String   @map("content_hash") @db.VarChar(64)
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         Int @id @default(autoincrement())
+  userId     Int @map("user_id")
+  documentId Int @map("document_id")
+
+  // E3/E5 tenant defense-in-depth (2026-07-09) — see PersonalDocument.
+  // Denormalised onto the chunk (not just the parent document) so the
+  // hot retrieval query can filter WITHOUT joining personal_documents.
+  clientNumber String?  @map("client_number") @db.VarChar(50)
+  content      String   @db.Text
+  embedding    Json     @default("[]")
+  chunkIndex   Int      @map("chunk_index")
+  contentHash  String   @map("content_hash") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
 
   document PersonalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([documentId])
   @@index([contentHash])
+  // Tenant-first composite matching the retrieval access pattern
+  // (tenant → user → document).
+  @@index([clientNumber, userId, documentId])
   @@map("personal_chunks")
 }
 
@@ -475,11 +493,18 @@ model DomainKnowledge {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
+  // E3/E5 tenant defense-in-depth (2026-07-09): NULL = global knowledge
+  // (the seeded regulatory/vertical corpus every tenant may read).
+  // Deliberately NOT backfilled — all existing rows ARE global seeds,
+  // so NULL is the correct end state, not a straggler.
+  clientNumber String? @map("client_number") @db.VarChar(50)
+
   parent   DomainKnowledge?  @relation("KnowledgeHierarchy", fields: [parentId], references: [id])
   children DomainKnowledge[] @relation("KnowledgeHierarchy")
 
   @@index([region, vertical])
   @@index([category])
+  @@index([clientNumber])
   @@map("domain_knowledge")
 }
 
@@ -668,7 +693,15 @@ model ActionDefinition {
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
 
+  // E3/E5 tenant defense-in-depth (2026-07-09): NULL = system/global
+  // action available to every tenant (all seeded rows). A non-NULL
+  // value pins a user-proposed action to the tenant that proposed it,
+  // so tenant A's custom action never shows up in tenant B's registry.
+  // Deliberately NOT backfilled — every existing row is a system seed.
+  clientNumber String? @map("client_number") @db.VarChar(50)
+
   @@index([scope, isActive])
+  @@index([clientNumber])
   @@map("action_definitions")
 }
 

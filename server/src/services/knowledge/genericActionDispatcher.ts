@@ -266,7 +266,10 @@ export async function dispatchAction(
   payload: Record<string, unknown>,
   ctx: DispatchContext,
 ): Promise<DispatchResult> {
-  const def = await getActionDefinition(actionType);
+  // E3/E5: tenant-scoped lookup — dispatch fails closed ("unknown
+  // action") when the type is pinned to a DIFFERENT tenant; system
+  // actions (clientNumber=NULL) resolve for everyone as before.
+  const def = await getActionDefinition(actionType, ctx.clientNumber);
   if (!def) {
     return { ok: false, message: `Unknown action type "${actionType}" — not registered in action_definitions.`, errorCode: 'unknown_action' };
   }

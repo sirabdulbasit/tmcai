@@ -93,8 +93,8 @@ export async function applyReasoningDecision(args: {
           actionResult: { ok: false, message: 'malformed_action' },
         };
       }
-      // Validate against registry.
-      const errs = await validateReasoningAction(action);
+      // Validate against registry (tenant-scoped — E3/E5).
+      const errs = await validateReasoningAction(action, clientNumber);
       if (errs && errs.length > 0) {
         return {
           answer: `Action validation failed: ${errs.join('; ')}. Need: ${errs[0]}.`,

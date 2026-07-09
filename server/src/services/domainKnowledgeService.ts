@@ -42,6 +42,12 @@ export async function searchDomainKnowledge(
     region?: DomainRegion;
     vertical?: DomainVertical;
     topK?: number;
+    /** E3/E5 tenant defense-in-depth: the caller's tenant. Rows with
+     *  client_number IS NULL are the seeded GLOBAL corpus and always
+     *  match; a non-NULL row only matches its own tenant. Pass null
+     *  ONLY when the caller genuinely has no tenant context (and say
+     *  why at the call site) — that keeps legacy unfiltered behavior. */
+    clientNumber?: string | null;
   } = {},
 ): Promise<Array<{ title: string; content: string; region: string; vertical: string; score: number }>> {
   const enabled = await isFeatureEnabled('GLOBAL', 'feature_knowledge_base', false).catch(() => false);
@@ -62,6 +68,12 @@ export async function searchDomainKnowledge(
   if (opts.vertical) {
     conditions.push(`vertical = $${pIdx++}`);
     params.push(opts.vertical);
+  }
+  if (opts.clientNumber) {
+    // NULL-or-mine, never someone else's. IS NULL comes first so the
+    // global seeds survive even if a tenant value is malformed.
+    conditions.push(`(client_number IS NULL OR client_number = $${pIdx++})`);
+    params.push(opts.clientNumber);
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -188,6 +200,12 @@ The Federal Tax Authority (FTA) oversees corporate tax compliance.`,
 
   for (const seed of seeds) {
     const embedding = await embedText(`${seed.title}\n\n${seed.content}`).catch(() => []);
+    // E3/E5: client_number is deliberately OMITTED (stays NULL). This
+    // seeder is the only writer to domain_knowledge today and its rows
+    // are global regulatory/vertical knowledge shared by every tenant —
+    // NULL = global is the intended tag, not missing tenant context.
+    // Any FUTURE tenant-specific knowledge writer must set client_number
+    // explicitly to the owning tenant.
     await prisma.$executeRawUnsafe(
       `INSERT INTO domain_knowledge (region, vertical, category, title, content, tags, source, embedding)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
