@@ -360,6 +360,9 @@ export async function reasoningComposeWithTools(input: ReasoningInput): Promise<
   // dataBlocks object — keep the function pure.
   let collected: string[] = [];
   let workingInput: ReasoningInput = input;
+  // C4: slots already auto-resolved from clarification memory this turn —
+  // each slot gets at most one memory-injection retry.
+  const resolvedSlots = new Set<string>();
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS + 1; i += 1) {
     const isFinal = i === MAX_TOOL_ITERATIONS;
@@ -379,6 +382,25 @@ export async function reasoningComposeWithTools(input: ReasoningInput): Promise<
     if (!result) return null;
 
     if (result.decision !== 'tool_call') {
+      // C4 (2026-07-08): before an 'ask' stands, check clarification
+      // memory. The user answering "which Asad?" once must mean never
+      // being asked the same slot in the same context again. On a hit we
+      // inject the prior resolution and re-run this pass (once per slot —
+      // the resolvedSlots guard stops loops when the LLM insists on
+      // asking anyway, e.g. because the remembered answer doesn't fit).
+      if (result.decision === 'ask' && result.question?.slotBeingFilled && !isFinal
+          && !resolvedSlots.has(result.question.slotBeingFilled)) {
+        const { buildClarificationInjection } = await import('./reasoningCompose.applyDispatch');
+        const injection = await buildClarificationInjection(input.userId, result.question);
+        if (injection) {
+          resolvedSlots.add(result.question.slotBeingFilled);
+          collected.push(injection);
+          console.info('[reasoning.clarify] auto-resolved from memory', {
+            userId: input.userId, slot: result.question.slotBeingFilled,
+          });
+          continue;
+        }
+      }
       // Final answer — bubble up.
       if (collected.length > 0) {
         console.info('[reasoning.tools] loop ended', {
