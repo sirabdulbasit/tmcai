@@ -14,12 +14,21 @@ const renderInstr = vi.fn((rows: any[]) => rows.length ? `## Standing instructio
 const getPrefs = vi.fn();
 const renderPrefs = vi.fn(() => '## Learned preferences\n- terse replies preferred');
 const governed = vi.fn(async () => '# Approved memories\n- Quote money in PKR');
+// Fix 3 (2026-07-09) — spy on getOrCompute so tests can assert the
+// cache key + TTL that renderBrainVoiceContext now wraps its work in.
+// Default is pass-through: call compute() and return its result, so
+// pre-existing value assertions keep working without knowing the
+// cache exists.
+const getOrComputeSpy = vi.fn(async (_key: string, _ttl: number, compute: () => Promise<any>) => compute());
 
 vi.mock('../src/services/tenantScope', () => ({
   resolveClientNumberForUser: (...a: any[]) => resolveTenant(...a),
 }));
 vi.mock('../src/db/prisma', () => ({
   default: { userPrompt: { findMany: vi.fn(async () => []) } }, // no overlay rules in these tests
+}));
+vi.mock('../src/utils/redisClient', () => ({
+  getOrCompute: (...a: any[]) => getOrComputeSpy(...(a as [string, number, () => Promise<any>])),
 }));
 vi.mock('../src/services/knowledge/instructionService', () => ({
   getActiveInstructions: (...a: any[]) => getInstructions(...a),
@@ -70,6 +79,34 @@ describe('renderBrainVoiceContext', () => {
   it('returns empty when the tenant cannot be resolved (fail quiet, not wrong)', async () => {
     resolveTenant.mockResolvedValue(null);
     expect(await renderBrainVoiceContext(2)).toBe('');
+  });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Fix 3 (2026-07-09) — cache hot-path reads.
+  //
+  // withUserPrompts is called on every specialized email compose, and
+  // autonomousExecutor invokes it PER FEED EVENT during draft passes.
+  // Previously each call ran a tenant lookup + three DB queries fully
+  // uncached, while brainComposer caches the same sources via
+  // getOrCompute with matching 60s TTLs. Wrapping the body in
+  // getOrCompute(`voicecontext:${userId}`, 60, ...) closes the
+  // asymmetry — same staleness bound as the composer caches.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('wraps the compute in getOrCompute with the per-user cache key + 60s TTL', async () => {
+    await renderBrainVoiceContext(2);
+    expect(getOrComputeSpy).toHaveBeenCalled();
+    const [key, ttl] = getOrComputeSpy.mock.calls[0]!;
+    expect(key).toBe('voicecontext:2');
+    expect(ttl).toBe(60);
+  });
+
+  it('varies the cache key by userId (no cross-user bleed)', async () => {
+    await renderBrainVoiceContext(2);
+    await renderBrainVoiceContext(5);
+    const keys = getOrComputeSpy.mock.calls.map((c) => c[0]);
+    expect(keys).toContain('voicecontext:2');
+    expect(keys).toContain('voicecontext:5');
   });
 });
 

@@ -16,44 +16,57 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 import createLogger from '../../utils/logger';
+import { getOrCompute } from '../../utils/redisClient';
 
 const log = createLogger('brain-voice-context');
 
 const MAX_INSTRUCTIONS = 10;
 
+// Fix 3 (2026-07-09) — 60s TTL matches the composer caches
+// (persona/prefs/instructions/overlay at brainComposer.ts ~1851). The
+// staleness bound is accepted: user-visible changes to standing
+// instructions or learned preferences take up to a minute to reach
+// email composers, same as they take to reach chat composers. In
+// exchange, the hot path (every specialized compose + every
+// autonomousExecutor draft pass) drops from 1 tenant lookup + 3 DB
+// queries to a single Redis GET on cache hit.
+const VOICECONTEXT_TTL_S = 60;
+
 export async function renderBrainVoiceContext(userId: number): Promise<string> {
-  try {
-    const { resolveClientNumberForUser } = await import('../tenantScope');
-    const clientNumber = await resolveClientNumberForUser(userId);
-    if (!clientNumber) return ''; // no tenant → no scoped knowledge; fail quiet, not wrong
+  return getOrCompute(`voicecontext:${userId}`, VOICECONTEXT_TTL_S, async () => {
+    try {
+      const { resolveClientNumberForUser } = await import('../tenantScope');
+      const clientNumber = await resolveClientNumberForUser(userId);
+      if (!clientNumber) return ''; // no tenant → no scoped knowledge; fail quiet, not wrong
 
-    // Each block loads independently — one failing source must never blank
-    // the others (a DB hiccup on instructions shouldn't drop preferences).
-    const [instructionsBlock, prefsBlock, governedBlock] = await Promise.all([
-      (async () => {
-        const { getActiveInstructions, renderInstructionsBlock } = await import('./instructionService');
-        const rows = await getActiveInstructions(clientNumber, userId, MAX_INSTRUCTIONS);
-        return rows.length ? renderInstructionsBlock(rows) : '';
-      })().catch(() => ''),
-      (async () => {
-        const { getLearnedPreferences, renderPreferencesBlock } = await import('./preferenceLearnerService');
-        const prefs = await getLearnedPreferences(clientNumber, userId);
-        return prefs ? renderPreferencesBlock(prefs) : '';
-      })().catch(() => ''),
-      (async () => {
-        const { renderGovernedMemoriesBlock } = await import('../learning/governedMemoriesBlock');
-        return renderGovernedMemoriesBlock(clientNumber, userId);
-      })().catch(() => ''),
-    ]);
+      // Each block loads independently — one failing source must never blank
+      // the others (a DB hiccup on instructions shouldn't drop preferences).
+      const [instructionsBlock, prefsBlock, governedBlock] = await Promise.all([
+        (async () => {
+          const { getActiveInstructions, renderInstructionsBlock } = await import('./instructionService');
+          const rows = await getActiveInstructions(clientNumber, userId, MAX_INSTRUCTIONS);
+          return rows.length ? renderInstructionsBlock(rows) : '';
+        })().catch(() => ''),
+        (async () => {
+          const { getLearnedPreferences, renderPreferencesBlock } = await import('./preferenceLearnerService');
+          const prefs = await getLearnedPreferences(clientNumber, userId);
+          return prefs ? renderPreferencesBlock(prefs) : '';
+        })().catch(() => ''),
+        (async () => {
+          const { renderGovernedMemoriesBlock } = await import('../learning/governedMemoriesBlock');
+          return renderGovernedMemoriesBlock(clientNumber, userId);
+        })().catch(() => ''),
+      ]);
 
-    const parts = [instructionsBlock, prefsBlock, governedBlock].filter(Boolean);
-    if (parts.length === 0) return '';
-    return [
-      '# What Brain knows about this user (apply where relevant to what you write)',
-      ...parts,
-    ].join('\n\n');
-  } catch (err: any) {
-    log.warn('brain voice context failed — composing without it', { userId, err: err?.message });
-    return '';
-  }
+      const parts = [instructionsBlock, prefsBlock, governedBlock].filter(Boolean);
+      if (parts.length === 0) return '';
+      return [
+        '# What Brain knows about this user (apply where relevant to what you write)',
+        ...parts,
+      ].join('\n\n');
+    } catch (err: any) {
+      log.warn('brain voice context failed — composing without it', { userId, err: err?.message });
+      return '';
+    }
+  });
 }
