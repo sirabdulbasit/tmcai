@@ -466,6 +466,17 @@ const server = app.listen(env.port, async () => {
     }
   }, 30 * 60 * 1000);
 
+  // D2 — trust promotion daily: propose (never auto-apply) raising the
+  // automation level for action types the user consistently approves.
+  setInterval(async () => {
+    try {
+      const { proposeTrustPromotions } = await import('./jobs/trustPromotionJob');
+      await proposeTrustPromotions();
+    } catch (err: any) {
+      console.warn('[trustPromotion] error:', err.message);
+    }
+  }, 24 * 60 * 60 * 1000);
+
   // C5 — memory decay daily: expire dated memories, fade stale unconfirmed
   // inferences (never explicit/confirmed ones), drop below-floor rows.
   setInterval(async () => {
