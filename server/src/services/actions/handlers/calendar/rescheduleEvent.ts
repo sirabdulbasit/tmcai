@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { getEvents } from '../../../adapters/calendarAdapter';
+import { findEventById } from '../../../adapters/calendarAdapter';
 
 export class RescheduleEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -53,13 +53,10 @@ export class RescheduleEventHandler extends ActionHandler {
       // single-event get.
       let previousStart: string | null = null;
       try {
-        const now = new Date();
-        const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
-        const pre = await getEvents(ctx.userId, now, horizon, 250);
-        if (!pre.error) {
-          const existing = pre.events.find(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
-          if (existing) previousStart = existing.start;
-        }
+        // Fix 5 dedupe — helper handles the 180d default window and
+        // recurrence-suffix matching.
+        const pre = await findEventById(ctx.userId, eventId);
+        if (!pre.error && pre.event) previousStart = pre.event.start;
       } catch { /* read-before-write is best-effort only */ }
 
       const { updateEvent } = await import('../../../calendarService');
@@ -81,15 +78,16 @@ export class RescheduleEventHandler extends ActionHandler {
       const newStart = new Date(String(o.newStart));
       const newEnd = new Date(String(o.newEnd));
       if (isNaN(newStart.getTime()) || isNaN(newEnd.getTime())) return false;
-      const r = await getEvents(ctx.userId, new Date(newStart.getTime() - 60_000), new Date(newEnd.getTime() + 60_000), 50);
-      if (r.error) return false;
-      return r.events.some(e => {
-        if (e.id !== eventId && !e.id.startsWith(`${eventId}_`)) return false;
-        if (e.status === 'cancelled') return false;
-        // Start must actually be the new start (±60s tolerance for formatting)
-        const start = new Date(e.start).getTime();
-        return Math.abs(start - newStart.getTime()) <= 60_000;
+      // Fix 5 dedupe — narrow ±60s window keeps the API call cheap
+      // and hits recurrence instances near the new time.
+      const r = await findEventById(ctx.userId, eventId, {
+        start: new Date(newStart.getTime() - 60_000),
+        end: new Date(newEnd.getTime() + 60_000),
       });
+      if (r.error || !r.event) return false;
+      // Start must actually be the new start (±60s tolerance for formatting).
+      const start = new Date(r.event.start).getTime();
+      return Math.abs(start - newStart.getTime()) <= 60_000;
     } catch {
       return false;
     }

@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { createEvent as createEventBreakered, getEvents } from '../../../adapters/calendarAdapter';
+import { createEvent as createEventBreakered, findEventById } from '../../../adapters/calendarAdapter';
 
 export class CreateEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -81,10 +81,13 @@ export class CreateEventHandler extends ActionHandler {
       const start = new Date(String(ctx.payload.startTime));
       const end = new Date(String(ctx.payload.endTime));
       if (isNaN(start.getTime()) || isNaN(end.getTime())) return false;
-      // Pad the window by a minute so boundary-exact events are included.
-      const r = await getEvents(ctx.userId, new Date(start.getTime() - 60_000), new Date(end.getTime() + 60_000), 50);
-      if (r.error) return false;
-      return r.events.some(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
+      // Fix 5 dedupe — helper accepts a narrow window (padded ±60s so
+      // boundary-exact events are included) and drops maxResults to 50.
+      const r = await findEventById(ctx.userId, eventId, {
+        start: new Date(start.getTime() - 60_000),
+        end: new Date(end.getTime() + 60_000),
+      });
+      return !r.error && r.event !== null;
     } catch {
       return false;
     }

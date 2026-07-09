@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { getEvents } from '../../../adapters/calendarAdapter';
+import { findEventById } from '../../../adapters/calendarAdapter';
 
 export class AddAttendeeHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -35,13 +35,11 @@ export class AddAttendeeHandler extends ActionHandler {
     const eventId = String(ctx.payload.eventId);
     const email = String(ctx.payload.email);
     try {
-      // Scan now → +180 days: the payload carries no event time and the
-      // adapter has no single-event get (same window confirm() uses below).
-      const now = new Date();
-      const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
-      const r = await getEvents(ctx.userId, now, horizon, 250);
+      // Fix 5 dedupe — helper handles the 180d default window and
+      // recurrence-suffix matching, same as before.
+      const r = await findEventById(ctx.userId, eventId);
       if (r.error) return { ok: false, error: r.error };
-      const event = r.events.find(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
+      const event = r.event;
       // Fail closed rather than write blind: patching an event we cannot see
       // would clobber an attendee list we never read.
       if (!event) return { ok: false, error: `event ${eventId} not found on calendar (next 180 days)` };
@@ -72,13 +70,9 @@ export class AddAttendeeHandler extends ActionHandler {
     if (typeof eventId !== 'string' || eventId.length === 0) return false;
     if (typeof email !== 'string' || email.length === 0) return false;
     try {
-      const now = new Date();
-      const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
-      const r = await getEvents(ctx.userId, now, horizon, 250);
-      if (r.error) return false;
-      const event = r.events.find(e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled');
-      if (!event) return false;
-      return event.attendees.some(a => a.toLowerCase() === email.toLowerCase());
+      const r = await findEventById(ctx.userId, eventId);
+      if (r.error || !r.event) return false;
+      return r.event.attendees.some(a => a.toLowerCase() === email.toLowerCase());
     } catch {
       return false;
     }

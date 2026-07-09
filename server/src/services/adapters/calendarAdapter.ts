@@ -1,4 +1,5 @@
 import * as calendarService from '../calendarService';
+import * as calendarEventFinder from '../calendarEventFinder';
 import { wrap } from '../../utils/circuitBreaker';
 
 const BREAKER_OPTS = {
@@ -14,3 +15,8 @@ export const getUpcomingEvents = wrap(calendarService.getUpcomingEvents, { ...BR
 export const createEvent = wrap(calendarService.createEvent, { ...BREAKER_OPTS, name: 'calendar.createEvent' });
 export const findFreeTime = wrap(calendarService.findFreeTime, { ...BREAKER_OPTS, name: 'calendar.findFreeTime' });
 export const deleteEvent = wrap(calendarService.deleteEvent, { ...BREAKER_OPTS, name: 'calendar.deleteEvent' });
+// Fix 5 (2026-07-09) — helper wrapping. calendarEventFinder.findEventById
+// calls getEvents internally; wrapping HERE preserves the circuit-
+// breaker semantics that handlers already had on the ad-hoc scans they
+// used to hand-roll.
+export const findEventById = wrap(calendarEventFinder.findEventById, { ...BREAKER_OPTS, name: 'calendar.findEventById' });

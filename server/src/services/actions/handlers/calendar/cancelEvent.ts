@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { getEvents } from '../../../adapters/calendarAdapter';
+import { findEventById } from '../../../adapters/calendarAdapter';
 
 export class CancelEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -49,14 +49,12 @@ export class CancelEventHandler extends ActionHandler {
     const eventId = o?.eventId ?? (ctx.payload.eventId as string | undefined);
     if (typeof eventId !== 'string' || eventId.length === 0) return false;
     try {
-      const now = new Date();
-      const horizon = new Date(now.getTime() + 180 * 24 * 3600_000);
-      const r = await getEvents(ctx.userId, now, horizon, 250);
+      // Fix 5 dedupe — cancellation stuck iff no LIVE match exists
+      // (helper's `event` excludes cancelled rows; `anyMatch` would
+      // still surface the cancelled row for observers).
+      const r = await findEventById(ctx.userId, eventId);
       if (r.error) return false;
-      const stillLive = r.events.some(
-        e => (e.id === eventId || e.id.startsWith(`${eventId}_`)) && e.status !== 'cancelled',
-      );
-      return !stillLive;
+      return r.event === null;
     } catch {
       return false;
     }

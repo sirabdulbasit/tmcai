@@ -18,8 +18,30 @@ vi.mock('../src/services/calendarService', () => ({
 }));
 
 const getEventsMock = vi.fn(async (..._a: any[]) => ({ events: [] as any[] }));
+
+// Fix 5 dedupe — handlers were migrated from adapter.getEvents to
+// adapter.findEventById (a small helper over getEvents). Preserve the
+// existing getEventsMock so the same events fixtures flow through, and
+// expose a findEventById mock that mirrors the real helper's shape.
+// This keeps every existing assertion honest — the tests still exercise
+// the getEvents boundary, only routed through the helper.
+async function findEventByIdMockImpl(userId: number, eventId: string, window?: { start: Date; end: Date }) {
+  const start = window?.start ?? new Date();
+  const end = window?.end ?? new Date(start.getTime() + 180 * 24 * 3600_000);
+  const maxResults = window ? 50 : 250;
+  const r = await getEventsMock(userId, start, end, maxResults);
+  if ((r as any).error) return { event: null, anyMatch: null, error: (r as any).error };
+  const events: any[] = (r as any).events ?? [];
+  const matchesId = (e: any) => e.id === eventId || (typeof e.id === 'string' && e.id.startsWith(`${eventId}_`));
+  const anyMatch = events.find(matchesId) ?? null;
+  const event = events.find((e) => matchesId(e) && e.status !== 'cancelled') ?? null;
+  return { event, anyMatch };
+}
+const findEventByIdMock = vi.fn(findEventByIdMockImpl);
+
 vi.mock('../src/services/adapters/calendarAdapter', () => ({
   getEvents: (...a: any[]) => getEventsMock(...a),
+  findEventById: (...a: any[]) => findEventByIdMock(...(a as [number, string, { start: Date; end: Date } | undefined])),
 }));
 
 import { RescheduleEventHandler } from '../src/services/actions/handlers/calendar/rescheduleEvent';
@@ -34,6 +56,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   updateEventMock.mockResolvedValue({ event: { id: 'evt_1' } });
   getEventsMock.mockResolvedValue({ events: [] });
+  // Re-arm the impl — clearAllMocks() wipes mockImplementation too.
+  findEventByIdMock.mockImplementation(findEventByIdMockImpl);
 });
 
 // ─── reschedule_event ────────────────────────────────────────────
