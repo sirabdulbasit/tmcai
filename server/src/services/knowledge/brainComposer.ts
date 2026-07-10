@@ -1370,7 +1370,7 @@ async function pickToneRecipientsFromMessage(
  *  Format is intentionally terse — id + title + status + missing
  *  slots are the load-bearing fields; priority and due give reasoning
  *  enough context to know what's already filled. */
-async function buildOpenItemsBlockForReasoning(
+export async function buildOpenItemsBlockForReasoning(
   userId: number,
   clientNumber: string,
 ): Promise<string> {
@@ -1382,7 +1382,7 @@ async function buildOpenItemsBlockForReasoning(
       },
       select: {
         id: true, title: true, status: true, priority: true, dueDate: true,
-        delegateeName: true, metadata: true,
+        delegateeName: true, delegateeEmail: true, metadata: true,
         delegationFollowupCount: true, delegationLastFollowupAt: true,
         createdAt: true,
       } as any,
@@ -1390,16 +1390,70 @@ async function buildOpenItemsBlockForReasoning(
       take: 30,
     });
     if (rows.length === 0) return '';
+
+    // Fix 2026-07-10 (Basit "ask status of EXIM" → wrong recipient):
+    // resolve each delegatee NAME to its contact entity so the block
+    // carries a routable candidate id + reachability. Before this, the
+    // block named the delegatee ("Muhammad Yousaf") but gave reasoning
+    // no id to send to — so a "ping the owner" ask couldn't bind the
+    // right person and substituted whoever was in the recent-candidates
+    // block (Asad). One batched lookup over the distinct delegatee names.
+    const delegateeNames = Array.from(new Set(
+      rows.map((r: any) => (typeof r.delegateeName === 'string' ? r.delegateeName.trim() : ''))
+          .filter((n: string) => n.length > 0),
+    )) as string[];
+    const delegateeContactByName = new Map<string, { id: string; phone: string | null; email: string | null }>();
+    if (delegateeNames.length > 0) {
+      const contacts = await prisma.entity.findMany({
+        where: {
+          clientNumber,
+          entityType: 'contact',
+          name: { in: delegateeNames },
+          OR: [
+            { scope: 'tenant' as any },
+            { ownerUserId: userId } as any,
+            { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+          ],
+        } as any,
+        select: { id: true, name: true, phone: true, email: true },
+      }).catch(() => [] as Array<{ id: string; name: string; phone: string | null; email: string | null }>);
+      // First contact wins per name; a duplicate-name collision is rare
+      // and the reachability hint still lets reasoning proceed or ask.
+      for (const c of contacts) {
+        if (!delegateeContactByName.has(c.name)) {
+          delegateeContactByName.set(c.name, { id: c.id, phone: c.phone, email: c.email });
+        }
+      }
+    }
+
     const lines = rows.map((r: any) => {
       const md = (r.metadata as any)?.draft;
       const missing = Array.isArray(md?.missingSlots) ? (md.missingSlots as string[]) : [];
       const due = r.dueDate ? new Date(r.dueDate).toISOString().slice(0, 10) : '—';
-      const deleg = r.delegateeName ? ` delegated_to=${r.delegateeName}` : '';
+      let deleg = '';
+      if (r.delegateeName) {
+        const contact = delegateeContactByName.get(String(r.delegateeName).trim());
+        deleg = ` delegated_to="${r.delegateeName}"`;
+        if (contact) {
+          // Routable identity — reasoning uses this id verbatim for
+          // notify_via_whatsapp / send_email to the owner. Never let
+          // it fall back to another candidate.
+          deleg += ` delegatee_candidateId=${contact.id}`;
+          const reach: string[] = [];
+          if (contact.phone) reach.push('whatsapp');
+          if (contact.email) reach.push('email');
+          deleg += ` delegatee_reachable=${reach.length ? reach.join('+') : 'none'}`;
+        } else {
+          // Named but not resolvable to a contact — reasoning MUST ask
+          // for the contact, not substitute someone else.
+          deleg += ' delegatee_candidateId=UNRESOLVED';
+        }
+      }
       const followups = (r.delegationFollowupCount ?? 0) > 0 ? ` followups_sent=${r.delegationFollowupCount}` : '';
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
       return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    return `# Your active open items (use id to update/delegate/mark_done)\n${lines.join('\n')}`;
+    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';
