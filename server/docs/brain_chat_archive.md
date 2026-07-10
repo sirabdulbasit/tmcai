@@ -22,6 +22,8 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `wrong-owner-routing` | "ask status of X" routed to the wrong person (recently-discussed contact) instead of the item's actual delegatee |
+| `stale-contact-data` | Brain uses an old email/phone the user already corrected (correction never persisted) |
 | `pending-prompt-eats-command` | promptReplyHandler swallows a new-chat imperative as an "answer" to a stale prompt (returns `[noted]`) |
 | `two-schema-oauth-mismatch` | `users.integration_*` legacy fields disagree with `user_connectors.config` — one says stale/wrong, the other says fresh |
 | `trigger-instruction-as-task` | "when X happens, do Y" becomes a slot-gated open item (asks priority/dueDate) instead of an event-triggered rule; never fires when X happens |
@@ -212,3 +214,22 @@ When the user pastes a new chat:
 **Structural recommendation:** instruction extractor gains a `trigger_rule` intent ("when <event condition>, <action>") that writes a `user_action_rules` row (autonomousExecutor already fires those on ingest, and per the autonomy definition rule-fires are user-authorized). Ownership: items whose executor is Brain get `ownerType: 'brain'` and never appear as user open items in briefs.
 
 **Verification status:** unverified (fixes not yet shipped)
+
+---
+
+## Chat 4 — 2026-07-10 12:21pm (ask status of EXIM → wrong owner)
+
+**Symptoms:**
+- `wrong-owner-routing` (NEW tag): "ask status of EXIM" → Brain proposed messaging Asad Ahmed Taj; EXIM is delegated to Muhammad Yousaf (prod DB confirmed). Wrong recipient.
+- `stale-contact-data`: proposed email `asad.ahmed@tmcltd.ai` — the `.ai` the user corrected to `.com` days earlier never persisted (contact-edit capability is on the branch, not yet deployed).
+
+**Root cause:**
+- `buildOpenItemsBlockForReasoning` passed the delegatee as a bare NAME with no routable candidate id. To emit notify_via_whatsapp the reasoning layer needs a recipientCandidateId; unable to bind "Muhammad Yousaf", it substituted a candidate from the recent-conversation pool (Asad, who dominated the prior leave-request thread). Owner-resolution substitution — same family as the closest-match bug, one layer up.
+- Prod data: Muhammad Yousaf entity has phone (+92...302...) but no email; EXIM open_item has empty delegatee_email; duplicate EXIM rows (one DELEGATED, one closed).
+
+**Fix commit:** `680c441` — open-items block now resolves delegatee name → contact entity and embeds `delegatee_candidateId` + `delegatee_reachable`; reasoningCompose gains an "Owner-routing contract" (route to the item's delegatee_candidateId; ask if UNRESOLVED; never substitute). Tests: openItemsOwnerRouting.test.ts (6).
+
+**Verification status:** unverified — ships with PR #2 merge; current prod (459bd4d) still has the bug (preview gate prevented the wrong send — user replies "no" to cancel).
+
+**Data hygiene follow-up (prod, not code):** duplicate EXIM open_item row; Muhammad Yousaf missing email.
+
