@@ -25,6 +25,7 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
+import { safeSlice } from '../../utils/utf8';
 
 const log = createLogger('sentiment');
 
@@ -159,7 +160,9 @@ export async function enrichFeedEvent(eventId: string): Promise<{ updated: boole
       sentimentScore: clamp(result.sentiment, -1, 1),
       urgencyScore: clamp(result.urgency, 0, 1),
       tone: result.tone,
-      sentimentRationale: result.rationale.slice(0, 1000),
+      // safeSlice (not slice): rationale can contain emoji; a plain
+      // slice can cut one in half leaving a lone surrogate → PG 22021.
+      sentimentRationale: safeSlice(result.rationale, 1000),
       sentimentAnalyzedAt: new Date(),
     } as any,
   });
