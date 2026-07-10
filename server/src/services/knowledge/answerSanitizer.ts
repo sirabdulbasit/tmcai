@@ -106,6 +106,11 @@ const MARKERS: MarkerRule[] = [
     whole: true,
   },
   {
+    match: /^\s*\[target unresolved:\s*([^\]]+)\]\s*$/i,
+    replace: "Before I do that, I need to confirm $1.",
+    whole: true,
+  },
+  {
     match: /^\s*\[noted\]\s*$/i,
     replace: "Got it — noted.",
     whole: true,

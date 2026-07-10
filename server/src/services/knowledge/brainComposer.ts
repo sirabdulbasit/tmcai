@@ -4913,6 +4913,34 @@ async function dispatchPendingDirect(
   pending: import('./pendingActionService').PendingAction,
 ): Promise<{ ok: boolean; artifactId?: string; message: string }> {
   const slots = pending.slots as any;
+
+  // Pillar 2 (2026-07-10) — ground-or-ask guard. This is the LAST gate
+  // before a confirmed action irreversibly fires. Verify every target
+  // (recipient / attendee / delegatee / contact / open item) grounds to
+  // a real record scoped to this user. If any can't, fail closed to an
+  // ask marker instead of dispatching to a guessed/stale target. The
+  // guard mirrors each verb's accept-conditions exactly, so it can only
+  // catch what the verb's own resolution would also reject — never a
+  // false block. This is the structural end of the substitution class
+  // (wrong-recipient, wrong-owner, stale-contact).
+  try {
+    const { verifyActionTargets } = await import('./actionTargetGuard');
+    const verdict = await verifyActionTargets(pending.actionKind, slots, userId, clientNumber);
+    if (!verdict.ok) {
+      console.warn('[brain-chat] ground-or-ask guard blocked confirmed dispatch', {
+        userId, clientNumber, actionKind: pending.actionKind, marker: verdict.marker,
+      });
+      return { ok: false, message: verdict.marker };
+    }
+  } catch (e: any) {
+    // Guard failure must not itself block a legitimate send — log and
+    // proceed to the per-verb resolution, which still fails closed on
+    // its own if a target is unresolved.
+    console.warn('[brain-chat] ground-or-ask guard errored (non-fatal, per-verb resolution still applies)', {
+      userId, clientNumber, actionKind: pending.actionKind, error: e?.message,
+    });
+  }
+
   const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
 
   // V2: slots may contain candidateIds + rawDate; resolve here.
