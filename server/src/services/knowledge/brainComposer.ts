@@ -5319,7 +5319,7 @@ function parseCompose(text: string): ParsedCompose {
  *  subject. Observed 2026-05-20: Basit's send-email-to-Asad turn went
  *  out as bare prose with no action, and we couldn't tell which path
  *  it took. */
-function normaliseAction(raw: unknown): ComposedAction | null {
+export function normaliseAction(raw: unknown): ComposedAction | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const type = typeof r.type === 'string' ? r.type : null;
