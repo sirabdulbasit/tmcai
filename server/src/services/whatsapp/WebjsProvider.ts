@@ -417,6 +417,19 @@ export class WebjsProvider implements IWhatsAppProvider {
             try { await message.react(''); } catch {}
             return;
           }
+          // Transcription echo (Basit 2026-07-13): show the user what was
+          // heard BEFORE acting, so a misread is caught immediately
+          // ("first it should transcribe my voice note so i can know what
+          // actually was conceived from my message"). This is a factual
+          // receipt of the user's OWN words, clearly labelled — not a
+          // Brain reply — so it's exempt from the LLM-only reply rule.
+          // Best-effort: never block processing if the echo send fails.
+          try {
+            const chat = await message.getChat();
+            await chat.sendMessage(`🎙️ Heard: "${messageBody}"`);
+          } catch (e: any) {
+            log.warn('transcription echo failed (non-blocking)', { error: e?.message });
+          }
         }
 
         const { handleInboundMessage } = await import('./WhatsAppInbound');
