@@ -266,6 +266,40 @@ export async function runForUser(
     });
   });
 
+  // D3 (2026-07-08): risks were computed and FILED, never surfaced. When
+  // high-severity flags exist, dispatch proactive outreach through the
+  // registry executor with initiator:'brain' — so it is autonomy-gated
+  // (D1: observe_only proposes, drafts_only drafts, supervised previews,
+  // full_auto sends), audited as an AgentAction, and confirmed against the
+  // prompt queue (B2). Dedup on docId means a same-day re-run never pings
+  // twice. Fire-and-forget: outreach failure must not fail the radar run.
+  if (highSeverityCount > 0) {
+    void (async () => {
+      try {
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        // Fix 2 (2026-07-09) — pass the LLM `narrative` in the payload
+        // so the handler can render it as the user-facing question
+        // body. Previously only `summary` (buildSummary()'s hardcoded
+        // template) reached the handler while the real LLM prose lived
+        // here unused, forcing the handler to append hardcoded English
+        // — a rule-4 violation on a user-visible surface. narrative
+        // may be null when config.narrate is off or narration failed;
+        // the handler falls back to a fully-bracketed system digest.
+        const r = await executeViaRegistry({
+          actionType: 'notify_user_risk',
+          clientNumber, userId,
+          initiator: 'brain',
+          executedByAgent: 'risk_radar',
+          payload: { docId, summary, narrative, highSeverityCount },
+          disambiguator: docId,
+        });
+        log.info('risk outreach dispatched', { docId, ok: r.ok, status: (r.output as any)?.status ?? null });
+      } catch (err: any) {
+        log.warn('risk outreach dispatch failed', { docId, error: err.message });
+      }
+    })();
+  }
+
   log.info('risk radar run complete', {
     clientNumber, userId, runDate: dateStr,
     flagCount: flags.length, highSeverityCount,

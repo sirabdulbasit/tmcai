@@ -166,7 +166,17 @@ router.delete('/users/:id', async (req: Request, res: Response) => {
     });
     return;
   }
-  await prisma.user.delete({ where: { id: userId } });
+  // Structural tenant guard: the pre-check above read clientNumber, but the
+  // delete itself must carry the filter too (TOCTOU + isolation-scan rule —
+  // every admin-route write is tenant-scoped at the query, not just at a
+  // preceding read). deleteMany because `delete` only accepts unique keys.
+  const del = await prisma.user.deleteMany({
+    where: { id: userId, clientNumber: req.user!.clientNumber },
+  });
+  if (del.count === 0) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
   res.json({ success: true, deletedUserId: userId, deletedEmail: target.email });
 });
 

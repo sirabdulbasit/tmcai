@@ -83,24 +83,45 @@ export interface ActionDefinitionRecord {
   scope: 'system' | 'tenant' | 'user';
   source: 'seeded' | 'user_proposed' | 'system';
   approvedAt: Date | null;
+  /** E3/E5 tenant defense-in-depth: null = system/global action visible
+   *  to every tenant; non-null pins the action to one tenant. */
+  clientNumber: string | null;
   updatedAt: Date;
+}
+
+/** E3/E5 tenant filter for action_definitions reads. NULL rows must
+ *  always pass: they are the seeded system actions every tenant uses
+ *  (and any pre-backfill stragglers). Only rows explicitly tagged with
+ *  a DIFFERENT tenant are excluded. When the caller has no tenant
+ *  context (clientNumber undefined) we apply no filter — identical to
+ *  pre-E3 behavior, so legacy call sites keep working unchanged. */
+function tenantWhere(clientNumber?: string): Record<string, unknown> {
+  return clientNumber
+    ? { OR: [{ clientNumber: null }, { clientNumber }] }
+    : {};
 }
 
 /** Look up an action definition by type. Returns null when not
  *  registered or inactive. Used by the generic dispatcher to route
- *  incoming actions. */
-export async function getActionDefinition(type: string): Promise<ActionDefinitionRecord | null> {
+ *  incoming actions. Pass the caller's clientNumber so tenant-pinned
+ *  actions of OTHER tenants stay invisible (system rows always match). */
+export async function getActionDefinition(type: string, clientNumber?: string): Promise<ActionDefinitionRecord | null> {
   const row = await (prisma as any).actionDefinition.findFirst({
-    where: { type, isActive: true },
+    where: { type, isActive: true, ...tenantWhere(clientNumber) },
   });
   return row ? toRecord(row) : null;
 }
 
 /** List all active action definitions. Used by the composer to
- *  enumerate Brain's current capabilities and by Settings UI. */
-export async function listActiveActions(scope?: 'system' | 'tenant' | 'user'): Promise<ActionDefinitionRecord[]> {
+ *  enumerate Brain's current capabilities and by Settings UI. With a
+ *  clientNumber, another tenant's custom actions are filtered out;
+ *  without one, behavior is unchanged (system + everything, legacy). */
+export async function listActiveActions(
+  scope?: 'system' | 'tenant' | 'user',
+  clientNumber?: string,
+): Promise<ActionDefinitionRecord[]> {
   const rows = await (prisma as any).actionDefinition.findMany({
-    where: { isActive: true, ...(scope ? { scope } : {}) },
+    where: { isActive: true, ...(scope ? { scope } : {}), ...tenantWhere(clientNumber) },
     orderBy: { type: 'asc' },
   });
   return rows.map(toRecord);
@@ -136,6 +157,11 @@ export async function registerAction(args: {
   scope?: 'system' | 'tenant' | 'user';
   source?: 'seeded' | 'user_proposed' | 'system';
   preApproved?: boolean;
+  /** E3/E5: tenant owning this action. Omit / null for system-global
+   *  actions (the seeder passes nothing — seeded verbs serve everyone).
+   *  User-proposed actions SHOULD pass the proposer's tenant so they
+   *  never surface in another tenant's registry. */
+  clientNumber?: string | null;
 }): Promise<ActionDefinitionRecord> {
   // Upsert by type — re-running the seeder is idempotent.
   const row = await (prisma as any).actionDefinition.upsert({
@@ -153,6 +179,7 @@ export async function registerAction(args: {
       scope: args.scope ?? 'system',
       source: args.source ?? 'seeded',
       approvedAt: args.preApproved ? new Date() : null,
+      clientNumber: args.clientNumber ?? null,
     },
     update: {
       displayName: args.displayName,
@@ -166,6 +193,10 @@ export async function registerAction(args: {
       scope: args.scope ?? 'system',
       source: args.source ?? 'seeded',
       approvedAt: args.preApproved ? new Date() : undefined,
+      // Re-running the seeder must not accidentally re-tag a row: the
+      // seeder always passes nothing, and null IS the seeder's intent
+      // (system-global), so persisting the ?? null here is correct.
+      clientNumber: args.clientNumber ?? null,
     },
   });
   validatorCache.delete(args.type);
@@ -204,6 +235,7 @@ function toRecord(row: any): ActionDefinitionRecord {
     scope: row.scope,
     source: row.source,
     approvedAt: row.approvedAt ?? null,
+    clientNumber: row.clientNumber ?? null,
     updatedAt: row.updatedAt,
   };
 }

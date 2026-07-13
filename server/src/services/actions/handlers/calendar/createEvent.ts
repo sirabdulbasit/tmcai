@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { createEvent as createEventBreakered } from '../../../adapters/calendarAdapter';
+import { createEvent as createEventBreakered, findEventById } from '../../../adapters/calendarAdapter';
 
 export class CreateEventHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -68,6 +68,28 @@ export class CreateEventHandler extends ActionHandler {
       return { ok: true, output: { eventId: r.event.id, htmlLink: (r.event as any).htmlLink, createdAt: new Date().toISOString() } };
     } catch (err: any) {
       return { ok: false, error: err.message };
+    }
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: list events in the booked window and require the
+    // returned eventId to be present and not cancelled. Fail closed on any
+    // read error — an unverifiable booking is not a confirmed booking.
+    const o = output as { eventId?: string } | null | undefined;
+    const eventId = o?.eventId;
+    if (typeof eventId !== 'string' || eventId.length === 0) return false;
+    try {
+      const start = new Date(String(ctx.payload.startTime));
+      const end = new Date(String(ctx.payload.endTime));
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return false;
+      // Fix 5 dedupe — helper accepts a narrow window (padded ±60s so
+      // boundary-exact events are included) and drops maxResults to 50.
+      const r = await findEventById(ctx.userId, eventId, {
+        start: new Date(start.getTime() - 60_000),
+        end: new Date(end.getTime() + 60_000),
+      });
+      return !r.error && r.event !== null;
+    } catch {
+      return false;
     }
   }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {

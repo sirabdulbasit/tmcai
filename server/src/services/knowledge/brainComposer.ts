@@ -86,6 +86,13 @@ export type ComposedAction =
   | { type: 'delete_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
   | { type: 'set_contact_scope'; contactCandidateId: string; scope: 'tenant' | 'normal' | 'private'; nameHint?: string }
   | { type: 'mark_contact_inactive'; contactCandidateId: string; nameHint?: string }
+  // update_contact (2026-07-13): edit an existing contact's fields. The
+  // capability registry long CLAIMED contact-edit ("PATCH /entities/:id")
+  // but no action backed it, so Brain kept saying "I can't update a
+  // contact's email" and offered to create a DUPLICATE contact instead.
+  // This is the real emittable action. At least one of newEmail/newPhone/
+  // newName must be present.
+  | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
@@ -1370,7 +1377,7 @@ async function pickToneRecipientsFromMessage(
  *  Format is intentionally terse — id + title + status + missing
  *  slots are the load-bearing fields; priority and due give reasoning
  *  enough context to know what's already filled. */
-async function buildOpenItemsBlockForReasoning(
+export async function buildOpenItemsBlockForReasoning(
   userId: number,
   clientNumber: string,
 ): Promise<string> {
@@ -1382,7 +1389,7 @@ async function buildOpenItemsBlockForReasoning(
       },
       select: {
         id: true, title: true, status: true, priority: true, dueDate: true,
-        delegateeName: true, metadata: true,
+        delegateeName: true, delegateeEmail: true, metadata: true,
         delegationFollowupCount: true, delegationLastFollowupAt: true,
         createdAt: true,
       } as any,
@@ -1390,16 +1397,70 @@ async function buildOpenItemsBlockForReasoning(
       take: 30,
     });
     if (rows.length === 0) return '';
+
+    // Fix 2026-07-10 (Basit "ask status of EXIM" → wrong recipient):
+    // resolve each delegatee NAME to its contact entity so the block
+    // carries a routable candidate id + reachability. Before this, the
+    // block named the delegatee ("Muhammad Yousaf") but gave reasoning
+    // no id to send to — so a "ping the owner" ask couldn't bind the
+    // right person and substituted whoever was in the recent-candidates
+    // block (Asad). One batched lookup over the distinct delegatee names.
+    const delegateeNames = Array.from(new Set(
+      rows.map((r: any) => (typeof r.delegateeName === 'string' ? r.delegateeName.trim() : ''))
+          .filter((n: string) => n.length > 0),
+    )) as string[];
+    const delegateeContactByName = new Map<string, { id: string; phone: string | null; email: string | null }>();
+    if (delegateeNames.length > 0) {
+      const contacts = await prisma.entity.findMany({
+        where: {
+          clientNumber,
+          entityType: 'contact',
+          name: { in: delegateeNames },
+          OR: [
+            { scope: 'tenant' as any },
+            { ownerUserId: userId } as any,
+            { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+          ],
+        } as any,
+        select: { id: true, name: true, phone: true, email: true },
+      }).catch(() => [] as Array<{ id: string; name: string; phone: string | null; email: string | null }>);
+      // First contact wins per name; a duplicate-name collision is rare
+      // and the reachability hint still lets reasoning proceed or ask.
+      for (const c of contacts) {
+        if (!delegateeContactByName.has(c.name)) {
+          delegateeContactByName.set(c.name, { id: c.id, phone: c.phone, email: c.email });
+        }
+      }
+    }
+
     const lines = rows.map((r: any) => {
       const md = (r.metadata as any)?.draft;
       const missing = Array.isArray(md?.missingSlots) ? (md.missingSlots as string[]) : [];
       const due = r.dueDate ? new Date(r.dueDate).toISOString().slice(0, 10) : '—';
-      const deleg = r.delegateeName ? ` delegated_to=${r.delegateeName}` : '';
+      let deleg = '';
+      if (r.delegateeName) {
+        const contact = delegateeContactByName.get(String(r.delegateeName).trim());
+        deleg = ` delegated_to="${r.delegateeName}"`;
+        if (contact) {
+          // Routable identity — reasoning uses this id verbatim for
+          // notify_via_whatsapp / send_email to the owner. Never let
+          // it fall back to another candidate.
+          deleg += ` delegatee_candidateId=${contact.id}`;
+          const reach: string[] = [];
+          if (contact.phone) reach.push('whatsapp');
+          if (contact.email) reach.push('email');
+          deleg += ` delegatee_reachable=${reach.length ? reach.join('+') : 'none'}`;
+        } else {
+          // Named but not resolvable to a contact — reasoning MUST ask
+          // for the contact, not substitute someone else.
+          deleg += ' delegatee_candidateId=UNRESOLVED';
+        }
+      }
       const followups = (r.delegationFollowupCount ?? 0) > 0 ? ` followups_sent=${r.delegationFollowupCount}` : '';
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
       return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    return `# Your active open items (use id to update/delegate/mark_done)\n${lines.join('\n')}`;
+    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';
@@ -1635,7 +1696,7 @@ export async function compose(
           const validationErrors = await validateReasoningAction({
             type: envelope.action.type,
             payload: envelope.action as any,
-          });
+          }, clientNumber); // E3/E5 — tenant-scoped registry lookup
           if (validationErrors && validationErrors.length > 0) {
             console.warn('[compose] reasoning act failed schema validation', {
               userId, clientNumber,
@@ -2048,7 +2109,13 @@ export async function compose(
   const memoriesBlock = await (async () => {
     try {
       const { renderMemoriesBlock } = await import('./userMemoryService');
-      return await renderMemoriesBlock(userId);
+      const inferred = await renderMemoriesBlock(userId);
+      // C1 (2026-07-08): governed memories were approve-only dead storage —
+      // no compose path ever read them. User-approved memories now ride in
+      // the same block slot as inferred ones.
+      const { renderGovernedMemoriesBlock } = await import('../learning/governedMemoriesBlock');
+      const governed = await renderGovernedMemoriesBlock(clientNumber, userId);
+      return [inferred, governed].filter(Boolean).join('\n\n');
     } catch { return ''; }
   })();
 
@@ -2927,6 +2994,69 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         } catch (e: any) {
           actionResult = { ok: false, message: `[mark_contact_inactive failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
+      } else if (act.type === 'update_contact') {
+        // Real contact-field edit (2026-07-13) — closes the gap where the
+        // capability registry claimed contact-edit but no action existed,
+        // so Brain refused ("I can't update a contact's email") and
+        // offered to create a DUPLICATE contact (the exact anti-pattern
+        // that caused earlier cross-user contact leakage). Updates the
+        // canonical entity row (what resolveCandidate reads) AND refreshes
+        // the entity_person wiki page metadata so contact resolution stays
+        // consistent across both stores — the "re-read truth, not cache"
+        // rule made concrete: fix the source, don't strand a stale copy.
+        try {
+          // Resolve with the SAME user-scope filter candidateResolver
+          // uses — if the contact resolves under this filter the user is
+          // allowed to edit it (tenant-shared, owned, or self-created).
+          // A private contact owned by someone else simply won't resolve
+          // → "not found", never an unauthorized edit.
+          const ent = await prisma.entity.findFirst({
+            where: {
+              id: act.contactCandidateId,
+              clientNumber,
+              entityType: 'contact',
+              OR: [
+                { scope: 'tenant' as any },
+                { ownerUserId: userId } as any,
+                { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+              ],
+            } as any,
+            select: { id: true, name: true, email: true, phone: true },
+          });
+          if (!ent) {
+            actionResult = { ok: false, message: `[update_contact: contact not found in your contacts]` };
+          } else {
+            const changes: string[] = [];
+            const data: Record<string, unknown> = {};
+            if (act.newEmail) { data.email = act.newEmail; changes.push(`email → ${act.newEmail}`); }
+            if (act.newPhone) { data.phone = act.newPhone; changes.push(`phone → ${act.newPhone}`); }
+            if (act.newName) { data.name = act.newName; changes.push(`name → ${act.newName}`); }
+            const { updateEntity } = await import('../entityService');
+            await updateEntity(ent.id, clientNumber, data as any);
+            // Keep the entity_person wiki page metadata in sync so the
+            // stale value can't resurface via the wiki-backed lookup path.
+            try {
+              await prisma.$executeRawUnsafe(
+                `UPDATE wiki_pages
+                    SET metadata = metadata
+                      || jsonb_build_object('email', COALESCE($3, metadata->>'email'),
+                                            'phone', COALESCE($4, metadata->>'phone')),
+                        last_updated_at = NOW()
+                  WHERE client_number = $1 AND page_type = 'entity_person'
+                    AND ( (metadata->>'email') IS NOT NULL AND lower(metadata->>'email') = $2 )`,
+                clientNumber,
+                (ent.email ?? '').toLowerCase(),
+                act.newEmail ?? null,
+                act.newPhone ?? null,
+              );
+            } catch { /* wiki sync is best-effort; entity is source of truth */ }
+            actionResult = { ok: true, artifactId: ent.id, message: `Updated ${ent.name}: ${changes.join(', ')}.` };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[update_contact failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       } else if (act.type === 'archive_wiki_page') {
@@ -4439,6 +4569,13 @@ function gateHumanFacingAction(
   if (act.type === 'add_open_item') return null;
   if (act.type === 'update_open_item') return null;
   if (act.type === 'mark_open_item_done') return null;
+  // update_contact edits an existing contact in place. It's internal
+  // (no outward message), explicitly parameterized by the value the
+  // user stated ("his email is X"), and reversible — so it dispatches
+  // inline like update_open_item rather than through preview/confirm.
+  // The inline block resolves the entity + enforces the owner scope,
+  // which is its own grounding (fails closed on an unknown contact).
+  if (act.type === 'update_contact') return null;
   // NOTE — delegate_open_item is INTENTIONALLY NOT skipped here.
   // It used to be (hardcoded skip), but action_definitions has
   // isHumanFacing=true for delegate and reasoning was observed
@@ -4566,7 +4703,18 @@ async function renderActionPreview(
     } else {
       const candId = String(act.recipientCandidateId ?? '');
       const r = candId ? await resolveCandidate(candId, userId, clientNumber) : null;
-      who = fmt(r, candId || '(no recipient)');
+      // Chat 6 (2026-07-13): channel-ground the preview. fmt() shows
+      // email ?? phone, so a phone-less contact rendered as
+      // "WhatsApp to Asad <asad.ahmed@tmcltd.ai>" — a promise the send
+      // could never keep, discovered only AFTER the user confirmed
+      // ("I can't find a phone number… should I email instead?").
+      // A WhatsApp preview must bind to a PHONE at preview time; no
+      // phone → say so now and offer the real alternative, don't
+      // preview a dead end.
+      if (r && !r.phone) {
+        return `[notify_via_whatsapp: ${r.name} has no phone on file — I can send an email instead, or give me their WhatsApp number]`;
+      }
+      who = r ? `${r.name} (${r.phone})` : fmt(r, candId || '(no recipient)');
     }
     return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
@@ -4853,6 +5001,34 @@ async function dispatchPendingDirect(
   pending: import('./pendingActionService').PendingAction,
 ): Promise<{ ok: boolean; artifactId?: string; message: string }> {
   const slots = pending.slots as any;
+
+  // Pillar 2 (2026-07-10) — ground-or-ask guard. This is the LAST gate
+  // before a confirmed action irreversibly fires. Verify every target
+  // (recipient / attendee / delegatee / contact / open item) grounds to
+  // a real record scoped to this user. If any can't, fail closed to an
+  // ask marker instead of dispatching to a guessed/stale target. The
+  // guard mirrors each verb's accept-conditions exactly, so it can only
+  // catch what the verb's own resolution would also reject — never a
+  // false block. This is the structural end of the substitution class
+  // (wrong-recipient, wrong-owner, stale-contact).
+  try {
+    const { verifyActionTargets } = await import('./actionTargetGuard');
+    const verdict = await verifyActionTargets(pending.actionKind, slots, userId, clientNumber);
+    if (!verdict.ok) {
+      console.warn('[brain-chat] ground-or-ask guard blocked confirmed dispatch', {
+        userId, clientNumber, actionKind: pending.actionKind, marker: verdict.marker,
+      });
+      return { ok: false, message: verdict.marker };
+    }
+  } catch (e: any) {
+    // Guard failure must not itself block a legitimate send — log and
+    // proceed to the per-verb resolution, which still fails closed on
+    // its own if a target is unresolved.
+    console.warn('[brain-chat] ground-or-ask guard errored (non-fatal, per-verb resolution still applies)', {
+      userId, clientNumber, actionKind: pending.actionKind, error: e?.message,
+    });
+  }
+
   const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
 
   // V2: slots may contain candidateIds + rawDate; resolve here.
@@ -5259,7 +5435,7 @@ function parseCompose(text: string): ParsedCompose {
  *  subject. Observed 2026-05-20: Basit's send-email-to-Asad turn went
  *  out as bare prose with no action, and we couldn't tell which path
  *  it took. */
-function normaliseAction(raw: unknown): ComposedAction | null {
+export function normaliseAction(raw: unknown): ComposedAction | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const type = typeof r.type === 'string' ? r.type : null;
@@ -5421,6 +5597,26 @@ function normaliseAction(raw: unknown): ComposedAction | null {
     if (!contactCandidateId) return reject('mark_contact_inactive:no-id');
     const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
     return { type: 'mark_contact_inactive', contactCandidateId, nameHint };
+  }
+  if (type === 'update_contact') {
+    const contactCandidateId = typeof r.contactCandidateId === 'string' ? r.contactCandidateId.trim() : '';
+    if (!contactCandidateId) return reject('update_contact:no-id');
+    const rawEmail = typeof r.newEmail === 'string' ? r.newEmail.trim() : '';
+    const newEmail = rawEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) ? rawEmail : undefined;
+    // If an email was supplied but is malformed, reject rather than
+    // silently dropping it (a bad email is worse than asking again).
+    if (rawEmail && !newEmail) return reject('update_contact:bad-email');
+    const rawPhone = typeof r.newPhone === 'string' ? r.newPhone.trim() : '';
+    const cleanedPhone = rawPhone.replace(/[\s\-()]/g, '');
+    const newPhone = cleanedPhone && /^\+?\d{10,15}$/.test(cleanedPhone)
+      ? (cleanedPhone.startsWith('+') ? cleanedPhone : `+${cleanedPhone}`)
+      : undefined;
+    if (rawPhone && !newPhone) return reject('update_contact:bad-phone');
+    const newName = typeof r.newName === 'string' && r.newName.trim() ? r.newName.trim() : undefined;
+    // At least one field to change, else there's nothing to do.
+    if (!newEmail && !newPhone && !newName) return reject('update_contact:no-fields');
+    const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
+    return { type: 'update_contact', contactCandidateId, newEmail, newPhone, newName, nameHint };
   }
   if (type === 'archive_wiki_page') {
     const wikiPageId = typeof r.wikiPageId === 'string' ? r.wikiPageId.trim() : '';

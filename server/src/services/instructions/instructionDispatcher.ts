@@ -256,15 +256,21 @@ export async function dispatchInstruction(args: {
           mdNote: note ?? undefined,
         });
 
-        const { sendUserEmail } = await import('../gmailService');
-        const r = await sendUserEmail(
+        // B5 (2026-07-08): route through the registry executor instead of
+        // calling gmailService directly. This path previously sent a REAL
+        // email with no AgentAction row — no executor-owned status, no
+        // confirm() read-back, no undo, no audit trail. Now the send gets
+        // the full validate→execute→confirm pipeline.
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        const r = await executeViaRegistry({
+          actionType: 'send_email',
+          clientNumber,
           userId,
-          resolvedEmail,
-          `Fwd: ${subject}`,
-          cover,
-          undefined,
-        );
-        if (!r.success) return { ok: false, message: `Forward failed: ${r.error}` };
+          executedByAgent: 'voice_instruction',
+          payload: { to: [resolvedEmail], subject: `Fwd: ${subject}`, body: cover },
+          disambiguator: `delegate:${ix.targetFeedEventId}:${resolvedEmail}`,
+        });
+        if (!r.ok) return { ok: false, message: `Forward failed: ${r.error ?? 'send could not be confirmed'}` };
 
         // Create open_item + delegationLog, mirroring the /brief/decide
         // delegate path so audit history is consistent.
@@ -343,29 +349,38 @@ export async function dispatchInstruction(args: {
         }
         const endDate = new Date(startDate.getTime() + duration * 60_000);
 
-        // Real Google Calendar event creation. Previous version imported
-        // a non-existent name (`createCalendarEvent`) — the actual export
-        // is `createEvent`. The undefined import dropped every Brain
-        // schedule_meeting into the stub branch below, which returned
-        // ok:true with a misleading "I'll create..." message — Brain
-        // claimed scheduled, calendar untouched. Observed 2026-05-20.
-        const { createEvent } = await import('../calendarService');
-        const r = await createEvent(userId, {
-          title,
-          startTime: startDate.toISOString(),
-          endTime: endDate.toISOString(),
-          attendees,
+        // B5 (2026-07-08): route through the registry executor (create_event
+        // handler) instead of calling calendarService directly. The direct
+        // call created a REAL calendar event with no AgentAction row — no
+        // executor-owned status, no confirm() read-back (provider re-list of
+        // the booked window), no undo. History note kept: an earlier version
+        // imported a non-existent `createCalendarEvent` and silently claimed
+        // success while the calendar stayed untouched (observed 2026-05-20) —
+        // exactly the class of lie the confirm() pipeline now catches.
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        const r = await executeViaRegistry({
+          actionType: 'create_event',
+          clientNumber,
+          userId,
+          executedByAgent: 'voice_instruction',
+          payload: {
+            summary: title,
+            startTime: startDate.toISOString(),
+            endTime: endDate.toISOString(),
+            attendees,
+          },
+          disambiguator: `schedule:${title}:${startDate.toISOString()}`,
         });
 
-        if (r.error || !r.event) {
-          return { ok: false, message: `Schedule failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        if (!r.ok) {
+          return { ok: false, message: `Schedule failed: ${r.error ?? 'event could not be confirmed on Google Calendar'}` };
         }
 
-        const eventStart = r.event.start ?? whenIso;
+        const out = (r.output ?? {}) as { eventId?: string };
         return {
           ok: true,
-          artifactId: r.event.id,
-          message: `Meeting "${title}" scheduled for ${eventStart}${attendees.length ? ` with ${attendees.join(', ')}` : ''}.${attendees.length ? ' Invites sent.' : ''}`,
+          artifactId: out.eventId ?? String(r.actionId),
+          message: `Meeting "${title}" scheduled for ${startDate.toISOString()}${attendees.length ? ` with ${attendees.join(', ')}` : ''}.${attendees.length ? ' Invites sent.' : ''}`,
         };
       } catch (err: any) {
         return { ok: false, message: `Schedule failed: ${err.message}` };
@@ -381,10 +396,20 @@ export async function dispatchInstruction(args: {
         return { ok: false, message: `Cancel failed: no eventId provided.` };
       }
       try {
-        const { deleteEvent } = await import('../calendarService');
-        const r = await deleteEvent(userId, eventId);
-        if (!r.success) {
-          return { ok: false, message: `Cancel failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        // B5 (2026-07-08): route through the registry executor (cancel_event
+        // handler — confirm() verifies the event is actually gone/cancelled
+        // on the provider) instead of calling calendarService directly.
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        const r = await executeViaRegistry({
+          actionType: 'cancel_event',
+          clientNumber,
+          userId,
+          executedByAgent: 'voice_instruction',
+          payload: { eventId, reason: reason || undefined },
+          disambiguator: `cancel:${eventId}`,
+        });
+        if (!r.ok) {
+          return { ok: false, message: `Cancel failed: ${r.error ?? 'cancellation could not be confirmed'}` };
         }
         const titleBit = titleHint ? ` "${titleHint}"` : '';
         const reasonBit = reason ? ` (${reason})` : '';
@@ -431,17 +456,28 @@ export async function dispatchInstruction(args: {
           // a new time too. Return helpful error.
           return { ok: false, message: `Reschedule failed: please tell me the new time as well as the duration change.` };
         }
-        const { updateEvent } = await import('../calendarService');
-        const r = await updateEvent(userId, eventId, patch);
-        if (r.error || !r.event) {
-          return { ok: false, message: `Reschedule failed: ${r.error ?? 'unknown error from Google Calendar'}` };
+        // B5 exception LIFTED (2026-07-09): reschedule_event's execute()
+        // is real now (F1 gap-fill), so voice reschedule routes through the
+        // registry executor like schedule/cancel — AgentAction audit row,
+        // provider read-back confirm(), undo with previousStart.
+        const { executeViaRegistry } = await import('../actions/executeViaRegistry');
+        const r = await executeViaRegistry({
+          actionType: 'reschedule_event',
+          clientNumber,
+          userId,
+          executedByAgent: 'voice_instruction',
+          payload: { eventId, newStartTime: patch.startTime!, newEndTime: patch.endTime! },
+          disambiguator: `reschedule:${eventId}:${patch.startTime}`,
+        });
+        if (!r.ok) {
+          return { ok: false, message: `Reschedule failed: ${r.error ?? 'move could not be confirmed on Google Calendar'}` };
         }
         const titleBit = titleHint ? ` "${titleHint}"` : '';
         const reasonBit = reason ? ` (${reason})` : '';
         return {
           ok: true,
-          artifactId: r.event.id,
-          message: `Rescheduled meeting${titleBit} to ${r.event.start}.${reasonBit} Attendees notified.`,
+          artifactId: eventId,
+          message: `Rescheduled meeting${titleBit} to ${patch.startTime}.${reasonBit} Attendees notified.`,
         };
       } catch (err: any) {
         return { ok: false, message: `Reschedule failed: ${err.message}` };
@@ -637,7 +673,34 @@ export async function dispatchInstruction(args: {
     }
 
     case 'none':
-    default:
       return { ok: false, message: '' }; // caller should suppress
+
+    // ── standing_instruction + any unknown non-none intent ─────────────
+    // A8 (2026-07-08): instructions that don't match a structured intent
+    // used to fall through here with ok:false and empty message — the
+    // "acknowledged but not saved" failure mode ("I told it and it
+    // agreed, then ignored it"). If the LLM classified the turn as an
+    // instruction, we persist it as a free-form ACTIVE instruction
+    // (wiki_page pageType='instruction') so it reaches every future
+    // prompt via getActiveInstructions, and the ack names it.
+    // Never ack without persisting.
+    case 'standing_instruction':
+    default: {
+      const text = String(
+        (ix.params as any).instructionText ?? ix.summary ?? '',
+      ).trim();
+      if (!text) return { ok: false, message: '' };
+      try {
+        const { createInstructionFromText } = await import('../knowledge/instructionService');
+        const created = await createInstructionFromText(clientNumber, userId, text, 'user');
+        if (!created) return { ok: false, message: `Couldn't save that instruction — please try again.` };
+        const label = ix.summary || created.structured.title;
+        log.info('free-form instruction persisted', { userId, intent: ix.intent, id: created.id });
+        return { ok: true, artifactId: created.id, message: `Noted: ${label}. I'll apply this going forward.` };
+      } catch (err: any) {
+        log.warn('free-form instruction persist failed', { error: err.message });
+        return { ok: false, message: `Couldn't save that instruction — please try again.` };
+      }
+    }
   }
 }

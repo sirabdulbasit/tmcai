@@ -300,7 +300,7 @@ function clip(s: string, n: number): string {
  *  legitimate new chat command and replies with gibberish ("couldn't
  *  parse 'brief my day' as a date — flagged for clarification"). The
  *  second failure mode is what MD hit on 2026-05-12 and is much worse. */
-function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
+export function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
   const t = text.trim();
   if (!t) return false;
 

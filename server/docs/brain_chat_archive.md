@@ -22,8 +22,17 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `self-echo-reply` | Brain replies to a non-user message (its own outbound echo or a system alert) as if the user sent it |
+| `channel-ungrounded-preview` | Preview promises a channel (e.g. WhatsApp) whose identity (phone) was never verified to exist |
+| `wrong-owner-routing` | "ask status of X" routed to the wrong person (recently-discussed contact) instead of the item's actual delegatee |
+| `stale-contact-data` | Brain uses an old email/phone the user already corrected (correction never persisted) |
 | `pending-prompt-eats-command` | promptReplyHandler swallows a new-chat imperative as an "answer" to a stale prompt (returns `[noted]`) |
 | `two-schema-oauth-mismatch` | `users.integration_*` legacy fields disagree with `user_connectors.config` — one says stale/wrong, the other says fresh |
+| `trigger-instruction-as-task` | "when X happens, do Y" becomes a slot-gated open item (asks priority/dueDate) instead of an event-triggered rule; never fires when X happens |
+| `trigger-met-no-follow-through` | Brain narrates the trigger event (e.g. in a brief) without connecting it to its own pending commitment |
+| `ownership-misattribution` | Brain's own follow-through tasks presented as the USER's open items |
+| `time-of-day-drift` | Greeting/wording contradicts actual local time ("Morning, Sir" at 5pm) |
+| `feedback-misread-as-action` | User feedback/correction classified as an action request → `[no action dispatched]` → canned dispatch-error reply |
 
 ---
 
@@ -93,7 +102,7 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 - Brain had no way to READ Gmail Sent folder to answer "did it actually go?" — `fetch_sent_emails` tool required a specific `to` recipient.
 
 **Fix commits:**
-- `59b63da` — added `PATCH /entities/:id` (contact-edit) to capability registry
+- `59b63da` — added `PATCH /entities/:id` (contact-edit) to capability registry. **RECURRED 2026-07-13 (chat 5): INSUFFICIENT** — this only added registry TEXT claiming the capability; no emittable action existed, so Brain still refused. Real fix in chat 5.
 - `af602e2` — email send verification stack: post-send fetch confirms Sent+From address; fabrication guard requires messageId; `fetch_sent_emails` widened to allow broad "list recent sent" mode; capability registry entry telling Brain to fetch Sent folder for "did it go?" queries
 
 **Verification status:** unverified (awaiting user redeploy + send retry with the new "sent from <address>" line)
@@ -183,3 +192,82 @@ When the user pastes a new chat:
 - `two-schema-oauth-mismatch`: `users.integration_token_expiry` = 2026-07-06 (2d ago, stale); `user_connectors` for the same user says fresh (last sync 2h ago). Two token stores exist and drift; `getAuthenticatedClient` reads UserConnector-first (correct), but the stale `users.*` row misleads any diagnostic query that hits the legacy fields.
 - Gmail connector's actual sender account is `basit.ahmed@tmcltd.com` — this IS correct (TMC's Google Workspace runs on .com; logins are .ai). Matches the Asad email correction from chat 2. So `wrong-from-account` is a **false positive** flagged in chat 2 — updating that entry.
 
+---
+
+## Chat 4 — 2026-07-09 4:51–5:12pm (Asad meeting + conditional WhatsApp follow-up)
+
+**What worked (for the record):** which-Asad disambiguation, calendar conflict warning, preview→confirm chains for both meeting and email, honest "no phone number" instead of fabrication, provenance (email from Basit only after explicit user chain), messageId receipt.
+
+**Symptoms:**
+- `trigger-instruction-as-task`: "send him whatsapp when you receive contact number from him" → `add_open_item` parked as DRAFT demanding priority + dueDate from the user. A conditional trigger directive was treated as a task with missing slots.
+- `trigger-met-no-follow-through`: 9 minutes later the Day Brief itself reported "a reply from Asad about his contact number" — the trigger condition met and NARRATED — while the parked item sat untouched. Brain observed its own trigger without acting.
+- `ownership-misattribution`: the brief listed the WhatsApp follow-up under "your open items"; Basit corrected: "Whatsapp to Asad is your open item not mine… you should take care of your things."
+- `time-of-day-drift`: "Morning, Sir" at 5:05pm.
+- `feedback-misread-as-action`: Basit's 5:12 ownership correction → reasoning treated it as an action turn → `[no action dispatched]` → sanitizer's canned "Sorry, something didn't dispatch on my end… name the recipient explicitly?" Non-sequitur that ignored the feedback entirely.
+
+**Root causes (fresh diagnosis):**
+1. Trigger directives have no home: the extractor/composer menu offers add_open_item / standing rules, but nothing creates an EVENT-TRIGGERED rule. The machinery exists — `user_action_rules` + `autonomousExecutor.executeIfMatched` fires per inbound feed event — but no bridge from a "when X, do Y" instruction to a rule row. The open-item slot gate (priority/dueDate) then compounds it by interrogating the user about Brain's own follow-through task.
+2. No inbound→commitment linkage: delegationTracker only watches DELEGATED items; a DRAFT open item with a trigger phrase is invisible to every inbound processor. Asad's reply was ingested, classified, even surfaced in the brief — nothing joined it to the commitment.
+3. `brainPersonaService.ts:203` few-shot example opens "Morning, ${addressAs}" and the composer injects today's DATE (`getUserLocalDate`) but not the current TIME — the model has no clock and parrots the example greeting.
+4. `answerSanitizer.ts:35` rewrites `[no action dispatched…]` into a canned English apology — a hardcoded Brain reply layered over an honest marker (rule-4 tension), and upstream, reasoning classified an ownership complaint as an action request instead of feedback (Step-1.4 negativeFeedbackHandler only catches demote-style signals).
+
+**Fix commits:** none yet — logged here first. Pending PR #2 partially helps: C4 (which-Asad won't re-ask), A8 (standing_instruction persistence would at least keep the directive in every prompt). It does NOT create event-triggered firing, fix the greeting clock, or fix feedback misclassification.
+
+**Structural recommendation:** instruction extractor gains a `trigger_rule` intent ("when <event condition>, <action>") that writes a `user_action_rules` row (autonomousExecutor already fires those on ingest, and per the autonomy definition rule-fires are user-authorized). Ownership: items whose executor is Brain get `ownerType: 'brain'` and never appear as user open items in briefs.
+
+**Verification status:** unverified (fixes not yet shipped)
+
+---
+
+## Chat 4 — 2026-07-10 12:21pm (ask status of EXIM → wrong owner)
+
+**Symptoms:**
+- `wrong-owner-routing` (NEW tag): "ask status of EXIM" → Brain proposed messaging Asad Ahmed Taj; EXIM is delegated to Muhammad Yousaf (prod DB confirmed). Wrong recipient.
+- `stale-contact-data`: proposed email `asad.ahmed@tmcltd.ai` — the `.ai` the user corrected to `.com` days earlier never persisted (contact-edit capability is on the branch, not yet deployed).
+
+**Root cause:**
+- `buildOpenItemsBlockForReasoning` passed the delegatee as a bare NAME with no routable candidate id. To emit notify_via_whatsapp the reasoning layer needs a recipientCandidateId; unable to bind "Muhammad Yousaf", it substituted a candidate from the recent-conversation pool (Asad, who dominated the prior leave-request thread). Owner-resolution substitution — same family as the closest-match bug, one layer up.
+- Prod data: Muhammad Yousaf entity has phone (+92...302...) but no email; EXIM open_item has empty delegatee_email; duplicate EXIM rows (one DELEGATED, one closed).
+
+**Fix commit:** `680c441` — open-items block now resolves delegatee name → contact entity and embeds `delegatee_candidateId` + `delegatee_reachable`; reasoningCompose gains an "Owner-routing contract" (route to the item's delegatee_candidateId; ask if UNRESOLVED; never substitute). Tests: openItemsOwnerRouting.test.ts (6).
+
+**Verification status:** unverified — ships with PR #2 merge; current prod (459bd4d) still has the bug (preview gate prevented the wrong send — user replies "no" to cancel).
+
+**Data hygiene follow-up (prod, not code):** duplicate EXIM open_item row; Muhammad Yousaf missing email.
+
+
+---
+
+## Chat 5 — 2026-07-13 2:18pm (update contact email → "I can't")
+
+**Symptoms:**
+- `capability-fabrication` (**RECURRENCE** of chat 2): "update his email with asad.ahmed@tmcltd.com" → "Sir, I can't directly update a contact's email address" + offered to create a DUPLICATE contact record.
+
+**Recurrence verdict:** the chat-2 fix (`59b63da`) was INSUFFICIENT — it edited the capability-registry TEXT to claim contact-edit ("PATCH /entities/:id", "do NOT say you can't") but never built an emittable action. Brain, finding no action to edit a contact, correctly concluded it couldn't — the registry claim was a phantom. Patching the prompt without building the capability. Escalated to structural per the diagnostic-first rule.
+
+**Root cause:** capability registry could claim a capability with no backing action → Brain fabricates a refusal (or a bad workaround: duplicate contact, which historically caused cross-user leakage).
+
+**Fix commit:** (this commit) — built the real `update_contact` action end-to-end: ComposedAction type + normaliseAction parser + inline dispatch (updateEntity + wiki-metadata sync, user-scope enforced) + action_definitions seed (reasoning path) + guard manifest entry + capability-registry handle now points at the real action. Tests: updateContactAction.test.ts + actionTargetGuard update_contact case + harness scenario chat5. Structural: a registry-parity check should ensure every claimed capability maps to a real action (follow-up).
+
+**Also confirmed this chat:** PR #2 was NOT merged — this is OLD prod (459bd4d). None of the owner-routing/guard/harness fixes were live. Correct EXIM→Yousaf in the Day Brief is just correct DATA display (never the bug); the bug was routing, untested here.
+
+**Verification status:** unverified — ships with PR #2 merge.
+
+---
+
+## Chat 6 — 2026-07-13 3:08–3:17pm (nudge → self-ack → phantom WhatsApp channel)
+
+**Symptoms:**
+- `self-echo-reply` (NEW tag): 3:16pm — with NO user message in between, Brain replied "Acknowledged, Sir. That message seems to be a system notification." It processed something non-user (likely its own 3:08 outbound nudge echoed via message_create, or a system alert) as user input and answered it.
+- `channel-ungrounded-preview` (NEW tag): the 2:17pm turn previewed "WhatsApp to Asad Ahmed Taj <asad.ahmed@tmcltd.ai>" — an EMAIL identity on a WhatsApp promise. Only after "Yes" did Brain discover "I can't find a phone number". The preview promised a channel it never grounded.
+- `stale-contact-data` (recurrence, chat 4/5 lineage): the 2:18pm email correction (.ai → .com) was never persisted (update_contact didn't exist on prod), so the offered email fallback would go to the STALE address.
+- Ambiguous confirm: "Yes" at 3:17 had TWO plausible antecedents (the 3:08 prompt-queue nudge vs the earlier email+WA follow-up pending) — Brain guessed which one.
+
+**Root cause:**
+- channel-ungrounded-preview: renderActionPreview's fmt() shows `email ?? phone`; no phone-existence check at preview time — the failure surfaced only at dispatch.
+- self-echo-reply: inbound filtering let a non-user message reach the reply pipeline. Needs prod-log diagnosis (fromMe/message_create dedup, or system alert re-ingestion).
+- stale-contact-data: update_contact shipped in 002829c but NOT deployed (PR #2 still unmerged — this whole chat ran on old prod 459bd4d).
+
+**Fix commit:** (this commit) — WA preview now channel-grounds at preview time: contact with no phone → immediate honest marker offering email-or-give-me-the-number, no dead-end preview. Self-echo needs prod log diagnosis before a code fix (do NOT guess-patch). Ambiguous-confirm noted as a design item: prompt-queue nudges and pendingAction both accept bare confirms.
+
+**Verification status:** unverified — ships with PR #2 merge. **Fifth consecutive chat analyzed against undeployed fixes; merging PR #2 is the gating action for everything.**

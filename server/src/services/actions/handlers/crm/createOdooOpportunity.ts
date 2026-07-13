@@ -1,5 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
-import { createOpportunity } from '../../../adapters/odooAdapter';
+import { createOpportunity, readRecord } from '../../../adapters/odooAdapter';
 
 export class CreateOdooOpportunityHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -49,6 +49,22 @@ export class CreateOdooOpportunityHandler extends ActionHandler {
       return { ok: true, output: { opportunityId, createdAt: new Date().toISOString() } };
     } catch (err: any) {
       return { ok: false, error: err.message };
+    }
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: read the created crm.lead by the id Odoo returned
+    // and require it to exist as type=opportunity with the requested name.
+    // Missing record or read error → false (fail closed).
+    const o = output as { opportunityId?: number } | null | undefined;
+    if (!o || typeof o.opportunityId !== 'number' || o.opportunityId <= 0) return false;
+    try {
+      const record = await readRecord<{ id: number; name?: string; type?: string }>(
+        ctx.clientNumber, 'crm.lead', o.opportunityId, ['id', 'name', 'type'],
+      );
+      if (!record || record.id !== o.opportunityId) return false;
+      return record.name === String(ctx.payload.name) && record.type === 'opportunity';
+    } catch {
+      return false;
     }
   }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {

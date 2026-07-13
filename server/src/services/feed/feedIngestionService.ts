@@ -268,6 +268,21 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
       })();
     }
 
+    // D4 (2026-07-09) — instant proactive evaluation: schedule a debounced
+    // risk-radar run for this user instead of waiting for the daily cron.
+    // Significance is judged by the radar itself (rules + LLM), quiet hours
+    // and dedup by the D3 outreach path. Fire-and-forget.
+    if (input.userId) {
+      void (async () => {
+        try {
+          const { maybeTriggerInstantEvaluation } = await import('./instantEvaluation');
+          await maybeTriggerInstantEvaluation(input.clientNumber, input.userId!);
+        } catch (err: any) {
+          console.warn(`[instantEval] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
     // Phase C — ingest propagation: extract project/policy references and
     // update the related tenant-shared wiki pages. One Flash call per
     // ingest; bounded, fire-and-forget.

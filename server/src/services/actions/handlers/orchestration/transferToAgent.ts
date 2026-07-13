@@ -60,4 +60,17 @@ export class TransferToAgentHandler extends ActionHandler {
       },
     };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back.
+    // execute() is a Phase-4 stub: it persists nothing and publishes nothing
+    // yet, so there is no platform row or Pub/Sub receipt to re-read. The
+    // strongest honest check today is the receipt itself: a transferId was
+    // minted, and it names the same valid agent the payload asked for. Once
+    // the Pub/Sub wiring lands, replace this with verification of the publish
+    // messageId / delivery record. Fail closed on a malformed or mismatched
+    // receipt.
+    const o = output as { targetAgent?: string; transferId?: string } | null;
+    if (!o?.transferId || !o.targetAgent) return false;
+    return o.targetAgent === ctx.payload.targetAgent && VALID_AGENTS.has(o.targetAgent);
+  }
 }

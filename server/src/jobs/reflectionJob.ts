@@ -44,15 +44,31 @@ export async function runReflectionForUser(
   userId: number,
   clientNumber: string,
 ): Promise<{ proposedCount: number; skippedCount: number }> {
-  // Pull recent turns from this user's WhatsApp + web sessions.
-  // For now, focus on WhatsApp session history (web doesn't yet
-  // persist turn-by-turn).
-  const sessions = await prisma.$queryRawUnsafe<Array<{ conversation_history: unknown }>>(
-    `SELECT conversation_history FROM whatsapp_sessions
-     WHERE user_id = $1 AND client_number = $2 AND last_message_at > NOW() - INTERVAL '7 days'
-     ORDER BY last_message_at DESC LIMIT 5`,
-    userId, clientNumber,
-  ).catch(() => [] as any[]);
+  // Pull recent turns from BOTH channels. C6 (2026-07-08): this used to
+  // scan WhatsApp session history only — the "web doesn't persist
+  // turn-by-turn" premise was stale (web chat writes to `messages`, and
+  // has since the WA→web sync landed). Web-only users taught Brain
+  // nothing. Learning must span all channels.
+  const [sessions, webRows] = await Promise.all([
+    prisma.$queryRawUnsafe<Array<{ conversation_history: unknown }>>(
+      `SELECT conversation_history FROM whatsapp_sessions
+       WHERE user_id = $1 AND client_number = $2 AND last_message_at > NOW() - INTERVAL '7 days'
+       ORDER BY last_message_at DESC LIMIT 5`,
+      userId, clientNumber,
+    ).catch(() => [] as any[]),
+    // Web turns. Exclude source='whatsapp' — those rows are the WA→web
+    // sync mirror of the sessions above and would double-count.
+    prisma.$queryRawUnsafe<Array<{ role: string; content: string }>>(
+      `SELECT m.role, m.content FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE c.user_id = $1 AND m.client_number = $2
+         AND m.created_at > NOW() - INTERVAL '7 days'
+         AND COALESCE(m.source, '') <> 'whatsapp'
+         AND m.role IN ('user', 'assistant')
+       ORDER BY m.created_at ASC LIMIT 100`,
+      userId, clientNumber,
+    ).catch(() => [] as any[]),
+  ]);
 
   const turns: Array<{ role: string; content: string }> = [];
   for (const s of sessions) {
@@ -62,6 +78,9 @@ export async function runReflectionForUser(
         turns.push({ role: h.role, content: String(h.content ?? '') });
       }
     }
+  }
+  for (const r of webRows) {
+    turns.push({ role: r.role, content: String(r.content ?? '') });
   }
   if (turns.length < 6) {
     // Not enough conversation to learn from.

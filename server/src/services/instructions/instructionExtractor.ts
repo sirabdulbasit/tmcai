@@ -15,6 +15,8 @@
  *   schedule_meeting    — add a calendar event linked to this thread
  *   add_open_item       — track as a follow-up, optional due date
  *   set_window          — adjust attention/brief windows
+ *   standing_instruction — durable free-form rule/preference (persisted
+ *                          via instructionService, applied on every turn)
  *   none                — not an instruction; let normal triage handle it
  *
  * Context match: the LLM is told about the user's last ~30 feed_events
@@ -37,7 +39,8 @@ export type InstructionIntent =
   | 'cancel_meeting'
   | 'reschedule_meeting'
   | 'add_open_item'
-  | 'set_window';
+  | 'set_window'
+  | 'standing_instruction';
 
 export interface ExtractedInstruction {
   intent: InstructionIntent;
@@ -74,6 +77,8 @@ export interface ExtractedInstruction {
     /** set_window */
     attentionWindowDays?: number;
     briefWindowDays?: number;
+    /** standing_instruction — the user's rule, verbatim */
+    instructionText?: string;
   };
   /** Plain-English summary of what Brain is about to do; used in the
    *  WhatsApp confirmation reply. */
@@ -179,6 +184,10 @@ Rules per intent:
 
   set_window →
     params: { attentionWindowDays?: 7..90, briefWindowDays?: 1..30 }
+
+  standing_instruction →
+    A durable rule or preference the user wants remembered and applied going forward, that does NOT fit any structured intent above. Examples: "always reply in English", "never message Asad after 8pm", "flag anything above 80% urgency", "remind me at 5pm every day".
+    params: { instructionText: "<the user's rule, VERBATIM — do not paraphrase>" }
 
   none →
     Use this when the input isn't an actionable instruction (chitchat, partial sentence, ambiguous). Set confidence < 0.4.

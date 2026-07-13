@@ -31,6 +31,22 @@ export class ArchiveHandler extends ActionHandler {
     });
     return { ok: true, output: { openItemId: ctx.openItemId, previousStatus: previous.status } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): execute() writes the legacy 'done' status PLUS an
+    // archivedAt breadcrumb in metadata — assert both, because status
+    // alone can't distinguish an archive from a plain close/done.
+    const o = output as { openItemId?: string } | null;
+    const id = o?.openItemId ?? ctx.openItemId;
+    if (!id) return false; // nothing to verify → fail closed
+    const row = await prisma.openItem.findFirst({
+      where: { id, clientNumber: ctx.clientNumber },
+      select: { status: true, metadata: true },
+    });
+    if (!row || row.status !== 'done') return false;
+    const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+    return typeof meta.archivedAt === 'string' && meta.archivedAt.length > 0;
+  }
+
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousStatus: string };
     return { handler: 'archive.revert', payload: { openItemId: ctx.openItemId, restoreStatus: o.previousStatus } };

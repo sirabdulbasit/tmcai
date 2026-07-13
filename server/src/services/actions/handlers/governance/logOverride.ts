@@ -1,5 +1,6 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, HandlerMetadata } from '../../handlerBase';
 import { record as recordDecision } from '../../../decisions/decisionLogService';
+import prisma from '../../../../db/prisma';
 
 export class LogOverrideHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -58,5 +59,24 @@ export class LogOverrideHandler extends ActionHandler {
       agentId: ctx.executedByAgent,
     });
     return { ok: true, output: { decisionLogId: result.id, archivedToBq: result.archivedToBq } };
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: the override only counts if the L3 DecisionLog row (the
+    // Postgres operational layer, our system of record here) exists for this
+    // tenant + user and carries the decision we recorded. The BQ archive
+    // (archivedToBq) is best-effort by design — its absence must not fail a
+    // decision that IS in Postgres, so we deliberately don't gate on it.
+    const o = output as { decisionLogId?: string } | null;
+    if (!o?.decisionLogId) return false;
+    const row = await prisma.decisionLog.findFirst({
+      where: {
+        id: o.decisionLogId,
+        clientNumber: ctx.clientNumber,
+        userId: ctx.userId,
+        userDecision: String(ctx.payload.userDecision),
+      },
+      select: { id: true },
+    });
+    return row !== null;
   }
 }

@@ -85,6 +85,22 @@ export class SnoozeHandler extends ActionHandler {
     };
   }
 
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): the OpenItem row IS the system of record here.
+    // execute() makes TWO separate writes (status via lifecycleService,
+    // then dueDate via a plain update) — so status alone is not proof the
+    // snooze fully landed; assert both. Missing row / drift → fail closed.
+    const o = output as { openItemId?: string; snoozeUntil?: string } | null;
+    const id = o?.openItemId ?? ctx.openItemId;
+    if (!id || !o?.snoozeUntil) return false; // no receipt to verify → fail closed
+    const row = await prisma.openItem.findFirst({
+      where: { id, clientNumber: ctx.clientNumber },
+      select: { status: true, dueDate: true },
+    });
+    if (!row) return false;
+    return row.status === 'SNOOZED' && row.dueDate?.getTime() === new Date(o.snoozeUntil).getTime();
+  }
+
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousStatus: string; previousDueDate: string | null };
     return {

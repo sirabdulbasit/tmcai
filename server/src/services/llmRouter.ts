@@ -104,7 +104,13 @@ export async function callLLM(
             purpose: opts?.purpose ?? 'unknown',
             inputTokens, outputTokens,
           }).catch(() => {});
-          return { text, provider };
+          // Prod fix 2026-07-10: LLM output truncated at maxTokens can
+          // end in a lone surrogate (half an emoji). Every downstream
+          // consumer slices/persists this text; sanitizing HERE — the
+          // single chokepoint all providers return through — guarantees
+          // valid UTF-8 for every DB write (PG error 22021 class).
+          const { sanitizeUtf8 } = await import('../utils/utf8');
+          return { text: sanitizeUtf8(text), provider };
         }
         errors.push(`${provider}[try${attempt + 1}]: empty response`);
         break; // empty response, move to next provider

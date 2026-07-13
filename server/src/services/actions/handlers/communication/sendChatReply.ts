@@ -54,6 +54,26 @@ export class SendChatReplyHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  /** B2 trust invariant — the googleChatAdapter exposes no message-level
+   *  read (only sendMessage / getSpaceInfo), so provider read-back isn't
+   *  possible without new API surface, and execute() writes no DB mirror
+   *  row. Best available: verify the provider-assigned resource name is
+   *  well-formed AND belongs to the space we were asked to post in — the
+   *  Chat API only returns a `spaces/X/messages/Y` name on an accepted
+   *  write, and a cross-space name would mean the receipt doesn't match
+   *  the requested side effect.
+   *  CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back
+   *  (spaces.messages.get) once the adapter grows a read method. */
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    const o = output as { messageName?: unknown } | undefined;
+    const name = o?.messageName;
+    if (typeof name !== 'string' || !name) return false;
+    // Chat message resource names look like spaces/AAAA/messages/BBBB.CCCC
+    if (!/^spaces\/[^/]+\/messages\/[^/]+$/.test(name)) return false;
+    const space = String(ctx.payload.space ?? '');
+    if (space && !name.startsWith(`${space}/messages/`)) return false;
+    return true;
+  }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { messageName: string };
     return {

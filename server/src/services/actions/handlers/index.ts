@@ -1,4 +1,4 @@
-import { register } from '../handlerRegistry';
+import { register, reset } from '../handlerRegistry';
 // Lifecycle
 import { SnoozeHandler } from './lifecycle/snooze';
 import { CloseHandler } from './lifecycle/close';
@@ -40,12 +40,39 @@ import { TagEntityHandler } from './brain/tagEntity';
 import { ExtractInsightHandler } from './brain/extractInsight';
 import { UpdateMemoryHandler } from './brain/updateMemory';
 import { SyncThoughtToNotionHandler } from './brain/syncThoughtToNotion';
+import { NotifyUserRiskHandler } from './brain/notifyUserRisk';
 // Governance
 import { RequestApprovalHandler } from './governance/requestApproval';
 import { LogOverrideHandler } from './governance/logOverride';
 import { FreezeRuleHandler } from './governance/freezeRule';
 
 let registered = false;
+
+/**
+ * Fix 6 (2026-07-09) — the true reset primitive.
+ *
+ * handlerRegistry.reset() clears the Map but leaves this file's
+ * `registered` flag set to true. In one module lifetime the pattern:
+ *   reset()
+ *   registerAllHandlers()
+ * left the registry EMPTY because the once-guard early-returned.
+ * Tests survived only because vitest re-imports modules per file,
+ * giving each file a fresh `registered = false` at import time.
+ * registryCoreVerbs.test.ts carried a workaround comment warning
+ * "never reset() between cases" — that workaround is what this
+ * export replaces.
+ *
+ * resetAllHandlers is the ONE true reset: clears the map AND flips
+ * the flag so a following registerAllHandlers() actually registers.
+ * Callers that only need to clear the map (a truly-empty
+ * intermediate state, useful nowhere in production) should still use
+ * handlerRegistry.reset() directly; the sequence "clear then repopulate
+ * to the default set" is what this helper covers.
+ */
+export function resetAllHandlers(): void {
+  reset();
+  registered = false;
+}
 
 export function registerAllHandlers(): void {
   if (registered) return;
@@ -90,6 +117,7 @@ export function registerAllHandlers(): void {
   register(new ExtractInsightHandler());
   register(new UpdateMemoryHandler());
   register(new SyncThoughtToNotionHandler());
+  register(new NotifyUserRiskHandler());
   // Governance (3)
   register(new RequestApprovalHandler());
   register(new LogOverrideHandler());

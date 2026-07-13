@@ -147,5 +147,11 @@ export async function callGemini(
       ...(opts?.responseMimeType ? { responseMimeType: opts.responseMimeType } : {}),
     } as any,
   });
-  return (resp.text ?? '').trim();
+  // Prod fix 2026-07-10: maxOutputTokens truncation can end the
+  // response in a lone surrogate (half an emoji). callGemini is called
+  // directly (not only via llmRouter's callLLM) by reasoningCompose,
+  // transcription, and turn classifiers — sanitize at this exit too so
+  // every DB write downstream receives valid UTF-8 (PG 22021 class).
+  const { sanitizeUtf8 } = await import('../utils/utf8');
+  return sanitizeUtf8((resp.text ?? '').trim());
 }

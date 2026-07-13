@@ -1,6 +1,7 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, HandlerMetadata } from '../../handlerBase';
 import { createPendingApproval } from '../../../risk/approvalWorkflow';
 import type { RiskTier, RiskEvaluation } from '../../../risk/riskGatingService';
+import prisma from '../../../../db/prisma';
 
 export class RequestApprovalHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -53,5 +54,26 @@ export class RequestApprovalHandler extends ActionHandler {
       evaluation,
     });
     return { ok: true, output: { approvalId, status: 'pending', riskTier: tier } };
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: "approval requested" means the gate row created by
+    // createPendingApproval actually exists — an AgentAction in this tenant,
+    // for the target action, flagged requiresApproval, still awaiting a
+    // human ('pending'). The push notification is fire-and-forget and is
+    // deliberately NOT part of the confirmation. Fail closed if the row is
+    // missing or already left the awaiting state before we could verify it.
+    const o = output as { approvalId?: number } | null;
+    if (typeof o?.approvalId !== 'number') return false;
+    const row = await prisma.agentAction.findFirst({
+      where: {
+        id: o.approvalId,
+        clientNumber: ctx.clientNumber,
+        actionType: String(ctx.payload.targetAction),
+        requiresApproval: true,
+        status: 'pending',
+      },
+      select: { id: true },
+    });
+    return row !== null;
   }
 }

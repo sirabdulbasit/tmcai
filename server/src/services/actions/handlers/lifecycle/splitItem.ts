@@ -1,4 +1,5 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import prisma from '../../../../db/prisma';
 import * as openItemsService from '../../../openItemsService';
 
 interface SubItemSpec {
@@ -68,6 +69,26 @@ export class SplitItemHandler extends ActionHandler {
     }
     return { ok: true, output: { openItemId: ctx.openItemId, createdIds, closedOriginal: ctx.payload.closeOriginal !== false } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): a split is only real when EVERY child row exists
+    // and (when requested) the parent actually reached CLOSED. A partial
+    // split — some children missing, or parent left open when it should
+    // have been closed — must not read as success; fail closed.
+    const o = output as { openItemId?: string; createdIds?: string[]; closedOriginal?: boolean } | null;
+    const parentId = o?.openItemId ?? ctx.openItemId;
+    const createdIds = o?.createdIds;
+    if (!parentId || !Array.isArray(createdIds) || createdIds.length === 0) return false;
+    const childCount = await prisma.openItem.count({
+      where: { id: { in: createdIds }, clientNumber: ctx.clientNumber },
+    });
+    if (childCount !== createdIds.length) return false;
+    if (o?.closedOriginal) {
+      const parent = await openItemsService.getItem(parentId, ctx.clientNumber);
+      if (parent?.status !== 'CLOSED') return false;
+    }
+    return true;
+  }
+
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { createdIds: string[]; closedOriginal: boolean };
     return {

@@ -62,6 +62,31 @@ export class ExtractInsightHandler extends ActionHandler {
     });
     return { ok: true, output: { target: 'thought_entry', insightId: row.id } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: the insight only counts if the row execute() created is
+    // findable in this tenant. The two targets use different id types
+    // (KnowledgeItem = Int autoincrement, ThoughtEntry = String cuid), so we
+    // branch on the target recorded in the output. Unknown target → fail closed.
+    const o = output as { target?: string; insightId?: unknown } | null;
+    if (o?.insightId === undefined || o?.insightId === null) return false;
+    if (o.target === 'knowledge_item') {
+      const id = Number(o.insightId);
+      if (!Number.isInteger(id)) return false;
+      const row = await prisma.knowledgeItem.findFirst({
+        where: { id, clientNumber: ctx.clientNumber },
+        select: { id: true },
+      });
+      return row !== null;
+    }
+    if (o.target === 'thought_entry') {
+      const row = await prisma.thoughtEntry.findFirst({
+        where: { id: String(o.insightId), clientNumber: ctx.clientNumber, userId: ctx.userId },
+        select: { id: true },
+      });
+      return row !== null;
+    }
+    return false;
+  }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { target: string; insightId: string };
     return { handler: 'extract_insight.revert', payload: { target: o.target, insightId: o.insightId }, note: 'soft-delete or archive' };

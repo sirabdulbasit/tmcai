@@ -11,8 +11,8 @@
  *                    its name, description, and JSON-Schema input
  *   tools/call     → execute a tool via `executeViaRegistry`
  *
- * Auth: requires `Authorization: Bearer <PLATFORM_API_TOKEN>` and
- * `X-Tenant-Id: <clientNumber>` (same shape as `agentAuthMiddleware`),
+ * Auth: requires `Authorization: Bearer <tenant-bound agent token>` and
+ * `X-Tenant-Id: <clientNumber>` (validated by `agentAuthMiddleware`),
  * OR a valid session cookie. Tenant scope is enforced by the same
  * AsyncLocalStorage middleware that wraps every other route.
  *

@@ -103,10 +103,14 @@ export abstract class ActionHandler {
   /** Execute the action (writes happen here) */
   abstract execute(ctx: HandlerContext): Promise<ExecutionOutput>;
 
-  /** Confirm the side effects stuck (read-back) */
-  async confirm(_ctx: HandlerContext, _output: unknown): Promise<boolean> {
-    return true;
-  }
+  /** Confirm the side effects stuck (read-back against the system of
+   *  record — provider API or DB). ABSTRACT by design (B2, 2026-07-08):
+   *  the old `return true` default meant a handler with no real read-back
+   *  was treated as confirmed. A missing confirmation must never read as
+   *  success — every handler decides explicitly what "it actually
+   *  happened" means for its side effect. Fail closed: return false when
+   *  the record/receipt cannot be found. */
+  abstract confirm(ctx: HandlerContext, output: unknown): Promise<boolean>;
 
   /** Produce the reverse operation record (enables cascading undo) */
   async undo(_ctx: HandlerContext, _output: unknown): Promise<ReverseOperation | null> {

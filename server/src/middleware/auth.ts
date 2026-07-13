@@ -19,8 +19,8 @@ const TOKEN_COOKIE = 'tmcai_token';
  * Attaches user to req.user if valid.
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // HaseebOS v15: if agentAuthMiddleware already authenticated this request
-  // via Bearer PLATFORM_API_TOKEN + X-Tenant-Id, honor it and skip cookie check.
+  // If agentAuthMiddleware already authenticated this request via a
+  // tenant-bound Bearer token + X-Tenant-Id, honor it and skip cookie check.
   if ((req as any).user?.clientNumber && (req as any).user?.isAgent) {
     return next();
   }

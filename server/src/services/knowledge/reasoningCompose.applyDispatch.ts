@@ -93,8 +93,8 @@ export async function applyReasoningDecision(args: {
           actionResult: { ok: false, message: 'malformed_action' },
         };
       }
-      // Validate against registry.
-      const errs = await validateReasoningAction(action);
+      // Validate against registry (tenant-scoped — E3/E5).
+      const errs = await validateReasoningAction(action, clientNumber);
       if (errs && errs.length > 0) {
         return {
           answer: `Action validation failed: ${errs.join('; ')}. Need: ${errs[0]}.`,
@@ -173,4 +173,34 @@ export async function lookupClarification(args: {
     resolution: found.resolutionValue,
     usedCount: found.usedCount,
   };
+}
+
+/** C4 (2026-07-08): ClarificationMemory finally gets a READER. When
+ *  reasoning emits decision='ask', reasoningComposeWithTools calls this
+ *  before letting the question through. A hit renders an injection block;
+ *  the pass re-runs with the prior resolution in context so Brain uses
+ *  the answer the user already gave ("which Asad?" asked once, never
+ *  again) instead of re-asking. Miss / no slot / lookup failure → null,
+ *  and the ask proceeds normally. */
+export async function buildClarificationInjection(
+  userId: number,
+  question: { text: string; slotBeingFilled: string; contextTokens: string[] } | null | undefined,
+): Promise<string | null> {
+  if (!question?.slotBeingFilled) return null;
+  try {
+    const hit = await lookupClarification({
+      userId,
+      slotBeingFilled: question.slotBeingFilled,
+      contextTokens: question.contextTokens ?? [],
+    });
+    if (!hit) return null;
+    return [
+      '# Previously resolved clarification',
+      `You were about to ask: "${question.text}"`,
+      `The user already resolved slot '${question.slotBeingFilled}' before (reused ${hit.usedCount}x): ${JSON.stringify(hit.resolution)}`,
+      'Do not re-ask. Proceed using this resolution. If it clearly cannot apply to THIS request, you may still ask — but say why the remembered answer does not fit.',
+    ].join('\n');
+  } catch {
+    return null;
+  }
 }

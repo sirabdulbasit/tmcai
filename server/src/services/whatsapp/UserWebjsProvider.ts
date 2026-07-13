@@ -553,7 +553,14 @@ export async function startPairing(userId: number, clientNumber: string): Promis
   }
 
   const sessionPath = process.env.WHATSAPP_USER_SESSION_PATH || './whatsapp-user-sessions';
-  const clientId = `u${userId}`;
+  // E2: tenant-scoped key (<clientNumber>-u<userId>) so a userId can never
+  // collide across tenants; dirs locked to 0700 and ownership-checked.
+  // Pre-E2 sessions keyed `u<userId>` are renamed once to preserve pairing.
+  const { userSessionKey, hardenSessionDir, migrateLegacyUserSession } = await import('./waSessionKey');
+  const clientId = userSessionKey(clientNumber, userId);
+  hardenSessionDir(sessionPath);
+  migrateLegacyUserSession(sessionPath, `u${userId}`, clientId);
+  hardenSessionDir(path.join(sessionPath, `session-${clientId}`));
 
   // Restart resilience — see WebjsProvider.cleanStaleSingletonLocks for
   // the rationale. Inlined here because UserWebjsProvider doesn't share

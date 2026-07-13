@@ -316,37 +316,45 @@ export async function runCognitiveTick(clientNumber: string, userId: number): Pr
 }
 
 async function fileObservation(clientNumber: string, userId: number, obs: Observation): Promise<boolean> {
-  // Dedupe on title within a 24h window — so the same stale thread
-  // doesn't spawn a new observation every tick.
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const existing = await prisma.wikiPage.findFirst({
-    where: {
-      clientNumber, userId, pageType: 'observation',
-      title: obs.title,
-      lastUpdatedAt: { gte: since },
-    } as any,
-    select: { id: true },
-  }).catch(() => null);
-  if (existing) {
-    // bump the urgency / body but don't create a duplicate
-    await prisma.wikiPage.update({
-      where: { id: existing.id },
-      data: { bodyMarkdown: renderObservationBody(obs), metadata: { ...obs, schemaVersion: BRAIN_SCHEMA_VERSION, authoredBy: 'cognitive_engine' } as any, lastUpdatedAt: new Date() },
-    }).catch(() => {});
-    return false;
-  }
+  // Prod fix 2026-07-10 — the old dedup was findFirst-then-create with
+  // TWO mismatches against the DB's unique constraint
+  // (client_number, user_id, page_type, title):
+  //   1. The lookup filtered lastUpdatedAt >= 24h ago, but the
+  //      constraint has no time bound — an OLDER same-title row made
+  //      the lookup miss and the create explode (P2002 bursts in prod
+  //      logs at every cognitive tick).
+  //   2. The lookup used the untruncated title while the create used
+  //      title.slice(0, 300) — >300-char titles could never match.
+  // Fix: truncate ONCE (surrogate-safe), then upsert on the actual
+  // constraint. The 24h-freshness idea is preserved in spirit: an
+  // update to an existing row refreshes it instead of duplicating.
+  const { safeSlice } = await import('../../utils/utf8');
+  const title = safeSlice(obs.title, 300);
+  const pageData = {
+    bodyMarkdown: renderObservationBody(obs),
+    metadata: { ...obs, schemaVersion: BRAIN_SCHEMA_VERSION, authoredBy: 'cognitive_engine' } as any,
+    lastUpdatedAt: new Date(),
+    lastUpdatedBy: 'cognitive_engine',
+  };
   try {
-    const created = await prisma.wikiPage.create({
-      data: {
+    const before = await prisma.wikiPage.findUnique({
+      where: { wiki_pages_user_title_idx: { clientNumber, userId, pageType: 'observation', title } } as any,
+      select: { id: true },
+    }).catch(() => null);
+    const created = await prisma.wikiPage.upsert({
+      where: { wiki_pages_user_title_idx: { clientNumber, userId, pageType: 'observation', title } } as any,
+      update: pageData,
+      create: {
         clientNumber, userId, pageType: 'observation',
-        title: obs.title.slice(0, 300),
-        bodyMarkdown: renderObservationBody(obs),
-        metadata: { ...obs, schemaVersion: BRAIN_SCHEMA_VERSION, authoredBy: 'cognitive_engine' } as any,
+        title,
+        ...pageData,
         storage: 'postgres', status: 'active',
         sourceCount: obs.anchors.length,
-        lastUpdatedBy: 'cognitive_engine',
       },
     });
+    // Refreshing an existing observation isn't a "new" filing — keep
+    // the tick's `filed` count meaning what it always meant.
+    if (before) return false;
     // Link observation → each anchor page
     for (const a of obs.anchors) {
       await prisma.wikiPageLink.upsert({

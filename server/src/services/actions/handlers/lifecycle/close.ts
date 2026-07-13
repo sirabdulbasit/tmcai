@@ -32,6 +32,17 @@ export class CloseHandler extends ActionHandler {
     );
     return { ok: true, output: { openItemId: ctx.openItemId, previousStatus: previous.status, outcome } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): re-fetch the row and assert the CLOSED transition
+    // actually stuck. changeStatus() throws on rejection, but we never
+    // trust the in-memory success path — only what the row says now.
+    const o = output as { openItemId?: string } | null;
+    const id = o?.openItemId ?? ctx.openItemId;
+    if (!id) return false; // nothing to verify → fail closed
+    const item = await openItemsService.getItem(id, ctx.clientNumber);
+    return item?.status === 'CLOSED';
+  }
+
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousStatus: string };
     return { handler: 'close.revert', payload: { openItemId: ctx.openItemId, restoreStatus: o.previousStatus } };

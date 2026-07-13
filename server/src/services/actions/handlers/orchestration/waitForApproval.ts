@@ -1,6 +1,7 @@
 import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, HandlerMetadata } from '../../handlerBase';
 import { createPendingApproval } from '../../../risk/approvalWorkflow';
 import type { RiskEvaluation } from '../../../risk/riskGatingService';
+import prisma from '../../../../db/prisma';
 
 export class WaitForApprovalHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -77,5 +78,26 @@ export class WaitForApprovalHandler extends ActionHandler {
         linkedParentActionId: ctx.rootActionId ?? null,
       },
     };
+  }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: this handler's own side effect is the WAIT GATE, not the
+    // downstream action — so confirm() verifies the pending-approval row
+    // exists (tenant-scoped, right actionType, requiresApproval, still
+    // 'pending'). It deliberately does NOT wait for the human to approve or
+    // for the downstream action to run; that happens later via the approval
+    // inbox / push flow. Fail closed if the gate row cannot be found awaiting.
+    const o = output as { approvalId?: number } | null;
+    if (typeof o?.approvalId !== 'number') return false;
+    const row = await prisma.agentAction.findFirst({
+      where: {
+        id: o.approvalId,
+        clientNumber: ctx.clientNumber,
+        actionType: String(ctx.payload.downstreamAction),
+        requiresApproval: true,
+        status: 'pending',
+      },
+      select: { id: true },
+    });
+    return row !== null;
   }
 }

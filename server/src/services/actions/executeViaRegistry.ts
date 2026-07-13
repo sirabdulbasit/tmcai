@@ -26,6 +26,40 @@ export interface RegistryExecutionInput {
    *  user's per-channel threshold, the action is held as a DRAFT for MD review
    *  instead of being executed. Absent = treat as 1.0 (full confidence). */
   confidence?: number;
+  /** D1 (2026-07-08): who initiated this action. 'user' = a user-initiated
+   *  chain (clicked approve, gave a voice/chat instruction, configured a
+   *  standing rule) — never gated. 'brain' = Brain acting on its own
+   *  judgment (proactive outreach, self-directed actions) — gated by the
+   *  user's automationLevel in the executor. Defaults to 'user' so existing
+   *  user-driven call sites keep working; every NEW brain-discretionary
+   *  caller MUST pass 'brain'. */
+  initiator?: 'user' | 'brain';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Fix 1 (2026-07-09) — payload seed-vector strip.
+//
+// The B4 reconciler resolves stuck 'executing' AgentAction rows by
+// looking up `input._idempotencyKey` in action_idempotency_logs and
+// copying the recovered outcome back onto the row. The executor stamps
+// that key on the row itself, but the stamping update is wrapped in
+// try/catch (non-fatal by design). If the stamping fails AFTER the
+// initial row create, an attacker-supplied `_idempotencyKey` inside
+// the payload survives and points the reconciler at a foreign log
+// row — a cross-tenant result-spoofing vector.
+//
+// The defence is boring: never let a caller seed the field. This
+// helper produces a shallow copy of the payload with any
+// `_idempotencyKey` removed, no matter its value (null, number,
+// string) — checking `!!key` alone leaves `{ _idempotencyKey: null }`
+// as a bypass. Callers use the returned value for any DB write;
+// the caller's original payload object is left untouched (defensive
+// against downstream code still holding a reference to it).
+// ─────────────────────────────────────────────────────────────────
+export function sanitizePayloadInput(payload: Record<string, unknown>): Record<string, unknown> {
+  const clean = { ...(payload ?? {}) } as Record<string, unknown>;
+  if ('_idempotencyKey' in clean) delete clean._idempotencyKey;
+  return clean;
 }
 
 export interface RegistryExecutionResult {
@@ -69,7 +103,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
           userId: input.userId,
           actionType: input.actionType,
           status: 'blocked_by_kill_switch',
-          input: input.payload as any,
+          input: sanitizePayloadInput(input.payload) as any,
           output: {
             reason: 'Kill switch is engaged for this tenant. Action withheld; release the kill switch to retry.',
             actionType: input.actionType,
@@ -121,6 +155,47 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
 
   const riskTier = await handler.riskLevel(ctx);
 
+  // D1 (2026-07-08): automation-level gate — deterministic, in the executor,
+  // BEFORE any dispatch. Brain-initiated actions are held per the user's
+  // automationLevel (observe_only → proposed; drafts_only → draft;
+  // supervised → pending_approval); user-initiated chains pass through.
+  // This is structural enforcement, not a prompt instruction.
+  if ((input.initiator ?? 'user') === 'brain') {
+    const { resolveAutonomyGate } = await import('./autonomyGate');
+    const { getAutomationLevel } = await import('../brainConfigService');
+    const level = await getAutomationLevel(input.userId);
+    const decision = resolveAutonomyGate('brain', level);
+    if (decision !== 'execute') {
+      const held = await prisma.agentAction.create({
+        data: {
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          actionType: input.actionType,
+          status: decision, // proposed | draft | pending_approval
+          input: sanitizePayloadInput(input.payload) as any,
+          output: {
+            heldBy: 'automation_level',
+            level,
+            reason: `Brain-initiated action held: your automation level is "${level}"`,
+          } as any,
+          riskTier,
+          dependencyGraphId: graphId,
+          executedByAgent: input.executedByAgent,
+          requiresApproval: decision !== 'proposed',
+        } as any,
+        select: { id: true },
+      });
+      return {
+        ok: true,
+        actionId: held.id,
+        handlerName: input.actionType,
+        output: { status: decision, heldBy: 'automation_level', level },
+        dependencyGraphId: graphId,
+        traceId,
+      } as any;
+    }
+  }
+
   // Confidence-gated draft mode: if the Brain provided a confidence score and
   // it falls below the user's per-channel threshold, hold as DRAFT for MD
   // review instead of executing. Surfaced on Day Brief.
@@ -134,7 +209,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
           userId: input.userId,
           actionType: input.actionType,
           status: 'draft',
-          input: input.payload as any,
+          input: sanitizePayloadInput(input.payload) as any,
           output: {
             confidence: input.confidence,
             channel,
@@ -182,13 +257,17 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
       data: { status: 'executing', dependencyGraphId: graphId, executedByAgent: input.executedByAgent },
     });
   } else {
+    // Fix 1: strip any caller-supplied `_idempotencyKey` from the
+    // payload before persist. Only the executor's stamping code below
+    // may ever write that field; a caller-seeded value would let the
+    // B4 reconciler resolve this row via a foreign tenant's log entry.
     actionRow = await prisma.agentAction.create({
       data: {
         clientNumber: input.clientNumber,
         userId: input.userId,
         actionType: input.actionType,
         status: 'executing',
-        input: input.payload as any,
+        input: sanitizePayloadInput(input.payload) as any,
         riskTier,
         dependencyGraphId: graphId,
         executedByAgent: input.executedByAgent,
@@ -216,35 +295,81 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
 
   const idempotencyType: IdempotencyActionType = coerceIdempotencyType(input.actionType);
 
+  // B4 (2026-07-09): stamp the idempotency key into the row's input JSON so
+  // the reconciler can join a stuck-'executing' row back to the confirmed
+  // outcome in action_idempotency_log (the log write happens BEFORE the
+  // status write, so it survives a crash between provider ack and DB
+  // update). Stored in JSON, not the unique idempotencyKey column — a
+  // legitimate retry creates a second row with the same key and the unique
+  // constraint would reject it.
+  const idemParams = {
+    actionType: idempotencyType,
+    clientNumber: input.clientNumber,
+    userId: input.userId,
+    referenceId: input.openItemId ?? `action:${actionRow.id}`,
+    disambiguator: input.disambiguator ?? input.actionType,
+  };
+  try {
+    const { generateKey } = await import('../actionIdempotencyService');
+    // Fix 1: sanitize BEFORE spreading — otherwise the stamp update
+    // would re-introduce any caller-supplied `_idempotencyKey` that the
+    // initial persist above stripped out.
+    await prisma.agentAction.update({
+      where: { id: actionRow.id },
+      data: { input: { ...sanitizePayloadInput(input.payload), _idempotencyKey: generateKey(idemParams) } as any },
+    });
+  } catch (err: any) {
+    console.warn(`[executeViaRegistry] could not stamp idempotency key on row ${actionRow.id}: ${err.message}`);
+  }
+
   try {
     const result = await withIdempotency(
-      {
-        actionType: idempotencyType,
-        clientNumber: input.clientNumber,
-        userId: input.userId,
-        referenceId: input.openItemId ?? `action:${actionRow.id}`,
-        disambiguator: input.disambiguator ?? input.actionType,
-      },
+      idemParams,
       async (): Promise<ExecutionOutput> => {
         await handler.prepare(ctx);
         const out = await handler.execute(ctx);
         if (out.ok) {
+          // B2: fail closed — a handler that somehow lacks confirm()
+          // (JS-level gap the abstract base can't catch at runtime) is
+          // UNCONFIRMED, never implicitly successful.
+          if (typeof handler.confirm !== 'function') {
+            throw new Error(`handler "${input.actionType}" has no confirm() — action cannot be verified`);
+          }
           const confirmed = await handler.confirm(ctx, out.output);
           if (!confirmed) throw new Error(`confirm() returned false for handler "${input.actionType}"`);
         }
         return out;
       },
+      {
+        // B3: a cache hit must be re-verified against the system of record
+        // (the handler's own confirm()) before we claim "already done" —
+        // and failed outcomes are never cached, so a transient failure
+        // can't block retries for the TTL window.
+        reconfirm: async (cached) =>
+          cached?.ok === true && typeof handler.confirm === 'function'
+            ? handler.confirm(ctx, cached.output).catch(() => false)
+            : false,
+        shouldCache: (r) => r?.ok === true,
+      },
     );
 
-    await prisma.agentAction.update({
-      where: { id: actionRow.id },
-      data: {
-        status: result.ok ? 'done' : 'error',
-        output: (result.output ?? null) as any,
-        error: result.error,
-        undoStatus: result.ok ? 'undoable' : 'none',
-      },
-    });
+    // B4: this write is non-fatal. The confirmed outcome is already durable
+    // in action_idempotency_log; if this update fails the reconciler
+    // (reconcileStuckExecuting) resolves the row from the log — throwing
+    // here would misreport a confirmed action as failed to the caller.
+    try {
+      await prisma.agentAction.update({
+        where: { id: actionRow.id },
+        data: {
+          status: result.ok ? 'done' : 'error',
+          output: (result.output ?? null) as any,
+          error: result.error,
+          undoStatus: result.ok ? 'undoable' : 'none',
+        },
+      });
+    } catch (err: any) {
+      console.error(`[executeViaRegistry] status write failed for action ${actionRow.id} — reconciler will recover from idempotency log: ${err.message}`);
+    }
 
     // L3.4 — publish outcome on action-executed-events for Brain observability
     // and Reflection's training feed. Best-effort: failure to publish does not

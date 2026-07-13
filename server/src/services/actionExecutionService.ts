@@ -55,7 +55,11 @@ interface WriteTarget {
 }
 
 export interface ExecutionResult {
-  status: 'done' | 'partial_failure' | 'snoozed';
+  /** 'dispatched' = published to the ADK agent worker; completion is NOT
+   *  confirmed yet. Only the executor's confirmation advances the
+   *  AgentAction row to done/error; the reaper marks unconfirmed rows
+   *  'stale'. Callers must not present 'dispatched' as success. */
+  status: 'done' | 'partial_failure' | 'snoozed' | 'dispatched';
   confirmedTargets?: number;
   failedTargets?: string[];
   openItemId: string;
@@ -174,12 +178,20 @@ async function publishToAgentExecutor(action: ApprovedAction, handlerName: strin
     },
   );
 
-  // Platform returns "done" optimistically. The agent worker will update the
-  // AgentAction row's status on completion; the UI polls for real status.
+  // B1 (2026-07-08): publish is NOT completion. The row advances to
+  // 'dispatched' here; only the agent worker's confirmation may write
+  // done/error, and agentActionReaper marks unconfirmed rows 'stale'.
+  // Previously this returned 'done' optimistically — a completion claim
+  // with no system-of-record backing, the exact class of bug 259f972
+  // was created to kill.
+  await prisma.agentAction.update({
+    where: { id: row.id },
+    data: { status: 'dispatched' },
+  });
   if (action.type === 'snooze') {
     return { status: 'snoozed', openItemId: action.openItemId };
   }
-  return { status: 'done', confirmedTargets: 0, openItemId: action.openItemId };
+  return { status: 'dispatched', confirmedTargets: 0, openItemId: action.openItemId };
 }
 
 function buildPayloadForHandler(action: ApprovedAction, handlerName: string): Record<string, unknown> {

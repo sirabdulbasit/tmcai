@@ -48,6 +48,33 @@ export class EscalateHandler extends ActionHandler {
     }
     return { ok: true, output: { openItemId: ctx.openItemId, previousPriority: item.priority, newPriority, notifyUserId: notifyId } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Read-back (B2): assert the priority bump landed on the row, and —
+    // when a supervisor notification was part of the action — that the
+    // queue row exists too. A half-applied escalation (priority written,
+    // notification lost) must not read as confirmed.
+    const o = output as { openItemId?: string; newPriority?: string; notifyUserId?: number | null } | null;
+    const id = o?.openItemId ?? ctx.openItemId;
+    if (!id || !o?.newPriority) return false; // no receipt to verify → fail closed
+    const item = await openItemsService.getItem(id, ctx.clientNumber);
+    if (!item || item.priority !== o.newPriority) return false;
+    if (o.notifyUserId) {
+      const notif = await prisma.notificationQueue.findFirst({
+        where: {
+          clientNumber: ctx.clientNumber,
+          recipientId: o.notifyUserId,
+          channel: 'in_app',
+          // JSON path filter — the queue row execute() wrote carries the
+          // escalated item's id inside its payload.
+          payload: { path: ['openItemId'], equals: id },
+        },
+        select: { id: true },
+      });
+      if (!notif) return false;
+    }
+    return true;
+  }
+
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousPriority: string };
     return { handler: 'demote', payload: { openItemId: ctx.openItemId, targetPriority: o.previousPriority } };

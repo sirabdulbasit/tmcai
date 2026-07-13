@@ -171,13 +171,21 @@ export class WebjsProvider implements IWhatsAppProvider {
 
     const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
 
+    // E2: validate the key (path-safe), lock the dirs to 0700, and refuse
+    // to initialize on a dir owned by another uid — session state carries
+    // live WhatsApp auth tokens.
+    const { tenantSessionKey, hardenSessionDir } = await import('./waSessionKey');
+    const sessionKey = tenantSessionKey(clientNumber);
+    hardenSessionDir(sessionPath);
+
     // Restart resilience: if the previous process got SIGKILL'd (crash,
     // nodemon SIGTERM grace exceeded, OOM, host reboot), Chromium left
     // SingletonLock files behind in the LocalAuth folder pointing at a
     // dead PID. Without this cleanup, Chromium refuses to launch against
     // that user-data dir and the WhatsApp client never reaches `ready`,
     // forcing the admin to re-scan QR after every hard restart.
-    const sessionDir = path.join(sessionPath, `session-${clientNumber}`);
+    const sessionDir = path.join(sessionPath, `session-${sessionKey}`);
+    hardenSessionDir(sessionDir);
     cleanStaleSingletonLocks(sessionDir);
 
     // Find Chrome/Chromium executable on the system. Honour both names:
@@ -192,7 +200,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         : '/usr/bin/google-chrome-stable');
 
     const client = new Client({
-      authStrategy: new LocalAuth({ clientId: clientNumber, dataPath: sessionPath }),
+      authStrategy: new LocalAuth({ clientId: sessionKey, dataPath: sessionPath }),
       restartOnAuthFail: true,
       puppeteer: {
         headless: true,
@@ -267,6 +275,9 @@ export class WebjsProvider implements IWhatsAppProvider {
 
       log.info('Raw message event', { from: rawFrom, body: (message.body || '').slice(0, 50), type: message.type, hasMedia: message.hasMedia });
 
+      // Declared outside the try so the catch can gate the error reply on
+      // _resolvedUserId (set by handleInboundMessage after registration).
+      let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
       try {
         // Extract real phone number — handle both @c.us and @lid formats
         let fromNumber = '';
@@ -369,11 +380,13 @@ export class WebjsProvider implements IWhatsAppProvider {
             if (media?.data) {
               const audioBuffer = Buffer.from(media.data, 'base64');
               const { transcribeVoiceNote } = await import('../voiceService');
-              // Look up sender's replyLanguage preference — when set to
-              // 'english', we translate the transcript in the same
-              // Gemini call. Basit 2026-07-08: "always transcribe voice
-              // note into english". Non-blocking DB read; if it fails
-              // we fall back to auto-detect (no translation).
+              // A5 (2026-07-08, supersedes "always transcribe voice note
+              // into english"): transcribe in the SPOKEN language so
+              // instructions embedded in the voice note reach the brain
+              // unmangled. replyLanguage='english' still guarantees the
+              // REPLY is English via the persona language pin
+              // (brainPersonaService). Input is translated only on
+              // explicit opt-in (brain_channel.translateVoiceInput).
               let translateTo: 'english' | null = null;
               try {
                 const rows = await prisma.$queryRawUnsafe<any[]>(
@@ -387,10 +400,8 @@ export class WebjsProvider implements IWhatsAppProvider {
                     LIMIT 1`,
                   clientNumber, fromNumber,
                 );
-                const prefs = rows[0]?.prefs ?? {};
-                if (prefs?.brain_channel?.replyLanguage === 'english') {
-                  translateTo = 'english';
-                }
+                const { resolveInputTranslation } = await import('../voiceInputTranslation');
+                translateTo = resolveInputTranslation(rows[0]?.prefs ?? {});
               } catch { /* preference lookup is best-effort */ }
               const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo });
               messageBody = transcription.text;
@@ -409,7 +420,10 @@ export class WebjsProvider implements IWhatsAppProvider {
         }
 
         const { handleInboundMessage } = await import('./WhatsAppInbound');
-        await handleInboundMessage({
+        // Hoisted so the catch below can read _resolvedUserId — the error
+        // reply must only go to REGISTERED senders (A7); unregistered
+        // traffic stays silently dropped by policy.
+        inboundParams = {
           clientNumber,
           fromNumber,
           messageBody,
@@ -442,11 +456,17 @@ export class WebjsProvider implements IWhatsAppProvider {
               await chat.sendStateTyping();
             } catch {}
           },
-        });
+        };
+        await handleInboundMessage(inboundParams);
 
         // Remove ⏳ after all processing + replies are done
         try { await message.react(''); } catch {}
       } catch (e: any) {
+        // A7: tell the user something went wrong (bracketed system
+        // marker, registered senders only) BEFORE clearing the ⏳ —
+        // an unacknowledged instruction reads as a disobeyed one.
+        const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
+        await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
         try { await message.react(''); } catch {} // remove even on error
         log.error('Inbound handler error', { error: e.message });
       }
@@ -472,6 +492,7 @@ export class WebjsProvider implements IWhatsAppProvider {
 
       log.info('message_create event', { from: rawFrom, body: (message.body || '').slice(0, 50) });
 
+      let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
       try {
         let fromNumber = '';
         if (rawFrom.includes('@c.us')) {
@@ -486,7 +507,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         }
 
         const { handleInboundMessage } = await import('./WhatsAppInbound');
-        await handleInboundMessage({
+        inboundParams = {
           clientNumber,
           fromNumber,
           messageBody: message.body,
@@ -498,9 +519,13 @@ export class WebjsProvider implements IWhatsAppProvider {
             const chat = await message.getChat();
             await chat.sendMessage(text);
           },
-        });
+        };
+        await handleInboundMessage(inboundParams);
         try { await message.react(''); } catch {}
       } catch (e: any) {
+        // A7: bracketed error marker to registered senders before clearing ⏳
+        const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
+        await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
         try { await message.react(''); } catch {}
         log.error('message_create handler error', { error: e.message });
       }

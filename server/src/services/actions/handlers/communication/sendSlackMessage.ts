@@ -97,6 +97,24 @@ export class SendSlackMessageHandler extends ActionHandler {
     }
   }
 
+  /** B2 trust invariant — no cheap read-back exists here: a
+   *  conversations.history fetch needs history scopes the tenant bot may
+   *  not have been granted, so a scope-denied read would spuriously
+   *  unconfirm genuinely-sent messages (fail-closed for the wrong reason),
+   *  and execute() writes no DB mirror row. Best available: verify the
+   *  Slack-assigned `ts` (the message's primary key, epoch.sequence
+   *  format) plus the resolved channel — chat.postMessage only returns
+   *  these on an accepted write, never on ok:false.
+   *  CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back
+   *  (conversations.history latest=ts limit=1) once history scope is
+   *  guaranteed in the OAuth install. */
+  async confirm(_ctx: HandlerContext, output: unknown): Promise<boolean> {
+    const o = output as { channel?: unknown; ts?: unknown } | undefined;
+    if (typeof o?.channel !== 'string' || !o.channel) return false;
+    if (typeof o?.ts !== 'string' || !/^\d+\.\d+$/.test(o.ts)) return false;
+    return true;
+  }
+
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { channel?: string; ts?: string };
     return {

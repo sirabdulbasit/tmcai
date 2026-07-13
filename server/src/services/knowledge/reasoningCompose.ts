@@ -129,7 +129,10 @@ export interface ReasoningInput {
 export async function reasoningCompose(input: ReasoningInput): Promise<ReasoningResult | null> {
   // Enumerate the action types Brain can currently dispatch — these
   // come from action_definitions, the data-driven source of truth.
-  const actions = await listActiveActions().catch(() => []);
+  // E3/E5: scoped to the caller's tenant so another tenant's custom
+  // actions never appear in this Brain's capability list (system rows
+  // with clientNumber=NULL always pass the filter).
+  const actions = await listActiveActions(undefined, input.clientNumber).catch(() => []);
   const actionsBlock = renderActionsBlock(actions);
 
   const systemPromptWithDecisionContract = `${input.systemPrompt}
@@ -177,6 +180,13 @@ If the user's message is a request to PERFORM an action (send an email, notify s
 - The composer intercepts decision='answer' outputs that contain completion language ("has been sent", "was scheduled", "I've delegated", passive or active) and replaces them with a bracketed "no action dispatched" marker. If you meant to act, emit act; if you're missing info, emit ask.
 - If you honestly do not have a required slot value (recipient email, meeting time, item id), emit 'ask' naming that slot. Never fabricate the missing value; never pretend the action happened.
 - Reporting a PAST action from history is OK — e.g. "You sent Asad an email yesterday" (grounded in dataBlocks). What is forbidden is reporting THIS turn's action as done when you didn't emit act.
+
+# Owner-routing contract (structural — wrong recipient is as bad as fabrication)
+
+When the user asks you to contact / ask / chase / remind the person HANDLING an open item — e.g. "ask status of EXIM", "chase the Phoenix one", "remind whoever has the leave request" — you MUST route to THAT item's owner, read from the "Your active open items" block:
+- Find the item by title fragment, take its \`delegatee_candidateId\`, and use THAT id as the recipient (notify_via_whatsapp.recipientCandidateId or send_email.toCandidateIds). Check \`delegatee_reachable\` to pick the channel (whatsapp needs a phone; email needs an email).
+- If the matched item's \`delegatee_candidateId=UNRESOLVED\` (owner named but not a contact) OR the item has no delegatee, emit decision='ask' — name the owner and ask for their contact.
+- NEVER substitute a different person. Do NOT pick a contact from the recent-conversation candidates just because they were mentioned lately. The owner of "EXIM solution" is whoever the open-items block says — not whoever you were last talking about. Sending the EXIM status request to the wrong person because they were recently discussed is a critical error (observed 2026-07-10: "ask status of EXIM" wrongly routed to Asad when EXIM is delegated to Muhammad Yousaf).
 
 # Anti-fabrication rules (load-bearing — violating these = wrong action by Brain)
 
@@ -332,11 +342,14 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
 
 /** Validate that the reasoning step's emitted action matches the
  *  action_definitions registry. Returns array of validation errors
- *  or null on success. */
+ *  or null on success. E3/E5: pass the caller's clientNumber so an
+ *  action pinned to ANOTHER tenant validates as "unknown" here rather
+ *  than leaking its schema; omitted = legacy unscoped lookup. */
 export async function validateReasoningAction(
   action: { type: string; payload: Record<string, unknown> },
+  clientNumber?: string,
 ): Promise<string[] | null> {
-  const def = await getActionDefinition(action.type);
+  const def = await getActionDefinition(action.type, clientNumber);
   if (!def) return [`Unknown action type: ${action.type}`];
   return validateActionPayload(def, action.payload);
 }
@@ -360,6 +373,9 @@ export async function reasoningComposeWithTools(input: ReasoningInput): Promise<
   // dataBlocks object — keep the function pure.
   let collected: string[] = [];
   let workingInput: ReasoningInput = input;
+  // C4: slots already auto-resolved from clarification memory this turn —
+  // each slot gets at most one memory-injection retry.
+  const resolvedSlots = new Set<string>();
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS + 1; i += 1) {
     const isFinal = i === MAX_TOOL_ITERATIONS;
@@ -379,6 +395,25 @@ export async function reasoningComposeWithTools(input: ReasoningInput): Promise<
     if (!result) return null;
 
     if (result.decision !== 'tool_call') {
+      // C4 (2026-07-08): before an 'ask' stands, check clarification
+      // memory. The user answering "which Asad?" once must mean never
+      // being asked the same slot in the same context again. On a hit we
+      // inject the prior resolution and re-run this pass (once per slot —
+      // the resolvedSlots guard stops loops when the LLM insists on
+      // asking anyway, e.g. because the remembered answer doesn't fit).
+      if (result.decision === 'ask' && result.question?.slotBeingFilled && !isFinal
+          && !resolvedSlots.has(result.question.slotBeingFilled)) {
+        const { buildClarificationInjection } = await import('./reasoningCompose.applyDispatch');
+        const injection = await buildClarificationInjection(input.userId, result.question);
+        if (injection) {
+          resolvedSlots.add(result.question.slotBeingFilled);
+          collected.push(injection);
+          console.info('[reasoning.clarify] auto-resolved from memory', {
+            userId: input.userId, slot: result.question.slotBeingFilled,
+          });
+          continue;
+        }
+      }
       // Final answer — bubble up.
       if (collected.length > 0) {
         console.info('[reasoning.tools] loop ended', {

@@ -263,6 +263,27 @@ const ACTIONS: Seed[] = [
     previewTemplate: 'Mark "{nameHint}" inactive?',
   },
   {
+    type: 'update_contact',
+    displayName: 'Update a contact\'s details',
+    description: "Edit an existing contact's email, phone, or name IN PLACE. Emit `contactCandidateId` (entity row id from the contacts block) plus at least one of `newEmail`, `newPhone`, `newName`. Use this for corrections like \"his email is actually X\" or \"update her number\". NEVER create a new/duplicate contact to work around a wrong field — edit the existing one. Do NOT claim you can't edit contacts; this action does exactly that.",
+    schema: {
+      type: 'object',
+      required: ['contactCandidateId'],
+      properties: {
+        contactCandidateId: { type: 'string' },
+        newEmail: { type: 'string' },
+        newPhone: { type: 'string' },
+        newName: { type: 'string' },
+        nameHint: { type: 'string' },
+      },
+    },
+    handlerModule: 'entityService',
+    handlerFunction: 'updateEntity',
+    requiresCapability: 'manage_contacts',
+    isHumanFacing: true,
+    previewTemplate: 'Update {nameHint}?',
+  },
+  {
     type: 'archive_wiki_page',
     displayName: 'Archive wiki page',
     description: "Archive (soft-hide) a wiki page so Brain stops surfacing it in answers / retrieval. Reversible — the page stays in the DB and can be restored. Reference by `wikiPageId` (use lookups via the wiki search if you don't have one in context). Always preview-by-default; the user MUST confirm before the page is hidden from Brain.",

@@ -67,6 +67,26 @@ export class UpdateMemoryHandler extends ActionHandler {
     });
     return { ok: true, output: { id: row.id, previousValue: existing?.memoryValue ?? null } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: the upsert only counts if a row exists at the exact
+    // composite key we wrote AND it is the row execute() reported (id match).
+    // We deliberately do NOT deep-compare memoryValue: the column is jsonb,
+    // which re-orders object keys, so a stringify comparison would produce
+    // false negatives on data that round-tripped correctly.
+    const o = output as { id?: string } | null;
+    if (!o?.id) return false;
+    const row = await prisma.agentMemory.findUnique({
+      where: {
+        clientNumber_agentId_memoryKey: {
+          clientNumber: ctx.clientNumber,
+          agentId: ctx.payload.agentId as string,
+          memoryKey: ctx.payload.memoryKey as string,
+        },
+      },
+      select: { id: true },
+    });
+    return row !== null && row.id === o.id;
+  }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { previousValue: unknown };
     return {

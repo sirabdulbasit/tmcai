@@ -6,47 +6,24 @@ import createLogger from '../utils/logger';
 const log = createLogger('agentAuth');
 
 /**
- * HaseebOS v15 — machine-to-machine auth for the ADK agent worker.
+ * Machine-to-machine auth for the ADK agent worker.
  *
- * The agent worker runs on Cloud Run (or localhost in dev) and calls back into
- * the platform over HTTP with `Authorization: Bearer <PLATFORM_API_TOKEN>` and
- * `X-Tenant-Id: <clientNumber>` on every request.
+ * The agent worker calls back into the platform with
+ * `Authorization: Bearer <token>` and `X-Tenant-Id: <clientNumber>`.
  *
- * This middleware:
- *  - Accepts the bearer token if it matches `process.env.PLATFORM_API_TOKEN`
- *  - Builds a synthetic `req.user` so downstream route handlers can read
- *    `clientNumber` / `userType='SA'` / `id` without distinguishing agent vs human
- *  - Records `X-Agent-Id` on the request for DecisionLog correlation
- *  - `user.id` maps to the tenant's first SA user so existing route checks
- *    (`if (!user?.id)`) pass. Attribution: the agent acts on behalf of that SA.
+ * E1 (2026-07-08): tokens are provisioned PER TENANT in `agent_api_tokens`
+ * (sha256 hash of the raw token — raw values are never stored). The
+ * middleware verifies the token↔tenant binding:
+ *   - token bound to the requested tenant  → synthetic SA `req.user`,
+ *     audit log, downstream runs inside that tenant's Prisma scope
+ *   - KNOWN token + tenant it is NOT bound to (or missing X-Tenant-Id)
+ *     → 403, request ends here. No scope is entered — this is the
+ *     cross-tenant impersonation the old env-token model allowed.
+ *   - unknown bearer → fall through to cookie/session auth untouched
  *
- * Falls through to cookie-session auth if the header is absent or mismatched.
- *
- * Security: the expected token is ONLY read from `process.env.PLATFORM_API_TOKEN`.
- * There is no hard-coded fallback — in production, boot fails if the env var
- * is missing. In development we log a loud warning and reject all agent
- * bearers rather than accepting a known string.
+ * The legacy single `PLATFORM_API_TOKEN` env var no longer grants access.
+ * Provision tokens with `npm run provision:agent-token -- <clientNumber> <label>`.
  */
-
-const MIN_TOKEN_BYTES = 32;
-
-// Cached: tenant → SA userId. Avoids a DB hit on every agent request.
-const saIdCache = new Map<string, number>();
-
-/** Read-and-validate the expected token once, at middleware-call time, from env. */
-export function getExpectedAgentToken(): string | null {
-  const raw = process.env.PLATFORM_API_TOKEN;
-  if (!raw || raw.length < MIN_TOKEN_BYTES) return null;
-  return raw;
-}
-
-/** Constant-time token comparison; safely handles unequal-length inputs. */
-function tokensMatch(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a, 'utf8');
-  const bBuf = Buffer.from(b, 'utf8');
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
-}
 
 async function resolveSaId(clientNumber: string): Promise<number> {
   const hit = saIdCache.get(clientNumber);
@@ -61,36 +38,69 @@ async function resolveSaId(clientNumber: string): Promise<number> {
   return id;
 }
 
-export async function agentAuthMiddleware(req: Request, _res: Response, next: NextFunction): Promise<void> {
+// Cached: tenant → SA userId. Avoids a DB hit on every agent request.
+const saIdCache = new Map<string, number>();
+
+export function hashAgentToken(raw: string): string {
+  return crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
+}
+
+export async function agentAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return next();
   const token = header.slice('Bearer '.length).trim();
+  if (!token) return next();
 
-  const expected = getExpectedAgentToken();
-  if (!expected) {
-    // No valid token configured — never accept an agent bearer. Fall through
-    // to cookie auth so human sessions still work (e.g. a developer running
-    // locally without the env var set).
-    log.warn('agent bearer rejected: PLATFORM_API_TOKEN missing or too short', {
-      path: req.path,
-    });
-    return next();
-  }
-
-  if (!token || !tokensMatch(token, expected)) {
-    return next();
-  }
-
+  const tokenHash = hashAgentToken(token);
   const tenantId = (req.headers['x-tenant-id'] as string | undefined)?.trim();
   const agentId = (req.headers['x-agent-id'] as string | undefined)?.trim() || 'unknown';
 
-  if (!tenantId) return next();
+  // 1. Is this token bound to the tenant it claims?
+  let bound: { id: string } | null = null;
+  try {
+    bound = tenantId
+      ? await prisma.agentApiToken.findFirst({
+          where: { tokenHash, clientNumber: tenantId, isActive: true },
+          select: { id: true },
+        })
+      : null;
+  } catch (err: any) {
+    // DB down — fail CLOSED for agent auth (do not guess a tenant), but
+    // let non-agent bearers continue to other auth layers.
+    log.error('agent token lookup failed', { error: err.message });
+    return next();
+  }
+
+  if (!bound) {
+    // 2. Not bound. Distinguish "known token, wrong tenant" (attack or
+    //    misconfig → hard 403, audit) from "not an agent token at all"
+    //    (fall through — could be another bearer scheme).
+    const known = await prisma.agentApiToken
+      .findFirst({ where: { tokenHash, isActive: true }, select: { id: true, clientNumber: true } })
+      .catch(() => null);
+    if (known) {
+      log.warn('AGENT AUTH REJECTED — token not bound to requested tenant', {
+        tokenId: known.id, boundTenant: known.clientNumber,
+        requestedTenant: tenantId ?? '(missing X-Tenant-Id)',
+        agentId, path: req.path,
+      });
+      res.status(403).json({ error: 'token not authorized for this tenant' });
+      return;
+    }
+    return next();
+  }
+
+  // 3. Bound token — audit every agent auth with its tenant.
+  log.info('agent auth ok', { tokenId: bound.id, tenant: tenantId, agentId, path: req.path });
+  void prisma.agentApiToken
+    .updateMany({ where: { id: bound.id }, data: { lastUsedAt: new Date() } })
+    .catch(() => { /* best effort */ });
 
   let saId = 0;
   try {
-    saId = await resolveSaId(tenantId);
+    saId = await resolveSaId(tenantId!);
   } catch {
-    /* DB down — proceed with id=0; some routes will reject, which is safer than a lie */
+    /* DB hiccup — proceed with id=0; some routes will reject, which is safer than a lie */
   }
 
   (req as any).user = {
@@ -103,10 +113,10 @@ export async function agentAuthMiddleware(req: Request, _res: Response, next: Ne
 
   // Run downstream in tenant scope so Prisma middleware auto-injects
   // clientNumber on tenant-scoped queries. Agent calls are scoped to
-  // exactly the tenant they specified — no cross-tenant bypass.
+  // exactly the tenant their token was provisioned for.
   const { runInTenantScope } = await import('../db/tenantContext');
   await runInTenantScope(
-    { clientNumber: tenantId, userId: saId || null, bypass: false },
+    { clientNumber: tenantId!, userId: saId || null, bypass: false },
     async () => next(),
   );
 }

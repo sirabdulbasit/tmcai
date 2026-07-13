@@ -78,6 +78,32 @@ export class UpdateOdooCrmHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // Provider read-back: re-read the changed keys from Odoo and require the
+    // record to exist with the written values in place. many2one fields read
+    // back as [id, name] tuples, so a numeric write is compared against the
+    // tuple's id. Record missing or read error → false (fail closed).
+    const o = output as { recordType?: string; recordId?: number; changedKeys?: string[] } | null | undefined;
+    if (!o || typeof o.recordId !== 'number') return false;
+    const model = o.recordType === 'opportunity' ? 'crm.lead' : 'res.partner';
+    const written = (ctx.payload.fields as Record<string, unknown>) ?? {};
+    const keys = Array.isArray(o.changedKeys) && o.changedKeys.length > 0 ? o.changedKeys : Object.keys(written);
+    try {
+      const record = await readRecord(ctx.clientNumber, model, o.recordId, keys);
+      if (!record) return false;
+      return keys.every(key => {
+        const wrote = written[key];
+        const read = (record as Record<string, unknown>)[key];
+        if (Array.isArray(read) && typeof wrote === 'number') return read[0] === wrote; // many2one [id, name]
+        if (['string', 'number', 'boolean'].includes(typeof wrote) && ['string', 'number', 'boolean'].includes(typeof read)) {
+          return String(read) === String(wrote);
+        }
+        return true; // non-comparable shapes (relations, dicts) — existence check already passed
+      });
+    } catch {
+      return false;
+    }
+  }
   async undo(_ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { recordType: string; recordId: number; previous: Record<string, unknown> | null };
     return {

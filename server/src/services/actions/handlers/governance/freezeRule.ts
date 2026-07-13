@@ -34,6 +34,19 @@ export class FreezeRuleHandler extends ActionHandler {
     });
     return { ok: true, output: { ruleId: rule.id, previousState: rule.state, previousFrozen: rule.frozen } };
   }
+  async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
+    // B2 read-back: a freeze is only real if the RuleLifecycle row in this
+    // tenant now has frozen=true AND carries the reason we wrote. This is a
+    // HIGH-tier action — an unverified freeze means a rule we believe is
+    // stopped may still be executing/promoting, so fail closed hard.
+    const o = output as { ruleId?: string } | null;
+    if (!o?.ruleId) return false;
+    const row = await prisma.ruleLifecycle.findFirst({
+      where: { id: o.ruleId, clientNumber: ctx.clientNumber },
+      select: { frozen: true, frozenReason: true },
+    });
+    return row !== null && row.frozen === true && row.frozenReason === String(ctx.payload.reason);
+  }
   async undo(ctx: HandlerContext, output: unknown): Promise<ReverseOperation> {
     const o = output as { ruleId: string; previousFrozen: boolean };
     return {
