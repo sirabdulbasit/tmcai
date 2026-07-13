@@ -11,5 +11,15 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function resolveInputTranslation(prefs: any): 'english' | null {
-  return prefs?.brain_channel?.translateVoiceInput === true ? 'english' : null;
+  // Resolution order (2026-07-13 — so new clients don't need per-user
+  // SQL): an EXPLICIT per-user setting always wins (true → translate,
+  // false → don't, even if the deployment default says otherwise).
+  // When the user hasn't set it at all, fall back to the deployment
+  // default env BRAIN_INPUT_TRANSLATE_DEFAULT ('english' to translate).
+  // A configured default is not a hardcoded assumption — the operator
+  // sets it per box; any user can still opt out explicitly.
+  const explicit = prefs?.brain_channel?.translateVoiceInput;
+  if (explicit === true) return 'english';
+  if (explicit === false) return null;
+  return process.env.BRAIN_INPUT_TRANSLATE_DEFAULT === 'english' ? 'english' : null;
 }

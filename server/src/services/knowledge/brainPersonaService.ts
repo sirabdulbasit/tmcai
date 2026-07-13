@@ -101,8 +101,17 @@ export async function getBrainPersona(userId: number, clientNumber: string): Pro
   //   'english'     → always English
   //   'urdu'        → always Urdu script
   //   'roman_urdu'  → always Roman-Urdu (Latin chars)
+  //
+  // Resolution order (2026-07-13 — so new clients don't need per-user
+  // SQL): explicit per-user pref wins; if absent, fall back to the
+  // deployment default env BRAIN_REPLY_LANGUAGE_DEFAULT; if that's
+  // unset, 'auto'. Same env-default pattern as attentionWindowDays.
+  // A configured default is not a hardcoded judgement — the operator
+  // sets it per box, and any user can still override to their language.
   const replyLanguage: 'auto' | 'english' | 'urdu' | 'roman_urdu' =
-    (prefs?.brain_channel?.replyLanguage as any) || 'auto';
+    (prefs?.brain_channel?.replyLanguage as any)
+    || (process.env.BRAIN_REPLY_LANGUAGE_DEFAULT as any)
+    || 'auto';
   // Per-user grammatical gender — drives English pronouns and Urdu verb
   // endings in every Brain reply. Default 'female' per user request
   // 2026-06-10 ("default is female"). Override via Settings → Profile.
