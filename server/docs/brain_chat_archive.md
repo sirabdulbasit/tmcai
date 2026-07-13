@@ -22,6 +22,8 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `self-echo-reply` | Brain replies to a non-user message (its own outbound echo or a system alert) as if the user sent it |
+| `channel-ungrounded-preview` | Preview promises a channel (e.g. WhatsApp) whose identity (phone) was never verified to exist |
 | `wrong-owner-routing` | "ask status of X" routed to the wrong person (recently-discussed contact) instead of the item's actual delegatee |
 | `stale-contact-data` | Brain uses an old email/phone the user already corrected (correction never persisted) |
 | `pending-prompt-eats-command` | promptReplyHandler swallows a new-chat imperative as an "answer" to a stale prompt (returns `[noted]`) |
@@ -250,3 +252,22 @@ When the user pastes a new chat:
 **Also confirmed this chat:** PR #2 was NOT merged — this is OLD prod (459bd4d). None of the owner-routing/guard/harness fixes were live. Correct EXIM→Yousaf in the Day Brief is just correct DATA display (never the bug); the bug was routing, untested here.
 
 **Verification status:** unverified — ships with PR #2 merge.
+
+---
+
+## Chat 6 — 2026-07-13 3:08–3:17pm (nudge → self-ack → phantom WhatsApp channel)
+
+**Symptoms:**
+- `self-echo-reply` (NEW tag): 3:16pm — with NO user message in between, Brain replied "Acknowledged, Sir. That message seems to be a system notification." It processed something non-user (likely its own 3:08 outbound nudge echoed via message_create, or a system alert) as user input and answered it.
+- `channel-ungrounded-preview` (NEW tag): the 2:17pm turn previewed "WhatsApp to Asad Ahmed Taj <asad.ahmed@tmcltd.ai>" — an EMAIL identity on a WhatsApp promise. Only after "Yes" did Brain discover "I can't find a phone number". The preview promised a channel it never grounded.
+- `stale-contact-data` (recurrence, chat 4/5 lineage): the 2:18pm email correction (.ai → .com) was never persisted (update_contact didn't exist on prod), so the offered email fallback would go to the STALE address.
+- Ambiguous confirm: "Yes" at 3:17 had TWO plausible antecedents (the 3:08 prompt-queue nudge vs the earlier email+WA follow-up pending) — Brain guessed which one.
+
+**Root cause:**
+- channel-ungrounded-preview: renderActionPreview's fmt() shows `email ?? phone`; no phone-existence check at preview time — the failure surfaced only at dispatch.
+- self-echo-reply: inbound filtering let a non-user message reach the reply pipeline. Needs prod-log diagnosis (fromMe/message_create dedup, or system alert re-ingestion).
+- stale-contact-data: update_contact shipped in 002829c but NOT deployed (PR #2 still unmerged — this whole chat ran on old prod 459bd4d).
+
+**Fix commit:** (this commit) — WA preview now channel-grounds at preview time: contact with no phone → immediate honest marker offering email-or-give-me-the-number, no dead-end preview. Self-echo needs prod log diagnosis before a code fix (do NOT guess-patch). Ambiguous-confirm noted as a design item: prompt-queue nudges and pendingAction both accept bare confirms.
+
+**Verification status:** unverified — ships with PR #2 merge. **Fifth consecutive chat analyzed against undeployed fixes; merging PR #2 is the gating action for everything.**

@@ -184,4 +184,32 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(claimed).toContain('update_contact');
     },
   },
+  {
+    id: 'chat6',
+    date: '2026-07-13',
+    userMessage: 'Yes (confirming a WhatsApp follow-up to a phone-less contact)',
+    observedFailure:
+      'The preview promised "WhatsApp to Asad <asad.ahmed@tmcltd.ai>" — an EMAIL identity on a WhatsApp promise. Only after the user confirmed did Brain discover there was no phone ("I can\'t find a phone number… should I email instead?"). The preview never grounded the channel it promised.',
+    symptomTags: ['channel-ungrounded-preview', 'self-echo-reply'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      // The preview renderer must channel-ground at PREVIEW time: the
+      // notify_via_whatsapp branch has to check the resolved contact's
+      // phone and bail with the honest no-phone marker instead of
+      // rendering a dead-end preview. Source-level lock (the renderer
+      // needs a prisma+resolver harness for a behavioural test; the
+      // load-bearing lines are the phone check + phone-only identity).
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      const previewIdx = src.indexOf('Before I send the WhatsApp, please confirm');
+      expect(previewIdx).toBeGreaterThan(-1);
+      const before = src.slice(Math.max(0, previewIdx - 2000), previewIdx);
+      // The no-phone bail must exist ABOVE the preview string.
+      expect(before).toMatch(/has no phone on file/);
+      expect(before).toMatch(/if \(r && !r\.phone\)/);
+      // Identity shown must be the PHONE, not fmt()'s email-first pick.
+      expect(before).toMatch(/\$\{r\.name\} \(\$\{r\.phone\}\)/);
+    },
+  },
 ];

@@ -4703,7 +4703,18 @@ async function renderActionPreview(
     } else {
       const candId = String(act.recipientCandidateId ?? '');
       const r = candId ? await resolveCandidate(candId, userId, clientNumber) : null;
-      who = fmt(r, candId || '(no recipient)');
+      // Chat 6 (2026-07-13): channel-ground the preview. fmt() shows
+      // email ?? phone, so a phone-less contact rendered as
+      // "WhatsApp to Asad <asad.ahmed@tmcltd.ai>" — a promise the send
+      // could never keep, discovered only AFTER the user confirmed
+      // ("I can't find a phone number… should I email instead?").
+      // A WhatsApp preview must bind to a PHONE at preview time; no
+      // phone → say so now and offer the real alternative, don't
+      // preview a dead end.
+      if (r && !r.phone) {
+        return `[notify_via_whatsapp: ${r.name} has no phone on file — I can send an email instead, or give me their WhatsApp number]`;
+      }
+      who = r ? `${r.name} (${r.phone})` : fmt(r, candId || '(no recipient)');
     }
     return `Before I send the WhatsApp, please confirm — message to ${who}:\n\n"${act.message}"\n\nThe note will be prefixed with the standard Nexeo-on-behalf-of intro. Reply "send" to confirm, or tell me what to change.`;
   }
