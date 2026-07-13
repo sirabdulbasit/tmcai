@@ -545,7 +545,7 @@ export async function dispatchInstruction(args: {
           return {
             ok: true,
             artifactId: existing.id,
-            message: `"${existing.title}" already on your open items (status: ${existing.status.toLowerCase()}). Not adding a duplicate.`,
+            message: `You already have "${existing.title}" on your list (${existing.status.toLowerCase()}). I kept the existing one — want me to follow up on it or update it?`,
           };
         }
       } catch { /* fall through to create */ }
@@ -599,7 +599,7 @@ export async function dispatchInstruction(args: {
               return {
                 ok: true,
                 artifactId: c.id,
-                message: `Same intent as existing "${c.title}" (status: ${c.status.toLowerCase()}). Not adding a duplicate.`,
+                message: `That's already on your list as "${c.title}" (${c.status.toLowerCase()}). I didn't add a duplicate — want me to follow up on it or update it?`,
               };
             }
           }
