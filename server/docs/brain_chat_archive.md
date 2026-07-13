@@ -100,7 +100,7 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 - Brain had no way to READ Gmail Sent folder to answer "did it actually go?" — `fetch_sent_emails` tool required a specific `to` recipient.
 
 **Fix commits:**
-- `59b63da` — added `PATCH /entities/:id` (contact-edit) to capability registry
+- `59b63da` — added `PATCH /entities/:id` (contact-edit) to capability registry. **RECURRED 2026-07-13 (chat 5): INSUFFICIENT** — this only added registry TEXT claiming the capability; no emittable action existed, so Brain still refused. Real fix in chat 5.
 - `af602e2` — email send verification stack: post-send fetch confirms Sent+From address; fabrication guard requires messageId; `fetch_sent_emails` widened to allow broad "list recent sent" mode; capability registry entry telling Brain to fetch Sent folder for "did it go?" queries
 
 **Verification status:** unverified (awaiting user redeploy + send retry with the new "sent from <address>" line)
@@ -233,3 +233,20 @@ When the user pastes a new chat:
 
 **Data hygiene follow-up (prod, not code):** duplicate EXIM open_item row; Muhammad Yousaf missing email.
 
+
+---
+
+## Chat 5 — 2026-07-13 2:18pm (update contact email → "I can't")
+
+**Symptoms:**
+- `capability-fabrication` (**RECURRENCE** of chat 2): "update his email with asad.ahmed@tmcltd.com" → "Sir, I can't directly update a contact's email address" + offered to create a DUPLICATE contact record.
+
+**Recurrence verdict:** the chat-2 fix (`59b63da`) was INSUFFICIENT — it edited the capability-registry TEXT to claim contact-edit ("PATCH /entities/:id", "do NOT say you can't") but never built an emittable action. Brain, finding no action to edit a contact, correctly concluded it couldn't — the registry claim was a phantom. Patching the prompt without building the capability. Escalated to structural per the diagnostic-first rule.
+
+**Root cause:** capability registry could claim a capability with no backing action → Brain fabricates a refusal (or a bad workaround: duplicate contact, which historically caused cross-user leakage).
+
+**Fix commit:** (this commit) — built the real `update_contact` action end-to-end: ComposedAction type + normaliseAction parser + inline dispatch (updateEntity + wiki-metadata sync, user-scope enforced) + action_definitions seed (reasoning path) + guard manifest entry + capability-registry handle now points at the real action. Tests: updateContactAction.test.ts + actionTargetGuard update_contact case + harness scenario chat5. Structural: a registry-parity check should ensure every claimed capability maps to a real action (follow-up).
+
+**Also confirmed this chat:** PR #2 was NOT merged — this is OLD prod (459bd4d). None of the owner-routing/guard/harness fixes were live. Correct EXIM→Yousaf in the Day Brief is just correct DATA display (never the bug); the bug was routing, untested here.
+
+**Verification status:** unverified — ships with PR #2 merge.

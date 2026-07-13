@@ -47,6 +47,7 @@ export const TARGETING_ACTION_KINDS = [
   'mark_open_item_done',
   'set_contact_scope',
   'mark_contact_inactive',
+  'update_contact',
   'archive_wiki_page',
   'delete_wiki_page',
 ] as const;
@@ -127,7 +128,8 @@ export async function verifyActionTargets(
       return ask('who to delegate to — name the exact contact or give a valid email');
     }
     case 'set_contact_scope':
-    case 'mark_contact_inactive': {
+    case 'mark_contact_inactive':
+    case 'update_contact': {
       if (await candidateResolves(s.contactCandidateId, userId, clientNumber)) return { ok: true };
       return ask('which contact — name the exact person');
     }

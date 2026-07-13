@@ -86,6 +86,13 @@ export type ComposedAction =
   | { type: 'delete_wiki_page'; wikiPageId: string; titleHint?: string; reason?: string }
   | { type: 'set_contact_scope'; contactCandidateId: string; scope: 'tenant' | 'normal' | 'private'; nameHint?: string }
   | { type: 'mark_contact_inactive'; contactCandidateId: string; nameHint?: string }
+  // update_contact (2026-07-13): edit an existing contact's fields. The
+  // capability registry long CLAIMED contact-edit ("PATCH /entities/:id")
+  // but no action backed it, so Brain kept saying "I can't update a
+  // contact's email" and offered to create a DUPLICATE contact instead.
+  // This is the real emittable action. At least one of newEmail/newPhone/
+  // newName must be present.
+  | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
@@ -2989,6 +2996,69 @@ ${calLines.join('\n')}`;
           actionResult = { ok: false, message: `[mark_contact_inactive failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
+      } else if (act.type === 'update_contact') {
+        // Real contact-field edit (2026-07-13) — closes the gap where the
+        // capability registry claimed contact-edit but no action existed,
+        // so Brain refused ("I can't update a contact's email") and
+        // offered to create a DUPLICATE contact (the exact anti-pattern
+        // that caused earlier cross-user contact leakage). Updates the
+        // canonical entity row (what resolveCandidate reads) AND refreshes
+        // the entity_person wiki page metadata so contact resolution stays
+        // consistent across both stores — the "re-read truth, not cache"
+        // rule made concrete: fix the source, don't strand a stale copy.
+        try {
+          // Resolve with the SAME user-scope filter candidateResolver
+          // uses — if the contact resolves under this filter the user is
+          // allowed to edit it (tenant-shared, owned, or self-created).
+          // A private contact owned by someone else simply won't resolve
+          // → "not found", never an unauthorized edit.
+          const ent = await prisma.entity.findFirst({
+            where: {
+              id: act.contactCandidateId,
+              clientNumber,
+              entityType: 'contact',
+              OR: [
+                { scope: 'tenant' as any },
+                { ownerUserId: userId } as any,
+                { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+              ],
+            } as any,
+            select: { id: true, name: true, email: true, phone: true },
+          });
+          if (!ent) {
+            actionResult = { ok: false, message: `[update_contact: contact not found in your contacts]` };
+          } else {
+            const changes: string[] = [];
+            const data: Record<string, unknown> = {};
+            if (act.newEmail) { data.email = act.newEmail; changes.push(`email → ${act.newEmail}`); }
+            if (act.newPhone) { data.phone = act.newPhone; changes.push(`phone → ${act.newPhone}`); }
+            if (act.newName) { data.name = act.newName; changes.push(`name → ${act.newName}`); }
+            const { updateEntity } = await import('../entityService');
+            await updateEntity(ent.id, clientNumber, data as any);
+            // Keep the entity_person wiki page metadata in sync so the
+            // stale value can't resurface via the wiki-backed lookup path.
+            try {
+              await prisma.$executeRawUnsafe(
+                `UPDATE wiki_pages
+                    SET metadata = metadata
+                      || jsonb_build_object('email', COALESCE($3, metadata->>'email'),
+                                            'phone', COALESCE($4, metadata->>'phone')),
+                        last_updated_at = NOW()
+                  WHERE client_number = $1 AND page_type = 'entity_person'
+                    AND ( (metadata->>'email') IS NOT NULL AND lower(metadata->>'email') = $2 )`,
+                clientNumber,
+                (ent.email ?? '').toLowerCase(),
+                act.newEmail ?? null,
+                act.newPhone ?? null,
+              );
+            } catch { /* wiki sync is best-effort; entity is source of truth */ }
+            actionResult = { ok: true, artifactId: ent.id, message: `Updated ${ent.name}: ${changes.join(', ')}.` };
+          }
+          answer = actionResult.message;
+        } catch (e: any) {
+          actionResult = { ok: false, message: `[update_contact failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
       } else if (act.type === 'archive_wiki_page') {
         try {
           const existing = await prisma.wikiPage.findUnique({
@@ -4499,6 +4569,13 @@ function gateHumanFacingAction(
   if (act.type === 'add_open_item') return null;
   if (act.type === 'update_open_item') return null;
   if (act.type === 'mark_open_item_done') return null;
+  // update_contact edits an existing contact in place. It's internal
+  // (no outward message), explicitly parameterized by the value the
+  // user stated ("his email is X"), and reversible — so it dispatches
+  // inline like update_open_item rather than through preview/confirm.
+  // The inline block resolves the entity + enforces the owner scope,
+  // which is its own grounding (fails closed on an unknown contact).
+  if (act.type === 'update_contact') return null;
   // NOTE — delegate_open_item is INTENTIONALLY NOT skipped here.
   // It used to be (hardcoded skip), but action_definitions has
   // isHumanFacing=true for delegate and reasoning was observed
@@ -5509,6 +5586,26 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     if (!contactCandidateId) return reject('mark_contact_inactive:no-id');
     const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
     return { type: 'mark_contact_inactive', contactCandidateId, nameHint };
+  }
+  if (type === 'update_contact') {
+    const contactCandidateId = typeof r.contactCandidateId === 'string' ? r.contactCandidateId.trim() : '';
+    if (!contactCandidateId) return reject('update_contact:no-id');
+    const rawEmail = typeof r.newEmail === 'string' ? r.newEmail.trim() : '';
+    const newEmail = rawEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) ? rawEmail : undefined;
+    // If an email was supplied but is malformed, reject rather than
+    // silently dropping it (a bad email is worse than asking again).
+    if (rawEmail && !newEmail) return reject('update_contact:bad-email');
+    const rawPhone = typeof r.newPhone === 'string' ? r.newPhone.trim() : '';
+    const cleanedPhone = rawPhone.replace(/[\s\-()]/g, '');
+    const newPhone = cleanedPhone && /^\+?\d{10,15}$/.test(cleanedPhone)
+      ? (cleanedPhone.startsWith('+') ? cleanedPhone : `+${cleanedPhone}`)
+      : undefined;
+    if (rawPhone && !newPhone) return reject('update_contact:bad-phone');
+    const newName = typeof r.newName === 'string' && r.newName.trim() ? r.newName.trim() : undefined;
+    // At least one field to change, else there's nothing to do.
+    if (!newEmail && !newPhone && !newName) return reject('update_contact:no-fields');
+    const nameHint = typeof r.nameHint === 'string' && r.nameHint.trim() ? r.nameHint.trim() : undefined;
+    return { type: 'update_contact', contactCandidateId, newEmail, newPhone, newName, nameHint };
   }
   if (type === 'archive_wiki_page') {
     const wikiPageId = typeof r.wikiPageId === 'string' ? r.wikiPageId.trim() : '';

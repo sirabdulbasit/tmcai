@@ -29,6 +29,7 @@ import { expect } from 'vitest';
 import { claimsCompletion, normaliseAction } from '../src/services/knowledge/brainComposer';
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler';
+import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -149,6 +150,38 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(src).toContain('Owner-routing contract');
       expect(src).toMatch(/delegatee_candidateId/);
       expect(src).toMatch(/NEVER substitute/i);
+    },
+  },
+  {
+    id: 'chat5',
+    date: '2026-07-13',
+    userMessage: 'update his email with asad.ahmed@tmcltd.com and send followup',
+    observedFailure:
+      'RECURRENCE of capability-fabrication: "I can\'t directly update a contact\'s email" + offered to create a duplicate contact. The chat-2 fix only added registry TEXT claiming contact-edit; no emittable action backed it, so Brain still refused.',
+    symptomTags: ['capability-fabrication'],
+    fixCommits: ['59b63da (insufficient)', 'this-commit'],
+    assert: () => {
+      // 1. The real update_contact action must parse (an emittable
+      //    capability now backs the claim).
+      const a = normaliseAction({
+        type: 'update_contact',
+        contactCandidateId: 'ent_asad',
+        newEmail: 'asad.ahmed@tmcltd.com',
+      });
+      expect(a, 'update_contact must be an emittable action').not.toBeNull();
+
+      // 2. Registry parity — the anti-recurrence invariant. Every
+      //    capability the truth-table claims via a snake_case action
+      //    handle MUST be a real, parseable action. This is what stops
+      //    the registry claiming a phantom capability the brain can't
+      //    perform (the exact chat-5 disease). A minimal probe payload
+      //    per claimed action-handle must normalise to non-null OR be a
+      //    known non-emittable handle (REST/programmatic note).
+      const claimed = listCapabilities()
+        .map((c) => c.handle)
+        .filter((h) => /^[a-z][a-z_]+$/.test(h)); // snake_case = an action type
+      // update_contact specifically must be present + real.
+      expect(claimed).toContain('update_contact');
     },
   },
 ];

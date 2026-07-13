@@ -154,7 +154,7 @@ describe('manifest coverage — every human/record-targeting ComposedAction is d
     const expected = [
       'notify_via_whatsapp', 'send_email', 'schedule_meeting', 'delegate_open_item',
       'cancel_meeting', 'reschedule_meeting', 'update_open_item', 'mark_open_item_done',
-      'set_contact_scope', 'mark_contact_inactive', 'archive_wiki_page', 'delete_wiki_page',
+      'set_contact_scope', 'mark_contact_inactive', 'update_contact', 'archive_wiki_page', 'delete_wiki_page',
     ].sort();
     expect([...TARGETING_ACTION_KINDS].sort()).toEqual(expected);
   });
