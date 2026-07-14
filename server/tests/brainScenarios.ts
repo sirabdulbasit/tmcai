@@ -232,4 +232,28 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(src).toMatch(/Exam solution of/); // the named anti-example
     },
   },
+  {
+    id: 'chat8',
+    date: '2026-07-14',
+    userMessage: 'his whatsapp number is +923474937298 (answering Brain\'s own ask)',
+    observedFailure:
+      'The provided number was filed into open-items dedup instead of updating the contact; the very next request said "no phone on file". Also a raw [notify_via_whatsapp:…] marker reached WhatsApp, and "Semantic duplicate of…" machinery-speak surfaced verbatim.',
+    symptomTags: ['identifier-misrouted', 'bracketed-marker-leak', 'stale-contact-data'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      // 1. Provided-identifier contract present in the reasoning prompt.
+      const rc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'reasoningCompose.ts'), 'utf-8');
+      expect(rc).toContain('Provided-identifier contract');
+      expect(rc).toMatch(/MUST emit update_contact/);
+      // 2. WhatsApp boundary sanitize (defence-in-depth for the leak).
+      const wa = readFileSync(join(__dirname, '..', 'src', 'services', 'whatsapp', 'WhatsAppInbound.ts'), 'utf-8');
+      expect(wa).toMatch(/const responseText = sanitizeAnswerForUser\(answer\)/);
+      // 3. Dedup block reason is human, not machinery.
+      const sd = readFileSync(join(__dirname, '..', 'src', 'services', 'openItems', 'semanticDedupService.ts'), 'utf-8');
+      expect(sd).not.toMatch(/reason: `Semantic duplicate of/);
+      expect(sd).toMatch(/already covered by/);
+    },
+  },
 ];
