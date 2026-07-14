@@ -22,6 +22,7 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `fragment-acted-on` | Clipped/fragment input (cut-off voice note) treated as a real instruction instead of asking |
 | `self-echo-reply` | Brain replies to a non-user message (its own outbound echo or a system alert) as if the user sent it |
 | `channel-ungrounded-preview` | Preview promises a channel (e.g. WhatsApp) whose identity (phone) was never verified to exist |
 | `wrong-owner-routing` | "ask status of X" routed to the wrong person (recently-discussed contact) instead of the item's actual delegatee |
@@ -271,3 +272,20 @@ When the user pastes a new chat:
 **Fix commit:** (this commit) — WA preview now channel-grounds at preview time: contact with no phone → immediate honest marker offering email-or-give-me-the-number, no dead-end preview. Self-echo needs prod log diagnosis before a code fix (do NOT guess-patch). Ambiguous-confirm noted as a design item: prompt-queue nudges and pendingAction both accept bare confirms.
 
 **Verification status:** unverified — ships with PR #2 merge. **Fifth consecutive chat analyzed against undeployed fixes; merging PR #2 is the gating action for everything.**
+
+---
+
+## Chat 7 — 2026-07-14 12:03pm (clipped voice note → item renamed to a fragment)
+
+**Symptoms:**
+- `fragment-acted-on` (NEW tag): a 1-second voice note transcribed as "Exam solution of" — an obvious mid-sentence fragment ending on a dangling "of". Instead of asking, the brain emitted update_open_item and RENAMED the existing item: `Updated "Exam solution": title="Exam solution of"`. A destructive edit from garbage input, dispatched inline with no preview (update_open_item is internal → skips the gate).
+
+**What worked (worth recording):** the transcription echo did its job perfectly — "🎙️ Heard: 'Exam solution of'" made the failure diagnosable at a glance. The transcription itself was verbatim-correct for a clipped recording; the failure was in ACTING on it.
+
+**Root cause:** the reasoning contract had no fragment handling. A transcript that merely echoes an existing item title plus a stray connector was pattern-matched into a title UPDATE. Two missing rules: (1) incomplete-looking input → ask, never act; (2) update_open_item title changes only on an explicit rename ask.
+
+**Fix commit:** (this commit) — "Fragment-input contract" added to the reasoning decision contract: dangling-connector or bare-fragment input → decision MUST be 'ask'; title renames require an explicit "rename X to Y". Names this incident as the anti-example. Harness scenario chat7 pins the rule.
+
+**Data damage to undo (user action):** open item title is now "Exam solution of" — say "rename Exam solution of to Exam solution" in chat (post-deploy), or leave it; it's cosmetic.
+
+**Verification status:** unverified — ships with next deploy.
