@@ -21,6 +21,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   // Phase 3.1: Personal GDrive folder access
   'https://www.googleapis.com/auth/drive.readonly',
+  // Obsidian vault (2026-07-14): drive.file grants write ONLY to files
+  // Nexeo itself creates — the "Nexeo Vault" folder. It cannot modify
+  // anything else in the user's Drive. Existing users re-consent on
+  // next reconnect; export skips silently until then.
+  'https://www.googleapis.com/auth/drive.file',
   // Tier 2 — Google Contacts import (People API).
   // Existing users won't have this scope until they re-authorize;
   // googleContactsService swallows 403s gracefully so the absence

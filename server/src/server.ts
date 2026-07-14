@@ -363,6 +363,19 @@ const server = app.listen(env.port, async () => {
     startBrainCognitiveWorker();
   }).catch((e) => console.warn('[brainCognitive] start failed:', e.message));
 
+  // Obsidian vault export (2026-07-14, Phase 1) — mirror each user's
+  // brain (contacts + wiki pages) into a "Nexeo Vault" folder in THEIR
+  // OWN Google Drive as plain markdown, for Obsidian. Incremental
+  // (hash-skip); silently waits for users who haven't granted
+  // drive.file yet. Hourly; first run 10 min after boot.
+  setTimeout(() => {
+    const vault = () => import('./services/knowledge/obsidianVaultService')
+      .then(({ exportVaultForAllUsers }) => exportVaultForAllUsers())
+      .catch((e) => console.warn('[obsidianVault] export failed:', e.message));
+    vault();
+    setInterval(vault, 60 * 60 * 1000);
+  }, 10 * 60 * 1000);
+
   // Contact prune (2026-07-14) — the contact janitor: daily merge of
   // safe exact-name duplicates, absorption of name-less junk rows,
   // conflict flagging (never guessed). First run 5 min after boot.

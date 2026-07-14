@@ -648,6 +648,11 @@ export async function getOAuthUrl(
         'https://www.googleapis.com/auth/calendar.events',
         'https://www.googleapis.com/auth/tasks',
         'https://www.googleapis.com/auth/drive.readonly',
+        // Obsidian vault (2026-07-14): drive.file grants write ONLY to
+        // files Nexeo itself creates — the "Nexeo Vault" folder. It cannot
+        // modify anything else in the user's Drive. Existing users re-
+        // consent on next reconnect; export skips silently until then.
+        'https://www.googleapis.com/auth/drive.file',
         // Google Chat — read user's spaces + recent messages so the chat
         // poller can pull DMs/spaces into Day Brief alongside email,
         // calendar, and tasks. Note: chat.messages.readonly only returns
