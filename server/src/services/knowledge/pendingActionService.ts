@@ -36,7 +36,19 @@ export type PendingActionKind =
   | 'cancel_meeting'
   | 'send_email'
   | 'notify_via_whatsapp'
-  | 'delegate_open_item';
+  | 'delegate_open_item'
+  // Compound plan (2026-07-14): several outbound steps previewed and
+  // confirmed TOGETHER ("send followup on email AND whatsapp" → one
+  // preview, one "send", both dispatch). slots = { steps: [{kind,
+  // slots}, …] }. dispatchPendingDirect fans the steps back through
+  // the per-kind dispatch paths, guard + verification per step.
+  | 'action_plan'
+  // The two kinds below occur ONLY as steps INSIDE an action_plan
+  // (never stored as standalone pendings — single instances dispatch
+  // inline without preview). They're in the union so the plan fan-out
+  // can type its synthetic per-step pendings.
+  | 'add_open_item'
+  | 'update_contact';
 
 export type PendingActionStatus =
   | 'collecting_slots'    // some slots filled, more needed

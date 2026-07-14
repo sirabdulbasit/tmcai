@@ -1632,6 +1632,66 @@ export async function compose(
           confidence: result.confidence,
           rationale: result.rationale,
         }).catch(() => undefined);
+
+        // ── Compound actions (Phase 1A, 2026-07-14) ──────────────────
+        // reasoning has been ABLE to emit multi-step action_plan since
+        // 2026-05-23, but nothing ever executed it — compound requests
+        // like "update his email AND send followup on email and
+        // whatsapp" (Basit chat 5) were silently reduced to one action
+        // or dropped. This branch makes plans real: validate every step
+        // against the registry, preview ALL steps together, and store a
+        // single 'action_plan' pending — one "send" confirms and
+        // dispatches every step (guard + provider verification per
+        // step, stop on first failure).
+        if (result.decision === 'act' && Array.isArray(result.actionPlan) && result.actionPlan.length >= 2) {
+          const steps = result.actionPlan.slice(0, 5); // hard cap — a "plan" of 6+ steps is a runaway
+          const { validateReasoningAction } = await import('./reasoningCompose');
+          let invalid: string | null = null;
+          for (const [i, step] of steps.entries()) {
+            if (!step?.type || step.type === 'action_plan') { invalid = `step ${i + 1}: missing or nested type`; break; }
+            const errs = await validateReasoningAction({ type: step.type, payload: step.payload ?? {} });
+            if (errs && errs.length > 0) { invalid = `step ${i + 1} (${step.type}): ${errs[0]}`; break; }
+          }
+          if (invalid) {
+            return {
+              answer: `[action_plan validation failed: ${invalid}]`,
+              citedPageIds: [], gaps: [], sources: [], action: null,
+              actionResult: { ok: false, message: `plan_invalid: ${invalid}` },
+              source: 'reasoning',
+            };
+          }
+          const planSteps = steps.map((s) => ({ kind: s.type, slots: s.payload ?? {} }));
+          const preview = await renderPlanPreview(planSteps, userId, clientNumber);
+          try {
+            const { startPending, hashProposedAction, markPreviewShown } = await import('./pendingActionService');
+            const pending = await startPending({
+              clientNumber, userId,
+              channel: opts.channel ?? 'web',
+              actionKind: 'action_plan',
+              slots: { steps: planSteps },
+              missingSlots: [],
+            });
+            await markPreviewShown(pending.id, hashProposedAction('action_plan', { steps: planSteps }));
+            console.info('[compose] action_plan preview persisted', {
+              userId, clientNumber, pendingId: pending.id, stepKinds: planSteps.map((s) => s.kind),
+            });
+          } catch (e: any) {
+            console.warn('[compose] action_plan pending persist failed', { userId, error: e?.message });
+            return {
+              answer: `[action_plan failed to queue: ${e?.message ?? 'unknown'}]`,
+              citedPageIds: [], gaps: [], sources: [], action: null,
+              actionResult: { ok: false, message: 'plan_persist_failed' },
+              source: 'reasoning',
+            };
+          }
+          return {
+            answer: preview,
+            citedPageIds: [], gaps: [], sources: [], action: null,
+            actionResult: { ok: false, message: 'preview_required' },
+            source: 'reasoning',
+          };
+        }
+
         const envelope = await applyReasoningDecision({
           result, userId, clientNumber,
           channel: opts.channel ?? 'web',
@@ -2997,68 +3057,15 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'update_contact') {
-        // Real contact-field edit (2026-07-13) — closes the gap where the
-        // capability registry claimed contact-edit but no action existed,
-        // so Brain refused ("I can't update a contact's email") and
-        // offered to create a DUPLICATE contact (the exact anti-pattern
-        // that caused earlier cross-user contact leakage). Updates the
-        // canonical entity row (what resolveCandidate reads) AND refreshes
-        // the entity_person wiki page metadata so contact resolution stays
-        // consistent across both stores — the "re-read truth, not cache"
-        // rule made concrete: fix the source, don't strand a stale copy.
-        try {
-          // Resolve with the SAME user-scope filter candidateResolver
-          // uses — if the contact resolves under this filter the user is
-          // allowed to edit it (tenant-shared, owned, or self-created).
-          // A private contact owned by someone else simply won't resolve
-          // → "not found", never an unauthorized edit.
-          const ent = await prisma.entity.findFirst({
-            where: {
-              id: act.contactCandidateId,
-              clientNumber,
-              entityType: 'contact',
-              OR: [
-                { scope: 'tenant' as any },
-                { ownerUserId: userId } as any,
-                { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
-              ],
-            } as any,
-            select: { id: true, name: true, email: true, phone: true },
-          });
-          if (!ent) {
-            actionResult = { ok: false, message: `[update_contact: contact not found in your contacts]` };
-          } else {
-            const changes: string[] = [];
-            const data: Record<string, unknown> = {};
-            if (act.newEmail) { data.email = act.newEmail; changes.push(`email → ${act.newEmail}`); }
-            if (act.newPhone) { data.phone = act.newPhone; changes.push(`phone → ${act.newPhone}`); }
-            if (act.newName) { data.name = act.newName; changes.push(`name → ${act.newName}`); }
-            const { updateEntity } = await import('../entityService');
-            await updateEntity(ent.id, clientNumber, data as any);
-            // Keep the entity_person wiki page metadata in sync so the
-            // stale value can't resurface via the wiki-backed lookup path.
-            try {
-              await prisma.$executeRawUnsafe(
-                `UPDATE wiki_pages
-                    SET metadata = metadata
-                      || jsonb_build_object('email', COALESCE($3, metadata->>'email'),
-                                            'phone', COALESCE($4, metadata->>'phone')),
-                        last_updated_at = NOW()
-                  WHERE client_number = $1 AND page_type = 'entity_person'
-                    AND ( (metadata->>'email') IS NOT NULL AND lower(metadata->>'email') = $2 )`,
-                clientNumber,
-                (ent.email ?? '').toLowerCase(),
-                act.newEmail ?? null,
-                act.newPhone ?? null,
-              );
-            } catch { /* wiki sync is best-effort; entity is source of truth */ }
-            actionResult = { ok: true, artifactId: ent.id, message: `Updated ${ent.name}: ${changes.join(', ')}.` };
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `[update_contact failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // Real contact-field edit (2026-07-13). Shared helper — the same
+        // implementation serves plan steps in dispatchPendingDirect.
+        actionResult = await updateContactGuarded(clientNumber, userId, {
+          contactCandidateId: act.contactCandidateId,
+          newEmail: act.newEmail,
+          newPhone: act.newPhone,
+          newName: act.newName,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'archive_wiki_page') {
         try {
           const existing = await prisma.wikiPage.findUnique({
@@ -4989,13 +4996,146 @@ async function wrapDispatchIdem(
   return { result, replayed: false };
 }
 
+/** Guarded in-place contact edit (2026-07-13, extracted 2026-07-14 so
+ *  compound-plan steps reuse the exact same implementation).
+ *
+ *  Closes the gap where the capability registry claimed contact-edit
+ *  but no action existed — Brain refused ("I can't update a contact's
+ *  email") and offered to create a DUPLICATE contact (the anti-pattern
+ *  behind the earlier cross-user contact leakage). Updates the
+ *  canonical entity row (what resolveCandidate reads) AND refreshes the
+ *  entity_person wiki page metadata so contact resolution stays
+ *  consistent across both stores — "re-read truth, not cache" made
+ *  concrete: fix the source, don't strand a stale copy.
+ *
+ *  Scope: resolves with the SAME user-scope filter candidateResolver
+ *  uses — tenant-shared, owned, or self-created. Another user's private
+ *  contact simply won't resolve → "not found", never an unauthorized
+ *  edit. */
+async function updateContactGuarded(
+  clientNumber: string,
+  userId: number,
+  edit: { contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string },
+): Promise<{ ok: boolean; artifactId?: string; message: string }> {
+  try {
+    const ent = await prisma.entity.findFirst({
+      where: {
+        id: edit.contactCandidateId,
+        clientNumber,
+        entityType: 'contact',
+        OR: [
+          { scope: 'tenant' as any },
+          { ownerUserId: userId } as any,
+          { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+        ],
+      } as any,
+      select: { id: true, name: true, email: true, phone: true },
+    });
+    if (!ent) return { ok: false, message: `[update_contact: contact not found in your contacts]` };
+    const changes: string[] = [];
+    const data: Record<string, unknown> = {};
+    if (edit.newEmail) { data.email = edit.newEmail; changes.push(`email → ${edit.newEmail}`); }
+    if (edit.newPhone) { data.phone = edit.newPhone; changes.push(`phone → ${edit.newPhone}`); }
+    if (edit.newName) { data.name = edit.newName; changes.push(`name → ${edit.newName}`); }
+    if (changes.length === 0) return { ok: false, message: `[update_contact: no fields to change]` };
+    const { updateEntity } = await import('../entityService');
+    await updateEntity(ent.id, clientNumber, data as any);
+    // Keep the entity_person wiki page metadata in sync so the stale
+    // value can't resurface via the wiki-backed lookup path.
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages
+            SET metadata = metadata
+              || jsonb_build_object('email', COALESCE($3, metadata->>'email'),
+                                    'phone', COALESCE($4, metadata->>'phone')),
+                last_updated_at = NOW()
+          WHERE client_number = $1 AND page_type = 'entity_person'
+            AND ( (metadata->>'email') IS NOT NULL AND lower(metadata->>'email') = $2 )`,
+        clientNumber,
+        (ent.email ?? '').toLowerCase(),
+        edit.newEmail ?? null,
+        edit.newPhone ?? null,
+      );
+    } catch { /* wiki sync is best-effort; entity is source of truth */ }
+    return { ok: true, artifactId: ent.id, message: `Updated ${ent.name}: ${changes.join(', ')}.` };
+  } catch (e: any) {
+    return { ok: false, message: `[update_contact failed: ${e?.message ?? 'unknown'}]` };
+  }
+}
+
+/** Compact one-line summary per plan step for the combined preview.
+ *  (renderActionPreview's full texts each end in their own "Reply
+ *  send…" instruction — unusable stacked; these are single lines.)
+ *  Resolves candidate ids to names so the user reviews PEOPLE, not ids. */
+export async function renderPlanPreview(
+  steps: Array<{ kind: string; slots: Record<string, unknown> }>,
+  userId: number,
+  clientNumber: string,
+): Promise<string> {
+  const { resolveCandidate } = await import('./candidateResolver');
+  const nameOf = async (id: unknown): Promise<string> => {
+    if (typeof id !== 'string' || !id) return '(unknown)';
+    const r = await resolveCandidate(id, userId, clientNumber).catch(() => null);
+    return r ? r.name : `(unknown contact ${id})`;
+  };
+  const lines: string[] = [];
+  for (const [i, step] of steps.entries()) {
+    const s = step.slots as any;
+    let line: string;
+    switch (step.kind) {
+      case 'send_email': {
+        const to = Array.isArray(s.toCandidateIds) && s.toCandidateIds.length
+          ? await Promise.all(s.toCandidateIds.map(nameOf)).then((n) => n.join(', '))
+          : (Array.isArray(s.toAdHoc) ? s.toAdHoc.join(', ') : '(no recipient)');
+        line = `Email to ${to} — "${s.subject ?? ''}"`;
+        break;
+      }
+      case 'notify_via_whatsapp': {
+        const who = s.recipientAdHocPhone
+          ? String(s.recipientAdHocPhone)
+          : await nameOf(s.recipientCandidateId);
+        line = `WhatsApp to ${who}: "${String(s.message ?? '').slice(0, 120)}"`;
+        break;
+      }
+      case 'schedule_meeting': {
+        const who = Array.isArray(s.attendeeCandidateIds) && s.attendeeCandidateIds.length
+          ? await Promise.all(s.attendeeCandidateIds.map(nameOf)).then((n) => n.join(', '))
+          : (Array.isArray(s.attendeeAdHocEmails) ? s.attendeeAdHocEmails.join(', ') : '(no attendee)');
+        line = `Meeting "${s.title ?? ''}" with ${who} — ${s.whenRaw ?? s.whenIso ?? ''}`;
+        break;
+      }
+      case 'delegate_open_item':
+        line = `Delegate item to ${s.delegateeAdHocEmail ?? await nameOf(s.delegateeCandidateId)}`;
+        break;
+      case 'update_contact': {
+        const changes = [s.newEmail && `email → ${s.newEmail}`, s.newPhone && `phone → ${s.newPhone}`, s.newName && `name → ${s.newName}`].filter(Boolean).join(', ');
+        line = `Update contact ${await nameOf(s.contactCandidateId)}: ${changes}`;
+        break;
+      }
+      case 'add_open_item':
+        line = `Add open item "${s.title ?? ''}"`;
+        break;
+      case 'cancel_meeting':
+        line = `Cancel meeting ${s.titleHint ?? s.eventId ?? ''}`;
+        break;
+      case 'reschedule_meeting':
+        line = `Reschedule meeting ${s.titleHint ?? s.eventId ?? ''} to ${s.newWhenRaw ?? ''}`;
+        break;
+      default:
+        line = `${step.kind.replace(/_/g, ' ')}`;
+    }
+    lines.push(`${i + 1}. ${line}`);
+  }
+  return `Before I proceed, please confirm — I'm about to do ALL of these:\n\n${lines.join('\n')}\n\nReply "send" to confirm everything, or tell me what to change.`;
+}
+
 /** Dispatch a pending action directly from its stored slots.
  *  Used by the Sprint 1 confirm_preview short-circuit — bypasses
  *  the LLM entirely because the action is fully grounded already.
  *  Returns {ok, artifactId, message} mirroring the existing
  *  dispatcher contract so the caller can persist the artifact and
  *  reply to the user uniformly. */
-async function dispatchPendingDirect(
+export async function dispatchPendingDirect(
   clientNumber: string,
   userId: number,
   pending: import('./pendingActionService').PendingAction,
@@ -5036,6 +5176,64 @@ async function dispatchPendingDirect(
   const { resolveDateTime } = await import('./dateResolver');
 
   switch (pending.actionKind) {
+    case 'action_plan': {
+      // Phase 1A (2026-07-14): compound plan — fan the confirmed steps
+      // back through this same dispatcher one at a time (recursion,
+      // depth 1; nested plans are rejected at validation). Each step
+      // re-runs the ground-or-ask guard for ITS kind at the top of the
+      // recursive call, and each provider dispatch verifies itself.
+      // Stop on first failure — later steps may depend on earlier ones
+      // (e.g. update the email, THEN send to it).
+      const steps = Array.isArray(slots.steps) ? slots.steps as Array<{ kind: string; slots: Record<string, unknown> }> : [];
+      if (steps.length === 0) return { ok: false, message: `[action_plan: no steps stored]` };
+      const results: string[] = [];
+      let firstArtifact: string | undefined;
+      for (const [i, step] of steps.entries()) {
+        if (step.kind === 'action_plan') {
+          return { ok: false, message: `[action_plan: nested plan at step ${i + 1} — refusing]` };
+        }
+        const r = await dispatchPendingDirect(clientNumber, userId, {
+          ...pending,
+          actionKind: step.kind as import('./pendingActionService').PendingActionKind,
+          slots: step.slots,
+        });
+        results.push(`${i + 1}. ${r.ok ? '✓' : '✗'} ${r.message}`);
+        if (r.ok && !firstArtifact && r.artifactId) firstArtifact = r.artifactId;
+        if (!r.ok) {
+          const remaining = steps.length - i - 1;
+          return {
+            ok: false,
+            artifactId: firstArtifact,
+            message: `${results.join('\n')}${remaining > 0 ? `\n(stopped — ${remaining} remaining step${remaining === 1 ? '' : 's'} not attempted)` : ''}`,
+          };
+        }
+      }
+      return { ok: true, artifactId: firstArtifact, message: results.join('\n') };
+    }
+    case 'add_open_item': {
+      // Plan-step only (single add_open_item dispatches inline in
+      // compose, no preview). Routed via the same instructionDispatcher
+      // path as the inline branch, dedup + gate included.
+      const res = await dispatchInstruction({
+        clientNumber, userId,
+        instruction: {
+          intent: 'add_open_item', confidence: 1,
+          summary: String(slots.title ?? ''),
+          params: { itemTitle: slots.title, itemDueDate: slots.dueDate, itemNote: slots.note },
+        } as any,
+      });
+      return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+    }
+    case 'update_contact': {
+      // Plan-step only — same guarded in-place edit as the inline
+      // compose branch (shared helper keeps one implementation).
+      return updateContactGuarded(clientNumber, userId, {
+        contactCandidateId: String(slots.contactCandidateId ?? ''),
+        newEmail: typeof slots.newEmail === 'string' ? slots.newEmail : undefined,
+        newPhone: typeof slots.newPhone === 'string' ? slots.newPhone : undefined,
+        newName: typeof slots.newName === 'string' ? slots.newName : undefined,
+      });
+    }
     case 'schedule_meeting': {
       // Union contact-resolved emails with ad-hoc emails the user
       // typed directly (structural fix 2026-07-07).
