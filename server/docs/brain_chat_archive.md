@@ -22,6 +22,7 @@ Living log of every user-shared Brain chat. Append a new entry each time the use
 | `oauth-stale-silent` | Google connector says "connected" while calls fail |
 | `calendar-hallucination` | Fabricates events not on the calendar |
 | `voice-language-mismatch` | Voice transcribed in wrong script for user's replyLanguage |
+| `identifier-misrouted` | A phone/email the user provides for a contact gets filed as a task/note instead of updating the contact |
 | `fragment-acted-on` | Clipped/fragment input (cut-off voice note) treated as a real instruction instead of asking |
 | `self-echo-reply` | Brain replies to a non-user message (its own outbound echo or a system alert) as if the user sent it |
 | `channel-ungrounded-preview` | Preview promises a channel (e.g. WhatsApp) whose identity (phone) was never verified to exist |
@@ -289,3 +290,22 @@ When the user pastes a new chat:
 **Data damage to undo (user action):** open item title is now "Exam solution of" — say "rename Exam solution of to Exam solution" in chat (post-deploy), or leave it; it's cosmetic.
 
 **Verification status:** unverified — ships with next deploy.
+
+---
+
+## Chat 8 — 2026-07-14 1:13–1:25pm (identifier swallowed; stale contact; marker leak)
+
+**Symptoms:**
+- `identifier-misrouted` (NEW tag): user gave "his whatsapp number is +923474937298" in DIRECT answer to Brain asking for it. Brain filed it into the open-items machinery (dedup fired: "Semantic duplicate of 'Send WhatsApp to Asad…'") instead of update_contact. Next request → "no phone on file". The number the user just provided was lost.
+- `stale-contact-data` (RECURRENCE, chats 4/5/6 lineage): email preview + send STILL used asad.ahmed@tmcltd.ai; the .com correction has never been persisted to the contact row. Email body even CLAIMED "I have updated your primary email address to .com in my records" while sending to .ai — completion claim inside outbound content contradicted by the send itself.
+- `bracketed-marker-leak` (RECURRENCE): `[notify_via_whatsapp: … no phone on file …]` reached WhatsApp raw. Sanitizer verified to handle this exact string locally → some path bypassed the routes-level sanitize. Root cause OPEN — needs prod log for that turn. Mitigated with defence-in-depth sanitize at the WhatsAppInbound reply boundary.
+- `machine-speak`: "Semantic duplicate of X — …" surfaced verbatim.
+- `stale-signoff` (RECURRENCE, chat 2): email signed "Best regards, Suzi-Smoke" — users.notificationPreferences.brainName is literally "Suzi-Smoke" (old smoke-test residue). ⚠️ After the outboundIdentity deploy, WA intros would say "this is Suzi-Smoke" — user must rename/clear.
+
+**What worked:** connection-restored context resume; send verification line (from-address + messageId, af602e2); channel grounding refused the WA send without a phone BOTH times (consistent); preview-before-send.
+
+**Fix commits:** (this commit) — Provided-identifier contract in reasoning (identifier for a known contact → update_contact, optionally action_plan [update, send]; never an open item); semanticDedup block reason humanized + offers next step; WhatsAppInbound boundary sanitize (defence-in-depth); send_email prompt forbids LLM sign-offs (real signature appends in code).
+
+**User actions:** (1) fix Asad's contact row (email .com + phone) — SQL provided in chat; (2) rename brain (clear "Suzi-Smoke").
+
+**Verification status:** unverified — ships with next deploy. Marker-leak bypass path still needs the prod log diagnostic.
