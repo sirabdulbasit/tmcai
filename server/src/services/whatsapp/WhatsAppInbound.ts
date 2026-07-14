@@ -416,6 +416,16 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       r?.intent ?? 'conversational',
     ).catch(() => { /* fire-and-forget: learning failure must not break the reply */ });
 
+    // In-chat learning (2026-07-14): passing remarks with durability
+    // markers ("always…", "never…", "from now on…") become PROPOSED
+    // governed memories — pending the user's approval, never active by
+    // themselves. Keyword pre-filter means most messages cost nothing.
+    void import('../learning/standingPreferenceCapture')
+      .then(({ captureStandingPreference }) => captureStandingPreference({
+        clientNumber: params.clientNumber, userId, userMessage: queryText,
+      }))
+      .catch(() => { /* fire-and-forget */ });
+
     // If this turn dispatched a successful action, persist the artifact
     // into session history so next turn's compose can resolve
     // cancel/reschedule references. Stored as role='artifact' with

@@ -80,6 +80,14 @@ export function postProcess(params: {
   if (userId && clientNumber) {
     updateMemoryFromMessage(userId, clientNumber, message).catch(() => {});
     learnFromMessage(clientNumber, userId, message, intentType).catch(() => {});
+    // In-chat learning (2026-07-14): same capture as the WhatsApp path
+    // — passing remarks with durability markers become PROPOSED
+    // governed memories (pending user approval). Channel parity.
+    import('../../services/learning/standingPreferenceCapture')
+      .then(({ captureStandingPreference }) => captureStandingPreference({
+        clientNumber, userId, userMessage: message,
+      }))
+      .catch(() => {});
   }
 }
 
