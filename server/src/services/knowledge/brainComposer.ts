@@ -2859,7 +2859,10 @@ ${calLines.join('\n')}`;
               const dueLine = (existing as any).dueDate
                 ? `\n\nDue: ${new Date((existing as any).dueDate).toISOString().slice(0, 10)}`
                 : '';
-              const draftBody = `Hi ${matched.name.split(/\s+/)[0]},\n\n${userName} has delegated this task to you:\n\n"${existing.title}"${dueLine}${act.note ? `\n\nNote from ${userName}: ${act.note}` : ''}\n\nPlease let me know once it's done, or reply if you need anything to get started.\n\nThanks,\n${userName}`;
+              // No hardcoded sign-off here — the user's REAL signature
+              // (learned from Sent items) is appended by the send_email
+              // dispatch, so a template "Thanks, <name>" would double-sign.
+              const draftBody = `Hi ${matched.name.split(/\s+/)[0]},\n\n${userName} has delegated this task to you:\n\n"${existing.title}"${dueLine}${act.note ? `\n\nNote from ${userName}: ${act.note}` : ''}\n\nPlease let me know once it's done, or reply if you need anything to get started.`;
               const emailSlots = {
                 toCandidateIds: [],
                 toAdHoc: [matched.email],
@@ -3238,7 +3241,11 @@ ${calLines.join('\n')}`;
 
           if (canDispatch && recipientPhone) {
             const introName = recipientName.startsWith('contact at') ? 'there' : recipientName;
-            const intro = `Hi ${introName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+            // Intro name = custom brain name when set ("Suzi"), Nexeo
+            // otherwise (Basit 2026-07-14).
+            const { getBrainDisplayName } = await import('./outboundIdentity');
+            const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
+            const intro = `Hi ${introName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
             const fullBody = `${intro}${act.message}`;
             const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, fullBody, userId);
             if (r.ok && r.waMessageId) {
@@ -3267,10 +3274,18 @@ ${calLines.join('\n')}`;
           const { sendUserEmail } = await import('../gmailService');
           const { resolveCandidates } = await import('./candidateResolver');
           const userName = persona.userFirstName || persona.userFullName || 'the user';
+          // Basit 2026-07-14: emails from the user's mailbox sign the
+          // way the USER signs (learned from Sent items / explicit
+          // pref), THEN the Nexeo disclosure — content in the user's
+          // voice, identity always disclosed. Skip the signature when
+          // the body already contains it (LLM habit or a re-send).
+          const { getUserEmailSignature } = await import('./outboundIdentity');
+          const signature = await getUserEmailSignature(userId, clientNumber).catch(() => `Thanks,\n${userName}`);
           const disclosureFooter = `\n\n—\nSent by Nexeo, ${userName}'s AI assistant.`;
-          const bodyWithFooter = act.body.endsWith(disclosureFooter)
-            ? act.body
-            : `${act.body}${disclosureFooter}`;
+          const bodyCore = act.body.includes(signature) ? act.body : `${act.body}\n\n${signature}`;
+          const bodyWithFooter = bodyCore.endsWith(disclosureFooter)
+            ? bodyCore
+            : `${bodyCore}${disclosureFooter}`;
           const toIds = Array.isArray(act.toCandidateIds) ? act.toCandidateIds : [];
           const ccIds = Array.isArray(act.ccCandidateIds) ? act.ccCandidateIds : [];
           const adHocTo = Array.isArray(act.toAdHoc) ? act.toAdHoc.filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) : [];
@@ -5354,8 +5369,13 @@ export async function dispatchPendingDirect(
       const { getBrainPersona } = await import('./brainPersonaService');
       const personaInner = await getBrainPersona(userId, clientNumber).catch(() => null);
       const userName = personaInner?.userFirstName || personaInner?.userFullName || 'the user';
+      // User's real signature (learned from Sent items) before the
+      // disclosure — same treatment as the inline send_email branch.
+      const { getUserEmailSignature } = await import('./outboundIdentity');
+      const signature = await getUserEmailSignature(userId, clientNumber).catch(() => `Thanks,\n${userName}`);
       const footer = `\n\n— Sent by Nexeo, ${userName}'s AI assistant`;
-      const fullBody = `${slots.body ?? ''}${footer}`;
+      const rawBody = String(slots.body ?? '');
+      const fullBody = `${rawBody.includes(signature) ? rawBody : `${rawBody}\n\n${signature}`}${footer}`;
       // V2: resolve toCandidateIds + ccCandidateIds + accept toAdHoc.
       const toIds = Array.isArray(slots.toCandidateIds) ? slots.toCandidateIds : [];
       const ccIds = Array.isArray(slots.ccCandidateIds) ? slots.ccCandidateIds : [];
@@ -5444,7 +5464,9 @@ export async function dispatchPendingDirect(
         recipientPhone = matched.phone;
       }
 
-      const intro = `Hi ${recipientName.startsWith('contact at') ? 'there' : recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+      const { getBrainDisplayName } = await import('./outboundIdentity');
+      const brainDisplayName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
+      const intro = `Hi ${recipientName.startsWith('contact at') ? 'there' : recipientName}, this is ${brainDisplayName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
         const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, `${intro}${slots.message}`, userId);
         if (r.ok && r.waMessageId) {
