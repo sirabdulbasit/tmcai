@@ -142,12 +142,18 @@ async function transcribeWithGemini(
         {
           role: 'user',
           parts: [
-            { text: `Transcribe this audio and output the result in ENGLISH ONLY. If the speaker uses Urdu, Hindi, or any other language, TRANSLATE their words into natural English — preserve meaning, tone, and any numbers/names verbatim. If the speaker mixes English with another language, translate the non-English parts into English while keeping the English parts as-is. Return ONLY the English transcript — no commentary, no source-language original, no brackets, no labels. If the audio has no clear speech, return an empty response.` },
+            { text: `Transcribe this audio and output the result in ENGLISH ONLY, following these rules STRICTLY:
+
+1. English speech → transcribe VERBATIM, word-for-word exactly as spoken. Do NOT summarize, shorten, clean up, rephrase, or "improve" anything. Keep every word, repetitions and filler words included. The output must be the complete literal sentence(s) the speaker said.
+2. Urdu / Hindi / any other language → translate faithfully, sentence by sentence, COMPLETE — every sentence the speaker said must appear in the output; nothing omitted, nothing condensed. Preserve meaning and tone; keep numbers and proper names exactly as spoken.
+3. Mixed speech → keep the English parts verbatim as rule 1; translate only the non-English parts as rule 2.
+
+NEVER produce a summary, a paraphrase, or a shortened version. Length of output should correspond to length of speech. Return ONLY the English transcript — no commentary, no source-language original, no brackets, no labels. If the audio has no clear speech, return an empty response.` },
             { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
           ],
         },
       ],
-      config: { maxOutputTokens: 500 },
+      config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
     });
     const raw = (result.text ?? '').trim();
     if (looksLikeSilence(raw)) {
@@ -172,7 +178,7 @@ async function transcribeWithGemini(
       {
         role: 'user',
         parts: [
-          { text: `Transcribe this audio. Return ONLY the spoken words verbatim \u2014 no commentary, no labels, no quotes, no brackets.
+          { text: `Transcribe this audio. Return ONLY the spoken words VERBATIM, word-for-word exactly as spoken \u2014 no commentary, no labels, no quotes, no brackets. Do NOT summarize, shorten, clean up, or rephrase; keep every word including repetitions and fillers. Output length must correspond to speech length.
 
 SCRIPT RULES (non-negotiable):
 - If the speech is Urdu, write it in URDU SCRIPT (Arabic script, e.g. \u0633\u0631 \u0627\u062F\u06BE\u0631 \u0633\u06D2 \u06C1\u0645 \u0627\u067E\u0646\u06CC \u0633\u0627\u0631\u06CC \u0648\u0631\u06A9\u0646\u06AF \u06A9\u0645\u067E\u0644\u06CC\u0679 \u06A9\u0631\u06CC\u06BA \u06AF\u06D2). NEVER Devanagari / Hindi script.
@@ -185,7 +191,7 @@ If the audio has no clear speech, return an empty response.` },
         ],
       },
     ],
-    config: { maxOutputTokens: 500 },
+    config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
   });
 
   let raw = (result.text ?? '').trim();
@@ -212,7 +218,7 @@ If the audio has no clear speech, return an empty response.` },
             ],
           },
         ],
-        config: { maxOutputTokens: 500 },
+        config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
       });
       const retryText = (retry.text ?? '').trim();
       if (retryText && !/[\u0900-\u097F]/.test(retryText)) raw = retryText;
