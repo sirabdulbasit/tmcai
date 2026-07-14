@@ -111,6 +111,16 @@ const MARKERS: MarkerRule[] = [
     whole: true,
   },
   {
+    match: /^\s*\[auto-send enabled:\s*([^\]]+)\]\s*$/i,
+    replace: "Done — I'll send $1 without asking for confirmation from now on. I'll still verify every recipient is real, and I'll still ask whenever anything is unclear. Say \"always preview $1\" to turn confirmations back on.",
+    whole: true,
+  },
+  {
+    match: /^\s*\[auto-send disabled:\s*([^\]]+)\]\s*$/i,
+    replace: "Done — I'll ask for your confirmation before sending $1 again.",
+    whole: true,
+  },
+  {
     match: /^\s*\[noted\]\s*$/i,
     replace: "Got it — noted.",
     whole: true,
@@ -157,11 +167,25 @@ export function sanitizeAnswerForUser(answer: string): string {
     }
   }
 
+  // Embedded auto-send OFFER (Phase 1C) — appended after a successful
+  // dispatch message, so it arrives embedded rather than whole. Render
+  // the human offer with the exact toggle phrases the command parser
+  // accepts (autoConfirmService.parseAutoConfirmCommand).
+  const OFFER_WORDS: Record<string, string> = {
+    send_email: 'emails',
+    notify_via_whatsapp: 'WhatsApp messages',
+    schedule_meeting: 'meeting invites',
+  };
+  let result0 = answer.replace(/\[auto-send offer:\s*(send_email|notify_via_whatsapp|schedule_meeting)\]/g, (_m, kind: string) => {
+    const w = OFFER_WORDS[kind] ?? kind;
+    return `By the way — you've approved my last 10 ${w} previews without changes. Want me to skip the confirmation step for ${w} from now on? Reply "auto-send ${w === 'emails' ? 'emails' : w === 'WhatsApp messages' ? 'whatsapp' : 'meetings'}" to enable (I'll still verify recipients and still ask when anything's unclear). "always preview ${w === 'emails' ? 'emails' : w === 'WhatsApp messages' ? 'whatsapp' : 'meetings'}" turns it back anytime.`;
+  });
+
   // Otherwise, sanitize any leaked bracketed markers embedded in prose.
   // Only touch things that LOOK like our system markers (all-lowercase
   // action name, ends with `]`, contains a colon or "expired" / "failed"
   // / "dispatched"). Preserves legitimate uses of square brackets.
-  let result = answer;
+  let result = result0;
   const embeddedMarker = /\[(?:[a-z_]+\s+(?:preview\s+expired|validation\s+failed|failed:|dispatched)|no action dispatched|cancelled|Action failed:|Brain unavailable|Brain output malformed|fabricated escalation path|LLM returned empty response)[^\]]*\]/g;
   result = result.replace(embeddedMarker, '').replace(/\s{2,}/g, ' ').trim();
 

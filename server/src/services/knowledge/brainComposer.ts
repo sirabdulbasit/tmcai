@@ -1486,6 +1486,27 @@ export async function compose(
     confidence: number;
   } | null = null;
 
+  // ── Earned-autonomy toggle commands (Phase 1C, 2026-07-14) ────────
+  // Closed command grammar the auto-send OFFER states verbatim
+  // ("auto-send emails" / "always preview emails"). Deterministic
+  // mechanics like "send" — handled before any LLM so consent is never
+  // subject to model interpretation.
+  {
+    const { parseAutoConfirmCommand, setAutoConfirm, KIND_WORDS } = await import('./autoConfirmService');
+    const toggle = parseAutoConfirmCommand(question);
+    if (toggle) {
+      await setAutoConfirm(userId, toggle.kind, toggle.enable);
+      console.info('[compose] auto-confirm toggled', { userId, clientNumber, kind: toggle.kind, enable: toggle.enable });
+      return {
+        answer: toggle.enable
+          ? `[auto-send enabled: ${KIND_WORDS[toggle.kind]}]`
+          : `[auto-send disabled: ${KIND_WORDS[toggle.kind]}]`,
+        citedPageIds: [], gaps: [], sources: [], action: null,
+        actionResult: null,
+      };
+    }
+  }
+
   // ── Phase 8 (2026-05-22): reasoning-first gate ────────────────────
   // When opts.useReasoning is on (or env says so), short-circuit
   // through the new reasoning composer. Falls through to legacy on
@@ -1919,8 +1940,20 @@ export async function compose(
           errorMessage: dispatchResult.ok ? null : dispatchResult.message,
         });
       } catch { /* non-fatal */ }
+      // Earned autonomy (Phase 1C): after a successful confirmed
+      // dispatch, check whether the user has now approved this kind
+      // enough times unmodified to EARN an auto-send offer. Marker is
+      // rendered human by answerSanitizer; offered at most once/30d.
+      let offerSuffix = '';
+      if (dispatchResult.ok) {
+        try {
+          const { maybeOfferAutoConfirm } = await import('./autoConfirmService');
+          const offer = await maybeOfferAutoConfirm(userId, activePending.actionKind);
+          if (offer) offerSuffix = `\n\n${offer}`;
+        } catch { /* offer is a nicety — never block the confirmation */ }
+      }
       return {
-        answer: dispatchResult.message,
+        answer: `${dispatchResult.message}${offerSuffix}`,
         citedPageIds: [],
         gaps: [],
         sources: [],
@@ -2467,7 +2500,7 @@ ${calLines.join('\n')}`;
   // visible; the preview default ensures the user always catches it
   // before it ships.
   if (parsed.action) {
-    const blockReason = gateHumanFacingAction(parsed.action, question, history);
+    const blockReason = await gateHumanFacingAction(parsed.action, question, history, userId);
     if (blockReason) {
       console.warn('[brain-chat] human-facing action blocked by verification gate', {
         userId, clientNumber, actionType: parsed.action.type, reason: blockReason,
@@ -4567,15 +4600,29 @@ function extractCompanyHint(query: string): string | null {
  *
  *  Internal actions (add_open_item, delegate, set_brain_name) skip
  *  this entirely — they're reversible / affect only user data. */
-function gateHumanFacingAction(
+async function gateHumanFacingAction(
   act: ComposedAction,
   question: string,
   history: ComposerHistoryTurn[],
-): string | null {
+  userId?: number,
+): Promise<string | null> {
   // Internal-only actions — skip the gate.
   if (act.type === 'add_open_item') return null;
   if (act.type === 'update_open_item') return null;
   if (act.type === 'mark_open_item_done') return null;
+
+  // Earned autonomy (Phase 1C, 2026-07-14): the user can CONSENT to
+  // skipping the preview for a kind after the brain proves itself
+  // (10 unmodified approvals → offer → "auto-send emails"). Consent
+  // removes only the CONFIRMATION step — ground-or-ask and per-verb
+  // target resolution still run on every dispatch, and the eligible
+  // set is a whitelist (destructive/rare kinds always preview).
+  if (typeof userId === 'number') {
+    try {
+      const { isAutoConfirmEnabled } = await import('./autoConfirmService');
+      if (await isAutoConfirmEnabled(userId, act.type)) return null;
+    } catch { /* consent lookup best-effort — fall through to preview */ }
+  }
   // update_contact edits an existing contact in place. It's internal
   // (no outward message), explicitly parameterized by the value the
   // user stated ("his email is X"), and reversible — so it dispatches
