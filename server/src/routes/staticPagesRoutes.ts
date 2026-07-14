@@ -10,6 +10,33 @@ const PAGE_STYLE = `
   a { color: #e94560; }
 `;
 
+router.get('/', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyOS - AI-Powered Executive Assistant</title>
+  <style>${PAGE_STYLE}</style>
+</head>
+<body>
+  <h1>MyOS</h1>
+  <p><strong>AI-Powered Executive Assistant</strong> by TallyMarks Consulting</p>
+
+  <h2>About</h2>
+  <p>MyOS is an intelligent executive assistant that integrates with Google Workspace to help you manage your daily workflows through AI-driven automation. It provides smart email management, calendar scheduling, task tracking, and context-aware assistance.</p>
+
+  <h2>Links</h2>
+  <p><a href="/privacy">Privacy Policy</a> | <a href="/terms">Terms of Service</a></p>
+
+  <div class="footer">
+    <p>&copy; 2026 TallyMarks Consulting. All rights reserved.</p>
+  </div>
+</body>
+</html>`);
+});
+
 router.get('/privacy', (_req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>

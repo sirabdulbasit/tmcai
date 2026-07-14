@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { sendUserEmail, readEmail } from '../../../adapters/gmailAdapter';
 // Shared with the reply handler — same feed_event → Gmail-id resolution
 // (payload ids come from feed cards; accept thread id or message id).
@@ -134,6 +134,10 @@ export class ForwardEmailHandler extends ActionHandler {
    *  when Gmail is unavailable; those ids are RFC-5322 Message-IDs
    *  (contain '@') that Gmail can't look up, so that path only gets a
    *  receipt-format check. Fail closed. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { results?: Array<{ recipient: string; messageId?: string; error?: string }> } | undefined;
     const claimed = (o?.results ?? []).filter((r) => r.messageId && !r.error);

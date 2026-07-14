@@ -65,8 +65,9 @@ export async function embedWikiPage(pageId: string): Promise<void> {
     const h = hashText(text);
     if (page.hash === h && !page.embeddingNull) return;
 
-    const { embedding, model } = await embed(text);
-    if (!embedding || embedding.length !== DIM) return;
+    const res = await embed(text);
+    if (!res || res.embedding.length !== DIM) return; // provider down in prod → no write, backfill re-embeds later
+    const { embedding, model } = res;
 
     // Write via raw SQL — Prisma has no native vector type and `Unsupported`
     // fields can't be assigned through the generated client. Cast to pgvector.
@@ -110,8 +111,9 @@ export async function searchWikiByVector(
   const text = query.trim();
   if (!text) return [];
 
-  const { embedding, model } = await embed(text.slice(0, MAX_EMBED_CHARS));
-  if (!embedding || embedding.length !== DIM) return [];
+  const res = await embed(text.slice(0, MAX_EMBED_CHARS));
+  if (!res || res.embedding.length !== DIM) return []; // degraded: callers fall back to keyword retrieval
+  const { embedding, model } = res;
 
   const limit = Math.min(opts.limit ?? 20, 50);
   // gap pages are meta-notes about what Brain DOESN'T know — they often
@@ -167,8 +169,12 @@ export async function searchWikiByVector(
 
 // ─── internals ───────────────────────────────────────────────────
 
-async function embed(text: string): Promise<{ embedding: number[]; model: string }> {
+/** null = provider unavailable in production (stubs forbidden there —
+ *  audit 2026-07-14 #7). Callers skip the write / degrade retrieval. */
+async function embed(text: string): Promise<{ embedding: number[]; model: string } | null> {
+  const { stubsAllowed, recordEmbeddingDegradation, recordEmbeddingRecovery } = await import('./embeddingGuard');
   const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  let lastError = 'no GEMINI_API_KEY/GOOGLE_API_KEY configured';
   if (key) {
     try {
       const r = await fetch(
@@ -182,13 +188,21 @@ async function embed(text: string): Promise<{ embedding: number[]; model: string
       if (r.ok) {
         const j: any = await r.json();
         const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
-        if (vec.length === DIM) return { embedding: vec, model: MODEL_GEMINI };
+        if (vec.length === DIM) {
+          recordEmbeddingRecovery('wiki');
+          return { embedding: vec, model: MODEL_GEMINI };
+        }
+        lastError = `unexpected embedding shape (len=${vec.length})`;
+      } else {
+        lastError = `HTTP ${r.status}`;
       }
-    } catch {
-      /* fall through to stub */
+    } catch (e: any) {
+      lastError = e?.message ?? 'fetch failed';
     }
   }
-  return { embedding: stubEmbed(text), model: MODEL_STUB };
+  if (stubsAllowed()) return { embedding: stubEmbed(text), model: MODEL_STUB };
+  await recordEmbeddingDegradation('wiki', lastError);
+  return null;
 }
 
 /** Deterministic 768-dim stub used only when Gemini key is missing. */

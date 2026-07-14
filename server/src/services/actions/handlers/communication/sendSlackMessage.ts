@@ -17,6 +17,7 @@ import {
   ExecutionOutput,
   ReverseOperation,
   HandlerMetadata,
+  ConfirmationCapability,
 } from '../../handlerBase';
 
 export class SendSlackMessageHandler extends ActionHandler {
@@ -108,6 +109,13 @@ export class SendSlackMessageHandler extends ActionHandler {
    *  CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back
    *  (conversations.history latest=ts limit=1) once history scope is
    *  guaranteed in the OAuth install. */
+  confirmationCapability(): ConfirmationCapability {
+    // confirm() can only re-inspect the dispatch output (channel + ts) —
+    // there is no provider read-back. Executor therefore records
+    // 'unconfirmed', never 'done' (audit 2026-07-14 #6).
+    return 'unverifiable';
+  }
+
   async confirm(_ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { channel?: unknown; ts?: unknown } | undefined;
     if (typeof o?.channel !== 'string' || !o.channel) return false;

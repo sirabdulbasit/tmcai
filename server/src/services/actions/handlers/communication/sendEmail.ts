@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { sendUserEmail, readEmail } from '../../../adapters/gmailAdapter';
 
 export class SendEmailHandler extends ActionHandler {
@@ -90,6 +90,10 @@ export class SendEmailHandler extends ActionHandler {
    *  RFC-5322 Message-IDs (contain '@') that Gmail can't look up, so for
    *  that path only a receipt-format check is possible. Fail closed: any
    *  claimed send we cannot verify makes the whole action unconfirmed. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { results?: Array<{ recipient: string; messageId?: string; error?: string }> } | undefined;
     const claimed = (o?.results ?? []).filter((r) => r.messageId && !r.error);

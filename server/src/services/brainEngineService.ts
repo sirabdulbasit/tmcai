@@ -127,7 +127,7 @@ export async function runForUser(userId: number, clientNumber: string): Promise<
     let nextRun: Date | null = null;
     if (engineSchedule) {
       try {
-        nextRun = computeNextRun(engineSchedule, config.engineTimezone || 'Asia/Karachi');
+        nextRun = computeNextRun(engineSchedule, config.engineTimezone || require('./userTimezoneService').systemDefaultTimezone());
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err);
         console.warn('[brainEngine] swallowed at computeNextRun:', m.slice(0, 240));

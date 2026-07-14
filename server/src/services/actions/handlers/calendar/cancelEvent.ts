@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { findEventById } from '../../../adapters/calendarAdapter';
 
 export class CancelEventHandler extends ActionHandler {
@@ -39,6 +39,10 @@ export class CancelEventHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back where ABSENCE is the success state: scan the user's
     // calendar (now → +180 days; the payload carries no event time, and there

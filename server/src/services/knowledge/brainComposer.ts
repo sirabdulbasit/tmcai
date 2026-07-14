@@ -95,6 +95,21 @@ export type ComposedAction =
   | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
+/** Every ComposedAction type the composer can actually dispatch.
+ *  MUST stay in sync with the union above (and its dispatch branches) —
+ *  live capability discovery treats a registered actionDefinition as
+ *  supported only if its handler is in the generic dispatcher's
+ *  allow-list OR its type is listed here. Locked against the seeded
+ *  registry by tests/capabilityDiscovery.test.ts (registry-parity). */
+export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
+  'add_open_item', 'update_open_item', 'mark_open_item_done', 'delegate_open_item',
+  'schedule_meeting', 'cancel_meeting', 'reschedule_meeting',
+  'send_email', 'notify_via_whatsapp',
+  'set_brain_name', 'archive_wiki_page', 'delete_wiki_page',
+  'set_contact_scope', 'mark_contact_inactive', 'update_contact',
+  'record_preference',
+]);
+
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
  *  stage that replaces the old keyword decomposition. */
@@ -1161,8 +1176,19 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // Added 2026-07-07 after Basit Rafay chat where Brain refused a
   // real capability and asked the user to work around it.
   try {
-    const { renderCapabilityBlock } = require('./brainCapabilityRegistry');
-    parts.push(renderCapabilityBlock());
+    if (args.clientNumber && args.userId != null) {
+      // LIVE truth-table: generated from the action registry + connector
+      // health so the prompt can never drift from what dispatch actually
+      // supports (audit 2026-07-14 #2). Fails closed to a conservative
+      // block internally.
+      const { renderCapabilityBlockLive } = await import('./brainCapabilityLive');
+      parts.push(await renderCapabilityBlockLive(args.clientNumber, args.userId));
+    } else {
+      // No tenant/user context (shouldn't happen on chat paths) — the
+      // static fallback still forbids fabricated limitations.
+      const { renderCapabilityBlock } = require('./brainCapabilityRegistry');
+      parts.push(renderCapabilityBlock());
+    }
   } catch { /* registry missing = non-fatal, drop the block */ }
 
   // Overlay — tenant policy. Always when present; it can affect any turn.
@@ -3884,7 +3910,8 @@ async function buildTodayCalendarBlock(clientNumber: string, userId: number): Pr
   // README in services/views: rule of thumb, no prisma calls outside
   // the views layer for user-facing entities.
   const { getTodayCalendar } = await import('../views');
-  const tz = 'Asia/Karachi'; // future: pull from user prefs
+  const { resolveUserTimezone } = await import('../userTimezoneService');
+  const tz = await resolveUserTimezone(userId);
   const events = await getTodayCalendar({ clientNumber, userId, opts: { timezone: tz } });
   if (events.length === 0) return '# Today\'s calendar\n(nothing scheduled)';
   const lines = events.map((e) => {

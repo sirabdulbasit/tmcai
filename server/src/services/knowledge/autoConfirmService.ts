@@ -116,8 +116,14 @@ export async function maybeOfferAutoConfirm(userId: number, kind: string): Promi
   if (bc?.autoConfirm?.[kind] === true) return null;
   const lastOffered = bc?.autoConfirmOfferedAt?.[kind];
   if (lastOffered && Date.now() - new Date(lastOffered).getTime() < OFFER_COOLDOWN_MS) return null;
+  // Threshold is user/tenant-tunable (behaviorConfig key
+  // 'auto_confirm.streak_threshold') with a clamped safety floor of 5 —
+  // no configuration can drop below it. Eligibility allowlist above
+  // stays a hard invariant regardless of any threshold.
+  const { getBehaviorValue } = await import('../behaviorConfig');
+  const threshold = await getBehaviorValue('auto_confirm.streak_threshold', { userId }).catch(() => STREAK_THRESHOLD);
   const streak = await getCleanStreak(userId, kind);
-  if (streak < STREAK_THRESHOLD) return null;
+  if (streak < threshold) return null;
   await writeBrainChannelPrefs(userId, {
     autoConfirmOfferedAt: { ...(bc.autoConfirmOfferedAt ?? {}), [kind]: new Date().toISOString() },
   }).catch(() => { /* best-effort; worst case we offer again */ });

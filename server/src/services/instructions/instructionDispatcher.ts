@@ -27,8 +27,8 @@ const log = createLogger('instruction-dispatch');
  *  pre-attach the user's local offset BEFORE that conversion so the
  *  emitted UTC ISO matches the user's intent.
  *
- *  Asia/Karachi is +05:00 with no DST, so we treat the offset as
- *  fixed. Multi-timezone support is a follow-up. */
+ *  The offset is resolved per-user (DST-aware, as of the meeting
+ *  date) by the caller and passed in. */
 function normalizeWhenIsoToLocalTz(whenIso: string, fixedOffset: string): string {
   if (!whenIso || typeof whenIso !== 'string') return whenIso;
   // Already has offset / Z suffix — trust it.
@@ -340,8 +340,12 @@ export async function dispatchInstruction(args: {
         // offset derived from the USER's tz (not a hardcoded +05:00).
         // Sprint 4A (2026-05-21): swapped to per-user lookup so users
         // outside Pakistan get correct local times.
-        const { getUserTimezoneOffset } = await import('../userTimezoneService');
-        const userOffset = await getUserTimezoneOffset(userId).catch(() => '+05:00');
+        const { getUserTimezoneOffset, getTimezoneOffset, systemDefaultTimezone } = await import('../userTimezoneService');
+        // Offset as of the MEETING date, not today — a meeting across a
+        // DST boundary (e.g. New York in November) shifts offsets.
+        const meetingDate = /^\d{4}-\d{2}-\d{2}/.test(whenIso) ? new Date(`${whenIso.slice(0, 10)}T12:00:00Z`) : new Date();
+        const userOffset = await getUserTimezoneOffset(userId, meetingDate)
+          .catch(() => getTimezoneOffset(systemDefaultTimezone(), meetingDate));
         const normalizedWhenIso = normalizeWhenIsoToLocalTz(whenIso, userOffset);
         const startDate = new Date(normalizedWhenIso);
         if (Number.isNaN(startDate.getTime())) {

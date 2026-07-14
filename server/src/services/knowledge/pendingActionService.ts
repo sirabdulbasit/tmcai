@@ -65,8 +65,20 @@ const TERMINAL_STATUSES: PendingActionStatus[] = ['completed', 'failed', 'cancel
  *  detail and come back to confirm; the old 1h window failed too
  *  many "yes"/"send" turns as "expired". If the user really has
  *  moved on, replacement by a new pending (startPending cancels the
- *  prior one) still handles that path. */
+ *  prior one) still handles that path.
+ *  Tunable per user/tenant via behaviorConfig 'pending_action.ttl_hours'
+ *  (clamped 1–24h); this constant is the code default. */
 const PENDING_TTL_MS = 4 * 60 * 60 * 1000;
+
+async function ttlMsFor(userId: number | null | undefined): Promise<number> {
+  try {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const hours = await getBehaviorValue('pending_action.ttl_hours', { userId: userId ?? undefined });
+    return hours * 60 * 60 * 1000;
+  } catch {
+    return PENDING_TTL_MS;
+  }
+}
 
 export interface PendingAction {
   id: string;
@@ -160,7 +172,7 @@ export async function startPending(args: {
       previewHash: null,
       previewedAt: null,
       artifactId: null,
-      expiresAt: new Date(now.getTime() + PENDING_TTL_MS),
+      expiresAt: new Date(now.getTime() + await ttlMsFor(args.userId)),
     },
   });
   return rowToPending(row);
@@ -188,7 +200,7 @@ export async function updatePendingSlots(
       missingSlots: remaining,
       status: remaining.length === 0 ? 'preview_shown' : 'collecting_slots',
       updatedAt: now,
-      expiresAt: new Date(now.getTime() + PENDING_TTL_MS),
+      expiresAt: new Date(now.getTime() + await ttlMsFor(existing.userId)),
     },
   });
   return rowToPending(updated);
@@ -199,6 +211,9 @@ export async function updatePendingSlots(
  *  prevent dispatching after the user has edited slots. */
 export async function markPreviewShown(pendingId: string, hash: string): Promise<PendingAction | null> {
   const now = new Date();
+  const existing = await (prisma as any).brainPendingAction.findUnique({
+    where: { id: pendingId }, select: { userId: true },
+  }).catch(() => null);
   const updated = await (prisma as any).brainPendingAction.update({
     where: { id: pendingId },
     data: {
@@ -206,7 +221,7 @@ export async function markPreviewShown(pendingId: string, hash: string): Promise
       previewedAt: now,
       status: 'preview_shown',
       updatedAt: now,
-      expiresAt: new Date(now.getTime() + PENDING_TTL_MS),
+      expiresAt: new Date(now.getTime() + await ttlMsFor(existing?.userId)),
     },
   });
   return rowToPending(updated);

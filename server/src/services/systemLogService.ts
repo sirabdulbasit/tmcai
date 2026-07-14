@@ -27,7 +27,12 @@ export type LogCategory =
   | 'data_quality'       // Data validation issue (missing fields, duplicates)
   | 'performance'        // Slow response (>20s)
   | 'system'             // General system issues
-  | 'security';          // Auth failures, suspicious activity
+  | 'security'           // Auth failures, suspicious activity
+  // Hardening audit 2026-07-14:
+  | 'job_failure'        // background job failed repeatedly (jobRunner)
+  | 'self_heal'          // allowlisted repair exhausted/escalated (repairService)
+  | 'embedding_degraded' // real embedding provider unavailable (embeddingGuard)
+  | 'health_transition'; // component up/down transition (connectionWatchdog etc.)
 
 interface LogEntry {
   clientNumber?: string;

@@ -95,6 +95,16 @@ registerFeedAdapter(imapSmtpFeedAdapter);
 // HTTP-server drain and DB disconnect today.
 const backgroundHandles: Array<NodeJS.Timeout> = [];
 
+// #4 (audit 2026-07-14): wrap a job body with the reliability runner —
+// pg-advisory leader lock (replica-safe), persisted run state in
+// job_runs, bounded retries by class, escalation to system_logs after
+// 3 consecutive failures. Wraps the BODY only; interval wiring below
+// is unchanged. Never throws.
+const protectedJob = (name: string, jobClass: 'maintenance' | 'important' | 'critical', fn: () => Promise<unknown>): Promise<unknown> =>
+  import('./jobs/jobRunner')
+    .then(({ protectedTick }) => protectedTick(name, jobClass, fn))
+    .catch((e) => console.warn(`job runner unavailable for ${name}:`, e?.message));
+
 const server = app.listen(env.port, async () => {
   console.log(`TMCAI Server listening on port ${env.port}`);
   startAutoRefresh(env.indexRefreshIntervalMs);
@@ -131,9 +141,10 @@ const server = app.listen(env.port, async () => {
     .then(({ seedSystemRiskRules }) => seedSystemRiskRules())
     .catch(err => console.error('Risk rule seed failed:', err.message));
   await initScheduler().catch(err => console.error('Scheduler init failed:', err.message));
-  // Cleanup expired context memories every hour
-  cleanupExpiredContextMemories().catch(() => {});
-  setInterval(() => cleanupExpiredContextMemories().catch(() => {}), 60 * 60 * 1000);
+  // Cleanup expired context memories every hour (#4: failures logged,
+  // never silently swallowed)
+  cleanupExpiredContextMemories().catch((e) => console.warn('[contextMemoryCleanup] failed:', e?.message));
+  setInterval(() => cleanupExpiredContextMemories().catch((e) => console.warn('[contextMemoryCleanup] failed:', e?.message)), 60 * 60 * 1000);
   // Demo-user expiry sweep — every hour. Flips is_active=false on
   // users whose users.expires_at has passed. First sweep fires 60s
   // after boot so a stale demo doesn't sit live until the first hour
@@ -164,26 +175,24 @@ const server = app.listen(env.port, async () => {
     }, 24 * 60 * 60 * 1000);
   }, 5 * 60 * 1000);
   // Personal GDrive sync every 30 minutes (Phase 3.1)
-  runPersonalDriveSyncJob().catch(() => {});
-  setInterval(() => runPersonalDriveSyncJob().catch(() => {}), 30 * 60 * 1000);
+  runPersonalDriveSyncJob().catch((e) => console.warn('[personalDriveSync] failed:', e?.message));
+  setInterval(() => runPersonalDriveSyncJob().catch((e) => console.warn('[personalDriveSync] failed:', e?.message)), 30 * 60 * 1000);
   // Phase 5: Index event processor (polls every 10s)
   startIndexEventProcessor();
   // Phase 5: Proactive intelligence — hourly scan
-  setInterval(() => runProactiveIntelligence().catch(() => {}), 60 * 60 * 1000);
+  setInterval(() => runProactiveIntelligence().catch((e) => console.warn('[proactiveIntelligence] failed:', e?.message)), 60 * 60 * 1000);
   // Open-item follow-up worker — hourly. Scans DELEGATED items that
   // have been silent past their threshold (3d / 7d / 14d) and pings
   // the user via brainContactsUser. "Brain runs after you" piece.
   // First sweep fires 5 minutes after boot so the scheduler isn't
   // bombarded at startup.
   setTimeout(() => {
-    import('./services/openItems/followupWorker')
-      .then(({ runFollowupSweep }) => runFollowupSweep())
-      .catch((err) => console.warn('Followup sweep failed:', err.message));
-    setInterval(() => {
-      import('./services/openItems/followupWorker')
-        .then(({ runFollowupSweep }) => runFollowupSweep())
-        .catch((err) => console.warn('Followup sweep failed:', err.message));
-    }, 60 * 60 * 1000);
+    const followupTick = () => protectedJob('followup_sweep', 'critical', async () => {
+      const { runFollowupSweep } = await import('./services/openItems/followupWorker');
+      await runFollowupSweep();
+    });
+    followupTick();
+    setInterval(followupTick, 60 * 60 * 1000);
   }, 5 * 60 * 1000);
 
   // Brain prompt queue — producer sweep + expiry sweep + delegatee email,
@@ -199,26 +208,22 @@ const server = app.listen(env.port, async () => {
   //                    "by when?". Reply matched on threadId by the feed
   //                    ingestion handler updates dueDate automatically.
   setTimeout(() => {
-    import('./services/brainPrompts/producerSweep')
-      .then(({ runProducerSweep }) => runProducerSweep())
-      .catch((err) => console.warn('Producer sweep failed:', err.message));
-    import('./services/brainPrompts/brainPromptQueueService')
-      .then(({ expireStalePrompts }) => expireStalePrompts())
-      .catch((err) => console.warn('Expiry sweep failed:', err.message));
-    import('./services/brainPrompts/delegateeEmailProducer')
-      .then(({ runDelegateeEmailSweep }) => runDelegateeEmailSweep())
-      .catch((err) => console.warn('Delegatee email sweep failed:', err.message));
-    setInterval(() => {
-      import('./services/brainPrompts/producerSweep')
-        .then(({ runProducerSweep }) => runProducerSweep())
-        .catch((err) => console.warn('Producer sweep failed:', err.message));
-      import('./services/brainPrompts/brainPromptQueueService')
-        .then(({ expireStalePrompts }) => expireStalePrompts())
-        .catch((err) => console.warn('Expiry sweep failed:', err.message));
-      import('./services/brainPrompts/delegateeEmailProducer')
-        .then(({ runDelegateeEmailSweep }) => runDelegateeEmailSweep())
-        .catch((err) => console.warn('Delegatee email sweep failed:', err.message));
-    }, 30 * 60 * 1000);
+    const brainPromptTicks = () => {
+      protectedJob('brain_prompt_producer', 'critical', async () => {
+        const { runProducerSweep } = await import('./services/brainPrompts/producerSweep');
+        await runProducerSweep();
+      });
+      protectedJob('brain_prompt_expiry', 'important', async () => {
+        const { expireStalePrompts } = await import('./services/brainPrompts/brainPromptQueueService');
+        await expireStalePrompts();
+      });
+      protectedJob('delegatee_email_sweep', 'critical', async () => {
+        const { runDelegateeEmailSweep } = await import('./services/brainPrompts/delegateeEmailProducer');
+        await runDelegateeEmailSweep();
+      });
+    };
+    brainPromptTicks();
+    setInterval(brainPromptTicks, 30 * 60 * 1000);
   }, 6 * 60 * 1000);
 
   // Smart Cleanup — Brain's autonomous contact maintenance, daily.
@@ -284,14 +289,30 @@ const server = app.listen(env.port, async () => {
     }).catch(() => {});
   }
   // Smart log maintenance — hourly: escalate high-recurrence, auto-fix known patterns, cleanup old
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('system_log_maintenance', 'important', async () => {
       const { escalateHighRecurrence, runAutoFix, cleanupOldLogs } = await import('./services/systemLogService');
       await escalateHighRecurrence();
       await runAutoFix('GLOBAL');
       await cleanupOldLogs(90);
-    } catch {}
+    });
   }, 60 * 60 * 1000);
+
+  // Self-heal pass — hourly (#5, audit 2026-07-14). Allowlisted,
+  // precondition-checked, verify-after, attempt-capped repairs only
+  // (stale connector metadata, stuck scribe markers, bounded DLQ
+  // replay). Audit trail in self_heal_log; exhaustion escalates to
+  // system_logs for a human. First pass 15 min after boot.
+  setTimeout(() => {
+    const heal = () => protectedJob('self_heal_pass', 'important', async () => {
+      const { runSelfHealPass } = await import('./services/selfheal/repairService');
+      const r = await runSelfHealPass();
+      const healed = Object.entries(r).flatMap(([id, os]) => os.filter((o) => o === 'healed').map(() => id));
+      if (healed.length > 0) console.log(`[selfHeal] healed: ${healed.join(', ')}`);
+    });
+    heal();
+    setInterval(heal, 60 * 60 * 1000);
+  }, 15 * 60 * 1000);
 
   // Memory consolidation — nightly. Archives low-value episodic pages
   // (email_message / sender_topic / observation / answer / gap) after
@@ -380,9 +401,10 @@ const server = app.listen(env.port, async () => {
   // safe exact-name duplicates, absorption of name-less junk rows,
   // conflict flagging (never guessed). First run 5 min after boot.
   setTimeout(() => {
-    const prune = () => import('./services/knowledge/contactPruneService')
-      .then(({ runContactPruneForAllTenants }) => runContactPruneForAllTenants())
-      .catch((e) => console.warn('[contactPrune] failed:', e.message));
+    const prune = () => protectedJob('contact_prune', 'maintenance', async () => {
+      const { runContactPruneForAllTenants } = await import('./services/knowledge/contactPruneService');
+      await runContactPruneForAllTenants();
+    });
     prune();
     setInterval(prune, 24 * 60 * 60 * 1000);
   }, 5 * 60 * 1000);
@@ -393,24 +415,24 @@ const server = app.listen(env.port, async () => {
   // per day) so the 15-min cadence is safe. First tick after 2 min so
   // boot isn't burdened.
   setTimeout(() => {
-    const tick = () => import('./services/brain/preactiveEngine')
-      .then(({ runPreactiveForAllUsers }) => runPreactiveForAllUsers())
-      .catch((e) => console.warn('[preactive] tick failed:', e.message));
+    const tick = () => protectedJob('preactive_engine', 'critical', async () => {
+      const { runPreactiveForAllUsers } = await import('./services/brain/preactiveEngine');
+      await runPreactiveForAllUsers();
+    });
     tick();
     setInterval(tick, 15 * 60 * 1000);
   }, 2 * 60 * 1000);
 
-  // HaseebOS v15 — notification queue drain every 60s
-  setInterval(async () => {
-    try {
+  // HaseebOS v15 — notification queue drain every 60s. THE outbound
+  // dispatcher: leader-locked so replicas can never double-send.
+  setInterval(() => {
+    protectedJob('notification_drain', 'critical', async () => {
       const { drain } = await import('./services/notifications/notificationService');
       const r = await drain({ batchSize: 25, maxRetries: 3 });
       if (r.sent > 0 || r.failed > 0) {
         console.log(`[notifications] drain: sent=${r.sent} failed=${r.failed} deferred=${r.deferred}`);
       }
-    } catch (err: any) {
-      console.warn('[notifications] drain error:', err.message);
-    }
+    });
   }, 60 * 1000);
 
   // MyOS wiki lint — nightly 03:00 PKT (22:00 UTC previous day) per user
@@ -491,16 +513,14 @@ const server = app.listen(env.port, async () => {
   // recipients can tell auto from manual. See smartChaseService.ts
   // for the safety reasoning. Tick every 30 min — the verdict is what
   // decides if anything actually goes out.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('delegation_follow_up', 'critical', async () => {
       const { runDelegationFollowUp } = await import('./jobs/delegationFollowUpJob');
       const s = await runDelegationFollowUp();
       if (s.sent + s.escalated + s.marked_stale + s.errors > 0) {
         console.log(`[delegationFollowUp] scanned=${s.scanned} sent=${s.sent} held=${s.held} escalated=${s.escalated} stale=${s.marked_stale} errors=${s.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[delegationFollowUp] error:', err.message);
-    }
+    });
   }, 30 * 60 * 1000);
 
   // D2 — trust promotion daily: propose (never auto-apply) raising the
@@ -528,16 +548,14 @@ const server = app.listen(env.port, async () => {
   // B1 — dispatched-action reaper every 5 min: AgentAction rows published
   // to the ADK worker that never received a confirmation move to 'stale'
   // (outcome unknown) — they must NEVER silently read as done.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('agent_action_reaper', 'critical', async () => {
       const { reapStaleAgentActions, reconcileStuckExecuting } = await import('./jobs/agentActionReaper');
       const r = await reapStaleAgentActions();
       if (r.reaped > 0) console.log(`[agentActionReaper] reaped=${r.reaped} dispatched→stale`);
       const rec = await reconcileStuckExecuting();
       if (rec.scanned > 0) console.log(`[agentActionReaper] reconciled executing: recovered=${rec.recovered} failed=${rec.failed} staled=${rec.staled}`);
-    } catch (err: any) {
-      console.warn('[agentActionReaper] error:', err.message);
-    }
+    });
   }, 5 * 60 * 1000);
 
   // HaseebOS v15 L2 — snooze timer every 60s: wake SNOOZED items when due
@@ -557,16 +575,14 @@ const server = app.listen(env.port, async () => {
   // /brief/attention, so opening the Day Brief in two tabs (or any other
   // double-fetch) doesn't cause duplicate WhatsApp pushes. The sweep
   // itself is idempotent via in-flight set + lastSent fingerprint cache.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('critical_bundle_sweep', 'critical', async () => {
       const { sweepCriticalBundles } = await import('./services/triage/criticalityNotifier');
       const s = await sweepCriticalBundles();
       if (s.sent > 0 || s.errors > 0) {
         console.log(`[criticalBundleSweep] users=${s.users} sent=${s.sent} skipped=${s.skipped} errors=${s.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[criticalBundleSweep] error:', err.message);
-    }
+    });
   }, 90 * 1000);
 
   // MyOS — connector health sweep every 5 min. Catches the OAuth-
@@ -646,16 +662,14 @@ const server = app.listen(env.port, async () => {
       }
     })();
   }, 3 * 60 * 1000); // first run 3 min after boot
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('open_item_draft_ask', 'critical', async () => {
       const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
       const s = await runOpenItemDraftAsk();
       if (s.asked + s.expired > 0) {
         console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} errors=${s.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[openItemDraftAsk] error:', err.message);
-    }
+    });
   }, 60 * 60 * 1000);
 
   // 2026-05-14 Phase 3.0 — daily smart follow-up engine. One LLM
@@ -675,14 +689,12 @@ const server = app.listen(env.port, async () => {
       }
     })();
   }, 5 * 60 * 1000); // first run 5 min after boot
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('open_item_follow_up', 'critical', async () => {
       const { runOpenItemFollowUp } = await import('./jobs/openItemFollowUpJob');
       const s = await runOpenItemFollowUp();
       console.log(`[openItemFollowUp] scanned=${s.scanned} dispatched=${s.dispatched} verdicts=${JSON.stringify(s.verdicts)} errors=${s.errors}`);
-    } catch (err: any) {
-      console.warn('[openItemFollowUp] error:', err.message);
-    }
+    });
   }, 24 * 60 * 60 * 1000); // daily
 
   // 2026-05-16 — Day Brief dispatch. Fires each opted-in user's
@@ -690,16 +702,14 @@ const server = app.listen(env.port, async () => {
   // (brain_channel.dayBriefTime + .timezone). Ticks every minute;
   // each user fires once per local-day. Composer + WA renderer
   // shared with /brain/ask so web and WhatsApp see the same brain.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('day_brief_dispatch', 'critical', async () => {
       const { runDayBriefDispatch } = await import('./jobs/dayBriefDispatchJob');
       const s = await runDayBriefDispatch();
       if (s.fired + s.errors > 0) {
         console.log(`[dayBriefDispatch] scanned=${s.scanned} fired=${s.fired} skipped=${s.skipped} errors=${s.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[dayBriefDispatch] error:', err.message);
-    }
+    });
   }, 60 * 1000);
 
   // 2026-05-15 — WA ingest health audit. Reconciles webjs's view of
@@ -1011,6 +1021,7 @@ const server = app.listen(env.port, async () => {
     const now = new Date();
     // PKT is UTC+5. 06:00 PKT = 01:00 UTC. Only fire within the first 5 min of the hour.
     if (now.getUTCHours() !== 1 || now.getUTCMinutes() >= 5) return;
+    await protectedJob('kpi_snapshot_morning_brief', 'critical', async () => {
     try {
       const prisma = (await import('./db/prisma')).default;
       const tenants = await prisma.tenant.findMany({ where: { isActive: true }, select: { clientNumber: true } });
@@ -1045,6 +1056,7 @@ const server = app.listen(env.port, async () => {
     } catch (err: any) {
       console.warn('[steering] snapshot loop error:', err.message);
     }
+    });
   }, 5 * 60 * 1000); // check every 5 min, fires once within the 06:00 PKT window
 });
 

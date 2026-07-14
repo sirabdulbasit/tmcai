@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { sendUserEmail, readEmail } from '../../../adapters/gmailAdapter';
 // getEmailHeadersForReply is imported straight from gmailService (not the
 // adapter) because the adapter only wraps the hot-path calls in circuit
@@ -203,6 +203,10 @@ export class SendEmailReplyHandler extends ActionHandler {
    *  unavailable; those ids are RFC-5322 Message-IDs (contain '@') that
    *  Gmail can't look up, so that path only gets a receipt-format check.
    *  Fail closed on anything we cannot verify. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { messageId?: string; threadId?: string } | undefined;
     const id = o?.messageId;

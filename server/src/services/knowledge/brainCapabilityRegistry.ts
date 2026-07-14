@@ -74,8 +74,30 @@ const LIMITATIONS: Limitation[] = [
   { label: 'Access files outside connected sources', why: 'Brain only reads Gmail / Calendar / Drive folders / WhatsApp messages that the user has connected.', offerInstead: 'connect the source in Settings → Connectors' },
 ];
 
-/** Render the capability truth-table for injection into a Brain
- *  system prompt. Keep it terse — this text is on every call. */
+/** Human-friendly descriptions keyed by ACTION TYPE — metadata for the
+ *  live discovery module (brainCapabilityLive), which generates the CAN
+ *  list from the action registry. These strings are display copy only;
+ *  presence in this map does NOT make a capability exist (fail-closed:
+ *  the live module drops anything without a real dispatch path, and a
+ *  type missing here still renders with a de-snaked fallback label). */
+export const CAPABILITY_HINTS: Record<string, { label: string; what: string }> = Object.fromEntries(
+  CAPABILITIES
+    .filter((c) => /^[a-z_]+$/.test(c.handle.split(' / ')[0]))
+    .flatMap((c) => c.handle.split(' / ').map((h) => [h.trim(), { label: c.label, what: c.what }])),
+);
+
+/** Capabilities NOT backed by an actionDefinition row (tool/REST
+ *  paths the composer triggers directly). The live module appends
+ *  these to the CAN list verbatim — they have no registry row to
+ *  discover. Keep this list tiny and only for paths that exist. */
+export const NON_ACTION_CAPABILITIES: Capability[] = CAPABILITIES.filter(
+  (c) => !/^[a-z_]+$/.test(c.handle.split(' / ')[0]),
+);
+
+/** DEPRECATED for prompt injection — brainComposer now uses
+ *  brainCapabilityLive.renderCapabilityBlockLive() (generated from the
+ *  action registry + connector health). Kept as the display fallback
+ *  and for the static hint metadata above. */
 export function renderCapabilityBlock(): string {
   const canLines = CAPABILITIES.map((c) => `- ${c.label} → ${c.handle}`).join('\n');
   const cannotLines = LIMITATIONS.map((l) => {

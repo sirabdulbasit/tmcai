@@ -13,6 +13,7 @@
  * here: render in the user's configured timezone (default Asia/Karachi).
  */
 import prisma from '../../db/prisma';
+import { formatLocalDate, zonedDayBounds, systemDefaultTimezone } from '../userTimezoneService';
 
 export interface CalendarEventRow {
   /** feed_event id, stable for cross-surface matching. */
@@ -33,42 +34,22 @@ export interface CalendarEventRow {
 
 export interface GetTodayCalendarOpts {
   /** IANA timezone for the "today" window and rendering localTime.
-   *  Default: 'Asia/Karachi'. Future: pull from user prefs. */
+   *  Callers should pass the resolved per-user zone; falls back to the
+   *  deployment default (systemDefaultTimezone). */
   timezone?: string;
   /** Hard cap on events returned. Default 50 — enough for any realistic
    *  single day. */
   limit?: number;
 }
 
-/** Wall-clock date components in a given IANA timezone. */
+/** Today's [start, end) UTC instants in a given IANA timezone.
+ *  Delegates to the shared DST-correct helper. The previous local
+ *  implementation folded negative offsets through a (…)%(24*60) trick
+ *  that landed a full day early for every zone west of UTC. */
 function todayBoundsInZone(timezone: string): { startUtc: Date; endUtc: Date } {
-  const now = new Date();
-  // Get the user's wall-clock year/month/day in their timezone, then
-  // build a Date representing midnight in that zone.
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(now);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  const y = parseInt(get('year'), 10);
-  const m = parseInt(get('month'), 10);
-  const d = parseInt(get('day'), 10);
-  // Convert local midnight → UTC instant by going through ISO with the
-  // appropriate offset. We compute the offset by formatting now in the
-  // zone and comparing to UTC.
-  const localMidnight = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
-  // Determine zone offset at this date (handles DST automatically).
-  const zoneNow = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: false,
-  }).formatToParts(localMidnight);
-  const zh = parseInt(zoneNow.find((p) => p.type === 'hour')?.value ?? '0', 10);
-  const zm = parseInt(zoneNow.find((p) => p.type === 'minute')?.value ?? '0', 10);
-  // localMidnight's UTC hour reads as zone offset; "00:00 local" = (24-zh):(60-zm) UTC if zh>0
-  // Simpler: compute offset minutes
-  const offsetMin = (zh * 60 + zm) % (24 * 60);
-  const startUtc = new Date(localMidnight.getTime() - offsetMin * 60 * 1000);
-  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
-  return { startUtc, endUtc };
+  const today = formatLocalDate(timezone, new Date());
+  const { fromUtc, toUtc } = zonedDayBounds(timezone, today);
+  return { startUtc: fromUtc, endUtc: new Date(toUtc.getTime() + 1) };
 }
 
 /**
@@ -85,7 +66,7 @@ export async function getTodayCalendar(args: {
   opts?: GetTodayCalendarOpts;
 }): Promise<CalendarEventRow[]> {
   const { clientNumber, userId, opts } = args;
-  const timezone = opts?.timezone || 'Asia/Karachi';
+  const timezone = opts?.timezone || systemDefaultTimezone();
   const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
 
   const { startUtc, endUtc } = todayBoundsInZone(timezone);

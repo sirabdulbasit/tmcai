@@ -49,9 +49,30 @@ const healthByTenant = new Map<string, HealthSample[]>();
 
 function pushHealth(clientNumber: string, sample: HealthSample): void {
   const arr = healthByTenant.get(clientNumber) ?? [];
+  const prev = arr[arr.length - 1];
   arr.push(sample);
   if (arr.length > HEALTH_HISTORY_CAP) arr.splice(0, arr.length - HEALTH_HISTORY_CAP);
   healthByTenant.set(clientNumber, arr);
+
+  // #8 (audit 2026-07-14): the ring buffer dies with the process — the
+  // TRANSITIONS (up→down, down→up, reinit outcomes) are the part worth
+  // keeping, so persist those to system_logs (deduped/aggregated by its
+  // recurrence machinery; steady-state healthy probes write nothing).
+  const wasOk = prev ? prev.ok : true;
+  const transitioned = wasOk !== sample.ok || sample.action === 'reinit_success' || sample.action === 'reinit_failed';
+  if (transitioned) {
+    import('../systemLogService')
+      .then(({ log: sysLog }) => sysLog({
+        level: sample.ok ? 'info' : 'warning',
+        category: 'health_transition',
+        source: `whatsapp:${clientNumber}`,
+        message: sample.ok
+          ? `WhatsApp wire recovered (${sample.action}, latency ${sample.latencyMs}ms)`
+          : `WhatsApp wire DOWN (${sample.action}): ${sample.error ?? 'probe failed'}`,
+        clientNumber,
+      } as any))
+      .catch(() => { /* ring buffer still has it */ });
+  }
 }
 
 /** Exposed for the dashboard route to read the ring buffer. */

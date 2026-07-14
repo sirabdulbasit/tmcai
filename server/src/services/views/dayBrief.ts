@@ -79,9 +79,10 @@ export async function getDayBrief(args: {
   opts?: GetDayBriefOpts;
 }): Promise<DayBriefData> {
   const { clientNumber, userId, opts } = args;
-  const timezone = opts?.timezone ?? 'Asia/Karachi';
+  const { resolveUserTimezone, formatLocalDate } = await import('../userTimezoneService');
+  const timezone = opts?.timezone ?? await resolveUserTimezone(userId);
   const generatedAt = new Date();
-  const localDate = new Date(generatedAt.getTime() + 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const localDate = formatLocalDate(timezone, generatedAt);
 
   const [calendar, openItems, attention, emails, waMsgs] = await Promise.all([
     getTodayCalendar({ clientNumber, userId, opts: { timezone } }).catch(() => [] as CalendarEventRow[]),

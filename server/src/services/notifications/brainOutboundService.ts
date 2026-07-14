@@ -308,7 +308,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   }
 
   // ── Quiet hours check ───────────────────────────────────────────────
-  if (!bypassQuiet && isWithinQuietHours(bc)) {
+  if (!bypassQuiet && await isWithinQuietHours(bc, user.id)) {
     return await record({
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
@@ -495,21 +495,24 @@ function channelsForUrgency(u: Urgency): Array<'text' | 'voicenote' | 'call_cta'
 /**
  * Quiet hours stored as `{ quietStart: 'HH:MM', quietEnd: 'HH:MM' }` in
  * user.notification_preferences.brain_channel. Times are interpreted in
- * the tenant's timezone (PKT for now). A range that crosses midnight
- * (e.g. 22:00 → 07:00) is supported.
+ * the USER's timezone: brain_channel.timezone if set, else the resolved
+ * User.timezone chain (DST-aware via Intl). A range that crosses
+ * midnight (e.g. 22:00 → 07:00) is supported.
  */
-function isWithinQuietHours(bc: any): boolean {
+async function isWithinQuietHours(bc: any, userId: number): Promise<boolean> {
   if (!bc?.quietStart || !bc?.quietEnd) return false;
-  const now = new Date();
-  // PKT offset (UTC+5). Cheap conversion — we don't need DST precision since
-  // PKT doesn't observe it. Keep central if other tenants come online.
-  const pktMinutes = ((now.getUTCHours() + 5) % 24) * 60 + now.getUTCMinutes();
+  const { resolveUserTimezone, isValidTimezone } = await import('../userTimezoneService');
+  const tz = isValidTimezone(bc.timezone) ? bc.timezone : await resolveUserTimezone(userId);
+  const nowLocal = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date());
+  const localMinutes = parseHHMM(nowLocal) ?? 0;
   const start = parseHHMM(bc.quietStart);
   const end = parseHHMM(bc.quietEnd);
   if (start === null || end === null) return false;
-  if (start <= end) return pktMinutes >= start && pktMinutes < end;
+  if (start <= end) return localMinutes >= start && localMinutes < end;
   // wraps midnight
-  return pktMinutes >= start || pktMinutes < end;
+  return localMinutes >= start || localMinutes < end;
 }
 
 function parseHHMM(s: string): number | null {

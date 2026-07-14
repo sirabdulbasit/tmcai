@@ -43,6 +43,7 @@ import { callGemini } from '../geminiService';
 import { listActiveActions, validateActionPayload, getActionDefinition } from './actionRegistryService';
 import { renderToolCatalogue, executeBrainTool, BRAIN_TOOLS } from './brainTools';
 import type { ComposerHistoryTurn } from './brainComposer';
+import { resolveUserTimezone, getTimezoneOffset, formatLocalDate } from '../userTimezoneService';
 
 export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline' | 'tool_call';
 
@@ -237,7 +238,8 @@ ${renderToolCatalogue()}
 
 ${actionsBlock}`;
 
-  const userMessage = renderUserMessage(input);
+  const tz = await resolveUserTimezone(input.userId);
+  const userMessage = renderUserMessage(input, { tz, offset: getTimezoneOffset(tz) });
 
   let raw: string;
   try {
@@ -272,7 +274,7 @@ function renderActionsBlock(actions: any[]): string {
   return lines.join('\n');
 }
 
-function renderUserMessage(input: ReasoningInput): string {
+function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset: string }): string {
   const parts: string[] = [];
   // Today's date + the user's timezone — needed so reasoning can
   // resolve relative phrases ("monday", "tomorrow at 6pm", "next
@@ -280,8 +282,8 @@ function renderUserMessage(input: ReasoningInput): string {
   // Without this anchor, reasoning has emitted literal "next Monday"
   // as the dueDate value, which downstream parsers reject.
   const nowIso = new Date().toISOString();
-  const todayPkt = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().slice(0, 10); // default PKT
-  parts.push(`Today (UTC): ${nowIso}\nToday (Asia/Karachi local date): ${todayPkt}\nUser timezone: Asia/Karachi (+05:00) unless the user's profile says otherwise.\nWhen emitting date/datetime fields, ALWAYS resolve relative phrases ("monday", "tomorrow", "next friday", "today 6pm") to absolute ISO 8601 using this anchor.`);
+  const todayLocal = formatLocalDate(tzAnchor.tz, new Date());
+  parts.push(`Today (UTC): ${nowIso}\nToday (${tzAnchor.tz} local date): ${todayLocal}\nUser timezone: ${tzAnchor.tz} (${tzAnchor.offset}).\nWhen emitting date/datetime fields, ALWAYS resolve relative phrases ("monday", "tomorrow", "next friday", "today 6pm") to absolute ISO 8601 using this anchor.`);
   parts.push(`User's current message: ${input.question}`);
   if (input.history.length > 0) {
     const recent = input.history.slice(-8).map((h) => {

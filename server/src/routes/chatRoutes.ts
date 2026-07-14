@@ -115,7 +115,13 @@ router.post('/feedback', optionalAuth, async (req, res) => {
   try {
     const prisma = require('../db/prisma').default;
     const userId = (req as any).user?.id;
-    const cn = (req as any).user?.clientNumber || 'unknown';
+    const cn = (req as any).user?.clientNumber;
+    if (!cn) {
+      // Authenticated user without a tenant should be impossible —
+      // fail closed rather than writing a row under a bogus tenant.
+      res.status(400).json({ error: 'no tenant context' });
+      return;
+    }
     await prisma.$executeRawUnsafe(
       `INSERT INTO feedback (client_number, user_id, rating, query, response_preview, conversation_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       cn, userId || null, rating,

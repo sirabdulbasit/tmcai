@@ -357,11 +357,19 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
     // in action_idempotency_log; if this update fails the reconciler
     // (reconcileStuckExecuting) resolves the row from the log — throwing
     // here would misreport a confirmed action as failed to the caller.
+    // #6 (2026-07-14): a handler whose confirm() cannot actually verify
+    // the side effect (confirmationCapability 'unverifiable') must never
+    // record 'done' — the honest terminal state is 'unconfirmed'. The
+    // dispatch may well have worked; we just refuse to CLAIM it did.
+    const confirmation = typeof (handler as any).confirmationCapability === 'function'
+      ? (handler as any).confirmationCapability()
+      : 'unverifiable'; // fail closed on a JS-level gap
+    const okStatus = confirmation === 'unverifiable' ? 'unconfirmed' : 'done';
     try {
       await prisma.agentAction.update({
         where: { id: actionRow.id },
         data: {
-          status: result.ok ? 'done' : 'error',
+          status: result.ok ? okStatus : 'error',
           output: (result.output ?? null) as any,
           error: result.error,
           undoStatus: result.ok ? 'undoable' : 'none',
@@ -374,7 +382,7 @@ export async function executeViaRegistry(input: RegistryExecutionInput): Promise
     // L3.4 — publish outcome on action-executed-events for Brain observability
     // and Reflection's training feed. Best-effort: failure to publish does not
     // roll back the successful execute.
-    await publishActionExecuted(input, actionRow.id, riskTier, graphId, traceId, result.ok, result.output, result.error);
+    await publishActionExecuted(input, actionRow.id, riskTier, graphId, traceId, result.ok, result.output, result.error, okStatus);
 
     return {
       ok: result.ok,
@@ -404,6 +412,7 @@ async function publishActionExecuted(
   ok: boolean,
   output: unknown,
   error: string | undefined,
+  okStatus: 'done' | 'unconfirmed' = 'done',
 ): Promise<void> {
   try {
     const orderingKey = `${input.clientNumber}:action:${actionId}`;
@@ -431,7 +440,7 @@ async function publishActionExecuted(
         attributes: {
           actionType: input.actionType,
           riskTier: riskTier as any,
-          outcome: ok ? 'done' : 'error',
+          outcome: ok ? okStatus : 'error',
         },
       },
     );

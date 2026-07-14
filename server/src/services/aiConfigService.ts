@@ -35,12 +35,19 @@ const DEFAULTS: AIConfig = {
   historyMaxCharsAssistant: 1500,
 };
 
-let cached: AIConfig | null = null;
-let cachedAt = 0;
+// Cache is keyed PER TENANT. The previous singleton cache let the
+// first tenant in a 5-min window serve its config to every other
+// tenant (cross-tenant config bleed) — hardening audit 2026-07-14 #9.
+const cache = new Map<string, { config: AIConfig; at: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 min
 
-export async function getAIConfig(clientNumber = 'TMC-0001'): Promise<AIConfig> {
-  if (cached && Date.now() - cachedAt < CACHE_TTL) return cached;
+export async function getAIConfig(clientNumber?: string | null): Promise<AIConfig> {
+  // Fail closed: no verified tenant context → code defaults, never
+  // another tenant's rows. (Previously defaulted to 'TMC-0001'.)
+  if (!clientNumber) return DEFAULTS;
+
+  const hit = cache.get(clientNumber);
+  if (hit && Date.now() - hit.at < CACHE_TTL) return hit.config;
 
   try {
     const rows = await prisma.systemConfig.findMany({
@@ -55,8 +62,7 @@ export async function getAIConfig(clientNumber = 'TMC-0001'): Promise<AIConfig> 
       }
     }
 
-    cached = config;
-    cachedAt = Date.now();
+    cache.set(clientNumber, { config, at: Date.now() });
     return config;
   } catch {
     return DEFAULTS;
@@ -65,8 +71,7 @@ export async function getAIConfig(clientNumber = 'TMC-0001'): Promise<AIConfig> 
 
 // Clear cache (call when config is updated via admin panel)
 export function clearAIConfigCache(): void {
-  cached = null;
-  cachedAt = 0;
+  cache.clear();
 }
 
 // Map DB keys to config field names

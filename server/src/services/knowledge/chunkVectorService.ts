@@ -99,8 +99,9 @@ export async function searchChunksByVector(
 ): Promise<ChunkVectorHit[]> {
   const text = query.trim();
   if (!text) return [];
-  const { embedding } = await embed(text.slice(0, MAX_EMBED_CHARS));
-  if (!embedding || embedding.length !== DIM) return [];
+  const res = await embed(text.slice(0, MAX_EMBED_CHARS));
+  if (!res || res.embedding.length !== DIM) return []; // degraded: caller falls back to keyword retrieval
+  const { embedding } = res;
   const limit = Math.min(opts.limit ?? 20, 50);
   const sourceFilter = opts.source ? `AND source = $3` : '';
   const args: any[] = [vectorLiteral(embedding), clientNumber];
@@ -131,8 +132,15 @@ export async function searchChunksByVector(
 
 // ─── internals (mirrors wikiEmbeddingService.embed) ─────────────────
 
-async function embed(text: string): Promise<{ embedding: number[]; model: string }> {
+/** null = provider unavailable in production. The chunks table has NO
+ *  per-vector model column, so a stub query vector compared against
+ *  real stored vectors returns silently garbage-ranked results — the
+ *  exact failure #7 forbids. Outside production stubs remain fine
+ *  because stored dev vectors are stubs too. */
+async function embed(text: string): Promise<{ embedding: number[]; model: string } | null> {
+  const { stubsAllowed, recordEmbeddingDegradation, recordEmbeddingRecovery } = await import('./embeddingGuard');
   const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  let lastError = 'no GEMINI_API_KEY/GOOGLE_API_KEY configured';
   if (key) {
     try {
       const r = await fetch(
@@ -146,11 +154,19 @@ async function embed(text: string): Promise<{ embedding: number[]; model: string
       if (r.ok) {
         const j: any = await r.json();
         const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
-        if (vec.length === DIM) return { embedding: vec, model: MODEL_GEMINI };
+        if (vec.length === DIM) {
+          recordEmbeddingRecovery('chunks');
+          return { embedding: vec, model: MODEL_GEMINI };
+        }
+        lastError = `unexpected embedding shape (len=${vec.length})`;
+      } else {
+        lastError = `HTTP ${r.status}`;
       }
-    } catch { /* fall through */ }
+    } catch (e: any) { lastError = e?.message ?? 'fetch failed'; }
   }
-  return { embedding: stubEmbed(text), model: MODEL_STUB };
+  if (stubsAllowed()) return { embedding: stubEmbed(text), model: MODEL_STUB };
+  await recordEmbeddingDegradation('chunks', lastError);
+  return null;
 }
 
 function stubEmbed(text: string): number[] {

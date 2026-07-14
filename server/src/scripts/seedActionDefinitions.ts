@@ -33,7 +33,10 @@ interface Seed {
   isHumanFacing?: boolean;
 }
 
-const ACTIONS: Seed[] = [
+// Exported for the registry-parity test (capabilityDiscovery.test.ts):
+// every seeded type must have a live dispatch path, or the suite goes
+// red before Brain can ever claim a capability it can't perform.
+export const ACTIONS: Seed[] = [
   {
     type: 'add_open_item',
     displayName: 'Add open item',

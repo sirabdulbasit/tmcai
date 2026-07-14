@@ -29,10 +29,12 @@ import createLogger from '../../utils/logger';
 
 const log = createLogger('preactive');
 
-/** How far ahead we prep a meeting. Wide enough to be useful, narrow
- *  enough that the context is fresh. */
+/** Defaults for the prep window / due lookahead. Both are now
+ *  user/tenant-tunable via behaviorConfig (audit 2026-07-14 #3/#10):
+ *  keys 'preactive.meeting_prep_window_min' and
+ *  'preactive.due_soon_hours'; these constants remain the documented
+ *  code defaults (and back-compat exports). */
 export const MEETING_PREP_WINDOW_MIN = 90;
-/** Deadline lookahead for commitment nudges. */
 export const DUE_SOON_HOURS = 24;
 
 export interface PreactiveResult {
@@ -44,6 +46,15 @@ export interface PreactiveResult {
  *  every ~15 min; every send is deduped so the cadence is safe. */
 export async function runPreactiveTick(clientNumber: string, userId: number): Promise<PreactiveResult> {
   const out: PreactiveResult = { meetingPrepsSent: 0, dueNudgesSent: 0 };
+  // #10 (audit 2026-07-14): per-user opt-out — brain_channel.preactive
+  // === false mutes both passes. Inspectable and reversible in profile
+  // settings; deterministic (no LLM decides whether to respect a mute).
+  try {
+    const u = await prisma.user.findUnique({
+      where: { id: userId }, select: { notificationPreferences: true },
+    });
+    if ((u?.notificationPreferences as any)?.brain_channel?.preactive === false) return out;
+  } catch { /* pref lookup failure must not block anticipation */ }
   try {
     out.meetingPrepsSent = await meetingPrepPass(clientNumber, userId);
   } catch (e: any) {
@@ -61,8 +72,10 @@ export async function runPreactiveTick(clientNumber: string, userId: number): Pr
 
 async function meetingPrepPass(clientNumber: string, userId: number): Promise<number> {
   const { getEvents } = await import('../calendarService');
+  const { getBehaviorValue } = await import('../behaviorConfig');
+  const windowMin = await getBehaviorValue('preactive.meeting_prep_window_min', { userId, clientNumber }).catch(() => MEETING_PREP_WINDOW_MIN);
   const now = new Date();
-  const horizon = new Date(now.getTime() + MEETING_PREP_WINDOW_MIN * 60_000);
+  const horizon = new Date(now.getTime() + windowMin * 60_000);
   const r = await getEvents(userId, now, horizon, 10);
   if (r.error || r.events.length === 0) return 0;
 
@@ -172,7 +185,9 @@ async function narrateMeetingPrep(
 // ─── 2. Commitment deadlines ────────────────────────────────────────
 
 async function dueSoonPass(clientNumber: string, userId: number): Promise<number> {
-  const soon = new Date(Date.now() + DUE_SOON_HOURS * 3600_000);
+  const { getBehaviorValue } = await import('../behaviorConfig');
+  const dueSoonHours = await getBehaviorValue('preactive.due_soon_hours', { userId, clientNumber }).catch(() => DUE_SOON_HOURS);
+  const soon = new Date(Date.now() + dueSoonHours * 3600_000);
   const items = await prisma.openItem.findMany({
     where: {
       clientNumber, userId, ownerId: userId,

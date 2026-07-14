@@ -1,5 +1,5 @@
 import prisma from '../../../../db/prisma';
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { sendWhatsAppToPhone } from '../../../adapters/whatsappAdapter';
 
 export class SendWhatsappMessageHandler extends ActionHandler {
@@ -61,6 +61,10 @@ export class SendWhatsappMessageHandler extends ActionHandler {
    *  connection row the service skips the mirror by design ("Meta is
    *  source of truth"), so we drop to a receipt check on the wamid. Fail
    *  closed when neither holds. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(_ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { messageId?: unknown } | undefined;
     const messageId = o?.messageId;

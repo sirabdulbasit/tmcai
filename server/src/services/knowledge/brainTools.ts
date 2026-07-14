@@ -85,11 +85,12 @@ const fetchCalendar: BrainToolDefinition = {
     required: ['range'],
   },
   handler: async ({ range }, { userId, clientNumber }) => {
-    const tz = 'Asia/Karachi';
+    const { resolveUserTimezone, calendarRangeBounds, formatInZone } = await import('../userTimezoneService');
+    const tz = await resolveUserTimezone(userId);
     if (range === 'today') {
       const events = await getTodayCalendar({ clientNumber, userId, opts: { timezone: tz } });
       if (events.length === 0) return '# Today\'s calendar\n(no meetings scheduled today)';
-      return '# Today\'s calendar (times in Asia/Karachi)\n' + events.map((e) => {
+      return `# Today's calendar (times in ${tz})\n` + events.map((e) => {
         const att = e.attendees.length > 0
           ? ` — ${e.attendees.slice(0, 5).join(', ')}${e.attendees.length > 5 ? ` +${e.attendees.length - 5}` : ''}`
           : '';
@@ -98,34 +99,11 @@ const fetchCalendar: BrainToolDefinition = {
     }
     // For tomorrow/week/date, query feed_events directly (no canonical
     // view yet for arbitrary ranges — TODO move into views/calendar.ts).
-    const now = new Date();
-    const localOffsetMin = 5 * 60; // Asia/Karachi
-    const localNow = new Date(now.getTime() + localOffsetMin * 60 * 1000);
-    const ymd = (d: Date) => d.toISOString().slice(0, 10);
-    let fromDate: Date; let toDate: Date;
-    if (range === 'tomorrow') {
-      const t = new Date(localNow); t.setUTCDate(localNow.getUTCDate() + 1);
-      const tStart = new Date(`${ymd(t)}T00:00:00.000Z`);
-      const tEnd = new Date(`${ymd(t)}T23:59:59.999Z`);
-      fromDate = new Date(tStart.getTime() - localOffsetMin * 60 * 1000);
-      toDate   = new Date(tEnd.getTime()   - localOffsetMin * 60 * 1000);
-    } else if (range === 'this_week' || range === 'next_week') {
-      const start = new Date(localNow);
-      if (range === 'next_week') start.setUTCDate(localNow.getUTCDate() + 7);
-      // Calendar week = next 7 days starting today (or +7).
-      const end = new Date(start); end.setUTCDate(start.getUTCDate() + 6);
-      const startStr = `${ymd(start)}T00:00:00.000Z`;
-      const endStr   = `${ymd(end)}T23:59:59.999Z`;
-      fromDate = new Date(new Date(startStr).getTime() - localOffsetMin * 60 * 1000);
-      toDate   = new Date(new Date(endStr).getTime()   - localOffsetMin * 60 * 1000);
-    } else if (/^\d{4}-\d{2}-\d{2}$/.test(range)) {
-      const dStart = new Date(`${range}T00:00:00.000Z`);
-      const dEnd   = new Date(`${range}T23:59:59.999Z`);
-      fromDate = new Date(dStart.getTime() - localOffsetMin * 60 * 1000);
-      toDate   = new Date(dEnd.getTime()   - localOffsetMin * 60 * 1000);
-    } else {
+    const bounds = calendarRangeBounds(range, tz);
+    if (!bounds) {
       return `# Calendar — invalid range\nReceived "${range}". Valid: today | tomorrow | this_week | next_week | YYYY-MM-DD.`;
     }
+    const fromDate = bounds.fromUtc; const toDate = bounds.toUtc;
     const events = await prisma.$queryRawUnsafe<Array<{
       event_at: Date; raw_payload: any; subject?: string | null;
     }>>(
@@ -144,10 +122,10 @@ const fetchCalendar: BrainToolDefinition = {
       const p = e.raw_payload ?? {};
       const title = String(p.summary ?? p.title ?? '(untitled)').slice(0, 120);
       const att   = Array.isArray(p.attendees) ? p.attendees.slice(0, 4).map((a: any) => a.email ?? a.displayName ?? '?').join(', ') : '';
-      const when  = new Date(e.event_at).toISOString().slice(0, 16).replace('T', ' ');
-      return `- ${when} UTC — ${title}${att ? ` · attendees: ${att}` : ''}`;
+      const when  = formatInZone(tz, new Date(e.event_at));
+      return `- ${when} — ${title}${att ? ` · attendees: ${att}` : ''}`;
     });
-    return `# Calendar (${range}, times in UTC — adjust to Asia/Karachi if relaying to user)\n${lines.join('\n')}`;
+    return `# Calendar (${range}, times already in the user's timezone ${tz})\n${lines.join('\n')}`;
   },
 };
 
@@ -472,14 +450,16 @@ const fetchUserProfile: BrainToolDefinition = {
     if (!u) return '# User profile\n(profile lookup failed)';
     const prefs = (u.notificationPreferences ?? {}) as any;
     const bc = prefs.brain_channel ?? {};
+    const { resolveUserTimezone } = await import('../userTimezoneService');
+    const effectiveTz = bc.timezone ?? await resolveUserTimezone(userId);
     const lines = [
       `Name: ${u.name ?? '(unset)'}`,
       `Email: ${u.email ?? '(unset)'}`,
       `Role: ${u.userType ?? '(unset)'}${u.jobDescription ? ` — ${u.jobDescription}` : ''}`,
       `WhatsApp number: ${bc.whatsappNumber ?? '(not set in Brain Channel settings)'}`,
       `Phone: ${u.contactNumber ?? '(not set)'}`,
-      `Timezone: ${bc.timezone ?? 'Asia/Karachi (default)'}`,
-      `Day Brief time: ${bc.dayBriefTime ?? '08:30'} ${bc.timezone ?? 'Asia/Karachi'}`,
+      `Timezone: ${effectiveTz}`,
+      `Day Brief time: ${bc.dayBriefTime ?? '08:30'} ${effectiveTz}`,
     ];
     return `# Your profile\n${lines.map((l) => `- ${l}`).join('\n')}`;
   },
