@@ -89,6 +89,34 @@ async function upsertContact(
     });
     return { id: existing.id, created: false };
   }
+
+  // Duplicate prevention (2026-07-14, Basit: "don't create duplicate
+  // records of contacts"). Email-exact missed = maybe a KNOWN person
+  // with a NEW address (the Asad .ai/.com split produced 3 rows for
+  // one man). Before creating: exactly ONE contact with the IDENTICAL
+  // name → attach this email to THAT row (fills the empty slot, or
+  // lands in metadata.altEmails when a different primary exists) —
+  // no second row. Zero or 2+ name matches → create; ambiguity is
+  // never guessed away.
+  if (name && name.trim().length >= 3) {
+    try {
+      const { findContactByExactName, attachIdentifierToContact } = await import('./personIdentityService');
+      const match = await findContactByExactName(clientNumber, name);
+      if (match) {
+        await attachIdentifierToContact(match.id, { email });
+        await prisma.entity.update({
+          where: { id: match.id },
+          data: {
+            lastInteraction: lastInteractionAt ?? new Date(),
+            relationshipStrength: { increment: 1 } as any,
+            updatedAt: new Date(),
+          } as any,
+        }).catch(() => {});
+        return { id: match.id, created: false };
+      }
+    } catch { /* dedup is best-effort — fall through to create */ }
+  }
+
   const row = await prisma.entity.create({
     data: {
       entityType: 'contact',

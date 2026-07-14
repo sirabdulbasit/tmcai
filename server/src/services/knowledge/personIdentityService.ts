@@ -83,6 +83,18 @@ export async function resolvePersonByEmail(email: string, opts: ResolveOptions):
     }
   }
 
+  // 2b) Duplicate prevention (2026-07-14): exactly one contact with the
+  // IDENTICAL name but a DIFFERENT email → same person, second address.
+  // Attach as altEmail instead of creating a duplicate row.
+  if (opts.name && opts.name.trim().length >= 3) {
+    const exact = await findContactByExactName(opts.clientNumber, opts.name);
+    if (exact) {
+      await attachIdentifierToContact(exact.id, { email: normalizedEmail });
+      log.info('attached alt email to existing contact (no duplicate created)', { entityId: exact.id, name: opts.name });
+      return exact.id;
+    }
+  }
+
   // 3) Create fresh
   const created = await prisma.entity.create({
     data: {
@@ -127,6 +139,17 @@ export async function resolvePersonByPhone(phone: string, opts: ResolveOptions):
       }).catch(() => {});
       log.info('bridged entity (email→WA)', { entityId: bridged.id, name: opts.name });
       return bridged.id;
+    }
+  }
+
+  // Duplicate prevention (2026-07-14): identical name, different phone
+  // → same person, second number. Attach as altPhone, no new row.
+  if (opts.name && opts.name.trim().length >= 3) {
+    const exact = await findContactByExactName(opts.clientNumber, opts.name);
+    if (exact) {
+      await attachIdentifierToContact(exact.id, { phone: normalizedPhone });
+      log.info('attached alt phone to existing contact (no duplicate created)', { entityId: exact.id, name: opts.name });
+      return exact.id;
     }
   }
 
@@ -200,6 +223,77 @@ function normalizePhone(raw: string): string | null {
   let p = raw.replace(/[^\d+]/g, '');
   if (!p.startsWith('+') && p.length > 7) p = '+' + p;
   return p.length >= 8 ? p : null;
+}
+
+/**
+ * Exact-name contact lookup for duplicate prevention (2026-07-14,
+ * per Basit: "don't create duplicate records of contacts").
+ *
+ * Used when a KNOWN person surfaces with a NEW identifier (second
+ * email address, new phone). Policy: an IDENTICAL full name (case-
+ * insensitive) within the tenant = same person → the caller attaches
+ * the new identifier to the existing row instead of creating a
+ * duplicate. Deliberately stricter than the trigram bridging above:
+ * similar-but-not-identical names never merge across conflicting
+ * identifiers (two different "Ali Khan"s stay separate), and if the
+ * tenant has MORE than one contact with the exact name we refuse to
+ * guess (return null → caller may create, ambiguity preserved).
+ */
+export async function findContactByExactName(
+  clientNumber: string,
+  name: string,
+): Promise<{ id: string; name: string | null; email: string | null; phone: string | null } | null> {
+  const trimmed = (name ?? '').trim();
+  if (trimmed.length < 3) return null;
+  const rows = await prisma.entity.findMany({
+    where: {
+      clientNumber,
+      entityType: 'contact',
+      name: { equals: trimmed, mode: 'insensitive' },
+    },
+    select: { id: true, name: true, email: true, phone: true },
+    take: 2,
+  }).catch(() => [] as Array<{ id: string; name: string | null; email: string | null; phone: string | null }>);
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+/**
+ * Attach a new identifier to an existing contact instead of creating
+ * a duplicate row. Empty slot → fill it (primary). Occupied slot with
+ * a DIFFERENT value → preserve as metadata.altEmails / altPhones so
+ * nothing is lost and no second contact row exists for the person.
+ */
+export async function attachIdentifierToContact(
+  contactId: string,
+  identifier: { email?: string; phone?: string },
+): Promise<void> {
+  const row = await prisma.entity.findUnique({
+    where: { id: contactId },
+    select: { email: true, phone: true, metadata: true },
+  }).catch(() => null);
+  if (!row) return;
+  const meta = ((row.metadata as Record<string, unknown> | null) ?? {}) as Record<string, any>;
+  const data: Record<string, unknown> = { lastInteraction: new Date() };
+  if (identifier.email) {
+    const e = identifier.email.toLowerCase();
+    if (!row.email) data.email = e;
+    else if (row.email.toLowerCase() !== e) {
+      const alts: string[] = Array.isArray(meta.altEmails) ? meta.altEmails : [];
+      if (!alts.map((x) => String(x).toLowerCase()).includes(e)) {
+        data.metadata = { ...meta, altEmails: [...alts, e] };
+      }
+    }
+  }
+  if (identifier.phone) {
+    const p = identifier.phone;
+    if (!row.phone) data.phone = p;
+    else if (row.phone !== p) {
+      const m = (data.metadata as Record<string, any>) ?? meta;
+      const alts: string[] = Array.isArray(m.altPhones) ? m.altPhones : [];
+      if (!alts.includes(p)) data.metadata = { ...m, altPhones: [...alts, p] };
+    }
+  }
+  await prisma.entity.update({ where: { id: contactId }, data: data as any }).catch(() => {});
 }
 
 async function findByNameForBridging(
