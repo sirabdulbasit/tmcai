@@ -212,4 +212,24 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(before).toMatch(/\$\{r\.name\} \(\$\{r\.phone\}\)/);
     },
   },
+  {
+    id: 'chat7',
+    date: '2026-07-14',
+    userMessage: 'voice note clipped to "Exam solution of" (1-second recording)',
+    observedFailure:
+      'The brain treated an obvious mid-sentence fragment as a RENAME instruction and overwrote the open item\'s title with the fragment (update_open_item dispatches inline, no preview). Should have asked "that looks cut off — what about the Exam solution?"',
+    symptomTags: ['fragment-acted-on'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      // Prompt-contract lock: the Fragment-input contract must exist in
+      // reasoningCompose with its two load-bearing rules (fragments →
+      // ask; title renames require an explicit rename ask).
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'reasoningCompose.ts'), 'utf-8');
+      expect(src).toContain('Fragment-input contract');
+      expect(src).toMatch(/NEVER emit update_open_item with a title change unless the user EXPLICITLY asked to rename/);
+      expect(src).toMatch(/Exam solution of/); // the named anti-example
+    },
+  },
 ];
