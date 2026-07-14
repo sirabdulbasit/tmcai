@@ -143,7 +143,10 @@ const HANDLER_REGISTRY: Record<string, Record<string, (userId: number, payload: 
       const { getBrainPersona } = await import('./brainPersonaService');
       const persona = await getBrainPersona(userId, ctx.clientNumber).catch(() => null);
       const userName = persona?.userFirstName || 'the user';
-      const intro = `Hi ${payload.recipientName}, this is Nexeo — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+      // Custom brain name when set ("Suzi"), Nexeo otherwise.
+      const { getBrainDisplayName } = await import('./outboundIdentity');
+      const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
+      const intro = `Hi ${payload.recipientName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
         const r = await sendTenantWhatsAppText(ctx.clientNumber, String(payload.recipientPhone), `${intro}${payload.message}`, userId);
         if (!r.ok) return { ok: false, message: `WhatsApp send failed: ${r.error ?? 'unknown'}`, errorCode: 'wa_api' };

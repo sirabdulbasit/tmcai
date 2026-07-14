@@ -165,9 +165,12 @@ export async function runDelegateeFollowupSweep(opts: { dryRun?: boolean } = {})
 
       const dueDateStr = new Date((it as any).dueDate).toISOString().slice(0, 10);
       const firstNameDel = ((it as any).delegateeName ?? '').split(/\s+/)[0] || 'there';
+      // Custom brain name when set ("Suzi"), Nexeo otherwise.
+      const { getBrainDisplayName } = await import('../knowledge/outboundIdentity');
+      const brainName = await getBrainDisplayName((it as any).userId).catch(() => 'Nexeo');
       const body = count === 0
-        ? `Hi ${firstNameDel}, this is Nexeo — ${userName}'s AI assistant. Quick check on "${(it as any).title}" — it was due ${dueDateStr}. Is it done? If not, when can you complete it?`
-        : `Hi ${firstNameDel}, Nexeo again. Following up on "${(it as any).title}" — still waiting on a status update. Could you let me know where it stands?`;
+        ? `Hi ${firstNameDel}, this is ${brainName} — ${userName}'s AI assistant. Quick check on "${(it as any).title}" — it was due ${dueDateStr}. Is it done? If not, when can you complete it?`
+        : `Hi ${firstNameDel}, ${brainName} again. Following up on "${(it as any).title}" — still waiting on a status update. Could you let me know where it stands?`;
 
       let sentVia: 'whatsapp' | 'email' = 'email';
       let sentOk = false;
