@@ -231,7 +231,7 @@ When the user pastes a new chat:
 
 **Fix commit:** `680c441` — open-items block now resolves delegatee name → contact entity and embeds `delegatee_candidateId` + `delegatee_reachable`; reasoningCompose gains an "Owner-routing contract" (route to the item's delegatee_candidateId; ask if UNRESOLVED; never substitute). Tests: openItemsOwnerRouting.test.ts (6).
 
-**Verification status:** unverified — ships with PR #2 merge; current prod (459bd4d) still has the bug (preview gate prevented the wrong send — user replies "no" to cancel).
+**Verification status:** ✅ CONFIRMED on prod 2026-07-14 — user voice-noted "Exim solution"; Brain resolved the correct owner ("delegated to Muhammad Yousaf") and ASKED for intent instead of substituting/acting. Screenshot also verified the transcription echo (🎙️ Heard) and voice+text reply pairing.
 
 **Data hygiene follow-up (prod, not code):** duplicate EXIM open_item row; Muhammad Yousaf missing email.
 
