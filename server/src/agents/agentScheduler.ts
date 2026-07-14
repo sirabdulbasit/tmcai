@@ -98,7 +98,7 @@ export function scheduleAgent(agentId: number, agentName: string, schedule: stri
         }
       } catch {}
     }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: require('../services/userTimezoneService').systemDefaultTimezone() });
 
   activeJobs.set(agentId, job);
   log.info('Agent scheduled as background job', { agentId, agentName, schedule, cronExpr });

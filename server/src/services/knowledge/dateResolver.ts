@@ -20,7 +20,7 @@
  * brain-vs-calculator split clean.
  */
 import * as chrono from 'chrono-node';
-import { getUserTimezoneOffset } from '../userTimezoneService';
+import { getUserTimezoneOffset, getTimezoneOffset, systemDefaultTimezone } from '../userTimezoneService';
 
 interface ResolveOpts {
   /** Anchor for relative dates. Defaults to now(). */
@@ -42,7 +42,7 @@ export async function resolveDate(
   if (trimmed.length === 0) return null;
 
   const ref = opts.referenceDate ?? new Date();
-  const offset = await getUserTimezoneOffset(userId).catch(() => '+05:00');
+  const offset = await getUserTimezoneOffset(userId).catch(() => getTimezoneOffset(systemDefaultTimezone()));
   // chrono ignores TZ offset in the input string; we resolve in the
   // user's local frame by parsing with `ref` as a local-time anchor.
 
@@ -74,7 +74,7 @@ export async function resolveDateTime(
   if (trimmed.length === 0) return null;
 
   const ref = opts.referenceDate ?? new Date();
-  const offset = await getUserTimezoneOffset(userId).catch(() => '+05:00');
+  const offset = await getUserTimezoneOffset(userId).catch(() => getTimezoneOffset(systemDefaultTimezone()));
 
   const parsed = chrono.parseDate(trimmed, ref, { forwardDate: true });
   if (!parsed || Number.isNaN(parsed.getTime())) return null;

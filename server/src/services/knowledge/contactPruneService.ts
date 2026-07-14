@@ -32,7 +32,7 @@ import createLogger from '../../utils/logger';
 
 const log = createLogger('contact-prune');
 
-const MAX_MERGES_PER_RUN = 25;
+const MAX_MERGES_PER_RUN = 25; // default; tenant-tunable via behaviorConfig 'contact_prune.max_merges_per_run' (clamped 1–100)
 
 export interface ContactRow {
   id: string;
@@ -130,6 +130,8 @@ export interface PruneResult {
 
 export async function runContactPrune(clientNumber: string): Promise<PruneResult> {
   const out: PruneResult = { groupsSeen: 0, merged: 0, junkAbsorbed: 0, conflictsFlagged: 0 };
+  const { getBehaviorValue } = await import('../behaviorConfig');
+  const maxMerges = await getBehaviorValue('contact_prune.max_merges_per_run', { clientNumber }).catch(() => MAX_MERGES_PER_RUN);
 
   // ── 1+3: exact-name duplicate groups ─────────────────────────────
   const dupNames = await prisma.$queryRawUnsafe<Array<{ lname: string }>>(
@@ -142,7 +144,7 @@ export async function runContactPrune(clientNumber: string): Promise<PruneResult
   ).catch(() => []);
 
   for (const g of dupNames) {
-    if (out.merged >= MAX_MERGES_PER_RUN) break;
+    if (out.merged >= maxMerges) break;
     out.groupsSeen += 1;
     const rows = await prisma.entity.findMany({
       where: { clientNumber, entityType: 'contact', name: { equals: g.lname, mode: 'insensitive' } },
@@ -169,7 +171,7 @@ export async function runContactPrune(clientNumber: string): Promise<PruneResult
     clientNumber,
   ).catch(() => []);
   for (const j of junk) {
-    if (out.merged + out.junkAbsorbed >= MAX_MERGES_PER_RUN) break;
+    if (out.merged + out.junkAbsorbed >= maxMerges) break;
     // A NAMED contact holding this email as primary or alt?
     const owner = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM entities

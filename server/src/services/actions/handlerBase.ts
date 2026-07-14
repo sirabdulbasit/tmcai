@@ -12,6 +12,10 @@ export type HandlerCategory =
 
 export type UndoStatus = 'none' | 'undoable' | 'undone' | 'expired';
 
+/** How strongly a handler's confirm() proves the side effect landed.
+ *  See ActionHandler.confirmationCapability(). */
+export type ConfirmationCapability = 'provider_confirmed' | 'locally_confirmed' | 'unverifiable';
+
 export interface HandlerContext {
   clientNumber: string;
   userId: number;
@@ -111,6 +115,21 @@ export abstract class ActionHandler {
    *  happened" means for its side effect. Fail closed: return false when
    *  the record/receipt cannot be found. */
   abstract confirm(ctx: HandlerContext, output: unknown): Promise<boolean>;
+
+  /** What confirm() can actually PROVE (audit 2026-07-14 #6):
+   *    provider_confirmed — read-back against the external provider
+   *      (message visible in Sent, event re-fetched from Calendar, …)
+   *    locally_confirmed  — read-back against our own DB row (the
+   *      side effect is internal, so the DB IS the system of record)
+   *    unverifiable       — confirm() can only inspect the dispatch
+   *      output; the provider offers no read-back. Executor records
+   *      the action as 'unconfirmed', NEVER 'done'.
+   *  Default is 'locally_confirmed' (most handlers verify a DB row);
+   *  handlers with provider read-backs or no read-back at all MUST
+   *  override so status honesty doesn't depend on prose. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'locally_confirmed';
+  }
 
   /** Produce the reverse operation record (enables cascading undo) */
   async undo(_ctx: HandlerContext, _output: unknown): Promise<ReverseOperation | null> {

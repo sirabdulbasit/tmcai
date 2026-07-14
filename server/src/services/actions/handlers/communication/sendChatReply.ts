@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { sendMessage } from '../../../adapters/googleChatAdapter';
 
 export class SendChatReplyHandler extends ActionHandler {
@@ -64,6 +64,10 @@ export class SendChatReplyHandler extends ActionHandler {
    *  the requested side effect.
    *  CONFIRM-DEEPEN(F1): receipt-only — upgrade to provider read-back
    *  (spaces.messages.get) once the adapter grows a read method. */
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider / delivery log
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     const o = output as { messageName?: unknown } | undefined;
     const name = o?.messageName;

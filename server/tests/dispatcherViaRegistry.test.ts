@@ -31,6 +31,10 @@ vi.mock('../src/services/knowledge/toneService', () => ({
 }));
 vi.mock('../src/services/userTimezoneService', () => ({
   getUserTimezoneOffset: vi.fn(async () => '+05:00'),
+  // audit 2026-07-14 #1: the dispatcher's catch-fallback now derives
+  // from the system default zone instead of a hardcoded '+05:00'.
+  getTimezoneOffset: vi.fn(() => '+05:00'),
+  systemDefaultTimezone: vi.fn(() => 'Asia/Karachi'),
 }));
 
 import { dispatchInstruction } from '../src/services/instructions/instructionDispatcher';

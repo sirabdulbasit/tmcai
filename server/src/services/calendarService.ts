@@ -90,12 +90,14 @@ export async function createEvent(userId: number, details: {
 
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
+    const { resolveUserTimezone } = await import('./userTimezoneService');
+    const tz = await resolveUserTimezone(userId);
 
     const eventBody: any = {
       summary: details.title,
       description: details.description,
-      start: { dateTime: details.startTime, timeZone: 'Asia/Karachi' },
-      end: { dateTime: details.endTime, timeZone: 'Asia/Karachi' },
+      start: { dateTime: details.startTime, timeZone: tz },
+      end: { dateTime: details.endTime, timeZone: tz },
       location: details.location,
       attendees: details.attendees?.map(email => ({ email })),
     };
@@ -209,12 +211,14 @@ export async function updateEvent(
 
   try {
     const calendar = google.calendar({ version: 'v3', auth: client });
+    const { resolveUserTimezone } = await import('./userTimezoneService');
+    const tz = await resolveUserTimezone(userId);
     const body: any = {};
     if (patch.title !== undefined) body.summary = patch.title;
     if (patch.description !== undefined) body.description = patch.description;
     if (patch.location !== undefined) body.location = patch.location;
-    if (patch.startTime !== undefined) body.start = { dateTime: patch.startTime, timeZone: 'Asia/Karachi' };
-    if (patch.endTime !== undefined) body.end = { dateTime: patch.endTime, timeZone: 'Asia/Karachi' };
+    if (patch.startTime !== undefined) body.start = { dateTime: patch.startTime, timeZone: tz };
+    if (patch.endTime !== undefined) body.end = { dateTime: patch.endTime, timeZone: tz };
     if (patch.attendees !== undefined) body.attendees = patch.attendees.map((email) => ({ email }));
 
     const response = await calendar.events.patch({

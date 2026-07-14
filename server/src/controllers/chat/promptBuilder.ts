@@ -84,9 +84,15 @@ export async function buildFullPrompt(params: {
   const tierStyle = tierSettings?.responseStyle || 'moderate';
   const tierMaxWords = tierSettings?.maxResponseWords || 500;
 
-  // Fallback to system_config only if no tier is configured
-  const configLength = !tierSettings ? await getConfig(clientNumber || 'TMC-0001', 'response_length').catch(() => 'moderate') : tierStyle;
-  const effectiveMaxWords = tierSettings ? tierMaxWords : Number(await getConfig(clientNumber || 'TMC-0001', 'max_response_words').catch(() => '500'));
+  // Fallback to system_config only if no tier is configured. Missing
+  // tenant context → code defaults, never another tenant's config
+  // (previously fell back to TMC-0001's rows).
+  const configLength = !tierSettings
+    ? (clientNumber ? await getConfig(clientNumber, 'response_length').catch(() => 'moderate') : 'moderate')
+    : tierStyle;
+  const effectiveMaxWords = tierSettings
+    ? tierMaxWords
+    : Number(clientNumber ? await getConfig(clientNumber, 'max_response_words').catch(() => '500') : '500');
   const userLength = userProfile?.tonePreference || configLength || 'moderate';
 
   const lengthRules: Record<string, string> = {

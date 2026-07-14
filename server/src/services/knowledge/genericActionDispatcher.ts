@@ -36,7 +36,29 @@ export interface DispatchResult {
   artifactId?: string;
   message: string;
   errorCode?: string;
+  /** What an ok result actually PROVES (audit 2026-07-14 #6). Stamped
+   *  by dispatchAction from CONFIRMATION_BY_HANDLER; callers rendering
+   *  user-facing success text must not claim "sent/done" when this is
+   *  'unverifiable' — say "dispatched, not yet confirmed" instead. */
+  confirmation?: 'provider_confirmed' | 'locally_confirmed' | 'unverifiable';
 }
+
+/** Confirmation strength per allow-listed (module, function) pair.
+ *  provider_confirmed = the provider returned a durable receipt (Gmail
+ *  message id, Calendar event id, Meta wamid). locally_confirmed = the
+ *  side effect is our own DB row. Unlisted pairs fail closed to
+ *  'unverifiable'. */
+const CONFIRMATION_BY_HANDLER: Record<string, DispatchResult['confirmation']> = {
+  'calendarService.createEvent': 'provider_confirmed',
+  'calendarService.deleteEvent': 'provider_confirmed',
+  'calendarService.updateEvent': 'provider_confirmed',
+  'gmailService.sendUserEmail': 'provider_confirmed',
+  'tenantWhatsappSender.sendTenantWhatsAppText': 'provider_confirmed',
+  'openItemsService.createItem': 'locally_confirmed',
+  'openItemsService.delegateItem': 'locally_confirmed',
+  'brainPersonaService.setBrainName': 'locally_confirmed',
+  'userMemoryService.recordExplicitMemory': 'locally_confirmed',
+};
 
 /** Closed registry of permitted (handlerModule, handlerFunction)
  *  pairs. Even if action_definitions has a row pointing elsewhere,
@@ -263,6 +285,27 @@ function resolveHandler(module: string, fn: string): ((userId: number, payload: 
   return HANDLER_REGISTRY[module]?.[fn] ?? null;
 }
 
+/** All allow-listed (module, function) pairs — for the confirmation
+ *  parity test: every dispatchable pair must declare what its success
+ *  proves, or it fails closed to 'unverifiable'. */
+export function listRegisteredHandlerPairs(): string[] {
+  return Object.entries(HANDLER_REGISTRY).flatMap(([m, fns]) => Object.keys(fns).map((f) => `${m}.${f}`));
+}
+
+/** Declared confirmation strength for a pair ('unverifiable' when unmapped). */
+export function confirmationForHandler(module: string, fn: string): NonNullable<DispatchResult['confirmation']> {
+  return CONFIRMATION_BY_HANDLER[`${module}.${fn}`] ?? 'unverifiable';
+}
+
+/** True when a (module, function) pair is in the closed allow-list —
+ *  i.e. an action definition pointing at it can actually dispatch.
+ *  Read-only probe for live capability discovery; never exposes the
+ *  handler itself. */
+export function isHandlerRegistered(module: string | null | undefined, fn: string | null | undefined): boolean {
+  if (!module || !fn) return false;
+  return Boolean(HANDLER_REGISTRY[module]?.[fn]);
+}
+
 /** Main entry point. Validates + capability-checks + invokes handler. */
 export async function dispatchAction(
   actionType: string,
@@ -302,7 +345,13 @@ export async function dispatchAction(
     };
   }
   try {
-    return await handler(ctx.userId, payload, ctx);
+    const result = await handler(ctx.userId, payload, ctx);
+    return {
+      ...result,
+      confirmation: result.confirmation
+        ?? CONFIRMATION_BY_HANDLER[`${def.handlerModule}.${def.handlerFunction}`]
+        ?? 'unverifiable', // fail closed: unmapped pair proves nothing
+    };
   } catch (e: any) {
     return { ok: false, message: `Handler threw: ${e?.message ?? 'unknown'}`, errorCode: 'handler_exception' };
   }

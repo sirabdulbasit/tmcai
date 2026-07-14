@@ -208,9 +208,15 @@ router.post('/users/:id/invite', requireAuth, requireAdmin, async (req: Request,
 // ─── Public: Get Password Rules (for setup/reset forms) ────────
 
 router.get('/password-rules/:token', async (req: Request, res: Response) => {
-  // Look up user by invite token to get their client's rules
+  // Look up user by invite token to get their client's rules.
+  // Unknown token → 404, fail closed. (Previously served TMC-0001's
+  // password policy to any unauthenticated caller.)
   const user = await prisma.user.findFirst({ where: { inviteToken: req.params.token as string } });
-  const cn = user?.clientNumber || 'TMC-0001'; // fallback
+  if (!user?.clientNumber) {
+    res.status(404).json({ error: 'invalid or expired token' });
+    return;
+  }
+  const cn = user.clientNumber;
   const gc = async (key: string, fallback: string) => (await getConfig(cn, key)) || fallback;
 
   res.json({

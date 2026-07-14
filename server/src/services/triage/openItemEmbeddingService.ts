@@ -27,7 +27,9 @@ export async function embedAndStore(openItemId: string, clientNumber: string, te
     }).catch(() => null);
     if (existing?.textHash === textHash) return;
 
-    const { embedding, model, dim } = await embed(text);
+    const res = await embed(text);
+    if (!res) return; // provider down in prod → no stub write; re-embeds on next content change
+    const { embedding, model, dim } = res;
     await (prisma as any).openItemEmbedding.upsert({
       where: { openItemId },
       update: { embedding: embedding as any, model, dim, textHash, createdAt: new Date() },
@@ -68,8 +70,13 @@ export async function findSimilar(clientNumber: string, openItemId: string, limi
 
 // ─── internals ───────────────────────────────────────────────────
 
-async function embed(text: string): Promise<{ embedding: number[]; model: string; dim: number }> {
+/** null = provider unavailable in production (stub writes forbidden —
+ *  audit 2026-07-14 #7). Retrieval already filters by model+dim, so
+ *  dev-mode stubs stay internally consistent. */
+async function embed(text: string): Promise<{ embedding: number[]; model: string; dim: number } | null> {
+  const { stubsAllowed, recordEmbeddingDegradation, recordEmbeddingRecovery } = await import('../knowledge/embeddingGuard');
   const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  let lastError = 'no GEMINI_API_KEY/GOOGLE_API_KEY configured';
   if (key) {
     try {
       const r = await fetch(
@@ -83,13 +90,19 @@ async function embed(text: string): Promise<{ embedding: number[]; model: string
       if (r.ok) {
         const j: any = await r.json();
         const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
-        if (vec.length > 0) return { embedding: vec, model: MODEL_GEMINI, dim: vec.length };
+        if (vec.length > 0) {
+          recordEmbeddingRecovery('open_items');
+          return { embedding: vec, model: MODEL_GEMINI, dim: vec.length };
+        }
+        lastError = 'empty embedding in response';
+      } else {
+        lastError = `HTTP ${r.status}`;
       }
-    } catch {
-      /* fall through to stub */
-    }
+    } catch (e: any) { lastError = e?.message ?? 'fetch failed'; }
   }
-  return { embedding: stubEmbed(text), model: MODEL_STUB, dim: 256 };
+  if (stubsAllowed()) return { embedding: stubEmbed(text), model: MODEL_STUB, dim: 256 };
+  await recordEmbeddingDegradation('open_items', lastError);
+  return null;
 }
 
 /** Deterministic 256-dim stub — hash-based so similar inputs land near each other. */

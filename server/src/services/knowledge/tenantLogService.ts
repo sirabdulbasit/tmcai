@@ -81,20 +81,17 @@ export async function appendTenantLog(
 
 function formatLine(entry: LogEntry): string {
   const at = entry.at ?? new Date();
-  const ts = formatPKT(at);
+  const ts = formatLogTimestamp(at);
   const detail = entry.detail ? ` — ${entry.detail}` : '';
   return `## [${ts}] ${entry.kind} | ${entry.title}${detail}`;
 }
 
-function formatPKT(d: Date): string {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Karachi',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  });
-  const parts = fmt.formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} PKT`;
+/** Log timestamps render in the deployment default zone (operator
+ *  config: NEXEO_DEFAULT_TIMEZONE), labeled with the zone name. */
+function formatLogTimestamp(d: Date): string {
+  const { systemDefaultTimezone, formatInZone } = require('../userTimezoneService');
+  const tz = systemDefaultTimezone();
+  return `${formatInZone(tz, d)} ${tz}`;
 }
 
 function logHeader(): string {

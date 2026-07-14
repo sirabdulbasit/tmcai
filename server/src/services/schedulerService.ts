@@ -2,6 +2,12 @@ import cron from 'node-cron';
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
 import { leaderOnly } from '../utils/leaderLock';
+import { systemDefaultTimezone } from './userTimezoneService';
+
+/** System-wide crons fire in the deployment default zone (operator
+ *  config: NEXEO_DEFAULT_TIMEZONE); per-user crons use their own
+ *  configured engine/radar timezone with this as the fallback. */
+const SYSTEM_CRON_TZ = systemDefaultTimezone();
 
 const log = createLogger('scheduler');
 import { sendEmail } from './emailService';
@@ -125,7 +131,7 @@ function scheduleTask(task: { id: number; cronExpression: string; isActive: bool
   const job = cron.schedule(
     task.cronExpression,
     () => leaderOnly(`scheduled_task:${task.id}`, () => executeTask(task.id)),
-    { timezone: 'Asia/Karachi' },
+    { timezone: SYSTEM_CRON_TZ },
   );
   activeJobs.set(task.id, job);
   log.info('Scheduled task', { taskId: task.id, cronExpression: task.cronExpression });
@@ -154,7 +160,7 @@ export async function initScheduler(): Promise<void> {
       const deleted = await cleanupExpiredKeys();
       if (deleted > 0) log.info('Idempotency cleanup', { deleted });
     } catch (err: any) { log.error('Idempotency cleanup failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Approval-token cleanup — daily 3:15am PKT. Sweeps tokens past their
   // 7-day audit grace window so the table doesn't grow unbounded.
@@ -164,7 +170,7 @@ export async function initScheduler(): Promise<void> {
       const deleted = await cleanupExpired();
       if (deleted > 0) log.info('Approval token cleanup', { deleted });
     } catch (err: any) { log.error('Approval token cleanup failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Decision outcome assessment — daily 2am PKT
   cron.schedule('0 2 * * *', () => leaderOnly('cron:decision_outcomes', async () => {
@@ -173,7 +179,7 @@ export async function initScheduler(): Promise<void> {
       await assessOutcomesForAllTenants();
       log.info('Decision outcome assessment completed');
     } catch (err: any) { log.error('Outcome assessment failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Pattern analysis — weekly Sunday 6am PKT
   cron.schedule('0 6 * * 0', () => leaderOnly('cron:pattern_analysis', async () => {
@@ -182,7 +188,7 @@ export async function initScheduler(): Promise<void> {
       await runForAllTenants();
       log.info('Pattern analysis completed');
     } catch (err: any) { log.error('Pattern analysis failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Thought pipeline weekly review — Friday 7am PKT
   cron.schedule('0 7 * * 5', () => leaderOnly('cron:thought_weekly_review', async () => {
@@ -191,7 +197,7 @@ export async function initScheduler(): Promise<void> {
       await generateWeeklyReviewsForAllTenants();
       log.info('Weekly reviews generated');
     } catch (err: any) { log.error('Weekly review generation failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Shadow scoring calibration — first Monday of each month, 7am PKT
   cron.schedule('0 7 1-7 * 1', () => leaderOnly('cron:shadow_scoring', async () => {
@@ -200,7 +206,7 @@ export async function initScheduler(): Promise<void> {
       await runForAllTenants();
       log.info('Shadow scoring calibration completed');
     } catch (err: any) { log.error('Shadow scoring failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Tier 2 — Sentiment backfill. Async on-ingest enrichment occasionally
   // misses (LLM timeout, restart mid-batch). Hourly sweep picks up any
@@ -212,7 +218,7 @@ export async function initScheduler(): Promise<void> {
       const r = await backfillAllTenants();
       if (r.aggregate.updated > 0) log.info('Sentiment backfill', { tenants: r.tenants, ...r.aggregate });
     } catch (err: any) { log.error('Sentiment backfill failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // Tier 1 #8 — Entity discipline sweep. Runs at 4:30am PKT — BEFORE
   // the Odoo mirror at 5am so that Odoo enrichment can match the entity
@@ -227,7 +233,7 @@ export async function initScheduler(): Promise<void> {
       const r = await sweepForAllTenants();
       log.info('Entity sweep complete', { tenants: r.tenants, ...r.aggregate });
     } catch (err: any) { log.error('Entity sweep failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // CRM mirror — Odoo → wiki, daily 5am PKT. Feeds opportunities + partners
   // into wiki_pages so the criticality engine's cascade-dimension can read
@@ -238,7 +244,7 @@ export async function initScheduler(): Promise<void> {
       const r = await mirrorOdooForAllTenants();
       log.info('Odoo wiki mirror complete', { tenants: r.tenants, ...r.result });
     } catch (err: any) { log.error('Odoo wiki mirror failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // M1 — Chunk pgvector backfill: copy JSON `embedding` arrays into the
   // pgvector column for every tenant that has chunks but no vector index
@@ -255,7 +261,7 @@ export async function initScheduler(): Promise<void> {
         if (r.written > 0) log.info('Chunk vector backfill', { clientNumber: t.client_number, ...r });
       }
     } catch (err: any) { log.error('Chunk vector backfill failed', { error: err.message }); }
-  }), { timezone: 'Asia/Karachi' });
+  }), { timezone: SYSTEM_CRON_TZ });
 
   // ── Per-user Brain Engine crons ─────────────────────────────
   await registerAllEngineCrons();
@@ -279,7 +285,7 @@ async function registerAllEngineCrons(): Promise<void> {
     ) as any[];
 
     for (const cfg of configs) {
-      registerUserEngineCron(cfg.user_id, cfg.client_number, cfg.engine_schedule, cfg.engine_timezone || 'Asia/Karachi');
+      registerUserEngineCron(cfg.user_id, cfg.client_number, cfg.engine_schedule, cfg.engine_timezone || SYSTEM_CRON_TZ);
     }
     log.info('Engine crons registered', { count: configs.length });
   } catch (err: any) {
@@ -345,7 +351,7 @@ async function registerAllRiskRadarCrons(): Promise<void> {
       const cfg = (r.risk_radar_config ?? {}) as { enabled?: boolean; schedule?: string; timezone?: string };
       if (cfg.enabled === false) continue;
       const schedule = cfg.schedule || '15 8 * * *';
-      const timezone = cfg.timezone || 'Asia/Karachi';
+      const timezone = cfg.timezone || SYSTEM_CRON_TZ;
       registerUserRiskRadarCron(r.user_id, r.client_number, schedule, timezone);
       count += 1;
     }
