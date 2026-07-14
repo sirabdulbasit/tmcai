@@ -216,7 +216,11 @@ export async function findSemanticDuplicate(args: {
     const matched = scored.find((x) => x.row.id === matchedId)!.row;
     return {
       itemId: matched.id,
-      reason: `Semantic duplicate of "${matched.title.slice(0, 80)}" — ${String(obj.reason ?? '').slice(0, 160)}`,
+      // Human wording (chat 8, 2026-07-14): this string reaches the
+      // user verbatim when the gate blocks a create — the old
+      // "Semantic duplicate of …" read as internal machinery on
+      // WhatsApp and offered no next step.
+      reason: `That's already covered by "${matched.title.slice(0, 80)}" on your list — ${String(obj.reason ?? '').slice(0, 160)}. Want me to act on it or update it instead?`,
     };
   } catch (err: any) {
     log.warn('semantic dedup LLM failed', { err: err.message });

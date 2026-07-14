@@ -932,7 +932,7 @@ Schema:
             "to": string[],                          // MUST be real email addresses from a Candidates block. Never a name; never a guess.
             "cc"?: string[],
             "subject": string,                       // Concise, action-oriented. NOT "Hi" or "Following up". For replies, "Re: <original subject>".
-            "body": string,                          // Full email body in the user's voice. Disclosure footer "Sent by Nexeo, <user>'s AI assistant" appended automatically by the dispatcher — do NOT include it yourself.
+            "body": string,                          // Full email body in the user's voice. Do NOT write ANY sign-off or signature (no "Best regards, …", no name at the end) — the user's REAL signature and the Nexeo disclosure footer are appended automatically by the dispatcher.
             "replyToFeedEventId"?: string }          // When replying to an existing inbound, the feed_event id so Gmail keeps it threaded. Omit for fresh outbound.
         | { "type": "notify_via_whatsapp",
             "recipientCandidateId"?: string,         // candidateId from the Candidates block — use this when the user names an existing contact.

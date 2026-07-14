@@ -395,7 +395,13 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   const { answer, degraded, result: r } = await askBrainWithRetry(
     () => answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' }),
   );
-  const responseText = answer;
+  // Defence-in-depth (chat 8, 2026-07-14): a raw "[notify_via_whatsapp:
+  // …]" marker reached WhatsApp despite the routes-level sanitizer —
+  // some internal path bypassed it (root cause under diagnosis via prod
+  // logs). Sanitizing at THIS boundary guarantees no bracketed system
+  // marker ever ships to a phone, whatever path produced the answer.
+  const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
+  const responseText = sanitizeAnswerForUser(answer);
   if (!degraded && r) {
     log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
 
