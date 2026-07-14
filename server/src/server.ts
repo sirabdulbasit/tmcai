@@ -363,6 +363,19 @@ const server = app.listen(env.port, async () => {
     startBrainCognitiveWorker();
   }).catch((e) => console.warn('[brainCognitive] start failed:', e.message));
 
+  // Preactive engine (2026-07-14) — anticipation, not reaction: meeting
+  // prep before each meeting with attendees + deadline nudges for open
+  // items due within 24h. Every send is deduped (per event / per item
+  // per day) so the 15-min cadence is safe. First tick after 2 min so
+  // boot isn't burdened.
+  setTimeout(() => {
+    const tick = () => import('./services/brain/preactiveEngine')
+      .then(({ runPreactiveForAllUsers }) => runPreactiveForAllUsers())
+      .catch((e) => console.warn('[preactive] tick failed:', e.message));
+    tick();
+    setInterval(tick, 15 * 60 * 1000);
+  }, 2 * 60 * 1000);
+
   // HaseebOS v15 — notification queue drain every 60s
   setInterval(async () => {
     try {

@@ -283,6 +283,26 @@ export async function ingest(input: RawEventInput): Promise<IngestResult> {
       })();
     }
 
+    // Email brain channel (2026-07-14, A0-email v1): an email FROM the
+    // user with a "Nexeo…" subject is a message TO the brain — route it
+    // through the same brain-core as WhatsApp/web and reply by email in
+    // the same thread. Deterministic trigger + per-event dedup inside.
+    if (input.userId && input.sourceType === 'gmail') {
+      void (async () => {
+        try {
+          const { maybeReplyToBrainEmail } = await import('./emailBrainChannel');
+          await maybeReplyToBrainEmail({
+            clientNumber: input.clientNumber,
+            userId: input.userId!,
+            feedEventId: row.id,
+            payload: (input.payload ?? {}) as Record<string, unknown>,
+          });
+        } catch (err: any) {
+          console.warn(`[emailBrainChannel] failed for ${row.id}: ${err.message}`);
+        }
+      })();
+    }
+
     // Phase C — ingest propagation: extract project/policy references and
     // update the related tenant-shared wiki pages. One Flash call per
     // ingest; bounded, fire-and-forget.
