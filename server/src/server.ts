@@ -363,6 +363,17 @@ const server = app.listen(env.port, async () => {
     startBrainCognitiveWorker();
   }).catch((e) => console.warn('[brainCognitive] start failed:', e.message));
 
+  // Contact prune (2026-07-14) — the contact janitor: daily merge of
+  // safe exact-name duplicates, absorption of name-less junk rows,
+  // conflict flagging (never guessed). First run 5 min after boot.
+  setTimeout(() => {
+    const prune = () => import('./services/knowledge/contactPruneService')
+      .then(({ runContactPruneForAllTenants }) => runContactPruneForAllTenants())
+      .catch((e) => console.warn('[contactPrune] failed:', e.message));
+    prune();
+    setInterval(prune, 24 * 60 * 60 * 1000);
+  }, 5 * 60 * 1000);
+
   // Preactive engine (2026-07-14) — anticipation, not reaction: meeting
   // prep before each meeting with attendees + deadline nudges for open
   // items due within 24h. Every send is deduped (per event / per item
