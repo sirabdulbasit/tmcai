@@ -18,6 +18,7 @@
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
+import { planZombieLifecycle } from '../services/openItems/zombieItemPolicy';
 
 const log = createLogger('open-items-backlog-cleanup');
 
@@ -34,6 +35,9 @@ interface CleanupStats {
   archivedStale: number;
   archivedDuplicate: number;
   archivedSmoke: number;
+  quarantinedZombie: number;
+  archivedZombie: number;
+  recoveredZombie: number;
   errors: number;
 }
 
@@ -48,7 +52,8 @@ function normalizeTitle(s: string): string {
 
 export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
   const stats: CleanupStats = {
-    scanned: 0, archivedByGate: 0, archivedStale: 0, archivedDuplicate: 0, archivedSmoke: 0, errors: 0,
+    scanned: 0, archivedByGate: 0, archivedStale: 0, archivedDuplicate: 0, archivedSmoke: 0,
+    quarantinedZombie: 0, archivedZombie: 0, recoveredZombie: 0, errors: 0,
   };
 
   // Per-user stale window resolved inside the loop. The candidate
@@ -63,7 +68,8 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
       priority: { not: 'critical' },
     },
     select: {
-      id: true, title: true, description: true, dueDate: true, priority: true,
+      id: true, title: true, description: true, status: true, dueDate: true, priority: true,
+      delegateeId: true, delegateeName: true, delegateeEmail: true, notes: true,
       createdAt: true, updatedAt: true, sourceFeed: true, sourceRef: true,
       metadata: true, userId: true, clientNumber: true,
     },
@@ -86,6 +92,44 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
   for (const it of items) {
     try {
       const meta = (it.metadata as Record<string, unknown> | null) ?? {};
+
+      // Quarantine malformed passive items before any cleanup or follow-up
+      // path can act on them. This is a soft, auditable lifecycle: no delete.
+      const prunePlan = planZombieLifecycle(it);
+      if (prunePlan.action === 'quarantine') {
+        await prisma.openItem.update({
+          where: { id: it.id },
+          data: { metadata: { ...meta, selfPrune: prunePlan.selfPrune } as any },
+        });
+        stats.quarantinedZombie++;
+        continue;
+      }
+      if (prunePlan.action === 'hold') continue;
+      if (prunePlan.action === 'archive') {
+        const archivedAt = new Date().toISOString();
+        await prisma.openItem.update({
+          where: { id: it.id },
+          data: {
+            status: 'CLOSED' as any,
+            metadata: {
+              ...meta,
+              selfPrune: prunePlan.selfPrune,
+              archivedReason: `zombie:${prunePlan.reason}`,
+              archivedAt,
+              inactivationReason: `Self-pruned after quarantine (${prunePlan.reason})`,
+            } as any,
+          },
+        });
+        stats.archivedZombie++;
+        continue;
+      }
+      if (prunePlan.action === 'recover') {
+        await prisma.openItem.update({
+          where: { id: it.id },
+          data: { metadata: { ...meta, selfPrune: prunePlan.selfPrune } as any },
+        });
+        stats.recoveredZombie++;
+      }
 
       // 1a. Smoke leftovers — anything tagged [smoke] is dev residue.
       if (/^\s*\[smoke\]/i.test(it.title)) {
@@ -149,8 +193,8 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         userStaleCache.set(it.userId, staleDays);
       }
       const userCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
-      const hasNotes = Array.isArray((it as any).notes) && (it as any).notes.length > 0;
-      const hasDelegation = !!(meta as any).delegateeEmail || !!(meta as any).delegateeName;
+      const hasNotes = Array.isArray(it.notes) && it.notes.length > 0;
+      const hasDelegation = !!it.delegateeId || !!it.delegateeEmail || !!it.delegateeName;
       if (staleDays > 0 && it.createdAt < userCutoff && !hasNotes && !hasDelegation) {
         await prisma.openItem.update({
           where: { id: it.id },
@@ -208,7 +252,8 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
     }
   }
 
-  if (stats.archivedByGate + stats.archivedStale + stats.archivedDuplicate > 0) {
+  if (stats.archivedByGate + stats.archivedStale + stats.archivedDuplicate
+      + stats.quarantinedZombie + stats.archivedZombie + stats.recoveredZombie > 0) {
     log.info('cleanup tick', { ...stats });
   }
   return stats;

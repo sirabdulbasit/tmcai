@@ -37,6 +37,7 @@
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
 import { brainContactsUser } from '../services/notifications/brainOutboundService';
+import { planZombieLifecycle } from '../services/openItems/zombieItemPolicy';
 
 const log = createLogger('open-item-draft-ask');
 
@@ -60,6 +61,9 @@ interface RunResult {
   scanned: number;
   asked: number;
   expired: number;
+  quarantined: number;
+  selfPruned: number;
+  recovered: number;
   errors: number;
 }
 
@@ -76,7 +80,9 @@ function dayIndex(createdAt: Date, now: Date): number {
 //   the WhatsApp sender being Nexeo's number, not by a label)
 
 export async function runOpenItemDraftAsk(): Promise<RunResult> {
-  const result: RunResult = { scanned: 0, asked: 0, expired: 0, errors: 0 };
+  const result: RunResult = {
+    scanned: 0, asked: 0, expired: 0, quarantined: 0, selfPruned: 0, recovered: 0, errors: 0,
+  };
   const now = new Date();
   const todayUtcDateStr = now.toISOString().slice(0, 10);
 
@@ -86,7 +92,9 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
   const drafts = await prisma.openItem.findMany({
     where: { status: { in: ACTIVE_DRAFT_STATUSES } as any },
     select: {
-      id: true, title: true, status: true, createdAt: true,
+      id: true, title: true, description: true, status: true, priority: true,
+      dueDate: true, delegateeId: true, delegateeName: true,
+      delegateeEmail: true, notes: true, createdAt: true,
       clientNumber: true, userId: true, metadata: true,
     } as any,
     take: 500,
@@ -95,6 +103,55 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
   for (const item of drafts) {
     result.scanned += 1;
     try {
+      // Self-pruning safety rail. Malformed residue is quarantined first, so it
+      // cannot nag the user. It is only soft-closed after the policy grace
+      // period, and any edit that makes it useful automatically recovers it.
+      const prunePlan = planZombieLifecycle(item, now);
+      if (prunePlan.action === 'quarantine') {
+        await prisma.openItem.update({
+          where: { id: item.id },
+          data: {
+            metadata: {
+              ...(item.metadata ?? {}),
+              selfPrune: prunePlan.selfPrune,
+            } as any,
+          },
+        });
+        result.quarantined += 1;
+        log.info('Draft quarantined from proactive asks', { itemId: item.id, reason: prunePlan.reason });
+        continue;
+      }
+      if (prunePlan.action === 'hold') continue;
+      if (prunePlan.action === 'archive') {
+        await prisma.openItem.update({
+          where: { id: item.id },
+          data: {
+            status: 'CLOSED',
+            metadata: {
+              ...(item.metadata ?? {}),
+              selfPrune: prunePlan.selfPrune,
+              archivedReason: `zombie:${prunePlan.reason}`,
+              archivedAt: now.toISOString(),
+              inactivationReason: `Self-pruned after quarantine (${prunePlan.reason})`,
+            } as any,
+          },
+        });
+        result.selfPruned += 1;
+        log.info('Quarantined draft soft-closed', { itemId: item.id, reason: prunePlan.reason });
+        continue;
+      }
+      if (prunePlan.action === 'recover') {
+        item.metadata = {
+          ...(item.metadata ?? {}),
+          selfPrune: prunePlan.selfPrune,
+        };
+        await prisma.openItem.update({
+          where: { id: item.id },
+          data: { metadata: item.metadata as any },
+        });
+        result.recovered += 1;
+      }
+
       const meta: DraftMeta = (item.metadata?.draft ?? {}) as DraftMeta;
       const missingSlots = (meta.missingSlots ?? []).filter(
         (s) => s === 'priority' || s === 'dueDate',

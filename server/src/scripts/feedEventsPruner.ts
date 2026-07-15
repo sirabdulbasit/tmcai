@@ -1,9 +1,9 @@
 /**
  * scripts/feedEventsPruner.ts
  *
- * Manual entry-point for the feed_events pruner. Identical logic to
- * the daily scheduler in server.ts — both call pruneUserFeedEvents()
- * from the maintenance service. Default = dry run.
+ * Manual entry-point for the feed_events pruner. Identical logic to the
+ * feed_event_prune task centrally scheduled by centralCleanupGovernor — both
+ * call pruneUserFeedEvents() from the maintenance service. Default = dry run.
  *
  * Use this when you want to:
  *   - Preview what would prune (no flags = dry run)

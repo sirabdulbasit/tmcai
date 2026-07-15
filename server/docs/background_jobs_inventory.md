@@ -48,15 +48,21 @@ completion exceeds 2× cadence.
 | notion_mirror_sync | server.ts | 10m | important | tenants | page-hash skip | cursor | 10m |
 | notion_reverse_sync | server.ts | 5m | important | tenants | conflict detection | cursor | 10m |
 | obsidian_vault_export | server.ts | 1h | important | users | appProperties hash-skip | first_tick | 10m |
-| contact_prune | server.ts | 24h | maintenance | tenants | merge-plan safety + caps | none | 10m |
+| central_cleanup_governor | server.ts / centralCleanupGovernor.ts | 5m governor tick; per-task 1h/24h cadence | maintenance | global + tenants + users | one replica lock; sequential tasks; successful-task cadence; failed-task retry | first_tick | 10m |
+
+`central_cleanup_governor` is the only autonomous cleanup scheduler. Its
+manifest centrally governs context-memory expiry, open-item backlog/zombie
+pruning, system-log retention, action-idempotency expiry, approval-token expiry,
+contact prune, smart contact cleanup, inferred memory decay, reset-archive TTL,
+wiki-memory consolidation, and feed-event pruning. Domain modules contain
+implementation only and own no timers.
 
 ## node-cron jobs (schedulerService/agentScheduler — pg-advisory
 ## `leaderOnly` per tick; short DB-bound bodies, transaction-held lock
 ## documented safe for these)
 
 scheduled_task executor (per task, sends result email — CRITICAL,
-leader-locked `scheduled_task:${id}`); idempotency_cleanup 3am;
-approval_token_cleanup 3:15am; decision_outcomes 2am; pattern_analysis
+leader-locked `scheduled_task:${id}`); decision_outcomes 2am; pattern_analysis
 Sun 6am; thought_weekly_review Fri 7am; shadow_scoring monthly;
 sentiment_backfill hourly; entity_sweep 4:30am; odoo_wiki_mirror 5am;
 chunk_vector_backfill + unknown-model re-embed 4am; per-user engine
@@ -71,16 +77,13 @@ durable lease instead.
 
 | Job | Source | Cadence | Class | Why unprotected is acceptable |
 |---|---|---|---|---|
-| context memory cleanup | server.ts 1h | maintenance | DELETE of expired rows — idempotent; failures logged |
 | gap detection | server.ts 24h | maintenance | analysis only |
-| smart cleanup | server.ts 24h | maintenance | archival with own caps |
-| memory consolidation | server.ts 24h | maintenance | archive-only, conservative |
 | wiki-lint nightly + worker | server.ts / wikiLintWorker | nightly/interval | maintenance | proposals only |
-| scribe backfill / feed_events prune | server.ts 6h/24h | maintenance | idempotent per-row checks |
+| scribe backfill | server.ts 6h | maintenance | recovery/copy operation; idempotent per-row checks; feed pruning is centrally governed |
 | gcal/gmailReadState/gtasks/gchat pollers | server.ts 2–5m | important | READ-ONLY ingest with per-source-id dedup — a duplicate concurrent poll re-ingests nothing (unique keys); failures logged; single-instance PM2 today. Migration to protectedTick is mechanical follow-up. |
 | rule miner | server.ts 15m | important | proposes rules only (shadow mode) |
 | WA ingest health audit | server.ts 24h | important | audit only, no sends |
-| trust promotion / memory decay / reflection / brainCognitiveWorker / attachment backfill / folder scribe | server.ts + module starters | daily/6h | maintenance | propose-only or idempotent archival |
+| trust promotion / reflection / brainCognitiveWorker / attachment backfill / folder scribe | server.ts + module starters | daily/6h | maintenance | propose-only or idempotent archival |
 | WA heartbeats (connectionWatchdog, UserWebjsProvider) | 60s/2m | important | inherently per-process (probes THIS process's WA session; a lease would break the semantics). Transitions persisted to system_logs. |
 | index event processor | 10s poll | important | single consumer of index_events queue; row claims are transactional |
 

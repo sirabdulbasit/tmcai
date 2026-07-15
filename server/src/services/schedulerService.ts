@@ -153,25 +153,6 @@ export async function initScheduler(): Promise<void> {
   // replica fires per tick. Keys are hardcoded job names; collisions across
   // different jobs are impossible since each name is unique.
 
-  // Idempotency key cleanup — daily 3am PKT
-  cron.schedule('0 3 * * *', () => leaderOnly('cron:idempotency_cleanup', async () => {
-    try {
-      const { cleanupExpiredKeys } = await import('./actionIdempotencyService');
-      const deleted = await cleanupExpiredKeys();
-      if (deleted > 0) log.info('Idempotency cleanup', { deleted });
-    } catch (err: any) { log.error('Idempotency cleanup failed', { error: err.message }); }
-  }), { timezone: SYSTEM_CRON_TZ });
-
-  // Approval-token cleanup — daily 3:15am PKT. Sweeps tokens past their
-  // 7-day audit grace window so the table doesn't grow unbounded.
-  cron.schedule('15 3 * * *', () => leaderOnly('cron:approval_token_cleanup', async () => {
-    try {
-      const { cleanupExpired } = await import('./notifications/approvalTokenService');
-      const deleted = await cleanupExpired();
-      if (deleted > 0) log.info('Approval token cleanup', { deleted });
-    } catch (err: any) { log.error('Approval token cleanup failed', { error: err.message }); }
-  }), { timezone: SYSTEM_CRON_TZ });
-
   // Decision outcome assessment — daily 2am PKT
   cron.schedule('0 2 * * *', () => leaderOnly('cron:decision_outcomes', async () => {
     try {

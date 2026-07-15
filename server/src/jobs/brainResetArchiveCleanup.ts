@@ -68,14 +68,3 @@ export async function runBrainResetArchiveCleanup(): Promise<{
   }
   return out;
 }
-
-/** Schedule daily. Pattern matches the other workers in this folder. */
-export function scheduleBrainResetArchiveCleanup(): void {
-  const INTERVAL_MS = 24 * 60 * 60 * 1000;
-  const FIRST_TICK_MS = 60 * 60 * 1000;
-  setTimeout(() => {
-    runBrainResetArchiveCleanup().catch(() => undefined);
-    setInterval(() => runBrainResetArchiveCleanup().catch(() => undefined), INTERVAL_MS);
-  }, FIRST_TICK_MS);
-  log.info('archive cleanup worker scheduled', { firstTickMs: FIRST_TICK_MS, intervalMs: INTERVAL_MS });
-}

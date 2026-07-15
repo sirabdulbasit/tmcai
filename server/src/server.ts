@@ -58,7 +58,6 @@ import app from './app';
 import { validateEnv, env } from './config/env';
 import { startAutoRefresh } from './services/indexCacheService';
 import { initScheduler } from './services/schedulerService';
-import { cleanupExpiredContextMemories } from './services/memoryService';
 import { runPersonalDriveSyncJob } from './jobs/personalDriveSyncJob';
 import { startIndexEventProcessor } from './services/indexEventService';
 import { runProactiveIntelligence } from './services/proactiveIntelligenceService';
@@ -160,10 +159,27 @@ const server = app.listen(env.port, async () => {
       { name: 'kpi_snapshot_morning_brief', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
     ])).catch((e) => console.warn('[jobRunner] missed-run scan failed:', e?.message));
   }, 30_000);
-  // Cleanup expired context memories every hour (#4: failures logged,
-  // never silently swallowed)
-  cleanupExpiredContextMemories().catch((e) => console.warn('[contextMemoryCleanup] failed:', e?.message));
-  setInterval(() => cleanupExpiredContextMemories().catch((e) => console.warn('[contextMemoryCleanup] failed:', e?.message)), 60 * 60 * 1000);
+  // Central cleanup governor — the only scheduler for autonomous data
+  // pruning/retention. Domain workers remain independently testable but do
+  // not own timers. The protected runner supplies a cross-replica durable
+  // lock, persisted run state, retries, and escalation. A five-minute tick
+  // lets the governor enforce each task's own hourly/daily cadence.
+  const cleanupGovernorHandle = setTimeout(() => {
+    const tick = () => protectedJob('central_cleanup_governor', 'maintenance', async () => {
+      const { runCentralCleanupGovernor } = await import('./jobs/centralCleanupGovernor');
+      const report = await runCentralCleanupGovernor();
+      if (report.failed > 0) {
+        throw new Error(`Central cleanup failed tasks: ${report.outcomes
+          .filter((outcome) => outcome.status === 'failed')
+          .map((outcome) => outcome.id)
+          .join(', ')}`);
+      }
+    });
+    void tick();
+    const handle = setInterval(tick, 5 * 60 * 1000);
+    backgroundHandles.push(handle);
+  }, 2 * 60 * 1000);
+  backgroundHandles.push(cleanupGovernorHandle);
   // Demo-user expiry sweep — every hour. Flips is_active=false on
   // users whose users.expires_at has passed. First sweep fires 60s
   // after boot so a stale demo doesn't sit live until the first hour
@@ -246,37 +262,6 @@ const server = app.listen(env.port, async () => {
     setInterval(brainPromptTicks, 30 * 60 * 1000);
   }, 6 * 60 * 1000);
 
-  // Smart Cleanup — Brain's autonomous contact maintenance, daily.
-  // First run ~10 min after boot, then every 24h. Per-user per-tenant,
-  // evidence-based: repoints cross-user-leaked rows, archives no-
-  // evidence + junk-pattern contacts, surfaces (but never auto-applies)
-  // duplicate-merge candidates. Per 2026-05-25 Basit rule: Brain
-  // maintains the contacts list intelligently so the user doesn't have
-  // to click cleanup buttons. Replaces the old junk-only daily cron;
-  // junk filter is now one branch inside smart cleanup.
-  setTimeout(() => {
-    import('./services/knowledge/smartCleanupService')
-      .then(({ runSmartCleanupAllUsers }) => runSmartCleanupAllUsers())
-      .then((r) => console.log(`[SmartCleanup] tenants=${r.tenants} users=${r.users}`,
-        `repointed=${r.aggregate.leakedRepointed}`,
-        `archived_dup=${r.aggregate.leakedArchivedDuplicate}`,
-        `archived_no_ev=${r.aggregate.noEvidenceArchived}`,
-        `archived_junk=${r.aggregate.junkArchived}`,
-        `errors=${r.aggregate.errors}`))
-      .catch((err) => console.warn('Smart cleanup failed:', err.message));
-    setInterval(() => {
-      import('./services/knowledge/smartCleanupService')
-        .then(({ runSmartCleanupAllUsers }) => runSmartCleanupAllUsers())
-        .then((r) => console.log(`[SmartCleanup] tenants=${r.tenants} users=${r.users}`,
-          `repointed=${r.aggregate.leakedRepointed}`,
-          `archived_dup=${r.aggregate.leakedArchivedDuplicate}`,
-          `archived_no_ev=${r.aggregate.noEvidenceArchived}`,
-          `archived_junk=${r.aggregate.junkArchived}`,
-          `errors=${r.aggregate.errors}`))
-        .catch((err) => console.warn('Smart cleanup failed:', err.message));
-    }, 24 * 60 * 60 * 1000);
-  }, 10 * 60 * 1000);
-
   // Agent scheduler: initialize all scheduled agents
   import('./agents/agentScheduler').then(({ initializeAgentScheduler }) => {
     initializeAgentScheduler().then(() => console.log('[Agents] Scheduler initialized')).catch(() => {});
@@ -308,13 +293,13 @@ const server = app.listen(env.port, async () => {
       resumeAllSessions().then(() => console.log('[WhatsApp Personal] User sessions resumed')).catch(() => {});
     }).catch(() => {});
   }
-  // Smart log maintenance — hourly: escalate high-recurrence, auto-fix known patterns, cleanup old
+  // Smart log health — escalation and repair remain operational self-healing,
+  // while log retention is owned by the central cleanup governor.
   setInterval(() => {
     protectedJob('system_log_maintenance', 'important', async () => {
-      const { escalateHighRecurrence, runAutoFix, cleanupOldLogs } = await import('./services/systemLogService');
+      const { escalateHighRecurrence, runAutoFix } = await import('./services/systemLogService');
       await escalateHighRecurrence();
       await runAutoFix('GLOBAL');
-      await cleanupOldLogs(90);
     });
   }, 60 * 60 * 1000);
 
@@ -334,25 +319,6 @@ const server = app.listen(env.port, async () => {
     setInterval(heal, 60 * 60 * 1000);
   }, 15 * 60 * 1000);
 
-  // Memory consolidation — nightly. Archives low-value episodic pages
-  // (email_message / sender_topic / observation / answer / gap) after
-  // their aging policy is met. Conservative — only sets status='archived',
-  // never deletes. First run waits 6h after boot to avoid restart churn.
-  const memoryConsolidationHandle = setTimeout(() => {
-    const tick = async () => {
-      try {
-        const { runConsolidationAllTenants } = await import('./services/knowledge/memoryConsolidationService');
-        await runConsolidationAllTenants();
-      } catch (err: any) {
-        console.warn('[memory-consolidation] tick failed:', err.message);
-      }
-    };
-    void tick();
-    const handle = setInterval(tick, 24 * 60 * 60 * 1000);
-    backgroundHandles.push(handle);
-  }, 6 * 60 * 60 * 1000);
-  backgroundHandles.push(memoryConsolidationHandle);
-
   // MyOS — attachment_doc backfill worker (Batch 2):
   //   drains historical Gmail events whose attachments pre-date the
   //   attachment-wiki hook. Per-user cursor in system_config, resumable,
@@ -362,12 +328,6 @@ const server = app.listen(env.port, async () => {
   import('./jobs/attachmentBackfillWorker').then(({ startAttachmentBackfillWorker }) => {
     startAttachmentBackfillWorker();
   }).catch((e) => console.warn('[attachmentBackfill] start failed:', e.message));
-
-  // Settings → Brain → Reset & Cleanup archive table TTL.
-  // Drops *_wipe_<suffix> tables after the 7-day window.
-  import('./jobs/brainResetArchiveCleanup').then(({ scheduleBrainResetArchiveCleanup }) => {
-    scheduleBrainResetArchiveCleanup();
-  }).catch((e) => console.warn('[brainResetArchiveCleanup] start failed:', e.message));
 
   // Delegatee follow-up worker (Brain → delegatee on due date).
   // Per Basit 2026-05-23 delegation lifecycle spec step 4.
@@ -417,18 +377,6 @@ const server = app.listen(env.port, async () => {
     vault();
     setInterval(vault, 60 * 60 * 1000);
   }, 10 * 60 * 1000);
-
-  // Contact prune (2026-07-14) — the contact janitor: daily merge of
-  // safe exact-name duplicates, absorption of name-less junk rows,
-  // conflict flagging (never guessed). First run 5 min after boot.
-  setTimeout(() => {
-    const prune = () => protectedJob('contact_prune', 'maintenance', async () => {
-      const { runContactPruneForAllTenants } = await import('./services/knowledge/contactPruneService');
-      await runContactPruneForAllTenants();
-    });
-    prune();
-    setInterval(prune, 24 * 60 * 60 * 1000);
-  }, 5 * 60 * 1000);
 
   // Preactive engine (2026-07-14) — anticipation, not reaction: meeting
   // prep before each meeting with attendees + deadline nudges for open
@@ -555,17 +503,6 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000);
 
-  // C5 — memory decay daily: expire dated memories, fade stale unconfirmed
-  // inferences (never explicit/confirmed ones), drop below-floor rows.
-  setInterval(async () => {
-    try {
-      const { decayUserMemories } = await import('./jobs/memoryDecayJob');
-      await decayUserMemories();
-    } catch (err: any) {
-      console.warn('[memoryDecay] error:', err.message);
-    }
-  }, 24 * 60 * 60 * 1000);
-
   // B1 — dispatched-action reaper every 5 min: AgentAction rows published
   // to the ADK worker that never received a confirmation move to 'stale'
   // (outcome unknown) — they must NEVER silently read as done.
@@ -630,37 +567,6 @@ const server = app.listen(env.port, async () => {
     });
   }, 5 * 60 * 1000);
 
-  // MyOS — open-items backlog cleanup every 60min. Walks the backlog and
-  // applies the same quality gate that gates auto-creates, plus a
-  // stale-no-engagement sweep and duplicate collapse. Critical items
-  // are never touched. This is the "Brain handles it itself" half of
-  // bulk archive — runaway backlogs (2K+ open items) get pulled back
-  // to a usable size autonomously.
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const { runOpenItemsBacklogCleanup } = await import('./jobs/openItemsBacklogCleanupJob');
-        const s = await runOpenItemsBacklogCleanup();
-        if (s.archivedByGate + s.archivedStale + s.archivedDuplicate > 0) {
-          console.log(`[openItemsBacklog] scanned=${s.scanned} gate=${s.archivedByGate} stale=${s.archivedStale} dup=${s.archivedDuplicate} errors=${s.errors}`);
-        }
-      } catch (err: any) {
-        console.warn('[openItemsBacklog] error:', err.message);
-      }
-    })();
-  }, 2 * 60 * 1000); // first run 2 min after boot
-  setInterval(async () => {
-    try {
-      const { runOpenItemsBacklogCleanup } = await import('./jobs/openItemsBacklogCleanupJob');
-      const s = await runOpenItemsBacklogCleanup();
-      if (s.archivedByGate + s.archivedStale + s.archivedDuplicate > 0) {
-        console.log(`[openItemsBacklog] scanned=${s.scanned} gate=${s.archivedByGate} stale=${s.archivedStale} dup=${s.archivedDuplicate} errors=${s.errors}`);
-      }
-    } catch (err: any) {
-      console.warn('[openItemsBacklog] error:', err.message);
-    }
-  }, 60 * 60 * 1000);
-
   // 2026-05-14 Phase 2 — DRAFT open-item ask cadence. Runs hourly,
   // but each item's lastAskAt-by-UTC-day check throttles to one ask
   // per day per draft. Day 5 = warning; day 6+ = expire (status CLOSED
@@ -671,8 +577,8 @@ const server = app.listen(env.port, async () => {
       try {
         const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
         const s = await runOpenItemDraftAsk();
-        if (s.asked + s.expired > 0) {
-          console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} errors=${s.errors}`);
+        if (s.asked + s.expired + s.quarantined + s.selfPruned + s.recovered > 0) {
+          console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} quarantined=${s.quarantined} selfPruned=${s.selfPruned} recovered=${s.recovered} errors=${s.errors}`);
         }
       } catch (err: any) {
         console.warn('[openItemDraftAsk] error:', err.message);
@@ -683,8 +589,8 @@ const server = app.listen(env.port, async () => {
     protectedJob('open_item_draft_ask', 'critical', async () => {
       const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
       const s = await runOpenItemDraftAsk();
-      if (s.asked + s.expired > 0) {
-        console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} errors=${s.errors}`);
+      if (s.asked + s.expired + s.quarantined + s.selfPruned + s.recovered > 0) {
+        console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} quarantined=${s.quarantined} selfPruned=${s.selfPruned} recovered=${s.recovered} errors=${s.errors}`);
       }
     });
   }, 60 * 60 * 1000);
@@ -819,16 +725,12 @@ const server = app.listen(env.port, async () => {
     });
   }, 2 * 60 * 1000);
 
-  // ── Queue/archive maintenance ─────────────────────────────────
-  // Two scheduled jobs that keep feed_events trimmed to a 30-day
-  // rolling active queue while ensuring scribe (wiki_pages
-  // email_message) holds the permanent archive. Both run for every
-  // active user automatically — new users get picked up on the next
-  // tick without any manual intervention. Per user instruction
-  // (2026-05-07): "who will run these scripts? and when?" — answer:
-  // the server, on this schedule, for everyone.
+  // ── Queue/archive durability ──────────────────────────────────
+  // Scribe backfill is a recovery/copy concern, so it retains its six-hour
+  // operational schedule. Destructive feed pruning is governed exclusively
+  // by centralCleanupGovernor and only runs after this durable copy exists.
 
-  // 1. Scribe backfill — every 6 hours. Catches any feed_events that
+  // Scribe backfill — every 6 hours. Catches any feed_events that
   //    didn't get a scribe sibling at ingest time (Gmail OAuth was
   //    invalid_grant when ingestEmailBody ran, etc.). Idempotent;
   //    the cost is one count + one find per row that already has a
@@ -848,28 +750,6 @@ const server = app.listen(env.port, async () => {
       console.warn('[scribe-backfill] error:', err.message);
     }
   }, 6 * 60 * 60 * 1000);
-
-  // 2. feed_events pruner — every 24 hours. Removes rows that are
-  //    older than 30 days OR have a terminal decision_log entry,
-  //    PROVIDED a scribe sibling exists (no data loss). Runs in
-  //    --apply mode unattended; the safety check is the scribe
-  //    sibling + the dry-run period the operator already validated.
-  setInterval(async () => {
-    try {
-      const { pruneUserFeedEvents, forEachActiveUser } =
-        await import('./services/maintenance/queueArchiveMaintenanceService');
-      const results = await forEachActiveUser((cn, uid) =>
-        pruneUserFeedEvents(cn, uid, { apply: true }),
-      );
-      const totalDeleted = results.reduce((s, r) => s + (r.result?.deleted ?? 0), 0);
-      const totalBlocked = results.reduce((s, r) => s + (r.result?.blockedNoScribe ?? 0), 0);
-      if (totalDeleted > 0 || totalBlocked > 0) {
-        console.log(`[feed-pruner] users=${results.length} deleted=${totalDeleted} blocked-no-scribe=${totalBlocked}`);
-      }
-    } catch (err: any) {
-      console.warn('[feed-pruner] error:', err.message);
-    }
-  }, 24 * 60 * 60 * 1000);
 
   // MyOS — Google Calendar poller every 2 min (was 10 min). Tightened
   // for near-realtime Day Brief freshness; Calendar API quota is

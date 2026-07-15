@@ -384,6 +384,10 @@ export async function runOpenItemFollowUp(): Promise<RunResult> {
 
   for (const item of items) {
     result.scanned += 1;
+    // Shared self-pruning policy quarantines suspicious residue before it is
+    // soft-closed. Never spend an LLM call or contact the owner for an item
+    // explicitly suppressed by that policy.
+    if (item.metadata?.selfPrune?.suppressProactive === true) continue;
     if (alreadyJudgedToday(item, now)) continue;
 
     try {
