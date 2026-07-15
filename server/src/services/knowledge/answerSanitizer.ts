@@ -31,8 +31,20 @@ interface MarkerRule {
 
 const MARKERS: MarkerRule[] = [
   {
+    // fabricated_completion_on_action_turn — the user requested a
+    // mutation, the model CLAIMED it happened, nothing actually ran.
+    // Honest wording: no invented dispatch failure, no recipient demand
+    // (chat 9 rewording, 2026-07-14) — just the truth plus the offer.
     match: /^\s*\[no action dispatched[^\]]*\]\s*$/i,
-    replace: "Sorry, something didn't dispatch on my end. Could you retry — and if it's a send action, name the recipient explicitly?",
+    replace: "Hold on — I hadn't actually done that yet; nothing was executed on my end. Say the word and I'll do it now.",
+    whole: true,
+  },
+  {
+    // read_only_answer_validation_failed — a STATUS question whose
+    // answer failed validation. No dispatch was attempted, so the
+    // wording must never mention dispatch or recipients (chat 9).
+    match: /^\s*\[status read failed[^\]]*\]\s*$/i,
+    replace: "I found the item, but I couldn't reliably read its current status. Let me check it again.",
     whole: true,
   },
   {
@@ -186,7 +198,7 @@ export function sanitizeAnswerForUser(answer: string): string {
   // action name, ends with `]`, contains a colon or "expired" / "failed"
   // / "dispatched"). Preserves legitimate uses of square brackets.
   let result = result0;
-  const embeddedMarker = /\[(?:[a-z_]+\s+(?:preview\s+expired|validation\s+failed|failed:|dispatched)|no action dispatched|cancelled|Action failed:|Brain unavailable|Brain output malformed|fabricated escalation path|LLM returned empty response)[^\]]*\]/g;
+  const embeddedMarker = /\[(?:[a-z_]+\s+(?:preview\s+expired|validation\s+failed|failed:|dispatched)|no action dispatched|status read failed|cancelled|Action failed:|Brain unavailable|Brain output malformed|fabricated escalation path|LLM returned empty response)[^\]]*\]/g;
   result = result.replace(embeddedMarker, '').replace(/\s{2,}/g, ' ').trim();
 
   return result || answer;

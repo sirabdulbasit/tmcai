@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { markTaskDone, findTaskById, getTask } from '../../../googleTasksService';
 
 export class CompleteTaskHandler extends ActionHandler {
@@ -60,6 +60,10 @@ export class CompleteTaskHandler extends ActionHandler {
       return { ok: false, error: err?.message ?? 'complete_task failed' };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider (Odoo/Google Tasks)
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back: fetch the task, expect status='completed'.
     const o = output as { taskId?: string; taskListId?: string } | null | undefined;

@@ -8,6 +8,24 @@ vi.mock('../src/services/systemLogService', () => ({
   log: vi.fn(async (e: any) => { sysLogCalls.push(e); }),
 }));
 
+// Durable state fake (#9): ops_health_state rows survive "restarts"
+// (resetEmbeddingGuard wipes memory; this map is the database).
+const healthRows = new Map<string, { status: string; detail: string | null; since: Date | null }>();
+vi.mock('../src/db/prisma', () => ({
+  default: {
+    $queryRawUnsafe: vi.fn(async (sql: string) => {
+      if (sql.includes('FROM ops_health_state')) {
+        return [...healthRows.entries()].map(([component, r]) => ({ component, ...r }));
+      }
+      return [];
+    }),
+    $executeRawUnsafe: vi.fn(async (_sql: string, ...a: any[]) => {
+      healthRows.set(a[0], { status: a[1], detail: a[2], since: a[3] });
+      return 1;
+    }),
+  },
+}));
+
 import {
   stubsAllowed,
   recordEmbeddingDegradation,
@@ -18,7 +36,7 @@ import {
 
 const origEnv = { NODE_ENV: process.env.NODE_ENV, ALLOW: process.env.EMBEDDINGS_ALLOW_STUB };
 
-beforeEach(() => { resetEmbeddingGuard(); sysLogCalls.length = 0; });
+beforeEach(() => { resetEmbeddingGuard(); sysLogCalls.length = 0; healthRows.clear(); });
 afterEach(() => {
   process.env.NODE_ENV = origEnv.NODE_ENV;
   if (origEnv.ALLOW === undefined) delete process.env.EMBEDDINGS_ALLOW_STUB;
@@ -52,7 +70,7 @@ describe('degradation tracking', () => {
     expect(sysLogCalls[0].category).toBe('embedding_degraded');
     expect(sysLogCalls[0].level).toBe('warning');
 
-    const health = getEmbeddingHealth();
+    const health = await getEmbeddingHealth();
     const chunks = health.find((h) => h.service === 'chunks')!;
     expect(chunks.status).toBe('degraded');
     expect(chunks.failures).toBe(1);
@@ -77,10 +95,28 @@ describe('degradation tracking', () => {
   it('recovery clears the degraded state', async () => {
     await recordEmbeddingDegradation('open_items', 'x');
     recordEmbeddingRecovery('open_items');
-    expect(getEmbeddingHealth().find((h) => h.service === 'open_items')!.status).toBe('ok');
+    expect((await getEmbeddingHealth()).find((h) => h.service === 'open_items')!.status).toBe('ok');
   });
 
   it('recovery without prior degradation is a no-op', () => {
     expect(() => recordEmbeddingRecovery('wiki')).not.toThrow();
+  });
+});
+
+describe('durable degradation state (#9) — survives restarts', () => {
+  it('restart preserves degraded state from the persisted row', async () => {
+    await recordEmbeddingDegradation('chunks', 'HTTP 503');
+    resetEmbeddingGuard(); // simulate process restart (memory wiped)
+    const health = await getEmbeddingHealth();
+    expect(health.find((h) => h.service === 'chunks')!.status).toBe('degraded');
+  });
+
+  it('a REAL provider success resolves it durably', async () => {
+    await recordEmbeddingDegradation('chunks', 'down');
+    recordEmbeddingRecovery('chunks'); // called only from real-model paths
+    await new Promise((r) => setTimeout(r, 0)); // let the async persist land
+    resetEmbeddingGuard();
+    const health = await getEmbeddingHealth();
+    expect(health.find((h) => h.service === 'chunks')!.status).toBe('ok');
   });
 });

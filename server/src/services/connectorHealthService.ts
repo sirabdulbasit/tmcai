@@ -386,6 +386,10 @@ async function fireStaleAlerts(stale: StaleConnector[]): Promise<void> {
       ? `${group[0].label} sync stale`
       : `${group.length} connectors sync stale`;
 
+    // #11: re-alert window is user-tunable (behaviorConfig
+    // 'connector.stale_realert_hours', clamped 1–168h; default 24h).
+    const { getBehaviorValue } = await import('./behaviorConfig');
+    const realertHours = await getBehaviorValue('connector.stale_realert_hours', { userId }).catch(() => 24);
     await brainContactsUser({
       userId,
       kind: 'connector_stale',
@@ -393,7 +397,7 @@ async function fireStaleAlerts(stale: StaleConnector[]): Promise<void> {
       body,
       urgency: 'normal',
       dedupKey: `connector_stale:${sortedIds}`,
-      dedupWindowMs: 24 * 60 * 60 * 1000,
+      dedupWindowMs: realertHours * 60 * 60 * 1000,
       metadata: { connectorIds: group.map((s) => s.connectorId) } as any,
     }).catch((e: any) => log.warn('alert send failed', { userId, error: e.message }));
   }

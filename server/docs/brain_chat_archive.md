@@ -309,3 +309,27 @@ When the user pastes a new chat:
 **User actions:** (1) fix Asad's contact row (email .com + phone) — SQL provided in chat; (2) rename brain (clear "Suzi-Smoke").
 
 **Verification status:** unverified — ships with next deploy. Marker-leak bypass path still needs the prod log diagnostic.
+
+## Chat 9 — 2026-07-14 (read-only status follow-up rewritten into a fake dispatch failure)
+
+**Symptoms:**
+- `status-follow-up-false-dispatch` (NEW tag): sequence — voice note transcribed as "exam solution" (unresolvable) → user clarified "I am talking about EXIM Solution" → Brain correctly resolved the open item delegated to Muhammad Yousaf → user: "Tell me its status" → Brain replied "Sorry, something didn't dispatch on my end. Could you retry — and if it's a send action, name the recipient explicitly?" A read-only question got a dispatch-failure apology.
+
+**Root cause (confirmed in code):** the reasoning-path completion interceptor (brainComposer, decision='answer' branch) ran `claimsCompletion()` UNGATED on every answer. The correct grounded status answer "…is delegated to Muhammad Yousaf" matched EMPTY_PROMISE_RE's passive branch ("is delegated") → replaced with the `[no action dispatched…]` marker → answerSanitizer rendered the misleading dispatch/recipient wording. Aggravator: `looksLikeImperative()` counts leading "tell" as an action verb, so "tell me its status" also read as an action turn on the legacy paths.
+
+**Fix commits:** (this commit) — `shouldInterceptCompletionClaim()` gate: turn intent (`classifyTurnIntent`: read_only / mutation / ambiguous — "tell me…" is a read; "tell Asad…" is a send) × claim shape (CURRENT_TURN_CLAIM_RE "I've delegated it" vs STATIVE_STATE_RE "is delegated") × dispatch evidence × grounded context. Read-only turns allow grounded state language; mutation turns without dispatch still intercept (safety kept — locked by tests D/E); ambiguous turns never invent a dispatch failure. Marker wording split by failure type: fabricated-completion no longer mentions dispatch/recipients; new `[status read failed]` marker for read-only validation problems. All three interceptor sites re-gated (reasoning answer branch, legacy decider fallback, legacy render-time guard). Reasoning contract text updated so status questions get stative answers without fear.
+
+**Verification status:** unverified in prod — unit-locked by tests/completionClaimGate.test.ts (scenario A–H incl. the literal chat-9 sequence) + brainScenarios chat9.
+
+## Chat 10 — 2026-07-15 (standing preference misrouted into an external-send confirmation)
+
+**Symptoms:**
+- `preference-misrouted-to-action` (NEW tag): user voice-noted a durable instruction — "do not read emails older than two weeks; only brief me on emails within two weeks." Transcription was verbatim ✓. But Brain replied "Before I proceed, please confirm the details and reply 'send'." — external-send confirmation semantics on an internal, reversible preference. No details were even shown, and there is nothing to send.
+
+**Root cause (confirmed in code):** `gateHumanFacingAction()` decided preview-vs-immediate from a HARDCODED action-name exception list instead of the action registry's metadata. `record_preference` is declared non-external / non-human-facing in the registry, but was absent from that hardcoded set, so it fell through to the generic "reply 'send'" preview. Same class as the capability-registry drift (chat lineage): a decision that should read live metadata was instead pinned to a hand-maintained list.
+
+**Fix commits:** (this commit, Codex pass) — `IMMEDIATE_INTERNAL_ACTION_TYPES` set (add/update/mark-done open item, update_contact, set_brain_name, record_preference); `gateHumanFacingAction()` consults it before the preview flow → internal reversible actions apply immediately, external sends + destructive ops keep confirmation. Plus a real `email_max_age_days` preference (canonical key, clamped 1–365, enforced in fetch_emails with a one-turn older-override) and a natural confirmation that never says "reply send" / never names a recipient. Also fixed: importing seedActionDefinitions ran its CLI (process.exit in tests) — now guarded by `require.main === module`.
+
+**What worked:** verbatim transcription + echo, the voice-note reply channel, the morning brief itself.
+
+**Verification status:** unverified in prod — unit-locked by tests/preferenceImmediateAction.test.ts + brainScenarios chat10. Ships with this deploy.

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyCapability,
-  CONNECTOR_FOR_ACTION,
   type ClassifyInput,
 } from '../src/services/knowledge/brainCapabilityLive';
 import { isHandlerRegistered } from '../src/services/knowledge/genericActionDispatcher';
@@ -17,59 +16,75 @@ import { CAPABILITY_HINTS, NON_ACTION_CAPABILITIES, listLimitations } from '../s
 const def = (over: Partial<ClassifyInput['def']>): ClassifyInput['def'] => ({
   type: 'send_email', isActive: true, approvedAt: new Date('2026-07-01'),
   handlerModule: 'gmailService', handlerFunction: 'sendUserEmail',
+  operationalMetadata: { external: true, connectors: { anyOf: ['gmail', 'smtp'] } },
   ...over,
 });
 
-describe('classifyCapability — fail-closed state machine', () => {
-  it('registered + approved + healthy connector → available', () => {
-    expect(classifyCapability({
-      def: def({}), healthyConnectors: new Set(['gmail']), tenantWaActive: true,
-    })).toBe('available');
+describe('classifyCapability — fail-closed, metadata-driven (#7)', () => {
+  it('registered + approved + healthy provider → available', () => {
+    expect(classifyCapability({ def: def({}), availableProviders: new Set(['gmail']) })).toBe('available');
   });
 
-  it('email without a healthy gmail connector → connector_unavailable (never claimed available)', () => {
+  it('a healthy SMTP ALTERNATIVE satisfies send_email without Gmail (anyOf)', () => {
+    expect(classifyCapability({ def: def({}), availableProviders: new Set(['smtp']) })).toBe('available');
+  });
+
+  it('email with NO healthy provider in anyOf → connector_unavailable', () => {
+    expect(classifyCapability({ def: def({}), availableProviders: new Set(['google_calendar']) })).toBe('connector_unavailable');
+  });
+
+  it('meeting actions demand a healthy calendar provider', () => {
     expect(classifyCapability({
-      def: def({}), healthyConnectors: new Set(), tenantWaActive: true,
+      def: def({ type: 'schedule_meeting', handlerModule: 'calendarService', handlerFunction: 'createEvent',
+        operationalMetadata: { external: true, connectors: { anyOf: ['google_calendar'] } } }),
+      availableProviders: new Set(['gmail', 'smtp']),
     })).toBe('connector_unavailable');
   });
 
-  it('meeting actions demand google_calendar', () => {
-    expect(classifyCapability({
-      def: def({ type: 'schedule_meeting', handlerModule: 'calendarService', handlerFunction: 'createEvent' }),
-      healthyConnectors: new Set(['gmail']), tenantWaActive: true,
-    })).toBe('connector_unavailable');
-  });
-
-  it('notify_via_whatsapp requires the tenant notifier to be active', () => {
-    const base = def({ type: 'notify_via_whatsapp', handlerModule: 'tenantWhatsappSender', handlerFunction: 'sendTenantWhatsAppText' });
-    expect(classifyCapability({ def: base, healthyConnectors: new Set(), tenantWaActive: false })).toBe('connector_unavailable');
-    expect(classifyCapability({ def: base, healthyConnectors: new Set(), tenantWaActive: true })).toBe('available');
+  it('tenant WhatsApp is distinct from a personal whatsapp connector', () => {
+    const wa = def({ type: 'notify_via_whatsapp', handlerModule: 'tenantWhatsappSender', handlerFunction: 'sendTenantWhatsAppText',
+      operationalMetadata: { external: true, connectors: { anyOf: ['tenant_whatsapp'] } } });
+    // A user's PERSONAL whatsapp connector must not satisfy the tenant notifier requirement.
+    expect(classifyCapability({ def: wa, availableProviders: new Set(['whatsapp_personal']) })).toBe('connector_unavailable');
+    expect(classifyCapability({ def: wa, availableProviders: new Set(['tenant_whatsapp']) })).toBe('available');
   });
 
   it('unapproved definition → approval_required, not available', () => {
-    expect(classifyCapability({
-      def: def({ approvedAt: null }), healthyConnectors: new Set(['gmail']), tenantWaActive: true,
-    })).toBe('approval_required');
+    expect(classifyCapability({ def: def({ approvedAt: null }), availableProviders: new Set(['gmail']) })).toBe('approval_required');
   });
 
   it('deactivated definition → unsupported (disabled action disappears)', () => {
-    expect(classifyCapability({
-      def: def({ isActive: false }), healthyConnectors: new Set(['gmail']), tenantWaActive: true,
-    })).toBe('unsupported');
+    expect(classifyCapability({ def: def({ isActive: false }), availableProviders: new Set(['gmail']) })).toBe('unsupported');
   });
 
-  it('a row whose handler is NOT in any dispatch path → unsupported, even if active+approved (fail closed)', () => {
+  it('a row whose handler is NOT in any dispatch path → unsupported, even if active+approved', () => {
     expect(classifyCapability({
       def: def({ type: 'totally_new_thing', handlerModule: 'evilModule', handlerFunction: 'pwn' }),
-      healthyConnectors: new Set(['gmail']), tenantWaActive: true,
+      availableProviders: new Set(['gmail']),
     })).toBe('unsupported');
   });
 
-  it('composer-dispatched types count as supported without a generic-dispatcher handler', () => {
+  it('an UNKNOWN type with no operational metadata fails closed to unsupported', () => {
     expect(classifyCapability({
-      def: def({ type: 'update_contact', handlerModule: 'entityService', handlerFunction: 'updateContactGuarded' }),
-      healthyConnectors: new Set(), tenantWaActive: false,
-    })).toBe('available'); // internal action — no connector needed
+      def: { type: 'mystery_external_action', isActive: true, approvedAt: new Date(),
+        handlerModule: 'gmailService', handlerFunction: 'sendUserEmail', operationalMetadata: null },
+      availableProviders: new Set(['gmail', 'smtp', 'tenant_whatsapp']),
+    })).toBe('unsupported');
+  });
+
+  it('a KNOWN legacy type with NULL metadata uses the transition fallback (pre-reseed grace)', () => {
+    expect(classifyCapability({
+      def: def({ operationalMetadata: null }), // send_email, pre-reseed row
+      availableProviders: new Set(['smtp']),
+    })).toBe('available');
+  });
+
+  it('composer-dispatched internal types need no connector', () => {
+    expect(classifyCapability({
+      def: def({ type: 'update_contact', handlerModule: 'entityService', handlerFunction: 'updateContactGuarded',
+        operationalMetadata: { external: false } }),
+      availableProviders: new Set(),
+    })).toBe('available');
   });
 });
 
@@ -97,9 +112,15 @@ describe('registry parity — the anti-drift lock', () => {
     expect(stale).toEqual([]);
   });
 
-  it('connector requirements only reference seeded types', () => {
-    const seeded = new Set(ACTIONS.map((a: any) => a.type));
-    expect(Object.keys(CONNECTOR_FOR_ACTION).filter((t) => !seeded.has(t))).toEqual([]);
+  it('EVERY seed declares operationalMetadata — new actions cannot ship without it (#7)', () => {
+    const missing = ACTIONS.filter((a: any) => !a.operationalMetadata || typeof a.operationalMetadata.external !== 'boolean').map((a: any) => a.type);
+    expect(missing).toEqual([]);
+  });
+
+  it('every EXTERNAL seed lists at least one provider in connectors.anyOf', () => {
+    const bad = ACTIONS.filter((a: any) => a.operationalMetadata?.external === true &&
+      !(a.operationalMetadata.connectors?.anyOf?.length > 0)).map((a: any) => a.type);
+    expect(bad).toEqual([]);
   });
 });
 

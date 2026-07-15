@@ -252,13 +252,19 @@ export async function initScheduler(): Promise<void> {
   // backfilled.
   cron.schedule('0 4 * * *', () => leaderOnly('cron:chunk_vector_backfill', async () => {
     try {
-      const { backfillChunkVectors } = await import('./knowledge/chunkVectorService');
+      const { backfillChunkVectors, reembedUnknownChunkVectors } = await import('./knowledge/chunkVectorService');
       const tenants = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT DISTINCT client_number FROM chunks WHERE vector_embedding IS NULL`,
+        `SELECT DISTINCT client_number FROM chunks
+          WHERE vector_embedding IS NULL
+             OR embedding_model IS NULL OR embedding_model = 'legacy-unknown'`,
       );
       for (const t of tenants) {
         const r = await backfillChunkVectors(t.client_number);
         if (r.written > 0) log.info('Chunk vector backfill', { clientNumber: t.client_number, ...r });
+        // #9: bounded nightly re-embed of unknown-model vectors (real
+        // provider only; no-op while the provider is degraded).
+        await reembedUnknownChunkVectors(t.client_number, 100)
+          .catch((e: any) => log.warn('re-embed pass failed', { clientNumber: t.client_number, error: e.message }));
       }
     } catch (err: any) { log.error('Chunk vector backfill failed', { error: err.message }); }
   }), { timezone: SYSTEM_CRON_TZ });
@@ -489,8 +495,11 @@ export async function runTaskNow(taskId: number, userId: number): Promise<void> 
   await executeTask(taskId);
 }
 
-function getNextRun(cronExpr: string): Date {
-  // Simple approximation — node-cron doesn't expose next run time
-  // Return now + estimated interval
-  return new Date(Date.now() + 3600000); // placeholder: 1 hour from now
+function getNextRun(_cronExpr: string): Date | null {
+  // #15 (2026-07-14): node-cron does not expose next-fire computation,
+  // and fabricating "now + 1h" put false timestamps in nextRunAt for
+  // every schedule. Honest answer: unknown → null (column is nullable;
+  // UI should render "—"). If real next-run display is ever needed,
+  // add a cron-parser dependency and compute it properly.
+  return null;
 }

@@ -288,6 +288,14 @@ router.put('/brain-channel', async (req: Request, res: Response) => {
     where: { id: req.user!.id },
     data: { notificationPreferences: prefs as any },
   });
+  // #13 (2026-07-14): a timezone chosen here is an EXPLICIT user
+  // selection — stamp User.timezone + timezone_is_explicit so the
+  // global resolver honours it (the brain_channel copy remains the
+  // documented per-feature override for Day Brief delivery time).
+  if (typeof timezone === 'string' && timezone.length > 0) {
+    const { setUserTimezone } = await import('../services/userTimezoneService');
+    await setUserTimezone(req.user!.id, timezone).catch(() => false);
+  }
   res.json({ success: true });
 });
 

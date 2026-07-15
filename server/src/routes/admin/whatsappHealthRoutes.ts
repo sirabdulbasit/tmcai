@@ -82,7 +82,7 @@ router.get('/system-health', async (req: Request, res: Response) => {
     ).catch(() => []),
   ]);
 
-  const [connectors, embeddings, waStats] = await Promise.all([
+  const [connectors, embeddings, waStats, opsState] = await Promise.all([
     prisma.userConnector.findMany({
       where: { clientNumber: cn },
       select: {
@@ -94,14 +94,34 @@ router.get('/system-health', async (req: Request, res: Response) => {
     }))).catch(() => [] as any[]),
     import('../../services/knowledge/embeddingGuard').then((m) => m.getEmbeddingHealth()).catch(() => []),
     Promise.resolve(getHealthStats(cn)),
+    prisma.$queryRawUnsafe<any[]>(
+      `SELECT component, status, detail, since, updated_at FROM ops_health_state ORDER BY component`,
+    ).catch(() => null), // null (not []) = table unreadable → unknown
   ]);
+
+  // #10: overall status is computed from EVIDENCE with freshness — an
+  // empty in-memory map or unreadable ledger is 'unknown', never
+  // 'healthy'. States: healthy | degraded | down | unknown.
+  const jobLedger = jobs as any;
+  const jobsList: any[] = Array.isArray(jobLedger) ? jobLedger : (jobLedger?.jobs ?? []);
+  const schemaAvailable = Array.isArray(jobLedger) ? true : Boolean(jobLedger?.schemaAvailable);
+  const failingJobs = jobsList.filter((j: any) => (j.consecutive_failures ?? 0) >= 3 || j.status === 'stale_running');
+  const degradedComponents = (opsState ?? []).filter((r: any) => r.status === 'degraded' || r.status === 'down');
+  const overall = !schemaAvailable || opsState === null
+    ? 'unknown'
+    : degradedComponents.some((r: any) => r.status === 'down') ? 'down'
+    : (failingJobs.length > 0 || degradedComponents.length > 0 || (dlqRows[0]?.n ?? 0) > 0) ? 'degraded'
+    : 'healthy';
 
   res.json({
     tenant: cn,
     generatedAt: new Date().toISOString(),
-    jobs,                       // job_runs ledger: last run, status, duration, failures
+    overall,                    // healthy | degraded | down | unknown
+    schemaAvailable,            // false = ops tables missing (migrations!)
+    jobs: jobsList,             // job_runs ledger: last run, status, duration, failures
+    componentState: opsState ?? [], // durable ops_health_state rows (+freshness)
     selfHeal: isSA ? repairs : (repairs as any[]).filter((r) => !r.client_number || r.client_number === cn),
-    embeddings,                 // per-service embedding provider status
+    embeddings,                 // per-service embedding provider status (durable)
     connectors,                 // this tenant's connector states + last sync
     whatsapp: waStats,          // wire health (uptime %, latency) — in-memory window
     dlqDepth: dlqRows[0]?.n ?? -1,

@@ -50,6 +50,7 @@ export const CANONICAL_KEYS = {
   PREFERRED_CHANNEL_FOR: 'preferred_channel_for', // map: name → channel
   TIMEZONE: 'timezone', // shadow of User.timezone for convenience
   MEETING_NOTIFICATION_LEAD: 'meeting_notification_lead_min',
+  EMAIL_MAX_AGE_DAYS: 'email_max_age_days',
   // Phase C style keys
   STYLE_REPLY_LENGTH: 'style.reply_length_preference',
   STYLE_GREETING: 'style.greeting_preference',
@@ -57,6 +58,18 @@ export const CANONICAL_KEYS = {
   STYLE_STRUCTURE: 'style.structure_preference',
   STYLE_NEXT_MOVE: 'style.next_move_preference',
 } as const;
+
+/** Normal email retrieval/briefing horizon explicitly chosen by the
+ * user. Null means no stored restriction. Clamp malformed data so it
+ * can never produce an unbounded query. */
+export async function getEmailMaxAgeDays(userId: number): Promise<number | null> {
+  const memories = await getApplicableMemories(userId);
+  const row = memories.find((m) => m.key === CANONICAL_KEYS.EMAIL_MAX_AGE_DAYS);
+  if (!row) return null;
+  const n = Number(row.value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(1, Math.min(365, Math.round(n)));
+}
 
 /** Get just the style.* memories — the ones the persona uses to tune
  *  the communication contract dynamically. Returns a map for easy

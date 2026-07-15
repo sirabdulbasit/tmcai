@@ -31,6 +31,12 @@ interface Seed {
   previewTemplate?: string | null;
   requiresCapability?: string | null;
   isHumanFacing?: boolean;
+  /** #7 (2026-07-14): operational requirements — REQUIRED on every
+   *  seed (parity test enforces it). external=true means the action
+   *  leaves the system; connectors.anyOf lists providers of which ONE
+   *  healthy instance satisfies the requirement ('smtp' = platform
+   *  SMTP fallback, 'tenant_whatsapp' = the tenant Meta notifier). */
+  operationalMetadata: { external: boolean; connectors?: { anyOf: string[] } };
 }
 
 // Exported for the registry-parity test (capabilityDiscovery.test.ts):
@@ -52,6 +58,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'openItemsService',
     handlerFunction: 'createItem',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_open_items',
     isHumanFacing: false, // internal — no preview gate
   },
@@ -72,6 +79,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'openItemsService',
     handlerFunction: 'updateItem',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_open_items',
     isHumanFacing: false,
   },
@@ -89,6 +97,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'openItemsService',
     handlerFunction: 'markDone',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_open_items',
     isHumanFacing: false,
   },
@@ -107,6 +116,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'openItemsService',
     handlerFunction: 'delegateItem',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_open_items',
     isHumanFacing: true,
     previewTemplate: 'Delegate "{titleHint}" to {delegateeName} <{delegateeEmail}>?',
@@ -128,6 +138,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'calendarService',
     handlerFunction: 'createEvent',
+    operationalMetadata: { external: true, connectors: { anyOf: ['google_calendar'] } },
     requiresCapability: 'google_calendar',
     isHumanFacing: true,
     previewTemplate: 'Schedule "{title}" {whenIso} ({durationMin} min) with {attendeeNames}.',
@@ -147,6 +158,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'calendarService',
     handlerFunction: 'deleteEvent',
+    operationalMetadata: { external: true, connectors: { anyOf: ['google_calendar'] } },
     requiresCapability: 'google_calendar',
     isHumanFacing: true,
     previewTemplate: 'Cancel meeting "{titleHint}" (event {eventId})?',
@@ -168,6 +180,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'calendarService',
     handlerFunction: 'updateEvent',
+    operationalMetadata: { external: true, connectors: { anyOf: ['google_calendar'] } },
     requiresCapability: 'google_calendar',
     isHumanFacing: true,
     previewTemplate: 'Move "{titleHint}" to {newWhenIso}?',
@@ -190,6 +203,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'gmailService',
     handlerFunction: 'sendUserEmail',
+    operationalMetadata: { external: true, connectors: { anyOf: ['gmail', 'smtp'] } },
     requiresCapability: 'send_email',
     isHumanFacing: true,
     previewTemplate: 'To: {to}\nSubject: {subject}\nBody:\n{body}',
@@ -208,6 +222,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'tenantWhatsappSender',
     handlerFunction: 'sendTenantWhatsAppText',
+    operationalMetadata: { external: true, connectors: { anyOf: ['tenant_whatsapp'] } },
     requiresCapability: 'notify_via_whatsapp',
     isHumanFacing: true,
     previewTemplate: 'Hi {recipientName}, this is Nexeo — {userName}\'s AI assistant. {userName} asked me to let you know:\n\n{message}',
@@ -225,6 +240,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'brainPersonaService',
     handlerFunction: 'setBrainName',
+    operationalMetadata: { external: false },
     requiresCapability: null,
     isHumanFacing: false,
   },
@@ -243,6 +259,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'entityCatalogService',
     handlerFunction: 'setContactScope',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_contacts',
     isHumanFacing: true,
     previewTemplate: 'Set "{nameHint}" scope to {scope}?',
@@ -261,6 +278,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'entityCatalogService',
     handlerFunction: 'markContactInactive',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_contacts',
     isHumanFacing: true,
     previewTemplate: 'Mark "{nameHint}" inactive?',
@@ -282,6 +300,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'entityService',
     handlerFunction: 'updateEntity',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_contacts',
     isHumanFacing: true,
     previewTemplate: 'Update {nameHint}?',
@@ -301,6 +320,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'wikiService',
     handlerFunction: 'archivePage',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_wiki',
     isHumanFacing: true,
     previewTemplate: 'Archive wiki page "{titleHint}"?',
@@ -320,6 +340,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'wikiService',
     handlerFunction: 'deletePage',
+    operationalMetadata: { external: false },
     requiresCapability: 'manage_wiki',
     isHumanFacing: true,
     previewTemplate: 'PERMANENTLY DELETE wiki page "{titleHint}"? (Irreversible.)',
@@ -339,6 +360,7 @@ export const ACTIONS: Seed[] = [
     },
     handlerModule: 'userMemoryService',
     handlerFunction: 'recordExplicitMemory',
+    operationalMetadata: { external: false },
     requiresCapability: null,
     isHumanFacing: false,
   },
@@ -357,6 +379,7 @@ async function main() {
       handlerFunction: a.handlerFunction,
       previewTemplate: a.previewTemplate ?? null,
       requiresCapability: a.requiresCapability ?? null,
+      operationalMetadata: a.operationalMetadata,
       isHumanFacing: !!a.isHumanFacing,
       scope: 'system',
       source: 'seeded',
@@ -369,7 +392,13 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  console.error('[seedActionDefinitions] fatal:', e);
-  process.exit(1);
-});
+// This file is also imported by registry-parity tests for ACTIONS.
+// Importing an inventory must never seed the database or terminate the
+// host test process. Run the CLI only when this module is the direct
+// entry point (ts-node/node); imports remain side-effect free.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('[seedActionDefinitions] fatal:', e);
+    process.exitCode = 1;
+  });
+}

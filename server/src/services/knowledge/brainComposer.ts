@@ -95,6 +95,18 @@ export type ComposedAction =
   | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
+/** Internal, reversible actions that apply immediately. They do not
+ * contact another person and must never enter the outbound preview /
+ * "reply send" flow. */
+export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']> = new Set([
+  'add_open_item',
+  'update_open_item',
+  'mark_open_item_done',
+  'update_contact',
+  'set_brain_name',
+  'record_preference',
+]);
+
 /** Every ComposedAction type the composer can actually dispatch.
  *  MUST stay in sync with the union above (and its dispatch branches) —
  *  live capability discovery treats a registered actionDefinition as
@@ -750,6 +762,167 @@ export function claimsCompletion(text: string): boolean {
   return EMPTY_PROMISE_RE.test(text ?? '');
 }
 
+// ── Completion-claim GATE (2026-07-14, chat 9) ──────────────────────
+//
+// The regex above cannot tell a fabricated current-turn claim
+// ("I've delegated it" — when nothing ran) from a FACTUAL STATUS
+// REPORT ("the item is delegated to Muhammad Yousaf" — read from the
+// open-items record). Chat 9: "Tell me its status" → reasoning
+// answered correctly from the grounded record → the ungated
+// interceptor matched the passive branch ("is delegated") → the user
+// got "something didn't dispatch… name the recipient" on a question
+// that involved no dispatch at all.
+//
+// The gate below keeps the safety property (fabricated completion on
+// a genuine mutation turn NEVER ships) while letting grounded state
+// language through on read-only turns. Structure, not broader regex:
+// turn intent × claim shape × dispatch evidence × grounding.
+
+/** Claim SHAPES, split out of EMPTY_PROMISE_RE's branches:
+ *  CURRENT_TURN_CLAIM — "I just did it" forms (first person, "Done —",
+ *  Urdu completion idioms, headless past-tense). STATIVE_STATE —
+ *  passive/impersonal state descriptions ("is delegated", "was sent")
+ *  which are the EXPECTED vocabulary of a status answer. */
+export const CURRENT_TURN_CLAIM_RE = new RegExp(
+  [
+    `\\bi(?:'ve|\\s+have|'ll|\\s+will|'m|\\s+am|\\s+just|\\s+already)\\s+(?:${_COMPLETION_VERBS_ANY})\\b`,
+    `\\bi\\s+(?:${_COMPLETION_VERBS_PAST})\\b`,
+    // Clause-INITIAL "Done —/Done." only: "Done — delegated to X" is a
+    // claim; "The task is marked done." is a state description.
+    `(?:^|[.!?]\\s+)done[\\s.!:—-]`,
+    `\\b(?:kar\\s+diya|kar\\s+di\\s+hai|kar\\s+liya|kar\\s+li\\s+hai|kar\\s+li|ho\\s+gaya|ho\\s+gai|ho\\s+gayi|kar\\s+diye|yaad\\s+kar\\s+liya|yaad\\s+rakh\\s+liya|yaad\\s+kar\\s+li|yaad\\s+rakh\\s+li)\\b`,
+    `(?:^|[.!?]\\s+)(?:${_COMPLETION_VERBS_PAST})\\s+(?:\\S+\\s+)?(?:to|for|it|him|her|them|that|this|those|the|myself|yourself|himself|herself|itself|themselves|inactive|done|complete|completed|closed|archived|as\\s+\\w+)\\b`,
+    `\\bcall(?:ing|ed)?\\s+myself\\b`,
+  ].join('|'),
+  'i',
+);
+
+export const STATIVE_STATE_RE = new RegExp(
+  [
+    // Optional adverb ("currently", "already", "now", "still") between
+    // auxiliary and verb — "is currently assigned to Sara".
+    `\\b(?:has|have|had|was|were|is|are|been)\\s+(?:been\\s+)?(?:(?:currently|already|now|still)\\s+)?(?:${_COMPLETION_VERBS_ANY})\\b`,
+    `\\b(?:the\\s+(?:email|message|invite|reminder|task|meeting|note|reply|nudge|follow-up|followup|thread|item)|it)\\s+(?:has\\s+been|had\\s+been|was|were|is|are)\\s+(?:(?:currently|already|now|still)\\s+)?(?:${_COMPLETION_VERBS_ANY})\\b`,
+  ].join('|'),
+  'i',
+);
+
+/** Which claim shape matched — observability only, never full text. */
+export function matchedCompletionCategory(text: string): 'current_turn_claim' | 'stative_state' | null {
+  const t = text ?? '';
+  if (CURRENT_TURN_CLAIM_RE.test(t)) return 'current_turn_claim';
+  if (STATIVE_STATE_RE.test(t)) return 'stative_state';
+  if (EMPTY_PROMISE_RE.test(t)) return 'current_turn_claim'; // regex drift safety: unclassified match = suspicious
+  return null;
+}
+
+export type TurnIntent = 'read_only' | 'mutation' | 'ambiguous';
+
+/** What is THIS user turn asking for — a read of existing state, or a
+ *  change to the world? Distinct from looksLikeImperative(), whose
+ *  leading-verb list counts "tell" as imperative: "tell me its status"
+ *  is a read; "tell Asad we're ready" is an outbound send. */
+export function classifyTurnIntent(question: string): TurnIntent {
+  const q = (question ?? '').trim().toLowerCase();
+  if (!q) return 'ambiguous';
+  // Outbound/change requests win even when phrased politely or as a
+  // question: "can you send it to Asad?", "tell Asad we're ready".
+  if (/\b(?:can|could|will|would|please)\s+(?:you\s+)?(?:add|delegate|send|schedule|reschedule|postpone|remind|snooze|draft|reply|create|forward|mark|close|cancel|delete|remove|update|change|book|set(?:\s+up)?|email|chase|follow\s*up|note|log|move|push|shift|invite|notify|call)\b/.test(q)) return 'mutation';
+  if (/^tell\s+(?!me\b)/.test(q) || /^check\s+(?:with|in\s+with)\b/.test(q)) return 'mutation';
+  // Read-only: interrogatives, ask-brain forms, status/history nouns.
+  if (/^(?:what|when|who|whose|where|why|how|which|did|do|does|is|are|was|were|has|have|had|any)\b/.test(q)) return 'read_only';
+  if (/^(?:tell|show|give)\s+me\b/.test(q) || /^check\b/.test(q)) return 'read_only';
+  if (/\b(?:status|progress|update\s+on|any\s+update|history|latest\s+on|kya\s+hua|kahan\s+tak|where\s+(?:are\s+we|do\s+we\s+stand))\b/.test(q)) return 'read_only';
+  if (looksLikeImperative(q)) return 'mutation';
+  if (/\?\s*$/.test(q)) return 'read_only';
+  return 'ambiguous';
+}
+
+export interface CompletionGateInput {
+  userQuestion: string;
+  answer: string;
+  /** Reasoning decision when on the reasoning path ('answer' | 'ask' | …). */
+  decision?: string;
+  /** Legacy imperative classification — advisory, logged only. */
+  isActionTurn?: boolean;
+  /** A structured action was emitted this turn. */
+  emittedAction?: boolean;
+  /** Dispatch outcome when an action ran. */
+  actionResult?: { ok: boolean } | null;
+  /** Retrieved records/history were available to ground state claims
+   *  (open items / day brief / recent messages / artifacts blocks). */
+  groundedStatusContext?: boolean;
+  /** RECORD-LEVEL grounding (#1 finalization): the canonical record ids
+   *  (open items, events) actually retrieved for this turn. Non-empty
+   *  grounds state language more strongly than the block-level boolean. */
+  groundedRecordIds?: string[];
+}
+
+/** Extract canonical record ids (cuid-shaped) from rendered data
+ *  blocks — turns block-level grounding into record-level grounding.
+ *  Exported for tests. */
+export function extractRecordIds(...blocks: Array<string | undefined>): string[] {
+  const ids = new Set<string>();
+  for (const b of blocks) {
+    if (!b) continue;
+    for (const m of b.matchAll(/\bc[a-z0-9]{20,28}\b/g)) ids.add(m[0]);
+  }
+  return [...ids];
+}
+
+export interface CompletionGateVerdict {
+  intercept: boolean;
+  failureType?: 'fabricated_completion_on_action_turn' | 'read_only_answer_validation_failed';
+  turnClass: TurnIntent;
+  matchedCategory: ReturnType<typeof matchedCompletionCategory>;
+}
+
+/** THE decision table (chat 9):
+ *    read-only turn  → grounded state language ALLOWED; only a bare
+ *                      ungrounded "I just did it" claim is withheld
+ *                      (as a status-read failure — never phrased as a
+ *                      dispatch failure, because none was attempted);
+ *    mutation turn, no dispatch → intercept (the original guarantee);
+ *    mutation turn, confirmed dispatch → allowed (dispatch path owns
+ *                      the wording);
+ *    ambiguous turn  → never invent a dispatch failure; withhold only
+ *                      ungrounded current-turn claims. */
+export function shouldInterceptCompletionClaim(input: CompletionGateInput): CompletionGateVerdict {
+  const turnClass = classifyTurnIntent(input.userQuestion);
+  const matchedCategory = matchedCompletionCategory(input.answer);
+  if (!matchedCategory) return { intercept: false, turnClass, matchedCategory };
+  // Record-level grounding subsumes the block-level boolean.
+  if ((input.groundedRecordIds?.length ?? 0) > 0) input = { ...input, groundedStatusContext: true };
+  // A real dispatch ran (and, for actionResult.ok, was confirmed by the
+  // dispatch path, which builds its own wording from provider evidence).
+  if (input.emittedAction || input.actionResult?.ok === true) {
+    return { intercept: false, turnClass, matchedCategory };
+  }
+  if (turnClass === 'read_only') {
+    if (matchedCategory === 'current_turn_claim' && !input.groundedStatusContext) {
+      return { intercept: true, failureType: 'read_only_answer_validation_failed', turnClass, matchedCategory };
+    }
+    return { intercept: false, turnClass, matchedCategory };
+  }
+  if (turnClass === 'mutation') {
+    return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
+  }
+  // ambiguous
+  if (matchedCategory === 'current_turn_claim' && !input.groundedStatusContext) {
+    return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
+  }
+  return { intercept: false, turnClass, matchedCategory };
+}
+
+/** Marker emitted per failure type — answerSanitizer owns the human
+ *  wording. Dispatch/recipient language appears ONLY on the fabricated-
+ *  completion type, where a mutation was actually requested. */
+export function completionInterceptMarker(failureType: NonNullable<CompletionGateVerdict['failureType']>): string {
+  return failureType === 'read_only_answer_validation_failed'
+    ? '[status read failed — answer withheld pending a grounded re-read]'
+    : '[no action dispatched — the assistant claimed completion but no action ran]';
+}
+
 /** Cheap heuristic for "the user is asking me to DO something." Used to
  *  gate the action vocabulary + emission rules — they shouldn't ride
  *  along on casual chat or factual questions. We don't need an LLM to
@@ -1018,7 +1191,9 @@ Forbidden alternatives in ALL three cases:
   - "default my meetings to 45 minutes" → \`{ type: "record_preference", key: "default_meeting_duration", value: 45 }\`
   - "I work 9 to 6" → \`{ type: "record_preference", key: "working_hours", value: { start: "09:00", end: "18:00" } }\`
   - "always WhatsApp Asad, never email" → \`{ type: "record_preference", key: "preferred_channel_for", value: { "asad": "whatsapp" } }\`
+  - "do not read emails older than two weeks" / "only brief me on emails within two weeks" → \`{ type: "record_preference", key: "email_max_age_days", value: 14, description: "Limit normal email retrieval and briefing to the most recent 14 days" }\`
   Confirm with a one-line acknowledgement ("Got it — I'll use 'Best regards' going forward."). Don't ask for confirmation BEFORE recording — explicit user statements like these are themselves the confirmation.
+  Saving a preference is INTERNAL and reversible. Never ask the user to reply "send" for it. A later explicit one-time request for an older email may override the normal recency preference without deleting it.
 
 - **set_brain_name — the user can rename you through conversation.** When the user says "your name is X", "call yourself X", "I'll call you X", "let's name you X" — emit \`set_brain_name\` with \`name\` = the proposed name. Examples that should fire:
   - "your name is Suzi" → \`{ type: "set_brain_name", name: "Suzi" }\`
@@ -1650,6 +1825,12 @@ export async function compose(
         console.warn('[compose] toneContext build failed (non-fatal)', { error: e?.message });
       }
 
+      // Chat 9 finalization (#1): carry canonical record ids ACROSS
+      // turns. The artifacts block extracts ids Brain surfaced in
+      // prior turns (open items, events) from history — so a pronoun
+      // follow-up ("tell me its status") resolves against the exact
+      // record id, not just the previous answer's prose.
+      const artifactsBlockForReasoning = renderArtifactsBlock(history);
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -1664,6 +1845,7 @@ export async function compose(
           todayCalendar: todayCalendarBlockForReasoning || undefined,
           contactProvenance: contactProvenanceBlock || undefined,
           dayBrief: dayBriefBlock || undefined,
+          artifacts: artifactsBlockForReasoning || undefined,
         },
       });
       if (result) {
@@ -1760,17 +1942,45 @@ export async function compose(
         // bracketed marker; answerSanitizer converts to honest text.
         // (Basit 2026-07-08 fix pass, chat 2 "has been sent to Asad".)
         if (result.decision !== 'act') {
-          if (result.decision === 'answer' && claimsCompletion(envelope.answer)) {
-            console.warn('[compose] reasoning answer_text contained completion claim — intercepting', {
-              userId, clientNumber,
-              head: (envelope.answer || '').slice(0, 120),
+          // Chat 9 (2026-07-14): gate on TURN INTENT, not bare regex.
+          // "Tell me its status" → "…is delegated to Muhammad Yousaf"
+          // is a grounded status answer, not a fabricated completion —
+          // the old unconditional intercept turned it into a bogus
+          // "didn't dispatch / name the recipient" reply.
+          if (result.decision === 'answer') {
+            const groundedRecordIds = extractRecordIds(
+              openItemsBlockForReasoning, dayBriefBlock, artifactsBlockForReasoning,
+            );
+            const verdict = shouldInterceptCompletionClaim({
+              userQuestion: question,
+              answer: envelope.answer,
+              decision: result.decision,
+              emittedAction: Boolean(envelope.action),
+              actionResult: (envelope as any).actionResult ?? null,
+              groundedRecordIds,
+              groundedStatusContext: Boolean(
+                openItemsBlockForReasoning || dayBriefBlock || recentEmailsBlock
+                || recentWhatsAppBlock || todayCalendarBlockForReasoning,
+              ),
             });
-            return {
-              ...envelope,
-              answer: `[no action dispatched — the assistant claimed completion but no action ran; retry with the action and target named explicitly]`,
-              actionResult: { ok: false, message: 'fabricated_completion_intercepted' },
-              source: 'reasoning',
-            };
+            if (verdict.intercept) {
+              console.warn('[compose] completion claim intercepted (reasoning path)', {
+                userId, clientNumber,
+                turnClass: verdict.turnClass,
+                decision: result.decision,
+                emittedAction: Boolean(envelope.action),
+                actionResultStatus: 'none',
+                matchedCategory: verdict.matchedCategory,
+                failureType: verdict.failureType,
+                head: (envelope.answer || '').slice(0, 80), // bounded — never full content
+              });
+              return {
+                ...envelope,
+                answer: completionInterceptMarker(verdict.failureType!),
+                actionResult: { ok: false, message: verdict.failureType! },
+                source: 'reasoning',
+              };
+            }
           }
           return { ...envelope, source: 'reasoning' };
         }
@@ -2448,32 +2658,40 @@ ${calLines.join('\n')}`;
         // "what did you want?" question.
         parsed.answer = renderMissingSlotPrompt(null, decision.missingSlot);
         parsed.action = null;
-      } else if (isActionTurn && claimsCompletion(parsed.answer)) {
-        // Structural safety net (Basit 2026-07-08 fix pass).
-        // The decider gave up (no action, no missing slot) BUT the
-        // original LLM prose asserted the action was done. This is the
-        // "has been sent" fabrication class — completion language must
-        // NEVER reach the user unless dispatch actually ran. Replace
-        // with a bracketed system marker; answerSanitizer converts it
-        // to an honest non-completion offer.
+      } else {
+        // Structural safety net (Basit 2026-07-08 fix pass; re-gated
+        // 2026-07-14 chat 9). The decider gave up (no action, no
+        // missing slot) BUT the prose asserted completion. The gate
+        // distinguishes a fabricated current-turn claim on a MUTATION
+        // turn (must never ship) from grounded state language on a
+        // read-only/status turn ("is delegated to X" — the correct
+        // answer, previously false-positived into a dispatch error).
         //
-        // Gated on isActionTurn because conversational Brain replies
-        // like "I've noted that" (Basit 2026-05-22 false-positive) can
-        // trigger the regex even though there's nothing to dispatch.
-        // isActionTurn === true means the user's message uses an
-        // imperative verb — a genuine action request. Only then do we
-        // insist that completion language be backed by a real dispatch.
-        //
-        // Invariant enforced by this branch: completion prose on an
-        // action turn reaches the user ONLY when built from a real
-        // provider response (see the sendRes.messageId assembly at
-        // ~:3022-3030 for the send_email case).
-        console.warn('[brain-chat] intercepted completion claim (decider produced no action)', {
-          userId, clientNumber,
-          claimedHead: parsed.answer.slice(0, 120),
+        // Invariant preserved: completion prose on a mutation turn
+        // reaches the user ONLY when built from a real provider
+        // response (see the sendRes.messageId assembly for send_email).
+        const verdict = shouldInterceptCompletionClaim({
+          userQuestion: question,
+          answer: parsed.answer,
+          isActionTurn,
+          emittedAction: false,
+          actionResult: null,
+          groundedStatusContext: Boolean(openItemsBlock || artifactsBlock),
         });
-        parsed.answer = `[no action dispatched — the assistant claimed completion but no action ran; retry with the action and target named explicitly]`;
-        parsed.action = null;
+        if (verdict.intercept) {
+          console.warn('[brain-chat] completion claim intercepted (legacy decider path)', {
+            userId, clientNumber,
+            turnClass: verdict.turnClass,
+            decision: 'decider_no_action',
+            emittedAction: false,
+            actionResultStatus: 'none',
+            matchedCategory: verdict.matchedCategory,
+            failureType: verdict.failureType,
+            head: parsed.answer.slice(0, 80), // bounded — never full content
+          });
+          parsed.answer = completionInterceptMarker(verdict.failureType!);
+          parsed.action = null;
+        }
       }
       // If neither action, missingSlot, nor completion claim: decider
       // concluded no action intent AND the prose is innocuous. Leave
@@ -3184,10 +3402,14 @@ ${calLines.join('\n')}`;
             value: act.value,
           });
           const valStr = typeof act.value === 'string' ? act.value : JSON.stringify(act.value);
+          const emailDays = act.key === 'email_max_age_days' ? Number(act.value) : NaN;
+          const preferenceMessage = Number.isFinite(emailDays)
+            ? `Got it — I'll limit normal email retrieval and briefing to the most recent ${Math.max(1, Math.round(emailDays))} days. If you explicitly ask for an older email, I'll treat that as a one-time override.`
+            : `Got it — I'll remember "${act.key}" as ${valStr} going forward. You can change or remove this in Settings → Brain → Memories.`;
           actionResult = {
             ok: true,
             artifactId: `pref:${act.key}`,
-            message: `Got it — I'll remember "${act.key}" as ${valStr} going forward. You can change or remove this in Settings → Brain → Memories.`,
+            message: preferenceMessage,
           };
           answer = actionResult.message;
         } catch (e: any) {
@@ -3497,7 +3719,11 @@ ${calLines.join('\n')}`;
       // Tighter gate: only fire when THIS TURN was an action-likely
       // turn AND there's no successful actionResult. Conversational
       // turns are exempt because there was nothing to do anyway.
-      const wasActionTurn = isActionTurn;
+      // Chat 9 (2026-07-14): "action turn" here now means the user
+      // asked for a MUTATION. looksLikeImperative counted "tell me its
+      // status" as imperative (leading "tell"), so grounded status
+      // answers on read-only turns were rewritten into failure prose.
+      const wasActionTurn = classifyTurnIntent(question) === 'mutation';
 
       // Look for an artifactId in the recent history — pattern is the
       // dispatcher's success messages from earlier turns. If we can
@@ -4648,10 +4874,10 @@ async function gateHumanFacingAction(
   history: ComposerHistoryTurn[],
   userId?: number,
 ): Promise<string | null> {
-  // Internal-only actions — skip the gate.
-  if (act.type === 'add_open_item') return null;
-  if (act.type === 'update_open_item') return null;
-  if (act.type === 'mark_open_item_done') return null;
+  // Internal-only, reversible actions apply immediately. In
+  // particular, record_preference must not fall through to the generic
+  // "reply send" preview: there is no recipient or external effect.
+  if (IMMEDIATE_INTERNAL_ACTION_TYPES.has(act.type)) return null;
 
   // Earned autonomy (Phase 1C, 2026-07-14): the user can CONSENT to
   // skipping the preview for a kind after the brain proves itself
@@ -4671,7 +4897,6 @@ async function gateHumanFacingAction(
   // inline like update_open_item rather than through preview/confirm.
   // The inline block resolves the entity + enforces the owner scope,
   // which is its own grounding (fails closed on an unknown contact).
-  if (act.type === 'update_contact') return null;
   // NOTE — delegate_open_item is INTENTIONALLY NOT skipped here.
   // It used to be (hardcoded skip), but action_definitions has
   // isHumanFacing=true for delegate and reasoning was observed
@@ -4679,7 +4904,6 @@ async function gateHumanFacingAction(
   // the user's contacts had different addresses) — no preview meant
   // the bad email went out silently. Treat delegations like every
   // other outbound human action: preview-by-default, user confirms.
-  if (act.type === 'set_brain_name') return null;
 
   // Exception 1: prior turn was a preview AND user is confirming.
   if (priorTurnWasPreview(history) && userMessageIsShortConfirmation(question)) {
@@ -5935,8 +6159,13 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     // expected per canonical key.
     const key = typeof r.key === 'string' ? r.key.trim() : '';
     if (!key || key.length > 80) return reject('record_preference:invalid-key');
-    const value = r.value;
+    let value = r.value;
     if (value === undefined || value === null) return reject('record_preference:no-value');
+    if (key === 'email_max_age_days') {
+      const days = Number(value);
+      if (!Number.isFinite(days)) return reject('record_preference:email-max-age-not-numeric');
+      value = Math.max(1, Math.min(365, Math.round(days)));
+    }
     const description = typeof r.description === 'string' && r.description.trim() ? r.description.trim() : undefined;
     return { type: 'record_preference', key, value, description };
   }

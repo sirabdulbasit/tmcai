@@ -1,172 +1,172 @@
 /**
  * repairService — allowlisted self-healing framework (hardening audit
- * 2026-07-14, item #5).
+ * 2026-07-14 #5; reworked same day for staging-readiness item #12).
  *
- * Before this, auto-repair was a single hardcoded rule inside
- * systemLogService (context-limit bump). This framework generalises the
- * pattern under strict rules:
- *
- *   - REPAIRS ARE CODE, in the REPAIR_RULES allowlist below. No LLM
- *     ever generates or executes repair logic. Nothing here edits
- *     source, runs migrations, deploys, or rotates credentials.
- *   - Every rule: precondition check (detect) → bounded apply →
- *     post-verify → audit row (before/after in self_heal_log). A repair
- *     whose verify fails is recorded 'verify_failed' — NEVER "healed".
- *   - Attempt cap per day + cooldown between attempts, per rule (and
- *     per tenant for tenant-scoped rules). Exhaustion escalates to
- *     system_logs (level=error, category self_heal) for a human — with
- *     a recommendation, not further mutation.
- *   - Tenant-scoped rules only ever touch rows of the tenant being
- *     passed; global rules touch infra tables only.
- *
- * The existing menders this wraps (all idempotent):
- *   stale_connector_error_metadata → connectorHealthService.sweepStaleErrorMetadata
- *   stuck_scribe_markers           → scribeRecovery.recoverStuckScribes
- *   feed_dlq_replay                → resets bounded batch of feed_events
- *                                    status 'dlq'→'new' for feedPublishRetry
- *
- * The legacy context-limit auto-fix in systemLogService keeps running
- * unchanged (it already has its own caps); new repairs land here.
+ * Rules (unchanged in spirit, tightened in mechanics):
+ *   - REPAIRS ARE CODE, in the REPAIR_RULES allowlist. No LLM ever
+ *     generates repair logic. Nothing edits source, runs migrations,
+ *     deploys, or rotates credentials.
+ *   - AUDIT-FIRST: the attempt row is INSERTED (pessimistically as
+ *     'apply_failed') BEFORE any mutation and updated to the real
+ *     outcome after verification. If that insert fails, the outcome is
+ *     'audit_unavailable' and NOTHING is mutated — no ledger, no
+ *     repair. A crash mid-apply leaves an honest 'apply_failed' row.
+ *   - SCOPE-CORRECT BUDGETS: every rule declares 'global' | 'tenant';
+ *     attempts and cooldowns are counted at that scope (tenant A can
+ *     never consume tenant B's budget; global rules count only
+ *     global rows).
+ *   - detect() throwing is 'detect_failed' (visible), never silently
+ *     'nothing to repair'.
+ *   - VERIFY EXACT ROWS: verification re-reads the specific ids the
+ *     rule touched. verify-fail is never reported healed.
+ *   - Exhaustion escalates to a human ONCE per 24h window per
+ *     rule+scope (deduped in the ledger itself).
+ *   - Schema comes from migration 20260714_ops_hardening — no runtime
+ *     DDL. Missing table = audit_unavailable = no mutation.
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('self-heal');
 
+export type RepairScope = 'global' | 'tenant';
+
 export interface RepairContext {
   clientNumber?: string;
 }
 
 export interface RepairPrecondition {
-  /** Human-readable summary of what detect() found. */
   summary: string;
-  /** Machine snapshot for the audit row ("before"). */
   before: Record<string, unknown>;
 }
 
 export interface RepairRule {
   id: string;
   description: string;
-  /** true → apply() must be tenant-scoped and runs once per tenant. */
-  tenantScoped: boolean;
+  scope: RepairScope;
   maxAttemptsPerDay: number;
   cooldownMin: number;
-  /** Look, don't touch. null = nothing to repair (the normal case). */
   detect(ctx: RepairContext): Promise<RepairPrecondition | null>;
-  /** The bounded, reversible mutation. Returns the "after" snapshot. */
   apply(ctx: RepairContext, pre: RepairPrecondition): Promise<Record<string, unknown>>;
-  /** Re-check the system of record. false = repair did NOT stick. */
-  verify(ctx: RepairContext, pre: RepairPrecondition): Promise<boolean>;
+  verify(ctx: RepairContext, pre: RepairPrecondition, after: Record<string, unknown>): Promise<boolean>;
 }
 
-export type RepairOutcome = 'healed' | 'verify_failed' | 'apply_failed' | 'skipped_cooldown' | 'skipped_exhausted' | 'nothing_to_repair';
+export type RepairOutcome =
+  | 'healed' | 'verify_failed' | 'apply_failed'
+  | 'skipped_cooldown' | 'skipped_exhausted'
+  | 'nothing_to_repair' | 'detect_failed' | 'audit_unavailable';
 
-// ── Audit / attempt bookkeeping (unmanaged raw table, same pattern as
-//    system_logs and job_runs) ────────────────────────────────────────
+// ── Ledger access (migrated schema only — no DDL) ───────────────────
 
-let tableEnsured = false;
-async function ensureLogTable(): Promise<void> {
-  if (tableEnsured) return;
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS self_heal_log (
-      id BIGSERIAL PRIMARY KEY,
-      rule_id TEXT NOT NULL,
-      client_number TEXT,
-      outcome TEXT NOT NULL,
-      summary TEXT,
-      before_state JSONB,
-      after_state JSONB,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX IF NOT EXISTS self_heal_log_rule_time_idx ON self_heal_log (rule_id, created_at DESC)`,
-  );
-  tableEnsured = true;
+function scopeWhere(rule: RepairRule, ctx: RepairContext): { sql: string; params: unknown[] } {
+  // Budgets count at the rule's declared scope: global rules count ONLY
+  // global rows; tenant rules count ONLY that tenant's rows.
+  return rule.scope === 'tenant'
+    ? { sql: 'client_number = $2', params: [ctx.clientNumber ?? null] }
+    : { sql: 'client_number IS NULL', params: [] };
 }
 
-async function recordAttempt(
-  rule: RepairRule, ctx: RepairContext, outcome: RepairOutcome,
-  pre?: RepairPrecondition | null, after?: Record<string, unknown>,
-): Promise<void> {
+async function attemptsInLast24h(rule: RepairRule, ctx: RepairContext): Promise<{ count: number; lastAt: Date | null; exhaustedNotified: boolean } | null> {
   try {
-    await ensureLogTable();
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO self_heal_log (rule_id, client_number, outcome, summary, before_state, after_state)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb)`,
-      rule.id, ctx.clientNumber ?? null, outcome,
-      pre?.summary ?? null,
-      pre ? JSON.stringify(pre.before) : null,
-      after ? JSON.stringify(after) : null,
+    const w = scopeWhere(rule, ctx);
+    const rows = await prisma.$queryRawUnsafe<Array<{ n: number; last_at: Date | null; notified: number }>>(
+      `SELECT
+         COUNT(*) FILTER (WHERE outcome IN ('healed','verify_failed','apply_failed'))::int AS n,
+         MAX(created_at) FILTER (WHERE outcome IN ('healed','verify_failed','apply_failed')) AS last_at,
+         COUNT(*) FILTER (WHERE outcome = 'skipped_exhausted')::int AS notified
+       FROM self_heal_log
+       WHERE rule_id = $1 AND ${w.sql}
+         AND created_at >= NOW() - INTERVAL '24 hours'`,
+      rule.id, ...w.params,
     );
+    const r = rows[0];
+    return { count: r?.n ?? 0, lastAt: r?.last_at ?? null, exhaustedNotified: (r?.notified ?? 0) > 0 };
   } catch (e: any) {
-    log.warn('self-heal audit write failed', { rule: rule.id, error: e?.message });
+    log.error('self-heal ledger unavailable — repairs disabled until schema is restored', { rule: rule.id, error: e?.message });
+    return null; // fail CLOSED
   }
 }
 
-async function attemptsInLast24h(rule: RepairRule, ctx: RepairContext): Promise<{ count: number; lastAt: Date | null }> {
+async function insertAttempt(rule: RepairRule, ctx: RepairContext, outcome: RepairOutcome, pre?: RepairPrecondition | null): Promise<bigint | null> {
   try {
-    await ensureLogTable();
-    const rows = await prisma.$queryRawUnsafe<Array<{ n: number; last_at: Date | null }>>(
-      `SELECT COUNT(*)::int AS n, MAX(created_at) AS last_at FROM self_heal_log
-        WHERE rule_id = $1
-          AND ($2::text IS NULL OR client_number = $2)
-          AND outcome IN ('healed','verify_failed','apply_failed')
-          AND created_at >= NOW() - INTERVAL '24 hours'`,
-      rule.id, ctx.clientNumber ?? null,
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: bigint }>>(
+      `INSERT INTO self_heal_log (rule_id, scope, client_number, outcome, summary, before_state)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb) RETURNING id`,
+      rule.id, rule.scope, rule.scope === 'tenant' ? (ctx.clientNumber ?? null) : null,
+      outcome, pre?.summary ?? null, pre ? JSON.stringify(pre.before) : null,
     );
-    return { count: rows[0]?.n ?? 0, lastAt: rows[0]?.last_at ?? null };
-  } catch {
-    // Bookkeeping unavailable → fail CLOSED: report the cap as reached
-    // so we never mutate without being able to count attempts.
-    return { count: Number.MAX_SAFE_INTEGER, lastAt: null };
+    return rows[0]?.id ?? null;
+  } catch (e: any) {
+    log.error('self-heal audit insert failed', { rule: rule.id, error: e?.message });
+    return null;
   }
+}
+
+async function finalizeAttempt(id: bigint, outcome: RepairOutcome, after?: Record<string, unknown>): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `UPDATE self_heal_log SET outcome = $2, after_state = $3::jsonb WHERE id = $1`,
+    id, outcome, after ? JSON.stringify(after) : null,
+  ).catch((e: any) => log.error('self-heal audit finalize failed', { id: String(id), error: e?.message }));
 }
 
 // ── Rule execution ──────────────────────────────────────────────────
 
 export async function runRepairRule(rule: RepairRule, ctx: RepairContext): Promise<RepairOutcome> {
+  if (rule.scope === 'tenant' && !ctx.clientNumber) return 'nothing_to_repair';
+
   let pre: RepairPrecondition | null;
   try {
     pre = await rule.detect(ctx);
   } catch (e: any) {
-    log.warn('detect failed — treating as nothing to repair', { rule: rule.id, error: e?.message });
-    return 'nothing_to_repair';
+    // Visible failure — a broken detector is an incident, not "healthy".
+    log.error('self-heal detect failed', { rule: rule.id, clientNumber: ctx.clientNumber, error: e?.message });
+    await insertAttempt(rule, ctx, 'detect_failed', { summary: `detect threw: ${String(e?.message).slice(0, 200)}`, before: {} });
+    return 'detect_failed';
   }
   if (!pre) return 'nothing_to_repair';
 
-  const { count, lastAt } = await attemptsInLast24h(rule, ctx);
-  if (count >= rule.maxAttemptsPerDay) {
-    // Exhausted: escalate to a human, recommend, stop mutating.
-    await recordAttempt(rule, ctx, 'skipped_exhausted', pre);
-    try {
-      const { log: sysLog } = await import('../systemLogService');
-      await sysLog({
-        level: 'error', category: 'self_heal', source: `repair:${rule.id}`,
-        message: `self-heal exhausted (${count}/${rule.maxAttemptsPerDay} in 24h) for "${rule.id}"${ctx.clientNumber ? ` tenant ${ctx.clientNumber}` : ''}: ${pre.summary}. Human action required — see runbook docs/brain_hardening_audit_2026-07-14.md.`,
-      } as any);
-    } catch { /* visible via self_heal_log regardless */ }
+  const budget = await attemptsInLast24h(rule, ctx);
+  if (budget === null) return 'audit_unavailable'; // ledger down → NO mutation
+
+  if (budget.count >= rule.maxAttemptsPerDay) {
+    if (!budget.exhaustedNotified) {
+      // Escalate ONCE per rolling 24h window (the skipped_exhausted row
+      // itself is the dedup marker).
+      await insertAttempt(rule, ctx, 'skipped_exhausted', pre);
+      try {
+        const { log: sysLog } = await import('../systemLogService');
+        await sysLog({
+          level: 'error', category: 'self_heal', source: `repair:${rule.id}`,
+          message: `self-heal exhausted (${budget.count}/${rule.maxAttemptsPerDay} in 24h) for "${rule.id}"${ctx.clientNumber ? ` tenant ${ctx.clientNumber}` : ''}: ${pre.summary}. Human action required — see runbook docs/brain_hardening_audit_2026-07-14.md.`,
+        } as any);
+      } catch { /* ledger row remains the signal */ }
+    }
     return 'skipped_exhausted';
   }
-  if (lastAt && Date.now() - new Date(lastAt).getTime() < rule.cooldownMin * 60_000) {
+  if (budget.lastAt && Date.now() - new Date(budget.lastAt).getTime() < rule.cooldownMin * 60_000) {
     return 'skipped_cooldown';
   }
+
+  // AUDIT-FIRST: pessimistic row before any mutation. Insert failure =
+  // no audit = no repair.
+  const attemptId = await insertAttempt(rule, ctx, 'apply_failed', pre);
+  if (attemptId === null) return 'audit_unavailable';
 
   let after: Record<string, unknown>;
   try {
     after = await rule.apply(ctx, pre);
   } catch (e: any) {
-    await recordAttempt(rule, ctx, 'apply_failed', pre, { error: e?.message });
+    await finalizeAttempt(attemptId, 'apply_failed', { error: String(e?.message).slice(0, 300) });
     log.warn('repair apply failed', { rule: rule.id, error: e?.message });
     return 'apply_failed';
   }
 
   let verified = false;
   try {
-    verified = await rule.verify(ctx, pre);
+    verified = await rule.verify(ctx, pre, after);
   } catch { verified = false; }
 
-  await recordAttempt(rule, ctx, verified ? 'healed' : 'verify_failed', pre, after);
+  await finalizeAttempt(attemptId, verified ? 'healed' : 'verify_failed', after);
   if (verified) {
     log.info('self-heal succeeded', { rule: rule.id, clientNumber: ctx.clientNumber, summary: pre.summary });
   } else {
@@ -180,7 +180,7 @@ export async function runRepairRule(rule: RepairRule, ctx: RepairContext): Promi
 const staleConnectorMetadata: RepairRule = {
   id: 'stale_connector_error_metadata',
   description: "Clear stale lastRefreshError/staleSince metadata from connectors whose status is back to 'connected' (recovery already confirmed by connectorSyncTracker).",
-  tenantScoped: false,
+  scope: 'global',
   maxAttemptsPerDay: 24,
   cooldownMin: 30,
   async detect() {
@@ -220,13 +220,11 @@ const staleConnectorMetadata: RepairRule = {
 const stuckScribeMarkers: RepairRule = {
   id: 'stuck_scribe_markers',
   description: "Reset user_connector scribeStatus='running' markers older than 30 min (crashed mid-scribe) so the UI unblocks re-scribing.",
-  tenantScoped: false,
+  scope: 'global',
   maxAttemptsPerDay: 12,
   cooldownMin: 60,
   async detect() {
-    const rows = await prisma.userConnector.findMany({
-      select: { id: true, metadata: true },
-    });
+    const rows = await prisma.userConnector.findMany({ select: { id: true, metadata: true } });
     const stuck = rows.filter((r: any) => {
       const m = r.metadata ?? {};
       if (m.scribeStatus !== 'running') return false;
@@ -256,8 +254,8 @@ const stuckScribeMarkers: RepairRule = {
 
 const feedDlqReplay: RepairRule = {
   id: 'feed_dlq_replay',
-  description: "Requeue a bounded batch (25) of feed_events rows from status='dlq' back to 'new' so feedPublishRetry re-attempts them — only rows parked >1h (transient causes have passed).",
-  tenantScoped: true,
+  description: "Atomically claim a bounded batch (25) of feed_events rows parked in status='dlq' >1h and requeue them to 'new' for feedPublishRetry. FOR UPDATE SKIP LOCKED — concurrent workers can never claim the same rows.",
+  scope: 'tenant',
   maxAttemptsPerDay: 4,
   cooldownMin: 120,
   async detect(ctx) {
@@ -273,29 +271,36 @@ const feedDlqReplay: RepairRule = {
     return { summary: `${n} feed event(s) parked in DLQ >1h`, before: { dlqCount: n } };
   },
   async apply(ctx) {
-    const updated = await prisma.$executeRawUnsafe(
-      `UPDATE feed_events SET status = 'new'
-        WHERE id IN (
-          SELECT id FROM feed_events
-           WHERE client_number = $1 AND status = 'dlq'
-             AND created_at < NOW() - INTERVAL '1 hour'
-           ORDER BY created_at ASC
-           LIMIT 25
-        )`,
+    // Atomic claim: SKIP LOCKED means a concurrent replica selecting at
+    // the same moment gets DIFFERENT rows (or none). The exact claimed
+    // ids are returned for id-exact verification.
+    const claimed = await prisma.$queryRawUnsafe<Array<{ id: number }>>(
+      `WITH claimed AS (
+         SELECT id FROM feed_events
+          WHERE client_number = $1 AND status = 'dlq'
+            AND created_at < NOW() - INTERVAL '1 hour'
+          ORDER BY created_at ASC
+          LIMIT 25
+          FOR UPDATE SKIP LOCKED
+       )
+       UPDATE feed_events SET status = 'new'
+        WHERE id IN (SELECT id FROM claimed)
+       RETURNING id`,
       ctx.clientNumber,
     );
-    return { requeued: updated };
+    return { requeuedIds: claimed.map((c) => Number(c.id)) };
   },
-  async verify(ctx, pre) {
+  async verify(ctx, _pre, after) {
+    const ids = (after.requeuedIds as number[]) ?? [];
+    if (ids.length === 0) return false; // claimed nothing → nothing healed
+    // Verify the EXACT rows we touched left the DLQ (they may already
+    // be further along the pipeline — anything except 'dlq' counts).
     const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
       `SELECT COUNT(*)::int AS n FROM feed_events
-        WHERE client_number = $1 AND status = 'dlq'
-          AND created_at < NOW() - INTERVAL '1 hour'`,
-      ctx.clientNumber,
+        WHERE client_number = $1 AND id = ANY($2::int[]) AND status = 'dlq'`,
+      ctx.clientNumber, ids,
     );
-    // Success = the batch left the DLQ (retry worker takes it from here;
-    // rows that fail again re-park and count against the next attempt).
-    return (rows[0]?.n ?? 0) < ((pre.before.dlqCount as number) ?? 0);
+    return (rows[0]?.n ?? 0) === 0;
   },
 };
 
@@ -305,8 +310,9 @@ export const REPAIR_RULES: readonly RepairRule[] = [
   feedDlqReplay,
 ];
 
-/** One pass over all rules: global rules once, tenant-scoped rules per
- *  active tenant. Registered hourly in server.ts (leader-locked). */
+/** One pass over all rules: global rules once, tenant rules per active
+ *  tenant. Registered hourly in server.ts under the job runner's lease
+ *  (cross-replica single execution). */
 export async function runSelfHealPass(): Promise<Record<string, RepairOutcome[]>> {
   const results: Record<string, RepairOutcome[]> = {};
   const tenants = await prisma.tenant.findMany({
@@ -316,7 +322,7 @@ export async function runSelfHealPass(): Promise<Record<string, RepairOutcome[]>
 
   for (const rule of REPAIR_RULES) {
     results[rule.id] = [];
-    if (rule.tenantScoped) {
+    if (rule.scope === 'tenant') {
       for (const t of tenants) {
         results[rule.id].push(await runRepairRule(rule, { clientNumber: t.clientNumber }));
       }
@@ -330,9 +336,8 @@ export async function runSelfHealPass(): Promise<Record<string, RepairOutcome[]>
 /** Recent audit trail for the admin health endpoint. */
 export async function getRecentRepairs(limit = 50): Promise<any[]> {
   try {
-    await ensureLogTable();
     return await prisma.$queryRawUnsafe<any[]>(
-      `SELECT rule_id, client_number, outcome, summary, created_at
+      `SELECT rule_id, scope, client_number, outcome, summary, created_at
          FROM self_heal_log ORDER BY created_at DESC LIMIT $1`,
       Math.min(Math.max(limit, 1), 200),
     );

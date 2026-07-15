@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { findTaskById, createSubtask, getTask } from '../../../googleTasksService';
 
 export class AddSubtaskHandler extends ActionHandler {
@@ -52,6 +52,10 @@ export class AddSubtaskHandler extends ActionHandler {
       return { ok: false, error: err?.message ?? 'add_subtask failed' };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider (Odoo/Google Tasks)
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back: fetch the subtask, verify parent linkage. A
     // matching id with the WRONG parent means the parent field didn't

@@ -140,10 +140,16 @@ const fetchEmails: BrainToolDefinition = {
       from:             { type: 'string', description: 'sender email (partial OK) — pass when user names a specific person' },
       subject_contains: { type: 'string', description: 'subject substring (case-insensitive)' },
       last_n_days:      { type: 'integer', description: 'lookback window (default 7, max 30)' },
+      explicit_older_override: { type: 'boolean', description: 'true ONLY when the current user message explicitly asks to search beyond their remembered email recency preference' },
     },
   },
-  handler: async ({ from, subject_contains, last_n_days }, { userId, clientNumber }) => {
-    const days = Math.max(1, Math.min(30, Number(last_n_days ?? 7)));
+  handler: async ({ from, subject_contains, last_n_days, explicit_older_override }, { userId, clientNumber }) => {
+    const requestedDays = Math.max(1, Math.min(30, Number(last_n_days ?? 7)));
+    const { getEmailMaxAgeDays } = await import('./userMemoryService');
+    const rememberedMax = await getEmailMaxAgeDays(userId).catch(() => null);
+    const days = rememberedMax != null && explicit_older_override !== true
+      ? Math.min(requestedDays, rememberedMax)
+      : requestedDays;
     const fromQ = from ? String(from).trim().toLowerCase() : '';
     const subQ  = subject_contains ? String(subject_contains).trim().toLowerCase() : '';
     const rows = await prisma.$queryRawUnsafe<Array<{
