@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { createLead, updatePartner, readRecord } from '../../../adapters/odooAdapter';
 
 export class CreateOdooLeadHandler extends ActionHandler {
@@ -44,6 +44,10 @@ export class CreateOdooLeadHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider (Odoo/Google Tasks)
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back: read the created crm.lead by the id Odoo returned
     // and require it to exist with the requested name. Missing record or

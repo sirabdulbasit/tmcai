@@ -26,7 +26,13 @@
  * a judgement miss becomes a caught "ask", not a silent wrong action.
  */
 import { expect } from 'vitest';
-import { claimsCompletion, normaliseAction } from '../src/services/knowledge/brainComposer';
+import {
+  claimsCompletion,
+  normaliseAction,
+  classifyTurnIntent,
+  shouldInterceptCompletionClaim,
+  IMMEDIATE_INTERNAL_ACTION_TYPES,
+} from '../src/services/knowledge/brainComposer';
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler';
 import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
@@ -254,6 +260,70 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const sd = readFileSync(join(__dirname, '..', 'src', 'services', 'openItems', 'semanticDedupService.ts'), 'utf-8');
       expect(sd).not.toMatch(/reason: `Semantic duplicate of/);
       expect(sd).toMatch(/already covered by/);
+    },
+  },
+  {
+    id: 'chat9',
+    date: '2026-07-14',
+    userMessage: '"Tell me its status" (follow-up after clarifying exam→EXIM Solution, item delegated to Muhammad Yousaf)',
+    observedFailure:
+      'Read-only status follow-up was rewritten into a fake dispatch failure: reasoning answered correctly ("…is delegated to Muhammad Yousaf") but the UNGATED completion interceptor matched the passive branch ("is delegated") and the user got "something didn\'t dispatch… name the recipient" for a question that involved no dispatch.',
+    symptomTags: ['status-follow-up-false-dispatch'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      // 1. The literal chat-9 turn is a READ, not an action.
+      expect(classifyTurnIntent('Tell me its status')).toBe('read_only');
+      // 2. The grounded status answer passes the gate untouched…
+      const answer = 'The EXIM solution item is delegated to Muhammad Yousaf.';
+      const v = shouldInterceptCompletionClaim({
+        userQuestion: 'Tell me its status',
+        answer,
+        decision: 'answer',
+        emittedAction: false,
+        actionResult: null,
+        groundedStatusContext: true,
+      });
+      expect(v.intercept).toBe(false);
+      // …even though the raw regex still matches it (the fix is the
+      // GATE, not a weakened safety regex):
+      expect(claimsCompletion(answer)).toBe(true);
+      // 3. The same claim on a genuine mutation turn STILL intercepts.
+      expect(shouldInterceptCompletionClaim({
+        userQuestion: 'Delegate EXIM to Yousaf',
+        answer: 'The item is delegated to Yousaf.',
+        emittedAction: false,
+        actionResult: null,
+      }).intercept).toBe(true);
+      // 4. The misleading dispatch/recipient wording is gone from the
+      // fabricated-completion sanitizer message.
+      const msg = sanitizeAnswerForUser('[no action dispatched — x]');
+      expect(msg.toLowerCase()).not.toContain('recipient');
+      expect(msg.toLowerCase()).not.toContain('dispatch');
+    },
+  },
+  {
+    id: 'chat10',
+    date: '2026-07-15',
+    userMessage: '"Do not read emails older than two weeks. Only brief me on emails that are within two weeks." (durable preference, voice note)',
+    observedFailure:
+      'A standing preference (internal, reversible) was routed into external-send confirmation: Brain replied "Before I proceed, please confirm the details and reply \'send\'." for something that contacts no one and shows no details.',
+    symptomTags: ['preference-misrouted-to-action'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      // 1. record_preference (and the other internal reversible actions)
+      //    apply immediately — they must NOT enter the send-preview flow.
+      expect(IMMEDIATE_INTERNAL_ACTION_TYPES.has('record_preference')).toBe(true);
+      expect(IMMEDIATE_INTERNAL_ACTION_TYPES.has('update_contact')).toBe(true);
+      // 2. External sends are NOT in the immediate set — they keep the
+      //    confirm-before-send guarantee (regression guard).
+      expect(IMMEDIATE_INTERNAL_ACTION_TYPES.has('send_email')).toBe(false);
+      expect(IMMEDIATE_INTERNAL_ACTION_TYPES.has('notify_via_whatsapp')).toBe(false);
+      expect(IMMEDIATE_INTERNAL_ACTION_TYPES.has('schedule_meeting')).toBe(false);
+      // 3. The gate consults the immediate set (not a stale hardcoded list).
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const bc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      expect(bc).toMatch(/gateHumanFacingAction[\s\S]{0,400}IMMEDIATE_INTERNAL_ACTION_TYPES\.has/);
     },
   },
 ];

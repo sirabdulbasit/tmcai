@@ -73,8 +73,12 @@ export async function backfillChunkVectors(
       const numeric = (arr as unknown[]).every((v) => typeof v === 'number');
       if (!numeric) { skipped += 1; continue; }
       try {
+        // #9: legacy JSON vectors have no provenance — stamp them
+        // 'legacy-unknown'. Retrieval filters by model, so unknowns
+        // never participate; the nightly re-embed pass replaces them
+        // from content with the real model.
         await prisma.$executeRawUnsafe(
-          `UPDATE chunks SET vector_embedding = $1::vector WHERE id = $2`,
+          `UPDATE chunks SET vector_embedding = $1::vector, embedding_model = 'legacy-unknown' WHERE id = $2`,
           vectorLiteral(arr as number[]), r.id,
         );
         written += 1;
@@ -101,19 +105,23 @@ export async function searchChunksByVector(
   if (!text) return [];
   const res = await embed(text.slice(0, MAX_EMBED_CHARS));
   if (!res || res.embedding.length !== DIM) return []; // degraded: caller falls back to keyword retrieval
-  const { embedding } = res;
+  const { embedding, model } = res;
   const limit = Math.min(opts.limit ?? 20, 50);
-  const sourceFilter = opts.source ? `AND source = $3` : '';
-  const args: any[] = [vectorLiteral(embedding), clientNumber];
+  const sourceFilter = opts.source ? `AND source = $4` : '';
+  const args: any[] = [vectorLiteral(embedding), clientNumber, model];
   if (opts.source) args.push(opts.source);
   args.push(limit);
   const limitParam = `$${args.length}`;
+  // #9: model-compatibility filter — only vectors produced by the SAME
+  // model as the query embedding participate. Legacy/unknown vectors
+  // ('legacy-unknown' or NULL) are excluded until re-embedded.
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, document_id AS "documentId", content, source,
             vector_embedding <=> $1::vector AS distance
        FROM chunks
       WHERE client_number = $2
         AND vector_embedding IS NOT NULL
+        AND embedding_model = $3
         ${sourceFilter}
       ORDER BY vector_embedding <=> $1::vector
       LIMIT ${limitParam}`,
@@ -128,6 +136,48 @@ export async function searchChunksByVector(
       return { id: Number(r.id), documentId: Number(r.documentId), content: r.content, source: r.source, distance, score } as ChunkVectorHit;
     })
     .filter((h) => h.score >= minScore);
+}
+
+/**
+ * #9 — bounded re-embedding of unknown-model vectors. Replaces
+ * 'legacy-unknown'/NULL-model vectors from chunk CONTENT using the
+ * REAL provider only (a stub result is never written here, even in
+ * dev — re-embedding exists to raise fidelity, not to churn rows).
+ * Idempotent: keyed per chunk id; a re-run finds fewer candidates.
+ * Wired into the nightly cron:chunk_vector_backfill after the copy
+ * pass.
+ */
+export async function reembedUnknownChunkVectors(
+  clientNumber: string,
+  limit = 100,
+): Promise<{ scanned: number; reembedded: number; skipped: number }> {
+  let scanned = 0, reembedded = 0, skipped = 0;
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT id, content FROM chunks
+      WHERE client_number = $1
+        AND vector_embedding IS NOT NULL
+        AND (embedding_model IS NULL OR embedding_model = 'legacy-unknown')
+      ORDER BY id ASC
+      LIMIT $2`,
+    clientNumber, Math.min(Math.max(limit, 1), 500),
+  ).catch(() => [] as any[]);
+  for (const r of rows) {
+    scanned += 1;
+    const res = await embed(String(r.content ?? '').slice(0, MAX_EMBED_CHARS));
+    if (!res || res.model !== MODEL_GEMINI || res.embedding.length !== DIM) { skipped += 1; continue; }
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE chunks SET vector_embedding = $1::vector, embedding_model = $2 WHERE id = $3`,
+        vectorLiteral(res.embedding), res.model, r.id,
+      );
+      reembedded += 1;
+    } catch (err: any) {
+      skipped += 1;
+      log.warn('re-embed row failed', { id: r.id, error: err.message });
+    }
+  }
+  if (reembedded > 0) log.info('unknown-model chunk vectors re-embedded', { clientNumber, scanned, reembedded, skipped });
+  return { scanned, reembedded, skipped };
 }
 
 // ─── internals (mirrors wikiEmbeddingService.embed) ─────────────────

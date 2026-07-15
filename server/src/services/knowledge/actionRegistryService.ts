@@ -78,6 +78,11 @@ export interface ActionDefinitionRecord {
   handlerFunction: string;
   previewTemplate: string | null;
   requiresCapability: string | null;
+  /** #7 (2026-07-14): {external: boolean, connectors?: {anyOf: string[]}}.
+   *  Lives WITH the action so capability discovery cannot drift from
+   *  dispatch. Fail-closed consumers treat missing metadata on unknown
+   *  types as unsupported. */
+  operationalMetadata: { external?: boolean; connectors?: { anyOf?: string[] } } | null;
   isHumanFacing: boolean;
   isActive: boolean;
   scope: 'system' | 'tenant' | 'user';
@@ -157,6 +162,7 @@ export async function registerAction(args: {
   scope?: 'system' | 'tenant' | 'user';
   source?: 'seeded' | 'user_proposed' | 'system';
   preApproved?: boolean;
+  operationalMetadata?: Record<string, unknown> | null;
   /** E3/E5: tenant owning this action. Omit / null for system-global
    *  actions (the seeder passes nothing — seeded verbs serve everyone).
    *  User-proposed actions SHOULD pass the proposer's tenant so they
@@ -175,6 +181,7 @@ export async function registerAction(args: {
       handlerFunction: args.handlerFunction,
       previewTemplate: args.previewTemplate ?? null,
       requiresCapability: args.requiresCapability ?? null,
+      operationalMetadata: (args.operationalMetadata ?? null) as any,
       isHumanFacing: !!args.isHumanFacing,
       scope: args.scope ?? 'system',
       source: args.source ?? 'seeded',
@@ -189,6 +196,7 @@ export async function registerAction(args: {
       handlerFunction: args.handlerFunction,
       previewTemplate: args.previewTemplate ?? null,
       requiresCapability: args.requiresCapability ?? null,
+      operationalMetadata: (args.operationalMetadata ?? null) as any,
       isHumanFacing: !!args.isHumanFacing,
       scope: args.scope ?? 'system',
       source: args.source ?? 'seeded',
@@ -230,6 +238,7 @@ function toRecord(row: any): ActionDefinitionRecord {
     handlerFunction: row.handlerFunction,
     previewTemplate: row.previewTemplate ?? null,
     requiresCapability: row.requiresCapability ?? null,
+    operationalMetadata: row.operationalMetadata ?? null,
     isHumanFacing: row.isHumanFacing,
     isActive: row.isActive,
     scope: row.scope,

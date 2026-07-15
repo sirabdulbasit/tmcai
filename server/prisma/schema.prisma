@@ -150,7 +150,11 @@ model User {
   // dispatcher (so meetings land at the user's local time). Default
   // 'Asia/Karachi' for backward compatibility with the original
   // hardcode; new users in other regions set it explicitly.
-  timezone String? @default("Asia/Karachi") @db.VarChar(50)
+  timezone String? @db.VarChar(50)
+  // #13 (2026-07-14): timezone participates in resolution ONLY when the
+  // user explicitly selected it. Legacy rows inherited the old column
+  // default and are NOT explicit — they fall through to tenant → system.
+  timezoneIsExplicit Boolean @default(false) @map("timezone_is_explicit")
 
   // ── HaseebOS v15 — per-user risk + agent config (M11) ──
   riskTolerance           String? @map("risk_tolerance") @db.VarChar(10) // conservative | balanced | aggressive
@@ -276,6 +280,9 @@ model Chunk {
   department      String?                     @db.VarChar(50)
   source          String                      @db.VarChar(50)
   metadata        Json                        @default("{}")
+  // #9 (2026-07-14): model that produced vector_embedding. NULL = legacy/
+  // unknown — retrieval EXCLUDES unknowns; bounded re-embed backfills them.
+  embeddingModel  String?                     @map("embedding_model") @db.VarChar(50)
   createdAt       DateTime                    @default(now()) @map("created_at")
 
   tenant   Tenant   @relation(fields: [clientNumber], references: [clientNumber])
@@ -699,6 +706,11 @@ model ActionDefinition {
   // so tenant A's custom action never shows up in tenant B's registry.
   // Deliberately NOT backfilled — every existing row is a system seed.
   clientNumber String? @map("client_number") @db.VarChar(50)
+
+  // #7 (2026-07-14): operational requirements live WITH the action —
+  // {external: boolean, connectors?: {anyOf: string[]}}. Live capability
+  // discovery reads this; a side map cannot drift from dispatch.
+  operationalMetadata Json? @map("operational_metadata")
 
   @@index([scope, isActive])
   @@index([clientNumber])
@@ -2536,4 +2548,62 @@ model AgentApiToken {
   @@unique([tokenHash, clientNumber])
   @@index([clientNumber])
   @@map("agent_api_tokens")
+}
+
+// ─── Hardening-audit operational tables (2026-07-14, migration
+//     20260714_ops_hardening — runtime DDL removed) ────────────────
+
+model JobRun {
+  name                String    @id
+  jobClass            String    @default("maintenance") @map("job_class")
+  lastStartedAt       DateTime? @map("last_started_at") @db.Timestamptz(6)
+  lastCompletedAt     DateTime? @map("last_completed_at") @db.Timestamptz(6)
+  lastStatus          String?   @map("last_status")
+  lastError           String?   @map("last_error")
+  lastDurationMs      Int?      @map("last_duration_ms")
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  runsCompleted       BigInt    @default(0) @map("runs_completed")
+  attemptsTotal       BigInt    @default(0) @map("attempts_total")
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([lastStatus, updatedAt(sort: Desc)], map: "job_runs_status_idx")
+  @@map("job_runs")
+}
+
+model JobLease {
+  name       String   @id
+  owner      String
+  fence      BigInt   @default(1)
+  acquiredAt DateTime @default(now()) @map("acquired_at") @db.Timestamptz(6)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "job_leases_expiry_idx")
+  @@map("job_leases")
+}
+
+model SelfHealLog {
+  id           BigInt   @id @default(autoincrement())
+  ruleId       String   @map("rule_id")
+  scope        String   @default("global")
+  clientNumber String?  @map("client_number")
+  userId       Int?     @map("user_id")
+  outcome      String
+  summary      String?
+  beforeState  Json?    @map("before_state")
+  afterState   Json?    @map("after_state")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ruleId, createdAt(sort: Desc)], map: "self_heal_log_rule_time_idx")
+  @@index([ruleId, clientNumber, createdAt(sort: Desc)], map: "self_heal_log_scope_idx")
+  @@map("self_heal_log")
+}
+
+model OpsHealthState {
+  component String    @id
+  status    String
+  detail    String?
+  since     DateTime? @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ops_health_state")
 }

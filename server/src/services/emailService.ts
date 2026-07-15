@@ -9,7 +9,19 @@ import nodemailer from 'nodemailer';
  *  system_config rows — a deployment/operator choice, not tenant
  *  identity. Override with PLATFORM_CONFIG_TENANT; env SMTP_* vars
  *  always take precedence over DB rows anyway. */
-const PLATFORM_CONFIG_TENANT = process.env.PLATFORM_CONFIG_TENANT || 'TMC-0001';
+export const PLATFORM_CONFIG_TENANT = process.env.PLATFORM_CONFIG_TENANT || 'TMC-0001';
+
+/** #7: is the platform SMTP fallback actually configured? Used by live
+ *  capability discovery ('smtp' provider in send_email's anyOf). */
+export async function smtpConfigured(): Promise<boolean> {
+  if (process.env.SMTP_HOST && process.env.SMTP_USER) return true;
+  try {
+    const { getConfig } = await import('./configService');
+    const host = await getConfig(PLATFORM_CONFIG_TENANT, 'smtp_host');
+    const user = await getConfig(PLATFORM_CONFIG_TENANT, 'smtp_user');
+    return Boolean(host && user);
+  } catch { return false; }
+}
 
 let transporter: nodemailer.Transporter | null = null;
 

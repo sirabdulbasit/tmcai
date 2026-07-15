@@ -50,37 +50,59 @@ export interface LiveCapability {
   reason?: string;
 }
 
-/** Connector slug each action type depends on. Types absent from this
- *  map are internal (DB-only) and need no connector. notify_via_whatsapp
- *  uses the TENANT WhatsApp notifier, checked separately. */
-export const CONNECTOR_FOR_ACTION: Record<string, string> = {
-  send_email: 'gmail',
-  schedule_meeting: 'google_calendar',
-  cancel_meeting: 'google_calendar',
-  reschedule_meeting: 'google_calendar',
+/** #7 rework (2026-07-14): operational requirements live IN the action
+ *  registry (actionDefinition.operationalMetadata, seeded alongside
+ *  the handler pointer) — the same source of truth that drives
+ *  dispatch. A new action with complete metadata needs NO edit here.
+ *
+ *  LEGACY_OPERATIONAL is a transition fallback ONLY: rows written
+ *  before the operational_metadata column existed (pre-migration /
+ *  pre-reseed) fall back to these known requirements with a warning.
+ *  An UNKNOWN type with no metadata fails closed to 'unsupported'. */
+const LEGACY_OPERATIONAL: Record<string, { external: boolean; connectors?: { anyOf: string[] } }> = {
+  send_email: { external: true, connectors: { anyOf: ['gmail', 'smtp'] } },
+  schedule_meeting: { external: true, connectors: { anyOf: ['google_calendar'] } },
+  cancel_meeting: { external: true, connectors: { anyOf: ['google_calendar'] } },
+  reschedule_meeting: { external: true, connectors: { anyOf: ['google_calendar'] } },
+  notify_via_whatsapp: { external: true, connectors: { anyOf: ['tenant_whatsapp'] } },
+  add_open_item: { external: false }, update_open_item: { external: false },
+  mark_open_item_done: { external: false }, delegate_open_item: { external: false },
+  set_brain_name: { external: false }, set_contact_scope: { external: false },
+  mark_contact_inactive: { external: false }, update_contact: { external: false },
+  archive_wiki_page: { external: false }, delete_wiki_page: { external: false },
+  record_preference: { external: false },
 };
 
-const TENANT_WA_ACTIONS = new Set(['notify_via_whatsapp']);
-
 export interface ClassifyInput {
-  def: Pick<ActionDefinitionRecord, 'type' | 'isActive' | 'approvedAt' | 'handlerModule' | 'handlerFunction'>;
-  /** Healthy connector slugs for this user (isConnectorHealthy === true). */
-  healthyConnectors: ReadonlySet<string>;
-  /** Tenant WhatsApp notifier configured + active. */
-  tenantWaActive: boolean;
+  def: Pick<ActionDefinitionRecord, 'type' | 'isActive' | 'approvedAt' | 'handlerModule' | 'handlerFunction' | 'operationalMetadata'>;
+  /** Healthy provider ids available to this user right now: connector
+   *  slugs with isConnectorHealthy === true, plus pseudo-providers
+   *  'smtp' (platform fallback configured) and 'tenant_whatsapp'
+   *  (tenant Meta notifier active). */
+  availableProviders: ReadonlySet<string>;
 }
 
 /** Pure classification — exported for tests. */
 export function classifyCapability(input: ClassifyInput): CapabilityState {
-  const { def, healthyConnectors, tenantWaActive } = input;
+  const { def, availableProviders } = input;
   const dispatchable =
     isHandlerRegistered(def.handlerModule, def.handlerFunction) ||
     COMPOSER_DISPATCHED_TYPES.has(def.type);
   if (!def.isActive || !dispatchable) return 'unsupported';
   if (!def.approvedAt) return 'approval_required';
-  const needed = CONNECTOR_FOR_ACTION[def.type];
-  if (needed && !healthyConnectors.has(needed)) return 'connector_unavailable';
-  if (TENANT_WA_ACTIONS.has(def.type) && !tenantWaActive) return 'connector_unavailable';
+
+  const meta = def.operationalMetadata ?? LEGACY_OPERATIONAL[def.type] ?? null;
+  if (!def.operationalMetadata && LEGACY_OPERATIONAL[def.type]) {
+    log.warn('actionDefinition missing operational_metadata — using legacy fallback; re-run seedActionDefinitions', { type: def.type });
+  }
+  // Fail closed: an action whose operational requirements are UNKNOWN
+  // must never be advertised as available.
+  if (!meta) return 'unsupported';
+
+  const anyOf = meta.connectors?.anyOf ?? [];
+  if (anyOf.length > 0 && !anyOf.some((p) => availableProviders.has(p))) {
+    return 'connector_unavailable';
+  }
   return 'available';
 }
 
@@ -88,10 +110,11 @@ function describe(type: string): { label: string; what: string } {
   return CAPABILITY_HINTS[type] ?? { label: type.replace(/_/g, ' '), what: '' };
 }
 
-function reasonFor(state: CapabilityState, type: string): string | undefined {
+function reasonFor(state: CapabilityState, def: { type: string; operationalMetadata?: any }): string | undefined {
   if (state === 'connector_unavailable') {
-    const slug = CONNECTOR_FOR_ACTION[type] ?? (TENANT_WA_ACTIONS.has(type) ? 'tenant WhatsApp' : 'connector');
-    return `temporarily unavailable — the ${slug} connection is down or not connected; offer to reconnect it, do NOT promise the action`;
+    const anyOf: string[] = (def.operationalMetadata ?? LEGACY_OPERATIONAL[def.type])?.connectors?.anyOf ?? [];
+    const need = anyOf.length > 0 ? anyOf.join(' or ') : 'a required connector';
+    return `temporarily unavailable — needs a healthy ${need} connection; offer to reconnect it, do NOT promise the action`;
   }
   if (state === 'approval_required') return 'registered but awaiting approval — say it needs enabling, do not attempt it';
   return undefined;
@@ -101,7 +124,7 @@ function reasonFor(state: CapabilityState, type: string): string | undefined {
  *  definitions plus THIS tenant's pinned ones only (another tenant's
  *  custom actions can never leak into this prompt). */
 export async function getLiveCapabilities(clientNumber: string, userId: number): Promise<LiveCapability[]> {
-  const [defs, connectors, waNotifier] = await Promise.all([
+  const [defs, connectors, waNotifier, smtpOk] = await Promise.all([
     listActiveActions(undefined, clientNumber),
     prisma.userConnector.findMany({
       where: { userId, clientNumber },
@@ -111,20 +134,24 @@ export async function getLiveCapabilities(clientNumber: string, userId: number):
       where: { clientNumber },
       select: { isActive: true },
     }).catch(() => null),
+    import('../emailService').then((m) => m.smtpConfigured()).catch(() => false),
   ]);
 
-  const healthyConnectors = new Set<string>(
+  const availableProviders = new Set<string>(
     (connectors as any[])
       .filter((c) => isConnectorHealthy({ status: c.status }))
       .map((c) => c.connectorType?.slug)
       .filter(Boolean),
   );
-  const tenantWaActive = Boolean(waNotifier?.isActive);
+  // Pseudo-providers: platform SMTP fallback + the tenant Meta notifier
+  // (distinct from a user's PERSONAL whatsapp connector slug).
+  if (smtpOk) availableProviders.add('smtp');
+  if (waNotifier?.isActive) availableProviders.add('tenant_whatsapp');
 
   return defs.map((def) => {
-    const state = classifyCapability({ def, healthyConnectors, tenantWaActive });
+    const state = classifyCapability({ def, availableProviders });
     const { label, what } = describe(def.type);
-    return { type: def.type, state, label, what, reason: reasonFor(state, def.type) };
+    return { type: def.type, state, label, what, reason: reasonFor(state, def) };
   });
 }
 

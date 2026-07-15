@@ -141,6 +141,25 @@ const server = app.listen(env.port, async () => {
     .then(({ seedSystemRiskRules }) => seedSystemRiskRules())
     .catch(err => console.error('Risk rule seed failed:', err.message));
   await initScheduler().catch(err => console.error('Scheduler init failed:', err.message));
+  // #6 (2026-07-14): boot missed-run scan. Logs any priority job whose
+  // last successful completion exceeds 2× its cadence. The CATCH-UP
+  // itself is each job's first post-boot tick (all priority jobs fire
+  // within minutes of boot and carry durable dedup keys / current-
+  // relevance checks, so "run the normal tick now" is the safe bounded
+  // replay — historical notifications are never re-sent). Policies per
+  // job: docs/background_jobs_inventory.md.
+  setTimeout(() => {
+    import('./jobs/jobRunner').then(({ evaluateMissedRuns }) => evaluateMissedRuns([
+      { name: 'day_brief_dispatch', cadenceMs: 60_000, policy: 'run_once_if_missed' },
+      { name: 'followup_sweep', cadenceMs: 60 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'preactive_engine', cadenceMs: 15 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'agent_action_reaper', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'feed_publish_retry', cadenceMs: 2 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'connector_health_sweep', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'open_item_follow_up', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'kpi_snapshot_morning_brief', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
+    ])).catch((e) => console.warn('[jobRunner] missed-run scan failed:', e?.message));
+  }, 30_000);
   // Cleanup expired context memories every hour (#4: failures logged,
   // never silently swallowed)
   cleanupExpiredContextMemories().catch((e) => console.warn('[contextMemoryCleanup] failed:', e?.message));
@@ -154,9 +173,10 @@ const server = app.listen(env.port, async () => {
       .then(({ runDemoExpirySweep }) => runDemoExpirySweep())
       .catch((err) => console.warn('Demo expiry sweep failed:', err.message));
     setInterval(() => {
-      import('./jobs/demoExpirySuspendJob')
-        .then(({ runDemoExpirySweep }) => runDemoExpirySweep())
-        .catch((err) => console.warn('Demo expiry sweep failed:', err.message));
+      protectedJob('demo_expiry_sweep', 'important', async () => {
+        const { runDemoExpirySweep } = await import('./jobs/demoExpirySuspendJob');
+        await runDemoExpirySweep();
+      });
     }, 60 * 60 * 1000);
   }, 60 * 1000);
 
@@ -176,11 +196,11 @@ const server = app.listen(env.port, async () => {
   }, 5 * 60 * 1000);
   // Personal GDrive sync every 30 minutes (Phase 3.1)
   runPersonalDriveSyncJob().catch((e) => console.warn('[personalDriveSync] failed:', e?.message));
-  setInterval(() => runPersonalDriveSyncJob().catch((e) => console.warn('[personalDriveSync] failed:', e?.message)), 30 * 60 * 1000);
+  setInterval(() => protectedJob('personal_drive_sync', 'important', () => runPersonalDriveSyncJob()), 30 * 60 * 1000);
   // Phase 5: Index event processor (polls every 10s)
   startIndexEventProcessor();
   // Phase 5: Proactive intelligence — hourly scan
-  setInterval(() => runProactiveIntelligence().catch((e) => console.warn('[proactiveIntelligence] failed:', e?.message)), 60 * 60 * 1000);
+  setInterval(() => protectedJob('proactive_intelligence', 'important', () => runProactiveIntelligence()), 60 * 60 * 1000);
   // Open-item follow-up worker — hourly. Scans DELEGATED items that
   // have been silent past their threshold (3d / 7d / 14d) and pings
   // the user via brainContactsUser. "Brain runs after you" piece.
@@ -390,9 +410,10 @@ const server = app.listen(env.port, async () => {
   // (hash-skip); silently waits for users who haven't granted
   // drive.file yet. Hourly; first run 10 min after boot.
   setTimeout(() => {
-    const vault = () => import('./services/knowledge/obsidianVaultService')
-      .then(({ exportVaultForAllUsers }) => exportVaultForAllUsers())
-      .catch((e) => console.warn('[obsidianVault] export failed:', e.message));
+    const vault = () => protectedJob('obsidian_vault_export', 'important', async () => {
+      const { exportVaultForAllUsers } = await import('./services/knowledge/obsidianVaultService');
+      await exportVaultForAllUsers();
+    });
     vault();
     setInterval(vault, 60 * 60 * 1000);
   }, 10 * 60 * 1000);
@@ -559,16 +580,14 @@ const server = app.listen(env.port, async () => {
   }, 5 * 60 * 1000);
 
   // HaseebOS v15 L2 — snooze timer every 60s: wake SNOOZED items when due
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('snooze_unblocker', 'important', async () => {
       const { wakeSnoozed } = await import('./jobs/snoozeUnblocker');
       const r = await wakeSnoozed();
       if (r.unblocked > 0 || r.errors > 0) {
         console.log(`[snooze] scanned=${r.scanned} unblocked=${r.unblocked} errors=${r.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[snooze] error:', err.message);
-    }
+    });
   }, 60 * 1000);
 
   // MyOS — critical-bundle WhatsApp sweep every 90s. Lives here, not in
@@ -592,8 +611,8 @@ const server = app.listen(env.port, async () => {
   // sync_stale on connectors past their cadence threshold and fires
   // one Brain WhatsApp ping per occurrence (deduped). See memory:
   // project_oauth_stale_sync_failure.md.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('connector_health_sweep', 'important', async () => {
       const { detectStaleConnectors, sweepStaleErrorMetadata } = await import('./services/connectorHealthService');
       const [staleResult, metaResult] = await Promise.all([
         detectStaleConnectors(),
@@ -608,9 +627,7 @@ const server = app.listen(env.port, async () => {
       if (staleResult.flipped > 0 || metaResult.cleaned > 0) {
         console.log(`[connectorHealth] stale: scanned=${staleResult.scanned} flipped=${staleResult.flipped} | meta-sweep: scanned=${metaResult.scanned} cleaned=${metaResult.cleaned}`);
       }
-    } catch (err: any) {
-      console.warn('[connectorHealth] error:', err.message);
-    }
+    });
   }, 5 * 60 * 1000);
 
   // MyOS — open-items backlog cleanup every 60min. Walks the backlog and
@@ -759,29 +776,25 @@ const server = app.listen(env.port, async () => {
       }
     })();
   }, 7 * 60 * 1000); // first run 7 min after boot
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('wa_outbound_reconciliation', 'important', async () => {
       const { runWaOutboundReconciliation } = await import('./jobs/waOutboundReconciliation');
       const s = await runWaOutboundReconciliation();
       if (s.outboundWritten > 0 || s.errors > 0) {
         console.log(`[waOutboundRecon] users=${s.usersScanned} chats=${s.chatsScanned} written=${s.outboundWritten} errors=${s.errors}`);
       }
-    } catch (err: any) {
-      console.warn('[waOutboundRecon] error:', err.message);
-    }
+    });
   }, 10 * 60 * 1000); // every 10 min
 
   // HaseebOS v15 L1.4 — feed publish retry catch-up worker every 2 min
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('feed_publish_retry', 'important', async () => {
       const { retryUnpublishedFeedEvents } = await import('./jobs/feedPublishRetry');
       const s = await retryUnpublishedFeedEvents(50);
       if (s.republished > 0 || s.errors > 0 || s.deadLettered > 0) {
         console.log(`[feedPubRetry] scanned=${s.scanned} republished=${s.republished} errors=${s.errors} dlq=${s.deadLettered}`);
       }
-    } catch (err: any) {
-      console.warn('[feedPubRetry] error:', err.message);
-    }
+    });
   }, 2 * 60 * 1000);
 
   // HaseebOS v15 L1 — generic feed poller every 2 min (drives all adapters
@@ -790,8 +803,8 @@ const server = app.listen(env.port, async () => {
   // the client's 2-min auto-refresh on Day Brief. The legacy gmailFeedPoller
   // still exports enrichBody() for VIP pull, but no longer runs on its own
   // schedule.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('generic_feed_poller', 'important', async () => {
       const { pollAllTenants } = await import('./jobs/genericFeedPoller');
       const r = await pollAllTenants();
       const totalIngested = r.reduce((s, x) => s + x.ingested, 0);
@@ -803,9 +816,7 @@ const server = app.listen(env.port, async () => {
         }, {});
         console.log(`[genericPoll] ingested=${totalIngested} errors=${totalErrors} bySource=${JSON.stringify(bySource)}`);
       }
-    } catch (err: any) {
-      console.warn('[genericPoll] error:', err.message);
-    }
+    });
   }, 2 * 60 * 1000);
 
   // ── Queue/archive maintenance ─────────────────────────────────
@@ -949,13 +960,11 @@ const server = app.listen(env.port, async () => {
   // MyOS — Notion mirror every 10 min. Pushes postgres-backed wiki pages to
   // Notion for users with a connected Notion connector. Graceful no-op when
   // no connector is present.
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('notion_mirror_sync', 'important', async () => {
       const { mirrorAllTenants } = await import('./jobs/notionMirrorSync');
       await mirrorAllTenants();
-    } catch (err: any) {
-      console.warn('[notionMirror] error:', err.message);
-    }
+    });
   }, 10 * 60 * 1000);
 
   // MyOS — Reflection agent every 6 hours. Aggregates decisions / delegations
@@ -1002,8 +1011,8 @@ const server = app.listen(env.port, async () => {
   }, 15 * 60 * 1000);
 
   // HaseebOS v15 — Notion reverse sync every 5 min (feature-flag gated per tenant)
-  setInterval(async () => {
-    try {
+  setInterval(() => {
+    protectedJob('notion_reverse_sync', 'important', async () => {
       const { reverseSyncAllTenants } = await import('./jobs/notionReverseSync');
       const r = await reverseSyncAllTenants();
       const updated = r.reduce((s, x) => s + x.updated, 0);
@@ -1011,9 +1020,7 @@ const server = app.listen(env.port, async () => {
       if (updated > 0 || conflicts > 0) {
         console.log(`[notionSync] updated=${updated} conflicts=${conflicts} tenants=${r.length}`);
       }
-    } catch (err: any) {
-      console.warn('[notionSync] error:', err.message);
-    }
+    });
   }, 5 * 60 * 1000);
 
   // HaseebOS v15 — daily KPI snapshot at 06:00 PKT per tenant

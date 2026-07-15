@@ -46,13 +46,60 @@ interface DegradationState {
 
 const state = new Map<string, DegradationState>();
 
+// #9 rework: degradation state is DURABLE (ops_health_state, migration
+// 20260714_ops_hardening). A restart must not flip a degraded provider
+// back to healthy-looking — hydrate once per process before reads, and
+// only a REAL provider success (recordEmbeddingRecovery is called
+// exclusively from real-model success paths; the stub path returns
+// before it) resolves the persisted row.
+let hydrated = false;
+async function hydrateFromDb(): Promise<void> {
+  if (hydrated) return;
+  hydrated = true;
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT component, status, detail, since FROM ops_health_state WHERE component LIKE 'embedding:%'`,
+    );
+    for (const r of rows) {
+      if (r.status !== 'degraded') continue;
+      const svc = String(r.component).slice('embedding:'.length);
+      if (!state.has(svc)) {
+        state.set(svc, {
+          degradedSince: r.since ? new Date(r.since) : new Date(),
+          lastError: r.detail ?? 'persisted degradation (pre-restart)',
+          failures: 1, escalated: false,
+        });
+      }
+    }
+  } catch (e: any) {
+    log.warn('embedding health hydrate failed — treating persisted state as unknown', { error: e?.message });
+  }
+}
+
+async function persistState(service: string, status: 'healthy' | 'degraded', detail: string | null, since: Date | null): Promise<void> {
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO ops_health_state (component, status, detail, since, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (component) DO UPDATE SET status = $2, detail = $3, since = $4, updated_at = NOW()`,
+      `embedding:${service}`, status, detail, since,
+    );
+  } catch (e: any) {
+    log.warn('embedding health persist failed (state remains in-memory)', { service, error: e?.message });
+  }
+}
+
 /** Record a real-provider failure for a service ('wiki' | 'chunks' |
  *  'open_items'). Safe to call on every failure — logging is deduped. */
 export async function recordEmbeddingDegradation(service: string, error: string): Promise<void> {
+  await hydrateFromDb();
   const s = state.get(service) ?? { degradedSince: new Date(), lastError: error, failures: 0, escalated: false };
   s.failures += 1;
   s.lastError = error.slice(0, 300);
   state.set(service, s);
+  await persistState(service, 'degraded', s.lastError, s.degradedSince);
 
   const degradedMin = (Date.now() - s.degradedSince.getTime()) / 60_000;
   const escalate = degradedMin >= DEGRADED_ALERT_AFTER_MIN && !s.escalated;
@@ -73,12 +120,15 @@ export async function recordEmbeddingDegradation(service: string, error: string)
   }
 }
 
-/** Stamp recovery when a real embedding succeeds after degradation. */
+/** Stamp recovery when a REAL embedding succeeds after degradation.
+ *  (Stub successes never reach this — the stub path returns before the
+ *  recovery call in all three services.) */
 export function recordEmbeddingRecovery(service: string): void {
   const s = state.get(service);
   if (!s) return;
   state.delete(service);
-  log.info('embedding provider recovered — nightly backfill will re-embed NULL vectors', {
+  void persistState(service, 'healthy', null, null);
+  log.info('embedding provider recovered — nightly backfill will re-embed NULL/unknown vectors', {
     service, downMinutes: Math.round((Date.now() - s.degradedSince.getTime()) / 60_000), failures: s.failures,
   });
 }
@@ -92,8 +142,11 @@ export interface EmbeddingHealth {
   stubsAllowed: boolean;
 }
 
-/** Snapshot for /admin/system-health. */
-export function getEmbeddingHealth(services: string[] = ['wiki', 'chunks', 'open_items']): EmbeddingHealth[] {
+/** Snapshot for /admin/system-health. Hydrates persisted state first —
+ *  a restart shows 'degraded' from the durable row, never a false
+ *  'healthy' from an empty in-memory map. */
+export async function getEmbeddingHealth(services: string[] = ['wiki', 'chunks', 'open_items']): Promise<EmbeddingHealth[]> {
+  await hydrateFromDb();
   return services.map((svc) => {
     const s = state.get(svc);
     return s
@@ -105,4 +158,5 @@ export function getEmbeddingHealth(services: string[] = ['wiki', 'chunks', 'open
 /** Test hook. */
 export function resetEmbeddingGuard(): void {
   state.clear();
+  hydrated = false;
 }

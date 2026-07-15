@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { createTask, getTask, getTaskLists } from '../../../googleTasksService';
 
 export class CreateTaskHandler extends ActionHandler {
@@ -69,6 +69,10 @@ export class CreateTaskHandler extends ActionHandler {
       return { ok: false, error: err?.message ?? 'create_task failed' };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider (Odoo/Google Tasks)
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back (B2): fetch the task we claim to have created
     // and confirm the id lines up. Any provider error → false.

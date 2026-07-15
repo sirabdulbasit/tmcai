@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { updatePartner, updateOpportunity, readRecord } from '../../../adapters/odooAdapter';
 
 export class UpdateOdooCrmHandler extends ActionHandler {
@@ -78,6 +78,10 @@ export class UpdateOdooCrmHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'provider_confirmed'; // confirm() reads back from the provider (Odoo/Google Tasks)
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Provider read-back: re-read the changed keys from Odoo and require the
     // record to exist with the written values in place. many2one fields read

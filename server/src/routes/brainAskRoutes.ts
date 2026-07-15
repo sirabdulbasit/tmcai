@@ -39,6 +39,25 @@ router.use((req: Request, res: Response, next) => {
   next();
 });
 
+// #14 (2026-07-14) — the user's OWN in-flight / unconfirmed / failed
+// actions with honest wording. Strictly user+tenant scoped; retry is
+// disabled until provider/idempotency evidence can prove a retry is
+// safe (a wrong retry on a send is a double-send). The reconciler
+// updates these rows, so the surface self-updates on refresh.
+router.get('/actions/status', async (req: Request, res: Response) => {
+  try {
+    const { listUserActionStatuses } = await import('../services/actions/actionStatusService');
+    const actions = await listUserActionStatuses(
+      (req as any).user.clientNumber,
+      (req as any).user.id,
+      Number(req.query.limit ?? 25),
+    );
+    res.json({ actions, generatedAt: new Date().toISOString() });
+  } catch (e: any) {
+    res.status(500).json({ error: 'status lookup failed' }); // no internals leaked
+  }
+});
+
 /**
  * Two-pass query. See docs/brain_schema.md §3.2.
  *

@@ -85,6 +85,11 @@ export async function runDelegateeFollowupSweep(opts: { dryRun?: boolean } = {})
   const now = Date.now();
 
   for (const it of items) {
+    // #11 (2026-07-14): cadence + escalation window are user/tenant-
+    // tunable (behaviorConfig, cached 60s — cheap in this loop).
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const pingIntervalHours = await getBehaviorValue('followup.subsequent_ping_hours', { userId: (it as any).userId, clientNumber: (it as any).clientNumber }).catch(() => SUBSEQUENT_PING_INTERVAL_HOURS);
+    const escalateAfterHours = await getBehaviorValue('followup.escalate_after_hours', { userId: (it as any).userId, clientNumber: (it as any).clientNumber }).catch(() => ESCALATE_TO_USER_AFTER_HOURS);
     const due = new Date((it as any).dueDate).getTime();
     const lastPing = (it as any).delegationLastFollowupAt
       ? new Date((it as any).delegationLastFollowupAt).getTime()
@@ -98,7 +103,7 @@ export async function runDelegateeFollowupSweep(opts: { dryRun?: boolean } = {})
       if (now >= due + FIRST_PING_HOURS_AFTER_DUE * 60 * 60 * 1000) shouldFire = true;
     } else if (lastPing) {
       const sinceLast = (now - lastPing) / (60 * 60 * 1000);
-      if (sinceLast >= SUBSEQUENT_PING_INTERVAL_HOURS) shouldFire = true;
+      if (sinceLast >= pingIntervalHours) shouldFire = true;
     }
     if (!shouldFire) { out.skipped += 1; continue; }
 
@@ -106,7 +111,7 @@ export async function runDelegateeFollowupSweep(opts: { dryRun?: boolean } = {})
     const sinceFirstPingHours = lastPing
       ? (now - new Date((it as any).delegationFollowupTrail?.[0]?.at ?? lastPing).getTime()) / (60 * 60 * 1000)
       : 0;
-    if (count > 0 && sinceFirstPingHours >= ESCALATE_TO_USER_AFTER_HOURS) {
+    if (count > 0 && sinceFirstPingHours >= escalateAfterHours) {
       if (opts.dryRun) {
         log.info('would escalate to user', { itemId: it.id, sinceFirstPingHours });
         out.escalated += 1;

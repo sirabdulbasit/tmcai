@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, ReverseOperation, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 
 export class ReassignTaskHandler extends ActionHandler {
   metadata(): HandlerMetadata {
@@ -32,6 +32,10 @@ export class ReassignTaskHandler extends ActionHandler {
       error: 'Google Tasks does not support cross-user task reassignment via API. Use delegate_open_item to delegate an open item to another internal user (creates an open_item row + notifies the delegatee).',
     };
   }
+  confirmationCapability(): ConfirmationCapability {
+    return 'unverifiable'; // execute() never succeeds; nothing is ever verifiable here
+  }
+
   async confirm(_ctx: HandlerContext, _output: unknown): Promise<boolean> {
     // execute() never returns ok:true for this handler, so confirm()
     // should never be invoked under B2's contract. Return false as a

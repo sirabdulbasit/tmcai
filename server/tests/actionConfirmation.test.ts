@@ -36,6 +36,27 @@ describe('Stack B handlers — confirmationCapability declarations', () => {
     const h = handlers.find((x) => x.metadata().name === 'send_slack_message');
     expect((h as any).confirmationCapability()).toBe('unverifiable');
   });
+
+  it('#8: EVERY external-category handler DECLARES its capability — the permissive default is not allowed to reach external actions', () => {
+    const externalCategories = new Set(['communication', 'calendar', 'crm', 'task']);
+    const undeclared = handlers
+      .filter((h) => externalCategories.has(h.metadata().category))
+      .filter((h) => !Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(h), 'confirmationCapability'))
+      .map((h) => h.metadata().name);
+    // If this fails: a new external handler shipped relying on the
+    // inherited 'locally_confirmed' default. Declare what its confirm()
+    // actually proves (provider_confirmed needs a real provider
+    // read-back; re-reading your own output is unverifiable).
+    expect(undeclared).toEqual([]);
+  });
+
+  it('odoo + google-tasks read-back handlers are provider_confirmed; reassign_task (never succeeds) is unverifiable', () => {
+    const byName = new Map(handlers.map((h) => [h.metadata().name, h]));
+    for (const name of ['update_odoo_crm', 'create_odoo_lead', 'create_odoo_opportunity', 'update_odoo_opportunity', 'create_task', 'complete_task', 'add_subtask']) {
+      expect((byName.get(name) as any).confirmationCapability(), name).toBe('provider_confirmed');
+    }
+    expect((byName.get('reassign_task') as any).confirmationCapability()).toBe('unverifiable');
+  });
 });
 
 describe('Stack A generic dispatcher — confirmation map parity', () => {

@@ -205,3 +205,99 @@ were fixed before completion — final suite is fully green.
 Note: unit tests mock providers/DB — this patch is verified for logic and
 regressions, not yet exercised against live Google/WhatsApp providers.
 Deploy through the normal staging flow before calling it production-ready.
+
+---
+
+# STAGING-READINESS PASS (2026-07-14, second pass)
+
+Status upgrades from the morning audit; every item below is verified by
+the suite (910 passing / 0 failing) and, where marked, by live local-DB
+checks. Providers remain MOCKED in tests — nothing here is live-provider
+verification.
+
+## Status table (complete / partial / deferred)
+
+| Item | Status | Notes |
+|---|---|---|
+| 1. Chat 9 fix + record grounding | **Complete** (unit-level) | One gate (`shouldInterceptCompletionClaim`) drives all 3 interception sites; artifacts block now feeds reasoning (cross-turn record ids); record-level grounding via `extractRecordIds`; pronoun tests A–H + who-owns/when-due/was-sent. True compose-integration test deferred (compose() requires live LLM; scenario chat9 + gate tests lock the logic). |
+| 2. Runtime DDL removed | **Complete** | Migration `20260714_ops_hardening`; jobRunner/repairService/embeddingGuard contain no CREATE statements; missing schema = loud failure + 'unknown' health; verified against a restricted non-DDL role. |
+| 3. Job state across restarts | **Complete** | Counters are atomic SQL increments (never overwritten); restart/mutation tests; stale-'running' surfaced; attempt semantics documented: MAX_ATTEMPTS is TOTAL tries (maintenance 1 / important 3 / critical 4). |
+| 4. Leader-lock design | **Complete (replaced)** | Transaction-held advisory lock replaced by a durable fenced lease (`job_leases`): atomic acquire, expiry reclaim, post-run fence check → 'lease_lost' (never success), per-attempt timeout. node-cron jobs keep `leaderOnly` (short DB-bound bodies — documented). |
+| 5. Job inventory + protection | **Complete-with-documented-exceptions** | docs/background_jobs_inventory.md — 27 protected jobs; unprotected list each carries a justification (read-only dedup pollers, propose-only maintenance, per-process WA heartbeats). |
+| 6. Missed-run catch-up | **Partial (by design)** | Policy per job documented; boot `evaluateMissedRuns` scan logs missed windows; catch-up execution = first post-boot tick (dedup-bounded; outbound never replayed historically). No replay_windows/provider_cursor engine built — current jobs don't need one. |
+| 7. Registry-driven capabilities | **Complete** | `operational_metadata` on action_definitions (seeded per action: external flag + connectors.anyOf); SMTP alternative satisfies send_email; tenant vs personal WhatsApp distinct; unknown metadata fails closed; legacy-row fallback (warn) covers deploy-before-reseed; parity tests. |
+| 8. Confirmation audit | **Complete** | All external-category handlers explicitly declare (prototype-check parity test forbids inherited defaults on communication/calendar/crm/task); odoo+gtasks = provider read-backs; reassign_task unverifiable; unconfirmed never renders done (also user-facing, see 14). |
+| 9. Embedding durability | **Complete** | chunks.embedding_model column; retrieval filters by query model (legacy-unknown excluded); nightly bounded re-embed (real provider only); degradation state persisted in ops_health_state (restart-proof, tested); stub-resolution impossible (recovery only called from real-model paths). |
+| 10. Durable health + isolation | **Complete** | `/admin/system-health`: overall healthy/degraded/down/unknown computed from evidence; schemaAvailable flag; ops_health_state rows with freshness; tenant-scoped queries; SA-only cross-tenant self-heal rows. Route-level auth tests deferred (service-level scoping tested). |
+| 11. Behavior-config consumers | **Complete** | All 8 keys wired (followup cadence + escalation + connector re-alert added); precedence/clamp/floor tests. Wiki 60/90-day divergence: DOCUMENTED as intentional — wikiLinterService(60d) flags for review, wikiLintService(90d) archives; different surfaces, different thresholds. |
+| 12. Self-heal scoping | **Complete** | scope per rule; budgets counted at scope (tenant-isolated, tested); detect_failed + audit_unavailable outcomes; AUDIT-FIRST pessimistic row before mutation; DLQ claim FOR UPDATE SKIP LOCKED + id-exact verify; exhaustion escalates once/24h. |
+| 13. Timezone inheritance | **Complete** | `timezone_is_explicit` column; column default dropped; resolver: explicit user → tenant → system → UTC; `setUserTimezone` (profile path) is the only explicitness writer; legacy rows inherit (same Karachi outcome today — no schedule changes); DST tests green. |
+| 14. User-visible unconfirmed actions | **Complete (API)** | `GET /brain/actions/status` (user+tenant scoped) with honest wording contract; retry disabled v1 (documented safety reason); reconciler updates rows. Client UI rendering is client-repo work. |
+| 15. Deferred correctness | **Complete** | getNextRun → null (no fabricated timestamps); wiki thresholds documented; SMTP under PLATFORM_CONFIG_TENANT (named + env-overridable); historical unknown vectors → stamped 'legacy-unknown', excluded, re-embedded nightly; remaining maintenance timers documented; new raw SQL parameterized + bounded + tenant-scoped (restricted-role verified). |
+
+## Pre-existing defect found during verification
+
+`npx prisma migrate deploy` against an EMPTY database fails in a
+HISTORIC migration (references `decision_logs` before creation) — the
+chain was never replayable from empty; prod evolved incrementally.
+Impact: none on existing environments (deploy only applies pending
+migrations). New-environment bootstrap must use
+`prisma db push` (schema) + `migrate resolve`, as this repo already
+does in practice. Logged here as the honest finding; repairing the
+historic chain is out of scope.
+
+## Migration instructions (staging/prod)
+
+```bash
+cd /var/www/tmcai/server
+# 1. Apply (idempotent — safe if runtime DDL already created the tables):
+npx prisma db execute --file prisma/migrations/20260714_ops_hardening/migration.sql --schema prisma/schema.prisma
+npx prisma migrate resolve --applied 20260714_ops_hardening
+# 2. Regenerate client + build:
+npx prisma generate && npm run build
+# 3. Reseed action definitions (writes operational_metadata):
+node dist/scripts/seedActionDefinitions.js
+# 4. Restart:
+pm2 restart tmcai-server
+```
+
+Rollback (non-destructive; runtime tolerates absent columns via legacy
+fallbacks EXCEPT the four ops tables, whose absence is loud-but-running):
+see the header comment of the migration file for exact DROP statements.
+Reverting code without reverting schema is safe (extra columns unused).
+
+## Staging smoke-test runbook
+
+1. `pm2 logs tmcai-server --lines 100 | grep -E "job-runner|self-heal|SCHEMA MISSING"` — must show NO "SCHEMA MISSING".
+2. `GET /admin/system-health` → `schemaAvailable: true`, `overall != 'unknown'`; jobs ledger populates within 15 min.
+3. `SELECT name, last_status, runs_completed FROM job_runs ORDER BY name;` — statuses 'ok'.
+4. WhatsApp: "what's on my calendar tomorrow?" (timezone), "tell me the status of <item>" (chat-9 class), then "delegate <item> to <person>" WITHOUT confirming (must preview, not claim done).
+5. `SELECT * FROM self_heal_log ORDER BY created_at DESC LIMIT 5;` after the first hourly pass.
+6. Kill -9 the process mid-minute and restart: `job_runs.runs_completed` must not reset; a 'running' row may show — verify it goes stale-visible, then clears next tick.
+7. `GET /brain/actions/status` as the test user → own rows only.
+
+## Production deployment checklist
+
+- [ ] Migration applied + resolved (step above) BEFORE the new build starts
+- [ ] seedActionDefinitions re-run (operational_metadata non-NULL: `SELECT COUNT(*) FROM action_definitions WHERE operational_metadata IS NULL;` → 0)
+- [ ] `EMBEDDINGS_ALLOW_STUB` NOT set in prod env
+- [ ] `NEXEO_DEFAULT_TIMEZONE` unset (keeps Asia/Karachi default) or set intentionally
+- [ ] PM2 stays `instances: 1` until the remaining pollers are lease-protected
+- [ ] Staging smoke runbook (above) fully green first
+
+## Monitoring + rollback thresholds
+
+- `job_runs.consecutive_failures >= 3` on any critical job → investigate within the hour; >= 6 → roll back.
+- `overall: 'unknown'` on /admin/system-health for > 10 min → migrations/DB issue; roll back if unresolved.
+- `self_heal_log` outcome 'skipped_exhausted' → human runbook action (do NOT restart-loop).
+- 'lease_lost' appearing without multi-replica deployment → clock skew or >10-min job body; raise that job's leaseTtlMs.
+- Embedding 'degraded' > 30 min → check GEMINI_API_KEY; vector retrieval silently degrades to keyword paths meanwhile (by design).
+
+## Remaining risks (post-pass)
+
+1. Compose-level Chat-9 behavior is locked by unit gates, not by a live-LLM integration test — staging smoke step 4 is the real check.
+2. Read-only feed pollers unprotected under hypothetical cluster mode (documented; PM2 pinned to 1 instance).
+3. `timeout` cannot cancel a JS job body — an orphaned body after lease expiry is detected (lease_lost) but not killed.
+4. Historic migration chain not replayable from empty (pre-existing; documented above).
+5. Legacy operational-metadata fallback map exists until one reseed has run everywhere; parity test prevents NEW drift.
+6. `attempts_total` on pre-existing job_runs rows from the runtime-DDL era starts at 0 (column added later) — cosmetic.

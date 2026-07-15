@@ -1,4 +1,4 @@
-import { ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, HandlerMetadata } from '../../handlerBase';
+import {ActionHandler, HandlerContext, ValidationResult, DryRunResult, ExecutionOutput, HandlerMetadata, ConfirmationCapability } from '../../handlerBase';
 import { getEvents } from '../../../adapters/calendarAdapter';
 
 // Working-hours window for proposals (local server time), matching the
@@ -115,6 +115,14 @@ export class ProposeTimesHandler extends ActionHandler {
       return { ok: false, error: err.message };
     }
   }
+  confirmationCapability(): ConfirmationCapability {
+    // Pure computation — no external write happens, so the produced
+    // proposal itself is the system of record. Declared explicitly so
+    // the external-category parity test doesn't read this as relying
+    // on the inherited default.
+    return 'locally_confirmed';
+  }
+
   async confirm(ctx: HandlerContext, output: unknown): Promise<boolean> {
     // Pure computation — execute() performs no external write (no event is
     // created, nothing is sent), so there is no system of record to read

@@ -62,23 +62,31 @@ export function pickTimezone(
 }
 
 /** Resolve the effective timezone for a user:
- *  User.timezone → tenant config 'tenant_timezone' → system default → UTC.
- *  Invalid values at any level are skipped with a warning, never used. */
+ *  EXPLICIT User.timezone → tenant config 'tenant_timezone' → system
+ *  default → UTC. Invalid values at any level are skipped with a
+ *  warning, never used.
+ *
+ *  #13 (2026-07-14): the old User.timezone column DEFAULT made every
+ *  legacy row look user-chosen, which silently blocked tenant fallback
+ *  forever. Semantics now: the user's zone participates ONLY when
+ *  timezone_is_explicit = true (set by the profile write path). Legacy
+ *  rows (explicit=false) inherit tenant → system — which today is the
+ *  same Asia/Karachi they had, so no existing schedule changes. */
 export async function resolveUserTimezone(userId: number): Promise<string> {
   try {
     const { getOrCompute } = await import('../utils/redisClient');
     return await getOrCompute(`usertz:${userId}`, TZ_CACHE_TTL_SEC, async () => {
       const row = await prisma.user.findUnique({
         where: { id: userId },
-        select: { timezone: true, clientNumber: true },
-      });
+        select: { timezone: true, clientNumber: true, timezoneIsExplicit: true } as any,
+      }) as any;
       let tenantTz: string | null = null;
       if (row?.clientNumber) {
         const { getConfig } = await import('./configService');
         tenantTz = await getConfig(row.clientNumber, 'tenant_timezone').catch(() => null);
       }
       return pickTimezone([
-        { source: 'user', tz: row?.timezone },
+        { source: 'user', tz: row?.timezoneIsExplicit ? row?.timezone : null },
         { source: 'tenant', tz: tenantTz },
         { source: 'system', tz: systemDefaultTimezone() },
       ]).tz;
@@ -86,6 +94,25 @@ export async function resolveUserTimezone(userId: number): Promise<string> {
   } catch {
     return systemDefaultTimezone();
   }
+}
+
+/** Persist an EXPLICIT user timezone selection (profile/settings write
+ *  path). Only this setter makes User.timezone participate in
+ *  resolution. Invalid names are rejected, not stored. */
+export async function setUserTimezone(userId: number, tz: string): Promise<boolean> {
+  if (!isValidTimezone(tz)) {
+    log.warn('rejected invalid timezone selection', { userId, tz });
+    return false;
+  }
+  await prisma.user.update({
+    where: { id: userId },
+    data: { timezone: tz, timezoneIsExplicit: true } as any,
+  });
+  try {
+    const { del } = await import('../utils/redisClient') as any;
+    if (typeof del === 'function') await del(`usertz:${userId}`);
+  } catch { /* 5-min TTL bounds staleness */ }
+  return true;
 }
 
 /** Look up a user's IANA timezone (back-compat name — now the full
