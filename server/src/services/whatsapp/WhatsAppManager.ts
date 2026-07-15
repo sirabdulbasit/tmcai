@@ -79,7 +79,9 @@ export async function sendWhatsAppMessage(params: {
   userId?: number;
   requiresApproval?: boolean;
 }): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  // Check config + limits
+  // Read config first to confirm tenant exists + connected. We still
+  // need this for status, connected_number, and the requires-approval
+  // path; the LIMIT check moves to an atomic conditional update below.
   const configs = await prisma.$queryRawUnsafe(
     `SELECT status, connected_number, daily_limit, messages_today FROM whatsapp_config WHERE client_number = $1`,
     params.clientNumber,
@@ -89,20 +91,82 @@ export async function sendWhatsAppMessage(params: {
   const config = configs[0];
 
   if (config.status !== 'connected') return { success: false, error: `WhatsApp status: ${config.status}` };
-  if (config.messages_today >= config.daily_limit) return { success: false, error: 'Daily message limit reached' };
 
-  // If requires approval: queue as pending
+  // `whatsapp_messages.user_id` is NOT NULL. Resolve a sane userId for
+  // the log row: prefer the caller-provided one; if missing, fall back
+  // to the tenant's first active SA (admin/superadmin). If even that
+  // fails, refuse to send rather than leave an orphaned row attempt.
+  let logUserId = params.userId ?? null;
+  if (!logUserId) {
+    const sa = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
+         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    logUserId = sa[0]?.id ?? null;
+  }
+  if (!logUserId) {
+    return { success: false, error: 'send refused — no userId and no SA/AD fallback for tenant' };
+  }
+
+  // If requires approval: queue as pending. Queued messages do NOT
+  // consume a daily slot — they're claimed only when actually sent
+  // (via approveQueuedMessage → sendWhatsAppMessage without
+  // requiresApproval, which goes through the atomic-claim path below).
   if (params.requiresApproval) {
     await prisma.$executeRawUnsafe(
       `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, status, requires_approval, agent_id, created_at)
        VALUES ($1, $2, 'outbound', $3, $4, $5, 'queued', TRUE, $6, NOW())`,
-      params.clientNumber, params.userId || null, config.connected_number || '', params.to,
+      params.clientNumber, logUserId, config.connected_number || '', params.to,
       params.message, params.agentId || null,
     );
     return { success: true, messageId: 'pending_approval' };
   }
 
-  // Send immediately
+  // ── Atomic daily-limit claim ─────────────────────────────────
+  //
+  // Old pattern (read → check → send → increment) had a race: under
+  // concurrent sends, multiple requests could pass the check before
+  // any of them incremented, busting the daily cap. The fix is the
+  // standard atomic-claim pattern — a single conditional UPDATE that
+  // increments only when under limit, with the row count telling us
+  // whether we got a slot.
+  //
+  // Rules:
+  //   - rowcount = 0 → limit was hit (someone else got the last slot)
+  //   - rowcount = 1 → slot claimed; we MUST either send successfully
+  //                    OR refund the counter on failure
+  //   - On send failure (network, provider error) we decrement back
+  //     so a transient error doesn't permanently consume a slot.
+  const claim = await prisma.$queryRawUnsafe<any[]>(
+    `UPDATE whatsapp_config
+        SET messages_today      = messages_today + 1,
+            messages_this_month = messages_this_month + 1,
+            last_message_at     = NOW(),
+            updated_at          = NOW()
+      WHERE client_number = $1
+        AND messages_today < daily_limit
+      RETURNING messages_today AS new_count, daily_limit AS limit_at`,
+    params.clientNumber,
+  ).catch(() => [] as any[]);
+
+  if (claim.length === 0) {
+    return { success: false, error: 'Daily message limit reached' };
+  }
+
+  const refundClaim = async () => {
+    // Decrement back. Bounded at 0 so a refund storm can't go negative.
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config
+          SET messages_today      = GREATEST(messages_today - 1, 0),
+              messages_this_month = GREATEST(messages_this_month - 1, 0),
+              updated_at          = NOW()
+        WHERE client_number = $1`,
+      params.clientNumber,
+    ).catch(() => {});
+  };
+
+  // Send
   try {
     const provider = await getProvider(params.clientNumber);
     const result = await provider.sendMessage({
@@ -118,21 +182,111 @@ export async function sendWhatsAppMessage(params: {
     await prisma.$executeRawUnsafe(
       `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, wa_message_id, status, agent_id, created_at)
        VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
-      params.clientNumber, params.userId || null, config.connected_number || '', params.to,
+      params.clientNumber, logUserId, config.connected_number || '', params.to,
       params.message, result.messageId || null, result.success ? 'sent' : 'failed', params.agentId || null,
     );
 
-    // Increment counter
-    if (result.success) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE whatsapp_config SET messages_today = messages_today + 1, messages_this_month = messages_this_month + 1, last_message_at = NOW() WHERE client_number = $1`,
-        params.clientNumber,
-      );
+    // Refund the claim if the actual send failed — the slot was
+    // consumed by the atomic update but the message never went out.
+    if (!result.success) {
+      await refundClaim();
     }
 
     return result;
   } catch (error: any) {
     log.error('Send failed', { clientNumber: params.clientNumber, to: params.to, error: error.message });
+    // Send threw before we could record an outcome — refund the slot
+    // so a thrown error (network blip, puppeteer crash) doesn't burn
+    // the user's daily quota silently.
+    await refundClaim();
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Send a voice note (OGG/Opus) via the active provider. Mirrors
+ * sendWhatsAppMessage but for audio: same daily-limit atomic claim,
+ * same logging shape, same refund-on-failure. Used by the unified
+ * tenant-WhatsApp sender to deliver Brain-generated voice notes when
+ * Meta /media isn't configured (the QR Code / webjs path).
+ */
+export async function sendWhatsAppVoiceNote(params: {
+  clientNumber: string;
+  to: string;
+  audio: Buffer;
+  mimeType?: string;
+  caption?: string;             // logged alongside the row for audit
+  agentId?: number;
+  userId?: number;
+}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const configs = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT status, connected_number, daily_limit, messages_today FROM whatsapp_config WHERE client_number = $1`,
+    params.clientNumber,
+  );
+  if (!configs.length) return { success: false, error: 'WhatsApp not configured' };
+  if (configs[0].status !== 'connected') return { success: false, error: `WhatsApp status: ${configs[0].status}` };
+
+  let logUserId = params.userId ?? null;
+  if (!logUserId) {
+    const sa = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
+         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    logUserId = sa[0]?.id ?? null;
+  }
+  if (!logUserId) return { success: false, error: 'send refused — no userId fallback' };
+
+  // Same atomic-claim pattern as text sends (see sendWhatsAppMessage).
+  const claim = await prisma.$queryRawUnsafe<any[]>(
+    `UPDATE whatsapp_config
+        SET messages_today      = messages_today + 1,
+            messages_this_month = messages_this_month + 1,
+            last_message_at     = NOW(),
+            updated_at          = NOW()
+      WHERE client_number = $1
+        AND messages_today < daily_limit
+      RETURNING messages_today AS new_count`,
+    params.clientNumber,
+  ).catch(() => [] as any[]);
+  if (claim.length === 0) return { success: false, error: 'Daily message limit reached' };
+
+  const refundClaim = async () => {
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config
+          SET messages_today      = GREATEST(messages_today - 1, 0),
+              messages_this_month = GREATEST(messages_this_month - 1, 0),
+              updated_at          = NOW()
+        WHERE client_number = $1`,
+      params.clientNumber,
+    ).catch(() => {});
+  };
+
+  try {
+    const provider = await getProvider(params.clientNumber);
+    // Only WebjsProvider implements sendVoiceMessage; Meta has its own
+    // /media path called via whatsappNotifierService directly.
+    if (typeof (provider as any).sendVoiceMessage !== 'function') {
+      await refundClaim();
+      return { success: false, error: 'voice note send not supported by current provider' };
+    }
+    const r = await (provider as any).sendVoiceMessage(
+      params.clientNumber,
+      params.to,
+      params.audio,
+      params.mimeType,
+    );
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, wa_message_id, status, agent_id, created_at)
+       VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
+      params.clientNumber, logUserId, configs[0].connected_number || '',
+      params.to, `[voice note] ${params.caption ?? ''}`.trim(),
+      r.messageId || null, r.success ? 'sent' : 'failed', params.agentId || null,
+    );
+    if (!r.success) await refundClaim();
+    return r;
+  } catch (error: any) {
+    await refundClaim();
     return { success: false, error: error.message };
   }
 }

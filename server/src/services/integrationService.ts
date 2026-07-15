@@ -21,6 +21,16 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   // Phase 3.1: Personal GDrive folder access
   'https://www.googleapis.com/auth/drive.readonly',
+  // Obsidian vault (2026-07-14): drive.file grants write ONLY to files
+  // Nexeo itself creates — the "Nexeo Vault" folder. It cannot modify
+  // anything else in the user's Drive. Existing users re-consent on
+  // next reconnect; export skips silently until then.
+  'https://www.googleapis.com/auth/drive.file',
+  // Tier 2 — Google Contacts import (People API).
+  // Existing users won't have this scope until they re-authorize;
+  // googleContactsService swallows 403s gracefully so the absence
+  // is visible (empty results) but not breaking.
+  'https://www.googleapis.com/auth/contacts.readonly',
 ];
 
 // ─── OAuth Client ─────────────────────────────────────────────
@@ -152,6 +162,67 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
             console.log(`[Integration] UserConnector token refreshed for user ${userId}`);
           } catch (err: any) {
             console.error(`[Integration] UserConnector token refresh failed for user ${userId}:`, err.message);
+            // Mark ALL the user's Google connector rows as broken,
+            // not just the one we happened to look up first. They
+            // all share the same OAuth token (see line 105 — Gmail,
+            // Calendar, Tasks, Chat, Drive read from the same
+            // userConnector row's config). When the refresh fails,
+            // every Google channel is dead, so every row should
+            // reflect that. Without this updateMany, the user sees
+            // ONE channel marked broken (whichever happened to
+            // trigger the refresh first) and the others stuck
+            // showing "Connected" — exactly what the user flagged
+            // on the connectors page.
+            const errorMessage = String(err?.message ?? 'token refresh failed');
+            const erroredAt = new Date().toISOString();
+            const allGoogleTypeIds = googleConnectorTypes.map((ct) => ct.id);
+            await prisma.userConnector.updateMany({
+              where: {
+                userId,
+                connectorTypeId: { in: allGoogleTypeIds },
+              },
+              data: {
+                status: 'error' as any,
+              },
+            }).catch(() => { /* best effort */ });
+            // updateMany can't merge JSON metadata, so loop for that.
+            const allRows = await prisma.userConnector.findMany({
+              where: { userId, connectorTypeId: { in: allGoogleTypeIds } },
+              select: { id: true, metadata: true },
+            }).catch(() => [] as Array<{ id: string; metadata: unknown }>);
+            for (const row of allRows) {
+              await prisma.userConnector.update({
+                where: { id: row.id },
+                data: {
+                  metadata: {
+                    ...((row.metadata as Record<string, unknown> | null) ?? {}),
+                    lastRefreshError: errorMessage,
+                    lastRefreshErrorAt: erroredAt,
+                  } as any,
+                },
+              }).catch(() => { /* best effort */ });
+            }
+            // Fire one Brain alert so the user knows immediately their
+            // Google connectors went dead — instead of discovering it
+            // 4 days later when My Attention is empty. Deduped on the
+            // userId so a stuck refresh doesn't spam (brainContactsUser
+            // dedupKey + dedupWindow handles this).
+            try {
+              const { brainContactsUser } = await import('./notifications/brainOutboundService');
+              const isExpiry = /invalid_grant|token has been expired|expired or revoked/i.test(errorMessage);
+              await brainContactsUser({
+                userId,
+                kind: 'connector_stale',
+                summary: isExpiry ? 'Google token expired — reconnect needed' : 'Google connector failed',
+                body: isExpiry
+                  ? `⚠️ Your Google sign-in expired. Gmail, Calendar, Drive, Tasks, and Chat have all stopped syncing.\n\nOpen Connectors and reconnect to restore Day Brief.`
+                  : `⚠️ Google connector hit an error: ${errorMessage.slice(0, 120)}\n\nOpen Connectors to investigate.`,
+                urgency: 'high',
+                dedupKey: `google_oauth_failure:${userId}`,
+                dedupWindowMs: 4 * 60 * 60 * 1000,
+                metadata: { errorMessage, isExpiry } as any,
+              }).catch(() => { /* best effort */ });
+            } catch { /* notifications service optional */ }
           }
         }
 

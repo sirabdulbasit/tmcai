@@ -6,6 +6,7 @@ import { ToastProvider } from './context/ToastContext';
 import { AuthProvider } from './context/AuthContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import App from './App';
+import './styles/base.css';
 import './index.css';
 
 createRoot(document.getElementById('root')).render(

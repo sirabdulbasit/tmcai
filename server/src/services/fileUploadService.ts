@@ -8,6 +8,7 @@
 import crypto from 'crypto';
 import prisma from '../db/prisma';
 import { embedBatch } from '../pipeline/embedder';
+import { resolveClientNumberForUser } from './tenantScope';
 import createLogger from '../utils/logger';
 
 const log = createLogger('fileUpload');
@@ -133,11 +134,18 @@ export async function processUpload(
     };
   }
 
+  // E3/E5: resolve the uploader's tenant once and stamp it on the
+  // document AND every chunk, so personal data carries a tenant tag on
+  // top of user_id scoping (defense in depth — a wrong userId can no
+  // longer cross tenants unnoticed). null only if the user row vanished
+  // mid-upload; the row then degrades to legacy user-only scoping.
+  const clientNumber = await resolveClientNumberForUser(userId);
+
   // Create document record
   const docRows: any[] = await prisma.$queryRawUnsafe(
-    `INSERT INTO personal_documents (user_id, source, file_name, mime_type, size_bytes, content_hash, parse_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    userId, 'upload', originalName, mimeType, sizeBytes, contentHash, 'processing',
+    `INSERT INTO personal_documents (user_id, source, file_name, mime_type, size_bytes, content_hash, parse_status, client_number)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    userId, 'upload', originalName, mimeType, sizeBytes, contentHash, 'processing', clientNumber,
   );
   const docId: number = docRows[0].id;
 
@@ -157,10 +165,12 @@ export async function processUpload(
     for (let i = 0; i < chunks.length; i++) {
       const chunkHash = crypto.createHash('sha256').update(userId + chunks[i]).digest('hex');
       const embeddingJson = JSON.stringify(embeddings[i] || []);
+      // client_number denormalised onto each chunk so retrieval can
+      // filter by tenant WITHOUT joining personal_documents.
       await prisma.$executeRawUnsafe(
-        `INSERT INTO personal_chunks (user_id, document_id, content, embedding, chunk_index, content_hash)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
-        userId, docId, chunks[i], embeddingJson, i, chunkHash,
+        `INSERT INTO personal_chunks (user_id, document_id, content, embedding, chunk_index, content_hash, client_number)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
+        userId, docId, chunks[i], embeddingJson, i, chunkHash, clientNumber,
       );
     }
 

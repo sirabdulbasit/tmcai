@@ -33,6 +33,9 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [testing, setTesting] = useState(false);     // Test Connection in flight
+  const [sendingTest, setSendingTest] = useState(false); // Send Test Message in flight
+  const [disconnecting, setDisconnecting] = useState(false);
   const [qrCode, setQrCode] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -40,16 +43,12 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
   const [showTest, setShowTest] = useState(false);
   const qrPollRef = useRef(null);
 
-  // Form state
+  // Form state — QR-code path only. Provider is forced to 'webjs'; Meta
+  // credentials live in the WhatsApp Meta panel. Daily/monthly limits +
+  // max-tokens have been removed from the UI: Brain decides response
+  // length and pacing based on conversation context, and the backend
+  // keeps a sane backstop (whatsapp_config.daily_limit default).
   const [companyNumber, setCompanyNumber] = useState(''); // The bot's WhatsApp number users message TO
-  const [provider, setProvider] = useState('webjs');
-  const [metaPhoneNumberId, setMetaPhoneNumberId] = useState('');
-  const [metaAccessToken, setMetaAccessToken] = useState('');
-  const [metaBusinessId, setMetaBusinessId] = useState('');
-  const [metaWebhookSecret, setMetaWebhookSecret] = useState('');
-  const [dailyLimit, setDailyLimit] = useState(100);
-  const [monthlyLimit, setMonthlyLimit] = useState(2000);
-  const [maxTokens, setMaxTokens] = useState(400);
 
   // ── Load tenant list for SuperAdmin ─────────────────────────────
   useEffect(() => {
@@ -86,11 +85,7 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
       setMessages(msgRes.data.messages || []);
       setSessions(sessRes.data.sessions || []);
       if (cfgRes.data.configured) {
-        setProvider(cfgRes.data.provider || 'webjs');
         setCompanyNumber(cfgRes.data.connected_number || cfgRes.data.company_number || '');
-        setDailyLimit(cfgRes.data.daily_limit || 100);
-        setMonthlyLimit(cfgRes.data.monthly_limit || 2000);
-        setMaxTokens(cfgRes.data.max_tokens_data || 400);
       }
       // Auto-start QR polling if already in connecting state
       if (statusRes.data?.status === 'connecting') {
@@ -106,16 +101,16 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
   }
 
   // ── Save config ─────────────────────────────────────────────────
+  // Provider is hard-coded to 'webjs' — this panel only manages the QR
+  // Code path. Meta-Cloud credentials live in the WhatsApp Meta panel.
   async function handleSave() {
     setSaving(true);
     try {
       await api.post(`/admin/whatsapp/config${q}`, {
-        provider,
+        provider: 'webjs',
         companyNumber: companyNumber || undefined,
-        ...(provider === 'meta' ? { metaPhoneNumberId, metaAccessToken: metaAccessToken || undefined, metaBusinessId, metaWebhookSecret: metaWebhookSecret || undefined } : {}),
-        dailyLimit, monthlyLimit, maxTokensData: maxTokens,
       });
-      setMsg('WhatsApp config saved');
+      setMsg('WhatsApp QR Code config saved');
       await loadAll();
     } catch (e) { setMsg('Failed to save config'); }
     setSaving(false);
@@ -132,7 +127,12 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
         startQRPolling();
       }
       setMsg(res.data.status === 'connected' ? 'Connected!' : 'Connecting... scan QR code');
-    } catch (e) { setMsg('Connection failed'); }
+    } catch (e) {
+      // Surface the real server error so the admin can diagnose (Chrome
+      // path, provider conflict with WhatsApp Personal, missing deps…).
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Connection failed: ${detail}`);
+    }
     setConnecting(false);
   }
 
@@ -158,6 +158,7 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
 
   // ── Disconnect ──────────────────────────────────────────────────
   async function handleDisconnect() {
+    setDisconnecting(true);
     try {
       await api.post(`/admin/whatsapp/disconnect${q}`);
       if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
@@ -165,17 +166,87 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
       setMsg('Disconnected');
       loadAll();
     } catch (e) { setMsg('Disconnect failed'); }
+    finally { setDisconnecting(false); }
+  }
+
+  // ── Reset Pairing (change WhatsApp number) ──────────────────────
+  // Destroys the in-memory client + deletes LocalAuth session on disk
+  // + clears DB columns + re-initializes so a fresh QR is shown. This
+  // is what you use to SWAP the company WhatsApp number — without
+  // this, scanning a new QR silently reconnects to the OLD account
+  // because the saved session on disk is still valid.
+  //
+  // Typed-phrase confirmation per the "no browser dialogs" rule —
+  // requires the admin to type RESET so it can't be triggered by an
+  // accidental click. Workflow expects the admin to FIRST log out from
+  // the old phone's WhatsApp → Linked Devices, then press this.
+  const [showResetPairing, setShowResetPairing] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetting, setResetting] = useState(false);
+  async function handleResetPairing() {
+    if (resetConfirmText.trim().toUpperCase() !== 'RESET') return;
+    setResetting(true);
+    try {
+      const res = await api.post(`/admin/whatsapp/reset-pairing${q}`);
+      setMsg(res.data?.message || 'Pairing reset — scan the new QR code with your new phone.');
+      setShowResetPairing(false);
+      setResetConfirmText('');
+      // Start QR polling — fresh QR will appear within ~3-8s
+      if (qrPollRef.current) { clearInterval(qrPollRef.current); }
+      qrPollRef.current = setInterval(async () => {
+        try {
+          const qrRes = await api.get(`/admin/whatsapp/qr${q}`);
+          if (qrRes.data?.qrCode) setQrCode(qrRes.data.qrCode);
+          if (qrRes.data?.status === 'connected') {
+            clearInterval(qrPollRef.current); qrPollRef.current = null;
+            setQrCode(null);
+            loadAll();
+          }
+        } catch {}
+      }, 3000);
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Reset failed: ${detail}`);
+    } finally {
+      setResetting(false);
+    }
   }
 
   // ── Test message ────────────────────────────────────────────────
   async function handleTestSend() {
     if (!testNumber) return;
+    setSendingTest(true);
     try {
       const res = await api.post(`/admin/whatsapp/test${q}`, { testNumber });
       setMsg(res.data.success ? `Test sent! (ID: ${res.data.messageId})` : `Test failed: ${res.data.error}`);
       setShowTest(false);
       loadAll();
     } catch (e) { setMsg('Test send failed'); }
+    finally { setSendingTest(false); }
+  }
+
+  // ── Test Connection ─────────────────────────────────────────────
+  // Centralized so the button gets a proper loading state — the inline
+  // version in the JSX had no spinner and no disabled gate, so users
+  // could rapid-fire clicks during the up-to-8s server-side self-heal
+  // wait.
+  async function handleTestConnection() {
+    setTesting(true);
+    try {
+      const res = await api.post(`/admin/whatsapp/test-connection${q}`);
+      if (res.data.success) {
+        setMsg(`Connection OK — Connected number: ${res.data.connectedNumber}`);
+        loadAll();
+      } else {
+        setMsg(`Connection failed: ${res.data.error ?? 'no detail returned by provider'}`);
+      }
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Test connection failed: ${detail}`);
+    } finally {
+      setTesting(false);
+    }
   }
 
   // ── Approve / Reject ───────────────────────────────────────────
@@ -186,66 +257,57 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
     try { await api.post(`/admin/whatsapp/messages/${id}/reject`); setMsg('Rejected'); loadAll(); } catch { setMsg('Reject failed'); }
   }
 
+  // ── Delete a single message row from the log ────────────────────
+  // No browser dialogs (per the no-browser-dialogs rule); the row
+  // shows an inline "Confirm?" affordance instead. Tracked per id so
+  // confirming one row doesn't open every row.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  async function handleDeleteMessage(id) {
+    try {
+      const res = await api.delete(`/admin/whatsapp/messages/${id}${q}`);
+      setMsg(res.data?.deleted ? 'Deleted' : 'Nothing to delete');
+      setConfirmDeleteId(null);
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Delete failed: ${detail}`);
+    }
+  }
+
+  // ── Clear ALL message logs for this tenant ──────────────────────
+  // Destructive — uses typed-phrase confirmation (type CLEAR).
+  const [showClearLog, setShowClearLog] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
+  const [clearing, setClearing] = useState(false);
+  async function handleClearLog() {
+    if (clearConfirmText.trim().toUpperCase() !== 'CLEAR') return;
+    setClearing(true);
+    try {
+      const res = await api.delete(`/admin/whatsapp/messages${q}`);
+      setMsg(`Cleared — deleted ${res.data?.deleted ?? 0} rows.`);
+      setShowClearLog(false);
+      setClearConfirmText('');
+      loadAll();
+    } catch (e) {
+      const detail = e?.response?.data?.error ?? e?.message ?? 'unknown error';
+      setMsg(`Clear failed: ${detail}`);
+    } finally {
+      setClearing(false);
+    }
+  }
+
   if (loading) return <div style={{ color: '#888', padding: 20 }}>Loading WhatsApp config...</div>;
 
   const st = status?.status || 'not_configured';
-  const todayPct = status?.daily_limit ? (status.messages_today / status.daily_limit) * 100 : 0;
-  const monthPct = status?.monthly_limit ? (status.messages_this_month / status.monthly_limit) * 100 : 0;
 
   return (
     <div>
-      {/* ── Tenant Selector ──────────────────────────────────────── */}
-      <div style={s.section}>
-        <div style={s.sectionTitle}>Configure WhatsApp for Client</div>
-        {user?.isSuperAdmin && tenants.length > 0 ? (
-          <>
-            <label style={s.label}>Select Client</label>
-            <select
-              style={{ ...s.input, cursor: 'pointer' }}
-              value={selectedTenant}
-              onChange={e => setSelectedTenant(e.target.value)}
-            >
-              {tenants.map(t => (
-                <option key={t.clientNumber} value={t.clientNumber}>
-                  {t.name} ({t.clientNumber})
-                </option>
-              ))}
-            </select>
-          </>
-        ) : (
-          <div style={{ color: '#eee', fontSize: 14 }}>
-            Client: <strong>{user?.clientNumber}</strong>
-          </div>
-        )}
-      </div>
-
-      {/* ── Section 1: Provider Selection ──────────────────────── */}
-      <div style={s.section}>
-        <div style={s.sectionTitle}>Provider</div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          {[
-            { key: 'webjs', label: 'WhatsApp Web', desc: 'Free — development/testing only', badge: 'DEV', badgeColor: '#f59e0b' },
-            { key: 'meta', label: 'Meta Cloud API', desc: 'Production — recommended', badge: 'PROD', badgeColor: '#4ade80' },
-          ].map(p => (
-            <label key={p.key} style={{
-              flex: 1, padding: 14, background: provider === p.key ? '#252525' : '#1a1a1a',
-              border: `2px solid ${provider === p.key ? '#cc6b4a' : '#333'}`, borderRadius: 10, cursor: 'pointer',
-            }}>
-              <input type="radio" name="provider" value={p.key} checked={provider === p.key} onChange={() => setProvider(p.key)} style={{ display: 'none' }} />
-              <div style={{ fontWeight: 600, color: '#eee', fontSize: 14 }}>{p.label}</div>
-              <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>{p.desc}</div>
-              <span style={{ ...s.badge, background: p.badgeColor + '22', color: p.badgeColor, marginTop: 6 }}>{p.badge}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Company WhatsApp Number (both providers) ──────────── */}
+      {/* ── Company WhatsApp Number (paired phone) ───────────── */}
       <div style={s.section}>
         <div style={s.sectionTitle}>Company WhatsApp Number</div>
         <p style={{ color: '#888', fontSize: 12, marginBottom: 8 }}>
-          This is the WhatsApp number your employees will message to chat with the AI.
-          {provider === 'webjs' ? ' For Web.js, this will be the number of the phone that scans the QR code.' : ' For Meta, this is your registered WhatsApp Business number.'}
+          The phone whose WhatsApp account scans the QR code. Users will see this
+          number when Brain messages them. Use a spare SIM — not your main account.
         </p>
         <label style={s.label}>WhatsApp Number (E.164 format) *</label>
         <input style={{
@@ -255,75 +317,26 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
         {companyNumber && !/^\+\d{10,15}$/.test(companyNumber.replace(/[\s-]/g, '')) && (
           <p style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>Invalid format. Must start with + followed by 10-15 digits. Example: +923001234567</p>
         )}
-        <p style={{ fontSize: 11, color: '#555', marginTop: 4 }}>This number will be shown to users in their Settings page so they know where to send messages.</p>
-      </div>
-
-      {/* ── Section 2: Credentials ─────────────────────────────── */}
-      {provider === 'meta' && (
-        <div style={s.section}>
-          <div style={s.sectionTitle}>Meta Cloud API Credentials</div>
-          <label style={s.label}>Phone Number ID *</label>
-          <input style={s.input} value={metaPhoneNumberId} onChange={e => setMetaPhoneNumberId(e.target.value)} placeholder="From Meta Business → WhatsApp → API Setup" />
-          <label style={s.label}>Access Token *</label>
-          <input style={s.input} type="password" value={metaAccessToken} onChange={e => setMetaAccessToken(e.target.value)} placeholder="Permanent token from Meta Business" />
-          <label style={s.label}>Business Account ID</label>
-          <input style={s.input} value={metaBusinessId} onChange={e => setMetaBusinessId(e.target.value)} placeholder="Meta Business Account ID" />
-          <label style={s.label}>Webhook Verify Token</label>
-          <input style={s.input} value={metaWebhookSecret} onChange={e => setMetaWebhookSecret(e.target.value)} placeholder="Any secret string you choose" />
-
-          <label style={s.label}>Webhook URL (register this in Meta Dashboard)</label>
-          <div style={{ ...s.input, background: '#1a1a1a', color: '#cc6b4a', userSelect: 'all', cursor: 'text' }}>
-            {window.location.origin.replace(':5174', ':4002')}/api/v1/webhooks/whatsapp/{user?.clientNumber}
-          </div>
-        </div>
-      )}
-
-      {provider === 'webjs' && (
-        <div style={s.section}>
-          <div style={s.sectionTitle}>WhatsApp Web (QR Code)</div>
-          <p style={{ color: '#888', fontSize: 12, lineHeight: 1.6 }}>
-            Uses your WhatsApp account via QR scan. <strong style={{ color: '#f59e0b' }}>Development and testing only.</strong><br />
-            Use a spare SIM — not your main WhatsApp number.
-          </p>
-        </div>
-      )}
-
-      {/* ── Limits ─────────────────────────────────────────────── */}
-      <div style={s.section}>
-        <div style={s.sectionTitle}>Limits & Response Settings</div>
-        <div style={{ display: 'flex', gap: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label style={s.label}>Daily Message Limit</label>
-            <input style={s.input} type="number" value={dailyLimit} onChange={e => setDailyLimit(+e.target.value)} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={s.label}>Monthly Message Limit</label>
-            <input style={s.input} type="number" value={monthlyLimit} onChange={e => setMonthlyLimit(+e.target.value)} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={s.label}>Max Response Tokens</label>
-            <input style={s.input} type="number" value={maxTokens} onChange={e => setMaxTokens(+e.target.value)} />
-            <p style={{ fontSize: 10, color: '#555', marginTop: 2 }}>Controls response length. 400 = ~100 words. Higher = longer answers, more cost.</p>
-          </div>
-        </div>
       </div>
 
       {/* ── Save + Test Connection ────────────────────────────── */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save Configuration'}
+        <button
+          style={{ ...s.btn, ...s.btnPrimary, opacity: saving ? 0.85 : 1 }}
+          onClick={handleSave}
+          disabled={saving || testing}
+        >
+          {saving && <span className="btn-spinner" />}
+          {saving ? 'Saving…' : 'Save Configuration'}
         </button>
-        <button style={{ ...s.btn, ...s.btnOutline }} onClick={async () => {
-          try {
-            const res = await api.post(`/admin/whatsapp/test-connection${q}`);
-            if (res.data.success) {
-              setMsg(`Connection OK — Connected number: ${res.data.connectedNumber}`);
-            } else {
-              setMsg(`Connection failed: ${res.data.error}`);
-            }
-          } catch { setMsg('Test connection failed'); }
-        }}>
-          Test Connection
+        <button
+          style={{ ...s.btn, ...s.btnOutline, opacity: testing ? 0.85 : 1 }}
+          onClick={handleTestConnection}
+          disabled={testing || saving}
+          title={testing ? 'Probing the provider… up to 8s if a self-heal kicks in' : 'Probe the WhatsApp provider without sending a message'}
+        >
+          {testing && <span className="btn-spinner" />}
+          {testing ? 'Testing…' : 'Test Connection'}
         </button>
       </div>
 
@@ -331,8 +344,16 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
       <div style={s.section}>
         <div style={s.sectionTitle}>Connection Status</div>
         <div style={s.row}>
-          <span style={s.statusDot(STATUS_COLORS[st] || '#666')} />
-          <span style={{ fontWeight: 600, color: '#eee', textTransform: 'uppercase' }}>{st}</span>
+          {/* Halo pulse during connecting/testing — subtle radiating ring
+              so users see "something is happening" instead of staring at
+              a static dot for up to 8 seconds. */}
+          <span
+            className={(st === 'connecting' || testing || connecting) ? 'status-dot-pulse' : ''}
+            style={{ ...s.statusDot(STATUS_COLORS[st] || '#666'), color: STATUS_COLORS[st] || '#666' }}
+          />
+          <span style={{ fontWeight: 600, color: '#eee', textTransform: 'uppercase' }}>
+            {testing ? 'testing…' : connecting && st !== 'connecting' ? 'connecting…' : st}
+          </span>
           {status?.connected_number && <span style={{ color: '#888', marginLeft: 8 }}>{status.connected_number}</span>}
           {status?.connected_at && <span style={{ color: '#555', fontSize: 11, marginLeft: 8 }}>Since {new Date(status.connected_at).toLocaleString()}</span>}
         </div>
@@ -355,44 +376,121 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
           </div>
         )}
 
-        {/* Usage bars */}
+        {/* Usage counters — informational only. No hard caps surfaced
+            in the UI; Brain self-paces, and the backend keeps a generous
+            backstop on whatsapp_config.daily_limit. */}
         {st === 'connected' && (
-          <div style={{ marginTop: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ color: '#888', fontSize: 12, width: 80 }}>Today</span>
-              <div style={s.progress}><div style={s.progressFill(todayPct)} /></div>
-              <span style={{ color: '#aaa', fontSize: 12, minWidth: 70, textAlign: 'right' }}>{status.messages_today} / {status.daily_limit}</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ color: '#888', fontSize: 12, width: 80 }}>This month</span>
-              <div style={s.progress}><div style={s.progressFill(monthPct)} /></div>
-              <span style={{ color: '#aaa', fontSize: 12, minWidth: 70, textAlign: 'right' }}>{status.messages_this_month} / {status.monthly_limit}</span>
-            </div>
+          <div style={{ marginTop: 12, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+            {status?.messages_today ?? 0} sent today · {status?.messages_this_month ?? 0} this month
           </div>
         )}
 
         {/* Action buttons */}
         <div style={{ ...s.row, marginTop: 16 }}>
           {(st === 'disconnected' || st === 'not_configured' || st === 'error') && (
-            <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleConnect} disabled={connecting}>
-              {connecting ? 'Connecting...' : 'Connect'}
+            <button
+              style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.85 : 1 }}
+              onClick={handleConnect}
+              disabled={connecting}
+            >
+              {connecting && <span className="btn-spinner" />}
+              {connecting ? 'Connecting…' : 'Connect'}
             </button>
           )}
           {st === 'connected' && (
             <>
-              <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowTest(true)}>Send Test Message</button>
+              <button
+                style={{ ...s.btn, ...s.btnPrimary }}
+                onClick={() => setShowTest(true)}
+                disabled={disconnecting}
+              >
+                Send Test Message
+              </button>
               {!confirmDisconnect ? (
-                <button style={{ ...s.btn, ...s.btnDanger }} onClick={() => setConfirmDisconnect(true)}>Disconnect</button>
+                <button
+                  style={{ ...s.btn, ...s.btnDanger, opacity: disconnecting ? 0.85 : 1 }}
+                  onClick={() => setConfirmDisconnect(true)}
+                  disabled={disconnecting}
+                >
+                  Disconnect
+                </button>
               ) : (
                 <>
                   <span style={{ color: '#ef4444', fontSize: 12, marginRight: 6 }}>Are you sure?</span>
-                  <button style={{ ...s.btn, ...s.btnDanger, fontSize: 11, padding: '4px 12px' }} onClick={() => { setConfirmDisconnect(false); handleDisconnect(); }}>Yes, Disconnect</button>
-                  <button style={{ ...s.btn, ...s.btnOutline, fontSize: 11, padding: '4px 12px' }} onClick={() => setConfirmDisconnect(false)}>Cancel</button>
+                  <button
+                    style={{ ...s.btn, ...s.btnDanger, fontSize: 11, padding: '4px 12px', opacity: disconnecting ? 0.85 : 1 }}
+                    onClick={() => { setConfirmDisconnect(false); handleDisconnect(); }}
+                    disabled={disconnecting}
+                  >
+                    {disconnecting && <span className="btn-spinner" />}
+                    {disconnecting ? 'Disconnecting…' : 'Yes, Disconnect'}
+                  </button>
+                  <button
+                    style={{ ...s.btn, ...s.btnOutline, fontSize: 11, padding: '4px 12px' }}
+                    onClick={() => setConfirmDisconnect(false)}
+                    disabled={disconnecting}
+                  >
+                    Cancel
+                  </button>
                 </>
               )}
+              <button
+                style={{ ...s.btn, ...s.btnOutline, borderColor: '#f59e0b', color: '#f59e0b' }}
+                onClick={() => setShowResetPairing(true)}
+                disabled={disconnecting || resetting}
+                title="Change the paired WhatsApp number"
+              >
+                Change Number / Reset Pairing
+              </button>
             </>
           )}
         </div>
+
+        {/* ── Reset Pairing — typed-phrase confirmation panel ────── */}
+        {showResetPairing && (
+          <div style={{
+            marginTop: 12, padding: 12, background: '#1a1410',
+            border: '1px solid #f59e0b', borderRadius: 6,
+          }}>
+            <div style={{ color: '#f59e0b', fontWeight: 600, marginBottom: 6 }}>
+              Change WhatsApp Number
+            </div>
+            <div style={{ color: '#ccc', fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+              This unpairs the current phone ({status?.connected_number || 'unknown'}) and clears the saved session
+              so a fresh QR code can be scanned with a new phone.
+              <br /><br />
+              <strong style={{ color: '#fbbf24' }}>BEFORE pressing Reset:</strong> on the currently-paired phone,
+              open WhatsApp → Settings → Linked Devices → tap the Nexeo entry → <strong>Log out</strong>.
+              <br /><br />
+              Type <strong style={{ color: '#fbbf24' }}>RESET</strong> below to confirm.
+            </div>
+            <input
+              style={{ ...s.input, maxWidth: 200, marginRight: 8 }}
+              value={resetConfirmText}
+              onChange={e => setResetConfirmText(e.target.value)}
+              placeholder="Type RESET"
+              disabled={resetting}
+            />
+            <button
+              style={{
+                ...s.btn, ...s.btnDanger,
+                opacity: (resetConfirmText.trim().toUpperCase() === 'RESET' && !resetting) ? 1 : 0.5,
+              }}
+              onClick={handleResetPairing}
+              disabled={resetConfirmText.trim().toUpperCase() !== 'RESET' || resetting}
+            >
+              {resetting && <span className="btn-spinner" />}
+              {resetting ? 'Resetting…' : 'Reset Pairing'}
+            </button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline, marginLeft: 6 }}
+              onClick={() => { setShowResetPairing(false); setResetConfirmText(''); }}
+              disabled={resetting}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Test Message Modal ─────────────────────────────────── */}
@@ -405,8 +503,21 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
             Message: "This is a test message from TMCAI. WhatsApp is configured correctly. — Sent via TMCAI Admin Panel"
           </p>
           <div style={{ ...s.row, marginTop: 12 }}>
-            <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleTestSend}>Send Test</button>
-            <button style={{ ...s.btn, ...s.btnOutline }} onClick={() => setShowTest(false)}>Cancel</button>
+            <button
+              style={{ ...s.btn, ...s.btnPrimary, opacity: sendingTest ? 0.85 : 1 }}
+              onClick={handleTestSend}
+              disabled={sendingTest || !testNumber}
+            >
+              {sendingTest && <span className="btn-spinner" />}
+              {sendingTest ? 'Sending…' : 'Send Test'}
+            </button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline }}
+              onClick={() => setShowTest(false)}
+              disabled={sendingTest}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
@@ -415,8 +526,56 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
       <div style={s.section}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={s.sectionTitle}>Recent Messages</div>
-          <button style={{ ...s.btn, ...s.btnOutline, fontSize: 11 }} onClick={loadAll}>Refresh</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...s.btn, ...s.btnOutline, fontSize: 11 }} onClick={loadAll}>Refresh</button>
+            {messages.length > 0 && (
+              <button
+                style={{ ...s.btn, ...s.btnOutline, fontSize: 11, borderColor: '#ef4444', color: '#ef4444' }}
+                onClick={() => setShowClearLog(true)}
+                disabled={clearing}
+                title="Delete all message logs for this tenant"
+              >
+                Clear All
+              </button>
+            )}
+          </div>
         </div>
+        {showClearLog && (
+          <div style={{
+            marginTop: 8, padding: 10, background: '#1a1010',
+            border: '1px solid #ef4444', borderRadius: 6,
+          }}>
+            <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 8 }}>
+              Permanently delete <strong>all {messages.length}+ message logs</strong> for this tenant.
+              Type <strong style={{ color: '#fca5a5' }}>CLEAR</strong> to confirm.
+            </div>
+            <input
+              style={{ ...s.input, maxWidth: 160, marginRight: 6 }}
+              value={clearConfirmText}
+              onChange={e => setClearConfirmText(e.target.value)}
+              placeholder="Type CLEAR"
+              disabled={clearing}
+            />
+            <button
+              style={{
+                ...s.btn, ...s.btnDanger, fontSize: 11,
+                opacity: (clearConfirmText.trim().toUpperCase() === 'CLEAR' && !clearing) ? 1 : 0.5,
+              }}
+              onClick={handleClearLog}
+              disabled={clearConfirmText.trim().toUpperCase() !== 'CLEAR' || clearing}
+            >
+              {clearing && <span className="btn-spinner" />}
+              {clearing ? 'Clearing…' : 'Clear All'}
+            </button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline, fontSize: 11, marginLeft: 6 }}
+              onClick={() => { setShowClearLog(false); setClearConfirmText(''); }}
+              disabled={clearing}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {messages.length === 0 ? (
           <p style={{ color: '#555', fontSize: 12 }}>No messages yet</p>
         ) : (
@@ -436,7 +595,11 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
                 {messages.map((m, i) => (
                   <tr key={m.id || i}>
                     <td style={s.td}>{m.direction === 'inbound' ? '📥' : '📤'}</td>
-                    <td style={s.td}>{m.from_number || m.to_number}</td>
+                    {/* Show the OTHER party — recipient for outbound, sender
+                        for inbound. The previous `from_number || to_number`
+                        always rendered the tenant's connected number for
+                        outbound rows, which was misleading. */}
+                    <td style={s.td}>{m.direction === 'inbound' ? (m.from_number || '?') : (m.to_number || '?')}</td>
                     <td style={{ ...s.td, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.content?.slice(0, 60)}</td>
                     <td style={s.td}>
                       <span style={{ ...s.badge,
@@ -449,8 +612,32 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
                       {m.status === 'queued' && m.requires_approval && (
                         <>
                           <button style={{ ...s.btn, ...s.btnPrimary, fontSize: 10, padding: '2px 8px', marginRight: 4 }} onClick={() => handleApprove(m.id)}>Approve</button>
-                          <button style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px' }} onClick={() => handleReject(m.id)}>Reject</button>
+                          <button style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px', marginRight: 4 }} onClick={() => handleReject(m.id)}>Reject</button>
                         </>
+                      )}
+                      {confirmDeleteId === m.id ? (
+                        <>
+                          <button
+                            style={{ ...s.btn, ...s.btnDanger, fontSize: 10, padding: '2px 8px', marginRight: 4 }}
+                            onClick={() => handleDeleteMessage(m.id)}
+                          >
+                            Confirm?
+                          </button>
+                          <button
+                            style={{ ...s.btn, ...s.btnOutline, fontSize: 10, padding: '2px 8px' }}
+                            onClick={() => setConfirmDeleteId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          style={{ ...s.btn, ...s.btnOutline, fontSize: 10, padding: '2px 8px', borderColor: '#666', color: '#999' }}
+                          onClick={() => setConfirmDeleteId(m.id)}
+                          title="Delete this row from the log"
+                        >
+                          Delete
+                        </button>
                       )}
                     </td>
                   </tr>

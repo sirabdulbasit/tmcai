@@ -1,23 +1,61 @@
-// Validates required environment variables on startup
+// Validates required environment variables on startup.
+//
+// Policy:
+//   - Security-critical vars: FAIL FAST in production, warn in dev.
+//   - Feature-critical vars (Google Drive): warn in both — the service can
+//     run without Drive, just with that feature disabled.
+//   - AI provider keys: warn if none present (at-least-one rule).
 
-const required = [
+// PLATFORM_API_TOKEN removed 2026-07-08 (E1): agent auth now uses
+// tenant-bound tokens in agent_api_tokens (see agentAuthMiddleware.ts);
+// the env token no longer grants anything, so boot must not require it.
+const SECURITY_CRITICAL = [
+  'DATABASE_URL',
+  'ENCRYPTION_KEY',
+] as const;
+
+const FEATURE_REQUIRED = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'GOOGLE_DRIVE_FOLDER_ID',
   'GOOGLE_INDEX_FILE_NAME',
 ];
 
-const optional = [
-  'ANTHROPIC_API_KEY',
-  'OPENAI_API_KEY',
-  'OPENROUTER_API_KEY',
-];
-
+/**
+ * Throws in production when any security-critical env var is missing or too
+ * short. In development we only warn, so local setup is ergonomic. Agent
+ * bearer tokens are validated against `agent_api_tokens` in the DB
+ * (see `agentAuthMiddleware.ts`), not against env.
+ */
 export function validateEnv(): void {
-  const missing = required.filter(key => !process.env[key]);
-  if (missing.length > 0) {
-    console.warn(`⚠ Missing required env vars: ${missing.join(', ')}`);
-    console.warn('  Google Drive integration will not work until these are set.');
+  const isProd = process.env.NODE_ENV === 'production';
+
+  const securityMissing: string[] = [];
+  for (const key of SECURITY_CRITICAL) {
+    const val = process.env[key];
+    if (!val) {
+      securityMissing.push(`${key} (unset)`);
+      continue;
+    }
+    // Minimum length: 32 chars for tokens/keys, any for DATABASE_URL.
+    if (key !== 'DATABASE_URL' && val.length < 32) {
+      securityMissing.push(`${key} (too short — need 32+ chars)`);
+    }
+  }
+  if (securityMissing.length > 0) {
+    const msg = `Security-critical env vars invalid: ${securityMissing.join(', ')}`;
+    if (isProd) {
+      // Fail fast. Better to refuse to boot than to silently accept weak config.
+      throw new Error(msg);
+    }
+    console.warn(`⚠ [env] ${msg}`);
+    console.warn('  (this would be fatal in NODE_ENV=production)');
+  }
+
+  const featureMissing = FEATURE_REQUIRED.filter(key => !process.env[key]);
+  if (featureMissing.length > 0) {
+    console.warn(`⚠ [env] Feature-required vars missing: ${featureMissing.join(', ')}`);
+    console.warn('  Google Drive integration will be disabled until these are set.');
   }
 
   const availableProviders: string[] = [];

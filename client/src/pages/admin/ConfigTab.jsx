@@ -22,6 +22,7 @@ export default function ConfigTab({ user }) {
       {subTab === 'config' && (
         <>
           {user?.isSuperAdmin && <LogoUploader />}
+          {user?.isSuperAdmin && <DisplayDefaultsSection />}
           <ConfigEditor sections={user?.isSuperAdmin ? SYSTEM_SECTIONS : CLIENT_SECTIONS} apiPath="/config" />
         </>
       )}
@@ -85,6 +86,75 @@ function LogoUploader() {
         )}
       </div>
       {msg && <div className={`settings-msg ${msg.includes('failed') ? 'error' : ''}`} style={{ marginTop: 8 }}>{msg}</div>}
+    </section>
+  );
+}
+
+// ─── Display defaults (SA-only) ─────────────────────────────
+// Sets the default --fs-scale for every user in this tenant. Individual
+// users can still set a personal override in Settings → Display; their
+// override wins over this default.
+
+function DisplayDefaultsSection() {
+  const PRESETS = [
+    { label: 'Small', value: 0.9 },
+    { label: 'Normal', value: 1.0 },
+    { label: 'Large', value: 1.15 },
+    { label: 'XL', value: 1.3 },
+  ];
+  const [scale, setScale] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    api.get('/profile/app-defaults/font-scale').then((r) => {
+      setScale(Number(r.data?.fontScale) || 1);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const save = async (next) => {
+    const clamped = Math.min(1.4, Math.max(0.85, Number(next) || 1));
+    setSaving(true); setMsg('');
+    try {
+      await api.put('/profile/app-defaults/font-scale', { fontScale: clamped });
+      setScale(clamped);
+      setMsg(`Organisation default set to ${Math.round(clamped * 100)}%. New users and anyone without a personal override will see this size.`);
+      setTimeout(() => setMsg(''), 4000);
+    } catch (err) {
+      setMsg(err.response?.data?.error || 'Failed to save');
+    }
+    setSaving(false);
+  };
+
+  const pct = Math.round(Number(scale) * 100);
+
+  return (
+    <section className="settings-section">
+      <h2>🔤 Display Defaults</h2>
+      <p style={{ fontSize: 12, color: '#666', marginTop: -4, marginBottom: 10 }}>
+        Sets the default interface text size for <strong>every user in this tenant</strong>. Individual users can still set a personal override in Settings → Display, which wins over this.
+      </p>
+      <div className="settings-field">
+        <label>Default text size · {pct}%</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="settings-btn" onClick={() => save(Math.max(0.85, scale - 0.05))} disabled={saving || loading || scale <= 0.85}>A−</button>
+          <button className="settings-btn" onClick={() => save(Math.min(1.4, scale + 0.05))} disabled={saving || loading || scale >= 1.4}>A+</button>
+          <span style={{ width: 1, height: 22, background: 'var(--border)', margin: '0 4px' }} />
+          {PRESETS.map((p) => (
+            <button
+              key={p.value}
+              className="settings-btn"
+              onClick={() => save(p.value)}
+              disabled={saving || loading}
+              style={Math.abs(scale - p.value) < 0.02 ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {msg && <div style={{ fontSize: 12, color: '#4ade80', marginTop: 8 }}>{msg}</div>}
+      </div>
     </section>
   );
 }

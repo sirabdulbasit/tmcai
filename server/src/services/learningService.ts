@@ -40,7 +40,10 @@ export async function trackLearning(
         value = $5,
         last_seen_at = NOW()
     `, clientNumber, userId, category, key, value, scoreBoost);
-  } catch {}
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err);
+    console.warn('[learning] swallowed at recordLearning upsert:', m.slice(0, 240));
+  }
 }
 
 // ─── Get learned preferences for a user ────────────────────────

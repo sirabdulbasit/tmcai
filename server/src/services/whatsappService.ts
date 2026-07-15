@@ -164,6 +164,53 @@ export async function sendWhatsAppMessage(
   return { sent: true, messageId: externalMessageId };
 }
 
+/**
+ * HaseebOS v15 H4 — send a WhatsApp message to any phone number (not just the
+ * calling user's registered one). Used when an agent delegates a reply to an
+ * external contact. Logs as outbound with no userId scoping.
+ */
+export async function sendWhatsAppToPhone(
+  clientNumber: string,
+  toPhone: string,
+  content: string,
+  agentId?: number,
+): Promise<{ sent: boolean; messageId?: string; reason?: string }> {
+  const enabled = await isFeatureEnabled('GLOBAL', 'ff_whatsapp_enabled', false);
+  if (!enabled) return { sent: false, reason: 'WhatsApp not enabled' };
+
+  const sanitized = sanitizeOutbound(content);
+  let externalMessageId: string | undefined;
+  try {
+    externalMessageId = await callMetaAPI(toPhone, sanitized);
+  } catch (err: any) {
+    log.error('Meta API send-to-phone failed', { clientNumber, toPhone, error: err.message });
+    return { sent: false, reason: 'Meta API error' };
+  }
+
+  // Log the outbound under a pseudo-user record via WhatsAppMessage; if we can't
+  // resolve a userId for this phone, skip the DB log (Meta is source of truth).
+  try {
+    const conn = await prisma.whatsAppConnection.findFirst({ where: { phoneNumber: toPhone } });
+    if (conn) {
+      await prisma.whatsAppMessage.create({
+        data: {
+          userId: conn.userId,
+          direction: 'out',
+          content: sanitized,
+          messageId: externalMessageId ?? null,
+          status: 'sent',
+          agentId: agentId ?? null,
+        },
+      });
+    }
+  } catch (err: any) {
+    log.warn('WhatsApp send-to-phone DB log failed (non-fatal)', { err: err.message });
+  }
+
+  log.info('WhatsApp message sent to external phone', { clientNumber, toPhone, messageId: externalMessageId });
+  return { sent: true, messageId: externalMessageId };
+}
+
 // ─── Inbound webhook processing ───────────────────────────────────────────────
 
 export interface InboundMessage {
@@ -219,6 +266,29 @@ export async function processInboundMessage(msg: InboundMessage): Promise<void> 
       conversationHistory: { push: { role: 'user', content: msg.content, ts: msg.timestamp } },
     },
   });
+
+  // HaseebOS v15 — publish to feed.raw so the Feed Curator agent can triage
+  try {
+    const { ingest } = await import('./feed/feedIngestionService');
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { clientNumber: true } });
+    if (user?.clientNumber) {
+      await ingest({
+        clientNumber: user.clientNumber,
+        sourceType: 'whatsapp',
+        sourceId: msg.messageId,
+        payload: {
+          userId,
+          waId: msg.waId,
+          phoneNumber: msg.phoneNumber,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          sessionId: session.id,
+        },
+      });
+    }
+  } catch (err: any) {
+    log.warn('Feed ingestion failed for inbound WhatsApp (non-fatal)', { err: err.message });
+  }
 
   log.info('Inbound WhatsApp processed', { userId, sessionId: session.id });
   // Actual LLM response is triggered by the route handler or agent worker — not here

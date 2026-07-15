@@ -8,7 +8,7 @@ import { loginSchema, changePasswordSchema, createUserSchema, setupPasswordSchem
 import { validateSeatAvailability } from '../services/licenseService';
 import { isValidUserType } from '../config/userTypes';
 import { getConfig } from '../services/configService';
-import { sendInvitation, setupPassword, validateInviteToken, sendPasswordReset } from '../services/inviteService';
+import { sendInvitation, setupPassword, validateInviteToken, sendPasswordReset, getClientTransporter } from '../services/inviteService';
 import prisma from '../db/prisma';
 
 const router = Router();
@@ -69,8 +69,22 @@ router.post('/logout', requireAuth, async (req: Request, res: Response) => {
 
 // ─── Current User ──────────────────────────────────────────────
 
-router.get('/me', requireAuth, (req: Request, res: Response) => {
-  res.json({ user: req.user });
+router.get('/me', requireAuth, async (req: Request, res: Response) => {
+  // Include the tenant's display name so the UI can render
+  // "Acme Corp" badges instead of system words like "Tenant" or
+  // raw client_numbers like "TMC-0001".
+  let tenantName: string | null = null;
+  try {
+    const t = await (await import('../db/prisma')).default.tenant.findUnique({
+      where: { clientNumber: req.user!.clientNumber },
+      select: { name: true },
+    });
+    tenantName = t?.name ?? null;
+  } catch { /* fall through with null */ }
+  res.json({
+    user: req.user,
+    tenant: { clientNumber: req.user!.clientNumber, name: tenantName },
+  });
 });
 
 // ─── Change Password ───────────────────────────────────────────
@@ -85,7 +99,7 @@ router.post('/change-password', requireAuth, validate(changePasswordSchema), asy
 // ─── Admin: Create User ────────────────────────────────────────
 
 router.post('/users', requireAuth, requireAdmin, validate(createUserSchema), async (req: Request, res: Response) => {
-  const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber } = req.body;
+  const { empcode, name, email, password, userType, department, clientNumber: reqClientNumber, expiresAt } = req.body;
 
   // Validate password complexity from system_config
   const targetClient = req.user!.isSuperAdmin && reqClientNumber ? reqClientNumber : req.user!.clientNumber;
@@ -107,8 +121,8 @@ router.post('/users', requireAuth, requireAdmin, validate(createUserSchema), asy
   if (!seatCheck.allowed) { res.status(403).json({ error: seatCheck.error }); return; }
 
   try {
-    const user = await createUser({ clientNumber: targetClient, empcode, name, email, password, userType, department });
-    res.status(201).json({ success: true, user: { id: user.id, empcode: user.empcode, name: user.name, email: user.email, userType: user.userType } });
+    const user = await createUser({ clientNumber: targetClient, empcode, name, email, password, userType, department, expiresAt });
+    res.status(201).json({ success: true, user: { id: user.id, empcode: user.empcode, name: user.name, email: user.email, userType: user.userType, expiresAt: user.expiresAt } });
   } catch (error: any) {
     if (error.code === 'P2002') { res.status(409).json({ error: 'User with this empcode or email already exists' }); return; }
     res.status(500).json({ error: error.message });
@@ -121,6 +135,58 @@ router.post('/users/:empcode/reset-password', requireAuth, requireAdmin, async (
   const result = await resetPassword(req.user!.clientNumber, req.params.empcode as string);
   if (!result.success) { res.status(400).json({ error: result.error }); return; }
   res.json({ success: true, tempPassword: result.tempPassword });
+});
+
+// ─── Voice transcript backfill ─────────────────────────────────
+// Runs the backfill IN this server process (where the in-memory
+// webjs clients live). CLI scripts spawn a fresh Node process and
+// see an empty clients Map — that's why running ts-node returned
+// skipped(no-client)=N for every row.
+//
+// Default scope: caller's own user. Passing userId in the body to
+// backfill someone else's data is gated to admins/super-admins so a
+// regular user can't read another user's voice notes.
+router.post('/voice-backfill', requireAuth, async (req: Request, res: Response) => {
+  const caller = (req as any).user;
+  const apply = !!req.body?.apply;
+  const requestedUserId = req.body?.userId ? Number(req.body.userId) : null;
+  let userId = caller.id;
+  if (requestedUserId && requestedUserId !== caller.id) {
+    if (!caller.isAdmin && !caller.isSuperAdmin) {
+      return res.status(403).json({ error: 'admin required to backfill another user' });
+    }
+    userId = requestedUserId;
+  }
+  const limit = req.body?.limit ? Math.max(1, Math.min(500, Number(req.body.limit))) : 200;
+  try {
+    const { backfillVoiceTranscriptsInProcess } =
+      await import('../services/whatsapp/UserWebjsProvider');
+    const result = await backfillVoiceTranscriptsInProcess({ apply, userId, limit });
+    res.json({ ok: true, mode: apply ? 'apply' : 'dry-run', userId, limit, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? 'backfill failed' });
+  }
+});
+
+// ─── Admin: SMTP Health / Test ─────────────────────────────────
+// Verifies the tenant's SMTP transport via SMTP handshake (does NOT
+// send a real message). Used by Client Config → Email/SMTP to surface
+// misconfiguration that the public forgot-password flow swallows on
+// purpose. Admin-only so we can return real error text without enabling
+// public email-enumeration probes.
+router.post('/smtp-test', requireAuth, requireAdmin, async (req: Request, res: Response) => {
+  const requestedClient = (req.body?.clientNumber as string | undefined)?.trim();
+  const clientNumber = req.user!.isSuperAdmin && requestedClient
+    ? requestedClient
+    : req.user!.clientNumber;
+  try {
+    const transporter = await getClientTransporter(clientNumber);
+    await transporter.verify();
+    const fromAddr = await getConfig(clientNumber, 'smtp_from') || process.env.SMTP_FROM || '';
+    res.json({ ok: true, clientNumber, fromAddr, message: 'SMTP handshake succeeded.' });
+  } catch (err: any) {
+    res.json({ ok: false, clientNumber, error: err?.message || 'SMTP test failed' });
+  }
 });
 
 // ─── Send Invitation Email ─────────────────────────────────────
@@ -142,9 +208,15 @@ router.post('/users/:id/invite', requireAuth, requireAdmin, async (req: Request,
 // ─── Public: Get Password Rules (for setup/reset forms) ────────
 
 router.get('/password-rules/:token', async (req: Request, res: Response) => {
-  // Look up user by invite token to get their client's rules
+  // Look up user by invite token to get their client's rules.
+  // Unknown token → 404, fail closed. (Previously served TMC-0001's
+  // password policy to any unauthenticated caller.)
   const user = await prisma.user.findFirst({ where: { inviteToken: req.params.token as string } });
-  const cn = user?.clientNumber || 'TMC-0001'; // fallback
+  if (!user?.clientNumber) {
+    res.status(404).json({ error: 'invalid or expired token' });
+    return;
+  }
+  const cn = user.clientNumber;
   const gc = async (key: string, fallback: string) => (await getConfig(cn, key)) || fallback;
 
   res.json({

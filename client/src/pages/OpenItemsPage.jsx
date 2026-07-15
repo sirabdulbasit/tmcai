@@ -4,27 +4,27 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const s = {
-  wrapper: { height: '100vh', overflow: 'hidden', position: 'relative', background: '#111' },
+  wrapper: { height: '100vh', overflow: 'hidden', position: 'relative', background: 'var(--bg-1)' },
   scrollArea: { height: '100%', overflowY: 'auto', paddingBottom: 60, scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' },
-  fadeHint: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 60, background: 'linear-gradient(transparent, #111)', pointerEvents: 'none', zIndex: 10, transition: 'opacity 0.3s' },
-  page: { padding: '20px 24px', maxWidth: 1100, margin: '0 auto' },
+  fadeHint: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 60, background: 'linear-gradient(transparent, var(--bg-1))', pointerEvents: 'none', zIndex: 10, transition: 'opacity 0.3s' },
+  page: { padding: '24px 32px', maxWidth: 1500 },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  btn: { padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, fontFamily: 'inherit' },
+  btn: { padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 500, fontFamily: 'inherit' },
   btnPrimary: { background: '#cc6b4a', color: '#fff' },
-  btnOutline: { background: 'transparent', border: '1px solid #555', color: '#aaa' },
-  btnSmall: { padding: '4px 10px', fontSize: 11 },
+  btnOutline: { background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' },
+  btnSmall: { padding: '4px 10px', fontSize: 'var(--fs-xs)' },
   badge: (color) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, background: color + '22', color }),
-  card: { background: '#1e1e1e', border: '1px solid #333', borderRadius: 10, padding: 14, marginBottom: 8, cursor: 'pointer', transition: 'border-color 0.2s' },
-  input: { width: '100%', background: '#2a2a2a', border: '1px solid #444', color: '#eee', padding: '8px 12px', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box' },
-  label: { display: 'block', fontSize: 12, color: '#888', marginBottom: 4, marginTop: 14 },
+  card: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 10, padding: 14, marginBottom: 8, cursor: 'pointer', transition: 'border-color 0.2s' },
+  input: { width: '100%', background: 'var(--bg-1)', border: '1px solid var(--border)', color: 'var(--text)', padding: '8px 12px', borderRadius: 8, fontSize: 'var(--fs-sm)', fontFamily: 'inherit', boxSizing: 'border-box' },
+  label: { display: 'block', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginBottom: 4, marginTop: 14 },
   modal: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 },
-  modalBody: { background: '#1e1e1e', border: '1px solid #444', borderRadius: 12, padding: 24, width: '100%', maxWidth: 500, maxHeight: '80vh', overflow: 'auto' },
-  tab: (active) => ({ padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, fontFamily: 'inherit', background: active ? '#cc6b4a' : 'transparent', color: active ? '#fff' : '#888', marginRight: 4 }),
+  modalBody: { background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, width: '100%', maxWidth: 500, maxHeight: '80vh', overflow: 'auto' },
+  tab: (active) => ({ padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 'var(--fs-sm)', fontWeight: 500, fontFamily: 'inherit', background: active ? '#cc6b4a' : 'transparent', color: active ? '#fff' : 'var(--text-muted)', marginRight: 4 }),
   stats: { display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' },
-  statCard: (color) => ({ background: '#1e1e1e', border: `1px solid ${color}33`, borderRadius: 10, padding: '12px 18px', minWidth: 100, textAlign: 'center' }),
-  statNum: { fontSize: 24, fontWeight: 700, color: '#eee' },
-  statLabel: { fontSize: 11, color: '#888', marginTop: 2 },
-  empty: { textAlign: 'center', padding: 40, color: '#666', fontSize: 14 },
+  statCard: (color) => ({ background: 'var(--bg-2)', border: `1px solid ${color}33`, borderRadius: 10, padding: '12px 18px', minWidth: 100, textAlign: 'center' }),
+  statNum: { fontSize: 'var(--fs-2xl)', fontWeight: 700, color: 'var(--text)' },
+  statLabel: { fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginTop: 2 },
+  empty: { textAlign: 'center', padding: 40, color: 'var(--text-muted)', fontSize: 'var(--fs-base)' },
 };
 
 const PRIORITY_COLORS = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#888' };
@@ -40,9 +40,84 @@ export default function OpenItemsPage() {
   const [filter, setFilter] = useState('all'); // all | open | delegated | done
   const [showCreate, setShowCreate] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
-  const [form, setForm] = useState({ title: '', description: '', type: 'task', priority: 'medium', dueDate: '' });
+  // priority starts empty (user picks it). Per 2026-05-15: pre-defaulting
+  // 'medium' meant the backend gate saw the slot as filled and never
+  // routed missing-priority items to DRAFT. Empty = "user hasn't chosen"
+  // so the gate's null-check fires correctly.
+  const [form, setForm] = useState({ title: '', description: '', type: 'task', priority: '', dueDate: '' });
   const [msg, setMsg] = useState('');
   const [atBottom, setAtBottom] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState(null); // { stale, dedup, total }
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupApplying, setCleanupApplying] = useState(false);
+  // Bulk select — Set of item ids the user has ticked. Sticky toolbar
+  // appears at the top whenever this is non-empty.
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const toggleSelect = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAllVisible = () => setSelected(new Set(items.map((it) => it.id)));
+  const clearSelection = () => setSelected(new Set());
+  const bulkAction = async (target, reasonLabel) => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selected];
+      // bulk-transition caps at 100 per call; chunk if more.
+      let totalAccepted = 0;
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const r = await api.post('/open-items/bulk-transition', { ids: chunk, target, reason: reasonLabel });
+        totalAccepted += r.data?.accepted ?? 0;
+      }
+      setMsg(`✓ ${target === 'closed' ? 'Closed' : target === 'snoozed' ? 'Snoozed' : 'Updated'} ${totalAccepted}/${ids.length} item${ids.length === 1 ? '' : 's'}.`);
+      clearSelection();
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Bulk action failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  // Mark wrong = "this shouldn't exist". Distinct from Done. Closes the
+  // row AND stamps a learning signal so Brain demotes future similar
+  // items (after 3 wrongs from same sender + title-prefix in 14 days).
+  const bulkMarkWrong = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selected];
+      let totalUpdated = 0;
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const r = await api.post('/open-items/bulk-mark-wrong', { ids: chunk, reason: 'user_marked_wrong_bulk' });
+        totalUpdated += r.data?.updated ?? 0;
+      }
+      setMsg(`✓ Removed ${totalUpdated}/${ids.length} item${ids.length === 1 ? '' : 's'} as not relevant. Brain will learn from this.`);
+      clearSelection();
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Mark-wrong failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const markWrongSingle = async (id) => {
+    try {
+      await api.post(`/open-items/${id}/mark-wrong`, { reason: 'user_marked_wrong' });
+      setMsg('✓ Removed as not relevant. Brain will learn from this.');
+      loadItems(); loadStats();
+    } catch (e) {
+      setMsg(e?.response?.data?.error ?? 'Failed to mark wrong');
+    }
+  };
 
   function handleScroll(e) {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
@@ -70,9 +145,16 @@ export default function OpenItemsPage() {
   async function handleCreate() {
     if (!form.title) return;
     try {
-      await api.post('/open-items', { ...form, dueDate: form.dueDate || undefined });
+      // Send priority as null when user didn't pick one (instead of the
+      // form's '' default) so the backend gate can route the item to
+      // DRAFT for slot-filling via the daily WhatsApp ask.
+      await api.post('/open-items', {
+        ...form,
+        priority: form.priority || null,
+        dueDate: form.dueDate || undefined,
+      });
       setShowCreate(false);
-      setForm({ title: '', description: '', type: 'task', priority: 'medium', dueDate: '' });
+      setForm({ title: '', description: '', type: 'task', priority: '', dueDate: '' });
       setMsg('Item created');
       loadItems(); loadStats();
       setTimeout(() => setMsg(''), 3000);
@@ -95,12 +177,75 @@ export default function OpenItemsPage() {
       <div style={s.header}>
         <div>
           <button style={{ ...s.btn, ...s.btnOutline, marginRight: 10 }} onClick={() => navigate('/')}>← Back to Chat</button>
-          <span style={{ fontSize: 20, fontWeight: 700, color: '#eee' }}>Open Items</span>
+          <span style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, color: 'var(--text)' }}>Open Items</span>
         </div>
-        <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            style={{ ...s.btn, ...s.btnOutline, opacity: cleanupBusy ? 0.7 : 1 }}
+            disabled={cleanupBusy}
+            title="Auto-close items older than 30 days with no activity, plus duplicates of the same source. Critical items are never auto-closed."
+            onClick={async () => {
+              setCleanupBusy(true);
+              setMsg('');
+              setCleanupPreview(null);
+              try {
+                const dry = await api.post('/open-items/triage-cleanup', { staleDays: 30, dryRun: true });
+                const total = dry.data?.total ?? 0;
+                if (total === 0) {
+                  // Explain WHY nothing matched — pull totals from stats so the
+                  // message is concrete instead of "no stale or duplicates".
+                  const recentNote = (stats?.byStatus?.new ?? 0) > 0
+                    ? `Your ${stats?.byStatus?.new ?? 0} NEW items are either <30 days old, marked critical (protected), or have unique sources.`
+                    : 'No NEW items in the eligible set.';
+                  setMsg(`Nothing to clean up. ${recentNote} Try the Done button on individual items, or wait until items age past 30 days.`);
+                } else {
+                  setCleanupPreview(dry.data);
+                }
+              } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup scan failed'); }
+              finally { setCleanupBusy(false); }
+            }}
+          >
+            {cleanupBusy ? <><span className="btn-spinner" />Scanning…</> : '🧹 Smart cleanup'}
+          </button>
+          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowCreate(true)}>+ New Item</button>
+        </div>
       </div>
 
-      {msg && <div style={{ padding: '8px 14px', background: '#252525', border: '1px solid #444', borderRadius: 8, marginBottom: 12, color: '#eee', fontSize: 13 }}>{msg}</div>}
+      {msg && <div style={{ padding: '8px 14px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12, color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>{msg}</div>}
+
+      {cleanupPreview && (
+        <div style={{
+          padding: '12px 14px', marginBottom: 12,
+          background: 'rgba(245,158,11,0.08)',
+          border: '1px solid rgba(245,158,11,0.4)',
+          borderRadius: 8, color: 'var(--text)', fontSize: 'var(--fs-sm)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+        }}>
+          <div>
+            About to auto-close <strong>{cleanupPreview.total}</strong> items —
+            <strong> {cleanupPreview.stale}</strong> stale (&gt;30d, no activity, non-critical) ·
+            <strong> {cleanupPreview.dedup}</strong> duplicates of the same source.
+            Critical items are not touched.
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              style={{ ...s.btn, background: '#f59e0b', color: '#000', borderColor: '#f59e0b', opacity: cleanupApplying ? 0.7 : 1 }}
+              disabled={cleanupApplying}
+              onClick={async () => {
+                setCleanupApplying(true);
+                try {
+                  const r = await api.post('/open-items/triage-cleanup', { staleDays: 30 });
+                  setMsg(`✓ Closed ${r.data?.total ?? 0} items (${r.data?.stale ?? 0} stale, ${r.data?.dedup ?? 0} duplicates).`);
+                  setCleanupPreview(null);
+                  load(); loadStats();
+                } catch (e) { setMsg(e?.response?.data?.error ?? 'Cleanup failed'); }
+                finally { setCleanupApplying(false); }
+              }}
+            >{cleanupApplying ? <><span className="btn-spinner" />Closing…</> : 'Yes, close them'}</button>
+            <button style={{ ...s.btn, ...s.btnOutline }} disabled={cleanupApplying} onClick={() => setCleanupPreview(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       {stats && (
@@ -114,13 +259,70 @@ export default function OpenItemsPage() {
       )}
 
       {/* Filter tabs */}
-      <div style={{ marginBottom: 16 }}>
-        {['all', 'open', 'in_progress', 'delegated', 'blocked', 'done', 'overdue'].map(f => (
-          <button key={f} style={s.tab(filter === f)} onClick={() => setFilter(f)}>
-            {f === 'all' ? 'All' : f.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          {['all', 'open', 'in_progress', 'delegated', 'blocked', 'done', 'overdue'].map(f => (
+            <button key={f} style={s.tab(filter === f)} onClick={() => setFilter(f)}>
+              {f === 'all' ? 'All' : f.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+            </button>
+          ))}
+        </div>
+        {items.length > 0 && (
+          <button
+            onClick={selected.size === items.length ? clearSelection : selectAllVisible}
+            style={{ ...s.btn, ...s.btnOutline, marginLeft: 'auto', fontSize: 'var(--fs-xs)' }}
+          >
+            {selected.size === items.length ? 'Unselect all' : `Select all visible (${items.length})`}
           </button>
-        ))}
+        )}
       </div>
+
+      {/* Bulk action bar — sticky-feel banner only when something is selected */}
+      {selected.size > 0 && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 50,
+          padding: '10px 14px', marginBottom: 12,
+          background: 'rgba(204,107,74,0.12)',
+          border: '1px solid rgba(204,107,74,0.55)',
+          borderRadius: 10, color: 'var(--text)', fontSize: 'var(--fs-sm)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, flexWrap: 'wrap',
+        }}>
+          <div>
+            <strong>{selected.size}</strong> selected
+            {selected.size > 100 && (
+              <span style={{ color: 'var(--text-muted)', marginLeft: 8, fontSize: 'var(--fs-xs)' }}>
+                (will be archived in batches of 100)
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button
+              style={{ ...s.btn, background: '#4ade80', color: '#0e1116', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={() => bulkAction('done', 'bulk_close_from_action_center')}
+              title="Mark all selected items as Done"
+            >{bulkBusy ? 'Working…' : `✓ Mark Done (${selected.size})`}</button>
+            <button
+              style={{ ...s.btn, background: '#f59e0b', color: '#0e1116', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={() => bulkAction('snoozed', 'bulk_snooze_from_action_center')}
+              title="Snooze all selected items"
+            >Snooze</button>
+            <button
+              style={{ ...s.btn, background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.55)', color: '#fca5a5', opacity: bulkBusy ? 0.7 : 1 }}
+              disabled={bulkBusy}
+              onClick={bulkMarkWrong}
+              title="Mark as not relevant — Brain learns to stop creating these"
+            >✕ Not relevant</button>
+            <button
+              style={{ ...s.btn, ...s.btnOutline }}
+              disabled={bulkBusy}
+              onClick={clearSelection}
+            >Clear</button>
+          </div>
+        </div>
+      )}
 
       {/* Items list */}
       {loading ? (
@@ -129,8 +331,24 @@ export default function OpenItemsPage() {
         <div style={s.empty}>No items found. Create your first open item or connect data sources to auto-generate items.</div>
       ) : (
         items.map(item => (
-          <div key={item.id} style={s.card} onClick={() => setSelectedItem(item)}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div
+            key={item.id}
+            style={{
+              ...s.card,
+              borderColor: selected.has(item.id) ? 'rgba(204,107,74,0.7)' : 'var(--border)',
+              background: selected.has(item.id) ? 'rgba(204,107,74,0.06)' : 'var(--bg-2)',
+            }}
+            onClick={() => setSelectedItem(item)}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={selected.has(item.id)}
+                onChange={(e) => { e.stopPropagation(); toggleSelect(item.id); }}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${item.title}`}
+                style={{ width: 16, height: 16, marginTop: 4, cursor: 'pointer', flexShrink: 0 }}
+              />
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 14 }}>{TYPE_ICONS[item.type] || '•'}</span>
@@ -148,10 +366,17 @@ export default function OpenItemsPage() {
               </div>
               <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
                 {item.status !== 'done' && (
-                  <button style={{ ...s.btn, ...s.btnSmall, background: '#4ade80', color: '#111' }} onClick={() => handleStatusChange(item.id, 'done')}>✓ Done</button>
+                  <button style={{ ...s.btn, ...s.btnSmall, background: '#4ade80', color: '#111' }} onClick={() => handleStatusChange(item.id, 'done')} title="Mark as completed">✓ Done</button>
                 )}
                 {item.status === 'open' && (
                   <button style={{ ...s.btn, ...s.btnSmall, ...s.btnOutline }} onClick={() => handleStatusChange(item.id, 'in_progress')}>Start</button>
+                )}
+                {item.status !== 'done' && item.status !== 'closed' && (
+                  <button
+                    style={{ ...s.btn, ...s.btnSmall, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5' }}
+                    onClick={() => markWrongSingle(item.id)}
+                    title="Not relevant — Brain learns to stop creating these"
+                  >✕ Wrong</button>
                 )}
               </div>
             </div>
@@ -183,6 +408,7 @@ export default function OpenItemsPage() {
               <div style={{ flex: 1 }}>
                 <label style={s.label}>Priority</label>
                 <select style={s.input} value={form.priority} onChange={e => setForm({ ...form, priority: e.target.value })}>
+                  <option value="">— Brain will ask if not set —</option>
                   <option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
                 </select>
               </div>

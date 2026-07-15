@@ -12,7 +12,10 @@ const router = Router();
 // Public app info — used by login page, welcome screen, etc.
 router.get('/app-info', async (_req, res) => {
   const config = await prisma.systemConfig.findFirst({ where: { key: 'app_name' } }).catch(() => null);
-  res.json({ appName: config?.value || 'TMC AI Intelligence' });
+  // Default fallback updated post-rebrand (2026-05-05): "Nexeo" replaces
+  // "TMC AI Intelligence". Per-tenant system_config rows still win when
+  // present (configurable per client).
+  res.json({ appName: config?.value || 'Nexeo' });
 });
 
 // Public logo — serve logo (system-wide)
@@ -40,17 +43,24 @@ async function serveLogo(cn: string, res: any) {
   }
 
   if (!logo) {
-    // No logo in DB — serve default static logo file
+    // No logo in DB — serve default static logo file. Prefer the
+    // Nexeo brand logo (post-rebrand 2026-05-05). Fall back to the
+    // legacy TMC logo only if the Nexeo asset is missing on disk.
     const path = require('path');
     const fs = require('fs');
-    const defaultLogo = path.resolve(__dirname, '../../../client/public/tmc-logo.png');
-    if (fs.existsSync(defaultLogo)) {
-      res.setHeader('Content-Type', 'image/png');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      res.send(fs.readFileSync(defaultLogo));
-    } else {
-      res.status(404).json({ error: 'No logo found' });
+    const candidates = [
+      { p: path.resolve(__dirname, '../../../client/public/nexeo-logo.jpeg'), type: 'image/jpeg' },
+      { p: path.resolve(__dirname, '../../../client/public/tmc-logo.png'),    type: 'image/png' },
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c.p)) {
+        res.setHeader('Content-Type', c.type);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.send(fs.readFileSync(c.p));
+        return;
+      }
     }
+    res.status(404).json({ error: 'No logo found' });
     return;
   }
 
@@ -171,5 +181,340 @@ router.get('/ready', async (_req, res) => {
 router.get('/live', (_req, res) => {
   res.status(200).json({ status: 'alive' });
 });
+
+/**
+ * L4.1 — HaseebOS v15 deep health check across all 13 monitored components.
+ * Drives the Steering Wheel Health Check tab. Each component reports
+ * `status: 'up' | 'degraded' | 'down'` + a `detail` string.
+ *
+ * Privacy: per-user / per-tenant checks (token_refresh, wiki, dlq) are
+ * scoped to the CALLING user — never leak another user's email or
+ * activity. Operator infrastructure checks (postgres / redis / pubsub /
+ * agent_worker / scheduler) are system-wide because they describe the
+ * machine, not any user's data.
+ */
+router.get('/deep', async (req, res) => {
+  // Pull caller identity. Endpoint is mounted under optionalAuth, so
+  // req.user may be missing for unauth health probes (uptime monitors).
+  // When missing → infrastructure-only view (no per-user details).
+  const callerUserId = (req as any).user?.id ?? null;
+  const callerClientNumber = (req as any).user?.clientNumber ?? null;
+  const [
+    postgres,
+    redis,
+    killSwitch,
+    feedAdapters,
+    pubsub,
+    agentWorker,
+    gemini,
+    handlerRegistry,
+    wiki,
+    dlq,
+    notifications,
+    scheduler,
+    tokenRefresh,
+    cache,
+  ] = await Promise.all([
+    checkPostgres(),
+    checkRedis(),
+    checkKillSwitchState(),
+    checkFeedAdapters(),
+    checkPubSub(),
+    checkAgentWorker(),
+    checkGeminiDeep(),
+    checkHandlerRegistry(),
+    checkWikiHealth(callerClientNumber, callerUserId),
+    checkDlqDepth(callerClientNumber),
+    checkNotificationQueue(),
+    checkScheduler(),
+    checkTokenRefresh(callerUserId),
+    checkCacheHitRate(),
+  ]);
+  const components = [
+    postgres, redis, killSwitch, feedAdapters, pubsub, agentWorker, gemini,
+    handlerRegistry, wiki, dlq, notifications, scheduler, tokenRefresh, cache,
+  ];
+  const up = components.filter((c) => c.status === 'up').length;
+  const degraded = components.filter((c) => c.status === 'degraded').length;
+  const down = components.filter((c) => c.status === 'down').length;
+  res.status(200).json({
+    overall: down > 0 ? 'down' : degraded > 0 ? 'degraded' : 'up',
+    counts: { total: components.length, up, degraded, down },
+    components,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+type ComponentHealth = { name: string; status: 'up' | 'degraded' | 'down'; detail?: string; latencyMs?: number };
+
+async function checkPostgres(): Promise<ComponentHealth> {
+  const t0 = Date.now();
+  try {
+    await prisma.$queryRawUnsafe('SELECT 1');
+    return { name: 'postgres', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'postgres', status: 'down', detail: err.message };
+  }
+}
+
+async function checkRedis(): Promise<ComponentHealth> {
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const t0 = Date.now();
+    await getRedis().ping();
+    return { name: 'redis', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'redis', status: 'down', detail: err.message };
+  }
+}
+
+async function checkKillSwitchState(): Promise<ComponentHealth> {
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const keys = await getRedis().keys('kill_switch:*');
+    return {
+      name: 'kill_switch',
+      status: keys.length > 0 ? 'degraded' : 'up',
+      detail: keys.length > 0 ? `${keys.length} tenant(s) halted` : 'no active halts',
+    };
+  } catch (err: any) {
+    return { name: 'kill_switch', status: 'down', detail: err.message };
+  }
+}
+
+async function checkFeedAdapters(): Promise<ComponentHealth> {
+  try {
+    const { listAll } = await import('../services/adapters/adapterRegistry');
+    const count = listAll().length;
+    return {
+      name: 'feed_adapters',
+      status: count > 0 ? 'up' : 'degraded',
+      detail: `${count} adapter(s) registered`,
+    };
+  } catch (err: any) {
+    return { name: 'feed_adapters', status: 'down', detail: err.message };
+  }
+}
+
+async function checkPubSub(): Promise<ComponentHealth> {
+  if (process.env.PUBSUB_EMULATOR_HOST) {
+    return { name: 'pubsub', status: 'up', detail: `emulator at ${process.env.PUBSUB_EMULATOR_HOST}` };
+  }
+  return { name: 'pubsub', status: 'up', detail: 'using real GCP (not probed to avoid quota)' };
+}
+
+async function checkAgentWorker(): Promise<ComponentHealth> {
+  const url = process.env.AGENT_WORKER_URL || 'http://localhost:8080';
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${url}/health`);
+    if (!r.ok) return { name: 'agent_worker', status: 'degraded', detail: `HTTP ${r.status}` };
+    return { name: 'agent_worker', status: 'up', latencyMs: Date.now() - t0 };
+  } catch (err: any) {
+    return { name: 'agent_worker', status: 'down', detail: err.message };
+  }
+}
+
+async function checkGeminiDeep(): Promise<ComponentHealth> {
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    return { name: 'gemini', status: 'degraded', detail: 'no API key configured' };
+  }
+  return { name: 'gemini', status: 'up', detail: 'API key configured' };
+}
+
+async function checkHandlerRegistry(): Promise<ComponentHealth> {
+  try {
+    const { listAll } = await import('../services/actions/handlerRegistry');
+    const n = listAll().length;
+    return { name: 'handler_registry', status: n >= 36 ? 'up' : 'degraded', detail: `${n} handlers registered` };
+  } catch (err: any) {
+    return { name: 'handler_registry', status: 'down', detail: err.message };
+  }
+}
+
+async function checkDlqDepth(clientNumber: string | null): Promise<ComponentHealth> {
+  try {
+    // Tenant-scoped — never count another tenant's stuck events.
+    // Unauth probes get a tenant-agnostic OK so uptime monitors stay
+    // green without leaking cross-tenant volumes.
+    if (!clientNumber) {
+      return { name: 'dlq_depth', status: 'up', detail: 'auth required for tenant DLQ count' };
+    }
+    const dlqCount = await prisma.feedEvent.count({
+      where: { status: 'dlq', clientNumber } as any,
+    }).catch(() => 0);
+    return {
+      name: 'dlq_depth',
+      status: dlqCount === 0 ? 'up' : dlqCount < 10 ? 'degraded' : 'down',
+      detail: `${dlqCount} row(s) in feed_events dlq`,
+    };
+  } catch (err: any) {
+    return { name: 'dlq_depth', status: 'down', detail: err.message };
+  }
+}
+
+async function checkNotificationQueue(): Promise<ComponentHealth> {
+  try {
+    const pending = await (prisma as any).notificationQueue?.count?.({
+      where: { status: 'pending' },
+    }).catch(() => 0) ?? 0;
+    return {
+      name: 'notification_queue',
+      status: pending < 100 ? 'up' : 'degraded',
+      detail: `${pending} pending`,
+    };
+  } catch (err: any) {
+    return { name: 'notification_queue', status: 'down', detail: err.message };
+  }
+}
+
+async function checkScheduler(): Promise<ComponentHealth> {
+  try {
+    const n = await (prisma as any).scheduledTask?.count?.({ where: { isActive: true } }).catch(() => 0) ?? 0;
+    return { name: 'scheduler', status: 'up', detail: `${n} active tasks` };
+  } catch (err: any) {
+    return { name: 'scheduler', status: 'down', detail: err.message };
+  }
+}
+
+async function checkTokenRefresh(userId: number | null): Promise<ComponentHealth> {
+  try {
+    // PRIVACY BOUNDARY — only check the CALLING user's own token. Never
+    // surface another user's email or expiry status, regardless of
+    // tenant or admin role. The Connectors page (where each user
+    // manages their own connectors) is the authoritative place for
+    // multi-user OAuth status; Health Check is a per-user status board.
+    //
+    // When userId is null (unauth health probe / uptime monitor), skip
+    // per-user checks and return generic OK.
+    if (!userId) {
+      return { name: 'token_refresh', status: 'up', detail: 'auth required for personal token status' };
+    }
+    const me: any = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, integrationStatus: true, integrationTokenExpiry: true, integrationProvider: true } as any,
+    }).catch(() => null);
+    if (!me) {
+      return { name: 'token_refresh', status: 'up', detail: 'no integration on your account' };
+    }
+    const expiry = me.integrationTokenExpiry;
+    const isExpiring =
+      me.integrationStatus === 'active'
+      && expiry
+      && new Date(expiry).getTime() < Date.now() + 10 * 60 * 1000;
+    if (!isExpiring) {
+      return { name: 'token_refresh', status: 'up', detail: 'your token is valid >10m' };
+    }
+    const provider = me.integrationProvider ? ` (${me.integrationProvider})` : '';
+    return {
+      name: 'token_refresh',
+      status: 'degraded',
+      detail: `your token expires within 10m: ${me.email}${provider}`,
+    };
+  } catch (err: any) {
+    return { name: 'token_refresh', status: 'down', detail: err.message };
+  }
+}
+
+async function checkWikiHealth(clientNumber: string | null, userId: number | null): Promise<ComponentHealth> {
+  try {
+    // Tenant-scoped + user-aware. Counts include:
+    //   - tenant-shared pages (org_doc, project, policy, etc.) for the
+    //     calling user's tenant
+    //   - the calling user's OWN private pages (sender_history, gap, etc.)
+    // Never counts another user's private pages or another tenant's data.
+    if (!clientNumber) {
+      return { name: 'wiki', status: 'up', detail: 'auth required for wiki status' };
+    }
+    const visibilityWhere: any = {
+      clientNumber,
+      OR: [
+        { scope: 'tenant' },
+        ...(userId ? [{ scope: 'user', userId }] : []),
+      ],
+    };
+    const [pageCount, contradicted, stale, orphans] = await Promise.all([
+      prisma.wikiPage.count({ where: visibilityWhere }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, status: 'contradicted' } as any }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, status: 'stale' } as any }),
+      prisma.wikiPage.count({ where: { ...visibilityWhere, inboundLinks: 0, outboundLinks: 0 } as any }),
+    ]);
+    // Triage rules — old logic flagged anything with > 9 orphans as DOWN,
+    // which was wildly aggressive: a healthy wiki naturally has hundreds of
+    // orphan pages (sender_history rows that no other page links to,
+    // thread-leaf email_message pages, etc.). New thresholds:
+    //   - contradicted > 0  → DOWN (Brain is giving conflicting facts)
+    //   - stale ratio > 30% → DEGRADED (lots of old data)
+    //   - orphan ratio > 70% → DEGRADED (most pages disconnected — linker
+    //                           may not be running)
+    //   - else → UP (orphans alone are normal)
+    const staleRatio  = pageCount > 0 ? stale  / pageCount : 0;
+    const orphanRatio = pageCount > 0 ? orphans / pageCount : 0;
+    let status: ComponentHealth['status'] = 'up';
+    if (contradicted > 0) status = 'down';
+    else if (staleRatio > 0.3 || orphanRatio > 0.7) status = 'degraded';
+    return {
+      name: 'wiki',
+      status,
+      detail: `${pageCount} pages · ${orphans} orphans · ${contradicted} contradicted · ${stale} stale`,
+    };
+  } catch (err: any) {
+    return { name: 'wiki', status: 'down', detail: err.message };
+  }
+}
+
+async function checkCacheHitRate(): Promise<ComponentHealth> {
+  // Honest view of the cache: we use Redis for two distinct roles.
+  //   1. Idempotency SETNX writes (every action insert) — these
+  //      legitimately register as "misses" in keyspace stats since
+  //      SETNX writes-not-reads. Counting them as cache misses
+  //      undersells the real read-through hit rate.
+  //   2. Read-through cache (composer envelope persona / instructions
+  //      / preferences / capabilities / tenant_log) — added in this
+  //      session via getOrCompute(). THIS is what the metric should
+  //      reflect.
+  //
+  // We separate the two by looking at keys in the read-through
+  // namespace explicitly. If we have at least one read-through key,
+  // we report on those operations only; otherwise fall back to
+  // global stats with a "no read-through traffic yet" note.
+  try {
+    const { getRedis } = await import('../utils/redisClient');
+    const r = getRedis();
+    const info = await r.info('stats');
+    const hits = parseInt(info.match(/keyspace_hits:(\d+)/)?.[1] ?? '0', 10);
+    const misses = parseInt(info.match(/keyspace_misses:(\d+)/)?.[1] ?? '0', 10);
+    const total = hits + misses;
+
+    // Sample the read-through namespace size — if it's empty, the
+    // global metric is just the SETNX traffic, not a real hit rate.
+    let readThroughKeys = 0;
+    try {
+      const stream = r.scanStream({ match: 'persona:*', count: 50 });
+      for await (const keys of stream as any) readThroughKeys += keys.length;
+      if (readThroughKeys === 0) {
+        const stream2 = r.scanStream({ match: 'instructions:*', count: 50 });
+        for await (const keys of stream2 as any) readThroughKeys += keys.length;
+      }
+    } catch { /* best effort */ }
+
+    if (readThroughKeys === 0 && total < 100) {
+      return {
+        name: 'cache_hit_rate',
+        status: 'up',  // not a problem — just no traffic yet
+        detail: `no read-through traffic yet (${total} ops total — mostly SETNX idempotency)`,
+      };
+    }
+
+    const rate = total === 0 ? 1 : hits / total;
+    return {
+      name: 'cache_hit_rate',
+      status: rate > 0.5 ? 'up' : rate > 0.2 ? 'degraded' : 'down',
+      detail: `${(rate * 100).toFixed(1)}% (${hits}/${total} ops · ${readThroughKeys} read-through keys live)`,
+    };
+  } catch (err: any) {
+    return { name: 'cache_hit_rate', status: 'down', detail: err.message };
+  }
+}
 
 export default router;

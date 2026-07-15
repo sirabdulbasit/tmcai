@@ -10,6 +10,7 @@ import cron from 'node-cron';
 import prisma from '../db/prisma';
 import { executeAgentRun } from './agentExecutionEngine';
 import { checkCircuitBreaker } from './agentFrameworkService';
+import { leaderOnly } from '../utils/leaderLock';
 import createLogger from '../utils/logger';
 
 const log = createLogger('agentScheduler');
@@ -53,7 +54,9 @@ export function scheduleAgent(agentId: number, agentName: string, schedule: stri
     return;
   }
 
-  const job = cron.schedule(cronExpr, async () => {
+  // C3 — keyed by agent id so each agent fires on exactly one replica per
+  // tick. Different agents run in parallel.
+  const job = cron.schedule(cronExpr, () => leaderOnly(`agent:${agentId}`, async () => {
     try {
       // Check if agent is still active
       const agents = await prisma.$queryRawUnsafe(
@@ -95,7 +98,7 @@ export function scheduleAgent(agentId: number, agentName: string, schedule: stri
         }
       } catch {}
     }
-  }, { timezone: 'Asia/Karachi' });
+  }), { timezone: require('../services/userTimezoneService').systemDefaultTimezone() });
 
   activeJobs.set(agentId, job);
   log.info('Agent scheduled as background job', { agentId, agentName, schedule, cronExpr });

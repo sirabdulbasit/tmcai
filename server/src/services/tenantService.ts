@@ -83,6 +83,19 @@ export async function createTenant(name: string, clientNumber?: string) {
     data: { clientNumber: finalClientNumber, name },
   });
 
+  // Seed defaults so the new tenant lands in a usable state — connector
+  // catalog enabled, etc. Without this, an admin opening the Connectors
+  // page on day 1 sees nothing and assumes the system is broken.
+  // Fire-and-forget — never block tenant creation on bootstrap failure.
+  void (async () => {
+    try {
+      const { bootstrapTenant } = await import('./tenantBootstrap');
+      await bootstrapTenant(tenant.clientNumber);
+    } catch (e: any) {
+      console.warn(`[Tenant] bootstrap failed for ${tenant.clientNumber}: ${e.message}`);
+    }
+  })();
+
   console.log(`[Tenant] Created: ${tenant.clientNumber} (${tenant.name})`);
   return tenant;
 }
@@ -106,10 +119,22 @@ export async function listTenants() {
 
 /**
  * Deactivate a tenant (soft delete).
+ *
+ * M11 — Also evict the tenant's cached WhatsApp provider so that a
+ * disabled tenant can't keep sending messages through an instance that
+ * was warmed up before the flag flipped. The import is dynamic to avoid
+ * a circular dependency at module load.
  */
 export async function deactivateTenant(clientNumber: string) {
-  return prisma.tenant.update({
+  const result = await prisma.tenant.update({
     where: { clientNumber },
     data: { isActive: false },
   });
+  try {
+    const { clearProviderCache } = await import('./whatsapp/WhatsAppManager');
+    clearProviderCache(clientNumber);
+  } catch {
+    // Cache clear is best-effort; never fail the deactivation on it.
+  }
+  return result;
 }

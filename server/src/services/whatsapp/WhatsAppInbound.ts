@@ -7,6 +7,8 @@
 
 import prisma from '../../db/prisma';
 import { sendWhatsAppMessage } from './WhatsAppManager';
+import { askBrainWithRetry } from './brainRetry';
+import { learnFromMessage } from '../learningService';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('whatsapp:inbound');
@@ -19,6 +21,10 @@ export interface InboundParams {
   mediaUrl?: string;
   replyFn?: (text: string) => Promise<void>;
   typingFn?: () => Promise<void>;  // Shows "typing..." indicator in WhatsApp
+  /** Set by handleInboundMessage after identity resolution; used by
+   *  sendReply so the outbound whatsapp_messages row carries a valid
+   *  user_id (column is NOT NULL — previously the insert failed silently). */
+  _resolvedUserId?: number;
 }
 
 // Dedup: prevent processing same message twice (WhatsApp Web.js can fire duplicate events)
@@ -43,14 +49,18 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   log.info('Inbound', { clientNumber: params.clientNumber, from: params.fromNumber, type: params.messageType });
 
-  // Log inbound message
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO whatsapp_messages (client_number, direction, from_number, to_number, content, message_type, status, created_at)
-     VALUES ($1, 'inbound', $2, '', $3, $4, 'received', NOW())`,
-    params.clientNumber, params.fromNumber, params.messageBody, params.messageType,
-  );
-
   // ── Step 1: Check if sender's number is registered ────────────────────────
+  //
+  // Per Basit 2026-06-10: "anyone who sends message to brain through
+  // whatsapp will not be saved or entertain if user is not registered".
+  // The registration check MUST run BEFORE any DB write. Previously we
+  // inserted the inbound message into whatsapp_messages here (with a
+  // fallback SA user_id) before doing the lookup — so unregistered
+  // senders' messages were getting saved to the audit table even though
+  // Brain never replied. Now: lookup first, drop without writing if
+  // unregistered. PM2 log line is the ONLY persisted record of
+  // unregistered traffic — admins can grep it if they need to audit.
+  //
   // Normalize number for matching: strip +, leading 0, try multiple formats
   const rawNum = params.fromNumber.replace(/[^\d]/g, ''); // digits only
   const numVariants = [
@@ -60,29 +70,37 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     '0' + rawNum.slice(rawNum.startsWith('92') ? 2 : 0), // 03226288256 (local)
   ];
 
+  // Tenant filter lives on the USER row — not on whatsapp_connections —
+  // because `wc.client_number` is allowed to be null (historical bug;
+  // see smoke log). The user's client_number is the authoritative
+  // tenant binding and is NOT NULL on every row.
   const connections = await prisma.$queryRawUnsafe(
     `SELECT wc.user_id, wc.id as connection_id, wc.display_name, u.name as user_name, u.client_number, u.department
      FROM whatsapp_connections wc JOIN users u ON u.id = wc.user_id
-     WHERE wc.client_number = $1 AND wc.status = 'active'
-     AND (wc.phone_number = $2 OR wc.phone_number = $3 OR wc.phone_number = $4 OR wc.phone_number = $5)`,
+     WHERE u.client_number = $1 AND wc.status = 'active' AND u.is_active = TRUE
+       AND (wc.phone_number = $2 OR wc.phone_number = $3 OR wc.phone_number = $4 OR wc.phone_number = $5)`,
     params.clientNumber, numVariants[0], numVariants[1], numVariants[2], numVariants[3],
   ) as any[];
 
-  // Unknown number — send registration prompt
+  // Unknown number — silently drop the message.
+  //
+  // Why ignore + don't save:
+  //   1. Privacy / data-hygiene — unregistered senders' bodies stay out
+  //      of whatsapp_messages, whatsapp_sessions, feed_events.
+  //   2. Replying confirms to the sender that this is an automated
+  //      business number, attracting spam/scrapers.
+  //   3. Every reply consumes a slot from the tenant's daily cap;
+  //      auto-replying to wrong-number / spam senders burns it.
+  //   4. A real user who needs access gets onboarded by their admin
+  //      via the Settings page; they don't need a reply from the bot.
+  //
+  // PM2 log line is the only persisted record — admins can grep it.
   if (!connections.length) {
-    log.info('Unregistered number', { from: params.fromNumber, clientNumber: params.clientNumber });
-    const reply = [
-      `This WhatsApp number (${params.fromNumber}) is not registered with TMCAI.`,
-      '',
-      'To use TMCAI on WhatsApp:',
-      '1. Login to your TMCAI portal',
-      '2. Go to Settings',
-      '3. Under WhatsApp, enter this phone number',
-      '4. Send a message here again',
-      '',
-      'Contact your admin if you need help.',
-    ].join('\n');
-    await sendReply(params, reply);
+    log.info('Unregistered number — dropped (no save, no reply)', {
+      from: params.fromNumber,
+      clientNumber: params.clientNumber,
+      bodyPrefix: params.messageBody.slice(0, 60),
+    });
     return;
   }
 
@@ -91,196 +109,133 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   const userName = conn.display_name || conn.user_name || 'there';
   let queryText = params.messageBody;
 
+  // Now that registration is confirmed, log the inbound to
+  // whatsapp_messages with the resolved user_id (no more SA fallback).
+  // This row is the audit trail for the conversation we ARE entertaining.
+  try {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, message_type, status, created_at)
+       VALUES ($1, $2, 'inbound', $3, '', $4, $5, 'received', NOW())`,
+      params.clientNumber, userId, params.fromNumber, params.messageBody, params.messageType,
+    );
+  } catch (err: any) {
+    log.warn('inbound log insert failed', { error: err.message });
+  }
+
+  // Thread the resolved userId onto params so sendReply's log insert
+  // carries it — whatsapp_messages.user_id is NOT NULL and the outbound
+  // row was previously being swallowed by an empty catch.
+  params._resolvedUserId = userId;
+
   log.info('Identified user', { from: params.fromNumber, userId, name: userName });
 
   // Show "typing..." indicator immediately so user knows bot is working
   if (params.typingFn) await params.typingFn().catch(() => {});
 
+  // ── Step 1.4: Negative-feedback shortcut ─────────────────────────────────
+  // Phrases like "shouldn't be", "stop", "ignore this", "don't care",
+  // "leave me alone" sent in response to a recent Brain bundle / prompt
+  // are FEEDBACK, not chat questions. Treat them as an explicit demote
+  // signal on whatever Brain most-recently nudged the user about, so
+  // Brain learns instead of explaining itself again.
+  try {
+    const { tryConsumeAsFeedback } = await import('../brainPrompts/negativeFeedbackHandler');
+    const fb = await tryConsumeAsFeedback({ userId, clientNumber: params.clientNumber, text: queryText });
+    if (fb.handled) {
+      log.info('consumed as negative feedback', { userId, action: fb.action });
+      if (fb.ackMessage) await sendReply(params, fb.ackMessage);
+      return;
+    }
+  } catch (err: any) {
+    log.warn('negative-feedback handler errored — falling through', { err: err.message });
+  }
+
+  // ── Step 1.5: Brain prompt queue reply ───────────────────────────────────
+  // If Brain is currently asking the user a question (brain_prompt_queue
+  // row in awaiting_reply), this inbound message IS the answer. Apply the
+  // side-effect, ack, and dispatch the next prompt — do NOT route to the
+  // chat LLM. Bypass session control / email-detection paths because those
+  // would mis-classify a one-word date answer like "friday" as gibberish
+  // and burn a chat turn.
+  try {
+    const { handlePromptReply } = await import('../brainPrompts/promptReplyHandler');
+    const r = await handlePromptReply({ userId, text: queryText });
+    if (r.handled) {
+      log.info('consumed as prompt reply', {
+        userId, promptId: r.promptId, sideEffect: r.sideEffectStatus,
+      });
+      if (r.ackMessage) {
+        await sendReply(params, r.ackMessage);
+      }
+      // A6: the answer may carry a piggybacked directive ("tomorrow,
+      // and always remind me at 5pm"). The LLM extractor judges the
+      // full message; plain answers return 'none'. Dispatched
+      // directives get their own ack so nothing is silently eaten.
+      const { handlePiggybackedInstruction } = await import('../brainPrompts/piggybackedInstruction');
+      const pb = await handlePiggybackedInstruction({
+        text: queryText, clientNumber: params.clientNumber, userId,
+      });
+      if (pb.dispatched && pb.ackMessage) {
+        await sendReply(params, pb.ackMessage);
+      }
+      return;  // do NOT continue to chat router
+    }
+  } catch (err: any) {
+    log.warn('prompt reply handler errored — falling through to chat', { err: err.message });
+  }
+
   // ── Step 2: Session control commands ─────────────────────────────────────
+  // Keyword shortcut for session close. The DB action stays; the reply
+  // is a SYSTEM marker (bracketed) so it's clearly machine-generated
+  // status, not Brain pretending to speak. Per Basit 2026-05-20:
+  // "don't hardcode anything this is the crime in building AI" — system
+  // status messages are honest; fake-Brain greetings are not.
   const lower = queryText.toLowerCase().trim();
   if (['bye', 'stop', 'end', 'quit', 'exit'].includes(lower)) {
     await prisma.$executeRawUnsafe(
       `UPDATE whatsapp_sessions SET closed_at = NOW() WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL`,
       userId, params.clientNumber,
     );
-    await sendReply(params, `Goodbye, ${userName}! Session ended. Send any message to start a new conversation.`);
+    await sendReply(params, `[session ended — send any message to resume]`);
     return;
   }
 
-  // ── Step 2b: Email report request ─────────────────────────────────────────
-  // Detect email requests — broad matching for natural language
-  const isEmailRequest = /\b(email|mail)\b/i.test(lower) && /\b(send|detail|report|full|it|me|on|in|to|via)\b/i.test(lower)
-    || /\bsend\b.*\b(email|mail)\b/i.test(lower)
-    || /\b(email|mail)\b.*\bsend\b/i.test(lower)
-    || /\b(yes|yeah|sure|ok)\b.*\b(email|mail)\b/i.test(lower)
-    || lower === 'email it' || lower === 'yes email' || lower === 'send email'
-    || /\bon\s+(email|mail)\b/i.test(lower)    // "send details on email"
-    || /\bin\s+(email|mail)\b/i.test(lower)    // "send details in email"
-    || /\bvia\s+(email|mail)\b/i.test(lower);  // "send via email"
+  // ── Step 2b REMOVED 2026-05-20: email-report fast-path ────────────────────
+  // The old code ran a regex over Brain's last reply to detect "Brain
+  // offered email" + a regex over the user's message to detect "user
+  // said yes", and on both matches generated a structured business
+  // report and emailed it to the user.
+  //
+  // The trigger was wrong. Observed 2026-05-20 on Basit's session:
+  //   1. Basit: "send email to asad and ask when haseeb is coming back"
+  //   2. Brain: disambiguation listing 2 Asads + 2 Haseebs, where the
+  //      contact metadata for Asad happened to contain the substring
+  //      "sends meeting notes for HEDP via email".
+  //   3. Basit: "yes this asad" — meant as a disambiguation answer.
+  //   4. `brainOfferedEmail` regex `send.*via.*email` matched the
+  //      contact metadata. `isShortAffirmation` matched "yes…". Both
+  //      gates true → email-report fast-path fired → Brain generated
+  //      a Day Brief and emailed it to Basit instead of continuing the
+  //      send-email pending action to Asad.
+  //
+  // Same architectural sin as the deleted greeting fast-path: a
+  // hardcoded behavior intercept running BEFORE Brain sees the message,
+  // matching surface patterns that can't reason about conversation
+  // continuity. Per Basit "don't hardcode anything this is the crime
+  // in building AI".
+  //
+  // Replacement: route everything through Brain. If the user genuinely
+  // wants a report emailed, Brain emits a `send_email` action with the
+  // report content (existing action type, dispatched through Gmail).
+  // The intent classifier handles "yes" as a pending-action resolution,
+  // not as a fresh email trigger.
 
-  if (isEmailRequest) {
-    // Get user's email
-    const userRows = await prisma.$queryRawUnsafe(
-      `SELECT email FROM users WHERE id = $1`, userId,
-    ) as any[];
-    const userEmail = userRows[0]?.email;
-
-    if (!userEmail) {
-      await sendReply(params, `I don't have your email address on file. Please update it in Settings.`);
-      return;
-    }
-
-    // Get last data query from session history to know WHAT to report on
-    const prevSessions = await prisma.$queryRawUnsafe(
-      `SELECT conversation_history FROM whatsapp_sessions
-       WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL
-       ORDER BY last_message_at DESC LIMIT 1`,
-      userId, params.clientNumber,
-    ) as any[];
-
-    const prevHistory = (prevSessions[0]?.conversation_history as any[]) || [];
-    // Find last user query that was a data question (not greeting/email request)
-    const lastDataQuery = [...prevHistory].reverse().find(
-      (m: any) => m.role === 'user' && !/\b(hi|hello|email|mail|send|bye)\b/i.test(m.content)
-    );
-
-    if (!lastDataQuery) {
-      await sendReply(params, `What would you like me to email? Ask a question first and then say "email it".`);
-      return;
-    }
-
-    await sendReply(params, `Generating report and sending to your email...`);
-
-    // Generate full detailed report (higher tokens, HTML formatted)
-    try {
-      log.info('Email report: generating', { query: lastDataQuery.content, userEmail });
-
-      const { classifyIntent } = await import('../intentService');
-      const { getAIConfig } = await import('../aiConfigService');
-      const { retrieveData } = await import('../../controllers/chat/dataRetrieval');
-
-      const aiConfig = await getAIConfig(params.clientNumber);
-      const intent = await classifyIntent(lastDataQuery.content);
-      log.info('Email report: intent classified', { type: intent.type });
-
-      const { context } = await retrieveData(
-        lastDataQuery.content, intent, 'gemini-flash', aiConfig, Date.now(),
-        () => {}, () => false, userId, ['org'], prevHistory.slice(-6),
-      );
-      log.info('Email report: data retrieved', { contextLen: (context || '').length });
-
-      // Ask Gemini for PLAIN TEXT report (not HTML — we build the HTML ourselves)
-      const { getGenAI } = await import('../genaiClient');
-      const ai = getGenAI();
-      const prompt = [
-        `Write a detailed professional report for this business query: "${lastDataQuery.content}"`,
-        `Use the data below to create a comprehensive analysis.`,
-        `Format: Use clear headings, bullet points, and numbers.`,
-        `Do NOT use HTML or markdown. Just plain text with line breaks.`,
-        `Include: key metrics, breakdown/analysis, insights, and recommendations.`,
-        context ? `\nDATA:\n${context}` : '\nNo relevant data found.',
-      ].join('\n');
-
-      const reportResult = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { maxOutputTokens: 4096 },
-      });
-
-      const reportText = (reportResult.text ?? '').trim();
-      log.info('Email report: text generated', { textLen: reportText.length });
-
-      // Convert plain text to professional HTML email
-      const reportBody = reportText
-        .split('\n')
-        .map(line => {
-          const trimmed = line.trim();
-          if (!trimmed) return '<br/>';
-          // Headings (lines ending with : or ALL CAPS or starting with number.)
-          if (/^[A-Z\s]{5,}:?$/.test(trimmed) || /^\d+\.\s+[A-Z]/.test(trimmed)) {
-            return `<h2 style="color:#cc6b4a;font-size:16px;margin:20px 0 8px 0;font-weight:600;">${trimmed}</h2>`;
-          }
-          // Sub-headings
-          if (trimmed.endsWith(':') && trimmed.length < 60) {
-            return `<h3 style="color:#333;font-size:14px;margin:16px 0 6px 0;font-weight:600;">${trimmed}</h3>`;
-          }
-          // Bullet points
-          if (/^[•\-\*]\s/.test(trimmed)) {
-            return `<li style="margin:4px 0;padding-left:4px;">${trimmed.replace(/^[•\-\*]\s*/, '')}</li>`;
-          }
-          // Bold markers
-          const withBold = trimmed.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
-          return `<p style="margin:6px 0;line-height:1.6;">${withBold}</p>`;
-        })
-        .join('\n');
-
-      const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-      const fullHtml = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background:#f4f4f4;font-family:'Segoe UI',Arial,sans-serif;">
-  <div style="max-width:680px;margin:20px auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-
-    <!-- Header -->
-    <div style="background:#1a1a2e;padding:24px 32px;text-align:center;">
-      <h1 style="color:#cc6b4a;font-size:22px;margin:0;font-weight:700;">TMC AI Report</h1>
-      <p style="color:#a0a0b0;font-size:13px;margin:6px 0 0 0;">Requested via WhatsApp by ${userName}</p>
-      <p style="color:#888;font-size:11px;margin:4px 0 0 0;">${now}</p>
-    </div>
-
-    <!-- Query -->
-    <div style="background:#f8f8f8;padding:12px 32px;border-bottom:1px solid #eee;">
-      <p style="margin:0;color:#666;font-size:12px;">Query: <strong style="color:#333;">"${lastDataQuery.content}"</strong></p>
-    </div>
-
-    <!-- Report Body -->
-    <div style="padding:24px 32px;color:#333;font-size:14px;line-height:1.7;">
-      ${reportBody}
-    </div>
-
-    <!-- Footer -->
-    <div style="background:#f8f8f8;padding:16px 32px;border-top:1px solid #eee;text-align:center;">
-      <p style="margin:0;color:#999;font-size:11px;">
-        Generated by <strong>TMC AI Intelligence</strong> |
-        <a href="https://tai.tmcltd.com" style="color:#cc6b4a;text-decoration:none;">tai.tmcltd.com</a>
-      </p>
-      <p style="margin:4px 0 0 0;color:#bbb;font-size:10px;">For interactive dashboards and charts, visit the web portal.</p>
-    </div>
-  </div>
-</body>
-</html>`;
-
-      const { sendEmail } = await import('../emailService');
-      const subject = `TMC AI Report: ${lastDataQuery.content.slice(0, 50)}`;
-      const sent = await sendEmail(userEmail, subject, fullHtml);
-
-      if (sent) {
-        await sendReply(params, `Done! Report sent to your email. Check your inbox.`);
-      } else {
-        await sendReply(params, `Failed to send email. Please try again or check tai.tmcltd.com`);
-      }
-    } catch (e: any) {
-      log.error('Email report failed', { error: e.message, stack: e.stack?.slice(0, 200) });
-      await sendReply(params, `Sorry, couldn't send the report right now. Try again or check tai.tmcltd.com`);
-    }
-    return;
-  }
-
-  // ── Step 2c: Check if user wants to hire an agent ─────────────────────────
-  const isHireRequest = /\b(hire|create|add).*(agent|team member|subordinate|assistant)\b/i.test(lower)
-    || /\b(i need|get me).*(agent|someone|person|assistant).*(monitor|track|check|watch)\b/i.test(lower);
-
-  if (isHireRequest) {
-    await sendReply(params,
-      `To hire a new agent, go to the web portal:\n\ntai.tmcltd.com → My Team → Hire New Agent\n\n` +
-      `There you can set the agent's name, task, schedule, and how it reports back to you.\n\n` +
-      `Once hired, you can talk to it here by name. e.g., "Atlas, check project risks daily"`
-    );
-    return;
-  }
-
+  // ── Step 2c REMOVED 2026-05-20: hardcoded "isHireRequest" fast-path
+  //    that pattern-matched "hire agent" / "add team member" and returned
+  //    a canned "go to the web portal" reply. Per Basit: "don't hardcode
+  //    anything this is the crime in building AI". Routing through Brain
+  //    instead — let Brain answer naturally with the same web-portal
+  //    pointer if and when it knows that's the right answer.
   // ── Step 2d: Agent conversation with session tracking ─────────────────────
   // If user is talking to an agent, ALL messages go to that agent until:
   //   - 10 min idle timeout → agent says goodbye
@@ -315,24 +270,18 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
       // Check if session timed out (10 min idle)
       if (idleMs > AGENT_SESSION_TIMEOUT_MS) {
-        // End agent session with goodbye
+        // End agent session \u2014 bracketed system marker, NOT fake-Brain
+        // goodbye prose. Per Basit 2026-05-20: "don't hardcode anything
+        // this is the crime in building AI". The previous canned
+        // multilingual goodbye ("Thank you Sir! Our conversation is
+        // ending now.") looked like the agent speaking; it's actually
+        // a state transition emitted by the dispatcher. Honest
+        // bracketed marker eliminates the fake-Brain impression.
         const agentName = session.active_agent_name;
         await prisma.$executeRawUnsafe(
           `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
         );
-
-        // Detect language of user's message for goodbye
-        const isUrdu = /[\u0600-\u06FF]/.test(queryText);
-        const isRomanUrdu = /\b(kia|kaise|hai|hain|ho|kar|rahi|batao|dekho|mujhe)\b/i.test(lower);
-
-        const goodbye = isUrdu
-          ? `*${agentName}*: شکریہ Sir! میری بات ختم ہو رہی ہے۔ اگر دوبارہ بات کرنی ہو تو "${agentName}" کہہ کر مجھے بلا لیں۔`
-          : isRomanUrdu
-          ? `*${agentName}*: Shukriya Sir! Meri conversation yahan khatam ho rahi hai. Agar dobara baat karni ho to "${agentName}" keh kar mujhe bula lein.`
-          : `*${agentName}*: Thank you Sir! Our conversation is ending now. If you need me again, just say "${agentName}" to start.`;
-
-        await sendReply(params, goodbye);
-        // Continue to process current message as main AI
+        await sendReply(params, `[agent session ended \u2014 ${agentName} idle 10+ min; routing to main AI]`);
       } else {
         // Session still active — check if user wants to leave
         const switchingAway = /\b(main ai|tmc ai|exit|back|leave|stop|bye|shukriya|thanks|theek hai)\b/i.test(lower);
@@ -341,11 +290,8 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
           await prisma.$executeRawUnsafe(
             `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
           );
-          const isUrdu = /[\u0600-\u06FF]/.test(queryText) || /\b(shukriya|theek)\b/i.test(lower);
-          const goodbye = isUrdu
-            ? `*${agentName}*: جی Sir، اگر کوئی اور بات ہو تو بتائیں۔ اللہ حافظ!`
-            : `*${agentName}*: Sure Sir, I'm here whenever you need me. Take care!`;
-          await sendReply(params, goodbye);
+          // Bracketed marker, no fake-Brain prose. Per Basit 2026-05-20.
+          await sendReply(params, `[agent session ended — ${agentName} closed; routing to main AI]`);
           return;
         }
 
@@ -407,47 +353,97 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     history = [];
   }
 
-  // ── Step 4: Greetings / simple messages ───────────────────────────────────
-  const isGreeting = /^(hi|hello|hey|assalam|salam|good morning|good evening)\b/i.test(lower);
+  // ── Step 4 REMOVED 2026-05-20: hardcoded greeting fast-path that
+  //    pattern-matched "hi" / "hello" / etc. and returned a canned reply
+  //    (different versions for new-session vs returning), bypassing Brain
+  //    composer entirely. Per Basit: "don't hardcode anything this is
+  //    the crime in building AI". Every message — including a bare "hi" —
+  //    now routes through Brain so the reply is generated, addressing,
+  //    tone, identity, and any embedded follow-up question are all
+  //    handled by one consistent path. The 1-2 second LLM latency on
+  //    greetings is the price for honesty: every reply is Brain talking,
+  //    not code pretending to be Brain.
 
-  if (isGreeting && isNewSession) {
-    // First message in a new session — greet by name and introduce
-    const greeting = [
-      `Hi ${userName}! 👋`,
-      '',
-      `I'm your TMCAI assistant. You can ask me anything about your company data:`,
-      `• Projects — "show project status", "which projects are delayed?"`,
-      `• Sales — "revenue breakdown", "top clients"`,
-      `• Employees — "how many employees?", "show org chart"`,
-      `• Risks — "open risks", "critical issues"`,
-      '',
-      `What would you like to know?`,
-    ].join('\n');
-    history.push({ role: 'user', content: queryText }, { role: 'assistant', content: greeting });
-    await prisma.$executeRawUnsafe(
-      `UPDATE whatsapp_sessions SET conversation_history = $1::jsonb, last_message_at = NOW() WHERE id = $2`,
-      JSON.stringify(history.slice(-20)), sessionId,
-    );
-    await sendReply(params, greeting);
-    return;
-  }
-
-  if (isGreeting && !isNewSession) {
-    // Returning user in existing session — short greeting
-    await sendReply(params, `Hi ${userName}! How can I help you?`);
-    return;
-  }
-
-  // ── Step 5: Process query through TMCAI chat pipeline ────────────────────
+  // ── Step 5: Process query through Brain (the living two-pass pipeline) ────
   // Refresh typing indicator (it expires after ~25s, processing can take 5-15s)
   if (params.typingFn) await params.typingFn().catch(() => {});
 
-  let responseText: string;
-  try {
-    responseText = await processWhatsAppQuery(userId, params.clientNumber, queryText, history);
-  } catch (error: any) {
-    log.error('Query processing failed', { error: error.message, userId });
-    responseText = `Sorry ${userName}, I encountered an error processing your request. Please try again or visit the TMCAI portal.`;
+  // Brain identifies WHO is asking from the sender phone (resolved to
+  // userId above) and answers with THAT user's full context: their
+  // user-scope instructions, private knowledge, open items, calendar.
+  // Client-scope instructions apply tenant-wide. This is the same
+  // pipeline `POST /brain/ask` uses on the web surface.
+  const { answerAsBrain } = await import('../../routes/brainAskRoutes');
+  // Map WA session history (role:user|assistant, content) to Brain's
+  // shape (role:user|brain, text). Without this, every WA message was
+  // a context-less standalone — Brain just sent a Day Brief listing
+  // "Numair: Google credits email", then on "add the google email to
+  // open items" it ran a fresh Gmail search and asked which Google
+  // email the user meant (security alerts, calendar invites, etc.)
+  // because it couldn't see what it had just said.
+  const brainHistory = history.map((h: any) => {
+    const role = h.role === 'assistant' ? ('brain' as const)
+      : h.role === 'artifact' ? ('artifact' as const)
+      : ('user' as const);
+    return { role, text: String(h.content ?? '') };
+  });
+  // ONE central brain, retried on transient failure — never a degraded
+  // parallel pipeline (legacy processWhatsAppQuery removed 2026-07-08).
+  // The brain degrades in latency, not competence. If BOTH attempts
+  // throw, the user gets a clearly bracketed status marker — not a
+  // hardcoded sentence pretending to be Brain.
+  const { answer, degraded, result: r } = await askBrainWithRetry(
+    () => answerAsBrain(params.clientNumber, userId, queryText, brainHistory, { channel: 'whatsapp' }),
+  );
+  // Defence-in-depth (chat 8, 2026-07-14): a raw "[notify_via_whatsapp:
+  // …]" marker reached WhatsApp despite the routes-level sanitizer —
+  // some internal path bypassed it (root cause under diagnosis via prod
+  // logs). Sanitizing at THIS boundary guarantees no bracketed system
+  // marker ever ships to a phone, whatever path produced the answer.
+  const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
+  const responseText = sanitizeAnswerForUser(answer);
+  if (!degraded && r) {
+    log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
+
+    // Fix 4 (2026-07-09) — restore the hot-path learning signal.
+    // Deleting legacy processWhatsAppQuery also deleted its
+    // fire-and-forget learnFromMessage call. Web chat still records
+    // it (controllers/chat/postProcessing.ts:82); WA no longer did —
+    // channel asymmetry in the per-message topic/style signal.
+    // reflectionJob remains the batch layer; this restores the
+    // instant per-message component so both channels feed learning
+    // the same way. Only fires on the true success path — degraded
+    // replies and bracketed markers must not train the model on
+    // "this intent worked" when it didn't.
+    learnFromMessage(
+      params.clientNumber,
+      userId,
+      queryText,
+      r?.intent ?? 'conversational',
+    ).catch(() => { /* fire-and-forget: learning failure must not break the reply */ });
+
+    // In-chat learning (2026-07-14): passing remarks with durability
+    // markers ("always…", "never…", "from now on…") become PROPOSED
+    // governed memories — pending the user's approval, never active by
+    // themselves. Keyword pre-filter means most messages cost nothing.
+    void import('../learning/standingPreferenceCapture')
+      .then(({ captureStandingPreference }) => captureStandingPreference({
+        clientNumber: params.clientNumber, userId, userMessage: queryText,
+      }))
+      .catch(() => { /* fire-and-forget */ });
+
+    // If this turn dispatched a successful action, persist the artifact
+    // into session history so next turn's compose can resolve
+    // cancel/reschedule references. Stored as role='artifact' with
+    // JSON-stringified content. The composer filters these out of the
+    // conversation block and renders them in a dedicated artifacts
+    // block instead. Per Basit 2026-05-21: enables "ok cancel this
+    // meeting" to actually work against the eventId from a prior
+    // schedule_meeting dispatch.
+    if (r.artifact) {
+      history.push({ role: 'artifact', content: JSON.stringify(r.artifact) });
+      log.info('Brain artifact persisted to session', { userId, kind: r.artifact.kind, artifactId: r.artifact.artifactId });
+    }
   }
 
   // No prefix needed — the LLM already knows the user's name from memory/profile
@@ -528,159 +524,44 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
     else clean += '...';
   }
 
-  // Log outbound message
+  // Log outbound message. `whatsapp_messages.user_id` is NOT NULL — if
+  // the resolver upstream didn't set one (edge case: reply before
+  // identity resolution, e.g., the "unregistered number" prompt), fall
+  // back to the tenant's first active SA so the log row is valid.
+  let logUserId = params._resolvedUserId;
+  if (!logUserId) {
+    const sa = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT id FROM users WHERE client_number = $1 AND is_active = TRUE
+         AND user_type IN ('SA','AD') ORDER BY user_type, id LIMIT 1`,
+      params.clientNumber,
+    ).catch(() => [] as any[]);
+    logUserId = sa[0]?.id;
+  }
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO whatsapp_messages (client_number, direction, from_number, to_number, content, status, created_at)
-       VALUES ($1, 'outbound', $2, $3, $4, 'sent', NOW())`,
-      params.clientNumber, '', params.fromNumber, clean,
-    );
-  } catch {}
+    if (logUserId) {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, status, created_at)
+         VALUES ($1, $2, 'outbound', $3, $4, $5, 'sent', NOW())`,
+        params.clientNumber, logUserId, '', params.fromNumber, clean,
+      );
+    }
+  } catch (err: any) {
+    log.warn('outbound log insert failed', { error: err.message });
+  }
 
   if (params.replyFn) {
+    // Provider-supplied reply path (legacy webjs uses MessageMedia for
+    // voice). When inbound came over Meta webhook, no replyFn is passed
+    // and we route through the unified tenant-WhatsApp sender — which
+    // picks Meta Notifier when configured, falls back to webjs otherwise.
     await params.replyFn(clean);
   } else {
-    await sendWhatsAppMessage({
-      clientNumber: params.clientNumber,
-      to: params.fromNumber,
-      message: clean,
-    });
-  }
-}
-
-// ─── Process query through TMCAI pipeline (same AI as web, mobile-optimized output) ──
-
-async function processWhatsAppQuery(
-  userId: number,
-  clientNumber: string,
-  query: string,
-  conversationHistory: any[],
-): Promise<string> {
-  const { classifyIntent, buildIntentDirective } = await import('../intentService');
-  const { getAIConfig } = await import('../aiConfigService');
-  const { retrieveData } = await import('../../controllers/chat/dataRetrieval');
-  const { buildMemoryPromptBlocks } = await import('../memoryService');
-  const { getUserProfile } = await import('../userProfileService');
-  const { getUserLearnings } = await import('../learningService');
-  const { learnFromMessage } = await import('../learningService');
-
-  const aiConfig = await getAIConfig(clientNumber);
-  const recentTurns = conversationHistory.slice(-6);
-
-  // ── Same pipeline as web: intent + memory + profile + learnings ──────────
-  const [intent, memoryBlocks, userProfile, userLearnings] = await Promise.all([
-    classifyIntent(query, undefined, recentTurns.length > 0 ? recentTurns : undefined),
-    buildMemoryPromptBlocks(userId),
-    getUserProfile(userId),
-    getUserLearnings(userId),
-  ]);
-
-  const aiName = memoryBlocks.aiName || 'TMCAI';
-
-  // ── WhatsApp output rules (the ONLY difference from web) ────────────────
-  const WHATSAPP_RULES = [
-    '── WHATSAPP FORMAT ──',
-    'Responding on WhatsApp. Keep it mobile-friendly.',
-    '',
-    'RULES:',
-    '• Be concise but COMPLETE. Never leave a sentence unfinished.',
-    '• Give the key answer first, then brief supporting details.',
-    '• Use plain text. For emphasis: *bold* (single asterisk). No markdown ## or **.',
-    '• For stats: ONLY use exact numbers from the DATA section. Do NOT count rows yourself — use totals stated in the data source.',
-    '• For lists: show top 5 items max. Mention total count.',
-    '• Always finish every sentence. If answer is getting long, summarize and offer:',
-    '  "Want the full report by email? Or check tai.tmcltd.com"',
-    '• Match the user\'s tone — casual or formal.',
-    '• LANGUAGE MATCHING: If user writes in Urdu → respond in Urdu. If English → respond in English. If mixed → respond in the same mix.',
-    '• For Urdu: use Urdu script (نستعلیق). Example: "آپ کے 47 ایکٹو پروجیکٹس ہیں۔"',
-    '• For Roman Urdu: respond in Roman Urdu. Example: "Aap ke 47 active projects hain."',
-    '── END FORMAT ──\n',
-  ].join('\n');
-
-  // ── Build user profile block (same as web) ──────────────────────────────
-  let profileBlock = '';
-  if (userProfile) {
-    const parts: string[] = [];
-    if (userProfile.jobDescription) parts.push(`User's JD: ${userProfile.jobDescription}`);
-    if (userProfile.aboutMe) parts.push(`About user: ${userProfile.aboutMe}`);
-    if (userProfile.instructions) parts.push(`Custom instructions: ${userProfile.instructions}`);
-    if (parts.length > 0) {
-      profileBlock = '── USER PROFILE ──\n' + parts.join('\n') +
-        '\nADAPTIVE TONE: Mirror the user\'s communication style. If casual, be casual. If formal, be formal.\n\n';
-    }
-  }
-
-  // ── Learned patterns (same as web) ──────────────────────────────────────
-  let learningBlock = '';
-  if (userLearnings.length > 0) {
-    learningBlock = '── LEARNED PATTERNS ──\n' + userLearnings.join('\n') + '\nUse these silently.\n\n';
-  }
-
-  // ── Memory blocks (same as web) ─────────────────────────────────────────
-  let memoryBlock = '';
-  if (memoryBlocks.userMemoryBlock) memoryBlock += memoryBlocks.userMemoryBlock + '\n';
-  if (memoryBlocks.aiMemoryBlock) memoryBlock += memoryBlocks.aiMemoryBlock + '\n';
-  if (memoryBlocks.contextBlock) memoryBlock += memoryBlocks.contextBlock + '\n';
-
-  // ── Data retrieval (skip for conversational) ────────────────────────────
-  let dataBlock = '';
-  if (intent.type !== 'conversational') {
-    const { context } = await retrieveData(
-      query, intent, 'gemini-flash', aiConfig, Date.now(),
-      () => {}, () => false, userId, ['org'], recentTurns,
+    const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+    await sendTenantWhatsAppText(
+      params.clientNumber,
+      params.fromNumber,
+      clean,
+      logUserId ?? 0,
     );
-
-    // Always include data_summary for accurate total counts (prevents LLM from counting rows)
-    let summaryLine = '';
-    try {
-      const { retrieveContext } = await import('../../pipeline/gcpRetrieval');
-      const summaryResult = await retrieveContext('how many total');
-      if (summaryResult.context && summaryResult.context.includes('Summary')) {
-        summaryLine = summaryResult.context;
-      }
-    } catch {}
-
-    const allContext = [summaryLine, context].filter(Boolean).join('\n\n---\n\n');
-    if (allContext) dataBlock = `── DATA (use ONLY these numbers, do NOT count rows yourself) ──\n${allContext}\n── END DATA ──\n`;
   }
-
-  // ── Assemble full prompt (same structure as web, with WA rules on top) ──
-  const directive = buildIntentDirective(intent);
-  const systemPrompt = [
-    WHATSAPP_RULES,
-    profileBlock,
-    learningBlock,
-    memoryBlock ? `── MEMORY ──\n${memoryBlock}── END MEMORY ──\n` : '',
-    directive,
-    dataBlock,
-  ].filter(Boolean).join('\n');
-
-  // Conversation turns (same as web)
-  const turns = recentTurns.map((t: any) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`).join('\n');
-  const fullPrompt = turns
-    ? `${systemPrompt}\n── CONVERSATION ──\n${turns}\n\nUser: ${query}`
-    : `${systemPrompt}\nUser: ${query}`;
-
-  // ── Generate response ───────────────────────────────────────────────────
-  const { getGenAI } = await import('../genaiClient');
-  const ai = getGenAI();
-  // Read max tokens from tenant's WhatsApp config (admin-configurable)
-  const waConfig = await prisma.$queryRawUnsafe(
-    `SELECT max_tokens_chat, max_tokens_data FROM whatsapp_config WHERE client_number = $1`, clientNumber,
-  ) as any[];
-  const maxTokensChat = waConfig[0]?.max_tokens_chat || 150;
-  const maxTokensData = waConfig[0]?.max_tokens_data || 400;
-  const maxTokens = intent.type === 'conversational' ? maxTokensChat : maxTokensData;
-  const result = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: fullPrompt,
-    config: { maxOutputTokens: maxTokens },
-  });
-
-  const response = (result.text ?? '').trim() || `Sorry, I couldn't process that. Try again or check tai.tmcltd.com`;
-
-  // ── Self-learning (same as web — tracks on WhatsApp too) ────────────────
-  learnFromMessage(clientNumber, userId, query, intent.type).catch(() => {});
-
-  return response;
 }

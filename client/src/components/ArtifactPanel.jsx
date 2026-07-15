@@ -181,11 +181,65 @@ function DownloadMenu({ artifact }) {
     setOpen(false);
   };
 
+  // C5 — HTML sanitizer used before writing artifact content into a new
+  // window or Blob. Regex-based script/button/style stripping cannot
+  // reliably block XSS (nested tags, srcdoc iframes, event handlers, etc).
+  // We parse with DOMParser, walk the tree, and only keep an allowlist of
+  // tags and attributes. This runs fully client-side — no new deps.
+  const SAFE_TAGS = new Set([
+    'html', 'head', 'body', 'meta', 'title', 'style',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'div', 'span', 'br', 'hr', 'strong', 'em', 'b', 'i', 'u',
+    'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+    'img', 'a', 'blockquote', 'code', 'pre', 'small', 'sup', 'sub',
+  ]);
+  const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'class', 'style']);
+  const sanitizeHtmlFragment = (raw) => {
+    const doc = new DOMParser().parseFromString(`<div>${raw}</div>`, 'text/html');
+    const root = doc.body.firstChild;
+    const walk = (node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 8 /* comment */) {
+          child.remove();
+          continue;
+        }
+        if (child.nodeType !== 1 /* element */) continue;
+        const tag = child.tagName.toLowerCase();
+        if (!SAFE_TAGS.has(tag)) {
+          // Drop the whole subtree rather than unwrapping — safer when the
+          // content is <script>, <iframe>, <object>, <svg>, etc.
+          child.remove();
+          continue;
+        }
+        // Strip disallowed attributes and all event handlers (on*) and
+        // javascript:/data: URLs except image data: (safe).
+        for (const attr of Array.from(child.attributes)) {
+          const name = attr.name.toLowerCase();
+          const val = attr.value;
+          if (name.startsWith('on') || !SAFE_ATTRS.has(name)) {
+            child.removeAttribute(attr.name);
+            continue;
+          }
+          if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(val)) {
+            child.removeAttribute(attr.name);
+          }
+          if (name === 'src' && /^\s*data:(?!image\/)/i.test(val)) {
+            child.removeAttribute(attr.name);
+          }
+        }
+        walk(child);
+      }
+    };
+    walk(root);
+    return root.innerHTML;
+  };
+
   const downloadWord = () => {
-    const html = getHtmlContent();
+    const html = sanitizeHtmlFragment(getHtmlContent());
     const wordContent = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:12px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f0f0f0;font-weight:bold}h2,h3{color:#333}</style></head>
-<body>${html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<button[\s\S]*?<\/button>/gi, '').replace(/class="[^"]*"/g, '').replace(/style="[^"]*color[^"]*"/g, '')}</body></html>`;
+<body>${html}</body></html>`;
     const blob = new Blob([wordContent], { type: 'application/msword' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -195,15 +249,23 @@ function DownloadMenu({ artifact }) {
   };
 
   const downloadPDF = () => {
-    // Use browser print to PDF
-    const html = getHtmlContent();
+    // C5 — Sanitize first, then render inside a sandboxed iframe using
+    // srcdoc + sandbox="allow-same-origin allow-modals" (no allow-scripts)
+    // so even a sanitizer miss can't execute JS in the print window.
+    const html = sanitizeHtmlFragment(getHtmlContent());
+    const safeTitle = (artifact.title || 'Report').replace(/[<>"']/g, '');
+    const srcdoc = `<!doctype html><html><head><title>${safeTitle}</title>
+<style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f0f0f0;font-weight:bold}h2{font-size:18px}h3{font-size:14px;margin-top:16px}.stat-card{display:inline-block;border:1px solid #ccc;border-radius:8px;padding:12px 20px;margin:4px;text-align:center}.stat-value{font-size:24px;font-weight:bold;color:#333}.stat-label{font-size:10px;color:#888;text-transform:uppercase}.card-grid{margin-bottom:16px}</style>
+</head><body>${html}</body></html>`;
     const printWindow = window.open('', '_blank');
     if (printWindow) {
-      printWindow.document.write(`<html><head><title>${artifact.title || 'Report'}</title>
-<style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f0f0f0;font-weight:bold}h2{font-size:18px}h3{font-size:14px;margin-top:16px}.stat-card{display:inline-block;border:1px solid #ccc;border-radius:8px;padding:12px 20px;margin:4px;text-align:center}.stat-value{font-size:24px;font-weight:bold;color:#333}.stat-label{font-size:10px;color:#888;text-transform:uppercase}.card-grid{margin-bottom:16px}</style>
-</head><body>${html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<button[\s\S]*?<\/button>/gi, '').replace(/<canvas[\s\S]*?<\/canvas>/gi, '[Chart]')}</body></html>`);
-      printWindow.document.close();
-      setTimeout(() => { printWindow.print(); }, 500);
+      const iframe = printWindow.document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-same-origin allow-modals');
+      iframe.style.cssText = 'width:100%;height:100vh;border:0';
+      iframe.srcdoc = srcdoc;
+      printWindow.document.body.style.margin = '0';
+      printWindow.document.body.appendChild(iframe);
+      setTimeout(() => { try { iframe.contentWindow?.print(); } catch { printWindow.print(); } }, 500);
     }
     setOpen(false);
   };

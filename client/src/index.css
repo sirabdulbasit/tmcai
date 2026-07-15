@@ -62,14 +62,114 @@ body {
   align-items: center; padding: 12px 0; gap: 4px;
 }
 .rail-btn {
+  position: relative;
   width: 36px; height: 36px; border-radius: var(--radius-sm); border: none;
   background: transparent; color: var(--text-tertiary);
   cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
 }
-.rail-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  transform: translateX(1px);
+}
 .rail-btn svg { width: 18px; height: 18px; }
 .rail-spacer { flex: 1; }
+
+/* Active-route highlight: a soft accent pill behind the icon + a 3px
+ * left bar showing which page the user is on. The bar is the recognition
+ * cue at a glance; the pill is the colour cue for the icon itself. */
+.rail-btn.is-active {
+  background: rgba(204, 107, 74, 0.14);
+  color: var(--accent, #cc6b4a);
+}
+.rail-btn.is-active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent, #cc6b4a);
+}
+
+/* Tooltip — pure CSS. Renders the rail-btn's [data-tip] value as a
+ * floating chip to the right of the icon on hover/focus. Replaces the
+ * native `title` attribute (which appears slowly, looks default-OS, and
+ * isn't keyboard-friendly). Instant, themed, and accessible. */
+.rail-btn[data-tip]:hover::after,
+.rail-btn[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: var(--bg-1, #1a1a22);
+  color: var(--text, #e5e7eb);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 10000;
+  pointer-events: none;
+  animation: railTipIn 140ms ease-out;
+}
+/* Little arrow on the tooltip pointing back at the icon */
+.rail-btn[data-tip]:hover::before,
+.rail-btn[data-tip]:focus-visible::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  width: 8px;
+  height: 8px;
+  background: var(--bg-1, #1a1a22);
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  z-index: 10000;
+  pointer-events: none;
+  animation: railTipIn 140ms ease-out;
+}
+/* Active-route already uses ::before for its bar — keep that visible
+ * even on hover by overriding the tooltip arrow only when hovering. */
+.rail-btn.is-active[data-tip]:hover::before,
+.rail-btn.is-active[data-tip]:focus-visible::before {
+  /* arrow takes precedence on hover; the active bar fades briefly */
+  background: var(--bg-1, #1a1a22);
+  width: 8px;
+  height: 8px;
+  left: calc(100% + 4px);
+  top: 50%;
+  border-radius: 0;
+}
+@keyframes railTipIn {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+/* Day Brief — collapsible section header.
+   Hover lifts the row visibly: tinted background, accent border, slight shift
+   on the chevron. Focus ring for keyboard a11y. The closed state already
+   has a panel background so it reads as a card; open state has no background
+   so it visually merges with the expanded body below. */
+.dbp-section-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.06)) !important;
+  border-color: var(--accent) !important;
+}
+.dbp-section-header.is-closed:hover > span:first-child,
+.dbp-section-header.is-open:hover > span:first-child {
+  background: var(--accent) !important;
+  color: #0e1116 !important;
+}
+.dbp-section-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* Main Content */
 .main-content {
@@ -795,41 +895,42 @@ body {
   font-size: 13px; color: var(--text-tertiary);
 }
 
-/* Settings & Admin Pages */
+/* Settings & Admin Pages — aligned with Day Brief / Action Center visual
+   system (left-aligned, same token palette, same type scale). */
 .settings-page {
-  height: 100vh; overflow-y: auto; background: var(--bg);
+  height: 100vh; overflow-y: auto; background: var(--bg-1);
   scrollbar-width: thin; scrollbar-color: #333 transparent;
 }
 .settings-container {
-  max-width: 640px; margin: 0 auto; padding: 32px 24px;
+  max-width: 1400px; padding: 24px 32px;
 }
 .settings-header {
   display: flex; align-items: center; gap: 16px; margin-bottom: 28px;
 }
-.settings-header h1 { font-size: 22px; font-weight: 600; color: var(--text-primary); }
+.settings-header h1 { font-size: var(--fs-2xl); font-weight: 600; color: var(--text); }
 .settings-back {
   display: flex; align-items: center; gap: 6px;
-  background: none; border: none; color: var(--text-secondary);
-  cursor: pointer; font-size: 13px; font-family: inherit; padding: 6px 10px;
-  border-radius: var(--radius-sm); transition: background var(--transition-fast);
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: var(--fs-sm); font-family: inherit; padding: 6px 10px;
+  border-radius: var(--r-sm); transition: background .15s ease;
 }
-.settings-back:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-back:hover { background: var(--bg-2); color: var(--text); }
 .settings-back svg { width: 16px; height: 16px; }
 .settings-section {
-  background: var(--bg-sidebar); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 20px; margin-bottom: 16px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 20px; margin-bottom: 16px;
 }
 .settings-section h2 {
-  font-size: 15px; font-weight: 600; color: var(--text-primary);
+  font-size: var(--fs-lg); font-weight: 600; color: var(--text);
   margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
 }
 .settings-info { display: flex; flex-direction: column; gap: 10px; }
-.settings-info > div { display: flex; justify-content: space-between; font-size: 13px; }
-.info-label { color: var(--text-secondary); }
-.settings-info span:last-child { color: var(--text-primary); }
+.settings-info > div { display: flex; justify-content: space-between; font-size: var(--fs-sm); }
+.info-label { color: var(--text-muted); }
+.settings-info span:last-child { color: var(--text); }
 .settings-readonly {
-  font-size: 13px; color: var(--text-secondary); line-height: 1.6;
-  background: var(--bg); padding: 12px; border-radius: var(--radius-sm);
+  font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6;
+  background: var(--bg-1); padding: 12px; border-radius: var(--r-sm);
 }
 .settings-field { margin-bottom: 14px; }
 .settings-field label {
@@ -856,12 +957,104 @@ body {
 .settings-btn:hover { opacity: 0.9; }
 .settings-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .settings-btn.danger { background: #ef4444; }
+/* Inline button spinner — 14px ring that rotates. Used inside buttons
+ * during async actions (Save / Connect / Test Connection / Send) to
+ * give the user something nicer than a frozen label. */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spinner-rotate 0.7s linear infinite;
+  vertical-align: -2px;
+  margin-right: 8px;
+  opacity: 0.85;
+}
+@keyframes btn-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Pulsing halo around the connection-status dot while reconnecting,
+ * connecting, or running an in-flight test. Subtle — same accent
+ * colour as the dot, just radiating outward and fading. */
+.status-dot-pulse {
+  position: relative;
+}
+.status-dot-pulse::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  opacity: 0.4;
+  animation: status-dot-pulse-anim 1.4s ease-out infinite;
+}
+@keyframes status-dot-pulse-anim {
+  0%   { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* Scribe progress visuals — banner pulse dot + per-card spinner. Used
+ * while a connector's scribeStatus is 'running' so the user sees Brain
+ * actually working, not a static "SCRIBING…" badge. */
+.scribe-pulse {
+  animation: scribe-pulse-anim 1.2s ease-in-out infinite;
+}
+@keyframes scribe-pulse-anim {
+  0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(96,165,250,0.6); }
+  50%      { transform: scale(1.25); opacity: 0.85; box-shadow: 0 0 0 6px rgba(96,165,250,0); }
+}
+.scribe-spinner {
+  animation: btn-spinner-rotate 0.85s linear infinite;
+}
+.scribe-running-badge {
+  animation: scribe-badge-pulse 2s ease-in-out infinite;
+}
+@keyframes scribe-badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(96,165,250,0.0); }
+  50%      { box-shadow: 0 0 0 4px rgba(96,165,250,0.18); }
+}
+
+/* Floating action toast.
+ * Was a static block above the form, which stranded the success/failure
+ * message at the top of the page when the user clicked an action 800px
+ * down. Now anchored to the viewport — stays visible regardless of
+ * scroll position. Pairs with a setMsg auto-dismiss timer in callers. */
 .settings-msg {
-  padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 16px;
-  background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.3); color: #4ade80;
+  position: fixed;
+  top: 88px;
+  right: 24px;
+  z-index: 1000;
+  max-width: 420px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: rgba(74,222,128,0.1);
+  border: 1px solid rgba(74,222,128,0.3);
+  color: #4ade80;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: settings-msg-in 180ms ease-out;
+  pointer-events: auto;
 }
 .settings-msg.error {
-  background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #ef4444;
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.3);
+  color: #ef4444;
+}
+@keyframes settings-msg-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@media (max-width: 768px) {
+  .settings-msg {
+    top: auto;
+    bottom: 16px;
+    left: 12px;
+    right: 12px;
+    max-width: none;
+  }
 }
 .badge-type {
   display: inline-block; padding: 2px 8px; border-radius: 10px;

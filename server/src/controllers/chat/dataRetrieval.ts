@@ -33,6 +33,7 @@ import { embedText } from '../../pipeline/embedder';
 import { searchPersonalChunks } from '../../services/personalDriveService';
 import { isFeatureEnabled } from '../../services/featureFlagService';
 import { searchDomainKnowledge } from '../../services/domainKnowledgeService';
+import { resolveClientNumberForUser } from '../../services/tenantScope';
 import { maskPIICached } from './piiCache';
 import { DataRetrievalResult } from './types';
 import type { DataSource } from '../../types';
@@ -147,6 +148,17 @@ export async function retrieveData(
     }
   }
 
+  // ── E3/E5 tenant defense-in-depth ───────────────────────────
+  // retrieveData only receives userId (aiConfig carries context limits,
+  // not tenant), so resolve the tenant from the users table ONCE here
+  // and thread it into both tenant-aware retrieval layers below. null
+  // when there is no userId at all (some agent paths call retrieveData
+  // without a user) — those callers genuinely have no tenant context
+  // and fall back to the legacy unfiltered behavior.
+  const tenantClientNumber = userId
+    ? await resolveClientNumberForUser(userId).catch(() => null)
+    : null;
+
   // ── Phase 4: Personal data retrieval (layer weights) ────────
   const personalWeight = intent.layerWeights?.personal ?? 0;
   const includePersonal = personalWeight > 0 ||
@@ -160,7 +172,10 @@ export async function retrieveData(
       if (queryEmbedding) {
         // More personal chunks when personal weight is high
         const personalTopK = personalWeight >= 0.5 ? 5 : 3;
-        const personalChunks = await searchPersonalChunks(userId, queryEmbedding, personalTopK);
+        // Tenant filter (E3/E5): user_id alone is no longer the last
+        // line of defense — chunks tagged to another tenant are excluded
+        // even if this userId were wrong/stale.
+        const personalChunks = await searchPersonalChunks(userId, queryEmbedding, personalTopK, tenantClientNumber);
         if (personalChunks.length > 0) {
           const personalContext = personalChunks
             .map((c, i) => `[Personal File ${i + 1}: ${c.fileName}]\n${c.content}`)
@@ -187,7 +202,9 @@ export async function retrieveData(
   const domainWeight = intent.layerWeights?.domain ?? 0;
   if (domainWeight > 0) {
     try {
-      const domainResults = await searchDomainKnowledge(message, { topK: 3 });
+      // Tenant filter (E3/E5): global seeds (client_number NULL) always
+      // match; tenant-specific knowledge stays inside its tenant.
+      const domainResults = await searchDomainKnowledge(message, { topK: 3, clientNumber: tenantClientNumber });
       if (domainResults.length > 0) {
         const domainContext = domainResults
           .map((d, i) => `[Domain Knowledge ${i + 1}: ${d.title} (${d.region}/${d.vertical})]\n${d.content}`)

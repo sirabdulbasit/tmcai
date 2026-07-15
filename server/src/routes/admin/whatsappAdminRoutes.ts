@@ -25,13 +25,19 @@ function getTargetClient(req: Request): string {
 }
 
 // ─── GET /config — current config (sensitive fields masked) ───────────────────
+//
+// Historical bug: this query used to reference `max_tokens_chat` (column never
+// existed) which made the whole SELECT throw — the React loader treated the
+// 500 as `{configured:false}` and silently rendered an empty form even when a
+// real device was paired. Limits/max-tokens were removed from the admin UI;
+// the column reference is gone here too. `max_tokens_data` is still in the
+// table schema as a backstop but no longer surfaced.
 router.get('/config', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
   const rows = await prisma.$queryRawUnsafe(
     `SELECT provider, meta_phone_number_id, meta_business_id, status, connected_number, connected_at,
             daily_limit, monthly_limit, messages_today, messages_this_month,
-            last_message_at, last_error, last_error_at, connected_number as company_number,
-            max_tokens_chat, max_tokens_data
+            last_message_at, last_error, last_error_at, connected_number as company_number
      FROM whatsapp_config WHERE client_number = $1`, cn,
   ) as any[];
 
@@ -117,11 +123,37 @@ router.get('/status', async (req: Request, res: Response) => {
 });
 
 // ─── POST /test-connection — validate connection (no message sent) ────────────
+//
+// Self-heals when the DB says `connected` but the in-process whatsapp-web.js
+// client Map is empty (typical after a nodemon restart): re-runs
+// `provider.initialize()` to re-load LocalAuth from disk and polls for
+// `ready` for up to 8s before reporting back. Same auto-recovery
+// pattern the send path uses, surfaced here so the admin's Test
+// Connection button doesn't lie about a paired session being dead.
 router.post('/test-connection', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
   try {
     const provider = await getProvider(cn);
-    const result = await provider.testConnection(cn);
+    let result = await provider.testConnection(cn);
+
+    if (!result.success && /not initialized|not connected/i.test(result.error ?? '')) {
+      // Check whether the DB believes we should be connected. If not,
+      // an admin needs to scan QR — don't silently re-init.
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT status FROM whatsapp_config WHERE client_number = $1`, cn,
+      );
+      if (rows[0]?.status === 'connected') {
+        log.info('test-connection: re-initializing from LocalAuth', { clientNumber: cn });
+        await provider.initialize(cn);
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          result = await provider.testConnection(cn);
+          if (result.success) break;
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+    }
+
     res.json(result);
   } catch (err: any) {
     res.json({ success: false, error: err.message });
@@ -136,8 +168,13 @@ router.post('/test', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'testNumber is required' });
     return;
   }
+  // `whatsapp_messages.user_id` is NOT NULL in the schema — pass the
+  // authenticated admin's id so the log insert doesn't violate the
+  // constraint. SuperAdmin + tenant-switched admin both satisfy this.
+  const authenticatedUserId = (req as any).user?.id;
   const result = await sendWhatsAppMessage({
     clientNumber: cn,
+    userId: authenticatedUserId,
     to: testNumber,
     message: 'This is a test message from TMCAI. WhatsApp is configured correctly. — Sent via TMCAI Admin Panel',
   });
@@ -153,6 +190,80 @@ router.post('/disconnect', async (req: Request, res: Response) => {
     clearProviderCache(cn);
     res.json({ success: true });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /reset-pairing — change WhatsApp number / unpair completely ─────────
+//
+// What this does (in order):
+//   1. client.logout()  → tells WhatsApp to unlink this device from the
+//      paired phone. Without this, the old phone keeps showing the entry
+//      under Linked Devices and can re-grab the session.
+//   2. client.destroy() → kills the in-memory webjs client + Chromium.
+//   3. rm -rf the LocalAuth session folder on disk. WITHOUT THIS, the
+//      next initialize() finds the saved session and silently reconnects
+//      to the OLD account — no QR is ever shown. This is THE bug that
+//      forced the user to SSH and delete the folder manually.
+//   4. Clear DB columns so the admin UI knows it needs a fresh pair.
+//   5. Re-initialize the provider → fresh QR appears on next /qr poll.
+//
+// Idempotent: safe to call even when not currently paired.
+router.post('/reset-pairing', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const fs = await import('fs');
+  const path = await import('path');
+  try {
+    // Step 1: destroy the live client (best-effort — tolerate
+    // "already disconnected" case). The UI flow tells the admin to log
+    // out from the phone's Linked Devices BEFORE pressing this button,
+    // so the WhatsApp-side session is already invalidated; here we just
+    // tear down the local Chromium / webjs Client so the next initialize
+    // starts clean.
+    try {
+      const provider = await getProvider(cn);
+      await provider.disconnect(cn);
+      clearProviderCache(cn);
+    } catch (e: any) {
+      log.warn('reset-pairing: provider tear-down errored, continuing', { cn, error: e.message });
+    }
+
+    // Step 3: delete LocalAuth session folder so next initialize()
+    // shows a fresh QR instead of silently re-pairing to the old account.
+    const sessionPath = process.env.WHATSAPP_SESSION_PATH || './whatsapp-sessions';
+    // E2: cn is request-supplied — validate before using it in a path we rm -rf.
+    const { tenantSessionKey } = await import('../../services/whatsapp/waSessionKey');
+    const sessionDir = path.join(sessionPath, `session-${tenantSessionKey(cn)}`);
+    try {
+      if (fs.existsSync(sessionDir)) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        log.info('reset-pairing: session dir deleted', { cn, sessionDir });
+      }
+    } catch (e: any) {
+      log.warn('reset-pairing: session dir delete failed', { cn, sessionDir, error: e.message });
+    }
+
+    // Step 4: clear DB so the admin UI surfaces "needs pairing" state.
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config
+         SET status            = 'disconnected',
+             connected_number  = NULL,
+             qr_code           = NULL,
+             qr_expires_at     = NULL,
+             connected_at      = NULL,
+             last_error        = 'reset for re-pair (admin)',
+             last_error_at     = NOW(),
+             updated_at        = NOW()
+       WHERE client_number = $1`, cn,
+    );
+
+    // Step 5: re-initialize so a fresh QR is generated for the next /qr poll.
+    const freshProvider = await getProvider(cn);
+    await freshProvider.initialize(cn);
+
+    res.json({ success: true, message: 'Pairing reset — scan the new QR code with the phone you want to use.' });
+  } catch (err: any) {
+    log.error('reset-pairing failed', { cn, error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
@@ -201,6 +312,45 @@ router.post('/messages/:id/reject', async (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string, 10);
   await rejectQueuedMessage(id, req.user!.id);
   res.json({ success: true });
+});
+
+// ─── DELETE /messages/:id — remove a single row from the log ─────────────────
+//
+// Tenant-scoped: an admin can only delete rows belonging to their own
+// tenant. Returns deleted-count so the UI can toast "Deleted" only on
+// actual delete (vs silent no-op if the id doesn't exist or belongs
+// to a different tenant).
+router.delete('/messages/:id', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const id = parseInt(req.params.id as string, 10);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const result: any = await prisma.$executeRawUnsafe(
+    `DELETE FROM whatsapp_messages WHERE id = $1 AND client_number = $2`, id, cn,
+  );
+  log.info('admin deleted whatsapp_messages row', {
+    cn, id, adminId: req.user?.id, deletedRows: Number(result) || 0,
+  });
+  res.json({ success: true, deleted: Number(result) || 0 });
+});
+
+// ─── DELETE /messages — clear the entire log for this tenant ─────────────────
+//
+// Destructive. Tenant-scoped (only this tenant's rows). The UI uses a
+// typed-phrase confirmation (type CLEAR) so it can't be triggered by
+// an accidental click. Returns the deleted-count so the admin sees
+// proof of action.
+router.delete('/messages', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const result: any = await prisma.$executeRawUnsafe(
+    `DELETE FROM whatsapp_messages WHERE client_number = $1`, cn,
+  );
+  log.warn('admin cleared whatsapp_messages log', {
+    cn, adminId: req.user?.id, deletedRows: Number(result) || 0,
+  });
+  res.json({ success: true, deleted: Number(result) || 0 });
 });
 
 // ─── GET /sessions — active WhatsApp sessions ────────────────────────────────

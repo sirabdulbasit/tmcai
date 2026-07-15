@@ -73,8 +73,20 @@ function extractBlocks(text) {
   return result.length > 0 ? result : [{ type: 'text', content: text }];
 }
 
+// Allowlist of drill-link types. Anything not in this set is rendered as
+// plain text (no anchor) to prevent attribute injection via unknown types.
+const DRILL_TYPES = new Set(['project', 'client', 'deal', 'query']);
+
 function formatMarkdown(text) {
-  let t = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Escape &, <, >, " and ' so captured groups are always safe in both text
+  // position AND inside double-quoted HTML attributes below. This is the one
+  // place that decides XSS safety for the whole pipeline — treat it carefully.
+  let t = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
   // Code blocks
   t = t.replace(/```[\s\S]*?```/g, m =>
@@ -90,11 +102,14 @@ function formatMarkdown(text) {
 
   // Drill-down links: [Text](drill://type/query)
   t = t.replace(/\[([^\]]+)\]\(drill:\/\/(\w+)\/([^)]+)\)/g, (_, text, type, query) => {
+    // Unknown types: render as plain text, do NOT emit an anchor. Prevents
+    // attribute-injection if an attacker smuggles a novel "type" through
+    // AI output. `text` is already attribute-safe (escaped above).
+    if (!DRILL_TYPES.has(type)) return text;
     const tooltip = type === 'project' ? `Click to see details about ${text}` :
                     type === 'client' ? `Click to see ${text} profile` :
                     type === 'deal' ? `Click to see deal details` :
-                    type === 'query' ? `Click to explore` :
-                    `Click for more details`;
+                    /* query */       `Click to explore`;
     return `<a class="drill-link" data-drill-type="${type}" data-drill-query="${query}" title="${tooltip}">${text}</a>`;
   });
 

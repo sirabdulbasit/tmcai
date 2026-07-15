@@ -13,14 +13,24 @@ const log = createLogger('voice');
 
 // ─── Speech-to-Text: transcribe voice note to text ────────────────────────────
 
-export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string): Promise<{
+export async function transcribeVoiceNote(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  opts?: { translateTo?: 'english' | null },
+): Promise<{
   text: string;
   language: string;
   confidence: number;
 }> {
-  // Try Gemini first (always available, supports Urdu + English + mixed)
+  // Try Gemini first (always available, supports Urdu + English + mixed).
+  // Pass the actual upload mime through — browser MediaRecorder usually
+  // sends webm/opus, not ogg/opus, and Gemini rejects mime mismatches.
+  // translateTo='english': Gemini transcribes AND translates in one call.
+  // Per Basit preference 2026-07-08: "always transcribe voice note into
+  // english" — even when the speaker uses Urdu, downstream Brain
+  // reasoning + logs stay in English.
   try {
-    const geminiResult = await transcribeWithGemini(audioBuffer);
+    const geminiResult = await transcribeWithGemini(audioBuffer, mimeType, opts?.translateTo === 'english');
     if (geminiResult.text) return geminiResult;
   } catch (e: any) {
     log.error('Gemini transcription failed, trying Google Speech', { error: e.message });
@@ -70,27 +80,212 @@ export async function transcribeVoiceNote(audioBuffer: Buffer, mimeType?: string
 
 // ─── Fallback: Gemini audio transcription ─────────────────────────────────────
 
-async function transcribeWithGemini(audioBuffer: Buffer): Promise<{ text: string; language: string; confidence: number }> {
+// Map a browser-supplied mimetype to one Gemini's audio input accepts.
+// MediaRecorder on Chrome emits "audio/webm;codecs=opus" by default; on
+// Safari it's "audio/mp4". We strip codec params and whitelist a known
+// set \u2014 anything else falls back to ogg/opus.
+function geminiAudioMime(input?: string): string {
+  const base = (input ?? '').split(';')[0]!.trim().toLowerCase();
+  switch (base) {
+    case 'audio/webm':
+    case 'audio/ogg':
+    case 'audio/mp4':
+    case 'audio/m4a':
+    case 'audio/mpeg':
+    case 'audio/mp3':
+    case 'audio/wav':
+    case 'audio/x-wav':
+    case 'audio/aac':
+    case 'audio/flac':
+      return base === 'audio/x-wav' ? 'audio/wav' : base === 'audio/m4a' ? 'audio/mp4' : base;
+    default:
+      return 'audio/ogg';
+  }
+}
+
+// Boilerplate Gemini emits when there's no clear speech. Treat these as
+// empty so the caller routes the user to "speak louder" rather than
+// passing a meaningless string into the instruction extractor.
+const SILENCE_BOILERPLATE = [
+  'i cannot', "i can't",
+  'cannot hear', "can't hear",
+  'no audio', 'no speech', 'no discernible',
+  'inaudible', 'unintelligible', 'silence',
+  'audio is empty', 'audio is silent',
+  'unable to transcribe', "couldn't transcribe",
+];
+
+function looksLikeSilence(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  if (!t) return true;
+  if (t.length < 2) return true;
+  // Pure punctuation or bracketed placeholder \u2192 silence
+  if (/^[\[\(].*[\]\)]$/.test(t)) return true;
+  if (/^[\s.,!?\-\u2014]+$/.test(t)) return true;
+  return SILENCE_BOILERPLATE.some((needle) => t.includes(needle));
+}
+
+async function transcribeWithGemini(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  translateToEnglish: boolean = false,
+): Promise<{ text: string; language: string; confidence: number }> {
   const { getGenAI } = await import('./genaiClient');
   const ai = getGenAI();
 
+  // English-only path (Basit preference 2026-07-08): skip the Urdu-
+  // script gymnastics entirely. One Gemini call, transcribe + translate.
+  if (translateToEnglish) {
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: `Transcribe this audio and output the result in ENGLISH ONLY, following these rules STRICTLY:
+
+1. English speech → transcribe VERBATIM, word-for-word exactly as spoken. Do NOT summarize, shorten, clean up, rephrase, or "improve" anything. Keep every word, repetitions and filler words included. The output must be the complete literal sentence(s) the speaker said.
+2. Urdu / Hindi / any other language → translate faithfully, sentence by sentence, COMPLETE — every sentence the speaker said must appear in the output; nothing omitted, nothing condensed. Preserve meaning and tone; keep numbers and proper names exactly as spoken.
+3. Mixed speech → keep the English parts verbatim as rule 1; translate only the non-English parts as rule 2.
+
+NEVER produce a summary, a paraphrase, or a shortened version. Length of output should correspond to length of speech. Return ONLY the English transcript — no commentary, no source-language original, no brackets, no labels. If the audio has no clear speech, return an empty response.` },
+            { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
+          ],
+        },
+      ],
+      config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
+    });
+    const raw = (result.text ?? '').trim();
+    if (looksLikeSilence(raw)) {
+      log.info('Gemini English-translate transcript looks like silence; returning empty', { raw: raw.slice(0, 80) });
+      return { text: '', language: 'unknown', confidence: 0 };
+    }
+    return { text: raw, language: 'en-US', confidence: 0.8 };
+  }
+
+  // The user (Basit, Pakistan) speaks Urdu, English, or a mix. Gemini's
+  // default tends to render Urdu speech in Devanagari (Hindi script,
+  // \u0900-\u097F) because Urdu and Hindi sound similar \u2014 the model picks
+  // the more-trained script. Explicit prompt now: NEVER Devanagari.
+  // Urdu must be in Arabic script (\u0600-\u06FF); English in Latin script;
+  // mixed = keep both as-is in their own scripts. If the audio is
+  // English-only, return English. The forbidden-Devanagari clause is the
+  // single most important rule here \u2014 the user 2026-05-13 flagged a KD
+  // Bhatti voice note rendered in Hindi script and called it out.
   const result = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: [
       {
         role: 'user',
         parts: [
-          { text: 'Transcribe this audio. Return ONLY the text, nothing else. If Urdu, write in Urdu script. If English, write in English. If mixed, keep both.' },
-          { inlineData: { mimeType: 'audio/ogg', data: audioBuffer.toString('base64') } },
+          { text: `Transcribe this audio. Return ONLY the spoken words VERBATIM, word-for-word exactly as spoken \u2014 no commentary, no labels, no quotes, no brackets. Do NOT summarize, shorten, clean up, or rephrase; keep every word including repetitions and fillers. Output length must correspond to speech length.
+
+SCRIPT RULES (non-negotiable):
+- If the speech is Urdu, write it in URDU SCRIPT (Arabic script, e.g. \u0633\u0631 \u0627\u062F\u06BE\u0631 \u0633\u06D2 \u06C1\u0645 \u0627\u067E\u0646\u06CC \u0633\u0627\u0631\u06CC \u0648\u0631\u06A9\u0646\u06AF \u06A9\u0645\u067E\u0644\u06CC\u0679 \u06A9\u0631\u06CC\u06BA \u06AF\u06D2). NEVER Devanagari / Hindi script.
+- If the speech is English, write it in English (Latin script).
+- If the speech mixes Urdu and English, keep each word in its own script: Urdu words in Arabic script, English words in Latin script. Do not transliterate one into the other.
+- Do NOT output Devanagari / Hindi characters (U+0900 to U+097F). This audio is from Pakistan; the language is Urdu, not Hindi, even if some words sound alike.
+
+If the audio has no clear speech, return an empty response.` },
+          { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
         ],
       },
     ],
-    config: { maxOutputTokens: 500 },
+    config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
   });
 
-  const text = (result.text ?? '').trim();
-  const isUrdu = /[\u0600-\u06FF]/.test(text);
-  return { text, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
+  let raw = (result.text ?? '').trim();
+  if (looksLikeSilence(raw)) {
+    log.info('Gemini transcript looks like silence/boilerplate; returning empty', { raw: raw.slice(0, 80) });
+    return { text: '', language: 'unknown', confidence: 0 };
+  }
+  // Safety net: if Gemini ignored the rule and emitted Devanagari anyway,
+  // retry once with a stronger forbid clause. After one retry, if it
+  // still emits Hindi script, accept the Latin-script fallback by
+  // asking for transliteration explicitly (last resort).
+  const hasDevanagari = /[\u0900-\u097F]/.test(raw);
+  if (hasDevanagari) {
+    log.warn('Gemini emitted Devanagari despite Urdu-only instruction; retrying', { raw: raw.slice(0, 80) });
+    try {
+      const retry = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: `Transcribe this audio. The speaker is from Pakistan and speaks URDU. Output the transcript in URDU SCRIPT (Arabic script, U+0600 to U+06FF) \u2014 for example \u0633\u0631 \u0627\u062F\u06BE\u0631 \u0633\u06D2 \u06C1\u0645. You are FORBIDDEN from using Devanagari / Hindi script (U+0900 to U+097F). If you cannot transcribe in Urdu script, transliterate to Roman Urdu (Latin letters, e.g. "Sir idhar se hum") \u2014 but NEVER Hindi script. Return ONLY the transcript, no commentary.` },
+              { inlineData: { mimeType: geminiAudioMime(mimeType), data: audioBuffer.toString('base64') } },
+            ],
+          },
+        ],
+        config: { maxOutputTokens: 2000 }, // was 500 — a >2.5min voice note silently truncated mid-transcript
+      });
+      const retryText = (retry.text ?? '').trim();
+      if (retryText && !/[\u0900-\u097F]/.test(retryText)) raw = retryText;
+    } catch (e: any) {
+      log.error('Gemini Devanagari retry failed', { error: e.message });
+    }
+  }
+  // Final defense: if BOTH transcription attempts still emitted
+  // Devanagari, drop down to a text-only conversion call. The previous
+  // two calls had audio context which may have biased the model toward
+  // Hindi; this one is a pure script-conversion task with no audio
+  // distraction. Per user 2026-05-14: "we should have only 2 languages
+  // right now english and urdu" \u2014 Hindi is not acceptable.
+  if (/[\u0900-\u097F]/.test(raw)) {
+    log.warn('Both transcription passes returned Devanagari \u2014 running script-conversion fallback');
+    try {
+      const converted = await transliterateDevanagariToUrdu(raw);
+      if (converted && !/[\u0900-\u097F]/.test(converted)) raw = converted;
+    } catch (e: any) {
+      log.error('Script conversion fallback failed', { error: e.message });
+    }
+  }
+  const isUrdu = /[\u0600-\u06FF]/.test(raw);
+  return { text: raw, language: isUrdu ? 'ur-PK' : 'en-US', confidence: 0.8 };
+}
+
+/**
+ * Convert Devanagari (Hindi script) text to Urdu script (Arabic).
+ *
+ * This is a pure script-conversion call \u2014 same spoken language, just
+ * a different writing system. Used as the third-stage defense after
+ * transcription when Gemini refuses to emit Urdu script. Also used by
+ * the one-shot backfill script (scripts/backfillDevanagariToUrdu.ts)
+ * to repair feed_events already stored with Devanagari text from
+ * before the 2026-05-14 voice-script fixes.
+ *
+ * Exported so callers (ingest, backfill, future render-time defense)
+ * can share the same conversion logic.
+ *
+ * Brain-vs-programmer note (per memory rule): this defensive
+ * conversion exists because Gemini 2.5 Flash is unreliable at
+ * honoring "use Arabic script not Devanagari" instructions for Urdu
+ * speech. The proper fix is to route Urdu voice transcription
+ * through a model that handles the language more reliably (or pin
+ * a Urdu-optimized multilingual model). Carrying this layer until
+ * we benchmark alternatives.
+ */
+export async function transliterateDevanagariToUrdu(text: string): Promise<string> {
+  if (!text || !/[\u0900-\u097F]/.test(text)) return text;
+  const { getGenAI } = await import('./genaiClient');
+  const ai = getGenAI();
+  const r = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: `Convert the following text from Devanagari (Hindi script) to Urdu script (Arabic script, U+0600 to U+06FF). The underlying language is the same \u2014 only the writing system changes. Keep any English words in Latin script unchanged. Return ONLY the converted text, no commentary, no preamble, no quotes.
+
+Input:
+${text}` },
+        ],
+      },
+    ],
+    config: { maxOutputTokens: 1000 },
+  });
+  return String(r.text ?? '').trim();
 }
 
 // ─── Text-to-Speech: convert text to voice note ───────────────────────────────
@@ -105,9 +300,17 @@ export async function textToVoiceNote(text: string, language?: string): Promise<
       const tts = await import('@google-cloud/text-to-speech');
       const client = new tts.TextToSpeechClient();
 
-      const isUrdu = /[\u0600-\u06FF]/.test(text) || language === 'ur-PK';
+      // Google Cloud TTS only ships Urdu under the IN locale \u2014
+      // 'ur-PK-*' voices do NOT exist in their catalogue and any request
+      // for one returns 3 INVALID_ARGUMENT ("Voice ... does not exist.
+      // Is it misspelled?") which makes voicenote outbound fall back to
+      // text-only without any audio reaching the recipient. Use the
+      // IN-locale equivalent; the language model is the same Urdu \u2014
+      // the locale tag only affects voice ID lookup, not pronunciation.
+      const isUrdu = /[\u0600-\u06FF]/.test(text)
+        || language === 'ur-PK' || language === 'ur-IN' || language === 'ur';
       const voiceConfig = isUrdu
-        ? { languageCode: 'ur-PK', name: 'ur-PK-Standard-A', ssmlGender: 'FEMALE' as any }
+        ? { languageCode: 'ur-IN', name: 'ur-IN-Standard-A', ssmlGender: 'FEMALE' as any }
         : { languageCode: 'en-US', name: 'en-US-Neural2-F', ssmlGender: 'FEMALE' as any };
 
       const [response] = await client.synthesizeSpeech({

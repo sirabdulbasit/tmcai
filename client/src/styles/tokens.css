@@ -1,0 +1,393 @@
+/**
+ * MyOS design tokens — single source of truth for colors, spacing,
+ * typography, radii, shadows, and layout constants. Every new component
+ * references these variables; no raw values in component styles.
+ */
+
+:root {
+  /* ─── Colors — surfaces ─── */
+  --bg-0: #0a0a0b;              /* app background */
+  --bg-1: #111113;              /* panels, sidebar */
+  --bg-2: #17181c;              /* inputs, cards */
+  --bg-3: #1f2126;              /* hover states, nested panels */
+  --bg-hover: #1d1f24;
+  --bg-active: #22252c;
+
+  /* ─── Colors — borders & dividers ─── */
+  --border: #262830;
+  --border-strong: #3a3d46;
+  --border-accent: #5a2f1f;
+
+  /* ─── Colors — text ─── */
+  --text: #e7e9ee;
+  --text-muted: #9ba0aa;
+  --text-dim: #6b6f78;
+  --text-disabled: #4a4d56;
+
+  /* ─── Colors — brand (TMC orange) ─── */
+  --accent: #cc6b4a;
+  --accent-hover: #d97a59;
+  --accent-active: #bb5e3e;
+  --accent-dim: #5a2f1f;
+  --accent-text: #ffffff;
+
+  /* ─── Colors — semantic ─── */
+  --success: #3bc18b;
+  --success-dim: rgba(59, 193, 139, 0.15);
+  --warning: #e0a43c;
+  --warning-dim: rgba(224, 164, 60, 0.15);
+  --danger: #e25c5c;
+  --danger-dim: rgba(226, 92, 92, 0.15);
+  --info: #5a9fd7;
+  --info-dim: rgba(90, 159, 215, 0.15);
+
+  /* ─── Typography ─── */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", Consolas, monospace;
+
+  /* Type scale — base values. Multiplied by --fs-scale so each user
+     can scale up/down via Settings → Display. Default 1.0 = the values
+     below; 0.85–1.4 permitted. */
+  --fs-scale: 1;
+  --fs-xs:   calc(13px * var(--fs-scale));
+  --fs-sm:   calc(14px * var(--fs-scale));
+  --fs-md:   calc(15px * var(--fs-scale));
+  --fs-base: calc(16px * var(--fs-scale));
+  --fs-lg:   calc(18px * var(--fs-scale));
+  --fs-xl:   calc(24px * var(--fs-scale));
+  --fs-2xl:  calc(28px * var(--fs-scale));
+  --fs-3xl:  calc(36px * var(--fs-scale));
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.6;
+
+  /* ─── Spacing — 4px rhythm ─── */
+  --s-0: 0;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ─── Radii ─── */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-pill: 999px;
+
+  /* ─── Shadows ─── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 20px 40px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 2px var(--accent-dim);
+
+  /* ─── Layout ─── */
+  --rail-width: 64px;
+  --rail-width-expanded: 220px;
+  --topbar-height: 56px;
+  --content-max: 1200px;
+  --reading-max: 780px;
+
+  /* ─── Transitions ─── */
+  --t-fast: 0.12s ease;
+  --t-base: 0.18s ease;
+  --t-slow: 0.3s ease;
+
+  /* ─── Z-index ─── */
+  --z-base: 1;
+  --z-dropdown: 10;
+  --z-sticky: 20;
+  --z-topbar: 50;
+  --z-modal: 100;
+  --z-toast: 200;
+
+  /* ─── Breakpoints (informational; queries below) ─── */
+  /* mobile: ≤ 640px · tablet: 641–1024px · desktop: > 1024px */
+}
+
+/* ─── Tablet (≤1024px) ────────────────────────────────────────────────
+   Drop the heaviest type sizes a little so headlines fit two-up; tighten
+   spacing so the side rail + content fit a 768-wide viewport without
+   horizontal scroll. Dropdown/popover widths stay responsive via min(). */
+@media (max-width: 1024px) {
+  :root {
+    --fs-3xl: calc(28px * var(--fs-scale));
+    --fs-2xl: calc(22px * var(--fs-scale));
+    --fs-xl:  calc(20px * var(--fs-scale));
+    --rail-width: 56px;
+    --content-max: 100%;
+    --s-6: 20px;
+    --s-8: 24px;
+  }
+}
+
+/* ─── Mobile (≤640px) ─────────────────────────────────────────────────
+   Phone form factor. Headlines compress further, rail collapses to a
+   thinner column (icons-only), modals go full-screen via the .modal-
+   overlay rule below, and 4-column stat grids fall to 1-up. */
+@media (max-width: 640px) {
+  :root {
+    --fs-3xl: calc(22px * var(--fs-scale));
+    --fs-2xl: calc(20px * var(--fs-scale));
+    --fs-xl:  calc(17px * var(--fs-scale));
+    --fs-lg:  calc(16px * var(--fs-scale));
+    --rail-width: 48px;
+    --topbar-height: 48px;
+    --s-4: 12px;
+    --s-5: 14px;
+    --s-6: 16px;
+    --s-8: 20px;
+  }
+
+  /* Tap targets — Apple HIG floor is 44×44pt. The default Button comes
+     out around 30px; bump padding so anything that's interactive is at
+     least finger-friendly. */
+  button, [role="button"], a.button,
+  input[type="checkbox"], input[type="radio"] {
+    min-height: 38px;
+  }
+}
+
+/* ─── Stat tiles grid — auto-collapse 4 → 2 → 1 ──────────────────────── */
+.stat-grid {
+  display: grid;
+  gap: var(--s-3);
+  grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 1024px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+  .stat-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── Modal overlay — full-screen on mobile so dialogs aren't cropped ─ */
+.modal-overlay > .modal-shell {
+  width: min(820px, 100%);
+  max-height: 90vh;
+}
+@media (max-width: 640px) {
+  .modal-overlay {
+    padding: 0 !important;
+    align-items: stretch !important;
+  }
+  .modal-overlay > .modal-shell {
+    width: 100% !important;
+    max-height: 100vh !important;
+    height: 100vh;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+
+  /* Generic catch-all for legacy inline modal overlays that don't yet
+     use the .modal-overlay class. Pattern: `position: fixed; inset: 0`
+     with an rgba dark background. Full-screen the immediate dialog
+     child on phone — covers OpenItemsPage, ConnectorsPage,
+     MyRulesPage, ClientManagementTab admin dialogs, etc. without per-
+     file edits. Excludes FloatingChat (its backdrop has no child
+     content; the actual drawer is a sibling <aside>). */
+  div[style*="position: fixed"][style*="inset: 0"][style*="rgba(0,0,0,"] > div:first-child {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    border: 0 !important;
+    margin: 0 !important;
+  }
+}
+
+/* ─── Action rows — wrap then stack at the smallest sizes ─────────── */
+.action-row {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+@media (max-width: 480px) {
+  .action-row {
+    gap: 6px;
+  }
+  .action-row > .action-row-spacer { display: none; }
+}
+
+/* ─── Card padding tightens on mobile ───────────────────────────────── */
+@media (max-width: 640px) {
+  .card { padding: var(--s-3); }
+}
+
+/* ─── Inline-style grids collapse on mobile (Phase 2) ───────────────────
+   The codebase has dozens of `style={{ display: 'grid', gridTemplateColumns:
+   '1fr 1fr' }}` inline grids across SettingsPage, admin tabs, TenantPage,
+   LicensesTab, ClientManagementTab, etc. Patching each call site would be
+   churn. Attribute-selector targeting catches them all in one place: any
+   inline grid with 2+ columns collapses on phone, 3+ columns drops to 2
+   on tablet. !important needed to override inline style. */
+@media (max-width: 640px) {
+  div[style*="grid-template-columns"][style*="1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="repeat(2"],
+  div[style*="grid-template-columns"][style*="repeat(3"],
+  div[style*="grid-template-columns"][style*="repeat(4"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (min-width: 641px) and (max-width: 1024px) {
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="1fr 1fr 1fr"],
+  div[style*="grid-template-columns"][style*="repeat(3"],
+  div[style*="grid-template-columns"][style*="repeat(4"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+
+/* ─── Tables — horizontal scroll wrapper for cramped phones ──────────
+   Wraps a table in <div class="responsive-table">. Tables that are
+   already pure cards (most of ours) don't need this. */
+.responsive-table {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.responsive-table > table { min-width: 100%; }
+
+/* ─── Tab strips that overflow on phones (admin sub-tabs etc.) ─────── */
+@media (max-width: 640px) {
+  .tab-strip,
+  [role="tablist"] {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    flex-wrap: nowrap !important;
+  }
+  .tab-strip > *,
+  [role="tablist"] > * {
+    flex-shrink: 0;
+  }
+}
+
+/* ─── Safe-area insets for iPhone notches ──────────────────────────── */
+@supports (padding: env(safe-area-inset-bottom)) {
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .modal-overlay > .modal-shell {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* ─── Settings sections + admin form inputs tighten on phones ───────── */
+@media (max-width: 640px) {
+  .settings-section { padding: var(--s-3) !important; }
+  .settings-field input,
+  .settings-field select,
+  .settings-field textarea {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+/* ─── Long horizontal labels in settings/admin go full-width on phone ─ */
+@media (max-width: 640px) {
+  /* React-style label/value rows commonly use flex with min-widths that
+     break on narrow screens. Force-stack when the parent is a "row". */
+  div[style*="display: flex"][style*="alignItems: center"][style*="gap"] {
+    flex-wrap: wrap;
+  }
+}
+
+/* ─── More options menu — bottom sheet on phone (Phase 2 fix) ──────────
+   On desktop the menu opens to the right of the More button. On a
+   ~390px phone the same dropdown overflows the left edge of the
+   viewport. Switch to a full-width sheet anchored above the bottom
+   safe-area so it always stays on-screen. */
+@media (max-width: 640px) {
+  .more-options-menu {
+    position: fixed !important;
+    left: var(--s-3) !important;
+    right: var(--s-3) !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--s-3)) !important;
+    top: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+}
+
+/* ─── Card density on mobile — every Card feels less wasteful ──────── */
+@media (max-width: 640px) {
+  /* Compress Card's vertical padding so 4 cards fit on a 390px screen
+     without the user feeling like every card is its own page. */
+  .card,
+  [class*="ui-card"] {
+    padding: var(--s-3) !important;
+  }
+
+  /* Stat-tile big numbers were 28-36px; on a phone we want quick scan,
+     not headline-sized. Brings the volume strip into a compact stripe. */
+  .stat-grid .ui-card,
+  .stat-grid .card,
+  div[style*="grid-template-columns"][style*="auto-fit"] > .ui-card {
+    padding: var(--s-3) !important;
+  }
+}
+
+/* ─── Tables in legacy pages (Contacts, Licenses) auto-wrap ─────────── */
+@media (max-width: 640px) {
+  /* Many list tables use grid-style headers via `<table>` or fixed
+     min-widths. Wrap their parent in horizontal scroll so cells don't
+     overlap or clip. The `.responsive-table` opt-in above handles this
+     for opt-in callers; this is a generic catch for legacy <table>. */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+  table tbody, table thead, table tr {
+    display: revert;
+  }
+}
+
+/* ─── Headers + page paddings on phones ─────────────────────────────── */
+@media (max-width: 640px) {
+  /* Page-level h1 in headers shouldn't push other widgets off-screen. */
+  header h1 {
+    font-size: var(--fs-2xl);
+  }
+  /* Tighten the standard page wrapper padding the few pages use. */
+  .page, .ui-page {
+    padding: var(--s-3) !important;
+  }
+}
+
+/* Light mode scaffold — switch body.light-mode to activate. Not wired yet. */
+body.light-mode {
+  --bg-0: #ffffff;
+  --bg-1: #f7f7f8;
+  --bg-2: #f0f0f2;
+  --bg-3: #e4e4e7;
+  --bg-hover: #ebebee;
+  --bg-active: #e0e0e4;
+  --border: #dcdce0;
+  --border-strong: #c0c0c6;
+  --text: #1a1b20;
+  --text-muted: #525660;
+  --text-dim: #7a7e87;
+  --text-disabled: #b0b3bb;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 20px 40px rgba(0, 0, 0, 0.1);
+}

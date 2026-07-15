@@ -142,11 +142,63 @@ export async function classifyFeedItem(raw: RawFeedItem): Promise<ClassifiedFeed
   }
 
   // ── PASS 5: HITL — human in the loop (~2%) ────────────────
+  // Detect forwarded emails first — when someone forwards an email to the
+  // user, the actionable signal is in the FORWARDER'S note, not the raw
+  // subject. Build a clean title/description that surfaces the real ask.
+  const { parseForwardedEmail, buildOpenItemFromForward } = await import('./openItems/forwardedEmailParser');
+  const { qualifyAutoOpenItem } = await import('./openItems/qualityGate');
+  const parsed = parseForwardedEmail(raw.subject ?? null, raw.body);
+  let title: string;
+  let description: string;
+  if (parsed.isForwarded) {
+    const built = buildOpenItemFromForward(
+      parsed,
+      raw.senderEmail ?? null,
+      raw.senderName ?? null,
+      raw.subject ?? raw.body.slice(0, 80),
+    );
+    title = built.title;
+    description = `${built.description}\n\nUnable to automatically classify this forwarded ${raw.source} item. Please review.`;
+  } else {
+    title = `Classification needed: ${raw.subject ?? raw.body.slice(0, 80)}`;
+    description = `Unable to automatically classify this ${raw.source} item. Please review.\n\nContent: ${raw.body.slice(0, 500)}`;
+  }
+
+  // Quality gate — Pass 5 only fires on the ~2% that nothing else
+  // resolved, but we still drop pure-FYI / no-signal residue rather than
+  // dump it on the user's Action Center.
+  const verdict = qualifyAutoOpenItem({
+    title,
+    body: parsed.innerBody ?? raw.body,
+    intent: pass2?.intent ?? null,
+    confidence: pass2?.confidence ?? 0,
+    senderEmail: raw.senderEmail ?? null,
+    archetype: parsed.isForwarded ? 'reply_needed' : null,
+    minConfidence: 0,  // confidence already failed pass2/3 — gate on signals only
+  });
+  if (verdict.verdict === 'reject') {
+    return null;  // dropped silently — not a real ask
+  }
+
+  // Priority floor from the sender's user-given stars. Policy: unrated
+  // is normal; criticality starts with stars; 5★ = top critical.
+  // - 0–2★ → no floor (medium default stays)
+  // - 3★ → at least medium (no-op vs default)
+  // - 4★ → at least high
+  // - 5★ → at least critical
+  let priority: 'low' | 'medium' | 'high' | 'critical' = 'medium';
+  try {
+    const { getStarsForSender } = await import('./knowledge/entitySweepService');
+    const stars = await getStarsForSender(raw.clientNumber, raw.userId, raw.senderEmail ?? null);
+    if (stars >= 5) priority = 'critical';
+    else if (stars === 4) priority = 'high';
+  } catch { /* no sender or stars unavailable — keep default */ }
+
   await openItemsService.createItem(raw.userId, raw.clientNumber, {
-    title: `Classification needed: ${raw.subject ?? raw.body.slice(0, 80)}`,
-    description: `Unable to automatically classify this ${raw.source} item. Please review.\n\nContent: ${raw.body.slice(0, 500)}`,
+    title,
+    description,
     type: 'alert',
-    priority: 'medium',
+    priority,
     sourceFeed: raw.source,
     sourceRef: raw.sourceRef,
     metadata: {
@@ -155,6 +207,18 @@ export async function classifyFeedItem(raw: RawFeedItem): Promise<ClassifiedFeed
       pass3Intent: pass3?.intent,
       requiresHITL: true,
       idempotencyKey,
+      // Surface for downstream hooks (star cadence in openItemsService
+      // looks these up to schedule WhatsApp notifications).
+      senderEmail: raw.senderEmail ?? null,
+      senderName: raw.senderName ?? null,
+      forwarded: parsed.isForwarded ? {
+        forwarderEmail: raw.senderEmail ?? null,
+        forwarderName: raw.senderName ?? null,
+        originalSenderEmail: parsed.originalSenderEmail,
+        originalSenderName: parsed.originalSenderName,
+        forwarderNote: parsed.forwarderNote,
+      } : undefined,
+      qualityGate: { code: verdict.code, reason: verdict.reason },
     },
   });
 

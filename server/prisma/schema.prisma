@@ -29,6 +29,16 @@ model Tenant {
   auditLogs      AuditLog[]
   scheduledTasks ScheduledTask[]
 
+  // Phase 1 — Self-Learning back-relations
+  brainLearningLogs BrainInteractionLearningLog[]
+  brainFeedback     BrainFeedback[]
+  brainMemories     GovernedBrainMemory[]
+
+  // Phase 2 — Gap/Proposal/DevRequest back-relations
+  detectedGaps        BrainDetectedGap[]
+  productProposals    BrainProductProposal[]
+  developmentRequests BrainDevelopmentRequest[]
+
   @@map("tenants")
 }
 
@@ -105,6 +115,9 @@ model User {
   lastLoginAt     DateTime? @map("last_login_at")
   failedAttempts  Int       @default(0) @map("failed_attempts")
   lockedUntil     DateTime? @map("locked_until")
+  // Demo-user expiry. NULL = permanent. When set + past, demoExpirySuspendJob
+  // flips is_active=false (reversible). Per Basit 2026-06-10.
+  expiresAt       DateTime? @map("expires_at")
   jobDescription  String?   @map("job_description") @db.Text
   city            String?   @db.VarChar(100)
   contactNumber   String?   @map("contact_number") @db.VarChar(30)
@@ -130,26 +143,92 @@ model User {
   integrationError        String?   @map("integration_error") @db.Text // last error message if any
   integrationPermissions  String?   @default("email_read,calendar_read") @map("integration_permissions") @db.Text // comma-separated: email_read,email_write,calendar_read,calendar_write,calendar_delete
 
+  // ── Per-user timezone (Sprint 4A, 2026-05-21) ──
+  // IANA timezone name, e.g., 'Asia/Karachi', 'America/New_York'.
+  // Drives todayDate in compose (so "tomorrow" resolves correctly
+  // in the user's local frame) and whenIso normalization in the
+  // dispatcher (so meetings land at the user's local time). Default
+  // 'Asia/Karachi' for backward compatibility with the original
+  // hardcode; new users in other regions set it explicitly.
+  timezone String? @db.VarChar(50)
+  // #13 (2026-07-14): timezone participates in resolution ONLY when the
+  // user explicitly selected it. Legacy rows inherited the old column
+  // default and are NOT explicit — they fall through to tenant → system.
+  timezoneIsExplicit Boolean @default(false) @map("timezone_is_explicit")
+
+  // ── HaseebOS v15 — per-user risk + agent config (M11) ──
+  riskTolerance           String? @map("risk_tolerance") @db.VarChar(10) // conservative | balanced | aggressive
+  agentConfigOverrides    Json?   @map("agent_config_overrides") // per-user agent tweaks
+  notificationPreferences Json?   @map("notification_preferences") // channel prefs, quiet hours
+  // App-level preferences the user controls from Settings. Currently:
+  //   attentionWindowDays — how far back My Attention surfaces unattended items (7..90, default 30)
+  //   briefWindowDays      — Brief audit trail window (1..30, default 7)
+  // Future flags for narrator voice, autonomy thresholds etc. live here.
+  preferences             Json?   @map("preferences")
+  killSwitchEnabled       Boolean @default(false) @map("kill_switch_enabled") // allow this user to trigger tenant kill switch
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  tenant             Tenant              @relation(fields: [clientNumber], references: [clientNumber])
-  sessions           Session[]
-  conversations      Conversation[]
-  auditLogs          AuditLog[]
-  scheduledTasks     ScheduledTask[]
-  personalDocuments  PersonalDocument[]
-  whatsappConnection WhatsAppConnection?
+  tenant              Tenant               @relation(fields: [clientNumber], references: [clientNumber])
+  sessions            Session[]
+  conversations       Conversation[]
+  auditLogs           AuditLog[]
+  scheduledTasks      ScheduledTask[]
+  personalDocuments   PersonalDocument[]
+  whatsappConnection  WhatsAppConnection?
+  brainUserMessages   BrainUserMessage[]
+  brainPromptQueue    BrainPromptQueue[]
+  brainPendingActions BrainPendingAction[]
+  promptOverlay       UserPromptOverlay[]
+  retrievalFeedback   RetrievalFeedback[]
+  brainResets         BrainReset[]
+
+  // Phase 1 — Self-Learning back-relations (named where ambiguous)
+  brainLearningLogs BrainInteractionLearningLog[]
+  brainFeedback     BrainFeedback[]
+  ownedMemories     GovernedBrainMemory[]         @relation("MemoryUser")
+  approvedMemories  GovernedBrainMemory[]         @relation("MemoryApprover")
+  rejectedMemories  GovernedBrainMemory[]         @relation("MemoryRejecter")
+
+  // Phase 2 — Gap/Proposal/DevRequest back-relations
+  detectedGaps         BrainDetectedGap[]        @relation("GapUser")
+  reviewedGaps         BrainDetectedGap[]        @relation("GapReviewer")
+  productProposals     BrainProductProposal[]    @relation("ProposalUser")
+  approvedProposals    BrainProductProposal[]    @relation("ProposalApprover")
+  devRequestsAsUser    BrainDevelopmentRequest[] @relation("DevReqUser")
+  requestedDevRequests BrainDevelopmentRequest[] @relation("DevReqRequester")
+  approvedDevRequests  BrainDevelopmentRequest[] @relation("DevReqApprover")
 
   @@unique([clientNumber, empcode])
   @@map("users")
+}
+
+// Settings → Brain → Reset & Cleanup audit log
+model BrainReset {
+  id               String    @id @default(cuid())
+  userId           Int       @map("user_id")
+  clientNumber     String?   @map("client_number") @db.VarChar(20)
+  tier             String    @db.VarChar(30) // 'quick' | 'refresh' | 'full' | 'full_with_contacts'
+  wipedCounts      Json      @default("{}") @map("wiped_counts")
+  archiveSuffix    String?   @map("archive_suffix") @db.VarChar(80)
+  archiveExpiresAt DateTime? @map("archive_expires_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("brain_resets")
 }
 
 // ─── Sessions ──────────────────────────────────────────────────
 
 model Session {
   id        Int      @id @default(autoincrement())
-  token     String   @unique @db.VarChar(255)
+  // C2 — sha256(token) hex. Raw token is returned to the client at issue
+  // time and never persisted; a read-only DB leak no longer hands over
+  // live bearer tokens.
+  tokenHash String   @unique @map("token_hash") @db.VarChar(64)
   userId    Int      @map("user_id")
   expiresAt DateTime @map("expires_at")
   isRevoked Boolean  @default(false) @map("is_revoked")
@@ -157,7 +236,7 @@ model Session {
   ipAddress String?  @map("ip_address") @db.VarChar(50)
   createdAt DateTime @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
 }
@@ -186,18 +265,25 @@ model Document {
 }
 
 model Chunk {
-  id           Int      @id @default(autoincrement())
-  clientNumber String   @map("client_number") @db.VarChar(20)
-  documentId   Int      @map("document_id")
-  content      String   @db.Text
-  embedding    Json     @default("[]")
-  chunkIndex   Int      @map("chunk_index")
-  headerPath   String[] @default([]) @map("header_path")
-  contentHash  String   @unique @map("content_hash") @db.VarChar(64)
-  department   String?  @db.VarChar(50)
-  source       String   @db.VarChar(50)
-  metadata     Json     @default("{}")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id              Int                         @id @default(autoincrement())
+  clientNumber    String                      @map("client_number") @db.VarChar(20)
+  documentId      Int                         @map("document_id")
+  content         String                      @db.Text
+  embedding       Json                        @default("[]")
+  // M1 — pgvector mirror of `embedding`. Written by the embedding backfill
+  // job; queried via raw SQL using `<=>` cosine distance. JSON column is
+  // kept until backfill is complete then dropped in a follow-up migration.
+  vectorEmbedding Unsupported("vector(768)")? @map("vector_embedding")
+  chunkIndex      Int                         @map("chunk_index")
+  headerPath      String[]                    @default([]) @map("header_path")
+  contentHash     String                      @unique @map("content_hash") @db.VarChar(64)
+  department      String?                     @db.VarChar(50)
+  source          String                      @db.VarChar(50)
+  metadata        Json                        @default("{}")
+  // #9 (2026-07-14): model that produced vector_embedding. NULL = legacy/
+  // unknown — retrieval EXCLUDES unknowns; bounded re-embed backfills them.
+  embeddingModel  String?                     @map("embedding_model") @db.VarChar(50)
+  createdAt       DateTime                    @default(now()) @map("created_at")
 
   tenant   Tenant   @relation(fields: [clientNumber], references: [clientNumber])
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -223,7 +309,7 @@ model Conversation {
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   tenant   Tenant    @relation(fields: [clientNumber], references: [clientNumber])
-  user     User      @relation(fields: [userId], references: [id])
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages Message[]
 
   @@map("conversations")
@@ -281,20 +367,26 @@ model AuditLog {
 // Scoped to userId only — admin queries NEVER touch these tables.
 
 model PersonalDocument {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  source      String   @db.VarChar(20) // 'gdrive' | 'upload'
-  externalId  String?  @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
-  folderId    String?  @map("folder_id") @db.VarChar(255) // GDrive folder ID (null for uploads)
-  fileName    String   @map("file_name") @db.VarChar(255)
-  mimeType    String   @map("mime_type") @db.VarChar(100)
-  sizeBytes   Int?     @map("size_bytes")
-  contentHash String?  @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
-  storagePath String?  @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
-  parseStatus String   @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
-  parseError  String?  @map("parse_error") @db.Text
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  id     Int @id @default(autoincrement())
+  userId Int @map("user_id")
+
+  // E3/E5 tenant defense-in-depth (2026-07-09): personal data was only
+  // user-scoped; a leaked/wrong userId crossed tenants with nothing to
+  // stop it. Nullable — NULL rows predate the backfill and remain
+  // readable; new writers always stamp the owner's tenant.
+  clientNumber String?  @map("client_number") @db.VarChar(50)
+  source       String   @db.VarChar(20) // 'gdrive' | 'upload'
+  externalId   String?  @map("external_id") @db.VarChar(255) // GDrive file ID (null for uploads)
+  folderId     String?  @map("folder_id") @db.VarChar(255) // GDrive folder ID (null for uploads)
+  fileName     String   @map("file_name") @db.VarChar(255)
+  mimeType     String   @map("mime_type") @db.VarChar(100)
+  sizeBytes    Int?     @map("size_bytes")
+  contentHash  String?  @map("content_hash") @db.VarChar(64) // SHA-256 for dedup
+  storagePath  String?  @map("storage_path") @db.VarChar(500) // GCS path for uploaded files
+  parseStatus  String   @default("pending") @map("parse_status") @db.VarChar(20) // pending|processing|done|error
+  parseError   String?  @map("parse_error") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   user   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   chunks PersonalChunk[]
@@ -302,24 +394,36 @@ model PersonalDocument {
   @@index([userId])
   @@index([userId, source])
   @@index([userId, externalId])
+  // Tenant-first composite: lets tenant-scoped reads prune by client
+  // before user, and doubles as the audit index for finding rows whose
+  // client_number disagrees with their owner's tenant.
+  @@index([clientNumber, userId])
   @@map("personal_documents")
 }
 
 model PersonalChunk {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  documentId  Int      @map("document_id")
-  content     String   @db.Text
-  embedding   Json     @default("[]")
-  chunkIndex  Int      @map("chunk_index")
-  contentHash String   @map("content_hash") @db.VarChar(64)
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         Int @id @default(autoincrement())
+  userId     Int @map("user_id")
+  documentId Int @map("document_id")
+
+  // E3/E5 tenant defense-in-depth (2026-07-09) — see PersonalDocument.
+  // Denormalised onto the chunk (not just the parent document) so the
+  // hot retrieval query can filter WITHOUT joining personal_documents.
+  clientNumber String?  @map("client_number") @db.VarChar(50)
+  content      String   @db.Text
+  embedding    Json     @default("[]")
+  chunkIndex   Int      @map("chunk_index")
+  contentHash  String   @map("content_hash") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
 
   document PersonalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([documentId])
   @@index([contentHash])
+  // Tenant-first composite matching the retrieval access pattern
+  // (tenant → user → document).
+  @@index([clientNumber, userId, documentId])
   @@map("personal_chunks")
 }
 
@@ -396,33 +500,48 @@ model DomainKnowledge {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
+  // E3/E5 tenant defense-in-depth (2026-07-09): NULL = global knowledge
+  // (the seeded regulatory/vertical corpus every tenant may read).
+  // Deliberately NOT backfilled — all existing rows ARE global seeds,
+  // so NULL is the correct end state, not a straggler.
+  clientNumber String? @map("client_number") @db.VarChar(50)
+
   parent   DomainKnowledge?  @relation("KnowledgeHierarchy", fields: [parentId], references: [id])
   children DomainKnowledge[] @relation("KnowledgeHierarchy")
 
   @@index([region, vertical])
   @@index([category])
+  @@index([clientNumber])
   @@map("domain_knowledge")
 }
 
 // ─── Phase 8: Agentic Capabilities ─────────────────────────────
 
 model AgentAction {
-  id               Int       @id @default(autoincrement())
-  clientNumber     String    @map("client_number") @db.VarChar(20)
-  userId           Int       @map("user_id")
-  actionType       String    @map("action_type") @db.VarChar(50) // draft_email|send_email|create_event|update_project|generate_report
-  status           String    @default("pending") @db.VarChar(20) // pending|approved|rejected|executing|done|error
-  input            Json      @default("{}")
-  output           Json?
-  requiresApproval Boolean   @default(true) @map("requires_approval")
-  approvedBy       Int?      @map("approved_by")
-  approvedAt       DateTime? @map("approved_at")
-  error            String?   @db.Text
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+  id                Int       @id @default(autoincrement())
+  clientNumber      String    @map("client_number") @db.VarChar(20)
+  userId            Int       @map("user_id")
+  actionType        String    @map("action_type") @db.VarChar(50) // draft_email|send_email|create_event|update_project|generate_report
+  status            String    @default("pending") @db.VarChar(20) // pending|approved|rejected|executing|dispatched|done|error|stale — dispatched=published to agent worker awaiting confirmation; stale=confirmation never arrived (reaper); only executor confirmation writes done/error
+  input             Json      @default("{}")
+  output            Json?
+  requiresApproval  Boolean   @default(true) @map("requires_approval")
+  approvedBy        Int?      @map("approved_by")
+  approvedAt        DateTime? @map("approved_at")
+  error             String?   @db.Text
+  // ── HaseebOS v15 (M13) ──
+  riskTier          String?   @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  undoStatus        String?   @map("undo_status") @db.VarChar(20) // none | undoable | undone | expired
+  idempotencyKey    String?   @unique @map("idempotency_key") @db.VarChar(128) // sha256 from actionIdempotencyService
+  dependencyGraphId String?   @map("dependency_graph_id") // groups related actions for cascading undo
+  executedByAgent   String?   @map("executed_by_agent") @db.VarChar(50) // brain | feed_curator | triage | action_executor | ...
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([clientNumber, userId])
   @@index([status])
+  @@index([dependencyGraphId])
+  @@index([executedByAgent])
   @@map("agent_actions")
 }
 
@@ -500,6 +619,439 @@ model WhatsAppSession {
   @@map("whatsapp_sessions")
 }
 
+/**
+ * PromptBlock — composable prompt fragments stored as data, not code.
+ * Phase 1 of the reasoning-first / data-driven refactor (2026-05-22).
+ * Replaces the hardcoded TS constants (CORE_CONVERSATIONAL_RULES,
+ * ACTION_RULES, FACTUAL_HONESTY_RULES, communication contract, etc.)
+ * Composer assembles a system prompt by querying applicable blocks
+ * at runtime instead of stitching constants together in code.
+ * Why: Brain can author its own prompt rules via the
+ * propose_prompt_block meta-action. User reviews in Settings →
+ * Brain → Rules, approves, the block lives in DB, next turn applies
+ * it. No code deploy needed. This is the "Brain builds itself"
+ * mechanism for behavior tuning.
+ * scope:
+ * - 'system': built-in seeded rules. Cannot be edited by users.
+ * - 'tenant': org-wide rules. Admin-only authoring.
+ * - 'user':   per-user rules from explicit settings or inferred
+ * from reflection (user must confirm).
+ * whenToInclude shape:
+ * { intent?: string[], requiresActionTurn?: boolean,
+ * channels?: ('web'|'whatsapp')[], languageHint?: string }
+ * Empty / null = always included.
+ * priority: higher = appears earlier in assembled prompt. System
+ * rules typically 100-200; user overrides 250+ so they win on conflict.
+ */
+model PromptBlock {
+  id            String    @id @default(cuid())
+  clientNumber  String?   @map("client_number") @db.VarChar(20) // null = system-wide
+  userId        Int?      @map("user_id") // null = tenant or system-scope
+  name          String    @db.VarChar(80)
+  content       String    @db.Text
+  whenToInclude Json?     @map("when_to_include")
+  priority      Int       @default(100)
+  scope         String    @default("user") @db.VarChar(20)
+  isActive      Boolean   @default(true) @map("is_active")
+  source        String    @default("user_proposed") @db.VarChar(20)
+  approvedAt    DateTime? @map("approved_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, name, scope], name: "one_block_name_per_user_scope")
+  @@index([clientNumber, scope, isActive])
+  @@index([userId, isActive])
+  @@map("prompt_blocks")
+}
+
+/**
+ * ActionDefinition — registry of action types Brain can dispatch.
+ * Phase 1 of data-driven refactor (2026-05-22).
+ * Replaces the switch/case in instructionDispatcher and the
+ * normaliseAction validator. Each action type is a row with its
+ * schema, the handler module + function to invoke, the preview
+ * template, the capability key required.
+ * The generic dispatcher reads this table on every action turn:
+ * - validates the payload against schema
+ * - checks capability via capability_registry
+ * - invokes handlerModule.handlerFunction(payload)
+ * Brain can propose new action types via register_action_type
+ * meta-action — constrained to use existing handler patterns
+ * (e.g., webhook adapter). User approves in Settings.
+ * schema (jsonb): JSON schema describing the action's slots.
+ * { type: 'object', required: ['to', 'subject', 'body'], properties: {...} }
+ * isHumanFacing: true → preview gate applies; false → direct dispatch OK.
+ */
+model ActionDefinition {
+  id                 String    @id @default(cuid())
+  type               String    @unique @db.VarChar(40)
+  displayName        String    @map("display_name") @db.VarChar(100)
+  description        String    @db.Text
+  schema             Json
+  handlerModule      String    @map("handler_module") @db.VarChar(100)
+  handlerFunction    String    @map("handler_function") @db.VarChar(100)
+  previewTemplate    String?   @map("preview_template") @db.Text
+  requiresCapability String?   @map("requires_capability") @db.VarChar(80)
+  isHumanFacing      Boolean   @default(false) @map("is_human_facing")
+  isActive           Boolean   @default(true) @map("is_active")
+  scope              String    @default("system") @db.VarChar(20)
+  source             String    @default("seeded") @db.VarChar(20)
+  approvedAt         DateTime? @map("approved_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  // E3/E5 tenant defense-in-depth (2026-07-09): NULL = system/global
+  // action available to every tenant (all seeded rows). A non-NULL
+  // value pins a user-proposed action to the tenant that proposed it,
+  // so tenant A's custom action never shows up in tenant B's registry.
+  // Deliberately NOT backfilled — every existing row is a system seed.
+  clientNumber String? @map("client_number") @db.VarChar(50)
+
+  // #7 (2026-07-14): operational requirements live WITH the action —
+  // {external: boolean, connectors?: {anyOf: string[]}}. Live capability
+  // discovery reads this; a side map cannot drift from dispatch.
+  operationalMetadata Json? @map("operational_metadata")
+
+  @@index([scope, isActive])
+  @@index([clientNumber])
+  @@map("action_definitions")
+}
+
+/**
+ * CapabilityRegistry — what each user/tenant is allowed to do.
+ * Phase 1 of data-driven refactor (2026-05-22).
+ * Replaces inline checks like "if user.integrationProvider === 'google'
+ * then can send_email". Each capability is a row; the generic dispatcher
+ * checks the registry before invoking an action.
+ * Brain can request a new capability via request_capability — the
+ * row is created with status='requested'; user approves in Settings;
+ * status flips to 'enabled'.
+ */
+model CapabilityRegistry {
+  id            String    @id @default(cuid())
+  clientNumber  String    @map("client_number") @db.VarChar(20)
+  userId        Int       @map("user_id")
+  capabilityKey String    @map("capability_key") @db.VarChar(80)
+  status        String    @db.VarChar(20) // enabled | disabled | requested | denied
+  config        Json?
+  grantedBy     Int?      @map("granted_by")
+  grantedAt     DateTime? @map("granted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, capabilityKey], name: "one_capability_per_user")
+  @@index([clientNumber, status])
+  @@map("capability_registry")
+}
+
+/**
+ * ClarificationMemory — Brain's record of "I had to ask X, you said Y".
+ * Phase 1 of reasoning-first refactor (2026-05-22).
+ * Every time Brain decides to ASK a clarifying question (instead of
+ * acting or answering directly), this table records the question, the
+ * slot being filled, and (when the user answers) the resolution. Future
+ * similar turns hit this table BEFORE asking again — that's how the
+ * system gets smarter without code changes.
+ * questionHash: normalized hash of the (slot + context-signature)
+ * pair, for O(1) lookup. Match logic: same slot + similar context →
+ * reuse the resolution.
+ */
+model ClarificationMemory {
+  id                String   @id @default(cuid())
+  clientNumber      String   @map("client_number") @db.VarChar(20)
+  userId            Int      @map("user_id")
+  questionPattern   String   @map("question_pattern") @db.Text
+  questionHash      String   @map("question_hash") @db.VarChar(64)
+  slotBeingFilled   String   @map("slot_being_filled") @db.VarChar(80)
+  resolutionValue   Json     @map("resolution_value")
+  resolutionContext Json?    @map("resolution_context")
+  usedCount         Int      @default(1) @map("used_count")
+  lastUsedAt        DateTime @default(now()) @map("last_used_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, questionHash], name: "one_resolution_per_user_per_question")
+  @@index([userId, slotBeingFilled])
+  @@index([clientNumber, lastUsedAt])
+  @@map("clarification_memory")
+}
+
+/**
+ * ReasoningTrace — debugging + audit trail for the reasoning-first
+ * composer. One row per turn. Phase 1 (2026-05-22).
+ * Captures Brain's decision (act/ask/answer/decline), the rationale,
+ * the model's confidence, token spend. Used for:
+ * - Settings → Brain → Activity (user-visible "how Brain decided")
+ * - Postmortems when Brain misbehaves ("which path did reasoning take?")
+ * - Cost monitoring (per-user token spend)
+ * 14-day TTL via the cleanup job to bound storage.
+ */
+model ReasoningTrace {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  turnId        String   @map("turn_id") @db.VarChar(60)
+  reasoningText String?  @map("reasoning_text") @db.Text
+  decidedAction String   @map("decided_action") @db.VarChar(30)
+  actionType    String?  @map("action_type") @db.VarChar(40)
+  confidence    Float?
+  inputTokens   Int?     @map("input_tokens")
+  outputTokens  Int?     @map("output_tokens")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([clientNumber, createdAt])
+  @@map("reasoning_traces")
+}
+
+/**
+ * BrainActionArtifact — canonical lifecycle record for every
+ * action Brain has attempted. Quality Sprint 5b (2026-05-21).
+ * Replaces the spread-across-three-tables debugging pain (state
+ * currently lives in PendingAction + ActionIdempotencyLog + WA
+ * session-history role='artifact'). One row per action attempt
+ * with explicit status transitions; the other tables remain for
+ * their primary purposes (pending = working memory, idempotency
+ * = dedupe lock).
+ * Status lifecycle:
+ * previewed (gate fired)
+ * → confirmed (user said send)
+ * → dispatching (handler started)
+ * → succeeded (handler returned ok)
+ * → failed   (handler returned !ok / threw)
+ * → cancelled  (user said cancel)
+ * → expired    (no response within preview TTL)
+ * Direct-emit paths (no preview gate — internal actions, canonical
+ * test email) skip 'previewed' and go straight 'dispatching' → result.
+ * Indexed for "what did Brain do recently?" queries on a per-user,
+ * per-channel basis.
+ */
+model BrainActionArtifact {
+  id              String   @id @default(cuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  channel         String   @db.VarChar(20) // 'web' | 'whatsapp'
+  pendingActionId String?  @map("pending_action_id") @db.VarChar(40)
+  previewHash     String?  @map("preview_hash") @db.VarChar(64)
+  idempotencyKey  String?  @map("idempotency_key") @db.VarChar(128)
+  actionType      String   @map("action_type") @db.VarChar(40)
+  status          String   @db.VarChar(30)
+  payload         Json
+  result          Json?
+  errorCode       String?  @map("error_code") @db.VarChar(40)
+  errorMessage    String?  @map("error_message") @db.Text
+  artifactExtId   String?  @map("artifact_ext_id") @db.VarChar(200) // external id (gmail messageId, calendar eventId, openItemId)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([userId, channel, createdAt])
+  @@index([clientNumber, createdAt])
+  @@index([artifactExtId])
+  @@map("brain_action_artifacts")
+}
+
+/**
+ * Person — unified per-user identity for someone the user
+ * communicates with. Quality Sprint 3 (2026-05-21).
+ * Solves the "Asad-via-Gmail + Asad-via-WhatsApp + Asad-via-Calendar
+ * are three different rows" fragmentation. A Person aggregates all
+ * facets (email, phone, WA JID, internal user id, entity id) under
+ * one identity per (userId, clientNumber).
+ * Scope is per-user — the user's view of "who is this person". Two
+ * users in the same tenant can have different Person records for
+ * the same human (e.g., one knows Asad only by work email, another
+ * also knows his WhatsApp). Tenant-wide identity unification is a
+ * future enhancement.
+ * displayName: free-form, what Brain uses when referring to them
+ * canonicalName: lowercase / collapsed-whitespace for fuzzy lookup
+ * (e.g., "Asad Ahmed Taj" → "asad ahmed taj")
+ * Facets are unique by (personId, facetType, facetValue) so an email
+ * can only belong to one Person per row.
+ */
+model Person {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  displayName   String   @map("display_name") @db.VarChar(200)
+  canonicalName String?  @map("canonical_name") @db.VarChar(200)
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  facets PersonFacet[]
+
+  @@index([userId, canonicalName])
+  @@index([clientNumber, userId])
+  @@map("persons")
+}
+
+/**
+ * PersonFacet — one identifier (email / phone / etc) belonging
+ * to a Person. Quality Sprint 3 (2026-05-21).
+ * facetType values:
+ * - 'email'         — e.g., asad.ahmed@tmcltd.ai
+ * - 'phone'         — E.164-ish, e.g., +923001234567
+ * - 'whatsapp_jid'  — Meta WA identifier (when separate from phone)
+ * - 'user_id'       — internal User.id (string-encoded) when this
+ * Person IS a tenant teammate
+ * - 'entity_id'     — Entity.id when this Person was first seen
+ * as an external contact row
+ * source values:
+ * - 'user_explicit' — user told Brain ("Asad's number is +923…")
+ * - 'inferred'      — backfilled from existing data
+ * - 'system'        — auto-linked during action dispatch
+ * - 'backfill'      — populated by the one-time migration
+ * verified=true means we've confirmed this facet works (sent email,
+ * called number, etc.). Useful for ranking when picking which
+ * channel to use for a Person.
+ */
+model PersonFacet {
+  id         String    @id @default(cuid())
+  personId   String    @map("person_id")
+  facetType  String    @map("facet_type") @db.VarChar(20)
+  facetValue String    @map("facet_value") @db.VarChar(300)
+  verified   Boolean   @default(false)
+  source     String    @db.VarChar(20)
+  confidence Float     @default(1.0)
+  lastSeenAt DateTime? @map("last_seen_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, facetType, facetValue], name: "one_facet_value_per_person")
+  @@index([facetType, facetValue])
+  @@map("person_facets")
+}
+
+/**
+ * UserMemory — durable per-user preferences and facts.
+ * Quality Sprint 2 (2026-05-21).
+ * Holds preferences and self-described facts that Brain should
+ * remember across sessions:
+ * - email_signoff: "Best regards"
+ * - default_meeting_duration: 30 (min)
+ * - working_hours: { start: "09:00", end: "18:00" }
+ * - preferred_channel_for: { "asad": "whatsapp" }
+ * - email_tone: "formal" | "casual"
+ * - signature: free-text block
+ * Source values:
+ * - 'explicit'  — user directly told Brain ("remember I sign off as X")
+ * - 'inferred'  — background reflection job extracted from prior turns
+ * (REQUIRES user confirmation before applying)
+ * - 'system'    — set by Brain itself (e.g., brain_name auto-set)
+ * Inferred memories with confirmedAt=NULL are HOLD-only: visible in
+ * Settings for review but NOT injected into the composer prompt
+ * until the user confirms them. Per third-party review #2 on long-
+ * term memory: silent learning is dangerous; explicit auditable
+ * preferences only.
+ */
+model UserMemory {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  key          String    @db.VarChar(80)
+  value        Json
+  category     String    @default("preference") @db.VarChar(30) // 'preference' | 'fact' | 'context'
+  source       String    @db.VarChar(20)
+  confidence   Float     @default(1.0)
+  confirmedAt  DateTime? @map("confirmed_at")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, key])
+  @@index([clientNumber, userId])
+  @@map("user_memories")
+}
+
+/**
+ * UserResolutionAlias — per-user mapping from a short name / nickname
+ * to a specific identifier (email or phone) the user has resolved
+ * before. Sprint 2 (2026-05-21).
+ * Solves "every session asks 'which Asad?'" — after the first
+ * explicit resolution, the resolver hits this table on every later
+ * mention of the alias and surfaces the prior pick as a strong-
+ * preference candidate. The LLM still confirms before sending if
+ * Brain's preview gate fires, so a stale alias can be caught.
+ * Stored as a normalized lowercase alias (no spaces, no
+ * special chars trimmed) so "Asad" / "asad" / "ASAD" all match the
+ * same row.
+ * source values:
+ * - 'explicit'  — user resolved disambiguation explicitly
+ * - 'inferred'  — recipient was unambiguous, recording for future
+ * - 'pinned'    — user manually pinned via Settings (not yet wired)
+ * Confidence is 0..1; resolutions decay over time but remain
+ * authoritative until the user contradicts.
+ */
+model UserResolutionAlias {
+  id             Int      @id @default(autoincrement())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  userId         Int      @map("user_id")
+  alias          String   @db.VarChar(120) // normalized lowercase
+  identifier     String   @db.VarChar(200) // email OR phone (normalized)
+  identifierKind String   @map("identifier_kind") @db.VarChar(20) // 'email' | 'phone'
+  displayName    String?  @map("display_name") @db.VarChar(200)
+  source         String   @default("explicit") @db.VarChar(20)
+  confidence     Float    @default(1.0)
+  usedCount      Int      @default(1) @map("used_count")
+  lastUsedAt     DateTime @default(now()) @map("last_used_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, alias, identifier], name: "one_alias_target_per_user")
+  @@index([userId, alias])
+  @@index([clientNumber, lastUsedAt])
+  @@map("user_resolution_aliases")
+}
+
+/**
+ * BrainPendingAction — durable working memory for a multi-turn action.
+ * Sprint 1 (2026-05-21) addresses the "Brain forgets what we were doing"
+ * failure: previously, every turn re-derived state from raw chat history
+ * and the LLM had to re-figure-out "we're scheduling X with Y at Z" each
+ * time. With this table, Brain holds the in-progress action explicitly
+ * and a deterministic reducer (turnRelationReducer) decides whether the
+ * user's current message continues / confirms / corrects / cancels it.
+ * Invariant: at most one ACTIVE row per (userId, channel). When a new
+ * task begins mid-flow, the existing pending is replaced or carried
+ * over as the reducer decides. Rows expire after 1h of inactivity.
+ * Status lifecycle:
+ * collecting_slots → preview_shown → confirmed → completed
+ * ↘ failed
+ * → cancelled (any time)
+ * slots is action-specific JSON; missingSlots names the remaining
+ * required fields so the slot-filler can ask for the next one
+ * deterministically (no "ask all questions at once" prose).
+ */
+model BrainPendingAction {
+  id           String    @id @default(cuid())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  channel      String    @db.VarChar(20) // 'web' | 'whatsapp'
+  actionKind   String    @map("action_kind") @db.VarChar(40) // 'schedule_meeting' | 'send_email' | etc
+  status       String    @db.VarChar(30) // see lifecycle above
+  slots        Json      @default("{}")
+  missingSlots String[]  @default([]) @map("missing_slots")
+  previewHash  String?   @map("preview_hash") @db.VarChar(64)
+  previewedAt  DateTime? @map("previewed_at")
+  artifactId   String?   @map("artifact_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+  expiresAt    DateTime  @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Note: the database has a PARTIAL unique index on (user_id, channel)
+  // WHERE status IN ('collecting_slots','preview_shown','confirmed')
+  // — see migration 20260522_pending_partial_unique. The original
+  // @@unique([userId, channel, status]) accidentally enforced
+  // "one terminal row per status" too, which broke the cancel-then-
+  // create flow whenever the user had any prior pending history.
+  // Prisma can't express partial unique indexes inline, so it's
+  // applied via raw SQL migration.
+  @@index([clientNumber, expiresAt])
+  @@index([userId, channel, updatedAt])
+  @@map("brain_pending_actions")
+}
+
 // ─── Scheduled Tasks ───────────────────────────────────────────
 
 model ScheduledTask {
@@ -521,7 +1073,7 @@ model ScheduledTask {
   updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [clientNumber], references: [clientNumber])
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("scheduled_tasks")
 }
@@ -601,37 +1153,147 @@ model UserConnector {
 // ─── Open Items ───────────────────────────────────────────────────
 
 model OpenItem {
-  id              String    @id @default(cuid())
-  itemNumber      Int       @default(autoincrement()) @map("item_number")
-  title           String    @db.VarChar(500)
-  description     String?   @db.Text
-  entityId        String?   @map("entity_id")
-  type            String    @db.VarChar(30) // task | email | delegation | alert | erp | okr | risk
-  status          String    @default("open") @db.VarChar(20) // open | in_progress | delegated | blocked | done | overdue
-  priority        String    @default("medium") @db.VarChar(10) // critical | high | medium | low
-  ownerId         Int       @map("owner_id") // FK → User
-  delegateeId     Int?      @map("delegatee_id") // FK → User (internal)
-  delegateeName   String?   @map("delegatee_name") @db.VarChar(200) // external person name
-  delegateeEmail  String?   @map("delegatee_email") @db.VarChar(200)
-  dueDate         DateTime? @map("due_date")
-  sourceFeed      String?   @map("source_feed") @db.VarChar(30) // gmail | whatsapp | chat | erp | okr | manual
-  sourceRef       String?   @map("source_ref") @db.VarChar(500) // thread ID, session ID, etc.
-  connectorId     String?   @map("connector_id") // FK → UserConnector
-  delegationTrail Json      @default("[]") @map("delegation_trail")
-  notes           Json      @default("[]")
-  metadata        Json?
-  priorityScore   Float?    @map("priority_score")
-  idempotencyKey  String?   @unique @map("idempotency_key")
-  clientNumber    String    @map("client_number") @db.VarChar(20)
-  userId          Int       @map("user_id")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  id                String    @id @default(cuid())
+  itemNumber        Int       @default(autoincrement()) @map("item_number")
+  title             String    @db.VarChar(500)
+  description       String?   @db.Text
+  entityId          String?   @map("entity_id")
+  type              String    @db.VarChar(30) // task | email | delegation | alert | erp | okr | risk
+  // HaseebOS v15 §3.2 L2 — 8-value lifecycle enforced by services/itemLifecycle
+  status            String    @default("NEW") @db.VarChar(20) // NEW | TRIAGED | IN_PROGRESS | DELEGATED | WAITING_INFO | SNOOZED | INFORMED | CLOSED
+  priority          String    @default("medium") @db.VarChar(10) // critical | high | medium | low
+  ownerId           Int       @map("owner_id") // FK → User
+  delegateeId       Int?      @map("delegatee_id") // FK → User (internal)
+  delegateeName     String?   @map("delegatee_name") @db.VarChar(200) // external person name
+  delegateeEmail    String?   @map("delegatee_email") @db.VarChar(200)
+  dueDate           DateTime? @map("due_date")
+  sourceFeed        String?   @map("source_feed") @db.VarChar(30) // gmail | whatsapp | chat | erp | okr | manual
+  sourceRef         String?   @map("source_ref") @db.VarChar(500) // thread ID, session ID, etc.
+  connectorId       String?   @map("connector_id") // FK → UserConnector
+  delegationTrail   Json      @default("[]") @map("delegation_trail")
+  notes             Json      @default("[]")
+  metadata          Json?
+  priorityScore     Float?    @map("priority_score")
+  idempotencyKey    String?   @unique @map("idempotency_key")
+  clientNumber      String    @map("client_number") @db.VarChar(20)
+  userId            Int       @map("user_id")
+  // ── HaseebOS v15 (M12) ──
+  dedupHash         String?   @map("dedup_hash") @db.VarChar(64) // sha256 over canonical content for dedup
+  enrichmentData    Json?     @map("enrichment_data") // classifier output, entity links, features
+  shadowScore       Float?    @map("shadow_score") // score from shadow rules (no UI action)
+  sourceFeedEventId String?   @map("source_feed_event_id") // FK → feed_events.id (soft ref)
+  archetype         String?   @db.VarChar(30) // reply_needed | delegate | inform_only | schedule_meeting | review_risk | acknowledge
+
+  // Delegation lifecycle tracking — populated after a DELEGATED transition.
+  // The follow-up worker reads these to decide what to chase and when.
+  delegationEmailedAt      DateTime? @map("delegation_emailed_at")
+  delegationEmailMessageId String?   @map("delegation_email_message_id")
+  delegationFollowupCount  Int       @default(0) @map("delegation_followup_count")
+  delegationLastFollowupAt DateTime? @map("delegation_last_followup_at")
+  delegationFollowupTrail  Json      @default("[]") @map("delegation_followup_trail")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([clientNumber, userId, status])
   @@index([clientNumber, userId, priority])
   @@index([clientNumber, entityId])
   @@index([priorityScore])
+  @@index([clientNumber, dedupHash])
+  @@index([sourceFeedEventId])
   @@map("open_items")
+}
+
+// Models removed 2026-05-18:
+//   - OpenItemEmbedding → table dropped (orphan, never referenced)
+//   - ItemStatusHistory → table dropped (replaced by open_items.notes JSON)
+// Both tables were created by past migrations but no service ever queried
+// them. Drop verified via grep; backup of empty data in
+// /tmp/tmcai-drop-backup-2026-05-18 on prod.
+
+// ─── MyOS Wiki (Memex layer) ──────────────────────────────────────
+// Per-user, multi-tenant wiki pages. Backing storage can be Notion (when the
+// user has connected it) or Postgres markdown (fallback). All tables are scoped
+// by (client_number, user_id) — no cross-user reads ever.
+
+model WikiPage {
+  id            String   @id @default(cuid()) // Notion page ID if notion-backed, cuid otherwise
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  pageType      String   @map("page_type") @db.VarChar(30) // entity | concept | decision | pattern | meeting | project | source_summary
+  title         String   @db.VarChar(300)
+  notionDbId    String?  @map("notion_db_id") @db.VarChar(50) // which Notion DB; null if postgres-backed
+  storage       String   @db.VarChar(20) // 'notion' | 'postgres'
+  bodyMarkdown  String?  @map("body_markdown") @db.Text // populated when storage='postgres'
+  inboundLinks  Int      @default(0) @map("inbound_links")
+  outboundLinks Int      @default(0) @map("outbound_links")
+  sourceCount   Int      @default(0) @map("source_count")
+  status        String   @default("active") @db.VarChar(20) // active | orphan | stale | contradicted | draft
+  // Visibility scope. 'user' = private to user_id; 'tenant' = shared
+  // across all users with this clientNumber. Retrieval filters:
+  //   WHERE client_number = $cn AND
+  //         (scope = 'tenant' OR (scope = 'user' AND user_id = $me))
+  scope         String   @default("user") @db.VarChar(10)
+  confidence    Float?
+  metadata      Json?
+  lastUpdatedBy String?  @map("last_updated_by") @db.VarChar(50) // wiki_scribe | user:<id> | lint
+  lastUpdatedAt DateTime @default(now()) @map("last_updated_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Vector retrieval (pgvector). `embedding` itself is vector(768) in
+  // Postgres — Prisma has no native vector type so we mark it Unsupported
+  // and write via raw SQL inside wikiEmbeddingService. The three
+  // bookkeeping columns ride along so we can tell when the embedding is
+  // stale or which model produced it.
+  embedding         Unsupported("vector(768)")? @map("embedding")
+  embeddingModel    String?                     @map("embedding_model") @db.VarChar(40)
+  embeddedAt        DateTime?                   @map("embedded_at")
+  embeddingTextHash String?                     @map("embedding_text_hash") @db.VarChar(64)
+
+  sources       WikiPageSource[]
+  outboundEdges WikiPageLink[]   @relation("from_page")
+  inboundEdges  WikiPageLink[]   @relation("to_page")
+
+  @@unique([clientNumber, userId, pageType, title], name: "wiki_pages_user_title_idx")
+  @@index([clientNumber, userId, pageType])
+  @@index([clientNumber, userId, status])
+  @@map("wiki_pages")
+}
+
+// Lineage: which raw sources, decisions, or open items contributed to this page.
+model WikiPageSource {
+  id            Int      @id @default(autoincrement())
+  wikiPageId    String   @map("wiki_page_id")
+  feedEventId   String?  @map("feed_event_id")
+  decisionLogId String?  @map("decision_log_id")
+  openItemId    String?  @map("open_item_id")
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  citedAt       DateTime @default(now()) @map("cited_at")
+
+  wikiPage WikiPage @relation(fields: [wikiPageId], references: [id], onDelete: Cascade)
+
+  @@index([wikiPageId])
+  @@index([clientNumber, userId, citedAt])
+  @@map("wiki_page_sources")
+}
+
+// Cross-reference graph between pages in the same user's wiki.
+model WikiPageLink {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  fromPageId   String   @map("from_page_id")
+  toPageId     String   @map("to_page_id")
+  linkType     String?  @map("link_type") @db.VarChar(30) // related | supersedes | contradicts | parent | child
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  fromPage WikiPage @relation("from_page", fields: [fromPageId], references: [id], onDelete: Cascade)
+  toPage   WikiPage @relation("to_page", fields: [toPageId], references: [id], onDelete: Cascade)
+
+  @@unique([fromPageId, toPageId, linkType])
+  @@index([clientNumber, userId])
+  @@map("wiki_page_links")
 }
 
 // ─── Entity Knowledge Graph ───────────────────────────────────────
@@ -650,8 +1312,28 @@ model Entity {
   lastInteraction      DateTime? @map("last_interaction")
   clientNumber         String    @map("client_number") @db.VarChar(20)
   createdBy            Int?      @map("created_by")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  // CRITICAL — added 2026-05-22 P0 after cross-user data leak.
+  // ownerUserId: the user this row belongs to. For scope='user'
+  //   rows, queries MUST filter ownerUserId = currentUser. For
+  //   scope='tenant' rows, all users in the tenant can see them.
+  // scope: 'user' (private contact, default for auto-discovered)
+  //        | 'tenant' (org-shared employee/account/project)
+  // Without this, ANY user in a tenant could see ANY contact created
+  // from another user's email/WhatsApp ingestion — exactly what
+  // happened 2026-05-21 when Basit saw Ali Numan from Haseeb's inbox.
+  ownerUserId Int?   @map("owner_user_id")
+  scope       String @default("user") @db.VarChar(20)
+
+  // Per user 2026-05-13: an executive's contact often has multiple
+  // identifiers (work email + personal email + phone). Path B = keep
+  // one row per identifier, but link them under a shared id so Brain
+  // knows it's one person, while letting EACH row carry its own
+  // Public/Private scope. Nullable — unlinked rows have null. Multiple
+  // rows with the same linkedPersonId form a "person group."
+  linkedPersonId String?  @map("linked_person_id") @db.VarChar(32)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   linksFrom EntityLink[] @relation("entity_from")
   linksTo   EntityLink[] @relation("entity_to")
@@ -659,6 +1341,10 @@ model Entity {
   @@unique([clientNumber, entityType, email])
   @@index([clientNumber, entityType])
   @@index([clientNumber, name])
+  @@index([clientNumber, linkedPersonId])
+  // P0: indexes for owner-scoped reads, the hot path post-fix.
+  @@index([clientNumber, ownerUserId, entityType])
+  @@index([clientNumber, scope, entityType])
   @@map("entities")
 }
 
@@ -681,33 +1367,341 @@ model EntityLink {
 // ─── Brain Configuration (per-user) ──────────────────────────────
 
 model BrainConfig {
-  id              String   @id @default(cuid())
-  userId          Int      @unique @map("user_id")
-  clientNumber    String   @map("client_number") @db.VarChar(20)
-  masterContext   String?  @map("master_context") @db.Text // user's self-described role, team, responsibilities
-  delegationRules Json     @default("[]") @map("delegation_rules")
-  escalationRules Json     @default("[]") @map("escalation_rules")
-  privacyRules    Json     @default("[]") @map("privacy_rules")
-  feedSettings    Json     @default("{}") @map("feed_settings")
-  briefingConfig  Json     @default("{}") @map("briefing_config")
-  alertThresholds Json     @default("{}") @map("alert_thresholds")
-  automationLevel     String   @default("drafts_only") @map("automation_level") @db.VarChar(20) // observe_only | drafts_only | supervised | full_auto
-  confirmedPatterns   Json     @default("[]") @map("confirmed_patterns")
-  revokedPatterns     Json     @default("[]") @map("revoked_patterns")
-  thoughtPipelineConfig Json   @default("{}") @map("thought_pipeline_config")
+  id                    String    @id @default(cuid())
+  userId                Int       @unique @map("user_id")
+  clientNumber          String    @map("client_number") @db.VarChar(20)
+  masterContext         String?   @map("master_context") @db.Text // user's self-described role, team, responsibilities
+  delegationRules       Json      @default("[]") @map("delegation_rules")
+  escalationRules       Json      @default("[]") @map("escalation_rules")
+  privacyRules          Json      @default("[]") @map("privacy_rules")
+  feedSettings          Json      @default("{}") @map("feed_settings")
+  briefingConfig        Json      @default("{}") @map("briefing_config")
+  alertThresholds       Json      @default("{}") @map("alert_thresholds")
+  automationLevel       String    @default("drafts_only") @map("automation_level") @db.VarChar(20) // observe_only | drafts_only | supervised | full_auto
+  confirmedPatterns     Json      @default("[]") @map("confirmed_patterns")
+  revokedPatterns       Json      @default("[]") @map("revoked_patterns")
+  thoughtPipelineConfig Json      @default("{}") @map("thought_pipeline_config")
+  // Per-user risk-radar config (signals, thresholds, schedule). Empty =
+  // use defaults from riskRadarService. Editable via brain config routes.
+  riskRadarConfig       Json      @default("{}") @map("risk_radar_config")
+  // Per-user web-push preferences: enabled toggle, per-event-type
+  // settings, quiet hours, rate limits. Defaults applied in pushService.
+  pushPrefs             Json      @default("{}") @map("push_prefs")
   // Brain Engine fields (v2 spec)
-  engineSchedule      String?  @map("engine_schedule") @db.VarChar(50)  // cron expression, null = on demand only, default "0 3 * * *"
-  engineTimezone      String   @default("Asia/Karachi") @map("engine_timezone") @db.VarChar(50)
-  lastEngineRun       DateTime? @map("last_engine_run")
-  nextEngineRun       DateTime? @map("next_engine_run")
-  briefDeliveryTime   String?  @map("brief_delivery_time") @db.VarChar(10) // HH:MM format, null = on demand only
-  engineRunning       Boolean  @default(false) @map("engine_running")    // mutex lock
-  isActive            Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  engineSchedule        String?   @map("engine_schedule") @db.VarChar(50) // cron expression, null = on demand only, default "0 3 * * *"
+  engineTimezone        String    @default("Asia/Karachi") @map("engine_timezone") @db.VarChar(50)
+  lastEngineRun         DateTime? @map("last_engine_run")
+  nextEngineRun         DateTime? @map("next_engine_run")
+  briefDeliveryTime     String?   @map("brief_delivery_time") @db.VarChar(10) // HH:MM format, null = on demand only
+  engineRunning         Boolean   @default(false) @map("engine_running") // mutex lock
+  isActive              Boolean   @default(true) @map("is_active")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([clientNumber])
   @@map("brain_configs")
+}
+
+// ─── Rule-Engine Gate ─────────────────────────────────────────────
+// Deterministic pre-LLM filter. Three layers — system / tenant / user.
+// User > tenant > system. Predicate + action are JSON DSL; see
+// ruleEngineService.ts for shape and examples.
+
+model GateRule {
+  id              Int       @id @default(autoincrement())
+  scope           String    @db.VarChar(10) // system | tenant | user
+  clientNumber    String?   @map("client_number") @db.VarChar(20)
+  userId          Int?      @map("user_id")
+  ruleKey         String?   @map("rule_key") @db.VarChar(80)
+  name            String    @db.VarChar(200)
+  description     String?   @db.Text
+  predicate       Json
+  action          Json
+  priority        Int       @default(100)
+  enabled         Boolean   @default(true)
+  fireCount       Int       @default(0) @map("fire_count")
+  lastFiredAt     DateTime? @map("last_fired_at")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, scope, enabled, priority], map: "gate_rules_lookup_idx")
+  @@index([userId, enabled, priority], map: "gate_rules_user_idx")
+  @@index([ruleKey], map: "gate_rules_key_idx")
+  @@map("gate_rules")
+}
+
+model GateRuleOverride {
+  id           Int      @id @default(autoincrement())
+  ruleKey      String   @map("rule_key") @db.VarChar(80)
+  scope        String   @db.VarChar(10) // tenant | user
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int?     @map("user_id")
+  disabled     Boolean  @default(true)
+  reason       String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([ruleKey, scope, clientNumber, userId], map: "gate_rule_overrides_unique")
+  @@index([clientNumber, scope, disabled], map: "gate_rule_overrides_lookup_idx")
+  @@map("gate_rule_overrides")
+}
+
+// ─── Risk Rules ────────────────────────────────────────────────────
+// User-defined rules that drive Risk Radar flags. Predicate DSL is
+// identical to gate_rules; the source field decides which table the
+// executor scans. Three scopes (system/tenant/user) with the same
+// override pattern as gate_rules.
+
+model RiskRule {
+  id              Int       @id @default(autoincrement())
+  scope           String    @db.VarChar(10) // system | tenant | user
+  clientNumber    String?   @map("client_number") @db.VarChar(20)
+  userId          Int?      @map("user_id")
+  ruleKey         String?   @map("rule_key") @db.VarChar(80)
+  name            String    @db.VarChar(200)
+  description     String?   @db.Text
+  source          String    @db.VarChar(20) // feed_event | open_item | wiki_page
+  lookbackHours   Int?      @default(24) @map("lookback_hours")
+  predicate       Json
+  severity        String    @default("medium") @db.VarChar(10)
+  titleTemplate   String?   @map("title_template") @db.Text
+  reasonTemplate  String?   @map("reason_template") @db.Text
+  suggestedAction String?   @map("suggested_action") @db.Text
+  enabled         Boolean   @default(true)
+  fireCount       Int       @default(0) @map("fire_count")
+  lastFiredAt     DateTime? @map("last_fired_at")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, scope, enabled], map: "risk_rules_lookup_idx")
+  @@index([userId, enabled], map: "risk_rules_user_idx")
+  @@index([ruleKey], map: "risk_rules_key_idx")
+  @@map("risk_rules")
+}
+
+model RiskRuleOverride {
+  id           Int      @id @default(autoincrement())
+  ruleKey      String   @map("rule_key") @db.VarChar(80)
+  scope        String   @db.VarChar(10) // tenant | user
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int?     @map("user_id")
+  disabled     Boolean  @default(true)
+  reason       String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([ruleKey, scope, clientNumber, userId], map: "risk_rule_overrides_unique")
+  @@index([clientNumber, scope, disabled], map: "risk_rule_overrides_lookup_idx")
+  @@map("risk_rule_overrides")
+}
+
+model GateRuleFiring {
+  id           BigInt   @id @default(autoincrement())
+  ruleId       Int      @map("rule_id")
+  ruleKey      String?  @map("rule_key") @db.VarChar(80)
+  ruleName     String?  @map("rule_name") @db.VarChar(200)
+  ruleScope    String?  @map("rule_scope") @db.VarChar(10)
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int?     @map("user_id")
+  feedEventId  String?  @map("feed_event_id")
+  decision     String   @db.VarChar(20)
+  firedAt      DateTime @default(now()) @map("fired_at")
+
+  @@index([clientNumber, firedAt(sort: Desc)], map: "gate_rule_firings_recent_idx")
+  @@index([ruleId, firedAt(sort: Desc)], map: "gate_rule_firings_rule_idx")
+  @@map("gate_rule_firings")
+}
+
+// ─── Web Push (subscriptions + approval tokens) ──────────────────
+// Per-device push subscription registry. One user can have many
+// devices; we dedup on (user_id, endpoint) so re-registering the same
+// browser updates rather than duplicates.
+
+model PushSubscription {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  endpoint     String    @db.Text
+  p256dhKey    String    @map("p256dh_key") @db.Text
+  authKey      String    @map("auth_key") @db.Text
+  deviceLabel  String?   @map("device_label") @db.VarChar(120)
+  userAgent    String?   @map("user_agent") @db.Text
+  isActive     Boolean   @default(true) @map("is_active")
+  lastPushAt   DateTime? @map("last_push_at")
+  lastError    String?   @map("last_error") @db.Text
+  failureCount Int       @default(0) @map("failure_count")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, endpoint], map: "push_subscriptions_user_endpoint_unique")
+  @@index([clientNumber, userId, isActive], map: "push_subscriptions_user_active_idx")
+  @@map("push_subscriptions")
+}
+
+// Short-lived signed tokens used by the "Approve" / "Reject" buttons in
+// push notifications. Token sent to the device is a random 32-byte
+// b64url string; only its SHA-256 hash is stored. Single-use, scoped
+// to one (action_id, user_id, intent) tuple.
+
+model ApprovalToken {
+  id           Int       @id @default(autoincrement())
+  tokenHash    String    @unique @map("token_hash") @db.VarChar(64)
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  actionId     Int       @map("action_id")
+  intent       String    @db.VarChar(20) // approve | reject | view
+  expiresAt    DateTime  @map("expires_at")
+  consumedAt   DateTime? @map("consumed_at")
+  consumedByIp String?   @map("consumed_by_ip") @db.VarChar(50)
+  consumedVia  String?   @map("consumed_via") @db.VarChar(20)
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([actionId], map: "approval_tokens_action_idx")
+  @@map("approval_tokens")
+}
+
+// ─── LLM Spend (cost-dashboard time series) ──────────────────────
+// One row per LLM call. The cost dashboard reads from here to render
+// timelines, top-N breakdowns, and anomaly signals. Cross-linked to
+// brain_docs.id when the call produced a typed Doc.
+
+model LlmSpend {
+  id           BigInt   @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int?     @map("user_id")
+  provider     String   @db.VarChar(40)
+  model        String?  @db.VarChar(80)
+  purpose      String?  @db.VarChar(60)
+  inputTokens  Int      @default(0) @map("input_tokens")
+  outputTokens Int      @default(0) @map("output_tokens")
+  estUsd       Decimal  @default(0) @map("est_usd") @db.Decimal(10, 6)
+  durationMs   Int?     @map("duration_ms")
+  success      Boolean  @default(true)
+  error        String?  @db.Text
+  brainDocId   String?  @map("brain_doc_id")
+  feedEventId  String?  @map("feed_event_id")
+  requestId    String?  @map("request_id") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, createdAt(sort: Desc)], map: "llm_spend_client_recent_idx")
+  @@index([clientNumber, userId, createdAt(sort: Desc)], map: "llm_spend_user_recent_idx")
+  @@index([clientNumber, purpose, createdAt(sort: Desc)], map: "llm_spend_purpose_idx")
+  @@index([clientNumber, provider, createdAt(sort: Desc)], map: "llm_spend_provider_idx")
+  @@index([brainDocId], map: "llm_spend_brain_doc_idx")
+  @@map("llm_spend")
+}
+
+// ─── Brain Docs (typed, versioned, replayable Brain outputs) ──────
+// Canonical Brain-output store. Every Brain reasoning pass writes one
+// row here keyed by (client_number, user_id, doc_type, version). The
+// `output` JSON is the structured payload; `prose` is the optional
+// rendered prose; `input_summary` + `inputs_hash` enable replay and
+// cache-hit detection. Specialized projections (risk_flag_docs, etc.)
+// can reference back via `projectionId`.
+
+model BrainDoc {
+  id             String   @id
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  userId         Int      @map("user_id")
+  docType        String   @map("doc_type") @db.VarChar(40)
+  version        Int      @default(1)
+  status         String   @default("active") @db.VarChar(20)
+  inputsHash     String?  @map("inputs_hash") @db.VarChar(64)
+  inputSummary   Json     @default("{}") @map("input_summary")
+  sourceEventIds String[] @default([]) @map("source_event_ids")
+  output         Json     @default("{}")
+  prose          String?  @db.Text
+  summary        String?  @db.Text
+  model          String?  @db.VarChar(50)
+  tokensInput    Int?     @map("tokens_input")
+  tokensOutput   Int?     @map("tokens_output")
+  generationMs   Int?     @map("generation_ms")
+  error          String?  @db.Text
+  supersededById String?  @map("superseded_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  projectionId   String?  @map("projection_id")
+
+  supersededBy BrainDoc?  @relation("BrainDocSupersedes", fields: [supersededById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  supersedes   BrainDoc[] @relation("BrainDocSupersedes")
+
+  @@unique([clientNumber, userId, docType, version], map: "brain_docs_logical_unique")
+  @@index([clientNumber, userId, docType, createdAt(sort: Desc)], map: "brain_docs_user_type_recent_idx")
+  @@index([clientNumber, status, createdAt(sort: Desc)], map: "brain_docs_active_idx")
+  @@index([clientNumber, userId, docType, inputsHash], map: "brain_docs_inputs_hash_idx")
+  @@map("brain_docs")
+}
+
+// ─── Risk Flag Doc ────────────────────────────────────────────────
+// One row per (client_number, user_id, run_date). Output of the risk
+// radar's daily aggregator: ranked flags, narrative, source signals.
+// Stable id `risk:<client>:<user>:<YYYY-MM-DD>` so reruns overwrite.
+
+model RiskFlagDoc {
+  id                String   @id
+  clientNumber      String   @map("client_number") @db.VarChar(20)
+  userId            Int      @map("user_id")
+  runDate           DateTime @map("run_date") @db.Date
+  generatedAt       DateTime @default(now()) @map("generated_at")
+  flags             Json     @default("[]")
+  narrative         String?  @db.Text
+  summary           String?  @db.Text
+  flagCount         Int      @default(0) @map("flag_count")
+  highSeverityCount Int      @default(0) @map("high_severity_count")
+  sourceSignals     Json     @default("{}") @map("source_signals")
+  model             String?  @db.VarChar(50)
+  tokensInput       Int?     @map("tokens_input")
+  tokensOutput      Int?     @map("tokens_output")
+  status            String   @default("active") @db.VarChar(20)
+  error             String?  @db.Text
+
+  @@unique([clientNumber, userId, runDate], map: "risk_flag_docs_run_date_unique")
+  @@index([clientNumber, userId, runDate(sort: Desc)], map: "risk_flag_docs_user_recent_idx")
+  @@index([clientNumber, status, generatedAt(sort: Desc)], map: "risk_flag_docs_active_idx")
+  @@map("risk_flag_docs")
+}
+
+// ─── Delegation Matrix ─────────────────────────────────────────────
+// Per-tenant "who owns what business area" map. Loaded into every Brain
+// system prompt so routing decisions are deterministic lookups instead of
+// LLM inference. Editable only by tenant ADMIN/SA. Compliments per-user
+// `BrainConfig.delegationRules` (which encodes type→action imperatives).
+
+model DelegationMatrix {
+  id              Int       @id @default(autoincrement())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  area            String    @db.VarChar(100)
+  ownerUserId     Int?      @map("owner_user_id")
+  ownerName       String    @map("owner_name") @db.VarChar(200)
+  ownerEmail      String?   @map("owner_email") @db.VarChar(200)
+  ownerRole       String?   @map("owner_role") @db.VarChar(100)
+  escalateToName  String?   @map("escalate_to_name") @db.VarChar(200)
+  escalateToEmail String?   @map("escalate_to_email") @db.VarChar(200)
+  notes           String?   @db.Text
+  effectiveFrom   DateTime? @map("effective_from") @db.Date
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  createdByUserId Int?      @map("created_by_user_id")
+  updatedByUserId Int?      @map("updated_by_user_id")
+
+  @@unique([clientNumber, area], map: "delegation_matrix_area_unique")
+  @@index([clientNumber, isActive], map: "delegation_matrix_active_idx")
+  @@map("delegation_matrix")
+}
+
+model DelegationMatrixHistory {
+  id              Int      @id @default(autoincrement())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  area            String   @db.VarChar(100)
+  operation       String   @db.VarChar(20) // insert | update | deactivate | delete
+  snapshot        Json
+  changedByUserId Int?     @map("changed_by_user_id")
+  changedAt       DateTime @default(now()) @map("changed_at")
+
+  @@index([clientNumber, area, changedAt(sort: Desc)], map: "delegation_matrix_history_client_idx")
+  @@map("delegation_matrix_history")
 }
 
 // ─── Decision Log ─────────────────────────────────────────────────
@@ -728,12 +1722,85 @@ model DecisionLog {
   responseTimeMs  Int?     @map("response_time_ms")
   outcome         String?  @db.VarChar(20) // positive | negative | neutral
   openItemId      String?  @map("open_item_id")
+  // ── HaseebOS v15 (M14) ──
+  confidenceScore Float?   @map("confidence_score") // agent's own confidence in suggestion
+  riskTier        String?  @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  inputSummary    String?  @map("input_summary") @db.Text
+  outputSummary   String?  @map("output_summary") @db.Text
+  durationMs      Int?     @map("duration_ms") // end-to-end decision latency
+  traceId         String?  @map("trace_id") @db.VarChar(64) // Global Trace ID across Pub/Sub
+  agentId         String?  @map("agent_id") @db.VarChar(50) // which of the 7 agents made this decision
+  // MyOS — canonical signature for scoring. SHA-256 over
+  // (user_id, item_type, action_archetype, sender_domain). Pattern counts
+  // are COUNT GROUP BY dedup_hash; when a hash crosses threshold + agreement,
+  // rule miner promotes it to a shadow_rule.
+  dedupHash       String?  @map("dedup_hash") @db.VarChar(64)
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@index([userId, clientNumber])
   @@index([clientNumber, createdAt])
   @@index([userId, itemType, isMatch])
+  @@index([traceId])
+  @@index([clientNumber, riskTier])
+  @@index([clientNumber, userId, dedupHash])
   @@map("decision_logs")
+}
+
+model DelegationLog {
+  id              String   @id @default(cuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id") // the delegator (MD)
+  delegateeUserId Int?     @map("delegatee_user_id") // internal TMC user
+  delegateeEmail  String?  @map("delegatee_email") @db.VarChar(200)
+  delegateeName   String?  @map("delegatee_name") @db.VarChar(200)
+  itemType        String   @map("item_type") @db.VarChar(30) // email | whatsapp | task | meeting
+  taskArchetype   String?  @map("task_archetype") @db.VarChar(40)
+  entityId        String?  @map("entity_id")
+  sourceRef       String?  @map("source_ref") @db.VarChar(500)
+  senderEmail     String?  @map("sender_email") @db.VarChar(200)
+  senderDomain    String?  @map("sender_domain") @db.VarChar(100)
+  subject         String?  @db.Text
+  briefNote       String?  @map("brief_note") @db.Text
+  delegatedBy     String   @default("user") @map("delegated_by") @db.VarChar(20) // user | brain
+  confidenceScore Float?   @map("confidence_score")
+  agentId         String?  @map("agent_id") @db.VarChar(50)
+  traceId         String?  @map("trace_id") @db.VarChar(64)
+  dedupHash       String   @map("dedup_hash") @db.VarChar(64)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, userId, createdAt])
+  @@index([clientNumber, userId, dedupHash])
+  @@index([clientNumber, userId, taskArchetype, createdAt])
+  @@map("delegation_logs")
+}
+
+model UserPrompt {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  scope        String   @default("global") @db.VarChar(20) // triage | draft_reply | delegation | global
+  text         String   @db.Text
+  isActive     Boolean  @default(true) @map("is_active")
+  priority     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, userId, isActive])
+  @@index([clientNumber, userId, scope])
+  @@map("user_prompts")
+}
+
+model PatternHidden {
+  userId       Int      @map("user_id")
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  source       String   @db.VarChar(20) // decision | delegation
+  dedupHash    String   @map("dedup_hash") @db.VarChar(64)
+  reason       String?  @db.Text
+  hiddenAt     DateTime @default(now()) @map("hidden_at")
+
+  @@id([userId, source, dedupHash])
+  @@index([clientNumber, source])
+  @@map("pattern_hidden")
 }
 
 // ─── Thought Pipeline ─────────────────────────────────────────────
@@ -785,30 +1852,9 @@ model OKR {
   @@map("okrs")
 }
 
-// ─── Risk Register ────────────────────────────────────────────────
-
-model RiskRegisterItem {
-  id           String    @id @default(cuid())
-  clientNumber String    @map("client_number") @db.VarChar(20)
-  description  String    @db.Text
-  category     String    @db.VarChar(30) // financial | operational | compliance | technical | client | employee
-  severity     String    @db.VarChar(10) // critical | high | medium | low
-  status       String    @default("open") @db.VarChar(20) // open | mitigating | mitigated | closed
-  mitigation   String?   @db.Text
-  ownerId      Int?      @map("owner_id")
-  entityId     String?   @map("entity_id")
-  source       String    @db.VarChar(30) // erp | email | chat | known | manual
-  sourceRef    String?   @map("source_ref") @db.VarChar(500)
-  detectedAt   DateTime  @default(now()) @map("detected_at")
-  resolvedAt   DateTime? @map("resolved_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
-
-  @@index([clientNumber, status])
-  @@index([clientNumber, severity])
-  @@index([clientNumber, entityId])
-  @@map("risk_register_items")
-}
+// Model removed 2026-05-18: RiskRegisterItem → table dropped.
+// Risk tracking now lives in risk_flag_docs + risk_register (the
+// wiki-based register), not this orphan table. No service queried it.
 
 // ─── Action Idempotency Log ──────────────────────────────────────
 
@@ -825,4 +1871,739 @@ model ActionIdempotencyLog {
   @@index([clientNumber, userId])
   @@index([expiresAt])
   @@map("action_idempotency_logs")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HaseebOS v15 — Phase 2 schema additions (M1–M10)
+// See docs/vscode-analysis/HASEEBOS_V15_IMPLEMENTATION_PLAN.md §5
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── M1: Feed Events (immutable raw capture) ────────────────────
+model FeedEvent {
+  id                  String    @id @default(cuid())
+  clientNumber        String    @map("client_number") @db.VarChar(20)
+  sourceType          String    @map("source_type") @db.VarChar(30) // gmail | whatsapp | gchat | gcal | gtasks
+  sourceId            String    @map("source_id") @db.VarChar(500) // external id (thread, message, event)
+  contentHash         String    @map("content_hash") @db.VarChar(64) // sha256 for dedup
+  rawPayload          Json      @map("raw_payload")
+  status              String    @default("new") @db.VarChar(20) // new | processed | dlq | skipped
+  traceId             String?   @map("trace_id") @db.VarChar(64)
+  // HaseebOS v15 §3.2 F-4 — canonical event_type and sender fields promoted
+  // out of rawPayload so Triage Analyst + Steering can index + filter on them.
+  eventType           String?   @map("event_type") @db.VarChar(30) // message_received | meeting_invite | task_assigned | …
+  senderId            String?   @map("sender_id") @db.VarChar(200)
+  senderEmail         String?   @map("sender_email") @db.VarChar(200)
+  senderName          String?   @map("sender_name") @db.VarChar(200)
+  senderPhone         String?   @map("sender_phone") @db.VarChar(30)
+  // L1.3/L1.4 — publish state for pre-publish SETNX gate + catch-up worker
+  publishedMessageId  String?   @map("published_message_id") @db.VarChar(100)
+  publishedAt         DateTime? @map("published_at")
+  publishAttempts     Int       @default(0) @map("publish_attempts")
+  // L1.5 — tamper-evidence. HMAC(contentHash + sourceId) over rawPayload at ingest.
+  sourceIntegrity     String?   @map("source_integrity") @db.VarChar(64)
+  // Tier 2 — sentiment + urgency enrichment, populated async after ingest.
+  // Null until the analyzer has run. See sentimentService.
+  sentimentScore      Decimal?  @map("sentiment_score") @db.Decimal(4, 3)
+  urgencyScore        Decimal?  @map("urgency_score") @db.Decimal(4, 3)
+  tone                String?   @db.VarChar(30)
+  sentimentRationale  String?   @map("sentiment_rationale") @db.Text
+  sentimentAnalyzedAt DateTime? @map("sentiment_analyzed_at")
+  // MyOS — which user's connector produced this event. Nullable for legacy
+  // rows written before the column existed; new ingests must stamp it.
+  userId              Int?      @map("user_id")
+  processedAt         DateTime? @map("processed_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  // Source-native event time — Gmail Date header / Calendar event start /
+  // WhatsApp timestamp / Tasks updated. Distinct from createdAt (DB
+  // insert / ingest time) so a 14 April email scribed today still reads
+  // as "14 April" everywhere — My Attention, Brief audit, archive search.
+  // Nullable for legacy rows written before this column existed; the
+  // backfill script populates them from rawPayload.
+  eventAt             DateTime? @map("event_at")
+
+  @@unique([clientNumber, contentHash])
+  @@index([clientNumber, status])
+  @@index([clientNumber, sourceType, createdAt])
+  @@index([clientNumber, userId, sourceType, createdAt])
+  @@index([clientNumber, userId, sourceType, eventAt])
+  @@index([clientNumber, eventType])
+  @@index([clientNumber, senderEmail])
+  @@index([clientNumber, publishedMessageId])
+  @@map("feed_events")
+}
+
+/**
+ * MutedSender — per-user list of senders the user has explicitly opted
+ * out of seeing on My Attention or Brief. Items from these senders
+ * still land in feed_events and the Wiki archive (so search works) but
+ * are filtered out of the active surfaces.
+ * Identifier semantics by channel:
+ * email     — exact email address (case-insensitive)
+ * whatsapp  — phone number (E.164, +XXXXX)
+ * gchat     — google chat user id
+ * other     — free-form
+ * No tenant-wide muting on purpose: muting is a personal preference,
+ * not a policy. Each user manages their own list.
+ */
+model MutedSender {
+  id           String   @id @default(cuid())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  channel      String   @db.VarChar(20) // email | whatsapp | gchat | other
+  identifier   String   @db.VarChar(255) // email / phone / id
+  displayName  String?  @map("display_name") @db.VarChar(200)
+  reason       String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, channel, identifier])
+  @@index([clientNumber, userId])
+  @@map("muted_senders")
+}
+
+// ─── M2: Agent Memory (cross-session state for ADK agents) ──────
+model AgentMemory {
+  id           String    @id @default(cuid())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  agentId      String    @map("agent_id") @db.VarChar(50) // brain | feed_curator | triage | action_executor | reflection | steering | shadow_scorer
+  memoryKey    String    @map("memory_key") @db.VarChar(200)
+  memoryValue  Json      @map("memory_value")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([clientNumber, agentId, memoryKey])
+  @@index([expiresAt])
+  @@map("agent_memory")
+}
+
+// ─── M3: Action Dependencies (cascading undo graph edges) ───────
+model ActionDependency {
+  id             Int      @id @default(autoincrement())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  parentActionId Int      @map("parent_action_id") // FK → agent_actions.id
+  childActionId  Int      @map("child_action_id") // FK → agent_actions.id
+  dependencyType String   @map("dependency_type") @db.VarChar(30) // triggers | blocks | informs | compensates
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([parentActionId, childActionId])
+  @@index([clientNumber, parentActionId])
+  @@index([childActionId])
+  @@map("action_dependencies")
+}
+
+// ─── M4: Shadow Scores (Shadowing pipeline results) ─────────────
+/**
+ * ShadowRule — Probabilistic Shadowing rules. Mode: DRAFT → SHADOW → ACTIVE,
+ * or FROZEN if the MD stops it. Evidence + agreement drive promotion prompts
+ * surfaced in Day Brief.
+ */
+model ShadowRule {
+  id                    String    @id @default(cuid())
+  clientNumber          String    @map("client_number") @db.VarChar(20)
+  userId                Int?      @map("user_id")
+  name                  String    @db.VarChar(200)
+  description           String?
+  archetype             String?   @db.VarChar(30)
+  triggerCondition      Json      @default("{}") @map("trigger_condition")
+  action                String    @db.VarChar(100)
+  mode                  String    @default("DRAFT") @db.VarChar(20)
+  evidence              Int       @default(0)
+  confirms              Int       @default(0)
+  overrides             Int       @default(0)
+  agreement             Float?
+  nextPromotionPromptAt DateTime? @map("next_promotion_prompt_at")
+  frozenReason          String?   @map("frozen_reason")
+  metadata              Json?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, mode])
+  @@map("shadow_rules")
+}
+
+/**
+ * TenantWhatsappNotifier — per-tenant outbound WhatsApp credentials.
+ * Inbound is per-user (user_connectors); this is the sender used by Brain
+ * when it needs to message users mid-day.
+ */
+model TenantWhatsappNotifier {
+  clientNumber         String    @id @map("client_number") @db.VarChar(20)
+  provider             String    @default("meta") @db.VarChar(20)
+  displayNumber        String?   @map("display_number") @db.VarChar(30)
+  phoneNumberId        String?   @map("phone_number_id") @db.VarChar(50)
+  accessTokenEncrypted String?   @map("access_token_encrypted")
+  appId                String?   @map("app_id") @db.VarChar(100)
+  wabaId               String?   @map("waba_id") @db.VarChar(100)
+  isActive             Boolean   @default(false) @map("is_active")
+  // Meta WhatsApp Business Calling — gated by enrollment per phone number.
+  // Until admin flips this on, Brain emergency paths fall back to call-CTA.
+  callingEnabled       Boolean   @default(false) @map("calling_enabled")
+  callingApiUrl        String?   @map("calling_api_url") @db.VarChar(120)
+  lastCallAt           DateTime? @map("last_call_at")
+  lastCallError        String?   @map("last_call_error")
+  verifiedAt           DateTime? @map("verified_at")
+  lastSendAt           DateTime? @map("last_send_at")
+  lastError            String?   @map("last_error")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("tenant_whatsapp_notifier")
+}
+
+/**
+ * BrainUserMessage — every proactive Brain → user contact (text / voice
+ * note / WhatsApp call CTA / WhatsApp Business call). One row per send.
+ * Two functions:
+ * 1) Audit panel — user/admin can see exactly when and why Brain pinged.
+ * 2) Frequency cap — per-(user, kind, dedup_key) lookup gates duplicate
+ * sends across server restarts and replicas (in-process Maps lose this).
+ */
+model BrainUserMessage {
+  id           BigInt   @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  kind         String   @db.VarChar(40)
+  channel      String   @db.VarChar(20)
+  urgency      String   @default("normal") @db.VarChar(10)
+  summary      String
+  waMessageIds String[] @default([]) @map("wa_message_ids")
+  dedupKey     String?  @map("dedup_key") @db.VarChar(120)
+  status       String   @default("sent") @db.VarChar(20)
+  error        String?
+  toPhone      String?  @map("to_phone") @db.VarChar(30)
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind, createdAt(sort: Desc)])
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@map("brain_user_messages")
+}
+
+/**
+ * RetrievalFeedback — per-(user, wiki_page) cumulative feedback signal
+ * used by the retrieval re-ranker. positive_uses / negative_uses
+ * accumulate via UPDATE; the smoothed boost is computed in code.
+ */
+model RetrievalFeedback {
+  id             BigInt    @id @default(autoincrement())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  userId         Int       @map("user_id")
+  pageId         String    @map("page_id")
+  positiveUses   Int       @default(0) @map("positive_uses")
+  negativeUses   Int       @default(0) @map("negative_uses")
+  lastPositiveAt DateTime? @map("last_positive_at")
+  lastNegativeAt DateTime? @map("last_negative_at")
+  metadata       Json      @default("{}")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pageId], map: "uq_rf_user_page")
+  @@index([clientNumber, updatedAt(sort: Desc)])
+  @@map("retrieval_feedback")
+}
+
+/**
+ * UserPromptOverlay — per-user growing personal directives prepended to
+ * Brain's composer system prompt. Auto-promoted from feedback diagnoses
+ * when the same category recurs; user can also add / edit / disable
+ * rules manually.
+ */
+model UserPromptOverlay {
+  id                BigInt    @id @default(autoincrement())
+  clientNumber      String    @map("client_number") @db.VarChar(20)
+  userId            Int       @map("user_id")
+  ruleText          String    @map("rule_text")
+  source            String    @default("manual") @db.VarChar(30)
+  sourceDiagnosisId String?   @map("source_diagnosis_id")
+  category          String    @default("custom") @db.VarChar(40)
+  active            Boolean   @default(true)
+  metadata          Json      @default("{}")
+  hitsCount         Int       @default(0) @map("hits_count")
+  lastHitAt         DateTime? @map("last_hit_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, userId, active, updatedAt(sort: Desc)])
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@map("user_prompt_overlay")
+}
+
+/**
+ * BrainPromptQueue — sequential conversation queue for Brain → user prompts.
+ * One question at a time per user (enforced by partial unique index on
+ * state='awaiting_reply'). When the user replies, the active prompt is
+ * marked answered and the next is dispatched.
+ */
+model BrainPromptQueue {
+  id           BigInt    @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  userId       Int       @map("user_id")
+  question     String
+  openItemId   String?   @map("open_item_id")
+  sideEffect   Json      @default("{}") @map("side_effect")
+  criticality  String    @default("routine") @db.VarChar(10)
+  state        String    @default("queued") @db.VarChar(20)
+  channelUsed  String?   @map("channel_used") @db.VarChar(20)
+  ackMessageId String?   @map("ack_message_id") @db.VarChar(120)
+  dedupKey     String?   @map("dedup_key") @db.VarChar(120)
+  queuedAt     DateTime  @default(now()) @map("queued_at")
+  sentAt       DateTime? @map("sent_at")
+  answeredAt   DateTime? @map("answered_at")
+  expiresAt    DateTime? @map("expires_at")
+  answerText   String?   @map("answer_text")
+  metadata     Json      @default("{}")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clientNumber, userId, state, criticality, queuedAt])
+  @@index([clientNumber, queuedAt(sort: Desc)])
+  @@map("brain_prompt_queue")
+}
+
+/**
+ * PatternInsight — Reflection agent writes an insight per pattern it notices.
+ * Surfaced on Day Brief under "What I noticed overnight".
+ */
+model PatternInsight {
+  id            Int       @id @default(autoincrement())
+  clientNumber  String    @map("client_number") @db.VarChar(20)
+  userId        Int?      @map("user_id")
+  description   String
+  evidenceCount Int       @default(1) @map("evidence_count")
+  ruleDraftId   String?   @map("rule_draft_id") @db.VarChar(50)
+  status        String    @default("new") @db.VarChar(20)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  expiresAt     DateTime? @map("expires_at")
+
+  @@index([clientNumber, userId, createdAt])
+  @@index([status, createdAt])
+  @@map("pattern_insights")
+}
+
+model ShadowScore {
+  id                String   @id @default(cuid())
+  clientNumber      String   @map("client_number") @db.VarChar(20)
+  modelVersion      String   @map("model_version") @db.VarChar(50)
+  agentId           String   @map("agent_id") @db.VarChar(50)
+  ruleId            String?  @map("rule_id")
+  goldenDatasetId   String?  @map("golden_dataset_id")
+  score             Float
+  evaluationDetails Json     @map("evaluation_details")
+  evaluatedAt       DateTime @default(now()) @map("evaluated_at")
+
+  @@index([clientNumber, agentId, evaluatedAt])
+  @@index([ruleId, evaluatedAt])
+  @@map("shadow_scores")
+}
+
+// ─── M5: Golden Dataset (labeled historical decisions) ──────────
+model GoldenDataset {
+  id              String    @id @default(cuid())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  category        String    @db.VarChar(50) // action_type or archetype
+  inputHash       String    @map("input_hash") @db.VarChar(64)
+  inputText       String?   @map("input_text") @db.Text // small inputs only; large go to GCS
+  expectedOutput  Json      @map("expected_output")
+  scoreThreshold  Float     @map("score_threshold") // promotion gate (0.95 LOW, 0.98 MEDIUM)
+  riskTier        String    @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  cloudStorageRef String?   @map("cloud_storage_ref") @db.VarChar(500) // gs://bucket/path for large payloads
+  lastEvaluatedAt DateTime? @map("last_evaluated_at")
+  curatedBy       Int?      @map("curated_by") // FK → User
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([clientNumber, inputHash])
+  @@index([clientNumber, category, riskTier])
+  @@map("golden_dataset")
+}
+
+// ─── M6: KPI Values (Steering Wheel time-series) ────────────────
+model KpiValue {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  metricType   String   @map("metric_type") @db.VarChar(50)
+  metricValue  Float    @map("metric_value")
+  dimensions   Json? // optional breakdown keys (by agent, by entity, etc.)
+  periodStart  DateTime @map("period_start")
+  periodEnd    DateTime @map("period_end")
+  computedAt   DateTime @default(now()) @map("computed_at")
+
+  @@index([clientNumber, metricType, periodStart])
+  @@map("kpi_values")
+}
+
+// Model removed 2026-05-18: AgentConfigOverride → table dropped.
+// Per-tenant agent customisation now lives in user_prompt_overlay
+// (instructions per user) and brain_configs (per-tenant brain
+// settings). No service ever queried the override table.
+
+// ─── M8: Notification Queue (unified dispatch) ──────────────────
+model NotificationQueue {
+  id           Int       @id @default(autoincrement())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  recipientId  Int       @map("recipient_id") // FK → User
+  channel      String    @db.VarChar(20) // email | whatsapp | in_app | chat
+  payload      Json
+  status       String    @default("pending") @db.VarChar(20) // pending | sending | sent | failed | cancelled
+  retryCount   Int       @default(0) @map("retry_count")
+  scheduledAt  DateTime  @default(now()) @map("scheduled_at")
+  sentAt       DateTime? @map("sent_at")
+  failedAt     DateTime? @map("failed_at")
+  errorMessage String?   @map("error_message") @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([clientNumber, status, scheduledAt])
+  @@index([recipientId])
+  @@map("notification_queue")
+}
+
+// ─── M9: Action Undo Log (reverse-operation records) ────────────
+model ActionUndoLog {
+  id               Int       @id @default(autoincrement())
+  clientNumber     String    @map("client_number") @db.VarChar(20)
+  actionId         Int       @map("action_id") // FK → agent_actions.id
+  reverseOperation Json      @map("reverse_operation") // what to call to undo
+  diffSnapshot     Json?     @map("diff_snapshot") // pre/post state for audit
+  executedBy       Int?      @map("executed_by") // FK → User (who triggered undo)
+  undoneAt         DateTime? @map("undone_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@unique([actionId])
+  @@index([clientNumber, createdAt])
+  @@map("action_undo_log")
+}
+
+// ─── M10: Rule Lifecycle (Shadowing state machine) ──────────────
+model RuleLifecycle {
+  id           String   @id @default(cuid())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  ruleName     String   @map("rule_name") @db.VarChar(200)
+  state        String   @default("DRAFT") @db.VarChar(20) // DRAFT | SHADOW | ACTIVE | DEPRECATED | ARCHIVED
+  enteredAt    DateTime @default(now()) @map("entered_at")
+  goldenScore  Float?   @map("golden_score") // most recent Golden Dataset score
+  driftStd     Float?   @map("drift_std") // std dev shift over 7-day window
+  frozen       Boolean  @default(false) // true = promotion blocked by drift guard
+  frozenReason String?  @map("frozen_reason") @db.Text
+  ruleSpec     Json     @map("rule_spec") // rule definition (conditions, actions, thresholds)
+  riskTier     String   @map("risk_tier") @db.VarChar(10) // LOW | MEDIUM | HIGH
+  authorId     Int?     @map("author_id") // FK → User
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([clientNumber, ruleName])
+  @@index([clientNumber, state])
+  @@map("rule_lifecycle")
+}
+
+// ─── WhatsApp Outbound Messages ─────────────────────────────────
+// Per MD 2026-05-12: thread modal showed only inbound messages
+// because we drop fromMe=true at ingest (UserWebjsProvider:557).
+// Result: every WA conversation looked one-sided. This table
+// captures MD's outbound message bodies so the thread modal can
+// render both sides AND the sender wiki can track relationship
+// strength based on both directions.
+//
+// Storage shape:
+//   - userId-scoped (each user's outbound is private to them)
+//   - chatId = the destination jid (e.g. 923xxxx@c.us or @lid)
+//   - waMessageId unique per user (dedup retries / reingest)
+//   - bodyText capped at 4000 chars (TEXT column; cap enforced at write)
+//   - sentAt = the WhatsApp-side timestamp, not our insert time
+//
+// Retention is currently unbounded — these aren't high-volume rows
+// (one per MD outbound). A cleanup script can be added if size
+// becomes an issue. Personal-contacts mark-personal scrubs this
+// table for that sender alongside feed_events.
+model WhatsAppOutboundMessage {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  chatId       String   @map("chat_id") @db.VarChar(150)
+  waMessageId  String?  @map("wa_message_id") @db.VarChar(150)
+  bodyText     String   @map("body_text") @db.Text
+  sentAt       DateTime @map("sent_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, waMessageId])
+  @@index([clientNumber, userId, chatId, sentAt])
+  @@map("whatsapp_outbound_messages")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Nexeo AI Self-Learning & Controlled Self-Development — Phase 1 Foundation
+//
+// Adds three tables that capture every Brain interaction, user feedback on
+// those interactions, and Brain-proposed memories that require human
+// approval before influencing future replies.
+//
+// Per nexeo_self_learning&development.md spec and Basit 2026-06-19.
+// Phase 2 (gap detection + product proposals) operates on the data
+// accumulated here, so this MUST run first.
+// ═════════════════════════════════════════════════════════════════════════════
+
+model BrainInteractionLearningLog {
+  id              String   @id @default(uuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  surface         String   @db.VarChar(50)
+  interactionType String   @map("interaction_type") @db.VarChar(100)
+  userPrompt      String?  @map("user_prompt") @db.Text
+  brainResponse   String?  @map("brain_response") @db.Text
+  contextSnapshot Json?    @map("context_snapshot")
+  dataBlocksUsed  Json?    @map("data_blocks_used")
+  modelProvider   String?  @map("model_provider") @db.VarChar(100)
+  modelName       String?  @map("model_name") @db.VarChar(100)
+  tokensUsed      Int?     @map("tokens_used")
+  riskLevel       String   @default("low") @map("risk_level") @db.VarChar(50)
+  status          String   @default("success") @db.VarChar(50)
+  userOutcome     String?  @map("user_outcome") @db.VarChar(100)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant   Tenant          @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  feedback BrainFeedback[]
+
+  @@index([clientNumber, userId, surface, createdAt(sort: Desc)])
+  @@map("brain_interaction_learning_logs")
+}
+
+model BrainFeedback {
+  id              String   @id @default(uuid())
+  clientNumber    String   @map("client_number") @db.VarChar(20)
+  userId          Int      @map("user_id")
+  interactionId   String?  @map("interaction_id")
+  feedbackType    String   @map("feedback_type") @db.VarChar(100)
+  feedbackComment String?  @map("feedback_comment") @db.Text
+  correctedOutput String?  @map("corrected_output") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user        User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant      Tenant                       @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  interaction BrainInteractionLearningLog? @relation(fields: [interactionId], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, userId, createdAt(sort: Desc)])
+  @@index([clientNumber, feedbackType, createdAt(sort: Desc)])
+  @@map("brain_feedback")
+}
+
+model GovernedBrainMemory {
+  id                String    @id @default(uuid())
+  clientNumber      String    @map("client_number") @db.VarChar(20)
+  userId            Int?      @map("user_id")
+  memoryScope       String    @map("memory_scope") @db.VarChar(50)
+  scopeReferenceId  String?   @map("scope_reference_id")
+  memoryType        String    @map("memory_type") @db.VarChar(100)
+  title             String    @db.Text
+  content           String    @db.Text
+  sourceType        String?   @map("source_type") @db.VarChar(100)
+  sourceReferenceId String?   @map("source_reference_id")
+  confidenceScore   Decimal   @default(0) @map("confidence_score") @db.Decimal(5, 2)
+  sensitivityLevel  String    @default("normal") @map("sensitivity_level") @db.VarChar(50)
+  status            String    @default("pending_approval") @db.VarChar(50)
+  createdByBrain    Boolean   @default(true) @map("created_by_brain")
+  approvedBy        Int?      @map("approved_by")
+  approvedAt        DateTime? @map("approved_at")
+  rejectedBy        Int?      @map("rejected_by")
+  rejectedAt        DateTime? @map("rejected_at")
+  rejectionReason   String?   @map("rejection_reason") @db.Text
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user     User?  @relation("MemoryUser", fields: [userId], references: [id], onDelete: Cascade)
+  tenant   Tenant @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  approver User?  @relation("MemoryApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  rejecter User?  @relation("MemoryRejecter", fields: [rejectedBy], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, status, sensitivityLevel, createdAt(sort: Desc)])
+  @@index([clientNumber, userId, memoryScope, status])
+  @@map("governed_brain_memories")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Nexeo Phase 2 — Gap Detection → Product Proposal → Development Request
+// Pipeline tables. Every transition gated by human approval.
+// ═════════════════════════════════════════════════════════════════════════════
+
+model BrainDetectedGap {
+  id                 String    @id @default(uuid())
+  clientNumber       String    @map("client_number") @db.VarChar(20)
+  userId             Int?      @map("user_id")
+  gapType            String    @map("gap_type") @db.VarChar(100)
+  title              String    @db.Text
+  description        String    @db.Text
+  evidence           Json
+  affectedSurfaces   String[]  @map("affected_surfaces")
+  affectedConnectors String[]  @map("affected_connectors")
+  affectedRoles      String[]  @map("affected_roles")
+  frequencyCount     Int       @default(0) @map("frequency_count")
+  businessImpact     String?   @map("business_impact") @db.VarChar(50)
+  riskLevel          String?   @map("risk_level") @db.VarChar(50)
+  brainConfidence    Decimal?  @map("brain_confidence") @db.Decimal(5, 2)
+  suggestedAction    String?   @map("suggested_action") @db.Text
+  status             String    @default("new") @db.VarChar(50)
+  reviewedBy         Int?      @map("reviewed_by")
+  reviewedAt         DateTime? @map("reviewed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user        User?                     @relation("GapUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant      Tenant                    @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  reviewer    User?                     @relation("GapReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  proposals   BrainProductProposal[]
+  devRequests BrainDevelopmentRequest[]
+
+  @@index([clientNumber, status, gapType, createdAt(sort: Desc)])
+  @@index([clientNumber, createdAt(sort: Desc)])
+  @@map("brain_detected_gaps")
+}
+
+model BrainProductProposal {
+  id                  String    @id @default(uuid())
+  clientNumber        String    @map("client_number") @db.VarChar(20)
+  userId              Int?      @map("user_id")
+  gapId               String?   @map("gap_id")
+  title               String    @db.Text
+  problemStatement    String    @map("problem_statement") @db.Text
+  businessImpact      String?   @map("business_impact") @db.Text
+  userImpact          String?   @map("user_impact") @db.Text
+  affectedSurfaces    String[]  @map("affected_surfaces")
+  affectedConnectors  String[]  @map("affected_connectors")
+  affectedServices    String[]  @map("affected_services")
+  proposalMarkdown    String    @map("proposal_markdown") @db.Text
+  riskLevel           String    @default("medium") @map("risk_level") @db.VarChar(50)
+  priority            String    @default("medium") @db.VarChar(50)
+  estimatedComplexity String    @default("medium") @map("estimated_complexity") @db.VarChar(50)
+  status              String    @default("draft") @db.VarChar(50)
+  createdByBrain      Boolean   @default(true) @map("created_by_brain")
+  approvedBy          Int?      @map("approved_by")
+  approvedAt          DateTime? @map("approved_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user        User?                     @relation("ProposalUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant      Tenant                    @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  gap         BrainDetectedGap?         @relation(fields: [gapId], references: [id], onDelete: SetNull)
+  approver    User?                     @relation("ProposalApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  devRequests BrainDevelopmentRequest[]
+
+  @@index([clientNumber, status, createdAt(sort: Desc)])
+  @@map("brain_product_proposals")
+}
+
+model BrainDevelopmentRequest {
+  id                    String    @id @default(uuid())
+  clientNumber          String    @map("client_number") @db.VarChar(20)
+  userId                Int?      @map("user_id")
+  gapId                 String?   @map("gap_id")
+  proposalId            String?   @map("proposal_id")
+  title                 String    @db.Text
+  description           String    @db.Text
+  requirementMarkdown   String    @map("requirement_markdown") @db.Text
+  technicalSpecMarkdown String?   @map("technical_spec_markdown") @db.Text
+  targetRepository      String?   @map("target_repository") @db.Text
+  targetBranch          String?   @map("target_branch") @db.Text
+  generatedBranch       String?   @map("generated_branch") @db.Text
+  pullRequestUrl        String?   @map("pull_request_url") @db.Text
+  testStatus            String    @default("not_started") @map("test_status") @db.VarChar(50)
+  securityStatus        String    @default("not_started") @map("security_status") @db.VarChar(50)
+  status                String    @default("draft") @db.VarChar(50)
+  riskLevel             String    @default("high") @map("risk_level") @db.VarChar(50)
+  requestedBy           Int?      @map("requested_by")
+  approvedBy            Int?      @map("approved_by")
+  approvedAt            DateTime? @map("approved_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user      User?                 @relation("DevReqUser", fields: [userId], references: [id], onDelete: SetNull)
+  tenant    Tenant                @relation(fields: [clientNumber], references: [clientNumber], onDelete: Cascade)
+  gap       BrainDetectedGap?     @relation(fields: [gapId], references: [id], onDelete: SetNull)
+  proposal  BrainProductProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  requester User?                 @relation("DevReqRequester", fields: [requestedBy], references: [id], onDelete: SetNull)
+  approver  User?                 @relation("DevReqApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@index([clientNumber, status, createdAt(sort: Desc)])
+  @@map("brain_development_requests")
+}
+
+// ═══ Agent API tokens (E1, 2026-07-08) ═════════════════════════════════════
+// Machine-to-machine tokens for the ADK agent worker, bound to the tenant(s)
+// they may act as. The middleware verifies X-Tenant-Id against this binding —
+// a valid token can NEVER operate on a tenant it wasn't provisioned for.
+// Raw tokens are never stored: tokenHash = sha256 hex of the bearer value.
+// One row per (token, tenant); revoke by setting isActive=false.
+model AgentApiToken {
+  id           String    @id @default(uuid())
+  tokenHash    String    @map("token_hash") @db.VarChar(64)
+  clientNumber String    @map("client_number") @db.VarChar(50)
+  label        String?   @db.VarChar(120)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+
+  @@unique([tokenHash, clientNumber])
+  @@index([clientNumber])
+  @@map("agent_api_tokens")
+}
+
+// ─── Hardening-audit operational tables (2026-07-14, migration
+//     20260714_ops_hardening — runtime DDL removed) ────────────────
+
+model JobRun {
+  name                String    @id
+  jobClass            String    @default("maintenance") @map("job_class")
+  lastStartedAt       DateTime? @map("last_started_at") @db.Timestamptz(6)
+  lastCompletedAt     DateTime? @map("last_completed_at") @db.Timestamptz(6)
+  lastStatus          String?   @map("last_status")
+  lastError           String?   @map("last_error")
+  lastDurationMs      Int?      @map("last_duration_ms")
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  runsCompleted       BigInt    @default(0) @map("runs_completed")
+  attemptsTotal       BigInt    @default(0) @map("attempts_total")
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([lastStatus, updatedAt(sort: Desc)], map: "job_runs_status_idx")
+  @@map("job_runs")
+}
+
+model JobLease {
+  name       String   @id
+  owner      String
+  fence      BigInt   @default(1)
+  acquiredAt DateTime @default(now()) @map("acquired_at") @db.Timestamptz(6)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "job_leases_expiry_idx")
+  @@map("job_leases")
+}
+
+model SelfHealLog {
+  id           BigInt   @id @default(autoincrement())
+  ruleId       String   @map("rule_id")
+  scope        String   @default("global")
+  clientNumber String?  @map("client_number")
+  userId       Int?     @map("user_id")
+  outcome      String
+  summary      String?
+  beforeState  Json?    @map("before_state")
+  afterState   Json?    @map("after_state")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ruleId, createdAt(sort: Desc)], map: "self_heal_log_rule_time_idx")
+  @@index([ruleId, clientNumber, createdAt(sort: Desc)], map: "self_heal_log_scope_idx")
+  @@map("self_heal_log")
+}
+
+model OpsHealthState {
+  component String    @id
+  status    String
+  detail    String?
+  since     DateTime? @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ops_health_state")
 }

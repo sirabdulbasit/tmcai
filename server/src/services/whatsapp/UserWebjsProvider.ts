@@ -1,0 +1,1725 @@
+/**
+ * MyOS — UserWebjsProvider (Path A, per-user WhatsApp pairing).
+ *
+ * Distinct from WebjsProvider (which is tenant-scoped for customer-facing
+ * bot conversations). This provider pairs the MD's personal WhatsApp via
+ * QR scan so incoming chats land in My Attention as feed_events, and
+ * terminal actions (archive, reply, delegate) can mark the conversation
+ * as read + optionally send a reply on the MD's behalf.
+ *
+ * State model:
+ *   user_connectors.connector_type=whatsapp_personal
+ *     .metadata = { status, qrDataUrl, qrExpiresAt, connectedNumber, lastError }
+ *   Client instances are kept in-memory per userId; the LocalAuth session
+ *   (on disk under WHATSAPP_USER_SESSION_PATH) survives process restart
+ *   so the next boot silently reconnects without a new QR.
+ */
+import prisma from '../../db/prisma';
+import createLogger from '../../utils/logger';
+import { ingest as ingestFeedEvent } from '../feed/feedIngestionService';
+import fs from 'fs';
+import path from 'path';
+
+const log = createLogger('whatsapp:user-webjs');
+
+// Per-user state
+const clients = new Map<number, any>();
+const waMessageIndex = new Map<string, { userId: number; chatId: string }>(); // feedEventId → chat pointer
+
+// Excluded-contacts cache — MD's list of numbers that should NEVER flow into
+// Day Brief or be read by Brain (wife, kids, close friends). Numbers are
+// stored in user.notificationPreferences.whatsapp.excludedNumbers as E.164.
+// Cached 60s per user to keep the inbound hot path fast.
+interface ExcludedCache { numbers: Set<string>; fetchedAt: number }
+const excludedCache = new Map<number, ExcludedCache>();
+const EXCLUDED_TTL = 60_000;
+
+// Tenant brain-notifier number cache. The TenantWhatsappNotifier row
+// holds the Meta Business number Brain uses to message users. When
+// Brain sends "🔴 critical bundle" to the user's personal WhatsApp,
+// the user's webjs client SEES that message arriving on their phone
+// and would otherwise ingest it as an inbound feed_event — which
+// triages back as critical, generates another bundle, and so on. The
+// loop the user reported. Filter at ingest by comparing senderPhone
+// to this number. Cached 5 min — number rarely changes.
+interface BrainNumberCache { numbers: Set<string>; fetchedAt: number }
+const brainNumberCache = new Map<string, BrainNumberCache>();
+const BRAIN_NUMBER_TTL = 5 * 60_000;
+
+async function brainNumbersFor(clientNumber: string): Promise<Set<string>> {
+  const cached = brainNumberCache.get(clientNumber);
+  if (cached && Date.now() - cached.fetchedAt < BRAIN_NUMBER_TTL) return cached.numbers;
+  const set = new Set<string>();
+  try {
+    const n = await prisma.tenantWhatsappNotifier.findUnique({
+      where: { clientNumber },
+      select: { displayNumber: true, isActive: true },
+    });
+    if (n?.displayNumber) {
+      // Add a few common normalisations so we match regardless of
+      // what format the inbound webjs message carries (with/without +,
+      // spaces, dashes, parens).
+      const raw = String(n.displayNumber).trim();
+      const stripped = raw.replace(/[^\d]/g, '');
+      if (raw) set.add(normalizePhone(raw));
+      if (stripped) {
+        set.add(`+${stripped}`);
+        set.add(stripped);
+      }
+    }
+  } catch { /* tolerate — empty set means no filter */ }
+  brainNumberCache.set(clientNumber, { numbers: set, fetchedAt: Date.now() });
+  return set;
+}
+
+function normalizePhone(p: string): string {
+  return (p || '').replace(/[^+\d]/g, '');
+}
+
+async function excludedFor(userId: number): Promise<Set<string>> {
+  const cached = excludedCache.get(userId);
+  if (cached && Date.now() - cached.fetchedAt < EXCLUDED_TTL) return cached.numbers;
+  const u = await prisma.user.findUnique({ where: { id: userId }, select: { notificationPreferences: true } });
+  const prefs: any = u?.notificationPreferences ?? {};
+  const list: string[] = prefs?.whatsapp?.excludedNumbers ?? [];
+  const set = new Set(list.map(normalizePhone).filter(Boolean));
+  excludedCache.set(userId, { numbers: set, fetchedAt: Date.now() });
+  return set;
+}
+
+export async function getExcludedNumbers(userId: number): Promise<string[]> {
+  const s = await excludedFor(userId);
+  return Array.from(s);
+}
+
+export async function setExcludedNumbers(userId: number, numbers: string[]): Promise<string[]> {
+  const clean = Array.from(new Set(numbers.map(normalizePhone).filter((n) => n.length >= 7)));
+  const u = await prisma.user.findUnique({ where: { id: userId }, select: { notificationPreferences: true } });
+  const prefs: any = (u?.notificationPreferences as any) ?? {};
+  prefs.whatsapp = { ...(prefs.whatsapp ?? {}), excludedNumbers: clean };
+  await prisma.user.update({ where: { id: userId }, data: { notificationPreferences: prefs as any } });
+  excludedCache.set(userId, { numbers: new Set(clean), fetchedAt: Date.now() });
+  return clean;
+}
+
+type Status = 'disconnected' | 'connecting' | 'qr' | 'connected' | 'error';
+
+interface UserMeta {
+  status?: Status;
+  qrDataUrl?: string | null;
+  qrExpiresAt?: string | null;
+  connectedNumber?: string | null;
+  lastError?: string | null;
+  sessionClientId?: string;
+  pairedAt?: string | null;
+}
+
+async function getUserConnector(userId: number) {
+  return prisma.userConnector.findFirst({
+    where: { userId, connectorType: { slug: 'whatsapp_personal' } },
+    include: { connectorType: true },
+  });
+}
+
+/** Stamp lastSyncAt for the user's whatsapp_personal row so the
+ *  Day Brief + Connectors page show fresh "last sync" times for an
+ *  event-driven channel that has no poll cycle of its own. Called
+ *  on ready, on every inbound message, and from the heartbeat tick.
+ *
+ *  Auto-recovery: a stamp implies the channel is alive RIGHT NOW
+ *  (we just got a message / heartbeat / ready event). If the row is
+ *  in a degraded status (sync_stale / error / token_expired), heal
+ *  it via the markConnectorConnected chokepoint. Without this, a
+ *  webjs reconnect would update lastSyncAt but leave status='sync_stale'
+ *  from a prior detector run — the Day Brief banner would keep
+ *  showing WhatsApp as broken even though it's clearly alive. Memory:
+ *  feedback_connector_status_is_truth.md.
+ */
+async function stampWhatsAppSync(userId: number): Promise<void> {
+  try {
+    const row = await getUserConnector(userId);
+    if (!row) return;
+    await prisma.userConnector.update({
+      where: { id: row.id },
+      data: { lastSyncAt: new Date() },
+    });
+    // Check the recent-error tracker before deciding status. If
+    // fetchThreadContext / fetchMessages keep throwing, the channel is
+    // technically alive (heartbeat fires, this stamp runs) but
+    // functionally broken — status should reflect 'degraded', not
+    // 'connected'. Per memory feedback_connector_status_is_truth.md.
+    const degradedReason = consumeDegradedReason(userId);
+    if (degradedReason) {
+      const { markConnectorDegraded } = await import('../connectorHealthService');
+      await markConnectorDegraded(row.id, degradedReason);
+      return;
+    }
+    // No recent errors — heal if previously degraded / errored.
+    if (row.status && row.status !== 'connected' && row.status !== 'pending') {
+      const { markConnectorConnected } = await import('../connectorHealthService');
+      await markConnectorConnected(row.id, 'whatsapp_alive_signal');
+    }
+  } catch { /* best-effort; never block the message path */ }
+}
+
+// ─── Per-user error counter for "lying status" detection ──────────
+//
+// 2026-05-25 (whatsapp-web.js broken vs WhatsApp internals): the
+// fetchThreadContext / chat.fetchMessages calls throw repeatedly on
+// @lid chats with `waitForChatLoading undefined`. The heartbeat still
+// fires (session is "alive" from WA Web's point of view), so without
+// this tracker the connector reads status='connected' while ingest is
+// completely dead.
+//
+// We track errors in a sliding 5-minute window per userId. When >=10
+// errors arrive within the window AND >=3 distinct minutes have seen
+// errors (so a one-off burst doesn't flip the badge), we mark the
+// next stampWhatsAppSync as degraded. Reset on the next clean success.
+
+interface ErrorWindow { timestamps: number[]; lastReason: string; }
+const errorWindows = new Map<number, ErrorWindow>();
+const ERROR_WINDOW_MS = 5 * 60 * 1000;          // 5 minutes
+const ERROR_COUNT_THRESHOLD = 10;
+const ERROR_DISTINCT_MINUTES = 3;
+
+export function recordWhatsAppFetchError(userId: number, reason: string): void {
+  const now = Date.now();
+  const w = errorWindows.get(userId) ?? { timestamps: [], lastReason: '' };
+  w.timestamps.push(now);
+  w.lastReason = reason;
+  // Trim old entries outside the window.
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  errorWindows.set(userId, w);
+  // Eagerly trigger the degraded flip when threshold is hit. Without
+  // this, the only consumer was stampWhatsAppSync inside the heartbeat
+  // loop — but the heartbeat is gated on client.getState()==='CONNECTED',
+  // and a fully-broken WA client never reaches CONNECTED, so the
+  // degraded check never ran even though errors were piling up.
+  // (Detected 2026-05-25 — Basit saw status='connected' while logs
+  // showed 108 waitForChatLoading errors.) Throttled to once per minute
+  // per user so we don't churn DB writes; markConnectorDegraded is
+  // itself idempotent on identical reason but the throttle avoids
+  // even attempting writes more often than necessary.
+  const lastFlip = lastDegradedFlipAt.get(userId) ?? 0;
+  if (now - lastFlip < 60_000) return;
+  const degradedReason = peekDegradedReason(userId);
+  if (degradedReason) {
+    lastDegradedFlipAt.set(userId, now);
+    void (async () => {
+      try {
+        const row = await getUserConnector(userId);
+        if (!row) return;
+        const { markConnectorDegraded } = await import('../connectorHealthService');
+        await markConnectorDegraded(row.id, degradedReason);
+      } catch { /* best-effort */ }
+    })();
+  }
+}
+
+const lastDegradedFlipAt = new Map<number, number>();
+
+/** Like consumeDegradedReason but non-destructive — used by the
+ *  eager flip in recordWhatsAppFetchError so the same window can
+ *  trigger heal-on-recovery later via stampWhatsAppSync. */
+function peekDegradedReason(userId: number): string | null {
+  const w = errorWindows.get(userId);
+  if (!w) return null;
+  const now = Date.now();
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  if (w.timestamps.length < ERROR_COUNT_THRESHOLD) return null;
+  const minutes = new Set(w.timestamps.map((t) => Math.floor(t / 60_000)));
+  if (minutes.size < ERROR_DISTINCT_MINUTES) return null;
+  return `WhatsApp ingest degraded (${w.timestamps.length} fetch errors in last 5min): ${w.lastReason}`;
+}
+
+/** Returns a degradation reason if the user has crossed the threshold,
+ *  else null. Called from stampWhatsAppSync. Resets if the window
+ *  cleared since the last sync. */
+function consumeDegradedReason(userId: number): string | null {
+  const w = errorWindows.get(userId);
+  if (!w) return null;
+  const now = Date.now();
+  // Trim window
+  while (w.timestamps.length > 0 && w.timestamps[0] < now - ERROR_WINDOW_MS) {
+    w.timestamps.shift();
+  }
+  if (w.timestamps.length < ERROR_COUNT_THRESHOLD) return null;
+  // Distinct-minutes guard
+  const minutes = new Set(w.timestamps.map((t) => Math.floor(t / 60_000)));
+  if (minutes.size < ERROR_DISTINCT_MINUTES) return null;
+  return `WhatsApp ingest degraded (${w.timestamps.length} fetch errors in last 5min): ${w.lastReason}`;
+}
+
+/** Test helper / explicit recovery — clear the error window so a
+ *  successful subsequent fetch can heal the status. */
+export function clearWhatsAppErrorWindow(userId: number): void {
+  errorWindows.delete(userId);
+}
+
+/**
+ * Process a self-dictation WhatsApp message — voice note or text the
+ * user sent to themselves on their "Message yourself" chat. Runs the
+ * voice-instruction pipeline without ingesting a feed_event (this is
+ * the user's own dictation, not external work to triage):
+ *
+ *   inbound msg →
+ *     if pending voice instruction (last 5 min):
+ *       msg is yes/ok/haan/bilkul/1   → dispatch
+ *       msg is no/cancel/nahi/2/3     → cancel
+ *       anything else                  → cancel pending + treat as new
+ *     else if msg is a voice note OR Brain-addressed text:
+ *       transcribe (if voice)
+ *       extract intent
+ *       stage as agent_action.status='voice_pending'
+ *       reply with transcript + plan + "Reply YES to confirm"
+ *
+ *  The reply goes back to the same self-chat so the user sees the
+ *  preview where they sent it.
+ */
+async function handleSelfDictation(args: {
+  userId: number;
+  clientNumber: string;
+  rawFrom: string;     // self jid
+  message: any;
+}): Promise<void> {
+  const { userId, clientNumber, rawFrom, message } = args;
+  const isVoice = message.type === 'ptt' || message.type === 'audio';
+
+  // 1. Transcribe voice if needed.
+  let transcriptText = (message.body || '').trim();
+  let voiceTranscript: { language: string; original: string; english: string; confidence: number } | null = null;
+  if (isVoice && message.hasMedia) {
+    try {
+      const media = await message.downloadMedia();
+      if (media?.data) {
+        const buffer = Buffer.from(media.data, 'base64');
+        const { transcribeVoiceNote } = await import('../voiceService');
+        const tx = await transcribeVoiceNote(buffer, media.mimetype);
+        if (tx.text) {
+          let english = '';
+          if (!(tx.language || '').toLowerCase().startsWith('en')) {
+            try {
+              const { callLLM } = await import('../llmRouter');
+              const r = await callLLM(
+                'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+                tx.text,
+                {
+                  maxTokens: 400,
+                  providers: ['gemini-flash', 'gemini', 'claude'],
+                  userId, clientNumber, purpose: 'voice_translate', timeoutMs: 12_000,
+                },
+              );
+              english = r.text.trim();
+            } catch { /* keep original only */ }
+          }
+          voiceTranscript = {
+            language: tx.language || 'unknown',
+            original: tx.text,
+            english,
+            confidence: tx.confidence || 0,
+          };
+          transcriptText = voiceTranscript.english || voiceTranscript.original;
+        }
+      }
+    } catch { /* fall back to body */ }
+  }
+
+  if (!transcriptText || transcriptText.length < 2) return;
+
+  const looksLikeConfirm = /^\s*(yes|ok|confirm|do it|go ahead|haan|theek hai|bilkul|1)\s*$/i.test(transcriptText);
+  const looksLikeCancel = /^\s*(no|cancel|stop|nahi|drop|2|3)\s*$/i.test(transcriptText);
+
+  // 2. Pending instruction handling.
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const pending = await prisma.agentAction.findFirst({
+    where: {
+      clientNumber, userId,
+      status: 'voice_pending',
+      createdAt: { gte: fiveMinAgo },
+    } as any,
+    orderBy: { createdAt: 'desc' } as any,
+  });
+
+  if (pending && looksLikeCancel) {
+    await prisma.agentAction.update({ where: { id: pending.id }, data: { status: 'cancelled' } as any });
+    await sendReply(userId, rawFrom, '✗ Cancelled. Nothing happened. Send a new instruction whenever you want.', 'self_dictation_cancel_ack');
+    return;
+  }
+  if (pending && looksLikeConfirm) {
+    const stored: any = pending.input ?? {};
+    const ix = stored.instruction;
+    if (!ix) {
+      await sendReply(userId, rawFrom, 'Could not read the staged instruction. Please re-record.', 'self_dictation_confirm_ack');
+      return;
+    }
+    const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+    const out = await dispatchInstruction({ instruction: ix, clientNumber, userId });
+    await prisma.agentAction.update({
+      where: { id: pending.id },
+      data: { status: out.ok ? 'done' : 'failed', output: { dispatchResult: out } as any } as any,
+    });
+    await sendReply(userId, rawFrom, out.ok ? `✓ ${out.message}` : `✗ ${out.message}`, 'self_dictation_confirm_dispatch');
+    return;
+  }
+  if (pending && !looksLikeConfirm && !looksLikeCancel) {
+    // User sent something new while a pending instruction was open;
+    // cancel the old one and treat the new one as fresh dictation.
+    await prisma.agentAction.update({
+      where: { id: pending.id }, data: { status: 'cancelled' } as any,
+    }).catch(() => {});
+  }
+
+  // 3. New instruction extraction. Voice always runs; text only when
+  //    addressed to Brain or starts with an imperative — otherwise the
+  //    user's casual self-notes shouldn't trigger anything.
+  const looksLikeInstruction =
+    isVoice ||
+    /\b(brain|nexeo)\b/i.test(transcriptText) ||
+    /^\s*(mute|unmute|draft|reply to|delegate|schedule|set a meeting|set window|add to open items?|note that)\b/i.test(transcriptText);
+  if (!looksLikeInstruction || transcriptText.length < 8) return;
+
+  const { extractInstruction } = await import('../instructions/instructionExtractor');
+  const ix = await extractInstruction({
+    text: transcriptText,
+    clientNumber,
+    userId,
+    triggerFeedEventId: null,
+  });
+  if (ix.intent === 'none' || ix.confidence < 0.6) return;
+
+  // 4. Stage as pending; user confirms before dispatch.
+  await prisma.agentAction.create({
+    data: {
+      clientNumber, userId,
+      actionType: 'voice_instruction',
+      status: 'voice_pending',
+      requiresApproval: true,
+      executedByAgent: 'voice_instruction',
+      input: { instruction: ix, transcript: transcriptText, chatId: rawFrom, source: 'self_dictation' } as any,
+      output: { stagedAt: new Date().toISOString() } as any,
+    } as any,
+  });
+
+  const heardLine = isVoice
+    ? `📝 I heard:\n"${(voiceTranscript?.original || transcriptText).slice(0, 400)}"`
+    : `📝 You said:\n"${transcriptText.slice(0, 400)}"`;
+  const englishLine = isVoice && voiceTranscript?.english && voiceTranscript.original !== voiceTranscript.english
+    ? `\n\n(English: ${voiceTranscript.english.slice(0, 400)})`
+    : '';
+  const planLine = `\n\n→ ${ix.summary || 'I will act on this.'}`;
+  const promptLine = `\n\nReply YES to confirm, anything else to cancel.`;
+
+  await sendReply(userId, rawFrom, `${heardLine}${englishLine}${planLine}${promptLine}`, 'self_dictation_confirm_ack');
+}
+
+/** Ensure the user has a whatsapp_personal row — lazy-creates on first pair.
+ *  Avoids a seed migration per new user. */
+async function ensureUserConnector(userId: number, clientNumber: string) {
+  const existing = await getUserConnector(userId);
+  if (existing) return existing;
+  const type = await prisma.connectorType.findUnique({ where: { slug: 'whatsapp_personal' } });
+  if (!type) return null;
+  try {
+    await prisma.userConnector.create({
+      data: {
+        userId,
+        clientNumber,
+        connectorTypeId: type.id,
+        status: 'pending',
+        config: {} as any,
+        metadata: { status: 'disconnected' } as any,
+      },
+    });
+  } catch { /* concurrent insert — next findFirst will see it */ }
+  return getUserConnector(userId);
+}
+
+async function writeMeta(userId: number, patch: UserMeta, status?: Status) {
+  const existing = await getUserConnector(userId);
+  if (!existing) return;
+  const merged = { ...(existing.metadata as any || {}), ...patch };
+
+  // DB status column is a stable "is this pairing alive overall" marker.
+  // Map providers real-time state to the canonical values:
+  //   connected    → 'connected'
+  //   disconnected → 'disconnected'
+  //   error        → 'error'
+  //   connecting/qr → DO NOT DOWNGRADE. A previously-connected row should
+  //                  stay 'connected' through reconnect blips so the gap
+  //                  banner / stats don't flicker off on server restart.
+  let nextStatus: string | undefined;
+  if (status === 'connected') nextStatus = 'connected';
+  else if (status === 'disconnected') nextStatus = 'disconnected';
+  else if (status === 'error') nextStatus = 'error';
+
+  // When transitioning to 'connected', route through the
+  // markConnectorConnected chokepoint so stale-error metadata
+  // (lastError, staleSince, lastRefreshError, etc.) gets stripped.
+  // Otherwise the BrokenConnectorBanner keeps showing the row as
+  // broken because the historical metadata says so. See memory:
+  // feedback_connector_status_is_truth.md.
+  if (nextStatus === 'connected') {
+    // First write the metadata patch + status atomically.
+    await prisma.userConnector.update({
+      where: { id: existing.id },
+      data: {
+        metadata: merged as any,
+        status: 'connected',
+        updatedAt: new Date(),
+      },
+    });
+    // Then strip stale-error metadata via the shared chokepoint
+    // (idempotent — re-reads the row, removes the keys, stamps
+    // recoveredAt/recoveredVia, and re-writes).
+    const { markConnectorConnected } = await import('../connectorHealthService');
+    await markConnectorConnected(existing.id, 'whatsapp_ready');
+    return;
+  }
+
+  await prisma.userConnector.update({
+    where: { id: existing.id },
+    data: {
+      metadata: merged as any,
+      ...(nextStatus ? { status: nextStatus } : {}),
+      updatedAt: new Date(),
+    },
+  });
+}
+
+async function loadDeps() {
+  // @ts-ignore optional dep
+  const wwebjs: any = await import('whatsapp-web.js' as string);
+  // @ts-ignore optional dep
+  const QRCode: any = await import('qrcode' as string);
+  return { Client: wwebjs.Client || wwebjs.default?.Client, LocalAuth: wwebjs.LocalAuth || wwebjs.default?.LocalAuth, QRCode };
+}
+
+function resolveChromePath() {
+  // Honour both PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
+  // and CHROME_PATH (legacy). Linux fallback uses google-chrome-stable
+  // because /usr/bin/chromium-browser on Ubuntu 24.04 is a snap shim that
+  // won't launch from headless node processes.
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  if (process.platform === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  if (process.platform === 'win32') return 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  return '/usr/bin/google-chrome-stable';
+}
+
+/** Inlined from WebjsProvider — see comment there for the full rationale. */
+function cleanStaleSingletonLocks(sessionDir: string): void {
+  if (!fs.existsSync(sessionDir)) return;
+  for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    const p = path.join(sessionDir, name);
+    let stale = false;
+    try {
+      const target = fs.readlinkSync(p);
+      const m = /-(\d+)$/.exec(target);
+      const pid = m ? Number(m[1]) : NaN;
+      if (Number.isFinite(pid) && pid > 0) {
+        try { process.kill(pid, 0); }
+        catch (err: any) { if (err.code === 'ESRCH') stale = true; }
+      } else { stale = true; }
+    } catch (err: any) {
+      if (err.code === 'ENOENT') continue;
+      stale = true;
+    }
+    if (stale) {
+      try { fs.unlinkSync(p); log.warn('removed stale chromium lock (user)', { file: p }); } catch {}
+    }
+  }
+}
+
+export async function startPairing(userId: number, clientNumber: string): Promise<{ status: Status; qrDataUrl: string | null; connectedNumber: string | null; error?: string }> {
+  const existing = await ensureUserConnector(userId, clientNumber);
+  if (!existing) {
+    return { status: 'error', qrDataUrl: null, connectedNumber: null, error: 'whatsapp_personal connector type missing. Run migration 20260421_whatsapp_personal_connector.' };
+  }
+
+  if (clients.has(userId)) {
+    // Already running — return current state
+    return getStatus(userId);
+  }
+
+  let Client: any, LocalAuth: any, QRCode: any;
+  try { ({ Client, LocalAuth, QRCode } = await loadDeps()); }
+  catch (e: any) {
+    await writeMeta(userId, { status: 'error', lastError: 'whatsapp-web.js not installed' }, 'error');
+    return { status: 'error', qrDataUrl: null, connectedNumber: null, error: 'whatsapp-web.js not installed' };
+  }
+
+  const sessionPath = process.env.WHATSAPP_USER_SESSION_PATH || './whatsapp-user-sessions';
+  // E2: tenant-scoped key (<clientNumber>-u<userId>) so a userId can never
+  // collide across tenants; dirs locked to 0700 and ownership-checked.
+  // Pre-E2 sessions keyed `u<userId>` are renamed once to preserve pairing.
+  const { userSessionKey, hardenSessionDir, migrateLegacyUserSession } = await import('./waSessionKey');
+  const clientId = userSessionKey(clientNumber, userId);
+  hardenSessionDir(sessionPath);
+  migrateLegacyUserSession(sessionPath, `u${userId}`, clientId);
+  hardenSessionDir(path.join(sessionPath, `session-${clientId}`));
+
+  // Restart resilience — see WebjsProvider.cleanStaleSingletonLocks for
+  // the rationale. Inlined here because UserWebjsProvider doesn't share
+  // a base class with WebjsProvider; a tiny duplication beats a circular
+  // import or a third utility file just for this 20-liner.
+  cleanStaleSingletonLocks(path.join(sessionPath, `session-${clientId}`));
+
+  const client = new Client({
+    authStrategy: new LocalAuth({ clientId, dataPath: sessionPath }),
+    restartOnAuthFail: true,
+    puppeteer: {
+      headless: true,
+      executablePath: resolveChromePath(),
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-first-run', '--no-zygote', '--disable-gpu'],
+    },
+  });
+
+  clients.set(userId, client);
+  await writeMeta(userId, { status: 'connecting', sessionClientId: clientId, lastError: null }, 'connecting' as any);
+
+  client.on('qr', async (qr: string) => {
+    try {
+      const qrDataUrl = await QRCode.toDataURL(qr);
+      // Detect "zombie pairing": a row that was previously paired
+      // (connectedNumber set) but the underlying webjs session has died
+      // and is now stuck issuing QRs for re-pair. Without this, the DB
+      // keeps lying that status='connected' while the channel is broken.
+      // First QR after a successful pair stamps qrLoopSinceAt; subsequent
+      // QRs check if we've been looping > 2 min and flip to disconnected
+      // so the broken-connector banner fires.
+      const existing = await getUserConnector(userId);
+      const meta: any = existing?.metadata ?? {};
+      const wasPaired = !!meta.connectedNumber;
+      const loopSinceAt: string | null = meta.qrLoopSinceAt ?? null;
+      const loopForMs = loopSinceAt ? Date.now() - new Date(loopSinceAt).getTime() : 0;
+      const looksDead = wasPaired && loopForMs > 2 * 60 * 1000;
+
+      await writeMeta(userId, {
+        status: 'qr',
+        qrDataUrl,
+        qrExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        qrLoopSinceAt: loopSinceAt ?? new Date().toISOString(),
+        ...(looksDead ? { lastError: 'pairing died — please scan the new QR to reconnect' } : {}),
+      } as any, looksDead ? 'disconnected' : undefined);
+
+      if (looksDead) log.warn('Zombie pairing detected — flipped to disconnected', { userId });
+      else log.info('QR issued', { userId });
+    } catch (e: any) { log.error('QR save failed', { userId, error: e.message }); }
+  });
+
+  client.on('ready', async () => {
+    const number = client.info?.wid?.user ? '+' + client.info.wid.user : null;
+    await writeMeta(userId, {
+      status: 'connected',
+      qrDataUrl: null,
+      qrExpiresAt: null,
+      qrLoopSinceAt: null,
+      connectedNumber: number,
+      lastError: null,
+      pairedAt: new Date().toISOString(),
+    } as any, 'connected');
+    await stampWhatsAppSync(userId);
+    log.info('Paired', { userId, number });
+  });
+
+  client.on('auth_failure', async (msg: string) => {
+    await writeMeta(userId, { status: 'error', lastError: msg }, 'error');
+    log.error('auth_failure', { userId, msg });
+  });
+
+  client.on('disconnected', async (reason: string) => {
+    clients.delete(userId);
+    await writeMeta(userId, { status: 'disconnected', lastError: `disconnected: ${reason}` });
+    log.info('Disconnected', { userId, reason });
+  });
+
+  // ─── Outbound capture (shared between 'message' and 'message_create') ──
+  // Per user 2026-05-15: outbound messages sent from the user's PHONE
+  // (synced to webjs) were missing from whatsapp_outbound_messages.
+  // Cause: whatsapp-web.js fires 'message' reliably for inbound but
+  // 'message_create' for outbound originating on the synced device.
+  // The old handler only listened to 'message' so phone-typed outbounds
+  // were never captured. This function is now invoked from BOTH events.
+  // The upsert on (userId, waMessageId) keeps duplicates safe if both
+  // events fire for the same message.
+  //
+  // Also accepts media-only outbounds (body empty) — records a
+  // placeholder body so the conversation turn isn't silently lost.
+  // The Apr 10 image-without-caption to Aziz was the visible miss
+  // from that empty-body guard.
+  const captureOutboundMessage = async (message: any): Promise<void> => {
+    try {
+      const ownWid: string = client.info?.wid?._serialized || '';
+      const isSelfChat = !!ownWid && (message.from === ownWid || message.to === ownWid);
+      if (!message.fromMe) return;
+      if (isSelfChat) return; // self-dictation handled by the 'message' handler
+      const rawFrom = message.from || '';
+      // Skip groups / status / newsletters
+      if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
+      const ts = message.timestamp ? message.timestamp * 1000 : Date.now();
+      const destChatId = message.to || rawFrom;
+      if (!destChatId) return;
+      // Body — fall back to a media-type placeholder so empty-caption
+      // outbound is still recorded as a conversation turn (not silently
+      // dropped). The thread modal renders this as "[image]" / "[voice]"
+      // so the user sees they sent something, even without text.
+      let body = String(message.body ?? '').slice(0, 4000);
+      if (!body && message.hasMedia) {
+        const t = String(message.type ?? '').toLowerCase();
+        body = t === 'image' ? '[image]'
+          : t === 'video' ? '[video]'
+          : t === 'audio' || t === 'ptt' ? '[voice]'
+          : t === 'document' ? '[document]'
+          : t === 'sticker' ? '[sticker]'
+          : '[media]';
+      }
+      const waMsgId = (message.id as any)?._serialized || (message.id as any)?.id || `${destChatId}:${ts}`;
+
+      // Redis fast path (existing behaviour)
+      try {
+        const { getRedis } = await import('../../utils/redisClient');
+        const redis = getRedis();
+        if (redis && destChatId) {
+          const markerKey = `wa_outbound:${userId}:${destChatId}`;
+          const logKey = `wa_outbound_log:${userId}:${destChatId}`;
+          await redis.set(markerKey, String(ts), 'EX', 7 * 24 * 60 * 60);
+          await redis.lpush(logKey, JSON.stringify({ ts, body: body.slice(0, 1024) }));
+          await redis.ltrim(logKey, 0, 49);
+          await redis.expire(logKey, 7 * 24 * 60 * 60);
+        }
+      } catch (e: any) {
+        log.warn('outbound redis write failed', { userId, error: e.message });
+      }
+
+      // Postgres permanent. No body-emptiness gate anymore — body now
+      // always has at least a placeholder for media-only outbound.
+      try {
+        await prisma.whatsAppOutboundMessage.upsert({
+          where: { userId_waMessageId: { userId, waMessageId: waMsgId } } as any,
+          create: {
+            clientNumber, userId,
+            chatId: destChatId,
+            waMessageId: waMsgId,
+            bodyText: body,
+            sentAt: new Date(ts),
+          } as any,
+          update: {},
+        });
+      } catch (e: any) {
+        log.warn('outbound postgres write failed', { userId, error: e.message });
+      }
+
+      // Sender wiki update — fire-and-forget
+      void (async () => {
+        try {
+          const { recordOutboundInteraction } = await import('../knowledge/senderWikiService');
+          await recordOutboundInteraction({
+            userId, clientNumber,
+            chatId: destChatId,
+            sentAt: new Date(ts),
+            body,
+          });
+        } catch (e: any) {
+          log.warn('sender wiki outbound update failed', { userId, error: e.message });
+        }
+      })();
+    } catch (e: any) {
+      log.warn('captureOutboundMessage error', { userId, error: e.message });
+    }
+  };
+
+  // 'message_create' fires for BOTH inbound and outbound, but the
+  // 'message' handler below covers inbound. Here we only handle the
+  // outbound side — gated on fromMe inside captureOutboundMessage.
+  client.on('message_create', async (message: any) => {
+    if (!message.fromMe) return; // 'message' handles inbound
+    await captureOutboundMessage(message);
+  });
+
+  client.on('message', async (message: any) => {
+    try {
+      // Stamp freshness regardless of whether the message survives the
+      // filters below (groups / status / empty body). Channel is alive,
+      // and that's what "last sync" should reflect.
+      stampWhatsAppSync(userId).catch(() => {});
+
+      const rawFrom = message.from || '';
+      if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
+      if (!message.body?.trim() && !message.hasMedia) return;
+
+      // ── Type whitelist ──
+      // WhatsApp emits non-message events through the same client.on
+      // ('message') hook: e2e_notification (security code changed),
+      // ciphertext (failed decrypt), call_log, gp2 (group ops),
+      // broadcast_notification, etc. These are NOT messages — they're
+      // system metadata. Their body field often contains the chatId
+      // (@lid format) instead of empty, so the empty-body guard above
+      // doesn't catch them, and they end up surfaced as "Tahir BM Bank
+      // Alfalah sent: 144697582436430@lid" cards the user can't find
+      // in WhatsApp because they aren't real messages.
+      //
+      // Per user 2026-05-15: "from where this message is coming? i
+      // can't find it in my whatsapp" — Tahir e2e_notification leaked
+      // as a card. Whitelist actual content types only.
+      const messageTypeStr = String(message.type ?? 'chat').toLowerCase();
+      const REAL_MESSAGE_TYPES = new Set([
+        'chat', 'ptt', 'audio', 'image', 'video', 'document',
+        'sticker', 'location', 'vcard', 'multi_vcard', 'list',
+        'list_response', 'buttons_response', 'order', 'payment',
+        'product', 'revoked',
+      ]);
+      if (!REAL_MESSAGE_TYPES.has(messageTypeStr)) {
+        log.info('Skipped non-message event type', { userId, type: messageTypeStr, from: rawFrom });
+        return;
+      }
+
+      // Bot/automation message filter — drop messages that are clearly
+      // output from another AI assistant or chatbot leaking into the
+      // user's chat. Pattern: body starts with "[AI]", "[BOT]",
+      // "[ASSISTANT]" or similar bracketed markers used by agentic
+      // systems for prefix tagging. These are debug/automation traffic,
+      // not real human interaction with the user. Reported 2026-05-10
+      // when [AI] iPhone-troubleshooting prompts surfaced as cards.
+      const botBodyPrefix = /^\s*\[(ai|bot|assistant|gpt|claude|chatbot)\]/i;
+      if (typeof message.body === 'string' && botBodyPrefix.test(message.body)) {
+        log.info('Skipped automation/bot body', { userId, prefix: message.body.slice(0, 20) });
+        return;
+      }
+
+      // ── Self-dictation path ──
+      // The user's own messages on the "Message yourself" WhatsApp
+      // chat are treated as instructions to Brain — voice or text.
+      // Detect by comparing the from jid to the client's own WID.
+      // Any other fromMe=true message (replies to colleagues, etc.)
+      // is ignored for triage, but we DO record a lightweight outbound
+      // marker so the WA "you-replied" filter knows MD has answered
+      // this chat — without depending on webjs fetchThreadContext,
+      // which fails on @lid chats with "waitForChatLoading undefined".
+      const ownWid: string = client.info?.wid?._serialized || '';
+      const isSelfChat = !!ownWid && message.from === ownWid;
+      if (message.fromMe && !isSelfChat) {
+        // Delegate to the shared capture function (also called from
+        // message_create — see above). Upsert keyed on waMessageId is
+        // idempotent so double-fire across events is safe.
+        await captureOutboundMessage(message);
+        return;
+      }
+
+      // For self-dictation, run a slim instruction-only pipeline:
+      // transcribe (if voice) → check for pending confirmation → if
+      // none, extract intent and stage with a confirmation prompt.
+      // No feed_event ingest — this is the user's own dictation, not
+      // external work to triage.
+      if (message.fromMe && isSelfChat) {
+        try {
+          await handleSelfDictation({
+            userId, clientNumber, rawFrom, message,
+          });
+        } catch (e: any) {
+          log.warn('self-dictation handler failed', { userId, error: e.message });
+        }
+        return;
+      }
+
+      let phone = '';
+      if (rawFrom.includes('@c.us')) phone = '+' + rawFrom.replace('@c.us', '');
+      else if (rawFrom.includes('@lid')) {
+        try {
+          const contact = await message.getContact();
+          phone = '+' + (contact?.number || contact?.id?.user || rawFrom.replace('@lid', ''));
+        } catch { phone = '+' + rawFrom.replace('@lid', ''); }
+      } else phone = '+' + rawFrom.replace(/@.*$/, '');
+
+      // Privacy filter — never ingest messages from excluded contacts
+      // (wife, family, close friends). Brain never sees these and they
+      // never appear in Day Brief. Checked per-message with a 60s cache.
+      const excluded = await excludedFor(userId);
+      if (excluded.has(normalizePhone(phone))) {
+        log.info('Skipped excluded contact', { userId, phone });
+        return;
+      }
+
+      // Self-loop guard — drop messages whose sender matches THIS
+      // tenant's Brain notifier number. When Brain sends a critical
+      // bundle to the user's personal WhatsApp, the user's webjs
+      // client sees that arrive and would otherwise ingest it as a
+      // feed_event from "Brain" → triage scores it critical (the body
+      // literally contains "critical") → next sweep includes itself
+      // in the next bundle → infinite escalation. Filter here before
+      // anything downstream sees it.
+      const brainNums = await brainNumbersFor(clientNumber);
+      if (brainNums.size > 0 && brainNums.has(normalizePhone(phone))) {
+        log.info('Skipped self-loop (brain notifier number)', { userId, phone });
+        return;
+      }
+
+      // Content-based self-loop guard — backup for cases where the
+      // phone match fails (sender display "My Business" but phone
+      // doesn't normalize to a brainNumbers entry; e.g. tenant
+      // notifier rotated, or normalizePhone strips a leading +).
+      // Per MD 2026-05-12: Brain's own daily brief was re-ingested
+      // as an inbound and shown back in the Day Brief as "reply
+      // needed" with thread count 53 — the same brief, replicated
+      // over many days, polluting MD's attention surface.
+      //
+      // Brain's outbound day-brief follows a recognisable signature:
+      // starts with "Here's your brief for today" / "Hey <name>,
+      // here's your brief for today" / contains the calendar +
+      // email + WhatsApp emoji-section pattern. Drop anything that
+      // matches — never a real user inbound, always a Brain echo.
+      const bodyForSignatureCheck = String(message.body ?? '').slice(0, 400);
+      const isOwnBriefEcho = /^(here'?s your brief for today|hey\s+\w+[\s,]+here'?s your brief)/i.test(bodyForSignatureCheck)
+        || (/📅[^\n]*(today'?s calendar|day brief)/i.test(bodyForSignatureCheck) && /📬[^\n]*email/i.test(bodyForSignatureCheck));
+      if (isOwnBriefEcho) {
+        log.info('Skipped self-loop (brief content signature)', { userId, phone, bodyPrefix: bodyForSignatureCheck.slice(0, 80) });
+        return;
+      }
+
+      // Resolve the sender's display name PLUS preserve which source
+      // each piece came from, so Brain can distinguish "this is in my
+      // contacts" (contact.name) from "this is just what they call
+      // themselves on WhatsApp" (contact.pushname). Per Basit 2026-05-25:
+      // "you said Za is a pushname but i saved this contact" — the
+      // previous extraction `pushname || name || verifiedName` lost
+      // the source info and Brain mislabeled a saved contact as a
+      // stranger.
+      let senderName: string | undefined;
+      let contactNames: {
+        savedName: string | null;        // contact.name — YOUR phone's saved label
+        savedShortName: string | null;   // contact.shortName
+        pushname: string | null;          // sender's WhatsApp display name
+        verifiedName: string | null;      // verified business name
+        isUserSavedContact: boolean;      // true ⇔ savedName is non-empty
+      } = {
+        savedName: null, savedShortName: null,
+        pushname: null, verifiedName: null,
+        isUserSavedContact: false,
+      };
+      try {
+        const c = await message.getContact();
+        contactNames.savedName      = (c?.name || '').trim() || null;
+        contactNames.savedShortName = (c?.shortName || '').trim() || null;
+        contactNames.pushname       = (c?.pushname || '').trim() || null;
+        contactNames.verifiedName   = (c?.verifiedName || '').trim() || null;
+        contactNames.isUserSavedContact = !!contactNames.savedName;
+        // Display-name precedence: trust YOUR saved name first, then
+        // verified business name, then pushname as last resort.
+        senderName = contactNames.savedName
+                  || contactNames.savedShortName
+                  || contactNames.verifiedName
+                  || contactNames.pushname
+                  || undefined;
+      } catch {}
+
+      // ── Voice note handling ──
+      // Voice notes (ptt) and audio messages used to ingest with an
+      // empty body — Brain saw they arrived but had no idea what was
+      // said. Now: download the audio, transcribe via voiceService
+      // (Gemini → Google Speech fallback, Urdu/English/mixed), and if
+      // the original wasn't English, translate to English via the LLM.
+      // The body becomes a clearly-labelled formatted block so triage,
+      // search, and the View thread modal all read it as text.
+      const isVoice = message.type === 'ptt' || message.type === 'audio';
+      let voiceTranscript: { language: string; original: string; english: string; confidence: number } | null = null;
+      if (isVoice && message.hasMedia) {
+        try {
+          const media = await message.downloadMedia();
+          if (media?.data) {
+            const buffer = Buffer.from(media.data, 'base64');
+            const { transcribeVoiceNote } = await import('../voiceService');
+            const tx = await transcribeVoiceNote(buffer, media.mimetype);
+            if (tx.text) {
+              let english = '';
+              const isEnglishish = (tx.language || '').toLowerCase().startsWith('en');
+              if (!isEnglishish) {
+                try {
+                  const { callLLM } = await import('../llmRouter');
+                  const r = await callLLM(
+                    'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+                    tx.text,
+                    {
+                      maxTokens: 400,
+                      providers: ['gemini-flash', 'gemini', 'claude'],
+                      userId,
+                      clientNumber,
+                      purpose: 'voice_translate',
+                      timeoutMs: 12_000,
+                    },
+                  );
+                  english = r.text.trim();
+                } catch (e: any) {
+                  log.warn('voice translation failed', { userId, error: e.message });
+                }
+              }
+              voiceTranscript = {
+                language: tx.language || 'unknown',
+                original: tx.text,
+                english,
+                confidence: tx.confidence || 0,
+              };
+            }
+          }
+        } catch (e: any) {
+          log.warn('voice transcription failed', { userId, error: e.message });
+        }
+      }
+
+      // Build the body Brain sees. For voice notes we synthesise a
+      // clearly-labelled block so triage prompts read sensible text
+      // instead of '[voice note]'. Fallback when transcription fails.
+      const humanLang = (code: string): string => {
+        const c = (code || '').toLowerCase();
+        if (c.startsWith('ur')) return 'Urdu';
+        if (c.startsWith('en')) return 'English';
+        if (c.startsWith('hi')) return 'Hindi';
+        if (c.startsWith('ar')) return 'Arabic';
+        return code || 'unknown language';
+      };
+      const formattedBody = isVoice
+        ? voiceTranscript && voiceTranscript.original
+          ? [
+              `🎤 Voice note in ${humanLang(voiceTranscript.language)} (auto-transcribed)`,
+              ``,
+              `Original: ${voiceTranscript.original}`,
+              voiceTranscript.english ? `\nEnglish: ${voiceTranscript.english}` : '',
+            ].filter(Boolean).join('\n')
+          : `🎤 Voice note (transcription unavailable — open WhatsApp to listen)`
+        : (message.body || '');
+
+      // Pull last ~10 turns of this chat so Brain can reason about context
+      // — "On it" / "sure" / "yes" mean nothing without the preceding ask.
+      let threadContext: ThreadTurn[] = [];
+      // Also use the same fetch to back-catch-up outbound messages we
+      // missed. Per user 2026-05-16 "I replied via WhatsApp but card
+      // still here" — the message_create listener can stop firing
+      // silently (saw a 18:41 yesterday cutoff) AND breaks on @lid
+      // chats. This back-catch-up makes EVERY inbound an opportunity
+      // to verify our outbound record matches reality for this chat.
+      // Independent of message_create — works even when the listener
+      // is dead. Pairs with the periodic engagement reconciliation
+      // job (commit B) for full defense-in-depth.
+      let priorMessages: any[] = [];
+      try {
+        const chat = await message.getChat();
+        if (chat?.fetchMessages) {
+          priorMessages = await chat.fetchMessages({ limit: 15 });
+          threadContext = (priorMessages || [])
+            .filter((m: any) => (m.body && m.body.trim()))
+            .slice(-10)
+            .map((m: any) => ({
+              from: m.fromMe ? 'me' : 'them',
+              text: String(m.body).slice(0, 500),
+              timestamp: m.timestamp ? m.timestamp * 1000 : Date.now(),
+            } as ThreadTurn));
+        }
+      } catch (e: any) {
+        log.warn('threadContext fetch failed', { error: e.message });
+        recordWhatsAppFetchError(userId, e?.message ?? 'inline threadContext fetch failed');
+      }
+
+      // Back-catch-up of outbound messages — for each fromMe message in
+      // the recent fetch, ensure it's in whatsapp_outbound_messages.
+      // Independent of the message_create listener (which may not fire
+      // for @lid chats or after a webjs reconnect). This guarantees that
+      // every time Brain sees an inbound on a chat, it also catches up
+      // on any outbound it missed in the recent window.
+      void (async () => {
+        for (const m of priorMessages) {
+          if (!m.fromMe) continue;
+          const ts = m.timestamp ? m.timestamp * 1000 : Date.now();
+          const msgId = m.id?._serialized || m.id?.id || `backfill:${rawFrom}:${ts}`;
+          let body = String(m.body ?? '').slice(0, 4000);
+          if (!body && m.hasMedia) {
+            const t = String(m.type ?? '').toLowerCase();
+            body = t === 'image' ? '[image]'
+              : t === 'video' ? '[video]'
+              : t === 'audio' || t === 'ptt' ? '[voice]'
+              : t === 'document' ? '[document]'
+              : t === 'sticker' ? '[sticker]'
+              : '[media]';
+          }
+          if (!body) continue; // truly empty event (system / reaction); skip
+          try {
+            await prisma.whatsAppOutboundMessage.upsert({
+              where: { userId_waMessageId: { userId, waMessageId: msgId } } as any,
+              create: {
+                clientNumber, userId,
+                chatId: rawFrom,
+                waMessageId: msgId,
+                bodyText: body,
+                sentAt: new Date(ts),
+              } as any,
+              update: {},
+            });
+          } catch (e: any) {
+            log.warn('back-catch-up outbound write failed', { userId, error: e.message });
+          }
+        }
+      })();
+
+      const payload = {
+        waMessageId: message.id?._serialized || message.id?.id || null,
+        chatId: rawFrom,
+        phoneNumber: phone,
+        senderName: senderName || null,
+        // 2026-05-25 — preserve the full name-source breakdown so
+        // downstream (entity_person enrichment, Brain reasoning,
+        // contact-identity questions) can distinguish "saved in your
+        // contacts" from "pushname only". Without this, Brain can't
+        // tell whether a sender named "X" is someone you know or
+        // someone calling themselves X on WhatsApp.
+        contactNames,
+        body: formattedBody,
+        type: message.type || 'chat',
+        hasMedia: !!message.hasMedia,
+        timestamp: message.timestamp ? message.timestamp * 1000 : Date.now(),
+        threadContext,
+        // Structured voice metadata so the triage prompts and the View
+        // thread modal can render the transcript distinctly. null when
+        // the message wasn't a voice note or when transcription failed.
+        voiceTranscript,
+      };
+
+      const result = await ingestFeedEvent({
+        clientNumber,
+        sourceType: 'whatsapp',
+        sourceId: payload.waMessageId || `${rawFrom}:${payload.timestamp}`,
+        payload,
+        userId,
+        eventType: 'message_received',
+        sender: { id: rawFrom, phone, name: senderName },
+      });
+
+      if (result.feedEventId) {
+        waMessageIndex.set(result.feedEventId, { userId, chatId: rawFrom });
+      }
+
+      // ── Instruction pipeline removed from inbound (non-self) path ──
+      // CRITICAL: this block previously ran the voice/text instruction
+      // pipeline on every inbound feed_event, including messages from
+      // OTHER PEOPLE. When a contact sent the user a voice note OR a
+      // text containing imperative verbs (draft/reply to/delegate/
+      // schedule/mute/set window/...) OR the word "brain"/"nexeo",
+      // Brain would:
+      //   1. Stage a voice_instruction on the user's account
+      //   2. Auto-send a reply FROM the user's WhatsApp TO the contact:
+      //      "📝 I heard: '...' → I will act on this. Reply YES to confirm"
+      //
+      // From the contact's view, the user's WhatsApp had just texted
+      // them an unsolicited Brain prompt — Brain speaking as the user
+      // without authorization. Reported by the user 2026-05-10 after
+      // they messaged a colleague and got a Brain-authored response
+      // back from the colleague's number.
+      //
+      // Self-dictation is correctly and exclusively handled by
+      // handleSelfDictation() above (gated on fromMe && isSelfChat).
+      // The browser inline voice strip on each card (DayBriefPage)
+      // covers per-card dictation. There is no legitimate case where
+      // a contact's inbound message should trigger an automatic
+      // reply from the user's WhatsApp.
+    } catch (e: any) {
+      log.error('message handler error', { userId, error: e.message });
+    }
+  });
+
+  try {
+    await client.initialize();
+  } catch (e: any) {
+    clients.delete(userId);
+    await writeMeta(userId, { status: 'error', lastError: e.message }, 'error');
+    return { status: 'error', qrDataUrl: null, connectedNumber: null, error: e.message };
+  }
+
+  return getStatus(userId);
+}
+
+/** Heartbeat — stamp lastSyncAt for every user with a live webjs client.
+ *  Runs every 2 min from server.ts so Day Brief reflects "channel is
+ *  alive" even when no new messages have arrived. Skips disconnected
+ *  clients so a dead pairing doesn't look fresh. */
+/** Internal accessor used by maintenance scripts (e.g. voice transcript
+ *  backfill) that need to reach the live webjs client to fetch a
+ *  message by id. Returns null when no live client is paired. */
+export function __getInternalClient(userId: number): any | null {
+  return clients.get(userId) ?? null;
+}
+
+/** List all currently-connected webjs clients with their user + tenant.
+ *  Used by the ingest health audit job to reconcile what webjs sees
+ *  against feed_events + whatsapp_outbound_messages. */
+export async function listConnectedClients(): Promise<Array<{ userId: number; clientNumber: string; client: any }>> {
+  const out: Array<{ userId: number; clientNumber: string; client: any }> = [];
+  for (const [userId, client] of clients.entries()) {
+    if (!client?.info) continue; // skip half-initialised clients
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { clientNumber: true },
+    }).catch(() => null);
+    if (!u?.clientNumber) continue;
+    out.push({ userId, clientNumber: u.clientNumber, client });
+  }
+  return out;
+}
+
+/**
+ * Backfill transcripts for old voice-note feed_events that arrived
+ * before the inline transcription path shipped. Must run IN the
+ * server process — relies on the live in-memory clients Map. CLI
+ * scripts spawn their own Node process and don't share memory, so
+ * they always see "no live client". An HTTP endpoint calls this
+ * directly inside the server.
+ *
+ * Optional userId narrows to one user; otherwise covers all paired.
+ */
+export async function backfillVoiceTranscriptsInProcess(opts?: {
+  apply?: boolean;
+  userId?: number;
+  limit?: number;
+}): Promise<{
+  scanned: number;
+  transcribed: number;
+  skippedNoClient: number;
+  skippedNotFound: number;
+  errors: number;
+}> {
+  const apply = !!opts?.apply;
+  const limit = Math.max(1, Math.min(500, opts?.limit ?? 200));
+
+  let scanned = 0;
+  let transcribed = 0;
+  let skippedNoClient = 0;
+  let skippedNotFound = 0;
+  let errors = 0;
+
+  const userFilter = opts?.userId ? `AND user_id = ${opts.userId}` : '';
+  const rows: Array<{
+    id: string; clientNumber: string; userId: number; rawPayload: any;
+  }> = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT id, client_number AS "clientNumber", user_id AS "userId",
+            raw_payload AS "rawPayload"
+       FROM feed_events
+      WHERE source_type = 'whatsapp'
+        AND user_id IS NOT NULL
+        ${userFilter}
+        AND (raw_payload->>'type' IN ('ptt', 'audio'))
+        AND (raw_payload->>'body' = '' OR raw_payload->>'body' IS NULL
+             OR raw_payload->>'body' ILIKE '%[voice note]%'
+             OR raw_payload->>'body' ILIKE '%(voice note)%')
+        AND raw_payload->'voiceTranscript' IS NULL
+      ORDER BY id DESC
+      LIMIT ${limit}`,
+  ).catch(() => [] as any[]);
+
+  const humanLang = (code: string): string => {
+    const c = (code || '').toLowerCase();
+    if (c.startsWith('ur')) return 'Urdu';
+    if (c.startsWith('en')) return 'English';
+    if (c.startsWith('hi')) return 'Hindi';
+    if (c.startsWith('ar')) return 'Arabic';
+    return code || 'unknown language';
+  };
+
+  for (const row of rows) {
+    scanned += 1;
+    const payload = row.rawPayload ?? {};
+    const waMessageId = payload.waMessageId;
+    if (!waMessageId) { skippedNotFound += 1; continue; }
+
+    const client = clients.get(row.userId);
+    if (!client) { skippedNoClient += 1; continue; }
+
+    try {
+      const message = await client.getMessageById?.(waMessageId).catch(() => null);
+      if (!message || !message.hasMedia) { skippedNotFound += 1; continue; }
+      const media = await message.downloadMedia();
+      if (!media?.data) { skippedNotFound += 1; continue; }
+
+      const { transcribeVoiceNote } = await import('../voiceService');
+      const tx = await transcribeVoiceNote(Buffer.from(media.data, 'base64'), media.mimetype);
+      if (!tx.text) { skippedNotFound += 1; continue; }
+
+      let english = '';
+      if (!(tx.language || '').toLowerCase().startsWith('en')) {
+        try {
+          const { callLLM } = await import('../llmRouter');
+          const r = await callLLM(
+            'Translate the input into clear, natural English. Output ONLY the English translation — no preamble, no labels, no quotes.',
+            tx.text,
+            {
+              maxTokens: 400,
+              providers: ['gemini-flash', 'gemini', 'claude'],
+              userId: row.userId,
+              clientNumber: row.clientNumber,
+              purpose: 'voice_translate',
+              timeoutMs: 12_000,
+            },
+          );
+          english = r.text.trim();
+        } catch { /* skip translation */ }
+      }
+
+      const voiceTranscript = {
+        language: tx.language || 'unknown',
+        original: tx.text,
+        english,
+        confidence: tx.confidence || 0,
+      };
+      const formattedBody = [
+        `🎤 Voice note in ${humanLang(voiceTranscript.language)} (auto-transcribed)`,
+        ``,
+        `Original: ${voiceTranscript.original}`,
+        english ? `\nEnglish: ${english}` : '',
+      ].filter(Boolean).join('\n');
+
+      if (apply) {
+        await prisma.feedEvent.update({
+          where: { id: row.id },
+          data: { rawPayload: { ...payload, body: formattedBody, voiceTranscript } as any },
+        });
+      }
+      transcribed += 1;
+      log.info('voice transcript backfilled', { id: row.id, lang: voiceTranscript.language, applied: apply });
+    } catch (err: any) {
+      errors += 1;
+      log.warn('backfill row failed', { id: row.id, error: err.message });
+    }
+  }
+
+  return { scanned, transcribed, skippedNoClient, skippedNotFound, errors };
+}
+
+export async function heartbeatAllConnected(): Promise<{ stamped: number; flippedDead: number }> {
+  let stamped = 0;
+  let flippedDead = 0;
+  for (const [userId, client] of clients.entries()) {
+    try {
+      // wwebjs Client exposes getState() async; CONNECTED is the only
+      // state where we can claim freshness. Cast to any — types from
+      // whatsapp-web.js aren't exported through a single union here.
+      const state = await client.getState?.().catch(() => null);
+      if (state === 'CONNECTED') {
+        await stampWhatsAppSync(userId);
+        stamped += 1;
+      }
+    } catch { /* skip this user, don't break the loop */ }
+  }
+
+  // Silent-dead-pairing detector. The earlier zombie-detect logic only
+  // catches sessions that reach the QR-issued event after death —
+  // multiple successive server restarts can fail authentication BEFORE
+  // QR fires, leaving the DB at status='connected' with no live client.
+  // Sweep: any whatsapp_personal row whose last_sync_at is more than 15
+  // minutes old AND has no entry in our in-memory clients Map → flip
+  // status to 'disconnected' so the broken-connector banner fires and
+  // the user is prompted to re-pair.
+  try {
+    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const candidates = await prisma.userConnector.findMany({
+      where: {
+        connectorType: { slug: 'whatsapp_personal' },
+        status: 'connected',
+        OR: [
+          { lastSyncAt: { lt: fifteenMinAgo } },
+          { lastSyncAt: null },
+        ],
+      } as any,
+      select: { id: true, userId: true, metadata: true },
+    });
+    for (const c of candidates) {
+      // If we still have a live in-memory client for this user, the
+      // heartbeat above would have stamped — leave it alone. Only flip
+      // when there's no client at all (boot-time orphan).
+      if (clients.has(c.userId)) continue;
+      const meta: any = c.metadata ?? {};
+      await prisma.userConnector.update({
+        where: { id: c.id },
+        data: {
+          status: 'disconnected',
+          metadata: {
+            ...meta,
+            status: 'disconnected',
+            lastError: 'No live WhatsApp client after server restart — please re-pair',
+            lastErrorAt: new Date().toISOString(),
+          } as any,
+        },
+      });
+      flippedDead += 1;
+      log.warn('Silent-dead pairing flipped to disconnected', { userId: c.userId });
+    }
+  } catch (e: any) {
+    log.warn('Silent-dead sweep failed', { error: e.message });
+  }
+
+  return { stamped, flippedDead };
+}
+
+export async function getStatus(userId: number): Promise<{ status: Status; qrDataUrl: string | null; connectedNumber: string | null; error?: string }> {
+  const row = await getUserConnector(userId);
+  const meta = (row?.metadata as any) || {};
+  return {
+    status: (meta.status as Status) || 'disconnected',
+    qrDataUrl: meta.qrDataUrl || null,
+    connectedNumber: meta.connectedNumber || null,
+    error: meta.lastError || undefined,
+  };
+}
+
+export async function disconnect(userId: number): Promise<void> {
+  const client = clients.get(userId);
+  if (client) {
+    try { await client.logout(); } catch {}
+    try { await client.destroy(); } catch {}
+    clients.delete(userId);
+  }
+  await writeMeta(userId, { status: 'disconnected', qrDataUrl: null, qrExpiresAt: null, connectedNumber: null }, 'disconnected' as any);
+}
+
+/**
+ * SendProvenance — every legitimate caller of sendReply must declare WHY
+ * it is sending a message from the user's paired WhatsApp client.
+ *
+ * Hard rule (see memory: feedback_brain_never_speaks_as_user.md):
+ * the only acceptable values describe a user-initiated chain — a UI
+ * button, the user's own self-dictation confirmation, or a tested
+ * admin verify path. No "inbound looked like an instruction" path is
+ * acceptable. If you find yourself wanting to add a new value here
+ * because of a heuristic on incoming messages from contacts, STOP —
+ * that's the trust-shattering bug class we already paid for.
+ */
+export type SendProvenance =
+  | 'ui_user_send_draft'                  // User clicked Send on a Day Brief draft
+  | 'ui_user_send_voice_note'             // User clicked Send Voice Note
+  | 'self_dictation_confirm_dispatch'     // User confirmed their own self-chat dictation
+  | 'self_dictation_confirm_ack'          // Brain acks the user's own self-dictation
+  | 'self_dictation_cancel_ack'           // Brain acks the user's own dictation cancel
+  | 'admin_verify_test';                  // Admin verify panel test send (dev only)
+
+export async function sendReply(
+  userId: number,
+  toChatId: string,
+  text: string,
+  provenance: SendProvenance,
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  // Runtime audit: every send writes its provenance + caller info to
+  // the log so any unexpected value (or future bug) is immediately
+  // visible in operational logs. We can grep for SEND_AUDIT in pm2
+  // logs and verify only the whitelisted values appear.
+  log.info('SEND_AUDIT', { userId, toChatId, provenance, textLen: text.length });
+  const client = clients.get(userId);
+  if (!client) {
+    return { success: false, error: 'WhatsApp session not active — open Connectors and re-scan the QR to re-pair.' };
+  }
+  try {
+    const msg = await client.sendMessage(toChatId, text);
+    const messageId = msg?.id?._serialized || msg?.id?.id;
+
+    // Fire-and-forget commitment extraction on every outbound message.
+    // Idempotent on (channel='whatsapp', sourceRef=messageId).
+    void (async () => {
+      try {
+        if (!messageId) return;
+        const u = await prisma.user.findUnique({
+          where: { id: userId }, select: { clientNumber: true },
+        });
+        if (!u?.clientNumber) return;
+        const recipient = '+' + String(toChatId).replace(/@.*$/, '');
+        const { extractAndFileCommitments } = await import('../knowledge/commitmentExtractor');
+        await extractAndFileCommitments({
+          clientNumber: u.clientNumber, userId,
+          channel: 'whatsapp', sourceRef: messageId,
+          recipient, subject: null, body: text,
+          sentAt: new Date(),
+        });
+      } catch { /* best effort */ }
+    })();
+
+    return { success: true, messageId };
+  } catch (e: any) {
+    return { success: false, error: `WhatsApp send failed: ${e.message}` };
+  }
+}
+
+/**
+ * Mark a WhatsApp conversation as read. Accepts either a waMessageId (from
+ * feed_event payload) or a chatId. Mirrors gmailService.markAsRead semantics:
+ * fire-and-forget from the action pipeline, success means "we tried".
+ */
+export async function markAsRead(userId: number, chatIdOrWaMessageId: string): Promise<{ success: boolean; error?: string }> {
+  const client = clients.get(userId);
+  if (!client) return { success: false, error: 'Not paired' };
+  try {
+    let chatId = chatIdOrWaMessageId;
+    if (!chatId.includes('@')) {
+      // Treat as waMessageId — try to locate the chat via getMessageById
+      try {
+        const msg = await client.getMessageById(chatIdOrWaMessageId);
+        chatId = msg?.from || chatId;
+      } catch {}
+    }
+    const chat = await client.getChatById(chatId);
+    if (chat?.sendSeen) await chat.sendSeen();
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Pull the last N messages the MD has SENT in a specific chat, so Brain can
+ * learn the exact WhatsApp texting style for that relationship. Skipped
+ * messages: media-only (no body). Returns empty array if not paired or
+ * chatId unreachable.
+ */
+export async function fetchSentSamplesForChat(userId: number, chatId: string, limit = 30): Promise<string[]> {
+  const client = clients.get(userId);
+  if (!client) return [];
+  try {
+    const chat = await client.getChatById(chatId);
+    if (!chat?.fetchMessages) return [];
+    const msgs = await chat.fetchMessages({ limit: Math.max(50, limit * 2) });
+    return (msgs || [])
+      .filter((m: any) => m.fromMe && m.body && m.body.trim())
+      .slice(-limit)
+      .map((m: any) => String(m.body).slice(0, 400));
+  } catch { return []; }
+}
+
+/**
+ * Pull the last N messages (both directions) from a chat, so Brain can
+ * understand what an ambiguous message like "On it" or "yes" is actually
+ * referring to. Returns an ordered transcript oldest→newest, each entry
+ * tagged with who spoke. Used by triage + reply composition.
+ */
+export interface ThreadTurn {
+  from: 'me' | 'them';
+  text: string;
+  timestamp: number;
+}
+export async function fetchThreadContext(userId: number, chatId: string, limit = 10): Promise<ThreadTurn[]> {
+  const client = clients.get(userId);
+  if (!client) {
+    // Smoking-gun for the "emptyThread=N" symptom in triage logs:
+    // the user-level webjs client isn't registered for this userId.
+    // That either means resumeAllSessions hasn't finished after a
+    // restart, or ingestion is happening via the tenant WebjsProvider
+    // (clientNumber-keyed) instead of the user one. Either way, the
+    // user-replied filter can't see the thread.
+    log.warn('[fetchThreadContext] no client in user map', { userId, chatId });
+    return [];
+  }
+  try {
+    const chat = await client.getChatById(chatId);
+    if (!chat?.fetchMessages) {
+      log.warn('[fetchThreadContext] getChatById returned no chat', { userId, chatId });
+      return [];
+    }
+    const msgs = await chat.fetchMessages({ limit: Math.max(20, limit * 2) });
+    const turns = (msgs || [])
+      .filter((m: any) => (m.body && m.body.trim()) || m.type === 'ptt' || m.type === 'audio')
+      .slice(-limit)
+      .map((m: any) => ({
+        from: m.fromMe ? 'me' : 'them',
+        text: String(m.body || '(voice note)').slice(0, 500),
+        timestamp: m.timestamp ? m.timestamp * 1000 : Date.now(),
+      }));
+    if (turns.length === 0) {
+      log.warn('[fetchThreadContext] chat returned 0 turns after filter', { userId, chatId, raw: (msgs || []).length });
+    }
+    return turns;
+  } catch (e: any) {
+    log.warn('[fetchThreadContext] threw', { userId, chatId, error: e?.message });
+    // Feed the lying-status detector. When this throws repeatedly
+    // (e.g. waitForChatLoading undefined for @lid chats), the next
+    // stampWhatsAppSync flips connector status='degraded' so the UI
+    // and Brain itself stop pretending WA ingest is healthy.
+    recordWhatsAppFetchError(userId, e?.message ?? 'fetchThreadContext threw');
+    return [];
+  }
+}
+
+/** Resume previously-paired sessions on server boot.
+ *
+ *  Important: if the tenant-level WebjsProvider is ALREADY logged in to
+ *  the same phone number, we SKIP the per-user resume for that phone.
+ *  Otherwise two headless Chromiums race for the same WhatsApp account,
+ *  each kicks the other out, and the UI sees a "keeps disconnecting"
+ *  loop. Pick one owner per phone.
+ */
+export async function resumeAllSessions(): Promise<void> {
+  const rows = await prisma.userConnector.findMany({
+    where: { connectorType: { slug: 'whatsapp_personal' }, status: 'connected' },
+    include: { connectorType: true },
+  });
+
+  // Read tenant-level claims so we don't double-bind the same phone.
+  const tenantClaims = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT client_number, connected_number FROM whatsapp_config WHERE status = 'connected' AND connected_number IS NOT NULL`,
+  ).catch(() => [] as any[]);
+  const claimedByTenant = new Map<string, string>();   // clientNumber → phone
+  for (const t of tenantClaims) claimedByTenant.set(t.client_number, String(t.connected_number).replace(/[^\d+]/g, ''));
+
+  for (const r of rows) {
+    // Try to read this user's paired phone from connector metadata
+    const meta: any = r.metadata ?? {};
+    const userPhone = String(meta.connectedNumber ?? meta.phoneNumber ?? '').replace(/[^\d+]/g, '');
+    const tenantPhone = claimedByTenant.get(r.clientNumber);
+    if (userPhone && tenantPhone && userPhone === tenantPhone) {
+      log.info('skip user resume — tenant already owns this phone', { userId: r.userId, phone: userPhone, clientNumber: r.clientNumber });
+      continue;
+    }
+    try { await startPairing(r.userId, r.clientNumber); }
+    catch (e: any) { log.warn('resume failed', { userId: r.userId, error: e.message }); }
+  }
+}
+
+/**
+ * Iterate the user's recent WhatsApp chats and yield each chat together
+ * with its recent message buffer. Used by the historical scribe to
+ * backfill Brain memory with past WhatsApp conversations after a fresh
+ * pair (without it, only messages arriving after pairing land in feed).
+ *
+ * Filtering rules:
+ *   - Skip group chats (`chat.isGroup`) — too noisy, low signal
+ *   - Skip status broadcasts and newsletters
+ *   - Skip excluded contacts (read from notificationPreferences)
+ *   - Only chats touched in the last `daysBack` days
+ *   - Per-chat message cap (`messagesPerChat`)
+ *   - Global message cap (`totalCap`) prevents runaway on heavy users
+ *
+ * Returns an async iterator so the caller can stream-process and
+ * checkpoint progress without holding the entire history in memory.
+ */
+export interface WhatsAppHistoryItem {
+  chatId: string;
+  contactNumber: string | null;
+  contactName: string | null;
+  isFromMe: boolean;
+  body: string;
+  type: string;
+  timestamp: number;
+  waMessageId: string;
+}
+
+export interface WhatsAppHistoryOpts {
+  /** How far back to look in days. Default 14. */
+  daysBack?: number;
+  /** Cap on messages per chat. Default 100. */
+  messagesPerChat?: number;
+  /** Global cap across all chats. Default 5000. */
+  totalCap?: number;
+}
+
+export async function* iterateWhatsAppHistory(
+  userId: number,
+  opts: WhatsAppHistoryOpts = {},
+): AsyncGenerator<WhatsAppHistoryItem> {
+  const client = clients.get(userId);
+  if (!client) return; // not paired
+
+  const daysBack = opts.daysBack ?? 14;
+  const messagesPerChat = opts.messagesPerChat ?? 100;
+  const totalCap = opts.totalCap ?? 5000;
+  const sinceMs = Date.now() - daysBack * 86_400_000;
+  const excluded = await excludedFor(userId);
+
+  let yielded = 0;
+
+  let chats: any[] = [];
+  try { chats = await client.getChats(); }
+  catch (err: any) { log.warn('getChats failed during scribe', { userId, error: err.message }); return; }
+
+  // Sort chats by last activity descending — most-recent conversations first
+  // so we hit the cap on what's relevant rather than ancient noise.
+  chats.sort((a: any, b: any) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+
+  for (const chat of chats) {
+    if (yielded >= totalCap) break;
+
+    const id = chat?.id?._serialized ?? '';
+    if (!id) continue;
+    if (chat.isGroup) continue;
+    if (id === 'status@broadcast' || id.includes('@g.us') || id.includes('@newsletter')) continue;
+
+    // chat.timestamp is the last-message-at; skip cold chats outside the window.
+    const lastTs = (chat.timestamp ?? 0) * 1000;
+    if (lastTs && lastTs < sinceMs) continue;
+
+    // Resolve the other party's phone number for the exclusion check.
+    let contactNumber: string | null = null;
+    let contactName: string | null = chat.name ?? null;
+    try {
+      const contact = await chat.getContact();
+      const num = contact?.number || contact?.id?.user;
+      if (num) contactNumber = '+' + String(num).replace(/^\+/, '');
+      if (!contactName) contactName = contact?.pushname || contact?.name || null;
+    } catch { /* fallback to chat-id parsing below */ }
+    if (!contactNumber) {
+      const m = /^(\d+)@/.exec(id);
+      if (m) contactNumber = '+' + m[1];
+    }
+
+    if (contactNumber && excluded.has(normalizePhone(contactNumber))) {
+      log.info('whatsapp scribe: skipping excluded contact', { contactNumber });
+      continue;
+    }
+
+    let messages: any[] = [];
+    try { messages = await chat.fetchMessages({ limit: messagesPerChat }); }
+    catch (err: any) {
+      log.warn('fetchMessages failed during scribe', { chatId: id, error: err.message });
+      continue;
+    }
+
+    // Iterate oldest → newest within the chat so feed_events land in time order.
+    for (const m of (messages || [])) {
+      if (yielded >= totalCap) break;
+      const tsMs = (m.timestamp ?? 0) * 1000;
+      if (tsMs && tsMs < sinceMs) continue;
+      // Skip non-chat messages: notifications, system, calls. Voice notes
+      // (ptt) and audio carry no transcribed body in the snapshot, so we
+      // log them with a placeholder so Brain at least knows they happened.
+      const body = m.body && m.body.trim()
+        ? m.body
+        : m.type === 'ptt' || m.type === 'audio'
+          ? '[voice note]'
+          : m.type === 'image' ? '[image]'
+          : m.type === 'video' ? '[video]'
+          : m.type === 'document' ? '[document]'
+          : '';
+      if (!body) continue;
+      yield {
+        chatId: id,
+        contactNumber,
+        contactName,
+        isFromMe: !!m.fromMe,
+        body: String(body).slice(0, 4000),
+        type: m.type ?? 'chat',
+        timestamp: tsMs || Date.now(),
+        waMessageId: m.id?.id ?? `${id}:${tsMs}`,
+      };
+      yielded += 1;
+    }
+  }
+}
+
+/** Destroy every per-user session — called from gracefulShutdown so
+ *  LocalAuth finishes writing session state before the process exits. */
+export async function destroyAllUserSessions(): Promise<void> {
+  const work: Promise<void>[] = [];
+  for (const [uid, c] of clients) {
+    work.push((async () => {
+      try { await c.destroy(); } catch {
+        try { const b = await c.pupBrowser; if (b) await b.close(); } catch {}
+      }
+      clients.delete(uid);
+    })());
+  }
+  await Promise.race([
+    Promise.all(work),
+    new Promise((res) => setTimeout(res, 3000)),
+  ]);
+}

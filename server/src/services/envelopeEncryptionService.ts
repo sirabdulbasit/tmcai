@@ -18,8 +18,13 @@ import createLogger from '../utils/logger';
 const log = createLogger('envelopeEncryption');
 
 const ALGORITHM   = 'aes-256-gcm';
-const IV_LENGTH   = 16;
+// H4 — 12 bytes is the NIST-recommended IV length for GCM. New
+// ciphertexts use 12 bytes. Existing 16-byte ciphertexts remain
+// decryptable because aeDecrypt reads the IV length from the encoded
+// prefix — no data migration needed.
+const IV_LENGTH   = 12;
 const DEK_BYTES   = 32; // 256-bit DEK
+const MEK_BYTES   = 32; // 256-bit MEK
 
 // In-memory DEK cache (session-scoped — cleared on process restart)
 const dekCache = new Map<number, Buffer>();
@@ -27,6 +32,42 @@ const dekCache = new Map<number, Buffer>();
 // ─── MEK helpers (reuses Secret Manager logic from configService) ─────────────
 
 let mekCache: Buffer | null = null;
+
+/**
+ * H3 — Decode a MEK string into exactly 32 bytes.
+ *
+ * Accepted encodings:
+ *   - base64 / base64url of 32 bytes (44 or 43 chars)
+ *   - hex of 32 bytes (64 chars)
+ *
+ * Previously the code did `Buffer.from(str.slice(0, 32), 'utf-8')`, which
+ * silently truncated to 32 UTF-8 bytes of whatever was in the env. For a
+ * hex-encoded secret that meant only 128 bits of entropy landed in the
+ * AES-256 key. This function now requires a canonical encoding and
+ * throws on anything else, so bad config fails at startup rather than
+ * quietly weakening encryption.
+ */
+export function decodeMEK(raw: string): Buffer {
+  const trimmed = raw.trim();
+
+  // Try hex first (only 0-9a-fA-F, length 64).
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return Buffer.from(trimmed, 'hex');
+  }
+
+  // Try base64 (standard or url-safe). 32 bytes → 43 chars unpadded or 44
+  // with padding.
+  if (/^[A-Za-z0-9+/_-]{43,44}=?=?$/.test(trimmed)) {
+    const b64 = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length === MEK_BYTES) return buf;
+  }
+
+  throw new Error(
+    `ENCRYPTION_KEY (MEK) must be 32 bytes encoded as hex (64 chars) or ` +
+    `base64 (43/44 chars). Got length=${trimmed.length}.`,
+  );
+}
 
 async function getMEK(): Promise<Buffer> {
   if (mekCache) return mekCache;
@@ -40,17 +81,20 @@ async function getMEK(): Promise<Buffer> {
         name: `projects/${projectId}/secrets/tmcai-encryption-key/versions/latest`,
       });
       const secret = version.payload?.data?.toString();
-      if (!secret || secret.length < 32) throw new Error('MEK from Secret Manager invalid');
-      mekCache = Buffer.from(secret.slice(0, 32), 'utf-8');
+      if (!secret) throw new Error('MEK from Secret Manager is empty');
+      mekCache = decodeMEK(secret);
       return mekCache;
     } catch (err: any) {
       log.error('Secret Manager MEK load failed', { error: err.message });
+      // Fall through to env-var path so boot doesn't hard-fail if Secret
+      // Manager is transiently unavailable. The env-var path still fails
+      // loudly if the value is unset or malformed.
     }
   }
 
   const key = process.env.ENCRYPTION_KEY;
-  if (!key || key.length < 32) throw new Error('ENCRYPTION_KEY must be set (32+ chars)');
-  mekCache = Buffer.from(key.slice(0, 32), 'utf-8');
+  if (!key) throw new Error('ENCRYPTION_KEY must be set');
+  mekCache = decodeMEK(key);
   return mekCache;
 }
 

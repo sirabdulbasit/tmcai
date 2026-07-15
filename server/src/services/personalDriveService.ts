@@ -163,6 +163,10 @@ async function syncFile(
   drive: any,
   file: { id: string; name: string; mimeType: string; size: string; md5Checksum?: string; modifiedTime: string },
   folderId: string,
+  // E3/E5: owner's tenant, resolved ONCE per sync in syncUserDrive and
+  // threaded through so every inserted document/chunk is born tenant-
+  // tagged (defense in depth on top of user_id scoping).
+  clientNumber: string | null,
 ): Promise<{ status: 'indexed' | 'skipped' | 'error'; reason?: string }> {
   const fileId = file.id;
   const mimeType = file.mimeType;
@@ -194,9 +198,9 @@ async function syncFile(
     await prisma.$executeRawUnsafe('DELETE FROM personal_chunks WHERE document_id = $1', docId);
   } else {
     const rows: any[] = await prisma.$queryRawUnsafe(
-      `INSERT INTO personal_documents (user_id, source, external_id, folder_id, file_name, mime_type, size_bytes, content_hash, parse_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      userId, 'gdrive', fileId, folderId, file.name, mimeType, sizeBytes, contentHash, 'processing',
+      `INSERT INTO personal_documents (user_id, source, external_id, folder_id, file_name, mime_type, size_bytes, content_hash, parse_status, client_number)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      userId, 'gdrive', fileId, folderId, file.name, mimeType, sizeBytes, contentHash, 'processing', clientNumber,
     );
     docId = rows[0].id;
   }
@@ -224,11 +228,13 @@ async function syncFile(
     for (let i = 0; i < chunks.length; i++) {
       const chunkHash = crypto.createHash('sha256').update(chunks[i]).digest('hex');
       const embeddingJson = JSON.stringify(embeddings[i] || []);
+      // client_number denormalised onto each chunk so the hot retrieval
+      // query can filter by tenant WITHOUT joining personal_documents.
       await prisma.$executeRawUnsafe(
-        `INSERT INTO personal_chunks (user_id, document_id, content, embedding, chunk_index, content_hash)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+        `INSERT INTO personal_chunks (user_id, document_id, content, embedding, chunk_index, content_hash, client_number)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
          ON CONFLICT (content_hash) DO NOTHING`,
-        userId, docId, chunks[i], embeddingJson, i, chunkHash,
+        userId, docId, chunks[i], embeddingJson, i, chunkHash, clientNumber,
       );
     }
 
@@ -254,11 +260,15 @@ export async function syncUserDrive(userId: number): Promise<{
 }> {
   const start = Date.now();
 
+  // client_number fetched in the SAME users lookup we already do — this
+  // is the owner's tenant, stamped onto every document/chunk written
+  // below (E3/E5). users.client_number is the ground truth mapping.
   const rows: any[] = await prisma.$queryRawUnsafe(
-    'SELECT personal_drive_folder_id FROM users WHERE id = $1',
+    'SELECT personal_drive_folder_id, client_number FROM users WHERE id = $1',
     userId,
   );
   const folderId = rows[0]?.personal_drive_folder_id;
+  const clientNumber: string | null = rows[0]?.client_number ?? null;
   if (!folderId) return { indexed: 0, skipped: 0, errors: 0, durationMs: 0 };
 
   const { client, error } = await getAuthenticatedClient(userId);
@@ -281,7 +291,7 @@ export async function syncUserDrive(userId: number): Promise<{
 
     const files = res.data.files || [];
     for (const file of files) {
-      const result = await syncFile(userId, drive, file, folderId);
+      const result = await syncFile(userId, drive, file, folderId, clientNumber);
       if (result.status === 'indexed') indexed++;
       else if (result.status === 'error') errors++;
       else skipped++;
@@ -307,12 +317,24 @@ export async function searchPersonalChunks(
   userId: number,
   queryEmbedding: number[],
   topK: number = 3,
+  // E3/E5 tenant defense-in-depth: the caller's tenant. With it, rows
+  // tagged to a DIFFERENT tenant are excluded even if the userId is
+  // wrong/stale — user_id alone stops being the last line of defense.
+  // NULL-tagged rows (pre-backfill stragglers) still pass so nothing a
+  // user indexed before the migration silently disappears. Omitted =
+  // legacy user-only scoping, for callers with no tenant context.
+  clientNumber?: string | null,
 ): Promise<Array<{ content: string; fileName: string; score: number }>> {
   // Fetch all personal chunks for this user (in-memory cosine — personal data stays small)
-  const chunks: any[] = await prisma.$queryRawUnsafe(
-    'SELECT pc.content, pc.embedding, pd.file_name FROM personal_chunks pc JOIN personal_documents pd ON pd.id = pc.document_id WHERE pc.user_id = $1',
-    userId,
-  );
+  const chunks: any[] = clientNumber
+    ? await prisma.$queryRawUnsafe(
+        'SELECT pc.content, pc.embedding, pd.file_name FROM personal_chunks pc JOIN personal_documents pd ON pd.id = pc.document_id WHERE pc.user_id = $1 AND (pc.client_number = $2 OR pc.client_number IS NULL)',
+        userId, clientNumber,
+      )
+    : await prisma.$queryRawUnsafe(
+        'SELECT pc.content, pc.embedding, pd.file_name FROM personal_chunks pc JOIN personal_documents pd ON pd.id = pc.document_id WHERE pc.user_id = $1',
+        userId,
+      );
 
   if (chunks.length === 0) return [];
 

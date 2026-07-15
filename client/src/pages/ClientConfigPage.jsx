@@ -12,7 +12,12 @@ const CLIENT_SECTIONS = [
   {
     title: 'Google Drive',
     icon: '📁',
-    keys: ['google_client_id', 'google_client_secret', 'google_redirect_uri', 'google_drive_folder_id', 'google_index_file_name'],
+    // Per-tenant OAuth credentials (google_client_id, google_client_secret,
+    // google_redirect_uri) were retired in 2026-05-04 — every tenant uses
+    // the platform-wide OAuth client in tmcai-491811. See memory
+    // `project_gcp_simplification.md`. Only the per-tenant Drive folder
+    // pointer + index file remain configurable here.
+    keys: ['google_drive_folder_id', 'google_index_file_name'],
   },
 ];
 
