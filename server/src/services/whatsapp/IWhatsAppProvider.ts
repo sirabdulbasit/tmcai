@@ -18,6 +18,10 @@ export interface SendResult {
   success: boolean;
   messageId?: string;
   error?: string;
+  /** provider_receipt = provider returned an immutable message id;
+   * transport_accepted = send resolved without a receipt, so do not retry. */
+  confirmation?: 'provider_receipt' | 'transport_accepted';
+  warning?: string;
 }
 
 export interface ConnectionStatus {

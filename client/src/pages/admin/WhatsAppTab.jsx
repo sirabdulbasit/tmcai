@@ -219,7 +219,13 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
     setSendingTest(true);
     try {
       const res = await api.post(`/admin/whatsapp/test${q}`, { testNumber });
-      setMsg(res.data.success ? `Test sent! (ID: ${res.data.messageId})` : `Test failed: ${res.data.error}`);
+      if (!res.data.success) {
+        setMsg(`Test failed: ${res.data.error}`);
+      } else if (res.data.confirmation === 'transport_accepted') {
+        setMsg('Test accepted by WhatsApp Web; receipt ID unavailable. It will not be retried—check the destination chat.');
+      } else {
+        setMsg(`Test sent! (ID: ${res.data.messageId})`);
+      }
       setShowTest(false);
       loadAll();
     } catch (e) { setMsg('Test send failed'); }

@@ -7,6 +7,7 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, TestResult } from './IWhatsAppProvider';
+import { classifyWebjsSendResult } from './sendReceipt';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import fs from 'fs';
@@ -803,17 +804,10 @@ export class WebjsProvider implements IWhatsAppProvider {
       }
 
       const msg = await client.sendMessage(chatId, params.message);
-      // The wwebjs Message object has id._serialized (the full WA id)
-      // and id.id (the short id). Track both — some downstream code
-      // uses one or the other.
-      const waMessageId = msg?.id?._serialized || msg?.id?.id;
-      if (!waMessageId) {
-        // Send didn't throw but returned no id — treat as failure so
-        // callers don't claim "sent" without proof. Per Basit 2026-07-07
-        // no-fabrication rule.
-        return { success: false, error: 'sendMessage returned no message id — send likely failed silently' };
-      }
-      return { success: true, messageId: waMessageId };
+      // A resolved send without an id is transport-accepted but unconfirmed.
+      // Never retry it: production proved those sends can arrive, and retrying
+      // from a false failure creates duplicate user-visible messages.
+      return classifyWebjsSendResult(msg);
     } catch (error: any) {
       return { success: false, error: error.message };
     }

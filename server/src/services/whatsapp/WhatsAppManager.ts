@@ -10,6 +10,8 @@ import { WebjsProvider } from './WebjsProvider';
 import { MetaProvider } from './MetaProvider';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import { whatsappMessageLogStatus } from './sendReceipt';
+import { SendResult } from './IWhatsAppProvider';
 
 const log = createLogger('whatsapp:manager');
 
@@ -78,7 +80,7 @@ export async function sendWhatsAppMessage(params: {
   agentId?: number;
   userId?: number;
   requiresApproval?: boolean;
-}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+}): Promise<SendResult> {
   // Read config first to confirm tenant exists + connected. We still
   // need this for status, connected_number, and the requires-approval
   // path; the LIMIT check moves to an atomic conditional update below.
@@ -183,7 +185,7 @@ export async function sendWhatsAppMessage(params: {
       `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, wa_message_id, status, agent_id, created_at)
        VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
       params.clientNumber, logUserId, config.connected_number || '', params.to,
-      params.message, result.messageId || null, result.success ? 'sent' : 'failed', params.agentId || null,
+      params.message, result.messageId || null, whatsappMessageLogStatus(result), params.agentId || null,
     );
 
     // Refund the claim if the actual send failed — the slot was
@@ -371,7 +373,8 @@ export async function approveQueuedMessage(messageId: number, approvedBy: number
 
   await prisma.$executeRawUnsafe(
     `UPDATE whatsapp_messages SET status = $1, approved_by = $2, approved_at = NOW(), wa_message_id = $3, error_message = $4 WHERE id = $5`,
-    result.success ? 'sent' : 'failed', approvedBy, result.messageId || null, result.error || null, messageId,
+    whatsappMessageLogStatus(result), approvedBy, result.messageId || null,
+    result.error || result.warning || null, messageId,
   );
 
   return result;

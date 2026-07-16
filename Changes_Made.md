@@ -659,18 +659,18 @@ user-confirmed QR tenant only, perform the equivalent of:
 ```sql
 UPDATE whatsapp_config
 SET provider = 'webjs',
-    status = 'disconnected',
-    qr_code = NULL,
-    qr_expires_at = NULL,
+    status = 'connected',
     last_error = NULL,
     updated_at = NOW()
 WHERE client_number = '<CONFIRMED_CLIENT_NUMBER>';
 ```
 
-Restart only `tmcai-server` with the correct environment. The Web.js watchdog
-should initialize the tenant from its preserved session. If the session is no
-longer valid, generate and scan a new QR code. Do not hard-code `TMC-0001` or
-change other tenants without confirming the production row.
+`connected` here is a boot-resume request for the already paired LocalAuth
+session: `initializeAllTenants()` intentionally skips rows marked
+`disconnected`. Restart only `tmcai-server` with the correct environment. If
+the preserved session is no longer valid, use Admin → WhatsApp → Reset Pairing
+and scan a new QR code. Do not hard-code `TMC-0001` or change other tenants
+without confirming the production row.
 
 Verify logs show Web.js initialization and an inbound `Raw message event` /
 `Message received`. Send `hi` from the registered user number and confirm a
@@ -754,3 +754,59 @@ git diff --check
 
 These latest changes are local and uncommitted at the time of writing. They
 have not been pushed or deployed by Codex.
+
+## 20. Web.js id-less send receipt false failures (2026-07-16)
+
+### Production evidence and root cause
+
+The Admin message log marked five test messages `failed` with:
+
+```text
+sendMessage returned no message id — send likely failed silently
+```
+
+The destination WhatsApp chat showed that all five messages were actually
+delivered. The same screenshots proved inbound processing was live: `hi` and
+`?` were recorded as received, and Brain replies were generated. In production
+with whatsapp-web.js 1.34.6, `Client.sendMessage()` can resolve after accepting
+the send while returning an object with no usable `id`. The prior binary
+contract incorrectly converted “receipt unavailable” into “send failed”. That
+invited manual retries and created duplicate messages.
+
+### Implementation
+
+Added `server/src/services/whatsapp/sendReceipt.ts` with an explicit three-state
+classification:
+
+- provider returned an ID → `provider_receipt`, log `sent`;
+- send resolved without an ID → `transport_accepted`, log
+  `sent_unconfirmed` and do not retry;
+- provider threw/rejected → `failed` and refund the claimed message quota.
+
+`SendResult` now carries `confirmation` and an optional bounded `warning`.
+`WebjsProvider`, normal sends, and approved queued sends use the shared status
+classifier. No-ID transport acceptance is not promoted to provider-confirmed
+delivery, so action confirmation continues to fail closed when it requires a
+real receipt.
+
+The Admin test UI now says:
+
+```text
+Test accepted by WhatsApp Web; receipt ID unavailable. It will not be retried—check the destination chat.
+```
+
+instead of falsely reporting failure. This prevents operators from repeating a
+send that may already be visible to the recipient.
+
+Added `server/tests/whatsappSendReceipt.test.ts` covering confirmed,
+transport-accepted/unconfirmed, and actual failure states.
+
+Final verification for this follow-up:
+
+```text
+Server: 935 passed, 21 skipped, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+Client Vite production build: passed
+git diff --check: passed
+```
