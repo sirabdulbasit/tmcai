@@ -8,6 +8,7 @@
 
 import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, TestResult } from './IWhatsAppProvider';
 import { classifyWebjsSendResult } from './sendReceipt';
+import { sendInboundTextReply } from './inboundReplyTransport';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import fs from 'fs';
@@ -426,8 +427,7 @@ export class WebjsProvider implements IWhatsAppProvider {
           // Brain reply — so it's exempt from the LLM-only reply rule.
           // Best-effort: never block processing if the echo send fails.
           try {
-            const chat = await message.getChat();
-            await chat.sendMessage(`🎙️ Heard: "${messageBody}"`);
+            await sendInboundTextReply(message, `🎙️ Heard: "${messageBody}"`);
           } catch (e: any) {
             log.warn('transcription echo failed (non-blocking)', { error: e?.message });
           }
@@ -443,10 +443,10 @@ export class WebjsProvider implements IWhatsAppProvider {
           messageBody,
           messageType,
           replyFn: async (text: string) => {
-            const chat = await message.getChat();
             // If input was voice, reply with voice note too
             if (inputWasVoice) {
               try {
+                const chat = await message.getChat();
                 const { textToVoiceNote } = await import('../voiceService');
                 const audioBuffer = await textToVoiceNote(text);
                 if (audioBuffer) {
@@ -455,14 +455,14 @@ export class WebjsProvider implements IWhatsAppProvider {
                   const media = new MessageMedia('audio/ogg; codecs=opus', audioBuffer.toString('base64'));
                   await chat.sendMessage(media, { sendAudioAsVoice: true });
                   // Also send text version (for readability)
-                  await chat.sendMessage(text);
+                  await sendInboundTextReply(message, text);
                   return;
                 }
               } catch (e: any) {
                 log.error('Voice reply failed, sending text only', { error: e.message });
               }
             }
-            await chat.sendMessage(text);
+            await sendInboundTextReply(message, text);
           },
           typingFn: async () => {
             try {
@@ -530,8 +530,7 @@ export class WebjsProvider implements IWhatsAppProvider {
             try { const chat = await message.getChat(); await chat.sendStateTyping(); } catch {}
           },
           replyFn: async (text: string) => {
-            const chat = await message.getChat();
-            await chat.sendMessage(text);
+            await sendInboundTextReply(message, text);
           },
         };
         await handleInboundMessage(inboundParams);

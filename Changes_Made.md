@@ -810,3 +810,43 @@ Server production build: passed (Prisma 6.19.2)
 Client Vite production build: passed
 git diff --check: passed
 ```
+
+## 21. Inbound `@lid` reply routing (2026-07-16)
+
+### Production evidence
+
+The Admin log proved that inbound `Hi` and `Brief my dya` messages were received
+from a WhatsApp `@lid` identity and that Brain generated responses, while the
+responses did not appear in the originating WhatsApp chat. The sender surfaced
+as a synthetic `+1735…` LID alias rather than the user's canonical phone.
+
+### Root cause and correction
+
+The tenant Web.js inbound handler replied through:
+
+```text
+message.getChat().sendMessage(...)
+```
+
+For an `@lid` sender, `getChat()` can resolve a virtual/LID chat object that
+accepts the call without reliably routing the reply into the visible originating
+conversation. The handler also called `getChat()` before deciding whether it
+even needed a chat object, so a bad LID chat resolution could block ordinary
+text replies before the send.
+
+Added `server/src/services/whatsapp/inboundReplyTransport.ts`. Text replies now
+prefer:
+
+```text
+message.reply(...)
+```
+
+which preserves the exact inbound message and WhatsApp routing context. The
+chat-based path remains only as compatibility fallback for older objects. This
+shared transport is used by both Web.js inbound event handlers, voice
+transcription echoes, and the text copy accompanying a voice reply. Voice media
+continues to use the chat media API because `message.reply()` does not provide
+the required voice-note send options.
+
+Added `server/tests/whatsappInboundReplyTransport.test.ts` to lock exact-context
+routing and the compatibility fallback.
