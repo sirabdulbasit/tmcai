@@ -206,15 +206,16 @@ export async function sweepStaleErrorMetadata(): Promise<{ scanned: number; clea
  * a transient network blip doesn't fire the alert, tight enough that a
  * 7-day token expiry is caught within 30 min instead of 4 days.
  *
- * Drive defaults to a longer threshold because folder-watch polling
- * runs less frequently than mail/calendar.
+ * Google Drive is intentionally absent: it has no automatic poller in this
+ * service. Its timestamp is refreshed only by a real Drive API probe/manual
+ * sync, so a wall-clock threshold would manufacture stale incidents forever.
+ * Actual Drive OAuth/API failures still flow through markTokenExpired().
  */
 const STALE_THRESHOLD_MIN: Record<string, number> = {
   ct_gmail:                  30,
   ct_google_calendar:        60,
   ct_google_tasks:          120,
   ct_google_chat:            30,
-  ct_google_drive_personal: 240,
   ct_whatsapp_personal:      15,
   ct_outlook:                30,
   ct_microsoft_calendar:     60,
@@ -246,10 +247,10 @@ export type StaleConnector = {
 };
 
 /**
- * 5-minute sweep — flips status on stale connectors and fires one
- * Brain ping per occurrence. Idempotent: re-running while a connector
- * is already sync_stale is cheap (no extra alert fires because
- * brainContactsUser dedups on dedupKey).
+ * 5-minute sweep — flips status on stale connectors and fires one Brain ping
+ * per occurrence. Idempotence is structural: only the process that atomically
+ * changes status from connected to sync_stale owns the incident and may alert;
+ * outbound dedup remains a second line of defence.
  */
 export async function detectStaleConnectors(): Promise<{ scanned: number; flipped: number }> {
   let scanned = 0;
@@ -281,8 +282,10 @@ export async function detectStaleConnectors(): Promise<{ scanned: number; flippe
     const label = prettyLabel(r.connectorTypeId);
     const errorMsg = `No sync for ${ageMin} min (expected every ${threshold} min). Likely OAuth token expired or connector lost session — reconnect from /connectors.`;
     try {
-      await prisma.userConnector.update({
-        where: { id: r.id },
+      // Atomic transition ownership: only one process/replica may turn this
+      // connected row into an incident and therefore own its alert.
+      const transition = await prisma.userConnector.updateMany({
+        where: { id: r.id, status: 'connected' } as any,
         data: {
           status: 'sync_stale',
           metadata: {
@@ -293,6 +296,7 @@ export async function detectStaleConnectors(): Promise<{ scanned: number; flippe
           } as any,
         },
       });
+      if (transition.count !== 1) continue;
       flipped++;
       stale.push({
         userId: r.userId, clientNumber: r.clientNumber,
@@ -307,10 +311,10 @@ export async function detectStaleConnectors(): Promise<{ scanned: number; flippe
     }
   }
 
-  // Fire alerts in a separate pass so a slow LLM call in one alert
-  // doesn't delay flipping the rest of the rows.
+  // Await alert completion so the protected job lifecycle observes failures
+  // and shutdown cannot abandon a claimed incident mid-send.
   if (stale.length > 0) {
-    void fireStaleAlerts(stale).catch((e) => log.warn('stale alerts failed', { error: e.message }));
+    await fireStaleAlerts(stale).catch((e) => log.warn('stale alerts failed', { error: e.message }));
   }
 
   return { scanned, flipped };

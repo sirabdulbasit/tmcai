@@ -5,6 +5,10 @@ import {
   sendVoiceNoteViaNotifier, sendCallNudgeViaNotifier, initiateBusinessCall,
 } from '../../services/notifications/whatsappNotifierService';
 import prisma from '../../db/prisma';
+import {
+  mirrorNotifierCredentials,
+  storeMetaWebhookSecret,
+} from '../../services/whatsapp/whatsappNotifierConfigMirror';
 
 /** Public base URL — derived from env, used to render the webhook callback URL
  *  in the admin UI so the operator can copy/paste it into Meta's webhook page. */
@@ -32,8 +36,8 @@ router.get('/whatsapp-notifier', requireAdmin, async (req: Request, res: Respons
   const u = (req as any).user;
   const n = await getNotifier(u.clientNumber);
 
-  // Inbound webhook state (separate table). Populated when the operator
-  // generates a webhook secret + we auto-flip provider='meta' on save.
+  // Inbound webhook state (separate table). Outbound notifier setup never
+  // changes this provider; switching inbound transport is an explicit action.
   const cfg = await prisma.$queryRawUnsafe<Array<{
     provider: string | null;
     meta_webhook_secret: string | null;
@@ -71,13 +75,11 @@ router.get('/whatsapp-notifier', requireAdmin, async (req: Request, res: Respons
   });
 });
 
-/** PUT /api/v1/admin/whatsapp-notifier — save (encrypts token).
- *  Also writes the same credentials to `whatsapp_config` (used by the inbound
- *  webhook route) and flips provider='meta' so both inbound + outbound use
- *  the same Meta account. Previously the form only wrote to
- *  tenant_whatsapp_notifier, leaving whatsapp_config stale — which is why
- *  the dashboard's "WhatsApp Meta" tile kept showing OFFLINE even after
- *  saving credentials. (2026-06-09 fix.) */
+/** PUT /api/v1/admin/whatsapp-notifier — save outbound credentials.
+ *  Mirrors only Meta credential fields into `whatsapp_config`. It deliberately
+ *  preserves the inbound provider/session: QR/Web.js inbound and Meta outbound
+ *  are valid at the same time. Inbound transport is switched separately via
+ *  the explicit /admin/whatsapp/config endpoint. */
 router.put('/whatsapp-notifier', requireAdmin, async (req: Request, res: Response) => {
   const u = (req as any).user;
   const { displayNumber, phoneNumberId, accessToken, appId, wabaId } = req.body ?? {};
@@ -93,31 +95,21 @@ router.put('/whatsapp-notifier', requireAdmin, async (req: Request, res: Respons
   }
   await saveNotifier(u.clientNumber, { displayNumber, phoneNumberId, accessToken, appId, wabaId });
 
-  // Mirror to whatsapp_config (inbound webhook routing table). Only update
-  // the meta_* fields + flip provider — preserve any existing webhook
-  // secret and other state.
+  // Mirror credentials for a future/active Meta webhook, but do not mutate
+  // provider, status, connected_number, QR state, or session state.
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO whatsapp_config
-         (client_number, provider, meta_phone_number_id, meta_access_token,
-          meta_business_id, connected_number, status, created_at, updated_at)
-       VALUES ($1, 'meta', $2, $3, $4, $5, 'connected', NOW(), NOW())
-       ON CONFLICT (client_number) DO UPDATE SET
-         provider             = 'meta',
-         meta_phone_number_id = EXCLUDED.meta_phone_number_id,
-         meta_access_token    = COALESCE(EXCLUDED.meta_access_token, whatsapp_config.meta_access_token),
-         meta_business_id     = COALESCE(EXCLUDED.meta_business_id, whatsapp_config.meta_business_id),
-         connected_number     = EXCLUDED.connected_number,
-         status               = 'connected',
-         updated_at           = NOW()`,
-      u.clientNumber, phoneNumberId, accessToken || null, wabaId || null, displayNumber,
-    );
+    await mirrorNotifierCredentials({
+      clientNumber: u.clientNumber,
+      phoneNumberId,
+      accessToken,
+      wabaId,
+    });
   } catch (err: any) {
-    // Mirror failure is non-fatal for the notifier save, but worth surfacing
-    // so the operator knows inbound webhook routing might not be ready yet.
+    // Mirror failure is non-fatal for outbound sending. Surface it so the
+    // operator knows the shared Meta credential row is not current.
     return res.json({ ok: true, mirrorWarning: err.message });
   }
-  res.json({ ok: true });
+  res.json({ ok: true, inboundProviderPreserved: true });
 });
 
 /** POST /api/v1/admin/whatsapp-notifier/webhook-secret — generate + store a
@@ -129,22 +121,13 @@ router.post('/whatsapp-notifier/webhook-secret', requireAdmin, async (req: Reque
   const u = (req as any).user;
   const secret = crypto.randomBytes(32).toString('hex');
   try {
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO whatsapp_config
-         (client_number, provider, meta_webhook_secret, status, created_at, updated_at)
-       VALUES ($1, COALESCE((SELECT provider FROM whatsapp_config WHERE client_number=$1), 'meta'),
-               $2, COALESCE((SELECT status FROM whatsapp_config WHERE client_number=$1), 'connected'),
-               NOW(), NOW())
-       ON CONFLICT (client_number) DO UPDATE SET
-         meta_webhook_secret = EXCLUDED.meta_webhook_secret,
-         updated_at = NOW()`,
-      u.clientNumber, secret,
-    );
+    await storeMetaWebhookSecret(u.clientNumber, secret);
     res.json({
       ok: true,
       verifyToken: secret,
       callbackUrl: `${publicBaseUrl(req)}/api/v1/webhooks/whatsapp/${u.clientNumber}`,
-      hint: 'Paste verifyToken into Meta\'s "Verify token" field on the webhook config page. Once you click "Verify and save" there, the GET handshake will succeed (our handler echoes back the challenge if the token matches what is stored).',
+      inboundProviderPreserved: true,
+      hint: 'Paste verifyToken into Meta\'s "Verify token" field. The handshake will work when it matches. To receive through Meta, explicitly select Meta as the inbound provider in WhatsApp configuration.',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
