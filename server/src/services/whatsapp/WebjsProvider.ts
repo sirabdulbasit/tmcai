@@ -393,7 +393,8 @@ export class WebjsProvider implements IWhatsAppProvider {
           inputWasVoice = true;
           let voiceFailureReason: import('../voiceService').VoiceTranscriptionFailure | undefined;
           try {
-            const media = await message.downloadMedia();
+            const { downloadInboundMedia } = await import('./inboundMedia');
+            const media = await downloadInboundMedia(message, { clientNumber, messageId: msgId });
             if (media?.data) {
               const audioBuffer = Buffer.from(media.data, 'base64');
               const { transcribeVoiceNote } = await import('../voiceService');
@@ -431,8 +432,11 @@ export class WebjsProvider implements IWhatsAppProvider {
               voiceFailureReason = 'invalid_media';
             }
           } catch (e: any) {
-            log.error('Voice transcription failed', { error: e.message });
-            voiceFailureReason = 'provider_failed';
+            log.error('Voice pipeline failed', {
+              stage: 'media_or_transcription',
+              error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+            });
+            voiceFailureReason = 'invalid_media';
             messageBody = '';
           }
           if (!messageBody) {

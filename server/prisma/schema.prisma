@@ -150,7 +150,7 @@ model User {
   // dispatcher (so meetings land at the user's local time). Default
   // 'Asia/Karachi' for backward compatibility with the original
   // hardcode; new users in other regions set it explicitly.
-  timezone String? @db.VarChar(50)
+  timezone           String? @db.VarChar(50)
   // #13 (2026-07-14): timezone participates in resolution ONLY when the
   // user explicitly selected it. Legacy rows inherited the old column
   // default and are NOT explicit — they fall through to tenant → system.
@@ -607,13 +607,16 @@ model WhatsAppMessage {
 }
 
 model WhatsAppSession {
-  id                  Int       @id @default(autoincrement())
-  userId              Int       @map("user_id")
-  conversationHistory Json      @default("[]") @map("conversation_history")
-  agentId             Int?      @map("agent_id")
-  lastMessageAt       DateTime  @default(now()) @map("last_message_at")
-  closedAt            DateTime? @map("closed_at")
-  createdAt           DateTime  @default(now()) @map("created_at")
+  id                    Int       @id @default(autoincrement())
+  userId                Int       @map("user_id")
+  conversationHistory   Json      @default("[]") @map("conversation_history")
+  agentId               Int?      @map("agent_id")
+  activeAgentId         Int?      @map("active_agent_id")
+  activeAgentName       String?   @map("active_agent_name") @db.VarChar(255)
+  agentSessionStartedAt DateTime? @map("agent_session_started_at")
+  lastMessageAt         DateTime  @default(now()) @map("last_message_at")
+  closedAt              DateTime? @map("closed_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
 
   @@index([userId])
   @@map("whatsapp_sessions")

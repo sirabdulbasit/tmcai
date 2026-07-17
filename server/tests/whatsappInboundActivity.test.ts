@@ -32,14 +32,60 @@ describe('WhatsApp inbound processing feedback', () => {
   });
 
   it('does not break Brain when WhatsApp rejects activity APIs', async () => {
+    const reply = vi.fn(async () => ({}));
     const activity = await startInboundActivity({
       react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
+      reply,
       getChat: vi.fn(async () => ({
         sendStateTyping: vi.fn(async () => { throw new Error('state rejected'); }),
         clearState: vi.fn(async () => { throw new Error('clear rejected'); }),
       })),
     }, false, { clientNumber: 'TMC-0001', userId: 2, messageId: 'wa-1' });
+    expect(reply).toHaveBeenCalledWith('⏳ Thinking…');
     await expect(activity.pulse()).resolves.toBeUndefined();
+    expect(reply).toHaveBeenCalledOnce();
     await expect(activity.stop()).resolves.toBeUndefined();
+  });
+
+  it('retries native activity through the phone-number chat for @lid inbound', async () => {
+    const lidTyping = vi.fn(async () => { throw 'r'; });
+    const phoneTyping = vi.fn(async () => {});
+    const getChatById = vi.fn(async () => ({
+      sendStateTyping: phoneTyping,
+      clearState: vi.fn(async () => {}),
+    }));
+    const reply = vi.fn(async () => ({}));
+    const activity = await startInboundActivity({
+      from: '173555350261799@lid',
+      react: vi.fn(async () => {}),
+      reply,
+      client: {
+        getContactLidAndPhone: vi.fn(async () => [{
+          lid: '173555350261799@lid', pn: '923001234567@c.us',
+        }]),
+        getChatById,
+      },
+      getChat: vi.fn(async () => ({
+        id: { _serialized: '173555350261799@lid' },
+        sendStateTyping: lidTyping,
+      })),
+    }, false);
+    expect(phoneTyping).toHaveBeenCalledOnce();
+    expect(getChatById).toHaveBeenCalledWith('923001234567@c.us');
+    expect(reply).not.toHaveBeenCalled();
+    await activity.stop();
+  });
+
+  it('uses a visible listening marker when recording state is rejected', async () => {
+    const reply = vi.fn(async () => ({}));
+    const activity = await startInboundActivity({
+      react: vi.fn(async () => {}), reply,
+      getChat: vi.fn(async () => ({
+        sendStateRecording: vi.fn(async () => { throw 'r'; }),
+        clearState: vi.fn(async () => {}),
+      })),
+    }, true);
+    expect(reply).toHaveBeenCalledWith('🎙️ Listening…');
+    await activity.stop();
   });
 });

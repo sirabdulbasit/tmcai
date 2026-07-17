@@ -347,3 +347,19 @@ When the user pastes a new chat:
 **Symptom tags:** `whatsapp-voice-pipeline-unobservable`, `whatsapp-activity-missing`.
 
 **Verification status:** unit-locked by voice, identity, activity, receipt, fallback, and Brain scenario tests. Live provider success and native WhatsApp activity remain deployment acceptance checks.
+
+---
+
+## Chat 12 — 2026-07-17 (live @lid activity rejected and PTT media unavailable)
+
+**User:** sent “Hi” and two voice notes after deploying the complete WhatsApp pipeline hardening.
+
+**Observed failure:** text reached Brain and received a correct answer after 7.2 seconds, but no typing indicator appeared. Both voice notes immediately returned the transcription-unavailable marker.
+
+**Production proof:** `whatsapp:activity` attempted native state repeatedly and received the string error `"r"`; the inbound chat id was `173555350261799@lid`. Each voice attempt failed roughly 10 ms after receipt, before `transcribeVoiceNote` logged any provider attempt. The break was therefore Web.js LID chat-state/media readiness, not Brain reasoning and not a speech-provider outage. The same log also exposed missing `whatsapp_sessions.active_agent_id` schema.
+
+**Root causes fixed:** activity now resolves the supported phone-number Wid for an `@lid` chat and retries native typing/recording there. If both native states fail, Nexeo sends one visible `⏳ Thinking…` or `🎙️ Listening…` acknowledgment through the known-good inbound reply route. Newly emitted PTT media is refreshed and retried with bounded delays before STT. Media acquisition failure remains `invalid_media`, never a fabricated provider outage. Sticky agent-session columns are formalized in an idempotent migration.
+
+**Symptom tags:** `whatsapp-lid-activity-rejected`, `whatsapp-ptt-media-not-ready`.
+
+**Verification status:** unit-locked by LID-mapping, visible-fallback, refreshed-media retry, bounded exhaustion, migration, and Chat 12 regression tests. Live Web.js acceptance remains required after deploy.

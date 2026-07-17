@@ -24,6 +24,27 @@ export interface InboundActivity {
   stop(): Promise<void>;
 }
 
+const activityError = (error: unknown): string => {
+  if (error instanceof Error) return `${error.name}: ${error.message}`.slice(0, 180);
+  try { return JSON.stringify(error).slice(0, 180); }
+  catch { return String(error).slice(0, 180); }
+};
+
+/**
+ * Modern WhatsApp delivers some 1:1 chats as @lid. whatsapp-web.js can reply
+ * to those messages, but its Chat state helpers may reject the LID Wid. Resolve
+ * the phone-number Wid explicitly and retry against that equivalent chat.
+ */
+async function resolvePhoneChat(message: any, currentChat: any): Promise<any | null> {
+  const rawId = currentChat?.id?._serialized || message?.from || '';
+  const client = message?.client;
+  if (!rawId.endsWith('@lid') || typeof client?.getContactLidAndPhone !== 'function') return null;
+  const mappings = await client.getContactLidAndPhone([rawId]);
+  const phoneId = mappings?.[0]?.pn;
+  if (!phoneId || typeof client?.getChatById !== 'function') return null;
+  return client.getChatById(phoneId);
+}
+
 /**
  * User-visible processing feedback for long Brain/voice turns.
  * - reacts ⏳ to the exact inbound message;
@@ -38,28 +59,64 @@ export async function startInboundActivity(
 ): Promise<InboundActivity> {
   let stopped = false;
   let chat: any = null;
+  let stateChat: any = null;
   let lastState: 'typing' | 'recording' | 'unsupported' | 'failed' = 'unsupported';
   let reactionOk = false;
+  let visibleFallbackSent = false;
+
+  const sendState = async (target: any): Promise<boolean> => {
+    if (voice && typeof target?.sendStateRecording === 'function') {
+      await target.sendStateRecording();
+      lastState = 'recording';
+      return true;
+    }
+    if (typeof target?.sendStateTyping === 'function') {
+      await target.sendStateTyping();
+      lastState = 'typing';
+      return true;
+    }
+    return false;
+  };
+
+  const sendVisibleFallback = async () => {
+    if (visibleFallbackSent || typeof message?.reply !== 'function') return;
+    visibleFallbackSent = true;
+    try {
+      await message.reply(voice ? '🎙️ Listening…' : '⏳ Thinking…');
+      log.info('Visible activity fallback sent', { ...context, voice });
+    } catch (error: unknown) {
+      log.warn('Visible activity fallback failed', { ...context, voice, error: activityError(error) });
+    }
+  };
 
   const pulse = async () => {
     if (stopped) return;
     try {
       chat ??= await message.getChat();
-      if (voice && typeof chat?.sendStateRecording === 'function') {
-        await chat.sendStateRecording();
-        lastState = 'recording';
-      } else if (typeof chat?.sendStateTyping === 'function') {
-        await chat.sendStateTyping();
-        lastState = 'typing';
-      } else {
+      if (!stateChat) stateChat = chat;
+      if (!await sendState(stateChat)) {
         lastState = 'unsupported';
         log.warn('Activity state unsupported by chat object', { ...context, voice });
+        await sendVisibleFallback();
       }
-    } catch (error: any) {
+      return;
+    } catch (firstError: unknown) {
+      try {
+        chat ??= await message.getChat();
+        const phoneChat = await resolvePhoneChat(message, chat);
+        if (phoneChat && await sendState(phoneChat)) {
+          stateChat = phoneChat;
+          log.info('Activity state sent through LID phone mapping', { ...context, voice });
+          return;
+        }
+      } catch (mappedError: unknown) {
+        log.warn('LID-mapped activity state failed', {
+          ...context, voice, error: activityError(mappedError),
+        });
+      }
       lastState = 'failed';
-      log.warn('Activity state send failed', {
-        ...context, voice, error: String(error?.message ?? error).slice(0, 180),
-      });
+      log.warn('Activity state send failed', { ...context, voice, error: activityError(firstError) });
+      await sendVisibleFallback();
     }
   };
 
@@ -67,9 +124,9 @@ export async function startInboundActivity(
     await message.react('⏳');
     reactionOk = true;
   }
-  catch (error: any) {
+  catch (error: unknown) {
     log.warn('Activity reaction failed', {
-      ...context, error: String(error?.message ?? error).slice(0, 180),
+      ...context, error: activityError(error),
     });
   }
   await pulse();
@@ -88,17 +145,17 @@ export async function startInboundActivity(
       stopped = true;
       clearInterval(timer);
       try {
-        chat ??= await message.getChat();
-        if (typeof chat?.clearState === 'function') await chat.clearState();
-      } catch (error: any) {
+        const target = stateChat || chat || await message.getChat();
+        if (typeof target?.clearState === 'function') await target.clearState();
+      } catch (error: unknown) {
         log.warn('Activity clear-state failed', {
-          ...context, error: String(error?.message ?? error).slice(0, 180),
+          ...context, error: activityError(error),
         });
       }
       try { await message.react(''); }
-      catch (error: any) {
+      catch (error: unknown) {
         log.warn('Activity reaction clear failed', {
-          ...context, error: String(error?.message ?? error).slice(0, 180),
+          ...context, error: activityError(error),
         });
       }
       log.info('Activity stopped', { ...context, voice, state: lastState });

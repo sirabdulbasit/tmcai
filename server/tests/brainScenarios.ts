@@ -39,6 +39,7 @@ import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegis
 import { detectAudioMime } from '../src/services/voiceService';
 import { classifyWebjsSendResult } from '../src/services/whatsapp/sendReceipt';
 import { whatsappPhoneVariants } from '../src/services/whatsapp/inboundIdentity';
+import { downloadInboundMedia } from '../src/services/whatsapp/inboundMedia';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -346,6 +347,32 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(classifyWebjsSendResult(undefined)).toMatchObject({
         success: true, confirmation: 'transport_accepted',
       });
+    },
+  },
+  {
+    id: 'chat12',
+    date: '2026-07-17',
+    userMessage: 'Text and two @lid voice notes after deploy; no typing sign and both voice notes returned transcription unavailable.',
+    observedFailure:
+      'Live logs proved native chat state rejected the @lid Wid with a string error and PTT media download failed in about 10ms, before any speech provider ran. The first hardening pass observed the failures but did not bridge the LID boundary or retry unresolved media.',
+    symptomTags: ['whatsapp-lid-activity-rejected', 'whatsapp-ptt-media-not-ready'],
+    fixCommits: ['this-commit'],
+    assert: async () => {
+      const media = { data: 'T2dnUw==', mimetype: 'audio/ogg' };
+      const fresh = { downloadMedia: async () => media };
+      const emitted = {
+        downloadMedia: async () => { throw 'r'; },
+        reload: async () => fresh,
+      };
+      await expect(downloadInboundMedia(emitted, { delaysMs: [0, 0] })).resolves.toBe(media);
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const migration = readFileSync(join(
+        __dirname, '..', 'prisma', 'migrations',
+        '20260717_whatsapp_agent_session_state', 'migration.sql',
+      ), 'utf-8');
+      expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS active_agent_id/);
+      expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS agent_session_started_at/);
     },
   },
 ];

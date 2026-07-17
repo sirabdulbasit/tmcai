@@ -898,6 +898,69 @@ Client Vite production build: passed
 git diff --check: passed
 ```
 
+## 2026-07-17 — Live `@lid` activity and PTT media compatibility
+
+The first live test after `db8e4c2` supplied decisive stage telemetry. Text
+identity, Brain reasoning and reply delivery were healthy, but Web.js rejected
+native typing/recording against the modern `@lid` chat with the opaque string
+error `"r"`. Voice failed about 10 ms after receipt, before any Gemini,
+OpenAI, Groq or Google attempt, proving the fault was inbound media acquisition
+rather than speech-provider availability.
+
+### Activity feedback
+
+- Native typing/recording first uses the inbound chat as before.
+- When that LID Wid is rejected, the provider calls Web.js's explicit
+  `getContactLidAndPhone` resolver and retries state against the equivalent
+  phone-number chat.
+- If WhatsApp rejects both native routes, Nexeo sends exactly one visible
+  `⏳ Thinking…` or `🎙️ Listening…` acknowledgment through the already-proven
+  inbound reply route. Brain processing continues; activity API failure cannot
+  suppress the answer.
+- Activity errors now preserve Error type or safely serialize thrown strings,
+  so future Web.js breakage is diagnosable without message content.
+
+### Voice media readiness
+
+- Added `whatsapp/inboundMedia.ts` as the bounded Web.js media-acquisition
+  boundary.
+- A newly emitted PTT is attempted immediately, then refreshed/retried after
+  400 ms and 1.2 seconds because WhatsApp can emit `message` while media is
+  still FETCHING/REUPLOADING.
+- Attempt number, MIME label and base64 byte count are logged without audio or
+  transcript content.
+- Exhausted acquisition is classified as `invalid_media`; it is no longer
+  incorrectly presented as an STT-provider outage.
+
+### Production schema parity
+
+- Added idempotent migration
+  `20260717_whatsapp_agent_session_state` for `active_agent_id`,
+  `active_agent_name` and `agent_session_started_at` on `whatsapp_sessions`,
+  plus the active-session lookup index.
+- Prisma schema now declares the same fields. This removes the live
+  `column "active_agent_id" does not exist` degradation.
+
+### Regression coverage
+
+- Expanded `whatsappInboundActivity.test.ts` for LID→phone state retry and the
+  visible text/voice fallbacks.
+- Added `whatsappInboundMedia.test.ts` for immediate success, refresh/retry
+  after the production-shaped thrown string, and bounded exhaustion.
+- Added Chat 12 to the permanent incident archive and executable regression
+  corpus.
+
+Final verification:
+
+```text
+Server: 996 passed, 21 skipped, 0 failed (91 passing files)
+Focused WhatsApp regressions: 30 passed, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+Client Vite production build: passed
+git diff --check: passed
+```
+
 ## 2026-07-17 — WhatsApp voice transcription resilience
 
 The WhatsApp text path was verified healthy in production, while a voice note
