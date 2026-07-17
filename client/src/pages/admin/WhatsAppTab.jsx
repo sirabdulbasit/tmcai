@@ -21,7 +21,7 @@ const s = {
   td: { padding: '7px 10px', borderBottom: '1px solid #2a2a2a', color: '#bbb' },
 };
 
-const STATUS_COLORS = { connected: '#4ade80', connecting: '#f59e0b', disconnected: '#666', error: '#ef4444', not_configured: '#666' };
+const STATUS_COLORS = { connected: '#4ade80', connecting: '#f59e0b', init_timeout: '#ef4444', disconnected: '#666', error: '#ef4444', not_configured: '#666' };
 
 export default function WhatsAppTab({ user, msg, setMsg }) {
   // ── Tenant selector (SuperAdmin can pick which client to configure) ──
@@ -126,7 +126,11 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
         // Start polling for QR code (webjs)
         startQRPolling();
       }
-      setMsg(res.data.status === 'connected' ? 'Connected!' : 'Connecting... scan QR code');
+      setMsg(res.data.status === 'connected'
+        ? 'Connected!'
+        : res.data.status === 'init_timeout'
+          ? 'Initialization timed out. If retries are exhausted, reset pairing and scan a fresh QR.'
+          : 'Connecting... scan QR code');
     } catch (e) {
       // Surface the real server error so the admin can diagnose (Chrome
       // path, provider conflict with WhatsApp Personal, missing deps…).
@@ -376,7 +380,7 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
         )}
 
         {/* Error display */}
-        {st === 'error' && status?.last_error && (
+        {(st === 'error' || st === 'init_timeout') && status?.last_error && (
           <div style={{ marginTop: 8, padding: 10, background: '#2a1a1a', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 12 }}>
             {status.last_error}
           </div>
@@ -393,7 +397,7 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
 
         {/* Action buttons */}
         <div style={{ ...s.row, marginTop: 16 }}>
-          {(st === 'disconnected' || st === 'not_configured' || st === 'error') && (
+          {(st === 'disconnected' || st === 'not_configured' || st === 'error' || st === 'init_timeout') && (
             <button
               style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.85 : 1 }}
               onClick={handleConnect}
@@ -401,6 +405,15 @@ export default function WhatsAppTab({ user, msg, setMsg }) {
             >
               {connecting && <span className="btn-spinner" />}
               {connecting ? 'Connecting…' : 'Connect'}
+            </button>
+          )}
+          {st === 'init_timeout' && (
+            <button
+              style={{ ...s.btn, ...s.btnOutline, borderColor: '#f59e0b', color: '#f59e0b' }}
+              onClick={() => setShowResetPairing(true)}
+              disabled={resetting}
+            >
+              Reset Pairing
             </button>
           )}
           {st === 'connected' && (

@@ -15,6 +15,11 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import fs from 'fs';
 import path from 'path';
+import {
+  classifyWebjsInitFailure,
+  getWebjsInitPolicy,
+  initTimeoutRetryDelayMs,
+} from './webjsInitPolicy';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -27,11 +32,33 @@ const statusMap = new Map<string, string>();       // connection status
 //   - initFlight: an initialize() call is already running for this tenant
 //   - reconnectTimer: a scheduled reconnect handle we can cancel
 //   - reconnectAttempt: exponential-backoff counter, reset on successful ready
-const initFlight = new Set<string>();
+interface InitFlight {
+  token: symbol;
+  startedAt: number;
+  deadlineAt: number;
+}
+export interface WebjsInitHealth {
+  state: 'idle' | 'connecting' | 'connected' | 'init_timeout' | 'error';
+  startedAt: number | null;
+  deadlineAt: number | null;
+  retryAt: number | null;
+  consecutiveTimeouts: number;
+  requiresRepair: boolean;
+  lastError?: string;
+}
+const initFlights = new Map<string, InitFlight>();
+const initHealth = new Map<string, WebjsInitHealth>();
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 const reconnectAttempts = new Map<string, number>();
 const RECONNECT_BACKOFF_MS = [10_000, 30_000, 120_000, 300_000, 600_000]; // 10s → 30s → 2m → 5m → 10m
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_BACKOFF_MS.length;
+
+export function getWebjsInitHealth(clientNumber: string): WebjsInitHealth {
+  return initHealth.get(clientNumber) ?? {
+    state: 'idle', startedAt: null, deadlineAt: null, retryAt: null,
+    consecutiveTimeouts: 0, requiresRepair: false,
+  };
+}
 
 // Per-message dedup so the `message` and `message_create` listeners
 // don't both invoke handleInboundMessage for the same inbound. Without
@@ -103,6 +130,33 @@ function cleanStaleSingletonLocks(sessionDir: string): boolean {
   return cleaned;
 }
 
+async function disposeWebjsClient(client: any, timeoutMs: number = 5_000): Promise<void> {
+  let destroyCompleted = false;
+  const wait = (ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref();
+  });
+  await Promise.race([
+    Promise.resolve().then(() => client.destroy()).then(() => { destroyCompleted = true; }).catch(() => undefined),
+    wait(timeoutMs),
+  ]);
+  if (destroyCompleted) return;
+  // destroy() itself can hang on a wedged DevTools protocol. Fall through to
+  // the underlying browser with its own bound so shutdown/recovery continues.
+  try {
+    const browser = await Promise.race([
+      Promise.resolve(client.pupBrowser),
+      wait(1_000).then(() => null),
+    ]);
+    if (browser) {
+      await Promise.race([
+        Promise.resolve(browser.close()).catch(() => undefined),
+        wait(2_000),
+      ]);
+    }
+  } catch { /* the OS/session cleanup path handles any already-dead browser */ }
+}
+
 /** Destroy every tenant client cleanly — called by gracefulShutdown on
  *  SIGTERM so LocalAuth's disk writes don't get truncated on nodemon/deploy. */
 export async function destroyAllClients(): Promise<void> {
@@ -110,10 +164,9 @@ export async function destroyAllClients(): Promise<void> {
   const work: Promise<void>[] = [];
   for (const [cn, c] of clients) {
     work.push((async () => {
-      try { await c.destroy(); } catch {
-        try { const b = await c.pupBrowser; if (b) await b.close(); } catch {}
-      }
+      await disposeWebjsClient(c);
       clients.delete(cn); statusMap.delete(cn); qrCodes.delete(cn);
+      initFlights.delete(cn); initHealth.delete(cn);
     })());
   }
   // Give each client up to 3s to finish destroy() so disk writes flush.
@@ -130,16 +183,50 @@ export class WebjsProvider implements IWhatsAppProvider {
     // Previously every reconnect attempt could race a boot-time
     // initializeAllTenants call, spawning two Chromiums that fought
     // over the same WhatsApp account and kicked each other out.
-    if (initFlight.has(clientNumber)) {
-      log.info('initialize skipped — already in flight', { clientNumber });
+    const policy = getWebjsInitPolicy();
+    const now = Date.now();
+    const activeFlight = initFlights.get(clientNumber);
+    if (activeFlight && now < activeFlight.deadlineAt) {
+      log.info('initialize skipped — already in flight', {
+        clientNumber, startedAt: activeFlight.startedAt, deadlineAt: activeFlight.deadlineAt,
+      });
+      return;
+    }
+    const previousHealth = getWebjsInitHealth(clientNumber);
+    if (previousHealth.requiresRepair) {
+      log.warn('initialize withheld — session requires re-pair', {
+        clientNumber, consecutiveTimeouts: previousHealth.consecutiveTimeouts,
+      });
       return;
     }
     const current = statusMap.get(clientNumber);
-    if ((current === 'connected' || current === 'connecting') && clients.has(clientNumber)) {
+    if (current === 'connected' && clients.has(clientNumber)) {
       log.info('initialize skipped — already connected/connecting', { clientNumber, current });
       return;
     }
-    initFlight.add(clientNumber);
+    if (current === 'connecting' && activeFlight && now < activeFlight.deadlineAt) return;
+
+    const token = Symbol(clientNumber);
+    const flight: InitFlight = {
+      token,
+      startedAt: now,
+      deadlineAt: now + policy.initDeadlineMs,
+    };
+    // Claim the per-tenant initialization slot before any await. A concurrent
+    // watchdog/admin/startup call will now see this flight and stand down.
+    initFlights.set(clientNumber, flight);
+    initHealth.set(clientNumber, {
+      state: 'connecting', startedAt: flight.startedAt, deadlineAt: flight.deadlineAt,
+      retryAt: null, consecutiveTimeouts: previousHealth.consecutiveTimeouts,
+      requiresRepair: false,
+    });
+
+    if (activeFlight) {
+      log.warn('initialization deadline expired — replacing wedged client', {
+        clientNumber, previousStartedAt: activeFlight.startedAt,
+        previousDeadlineAt: activeFlight.deadlineAt,
+      });
+    }
 
     // Cancel any pending reconnect timer — we're (re)initializing NOW.
     const pending = reconnectTimers.get(clientNumber);
@@ -148,13 +235,10 @@ export class WebjsProvider implements IWhatsAppProvider {
     // Clean up any stale client before reinitializing
     if (clients.has(clientNumber)) {
       const oldClient = clients.get(clientNumber);
-      try {
-        await oldClient.destroy();
-      } catch {
-        // If destroy fails, try to kill the browser process directly
-        try { const browser = await oldClient.pupBrowser; if (browser) await browser.close(); } catch {}
-      }
+      // Remove ownership before destroy: its delayed disconnected/error events
+      // must not overwrite or schedule reconnects for the replacement client.
       clients.delete(clientNumber);
+      await disposeWebjsClient(oldClient);
       statusMap.delete(clientNumber);
       qrCodes.delete(clientNumber);
     }
@@ -209,6 +293,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       puppeteer: {
         headless: true,
         executablePath,
+        protocolTimeout: policy.protocolTimeoutMs,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
                '--disable-gpu'],
@@ -217,8 +302,17 @@ export class WebjsProvider implements IWhatsAppProvider {
 
     statusMap.set(clientNumber, 'connecting');
     clients.set(clientNumber, client);
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config
+          SET status = 'connecting', last_error = NULL
+        WHERE client_number = $1`,
+      clientNumber,
+    ).catch((error: any) => {
+      log.warn('failed to persist connecting state', { clientNumber, error: error?.message });
+    });
 
     client.on('qr', async (qr: string) => {
+      if (clients.get(clientNumber) !== client) return;
       try {
         const qrImage = await QRCode.toDataURL(qr);
         qrCodes.set(clientNumber, qrImage);
@@ -230,9 +324,14 @@ export class WebjsProvider implements IWhatsAppProvider {
     });
 
     client.on('ready', async () => {
+      if (clients.get(clientNumber) !== client) return;
       statusMap.set(clientNumber, 'connected');
       qrCodes.delete(clientNumber);
       reconnectAttempts.delete(clientNumber);  // reset backoff counter on a clean connection
+      initHealth.set(clientNumber, {
+        state: 'connected', startedAt: null, deadlineAt: null, retryAt: null,
+        consecutiveTimeouts: 0, requiresRepair: false,
+      });
       const number = '+' + client.info.wid.user;
       await prisma.$executeRawUnsafe(
         `UPDATE whatsapp_config SET status = 'connected', connected_number = $1, connected_at = NOW(), qr_code = NULL, qr_expires_at = NULL, last_error = NULL WHERE client_number = $2`,
@@ -637,6 +736,10 @@ export class WebjsProvider implements IWhatsAppProvider {
     });
 
     client.on('disconnected', async (reason: string) => {
+      if (clients.get(clientNumber) !== client) {
+        log.info('ignored disconnected event from superseded client', { clientNumber, reason });
+        return;
+      }
       statusMap.set(clientNumber, 'disconnected');
       clients.delete(clientNumber);
       await prisma.$executeRawUnsafe(
@@ -718,20 +821,96 @@ export class WebjsProvider implements IWhatsAppProvider {
     });
 
     client.on('auth_failure', async (msg: string) => {
+      if (clients.get(clientNumber) !== client) return;
       statusMap.set(clientNumber, 'error');
+      initHealth.set(clientNumber, {
+        state: 'error', startedAt: null, deadlineAt: null, retryAt: null,
+        consecutiveTimeouts: 0, requiresRepair: true, lastError: msg,
+      });
       await prisma.$executeRawUnsafe(
         `UPDATE whatsapp_config SET status = 'error', last_error = $1, last_error_at = NOW() WHERE client_number = $2`,
         msg, clientNumber,
       );
     });
 
+    let deadlineTimer: NodeJS.Timeout | null = null;
     try {
-      await client.initialize();
+      await Promise.race([
+        client.initialize(),
+        new Promise<never>((_, reject) => {
+          const remaining = Math.max(1, flight.deadlineAt - Date.now());
+          deadlineTimer = setTimeout(() => {
+            reject(new Error(`WhatsApp initialization protocol timeout after ${policy.initDeadlineMs}ms`));
+          }, remaining);
+          deadlineTimer.unref();
+        }),
+      ]);
+    } catch (error: any) {
+      // A deadline-expired attempt may finish after its replacement started.
+      // Fence it by both flight token and client ownership.
+      if (initFlights.get(clientNumber)?.token !== token || clients.get(clientNumber) !== client) {
+        log.info('ignored init failure from superseded client', { clientNumber });
+        return;
+      }
+      const failureClass = classifyWebjsInitFailure(error);
+      const message = String(error?.message ?? error ?? 'unknown initialization failure').slice(0, 500);
+      const consecutiveTimeouts = failureClass === 'init_timeout'
+        ? previousHealth.consecutiveTimeouts + 1
+        : 0;
+      const requiresRepair = failureClass === 'init_timeout'
+        && consecutiveTimeouts >= policy.timeoutEscalationCount;
+      const retryAt = failureClass === 'init_timeout' && !requiresRepair
+        ? Date.now() + initTimeoutRetryDelayMs(consecutiveTimeouts)
+        : null;
+      // Release profile ownership before destroying. Any delayed event from
+      // this failed client is fenced out by the ownership checks above.
+      clients.delete(clientNumber);
+      await disposeWebjsClient(client);
+      statusMap.set(clientNumber, failureClass === 'init_timeout' ? 'init_timeout' : 'error');
+      initHealth.set(clientNumber, {
+        state: failureClass === 'init_timeout' ? 'init_timeout' : 'error',
+        startedAt: flight.startedAt, deadlineAt: flight.deadlineAt, retryAt,
+        consecutiveTimeouts, requiresRepair, lastError: message,
+      });
+      await prisma.$executeRawUnsafe(
+        `UPDATE whatsapp_config
+            SET status = $2, last_error = $3, last_error_at = NOW()
+          WHERE client_number = $1`,
+        clientNumber,
+        failureClass === 'init_timeout' ? 'init_timeout' : 'error',
+        `${failureClass}: ${message}`,
+      ).catch(() => undefined);
+      log.error('initialization failed', {
+        clientNumber, failureClass, consecutiveTimeouts, retryAt, requiresRepair,
+        protocolTimeoutMs: policy.protocolTimeoutMs, initDeadlineMs: policy.initDeadlineMs,
+      });
+      void import('../systemLogService').then(({ log: sysLog }) => sysLog({
+        level: requiresRepair ? 'error' : 'warning',
+        category: 'health_transition',
+        source: `whatsapp:${clientNumber}`,
+        message: requiresRepair
+          ? `WhatsApp session likely wedged after ${consecutiveTimeouts} initialization timeouts — re-pair may be required`
+          : `WhatsApp initialization timeout ${consecutiveTimeouts}/${policy.timeoutEscalationCount}`,
+        clientNumber,
+      } as any)).catch(() => undefined);
+      if (requiresRepair) {
+        void import('./connectionWatchdog').then(({ alertWhatsAppDisconnect }) => alertWhatsAppDisconnect({
+          clientNumber,
+          tenantPhone: '(check Admin → WhatsApp)',
+          reason: `session likely wedged after ${consecutiveTimeouts} initialization timeouts`,
+          requiresAction: 'Open Admin → WhatsApp and re-pair the QR session.',
+          attemptCount: consecutiveTimeouts,
+        })).catch((alertError: any) => {
+          log.error('init-timeout escalation failed', { clientNumber, error: alertError?.message });
+        });
+      }
+      throw error;
     } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       // Release the initFlight lock — regardless of success/failure —
       // so a later reconnect can proceed once the current attempt
       // resolves.
-      initFlight.delete(clientNumber);
+      if (initFlights.get(clientNumber)?.token === token) initFlights.delete(clientNumber);
     }
   }
 
@@ -851,11 +1030,14 @@ export class WebjsProvider implements IWhatsAppProvider {
   async disconnect(clientNumber: string): Promise<void> {
     const client = clients.get(clientNumber);
     if (client) {
-      try { await client.destroy(); } catch {}
+      await disposeWebjsClient(client);
       clients.delete(clientNumber);
       statusMap.delete(clientNumber);
       qrCodes.delete(clientNumber);
     }
+    initFlights.delete(clientNumber);
+    initHealth.delete(clientNumber);
+    reconnectAttempts.delete(clientNumber);
     await prisma.$executeRawUnsafe(
       `UPDATE whatsapp_config SET status = 'disconnected', qr_code = NULL WHERE client_number = $1`, clientNumber,
     );
@@ -867,6 +1049,8 @@ export class WebjsProvider implements IWhatsAppProvider {
     return {
       status,
       connectedNumber: status === 'connected' && client ? '+' + client.info?.wid?.user : undefined,
+      error: getWebjsInitHealth(clientNumber).lastError,
+      init: getWebjsInitHealth(clientNumber),
     };
   }
 }

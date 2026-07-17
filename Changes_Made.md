@@ -1248,3 +1248,74 @@ Server production build: passed (Prisma 6.19.2)
 Client Vite production build: passed
 git diff --check: passed
 ```
+
+## 24. WhatsApp Web.js initialization contention and timeout health (2026-07-17)
+
+### Evidence and root cause
+
+Production PM2 evidence showed watchdog-triggered `initialize()` calls while a
+prior initialization was still running, up to six Chromium processes sharing
+one LocalAuth profile, and only a generic `Runtime.callFunctionOn timed out`
+error. Code inspection confirmed that `WebjsProvider` had a boolean in-flight
+set but no deadline/generation/backoff/repair state, while the watchdog trusted
+the database's stale `connected` value and allowed overlapping async sweeps.
+
+### Technical changes
+
+- Replaced the boolean guard with a tokenized per-tenant init flight claimed
+  before any await. Healthy in-flight calls are reused; an expired attempt is
+  generation-fenced so its late events cannot affect the replacement.
+- Added an explicit Puppeteer `protocolTimeout` (240s) and an enforced overall
+  init deadline (270s). Bounded overrides are
+  `WHATSAPP_WEBJS_PROTOCOL_TIMEOUT_MS` (60–600s),
+  `WHATSAPP_WEBJS_INIT_DEADLINE_MS` (90–660s and at least protocol + 30s), and
+  `WHATSAPP_WEBJS_TIMEOUT_ESCALATION_COUNT` (2–5, default 3).
+- Bounded client destruction and browser-close fallback prevent timed-out
+  attempts from leaving zombie Chromium processes. Superseded-client QR,
+  ready, disconnect, auth, and error events are ignored.
+- Classified the production error as `init_timeout`, persisted it in
+  `whatsapp_config`, and exposed start/deadline/retry/count/repair state through
+  provider status and Admin WhatsApp Health.
+- Added 30s/2m/5m timeout backoff. Three consecutive timeouts open a repair
+  gate, stop silent retries, write a durable `health_transition`, and send one
+  admin escalation that QR re-pairing may be required.
+- Added a whole-watchdog-sweep mutex. The watchdog now respects a connecting
+  deadline, timeout backoff, and repair gate instead of starting another init.
+- Admin UI recognizes `init_timeout`, shows its error and retry/repair state,
+  and exposes the guarded Reset Pairing action. Alert branding now says Nexeo.
+
+### Complete file list
+
+- `server/src/services/whatsapp/webjsInitPolicy.ts` (new)
+- `server/src/services/whatsapp/WebjsProvider.ts`
+- `server/src/services/whatsapp/IWhatsAppProvider.ts`
+- `server/src/services/whatsapp/connectionWatchdog.ts`
+- `server/src/routes/admin/whatsappHealthRoutes.ts`
+- `server/tests/webjsInitPolicy.test.ts` (new)
+- `server/tests/webjsInitLifecycle.test.ts` (new)
+- `client/src/pages/admin/WhatsAppHealthPanel.jsx`
+- `client/src/pages/admin/WhatsAppTab.jsx`
+- `Changes_Made.md`
+
+No database migration or new dependency is included. The incident came from
+production initialization logs, not a Brain conversation, so no chat-archive
+scenario was added.
+
+### Verification and remaining acceptance
+
+The 11 new tests cover exact timeout classification, config bounds, backoff,
+watchdog deferral, concurrent admission, persistence, disposal, escalation,
+post-escalation suppression, and Puppeteer configuration.
+
+```text
+Server: 1007 passed, 21 skipped, 0 failed (93 files passed, 1 skipped)
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2 generation + tsc)
+Client Vite production build: passed
+git diff --check: passed
+```
+
+Live acceptance remains: complete the fresh QR pairing, test one inbound text
+and voice-note turn, confirm only one Chromium process tree owns
+`session-TMC-0001`, and confirm no re-init occurs before the reported deadline.
+Codex changed no production state. Work remains uncommitted for Claude review.

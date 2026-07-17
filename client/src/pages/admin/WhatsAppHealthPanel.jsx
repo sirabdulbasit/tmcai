@@ -35,7 +35,7 @@ export default function WhatsAppHealthPanel() {
   if (loading) return <div style={panelStyle()}>Loading health data…</div>;
   if (!data || data.error) return null;
 
-  const { stats, history, config, notifier, voice = [], voiceProviders = {}, activity = [] } = data;
+  const { stats, history, config, notifier, init, voice = [], voiceProviders = {}, activity = [] } = data;
   const configConnected = config?.status === 'connected';
   const notifierReady = !!notifier?.is_active;
   const lastVoice = voice.length ? voice[voice.length - 1] : null;
@@ -46,6 +46,17 @@ export default function WhatsAppHealthPanel() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 14, color: '#eee' }}>WhatsApp Resilience</strong>
         <StatusPill ok={configConnected} label={configConnected ? 'QR-pair connected' : 'QR-pair down'} />
+        {init?.state === 'connecting' && (
+          <StatusPill ok label={`initializing · deadline ${new Date(init.deadlineAt).toLocaleTimeString()}`} />
+        )}
+        {init?.state === 'init_timeout' && (
+          <StatusPill
+            ok={false}
+            label={init.requiresRepair
+              ? `init timeout ×${init.consecutiveTimeouts} · re-pair required`
+              : `init timeout ×${init.consecutiveTimeouts} · retry scheduled`}
+          />
+        )}
         <StatusPill ok={notifierReady} label={notifierReady ? 'Meta notifier active' : 'Meta notifier inactive'} />
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#666' }}>
           auto-refresh every 30s
@@ -139,6 +150,15 @@ export default function WhatsAppHealthPanel() {
           border: '1px solid #ef4444', marginTop: 8,
         }}>
           <strong>Last error:</strong> {stats.lastError}
+        </div>
+      )}
+      {init?.requiresRepair && (
+        <div style={{
+          padding: '8px 10px', fontSize: 12, borderRadius: 4,
+          background: '#f59e0b22', color: '#f59e0b',
+          border: '1px solid #f59e0b', marginTop: 8,
+        }}>
+          <strong>Action required:</strong> the QR session is likely wedged after repeated initialization timeouts. Use Change Number / Reset Pairing below and scan a fresh QR.
         </div>
       )}
     </div>

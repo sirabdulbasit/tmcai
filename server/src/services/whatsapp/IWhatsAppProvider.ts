@@ -25,9 +25,16 @@ export interface SendResult {
 }
 
 export interface ConnectionStatus {
-  status: 'disconnected' | 'connecting' | 'connected' | 'error';
+  status: 'disconnected' | 'connecting' | 'connected' | 'init_timeout' | 'error';
   connectedNumber?: string;
   error?: string;
+  init?: {
+    startedAt: number | null;
+    deadlineAt: number | null;
+    retryAt: number | null;
+    consecutiveTimeouts: number;
+    requiresRepair: boolean;
+  };
 }
 
 export interface TestResult {

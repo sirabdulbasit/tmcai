@@ -31,6 +31,7 @@ const log = createLogger('whatsapp:watchdog');
 // per minute; at <20 tenants this is nothing.
 const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 let heartbeatHandle: NodeJS.Timeout | null = null;
+let probeInFlight = false;
 
 // ─── Health metrics (in-memory ring buffer per tenant) ──────────
 // Feeds the resilience dashboard (commit 3). Every probe appends a
@@ -42,7 +43,7 @@ interface HealthSample {
   ok: boolean;
   latencyMs?: number;
   error?: string;
-  action?: 'noop' | 'reinit_success' | 'reinit_failed';
+  action?: 'noop' | 'init_wait' | 'init_timeout' | 'reinit_success' | 'reinit_failed';
 }
 const HEALTH_HISTORY_CAP = 200;
 const healthByTenant = new Map<string, HealthSample[]>();
@@ -135,8 +136,18 @@ export function stopConnectionWatchdog(): void {
 
 /** Probe every tenant whose DB row says connected. Re-init if unhealthy. */
 async function probeAllTenants(): Promise<void> {
+  // setInterval does not await async callbacks. A slow Chromium init must not
+  // let the next heartbeat start a competing sweep for the same LocalAuth dir.
+  if (probeInFlight) {
+    log.info('heartbeat sweep skipped — previous sweep still in flight');
+    return;
+  }
+  probeInFlight = true;
+  try {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT client_number, connected_number FROM whatsapp_config WHERE status = 'connected'`,
+    `SELECT client_number, connected_number, status
+       FROM whatsapp_config
+      WHERE status IN ('connected', 'connecting', 'init_timeout')`,
   ).catch(() => [] as any[]);
 
   for (const row of rows) {
@@ -145,6 +156,34 @@ async function probeAllTenants(): Promise<void> {
     try {
       const { getProvider } = await import('./WhatsAppManager');
       const provider = await getProvider(cn);
+      const providerStatus = await provider.getStatus(cn);
+      const init = providerStatus.init;
+      const now = Date.now();
+      const { watchdogInitDeferral } = await import('./webjsInitPolicy');
+      const deferral = watchdogInitDeferral(providerStatus.status, init, now);
+
+      if (deferral === 'connecting') {
+        log.info('heartbeat waiting for bounded initialization', {
+          clientNumber: cn, deadlineAt: init?.deadlineAt,
+        });
+        continue;
+      }
+      if (providerStatus.status === 'init_timeout') {
+        if (deferral === 'repair_required') {
+          pushHealth(cn, {
+            at: now, ok: false,
+            error: 'init_timeout: session likely wedged — re-pair may be required',
+            action: 'init_timeout',
+          });
+          continue;
+        }
+        if (deferral === 'backoff') {
+          log.info('heartbeat respecting init-timeout backoff', {
+            clientNumber: cn, retryAt: init?.retryAt,
+          });
+          continue;
+        }
+      }
       const t = await provider.testConnection(cn).catch(() => ({ success: false, error: 'probe threw' }));
       const latencyMs = Date.now() - t0;
 
@@ -155,7 +194,19 @@ async function probeAllTenants(): Promise<void> {
 
       // DB says connected, in-memory says no. Self-heal by re-initializing.
       log.warn('heartbeat detected drift — re-initializing', { clientNumber: cn, probeError: t.error });
-      await provider.initialize(cn);
+      try {
+        await provider.initialize(cn);
+      } catch (initError: any) {
+        const failedStatus = await provider.getStatus(cn).catch(() => null);
+        const isInitTimeout = failedStatus?.status === 'init_timeout';
+        pushHealth(cn, {
+          at: Date.now(), ok: false, latencyMs: Date.now() - t0,
+          error: isInitTimeout ? `init_timeout: ${failedStatus?.error ?? initError?.message}` : initError?.message,
+          action: isInitTimeout ? 'init_timeout' : 'reinit_failed',
+        });
+        if (!isInitTimeout) throw initError;
+        continue;
+      }
 
       // Wait briefly for ready; if still failing, alert admins.
       const deadline = Date.now() + 10_000;
@@ -175,6 +226,11 @@ async function probeAllTenants(): Promise<void> {
       });
 
       if (!recovered) {
+        const failedStatus = await provider.getStatus(cn).catch(() => null);
+        if (failedStatus?.status === 'connecting') {
+          log.info('heartbeat initialization still connecting', { clientNumber: cn });
+          continue;
+        }
         log.error('heartbeat self-heal failed', { clientNumber: cn });
         await alertWhatsAppDisconnect({
           clientNumber: cn,
@@ -192,6 +248,9 @@ async function probeAllTenants(): Promise<void> {
       });
       log.error('heartbeat probe error', { clientNumber: cn, error: err.message });
     }
+  }
+  } finally {
+    probeInFlight = false;
   }
 }
 
@@ -230,7 +289,7 @@ export async function alertWhatsAppDisconnect(params: {
     return;
   }
 
-  const subject = `[MyOS] WhatsApp disconnected — ${params.clientNumber}`;
+  const subject = `[Nexeo] WhatsApp disconnected — ${params.clientNumber}`;
   const html = `
     <div style="font-family: -apple-system, system-ui, sans-serif; max-width: 560px;">
       <p style="margin: 0 0 16px;"><strong>Brain has lost contact with users on tenant <code>${params.clientNumber}</code>.</strong></p>

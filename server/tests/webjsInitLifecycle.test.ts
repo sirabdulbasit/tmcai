@@ -1,0 +1,116 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  executeRaw: vi.fn(),
+  initialize: vi.fn(),
+  destroy: vi.fn(),
+  alert: vi.fn(),
+  clients: [] as any[],
+}));
+
+vi.mock('../src/db/prisma', () => ({
+  default: {
+    $executeRawUnsafe: (...args: any[]) => mocks.executeRaw(...args),
+    $queryRawUnsafe: vi.fn().mockResolvedValue([]),
+  },
+}));
+vi.mock('../src/utils/logger', () => ({
+  default: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+}));
+vi.mock('../src/services/systemLogService', () => ({ log: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../src/services/whatsapp/connectionWatchdog', () => ({
+  alertWhatsAppDisconnect: (...args: any[]) => mocks.alert(...args),
+}));
+vi.mock('qrcode', () => ({ default: { toDataURL: vi.fn() }, toDataURL: vi.fn() }));
+vi.mock('whatsapp-web.js', () => {
+  class FakeClient {
+    handlers = new Map<string, Function>();
+    info = { wid: { user: '923000000000' } };
+    pupBrowser = Promise.resolve({ close: vi.fn().mockResolvedValue(undefined) });
+    constructor(public options: any) { mocks.clients.push(this); }
+    on(event: string, handler: Function) { this.handlers.set(event, handler); }
+    initialize() { return mocks.initialize(); }
+    destroy() { return mocks.destroy(); }
+  }
+  class FakeLocalAuth { constructor(public options: any) {} }
+  return { Client: FakeClient, LocalAuth: FakeLocalAuth };
+});
+
+import {
+  WebjsProvider,
+  getWebjsInitHealth,
+} from '../src/services/whatsapp/WebjsProvider';
+
+const tenant = 'TMC-INIT-TEST';
+
+describe('Web.js per-tenant initialization lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.clients.length = 0;
+    mocks.executeRaw.mockResolvedValue(1);
+    mocks.destroy.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await new WebjsProvider().disconnect(tenant);
+  });
+
+  it('admits only one Chromium initialization for concurrent tenant calls', async () => {
+    let resolveInit!: () => void;
+    mocks.initialize.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveInit = resolve; }));
+    const provider = new WebjsProvider();
+
+    const first = provider.initialize(tenant);
+    await vi.waitFor(() => expect(mocks.initialize).toHaveBeenCalledOnce());
+    await provider.initialize(tenant);
+
+    expect(mocks.clients).toHaveLength(1);
+    expect(getWebjsInitHealth(tenant).state).toBe('connecting');
+    resolveInit();
+    await first;
+  });
+
+  it('classifies a protocol failure, persists init_timeout, and destroys the failed client', async () => {
+    mocks.initialize.mockRejectedValueOnce(
+      new Error('Runtime.callFunctionOn timed out. Increase the protocolTimeout setting'),
+    );
+    const provider = new WebjsProvider();
+
+    await expect(provider.initialize(tenant)).rejects.toThrow('Runtime.callFunctionOn timed out');
+
+    const health = getWebjsInitHealth(tenant);
+    expect(health.state).toBe('init_timeout');
+    expect(health.consecutiveTimeouts).toBe(1);
+    expect(health.retryAt).toBeTypeOf('number');
+    expect(health.requiresRepair).toBe(false);
+    expect(mocks.destroy).toHaveBeenCalledOnce();
+    expect(mocks.executeRaw.mock.calls.some((call) =>
+      String(call[0]).includes('SET status = $2') && call[2] === 'init_timeout'
+    )).toBe(true);
+  });
+
+  it('opens the repair gate and escalates after three consecutive init timeouts', async () => {
+    mocks.initialize.mockRejectedValue(
+      new Error('Runtime.callFunctionOn timed out. Increase the protocolTimeout setting'),
+    );
+    const provider = new WebjsProvider();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await provider.initialize(tenant).catch(() => undefined);
+    }
+
+    const health = getWebjsInitHealth(tenant);
+    expect(health.consecutiveTimeouts).toBe(3);
+    expect(health.requiresRepair).toBe(true);
+    await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledOnce());
+
+    await provider.initialize(tenant);
+    expect(mocks.initialize).toHaveBeenCalledTimes(3);
+  });
+
+  it('passes the explicit bounded protocol timeout into Puppeteer', async () => {
+    mocks.initialize.mockResolvedValueOnce(undefined);
+    await new WebjsProvider().initialize(tenant);
+    expect(mocks.clients[0].options.puppeteer.protocolTimeout).toBe(240_000);
+  });
+});

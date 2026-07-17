@@ -44,6 +44,11 @@ router.get('/whatsapp-health', async (req: Request, res: Response) => {
   const activity = await import('../../services/whatsapp/inboundActivity')
     .then((m) => m.getInboundActivityHealth(cn))
     .catch(() => []);
+  const init = config?.provider === 'webjs'
+    ? await import('../../services/whatsapp/WebjsProvider')
+      .then((m) => m.getWebjsInitHealth(cn))
+      .catch(() => null)
+    : null;
 
   res.json({
     tenant: cn,
@@ -54,6 +59,7 @@ router.get('/whatsapp-health', async (req: Request, res: Response) => {
     voice,
     voiceProviders,
     activity,
+    init,
     generatedAt: new Date().toISOString(),
   });
 });
