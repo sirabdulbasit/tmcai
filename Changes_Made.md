@@ -1553,3 +1553,19 @@ commit, push, deploy, or change production.
 
 The separately reported `obsidian_vault_export` timeout remains explicitly out
 of scope and was not bundled.
+
+## Deployment Record — 2026-07-17 — 170854fcccc728e5da6175045640aa8dacde35c5 (REVIEWER)
+
+**Four-SHA ledger:**
+1. Application release SHAs: `d9ee60a` (exact 1.34.7 pin + dependency matrix), `170854f` (init-stage telemetry)
+2. Reviewed remote HEAD: `170854fcccc728e5da6175045640aa8dacde35c5`
+3. Production deployed SHA: `170854fcccc728e5da6175045640aa8dacde35c5` (verified on deepmarks; ancestor check for d9ee60a passed)
+4. Documentation/report SHA: this commit (not live-tested; prod runs 170854f)
+
+**Deployment evidence (deepmarks, 2026-07-17 ~14:05–14:14 UTC):**
+- Package reconciliation per disclosed procedure: prod's hand-edited package files backed up to `*.prod-backup-20260717`, tracked versions restored, `git pull --ff-only` clean.
+- `npm install` (IPv4-first, skip-Chromium): up to date in 2s; installed whatsapp-web.js verified `1.34.7`.
+- Server build clean (Prisma 6.19.2 + tsc). No migration, no client changes. Only tmcai-server restarted; health HTTP 200, database up (10ms).
+
+**Release status: PARTIAL** — infrastructure verified; WhatsApp live acceptance blocked by the (pre-existing) init failure, which the new telemetry has now attributed:
+`init_timeout[page_reached]` — page loads, QR listener registered, `qrEmitted=false`, `wwebVersion=2.3000.1043359815`, one browser-error fingerprint (`unknown_browser_error`) originating from WhatsApp's own bundle `static.whatsapp.net/rsrc.php/v4/yS/r/0gPJ7eUi6im.js`. Network/Chromium/profile exonerated (clean profile; page reached; version readable). Conclusion: whatsapp-web.js 1.34.7 bootstrap is incompatible with WhatsApp Web build 2.3000.1043359815. Defect handed to BUILDER with the exact build number.
