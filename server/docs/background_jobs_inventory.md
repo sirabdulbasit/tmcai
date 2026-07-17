@@ -26,15 +26,9 @@ completion exceeds 2× cadence.
 | day_brief_dispatch | server.ts | 60s | critical | per user | once-per-local-day stamp | first_tick | 10m |
 | critical_bundle_sweep | server.ts | 90s | critical | per user | fingerprint + in-flight set | first_tick | 10m |
 | preactive_engine | server.ts | 15m | critical | per user | per-event / per-item-per-day dedup keys | first_tick | 10m |
-| followup_sweep | server.ts | 1h | critical | per user | per-item follow-up stamps | first_tick | 10m |
-| brain_prompt_producer | server.ts | 30m | critical | per user | queue dedup keys | first_tick | 10m |
-| delegatee_email_sweep | server.ts | 30m | critical | per user | per-item emailed stamp | first_tick | 10m |
-| delegation_follow_up | server.ts | 30m | critical | — | verdict-gated, per-item stamps | first_tick | 10m |
+| central_action_governor | server.ts / centralActionGovernor.ts | 5m governor tick; per-task 30m/1h cadence | critical | tenants + users + open items | one replica lock; sequential tasks; queue dedup + per-item lifecycle state | first_tick | 10m |
 | agent_action_reaper | server.ts | 5m | critical | — | row-state machine | first_tick | 10m |
-| open_item_draft_ask | server.ts | 1h | critical | — | per-item ask stamp | first_tick | 10m |
-| open_item_follow_up | server.ts | 24h | critical | — | one verdict/item/day | first_tick | 10m |
 | kpi_snapshot_morning_brief | server.ts | 5m tick / daily window | critical | per tenant×user | daily window check | first_tick | 10m |
-| brain_prompt_expiry | server.ts | 30m | important | queue rows | TTL state machine | none | 10m |
 | system_log_maintenance | server.ts | 1h | important | GLOBAL | dedup by recurrence | none | 10m |
 | self_heal_pass | server.ts | 1h | important | global+per tenant | audit-first ledger, caps | none | 10m |
 | demo_expiry_sweep | server.ts | 1h | important | users | idempotent flag flip | first_tick | 10m |
@@ -56,6 +50,13 @@ pruning, system-log retention, action-idempotency expiry, approval-token expiry,
 contact prune, smart contact cleanup, inferred memory decay, reset-archive TTL,
 wiki-memory consolidation, and feed-event pruning. Domain modules contain
 implementation only and own no timers.
+
+`central_action_governor` is the only Action Center autonomy scheduler. Its
+manifest centrally governs prompt expiry, new-item gap questions, indefinite
+daily DRAFT slot completion, and the living action lifecycle (concerned-party
+follow-up, deadline renewal, delay history, evidence-based closure, and owner
+intervention). The retired followup/delegation workers remain available for
+historical tests or manual migration tooling but own no production timers.
 
 ## node-cron jobs (schedulerService/agentScheduler — pg-advisory
 ## `leaderOnly` per tick; short DB-bound bodies, transaction-held lock

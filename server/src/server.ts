@@ -150,12 +150,11 @@ const server = app.listen(env.port, async () => {
   setTimeout(() => {
     import('./jobs/jobRunner').then(({ evaluateMissedRuns }) => evaluateMissedRuns([
       { name: 'day_brief_dispatch', cadenceMs: 60_000, policy: 'run_once_if_missed' },
-      { name: 'followup_sweep', cadenceMs: 60 * 60_000, policy: 'run_once_if_missed' },
+      { name: 'central_action_governor', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
       { name: 'preactive_engine', cadenceMs: 15 * 60_000, policy: 'run_once_if_missed' },
       { name: 'agent_action_reaper', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
       { name: 'feed_publish_retry', cadenceMs: 2 * 60_000, policy: 'run_once_if_missed' },
       { name: 'connector_health_sweep', cadenceMs: 5 * 60_000, policy: 'run_once_if_missed' },
-      { name: 'open_item_follow_up', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
       { name: 'kpi_snapshot_morning_brief', cadenceMs: 24 * 60 * 60_000, policy: 'run_once_if_missed' },
     ])).catch((e) => console.warn('[jobRunner] missed-run scan failed:', e?.message));
   }, 30_000);
@@ -180,6 +179,26 @@ const server = app.listen(env.port, async () => {
     backgroundHandles.push(handle);
   }, 2 * 60 * 1000);
   backgroundHandles.push(cleanupGovernorHandle);
+  // Central Action Lifecycle Governor — the only scheduler for Action Center
+  // prompting, deadline acquisition, concerned-party follow-up, commitment
+  // renewal, and owner escalation. Specialist workers remain independently
+  // testable but no longer own competing timers/policies.
+  const actionGovernorHandle = setTimeout(() => {
+    const tick = () => protectedJob('central_action_governor', 'critical', async () => {
+      const { runCentralActionGovernor } = await import('./jobs/centralActionGovernor');
+      const report = await runCentralActionGovernor();
+      if (report.failed > 0) {
+        throw new Error(`Central action lifecycle failed tasks: ${report.outcomes
+          .filter((outcome) => outcome.status === 'failed')
+          .map((outcome) => outcome.id)
+          .join(', ')}`);
+      }
+    });
+    void tick();
+    const handle = setInterval(tick, 5 * 60 * 1000);
+    backgroundHandles.push(handle);
+  }, 3 * 60 * 1000);
+  backgroundHandles.push(actionGovernorHandle);
   // Demo-user expiry sweep — every hour. Flips is_active=false on
   // users whose users.expires_at has passed. First sweep fires 60s
   // after boot so a stale demo doesn't sit live until the first hour
@@ -217,51 +236,6 @@ const server = app.listen(env.port, async () => {
   startIndexEventProcessor();
   // Phase 5: Proactive intelligence — hourly scan
   setInterval(() => protectedJob('proactive_intelligence', 'important', () => runProactiveIntelligence()), 60 * 60 * 1000);
-  // Open-item follow-up worker — hourly. Scans DELEGATED items that
-  // have been silent past their threshold (3d / 7d / 14d) and pings
-  // the user via brainContactsUser. "Brain runs after you" piece.
-  // First sweep fires 5 minutes after boot so the scheduler isn't
-  // bombarded at startup.
-  setTimeout(() => {
-    const followupTick = () => protectedJob('followup_sweep', 'critical', async () => {
-      const { runFollowupSweep } = await import('./services/openItems/followupWorker');
-      await runFollowupSweep();
-    });
-    followupTick();
-    setInterval(followupTick, 60 * 60 * 1000);
-  }, 5 * 60 * 1000);
-
-  // Brain prompt queue — producer sweep + expiry sweep + delegatee email,
-  // all every 30 min.
-  //   Producer:        scans new auto-created open items missing a
-  //                    deadline / missing an owner / critical-with-pending-
-  //                    deadline, enqueues the right WhatsApp prompt for
-  //                    the user.
-  //   Expiry:          auto-skips prompts past 48h TTL so a silent user
-  //                    doesn't deadlock the queue forever.
-  //   Delegatee email: items DELEGATED with a delegateeEmail but no
-  //                    dueDate get an email from the user's Gmail asking
-  //                    "by when?". Reply matched on threadId by the feed
-  //                    ingestion handler updates dueDate automatically.
-  setTimeout(() => {
-    const brainPromptTicks = () => {
-      protectedJob('brain_prompt_producer', 'critical', async () => {
-        const { runProducerSweep } = await import('./services/brainPrompts/producerSweep');
-        await runProducerSweep();
-      });
-      protectedJob('brain_prompt_expiry', 'important', async () => {
-        const { expireStalePrompts } = await import('./services/brainPrompts/brainPromptQueueService');
-        await expireStalePrompts();
-      });
-      protectedJob('delegatee_email_sweep', 'critical', async () => {
-        const { runDelegateeEmailSweep } = await import('./services/brainPrompts/delegateeEmailProducer');
-        await runDelegateeEmailSweep();
-      });
-    };
-    brainPromptTicks();
-    setInterval(brainPromptTicks, 30 * 60 * 1000);
-  }, 6 * 60 * 1000);
-
   // Agent scheduler: initialize all scheduled agents
   import('./agents/agentScheduler').then(({ initializeAgentScheduler }) => {
     initializeAgentScheduler().then(() => console.log('[Agents] Scheduler initialized')).catch(() => {});
@@ -328,12 +302,6 @@ const server = app.listen(env.port, async () => {
   import('./jobs/attachmentBackfillWorker').then(({ startAttachmentBackfillWorker }) => {
     startAttachmentBackfillWorker();
   }).catch((e) => console.warn('[attachmentBackfill] start failed:', e.message));
-
-  // Delegatee follow-up worker (Brain → delegatee on due date).
-  // Per Basit 2026-05-23 delegation lifecycle spec step 4.
-  import('./services/openItems/delegateeFollowupWorker').then(({ scheduleDelegateeFollowupWorker }) => {
-    scheduleDelegateeFollowupWorker();
-  }).catch((e) => console.warn('[delegateeFollowup] start failed:', e.message));
 
   // Stale-connector proactive ping. Detects sync_stale connectors and
   // surfaces a Brain message asking the user to reconnect.
@@ -476,22 +444,6 @@ const server = app.listen(env.port, async () => {
     }
   }, 24 * 60 * 60 * 1000);
 
-  // Delegation chase — rewritten 2026-05-18. Smart per-recipient tone
-  // from the user's sent emails, LLM-judged timing (hold / chase /
-  // escalate / mark_stale), and a disclosure footer on every body so
-  // recipients can tell auto from manual. See smartChaseService.ts
-  // for the safety reasoning. Tick every 30 min — the verdict is what
-  // decides if anything actually goes out.
-  setInterval(() => {
-    protectedJob('delegation_follow_up', 'critical', async () => {
-      const { runDelegationFollowUp } = await import('./jobs/delegationFollowUpJob');
-      const s = await runDelegationFollowUp();
-      if (s.sent + s.escalated + s.marked_stale + s.errors > 0) {
-        console.log(`[delegationFollowUp] scanned=${s.scanned} sent=${s.sent} held=${s.held} escalated=${s.escalated} stale=${s.marked_stale} errors=${s.errors}`);
-      }
-    });
-  }, 30 * 60 * 1000);
-
   // D2 — trust promotion daily: propose (never auto-apply) raising the
   // automation level for action types the user consistently approves.
   setInterval(async () => {
@@ -566,59 +518,6 @@ const server = app.listen(env.port, async () => {
       }
     });
   }, 5 * 60 * 1000);
-
-  // 2026-05-14 Phase 2 — DRAFT open-item ask cadence. Runs hourly,
-  // but each item's lastAskAt-by-UTC-day check throttles to one ask
-  // per day per draft. Day 5 = warning; day 6+ = expire (status CLOSED
-  // with inactivationReason in metadata). Outbound goes via Nexeo
-  // notifier per the Brain-never-speaks-as-user rule.
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
-        const s = await runOpenItemDraftAsk();
-        if (s.asked + s.expired + s.quarantined + s.selfPruned + s.recovered > 0) {
-          console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} quarantined=${s.quarantined} selfPruned=${s.selfPruned} recovered=${s.recovered} errors=${s.errors}`);
-        }
-      } catch (err: any) {
-        console.warn('[openItemDraftAsk] error:', err.message);
-      }
-    })();
-  }, 3 * 60 * 1000); // first run 3 min after boot
-  setInterval(() => {
-    protectedJob('open_item_draft_ask', 'critical', async () => {
-      const { runOpenItemDraftAsk } = await import('./jobs/openItemDraftAskJob');
-      const s = await runOpenItemDraftAsk();
-      if (s.asked + s.expired + s.quarantined + s.selfPruned + s.recovered > 0) {
-        console.log(`[openItemDraftAsk] scanned=${s.scanned} asked=${s.asked} expired=${s.expired} quarantined=${s.quarantined} selfPruned=${s.selfPruned} recovered=${s.recovered} errors=${s.errors}`);
-      }
-    });
-  }, 60 * 60 * 1000);
-
-  // 2026-05-14 Phase 3.0 — daily smart follow-up engine. One LLM
-  // verdict per active item per day; dispatches via Nexeo only.
-  // Per-user learning via agent_action history of past verdicts.
-  // Internal Nexeo delegatees get direct nudges; external delegations
-  // get owner-side "want to chase?" reminders (Brain never contacts
-  // external per feedback_brain_never_speaks_as_user 2026-05-14).
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const { runOpenItemFollowUp } = await import('./jobs/openItemFollowUpJob');
-        const s = await runOpenItemFollowUp();
-        console.log(`[openItemFollowUp] scanned=${s.scanned} dispatched=${s.dispatched} verdicts=${JSON.stringify(s.verdicts)} errors=${s.errors}`);
-      } catch (err: any) {
-        console.warn('[openItemFollowUp] error:', err.message);
-      }
-    })();
-  }, 5 * 60 * 1000); // first run 5 min after boot
-  setInterval(() => {
-    protectedJob('open_item_follow_up', 'critical', async () => {
-      const { runOpenItemFollowUp } = await import('./jobs/openItemFollowUpJob');
-      const s = await runOpenItemFollowUp();
-      console.log(`[openItemFollowUp] scanned=${s.scanned} dispatched=${s.dispatched} verdicts=${JSON.stringify(s.verdicts)} errors=${s.errors}`);
-    });
-  }, 24 * 60 * 60 * 1000); // daily
 
   // 2026-05-16 — Day Brief dispatch. Fires each opted-in user's
   // daily brief on WhatsApp at their configured local time

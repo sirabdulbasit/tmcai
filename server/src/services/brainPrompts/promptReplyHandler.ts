@@ -176,6 +176,24 @@ async function applySideEffect(
       return { status: 'applied' };
     }
 
+    case 'action_status_update': {
+      if (!openItemId) return { status: 'failed', detail: 'no_open_item' };
+      const item = await prisma.openItem.findFirst({ where: { id: openItemId }, select: { clientNumber: true } });
+      if (!item) return { status: 'failed', detail: 'item_not_found' };
+      const { recordActionLifecycleReply } = await import('../openItems/actionLifecycleService');
+      const result = await recordActionLifecycleReply({
+        openItemId,
+        clientNumber: item.clientNumber,
+        body: answer,
+        source: 'user',
+      });
+      if (!result.handled) return { status: 'failed', detail: 'item_not_found' };
+      if (result.closed) return { status: 'applied', detail: 'completed' };
+      if (result.newDueDate) return { status: 'applied', detail: `new_due:${result.newDueDate}` };
+      if (result.needsUserIntervention) return { status: 'applied', detail: 'intervention_recorded' };
+      return { status: 'applied', detail: result.outcome ?? 'status_recorded' };
+    }
+
     default:
       return { status: 'unknown_kind' };
   }
@@ -274,6 +292,13 @@ function composeAck(
       return `[owner not identified — reply with a name or email]`;
     case 'free_form_note':
       return outcome.status === 'applied' ? `[note saved]` : `[noted]`;
+    case 'action_status_update':
+      if (outcome.detail === 'completed') return `[completion recorded and item closed]`;
+      if (outcome.detail?.startsWith('new_due:')) {
+        return `[new deadline recorded: ${outcome.detail.slice('new_due:'.length, 'new_due:'.length + 10)}]`;
+      }
+      if (outcome.detail === 'intervention_recorded') return `[blocker recorded — intervention flagged]`;
+      return outcome.status === 'applied' ? `[status update recorded]` : `[status update could not be applied]`;
     case 'noop':
     default:
       return `[noted]`;
@@ -338,6 +363,10 @@ export function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
     }
     case 'free_form_note':
       // Anything that isn't a new-chat trigger (layer 1 already filtered).
+      return true;
+    case 'action_status_update':
+      // Status replies are intentionally free-form: completion, progress,
+      // blocker, delay reason, and a new deadline often arrive in one sentence.
       return true;
     case 'noop':
     default:

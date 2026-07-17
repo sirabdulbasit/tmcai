@@ -112,6 +112,7 @@ export async function captureExpectedExternalReply(
   const outboundLower = String(owner.content ?? '').toLowerCase();
   const item = candidates.find((c) => outboundLower.includes(c.title.toLowerCase()))
     ?? (candidates.length === 1 ? candidates[0] : undefined);
+  let lifecycleNeedsIntervention = false;
 
   const { ingest } = await import('../feed/feedIngestionService');
   const occurredAt = input.timestamp ?? Date.now();
@@ -157,25 +158,46 @@ export async function captureExpectedExternalReply(
       JSON.stringify([note]), JSON.stringify(note), item.id,
       input.clientNumber, owner.user_id,
     ).catch((e: any) => log.warn('open item reply evidence write failed', { error: e.message }));
+
+    // Feed the same reply into the canonical living-action state machine.
+    // It extracts completion, blockers, delay reasons, and new commitments;
+    // the generic evidence note above remains as the immutable source trail.
+    const { recordActionLifecycleReply } = await import('../openItems/actionLifecycleService');
+    const lifecycleResult = await recordActionLifecycleReply({
+      openItemId: item.id,
+      clientNumber: input.clientNumber,
+      body: input.body,
+      source: 'whatsapp',
+      sourceId: input.sourceId,
+    }).catch((e: any) => {
+      log.warn('action lifecycle reply update failed', { error: e.message });
+      return null;
+    });
+    lifecycleNeedsIntervention = lifecycleResult?.needsUserIntervention === true;
   }
 
-  const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
-  await enqueueBrainPrompt({
-    userId: owner.user_id,
-    clientNumber: input.clientNumber,
-    question: item
-      ? `${contactName} replied about "${item.title}": “${input.body.slice(0, 500)}”`
-      : `${contactName} replied to your WhatsApp message: “${input.body.slice(0, 500)}”`,
-    openItemId: item?.id,
-    sideEffect: { kind: 'noop' },
-    criticality: 'routine',
-    dedupKey: `external_wa_reply:${input.sourceId}`,
-    metadata: {
-      source: 'expected_external_whatsapp_reply',
-      phone: input.fromNumber,
-      feedEventId: feed.feedEventId,
-    },
-  }).catch(() => {});
+  // Blocker replies already generated an immediate high-criticality
+  // intervention prompt. Do not add a second routine prompt for the same
+  // message; ordinary progress/completion replies still notify the owner.
+  if (!lifecycleNeedsIntervention) {
+    const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
+    await enqueueBrainPrompt({
+      userId: owner.user_id,
+      clientNumber: input.clientNumber,
+      question: item
+        ? `${contactName} replied about "${item.title}": “${input.body.slice(0, 500)}”`
+        : `${contactName} replied to your WhatsApp message: “${input.body.slice(0, 500)}”`,
+      openItemId: item?.id,
+      sideEffect: { kind: 'noop' },
+      criticality: 'routine',
+      dedupKey: `external_wa_reply:${input.sourceId}`,
+      metadata: {
+        source: 'expected_external_whatsapp_reply',
+        phone: input.fromNumber,
+        feedEventId: feed.feedEventId,
+      },
+    }).catch(() => {});
+  }
 
   log.info('expected external reply captured', {
     userId: owner.user_id,

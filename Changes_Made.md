@@ -950,3 +950,111 @@ TypeScript: clean
 Server production build: passed (Prisma 6.19.2)
 git diff --check: passed
 ```
+
+## 23. Living Action Center lifecycle and central action governor (2026-07-17)
+
+### Problem found
+
+Actionable work was split across four overlapping follow-up engines with
+conflicting behavior: one only reminded the owner, one contacted delegatees,
+one sent email chases, and another could mark work stale. DRAFT items also
+closed automatically after silence. This did not provide one accountable
+assistant that owns a task until completion.
+
+### Canonical lifecycle
+
+Added `services/openItems/actionLifecycleService.ts`. Every active actionable
+item now carries a versioned `metadata.actionLifecycle` state with:
+
+- lifecycle phase and next follow-up time;
+- last concerned-party contact and response;
+- unanswered-attempt and missed-commitment counters;
+- current delay reason and intervention flag;
+- bounded commitment, follow-up, evidence, and escalation history.
+
+The deterministic lifecycle policy cannot silently abandon work:
+
+- no deadline → ask the responsible person daily for a committed date;
+- deadline in the future → monitor until that commitment;
+- deadline reached → ask whether it is complete; if not, require the delay
+  reason and a new committed deadline;
+- new deadline → record it and schedule the next check at that date;
+- no usable new deadline → continue daily;
+- explicit completion evidence → close through the canonical item lifecycle;
+- three unanswered attempts, two missed commitments, a blocker, or an
+  authority/approval dependency → involve the owner with a decision-ready
+  intervention summary;
+- terminal, cancelled, or self-pruned items → no proactive contact.
+
+Silence no longer expires a DRAFT item. The existing daily slot question keeps
+running until priority/deadline are supplied or the user explicitly skips or
+cancels the item. The old “last call / I’ll drop it” behavior was removed.
+
+### Concerned-party communication and reply understanding
+
+Added `jobs/actionLifecycleWorker.ts`. It routes follow-up through the best
+auditable path:
+
+- internal Nexeo delegatee → sequential Brain Prompt Queue, so the reply is
+  correlated to the owner's exact open item;
+- external contact with a phone → tenant Nexeo WhatsApp;
+- external contact with email → disclosed Nexeo-on-behalf-of email;
+- owner/self-owned work → Brain Prompt Queue.
+
+External WhatsApp replies and delegation-tracker email replies now enter the
+same lifecycle reply interpreter. The interpreter extracts completion,
+progress, blockers, a delay reason, a new deadline, completion evidence, and
+whether user authority is required. LLM interpretation has a deterministic
+fallback, and a future promise is never treated as completion. Authority or
+approval blockers create an immediate high-criticality owner prompt rather
+than waiting for the next daily sweep.
+
+Added the `action_status_update` Brain Prompt side effect so owner/internal
+delegatee replies update the item, commitment history, next follow-up, and
+closure state instead of becoming unlinked chat text.
+
+### One governed job
+
+Added `jobs/centralActionGovernor.ts`. Production now has one protected
+`central_action_governor` timer and durable job lease. It centrally sequences:
+
+1. prompt expiry;
+2. new-item gap prompts;
+3. indefinite DRAFT slot completion;
+4. the living action lifecycle sweep.
+
+The old `followup_sweep`, `delegation_follow_up`, `delegatee_email_sweep`,
+`open_item_draft_ask`, and `open_item_follow_up` production timers were removed,
+eliminating duplicate or contradictory chases. Their domain modules remain
+available for historical tests/migration tooling but do not schedule
+themselves. The background-job inventory and missed-run policy now name the
+central governor.
+
+### Action Center visibility
+
+The Open Items page now shows a `Nexeo: <phase>` badge and a Living Follow-up
+panel containing the next follow-up, unanswered attempts, missed commitments,
+latest delay reason, and intervention status. The How Brain Works page now
+explains that sender-star notifications hand off to the living lifecycle when
+work becomes active/delegated; only closure or explicit cancellation stops it.
+
+No database migration is required; lifecycle state uses the existing JSON
+metadata, notes, action audit, prompt queue, and item status history.
+
+### Regression coverage and verification
+
+Added:
+
+- `server/tests/actionLifecyclePolicy.test.ts`;
+- `server/tests/actionLifecycleReply.test.ts`;
+- `server/tests/centralActionGovernor.test.ts`.
+
+Final verification:
+
+```text
+Server: 959 passed, 21 skipped, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+Client Vite production build: passed
+git diff --check: passed
+```

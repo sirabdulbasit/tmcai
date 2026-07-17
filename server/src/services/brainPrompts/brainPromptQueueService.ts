@@ -33,7 +33,7 @@ export type Criticality = 'routine' | 'high' | 'top';
 
 export interface SideEffect {
   /** What to do with the user's answer. */
-  kind: 'set_due_date' | 'assign_owner' | 'free_form_note' | 'noop';
+  kind: 'set_due_date' | 'assign_owner' | 'free_form_note' | 'action_status_update' | 'noop';
   /** Most side-effects target an open item. */
   openItemId?: string;
   /** Free-form payload — handler-specific. */

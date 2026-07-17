@@ -31,6 +31,12 @@ const PRIORITY_COLORS = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6
 const STATUS_COLORS = { open: '#3b82f6', in_progress: '#f59e0b', delegated: '#a855f7', blocked: '#ef4444', done: '#4ade80', overdue: '#ef4444' };
 const TYPE_ICONS = { task: '✓', email: '✉', delegation: '→', alert: '⚠', erp: '📊', okr: '🎯', risk: '⚡' };
 
+function lifecycleLabel(item) {
+  const phase = item?.metadata?.actionLifecycle?.phase;
+  if (!phase) return null;
+  return phase.replaceAll('_', ' ');
+}
+
 export default function OpenItemsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -355,6 +361,7 @@ export default function OpenItemsPage() {
                   <span style={{ fontSize: 14, fontWeight: 600, color: '#eee' }}>{item.title}</span>
                   <span style={s.badge(PRIORITY_COLORS[item.priority])}>{item.priority}</span>
                   <span style={s.badge(STATUS_COLORS[item.status])}>{item.status.replace('_', ' ')}</span>
+                  {lifecycleLabel(item) && <span style={s.badge('#22c55e')}>Nexeo: {lifecycleLabel(item)}</span>}
                 </div>
                 {item.description && <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{item.description.substring(0, 120)}{item.description.length > 120 ? '...' : ''}</div>}
                 <div style={{ fontSize: 11, color: '#666', marginTop: 6, display: 'flex', gap: 12 }}>
@@ -444,6 +451,19 @@ export default function OpenItemsPage() {
               <div>Created: {new Date(selectedItem.createdAt).toLocaleString()}</div>
               <div>Updated: {new Date(selectedItem.updatedAt).toLocaleString()}</div>
             </div>
+            {selectedItem.metadata?.actionLifecycle && (
+              <div style={{ marginTop: 16, padding: 12, border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, background: 'rgba(34,197,94,0.05)' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#86efac', marginBottom: 8 }}>Nexeo Living Follow-up</div>
+                <div style={{ fontSize: 12, color: '#aaa', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div>Phase: {lifecycleLabel(selectedItem)}</div>
+                  {selectedItem.metadata.actionLifecycle.nextFollowUpAt && <div>Next follow-up: {new Date(selectedItem.metadata.actionLifecycle.nextFollowUpAt).toLocaleString()}</div>}
+                  <div>Unanswered attempts: {selectedItem.metadata.actionLifecycle.unansweredAttempts ?? 0}</div>
+                  <div>Missed commitments: {selectedItem.metadata.actionLifecycle.missedCommitments ?? 0}</div>
+                  {selectedItem.metadata.actionLifecycle.currentDelayReason && <div>Latest delay reason: {selectedItem.metadata.actionLifecycle.currentDelayReason}</div>}
+                  {selectedItem.metadata.actionLifecycle.needsUserIntervention && <div style={{ color: '#fca5a5' }}>User intervention required: {selectedItem.metadata.actionLifecycle.interventionReason || 'Nexeo detected a blocker.'}</div>}
+                </div>
+              </div>
+            )}
             {selectedItem.delegationTrail?.length > 0 && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#888', marginBottom: 6 }}>Delegation Trail</div>
@@ -464,4 +484,3 @@ export default function OpenItemsPage() {
     </div>
   );
 }
-

@@ -501,7 +501,7 @@ function SectionStarCadence() {
       </div>
 
       <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${COL.border}`, borderRadius: 8, fontSize: 13, color: COL.dim, lineHeight: 1.55 }}>
-        <strong style={{ color: COL.text }}>Pause</strong> — once you mark the open item as in-progress, delegated, snoozed, or closed, Brain stops the cadence. You won't be pinged about something you've already handled.
+        <strong style={{ color: COL.text }}>Handoff</strong> — once an item becomes in-progress or delegated, the sender-star notification cadence stops and the Living Follow-up lifecycle takes over. Nexeo tracks the responsible person, deadline, delay reasons, and new commitments until verified completion. Closed or explicitly cancelled items stop completely.
       </div>
 
       <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(99,102,241,0.06)', border: `1px solid rgba(99,102,241,0.25)`, borderRadius: 8, fontSize: 13, color: COL.text, lineHeight: 1.55 }}>

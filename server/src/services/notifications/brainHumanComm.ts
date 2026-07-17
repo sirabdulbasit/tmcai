@@ -88,11 +88,10 @@ export async function addressUser(userId: number): Promise<string> {
   }
 }
 
-/** Compose a draft-ask body with variation. Casual asks until the
- *  final day, which is the explicit warning. `warnDay` defaults to 5
- *  to preserve old behaviour when callers don't pass it (DRAFT expiry
- *  was 6 days, warning on day 5). New caller passes warnDay derived
- *  from the user's draftExpiryDays setting. */
+/** Compose a daily draft-slot question with variation. Silence never emits a
+ * "last call" and never drops the item; only an explicit user choice closes
+ * an actionable loop. `warnDay` remains in the input for source compatibility
+ * with older callers but is intentionally ignored. */
 export function phraseDraftAsk(args: {
   userFirstName: string;
   itemTitle: string;
@@ -101,25 +100,14 @@ export function phraseDraftAsk(args: {
   itemId: string;
   warnDay?: number;
 }): string {
-  const { userFirstName, itemTitle, missingSlots, dayIndex, itemId } = args;
-  const warnDay = args.warnDay ?? 5;
+  const { userFirstName, itemTitle, missingSlots, itemId } = args;
   const both = missingSlots.includes('priority') && missingSlots.includes('dueDate');
   const slotPhrase = both
     ? 'a priority and a deadline'
     : missingSlots.includes('priority') ? 'a priority' : 'a deadline';
 
   const greet = userFirstName ? `${userFirstName}, ` : '';
-  const warn = dayIndex >= warnDay;
-
-  if (warn) {
-    return [
-      `${greet}last call on this one — I still need ${slotPhrase} for:`,
-      `"${itemTitle}"`,
-      `If I don't hear today, I'll let it drop. Reply with the priority (critical / high / medium / low) and/or a date, or "skip" to drop it.`,
-    ].join('\n\n');
-  }
-
-  // Days 0-4: rotate among 3 variants per day so daily nudges don't
+  // Rotate among 3 variants per day so daily nudges don't
   // feel identical to yesterday's.
   const variant = pickVariant('draft_ask', itemId, 0, 3);
   const leads = [

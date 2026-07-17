@@ -12,11 +12,9 @@
  *   Day 0 (creation day):  first ask (sent by this job's first tick
  *                          after creation)
  *   Days 1-4:              one ask per day
- *   Day 5:                 final ask + warning ("if I don't hear
- *                          back today I'll drop this draft")
- *   Day 6 onward:          status -> CLOSED, audit reason recorded
- *                          ("Draft expired — priority/dueDate not
- *                          provided after 6 daily prompts")
+ *   Day 5 onward:          continue once daily until the missing deadline
+ *                          and priority are supplied, or the user explicitly
+ *                          skips/cancels the item. Silence never closes work.
  *
  * "Day N" is counted as floor((now - createdAt) / 24h).
  *
@@ -42,12 +40,9 @@ import { planZombieLifecycle } from '../services/openItems/zombieItemPolicy';
 const log = createLogger('open-item-draft-ask');
 
 const ACTIVE_DRAFT_STATUSES = ['DRAFT'];
-// MAX_ASKS / WARN_DAY are now per-user (Settings → Open Items →
-// DRAFT expiry). Resolved per item via getOpenItemsSettings(userId).
-// Day N is counted as floor((now - createdAt) / 24h):
-//   days 0 .. (expiry-2): ask
-//   day  (expiry-1):       final ask + warning
-//   day  expiry or later:  status -> CLOSED, audit reason recorded.
+// Day N is counted as floor((now - createdAt) / 24h). There is deliberately
+// no silence-based expiry: a living assistant keeps the loop open until it has
+// a commitment or the user explicitly cancels it.
 
 interface DraftMeta {
   missingSlots?: Array<'priority' | 'dueDate'>;
@@ -168,32 +163,6 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
 
       const day = dayIndex(item.createdAt, now);
 
-      // Per-user DRAFT expiry — Settings → Open Items.
-      const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
-      const oiSettings = await getOpenItemsSettings(item.userId);
-      const maxAsks = oiSettings.draftExpiryDays;
-      const warnDay = Math.max(1, maxAsks - 1);
-
-      // Day >= maxAsks → expire.
-      if (day >= maxAsks) {
-        await prisma.openItem.update({
-          where: { id: item.id },
-          data: {
-            status: 'CLOSED',
-            metadata: {
-              ...(item.metadata ?? {}),
-              draft: {
-                ...meta,
-                expiredAt: now.toISOString(),
-              },
-              inactivationReason: `Draft expired — priority/deadline not provided after ${maxAsks} daily prompts`,
-            } as any,
-          } as any,
-        });
-        result.expired += 1;
-        continue;
-      }
-
       // Skip if already asked today (UTC day).
       const lastAsk = meta.lastAskAt ? new Date(meta.lastAskAt) : null;
       if (lastAsk && lastAsk.toISOString().slice(0, 10) === todayUtcDateStr) {
@@ -208,7 +177,9 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         missingSlots,
         dayIndex: day,
         itemId: item.id,
-        warnDay,
+        // Never emit the old "last call / I'll drop it" warning. Only an
+        // explicit user decision may close an actionable draft.
+        warnDay: Number.MAX_SAFE_INTEGER,
       });
 
       // Brain → user via the canonical brainContactsUser path. Handles

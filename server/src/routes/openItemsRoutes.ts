@@ -387,8 +387,8 @@ router.get('/transitions/matrix', requireAuth, async (_req: Request, res: Respon
  */
 router.post('/followup-sweep', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { runFollowupSweep } = await import('../services/openItems/followupWorker');
-    const summary = await runFollowupSweep({ dryRun: req.body?.dryRun === true });
+    const { runActionLifecycleSweep } = await import('../jobs/actionLifecycleWorker');
+    const summary = await runActionLifecycleSweep({ dryRun: req.body?.dryRun === true });
     res.json({ ok: true, ...summary });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

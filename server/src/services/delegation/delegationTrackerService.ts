@@ -174,6 +174,37 @@ export async function checkInboundForDelegationUpdate(params: {
     } as any,
   });
 
+  // Keep email replies and WhatsApp replies on the same living-action
+  // lifecycle. The tracker classification is reused as a grounded hint so
+  // this path does not spend a second LLM call.
+  try {
+    const { parseDuePhrase } = await import('../brainPrompts/promptReplyHandler');
+    const { recordActionLifecycleReply } = await import('../openItems/actionLifecycleService');
+    const newDeadline = classification.outcome === 'progress' || classification.outcome === 'blocked'
+      ? parseDuePhrase(snippet)
+      : null;
+    await recordActionLifecycleReply({
+      openItemId: best.id,
+      clientNumber: params.clientNumber,
+      body: snippet || classification.summary,
+      source: 'email',
+      sourceId: params.feedEventId,
+      interpretation: {
+        outcome: classification.outcome === 'done' ? 'completed'
+          : classification.outcome === 'progress' ? 'in_progress'
+          : 'blocked',
+        summary: classification.summary,
+        newDeadline,
+        delayReason: classification.outcome === 'blocked' ? classification.summary : null,
+        completionEvidence: classification.outcome === 'done' ? classification.summary : null,
+        needsUserIntervention: classification.outcome === 'blocked',
+        confidence: classification.confidence,
+      },
+    });
+  } catch (err: any) {
+    log.warn('action lifecycle email update failed', { error: err.message });
+  }
+
   // Mirror update on the delegatee's parallel open_item (created
   // when MD delegated). Without this, the delegatee's Action Center
   // still shows the task as open even though Brain has confirmed
