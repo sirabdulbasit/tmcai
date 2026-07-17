@@ -21,6 +21,16 @@ vi.mock('../src/services/systemLogService', () => ({ log: vi.fn().mockResolvedVa
 vi.mock('../src/services/whatsapp/connectionWatchdog', () => ({
   alertWhatsAppDisconnect: (...args: any[]) => mocks.alert(...args),
 }));
+vi.mock('../src/services/whatsapp/webjsVersionCache', () => ({
+  prepareVerifiedWebjsVersionCache: vi.fn().mockResolvedValue({
+    version: '2.3000.1043346688-alpha',
+    sourceUrl: 'https://archive.invalid/immutable.html',
+    sha256: 'a'.repeat(64),
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    cachePath: '/tmp/verified-webjs-cache',
+    webVersionCache: { type: 'local', path: '/tmp/verified-webjs-cache', strict: true },
+  }),
+}));
 vi.mock('qrcode', () => ({ default: { toDataURL: vi.fn() }, toDataURL: vi.fn() }));
 vi.mock('whatsapp-web.js', () => {
   class FakeClient {
@@ -142,10 +152,12 @@ describe('Web.js per-tenant initialization lifecycle', () => {
     expect(mocks.clients[0].options.puppeteer.protocolTimeout).toBe(240_000);
   });
 
-  it('does not claim an unverified WhatsApp Web cache version', async () => {
+  it('passes only the integrity-prepared strict local Web cache to the client', async () => {
     mocks.initialize.mockResolvedValueOnce(undefined);
     await new WebjsProvider().initialize(tenant);
-    expect(mocks.clients[0].options.webVersion).toBeUndefined();
-    expect(mocks.clients[0].options.webVersionCache).toBeUndefined();
+    expect(mocks.clients[0].options.webVersion).toBe('2.3000.1043346688-alpha');
+    expect(mocks.clients[0].options.webVersionCache).toEqual({
+      type: 'local', path: '/tmp/verified-webjs-cache', strict: true,
+    });
   });
 });

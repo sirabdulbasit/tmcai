@@ -1569,3 +1569,131 @@ of scope and was not bundled.
 
 **Release status: PARTIAL** — infrastructure verified; WhatsApp live acceptance blocked by the (pre-existing) init failure, which the new telemetry has now attributed:
 `init_timeout[page_reached]` — page loads, QR listener registered, `qrEmitted=false`, `wwebVersion=2.3000.1043359815`, one browser-error fingerprint (`unknown_browser_error`) originating from WhatsApp's own bundle `static.whatsapp.net/rsrc.php/v4/yS/r/0gPJ7eUi6im.js`. Network/Chromium/profile exonerated (clean profile; page reached; version readable). Conclusion: whatsapp-web.js 1.34.7 bootstrap is incompatible with WhatsApp Web build 2.3000.1043359815. Defect handed to BUILDER with the exact build number.
+
+## 27. Integrity-pinned WhatsApp Web compatibility cache (2026-07-17)
+
+### Decisive production evidence and upstream resolution audit
+
+Section 26 produced the same bounded result on two independent production
+initializations: `init_timeout[page_reached]`, Web build
+`2.3000.1043359815`, QR listener registered but no QR emitted, and an opaque
+exception from WhatsApp's own `static.whatsapp.net/rsrc.php` boot bundle. The
+page and its JavaScript were running, so network, Chromium launch, LocalAuth
+profile state, and Nexeo's listener registration were eliminated. The failure
+boundary is the current WhatsApp Web bundle against whatsapp-web.js 1.34.7.
+
+The requested upstream audit found no released library repair:
+
+- issue 201818 was closed with only a maintainer screenshot and no linked
+  commit, PR, cache version, or reproducible remedy:
+  https://github.com/wwebjs/whatsapp-web.js/issues/201818
+- issue 201821 contains a reporter workaround that waits for an input selector
+  before `attachEventListeners()`. That failure occurs after an existing
+  session advances toward ready; it does not repair Nexeo's clean-profile,
+  pre-QR `page_reached` failure:
+  https://github.com/wwebjs/whatsapp-web.js/issues/201821#issuecomment-4914820711
+- 1.34.7 remains the latest stable release. No merged July bootstrap PR or
+  stable 1.34.8/1.35 artifact exists to regression-test or adopt:
+  https://github.com/wwebjs/whatsapp-web.js/releases/tag/v1.34.7
+
+### Verified compatibility artifact
+
+The `wppconnect-team/wa-version` archive contains WhatsApp Web build
+`2.3000.1043346688-alpha`, captured immediately before the incompatible
+production build. Its immutable evidence chain is:
+
+- archive commit: `d71af1f1094ace8354e0a0f0f5e9c32b67988f96`;
+- Git blob: `dfcc393253ee3f4824baf0599a7687370e8a1bf7` (568,383 bytes);
+- SHA-256:
+  `80a55358cdd081b3e58eb4bf62434b9f8bd9802f569e10c53e48823cd8528fcf`;
+- archive expiry: `2026-09-17T07:27:10.198Z`;
+- immutable source:
+  `https://raw.githubusercontent.com/wppconnect-team/wa-version/d71af1f1094ace8354e0a0f0f5e9c32b67988f96/html/2.3000.1043346688-alpha.html`.
+
+This artifact emitted a fresh QR with whatsapp-web.js 1.34.7 in two
+independent immutable-remote clean-profile probes (2.61s and 3.78s). The
+compiled Nexeo preparer then downloaded it, verified the exact SHA-256, wrote
+the strict local cache, and a third clean profile emitted QR from that local
+cache in 3.36s. These tests require no account pairing and establish the exact
+acceptance boundary that production currently fails: bootstrap reaches QR.
+
+### Implemented fail-closed local cache preparation
+
+Added `webjsVersionCache.ts`. Before constructing a Web.js client, Nexeo now:
+
+1. resolves the default pin or one atomic environment rotation;
+2. validates version syntax, credential-free HTTPS source, SHA-256, and expiry;
+3. reuses a local artifact only after recalculating its digest;
+4. otherwise downloads with a 20-second abort deadline and 2 MiB size cap;
+5. verifies SHA-256 before any write;
+6. atomically installs the file with directory mode 0700 and file mode 0600;
+7. passes whatsapp-web.js an explicit version and strict `LocalWebCache`;
+8. fails visibly as `web_cache_unavailable` rather than falling back to the
+   incompatible live build.
+
+Concurrent preparations for the same cache/version/digest share one in-process
+flight. A corrupt local artifact is replaced only by a verified download.
+Download, integrity, expiry, or configuration failure releases the init lock,
+persists an error, and prevents an unsafe live-version fallback.
+
+Rotation requires all four values together, preventing a new version from
+silently retaining an old digest or expiry:
+
+- `WHATSAPP_WEBJS_WEB_VERSION`
+- `WHATSAPP_WEBJS_WEB_CACHE_URL`
+- `WHATSAPP_WEBJS_WEB_CACHE_SHA256`
+- `WHATSAPP_WEBJS_WEB_CACHE_EXPIRES_AT`
+
+The default artifact fails closed after its recorded September expiry. A
+replacement can therefore be tested and rotated through environment settings
+without an application release, but cannot be introduced without its integrity
+and lifetime metadata.
+
+### WA bundle fingerprint
+
+The telemetry taxonomy now classifies an otherwise opaque error originating
+from sanitized `https://static.whatsapp.net/rsrc.php...` as
+`wa_bundle_boot_exception`. Raw minified error text remains discarded. This
+distinguishes the exact current incompatibility from an arbitrary unknown page
+error without exposing browser or message content.
+
+### Complete file list
+
+- `server/src/services/whatsapp/webjsVersionCache.ts` (new)
+- `server/src/services/whatsapp/WebjsProvider.ts`
+- `server/src/services/whatsapp/webjsInitTelemetry.ts`
+- `server/tests/webjsVersionCache.test.ts` (new)
+- `server/tests/webjsInitLifecycle.test.ts`
+- `server/tests/webjsInitTelemetry.test.ts`
+- `Changes_Made.md`
+
+No package file, client file, database schema, or migration changed. Production
+package reconciliation for the 1.34.7 pin was already completed in the prior
+deployment; Section 27 requires no dependency installation. This is a
+production connector incident rather than a Brain conversation, so no chat
+archive/scenario pair was added.
+
+### Tests and verification
+
+Six new cache tests cover the immutable default, atomic rotations, expiry,
+download/digest/atomic reuse, mismatch rejection, and corrupted-cache repair.
+The lifecycle suite proves that only the prepared explicit version and strict
+local cache reach the Client. Telemetry tests cover the new WA-bundle category.
+The focused matrix also includes dependency-surface, inbound activity/media/
+reply, and complete Chat 11/12 Brain regression coverage.
+
+```text
+Focused compatibility/init/LID/media/Brain matrix: 55 passed, 0 failed (9 files)
+Server: 1022 passed, 21 skipped, 0 failed (96 files passed, 1 skipped)
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2 generation + tsc)
+Compiled integrity preparation: exact SHA-256 verified; strict local cache created
+Clean-profile QR probes: 3/3 passed against immutable/verified-local artifact
+git diff --check: passed
+```
+
+Client build was not required because no client file changed. Production live
+acceptance remains mandatory: clean profile emits QR within the deadline,
+pairing completes, text + voice + repeat-voice turns pass, one Chromium tree
+remains, and Admin health exposes the selected version/stage. Codex did not
+commit, push, deploy, or change production.

@@ -29,6 +29,10 @@ describe('WhatsApp Web.js bounded initialization telemetry', () => {
       .toBe('network_failure');
     expect(fingerprintBrowserError('private arbitrary browser detail'))
       .toBe('unknown_browser_error');
+    expect(fingerprintBrowserError(
+      'opaque minified exception',
+      'https://static.whatsapp.net/rsrc.php/v4/yS/r/bundle.js?token=secret',
+    )).toBe('wa_bundle_boot_exception');
   });
 
   it('retains only a capped fingerprint ring and no raw browser text', () => {

@@ -19,6 +19,7 @@ export type BrowserErrorFingerprint =
   | 'network_failure'
   | 'csp_violation'
   | 'javascript_type_error'
+  | 'wa_bundle_boot_exception'
   | 'unknown_browser_error';
 
 export interface WebjsInitTelemetrySnapshot {
@@ -68,7 +69,7 @@ export function safeWwebVersion(raw: unknown): string | null {
  * Converts browser text into a fixed operational category. Raw console/page
  * error text is never retained because it may contain user content or tokens.
  */
-export function fingerprintBrowserError(raw: unknown): BrowserErrorFingerprint {
+export function fingerprintBrowserError(raw: unknown, location?: unknown): BrowserErrorFingerprint {
   const text = String((raw as any)?.message ?? raw ?? '').toLowerCase();
   if (/runtime\.callfunctionon|protocol.*tim(?:e|ed) out/.test(text)) return 'runtime_call_timeout';
   if (/passkey|webauthn|authenticator/.test(text)) return 'passkey_required';
@@ -78,6 +79,10 @@ export function fingerprintBrowserError(raw: unknown): BrowserErrorFingerprint {
   if (/net::|networkerror|failed to fetch|err_(?:connection|name|internet)/.test(text)) return 'network_failure';
   if (/content security policy|refused to (?:load|execute)|csp/.test(text)) return 'csp_violation';
   if (/typeerror|referenceerror|syntaxerror/.test(text)) return 'javascript_type_error';
+  const safeLocation = safeBrowserUrl(location);
+  if (safeLocation?.startsWith('https://static.whatsapp.net/rsrc.php')) {
+    return 'wa_bundle_boot_exception';
+  }
   return 'unknown_browser_error';
 }
 
@@ -133,7 +138,7 @@ export class WebjsInitTelemetry {
     at: number = Date.now(),
   ): void {
     const entry = {
-      at, source, fingerprint: fingerprintBrowserError(raw),
+      at, source, fingerprint: fingerprintBrowserError(raw, location),
       ...(safeBrowserUrl(location) ? { location: safeBrowserUrl(location)! } : {}),
     };
     this.data.consoleErrors.push(entry);

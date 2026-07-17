@@ -24,6 +24,7 @@ import {
   WebjsInitTelemetry,
   WebjsInitTelemetrySnapshot,
 } from './webjsInitTelemetry';
+import type { PreparedWebjsVersionCache } from './webjsVersionCache';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -289,6 +290,35 @@ export class WebjsProvider implements IWhatsAppProvider {
     hardenSessionDir(sessionDir);
     cleanStaleSingletonLocks(sessionDir);
 
+    let verifiedWebCache: PreparedWebjsVersionCache;
+    try {
+      const { prepareVerifiedWebjsVersionCache } = await import('./webjsVersionCache');
+      verifiedWebCache = await prepareVerifiedWebjsVersionCache({ sessionPath });
+      log.info('verified WhatsApp Web cache ready', {
+        clientNumber,
+        webVersion: verifiedWebCache.version,
+        sha256Head: verifiedWebCache.sha256.slice(0, 12),
+        expiresAt: verifiedWebCache.expiresAt,
+      });
+    } catch (error: any) {
+      const message = String(error?.message ?? error ?? 'cache preparation failed').slice(0, 300);
+      statusMap.set(clientNumber, 'error');
+      initHealth.set(clientNumber, {
+        state: 'error', startedAt: flight.startedAt, deadlineAt: flight.deadlineAt,
+        retryAt: null, consecutiveTimeouts: 0, requiresRepair: false,
+        lastError: `web_cache_unavailable: ${message}`, telemetry: telemetry.snapshot(),
+      });
+      await prisma.$executeRawUnsafe(
+        `UPDATE whatsapp_config
+            SET status = 'error', last_error = $2, last_error_at = NOW()
+          WHERE client_number = $1`,
+        clientNumber, `web_cache_unavailable: ${message}`,
+      ).catch(() => undefined);
+      if (initFlights.get(clientNumber)?.token === token) initFlights.delete(clientNumber);
+      log.error('verified WhatsApp Web cache unavailable', { clientNumber, error: message });
+      throw error;
+    }
+
     // Find Chrome/Chromium executable on the system. Honour both names:
     //   - PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
     //   - CHROME_PATH (older internal name, kept for back-compat)
@@ -303,6 +333,8 @@ export class WebjsProvider implements IWhatsAppProvider {
     const client = new Client({
       authStrategy: new LocalAuth({ clientId: sessionKey, dataPath: sessionPath }),
       restartOnAuthFail: true,
+      webVersion: verifiedWebCache.version,
+      webVersionCache: verifiedWebCache.webVersionCache,
       puppeteer: {
         headless: true,
         executablePath,
