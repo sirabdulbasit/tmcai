@@ -34,6 +34,7 @@ export interface WebjsInitTelemetrySnapshot {
     at: number;
     source: 'console' | 'pageerror';
     fingerprint: BrowserErrorFingerprint;
+    exceptionName?: string;
     location?: string;
   }>;
   timeline: Array<{ stage: WebjsInitStage; at: number }>;
@@ -63,6 +64,17 @@ export function safeBrowserUrl(raw: unknown): string | null {
 export function safeWwebVersion(raw: unknown): string | null {
   const value = String(raw ?? '');
   return /^\d+(?:\.\d+){2,3}(?:-[a-z]+)?$/i.test(value) ? value.slice(0, 80) : null;
+}
+
+/** Exception class/name only. Message and stack are intentionally discarded. */
+export function safeBrowserExceptionName(raw: unknown): string | null {
+  const objectName = typeof raw === 'object' && raw !== null
+    ? String((raw as any).name ?? '')
+    : '';
+  if (/^[A-Za-z_$][A-Za-z0-9_$]{0,47}$/.test(objectName)) return objectName;
+  const text = String(raw ?? '').trim();
+  const match = /^(?:Uncaught(?: \(in promise\))?\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,47})(?=\s*:)/.exec(text);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -139,6 +151,7 @@ export class WebjsInitTelemetry {
   ): void {
     const entry = {
       at, source, fingerprint: fingerprintBrowserError(raw, location),
+      ...(safeBrowserExceptionName(raw) ? { exceptionName: safeBrowserExceptionName(raw)! } : {}),
       ...(safeBrowserUrl(location) ? { location: safeBrowserUrl(location)! } : {}),
     };
     this.data.consoleErrors.push(entry);

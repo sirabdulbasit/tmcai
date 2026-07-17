@@ -3,6 +3,7 @@ import {
   fingerprintBrowserError,
   getInitConsoleErrorCap,
   safeBrowserUrl,
+  safeBrowserExceptionName,
   safeWwebVersion,
   WebjsInitTelemetry,
 } from '../src/services/whatsapp/webjsInitTelemetry';
@@ -19,6 +20,15 @@ describe('WhatsApp Web.js bounded initialization telemetry', () => {
     expect(safeWwebVersion('2.3000.1043351526-alpha')).toBe('2.3000.1043351526-alpha');
     expect(safeWwebVersion('version=<token>')).toBeNull();
     expect(safeWwebVersion('2.3')).toBeNull();
+  });
+
+  it('retains only a bounded exception name and never its message', () => {
+    expect(safeBrowserExceptionName(new TypeError('secret message'))).toBe('TypeError');
+    expect(safeBrowserExceptionName('Uncaught (in promise) SecurityError: private detail'))
+      .toBe('SecurityError');
+    expect(safeBrowserExceptionName('r: opaque minified failure')).toBe('r');
+    expect(safeBrowserExceptionName('private free-form text without a class')).toBeNull();
+    expect(safeBrowserExceptionName(`${'A'.repeat(49)}: too long`)).toBeNull();
   });
 
   it('maps raw browser failures to fixed fingerprints', () => {
@@ -49,6 +59,25 @@ describe('WhatsApp Web.js bounded initialization telemetry', () => {
       { at: 1_004, source: 'console', fingerprint: 'unknown_browser_error' },
     ]);
     expect(JSON.stringify(snapshot)).not.toMatch(/secret-[ABC]|token=secret|private text/);
+  });
+
+  it('records exception name without retaining the exception message', () => {
+    const telemetry = new WebjsInitTelemetry(1_000);
+    telemetry.recordBrowserError(
+      'pageerror',
+      new DOMException('private anti-bot detail', 'SecurityError'),
+      'https://static.whatsapp.net/rsrc.php/v4/x.js?token=secret',
+      1_001,
+    );
+    const serialized = JSON.stringify(telemetry.snapshot());
+    expect(telemetry.snapshot().consoleErrors[0]).toEqual({
+      at: 1_001,
+      source: 'pageerror',
+      fingerprint: 'wa_bundle_boot_exception',
+      exceptionName: 'SecurityError',
+      location: 'https://static.whatsapp.net/rsrc.php/v4/x.js',
+    });
+    expect(serialized).not.toMatch(/anti-bot detail|token=secret/);
   });
 
   it('records lifecycle facts and returns defensive snapshots', () => {

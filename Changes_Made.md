@@ -1697,3 +1697,153 @@ acceptance remains mandatory: clean profile emits QR within the deadline,
 pairing completes, text + voice + repeat-voice turns pass, one Chromium tree
 remains, and Admin health exposes the selected version/stage. Codex did not
 commit, push, deploy, or change production.
+
+## 28. Environment-classified WhatsApp bootstrap diagnostics (2026-07-17)
+
+### Confirmed boundary after Chrome parity test
+
+Production repeated the same `page_reached` / `qrEmitted=false` /
+`wa_bundle_boot_exception` failure with both WhatsApp Web builds (live
+`2.3000.1043359815` and pinned `2.3000.1043346688-alpha`) and both Chrome
+builds (bundled 146.0.7680.153 and system 150.0.7871.114). IPv4 access to
+`web.whatsapp.com` and the exact `static.whatsapp.net` resource, UTC clock,
+clean profile, whatsapp-web.js 1.34.7, and Nexeo's init lifecycle were also
+verified. The same pinned library/Web/Chrome stack reaches QR on the Mac's
+residential network.
+
+This confirms the failure boundary is environment-sensitive execution of
+WhatsApp's boot bundle on the production server. Datacenter egress or another
+server classification signal is the leading hypothesis, but the bundle's
+specific thrown exception was not retained by the privacy-safe runtime
+telemetry, so anti-bot behavior is not yet claimed as fact.
+
+### Exception-name-only runtime telemetry
+
+Runtime browser telemetry now extracts only a bounded exception class/name
+such as `SecurityError`, `TypeError`, `DOMException`, or a minified identifier
+such as `r`. The value must be a single 1–48 character JavaScript identifier.
+Exception messages and stacks remain discarded. The safe name is carried with
+the existing fixed fingerprint, sanitized resource path, and bounded ring in
+Admin health/PM2 metadata.
+
+This distinguishes security/permission classes from ordinary JavaScript
+incompatibility without weakening the operational-evidence privacy boundary.
+Tests prove `SecurityError: private detail` retains `SecurityError` only and
+that free-form/oversized text is rejected.
+
+### Manual stdout-only diagnostic
+
+Added `scripts/diagnoseWebjsBootstrap.ts`, a standalone operator tool. It is
+never imported by runtime startup, never scheduled, and imports neither Prisma
+nor the application logger. It:
+
+- creates one temporary LocalAuth profile and one Chromium Client;
+- uses the same integrity-verified pinned cache and configured Chrome path;
+- attaches to the page before WhatsApp bootstrap settles;
+- prints full browser console/page errors only to the invoking terminal;
+- never prints QR content;
+- bounds the attempt, error count, and each text/stack field;
+- destroys Chromium and removes the temporary profile on every exit;
+- emits machine-readable JSON lines and a deterministic exit code.
+
+Manual production invocation from `server/` after a build:
+
+```bash
+node -r dotenv/config dist/scripts/diagnoseWebjsBootstrap.js
+```
+
+Bounded overrides are protocol/diagnostic constants:
+
+- `WHATSAPP_WEBJS_DIAGNOSTIC_TIMEOUT_MS`: default 120s, clamp 30–300s;
+- `WHATSAPP_WEBJS_DIAGNOSTIC_ERROR_CAP`: default 50, clamp 1–100;
+- `WHATSAPP_WEBJS_DIAGNOSTIC_TEXT_CAP`: default 8,000, clamp 500–20,000.
+
+The operator terminal is the sole destination for raw diagnostic output; the
+script performs no log or database persistence. It should be invoked once by
+an authorized operator when no other manual diagnostic is running.
+
+The compiled script was exercised locally against the pin. It captured a
+WhatsApp bundle console error stating storage-bucket persistence was denied,
+then emitted QR and exited 0 in approximately four seconds. That error is
+therefore nonfatal on the Mac and provides a precise comparison for the
+production run. Deliberate browser teardown is suppressed from results so a
+post-outcome `TargetCloseError` cannot be mistaken for the cause.
+
+### Remediation map — options only, not implemented
+
+The production stdout result should select the next course:
+
+1. **`SecurityError`, `NotAllowedError`, or environment/anti-bot indication.**
+   First validate with a controlled alternate egress. Prefer a dedicated
+   company/office connector host or controlled residential business circuit
+   over an opaque consumer proxy. The entire WhatsApp Web session—including
+   page, static resources, WebSocket, LocalAuth ownership, inbound, and
+   outbound—must use one stable egress. A partial resource proxy is invalid.
+   Any proxy/alternate-host design requires security, credential, WhatsApp
+   terms, and data-residency review before implementation.
+
+2. **`TypeError`, `ReferenceError`, `SyntaxError`, or named module failure.**
+   Treat it as a bundle/injection compatibility defect. Use the stdout stack
+   and resource location to identify the failing module, then evaluate a
+   specific upstream commit/fork or another integrity-pinned Web artifact.
+   Do not add blind delays, cache guesses, or weakened initialization gates.
+
+3. **Only the same storage-persistence denial followed by no QR.** Compare the
+   subsequent console/page events with the Mac run, because that denial alone
+   is demonstrably nonfatal. The first divergent event—not the shared storage
+   warning—becomes the repair target.
+
+4. **No browser exception before timeout.** The next bounded manual diagnostic
+   may capture page state/network lifecycle or a one-time screenshot, but raw
+   persistence must remain outside runtime. Do not infer anti-bot without a
+   thrown class or controlled-egress A/B result.
+
+5. **Strategic supported channel: Meta Cloud API.** Nexeo already has a
+   `MetaProvider`, signed inbound webhook, registered-user resolution, inbound
+   audio download/transcription, typing indicator, and text/voice reply path.
+   Meta's Cloud API supports audio messaging, but switching requires verified
+   business/number enrollment, webhook credentials, template/conversation
+   rules, pricing, current Graph API/version review, and confirmation that
+   Nexeo's use is eligible under current WhatsApp Business Platform terms.
+   Treat this as a deliberate provider migration with text/voice/action parity
+   acceptance, not an emergency flag flip.
+
+The lowest-risk tactical experiment is controlled alternate egress; the more
+stable strategic path is completing and validating the existing Meta channel
+if policy and business enrollment permit it. Neither option was built in this
+section.
+
+### Company-number observation correction
+
+The Admin screenshot's `+923001234567` was not a configured value. Code review
+confirmed it is the empty input's literal placeholder. Actual configuration is
+`whatsapp_config.connected_number` for the tenant `client_number`; the Admin
+GET route also aliases that column as `company_number`. No database value was
+observed or changed by Codex.
+
+### Complete file list
+
+- `server/src/services/whatsapp/webjsInitTelemetry.ts`
+- `server/src/scripts/diagnoseWebjsBootstrap.ts` (new)
+- `server/tests/webjsInitTelemetry.test.ts`
+- `server/tests/webjsBootstrapDiagnostic.test.ts` (new)
+- `Changes_Made.md`
+
+No client file, package file, database schema, migration, provider routing, or
+production configuration changed. The incident is connector/runtime evidence,
+not a Brain conversation, so no chat archive/scenario pair was added.
+
+### Tests and verification
+
+```text
+Focused init telemetry/diagnostic/cache/lifecycle: 29 passed, 0 failed (5 files)
+Server: 1027 passed, 21 skipped, 0 failed (97 files passed, 1 skipped)
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2 generation + tsc)
+Compiled standalone diagnostic: QR outcome, exit 0, bounded stdout, clean teardown
+git diff --check: passed
+```
+
+Client build was not required because no client file changed. The production
+diagnostic remains a manual Reviewer operation; Codex did not run it on
+production, commit, push, deploy, change egress, or switch providers.
