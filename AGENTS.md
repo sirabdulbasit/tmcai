@@ -9,7 +9,9 @@ Two agents work this repo in fixed roles:
 | **BUILDER** | Codex | Implement, test, document. **Never commit, push, or deploy.** |
 | **REVIEWER / RELEASE GATE** | Claude | Independently re-verify every claim, gap-analyze, enforce conventions, then commit → push → guide Basit's production deploy. |
 
-Basit triggers the gate by telling Claude **"review and deploy"**. If Claude finds gaps, it raises them and holds; otherwise it ships and appends its verification + deploy record to `Changes_Made.md`.
+Model versions occupying either seat may change without renegotiating this contract. Basit triggers the gate by telling Claude **"review and deploy"**. If Claude finds gaps, it raises them and holds; otherwise it ships and appends its Deployment Record to `Changes_Made.md`. **Deployment authorization is exclusively Basit's.**
+
+**Contract precedence:** AGENTS.md is the canonical repository working contract. Both roles follow it unless it conflicts with a newer explicit instruction from Basit, platform/system requirements, tool permission boundaries, or verified evidence that following it would be unsafe or obsolete. In that event, stop, disclose the conflict, and propose an AGENTS.md amendment rather than silently diverging.
 
 ---
 
@@ -40,11 +42,11 @@ Basit triggers the gate by telling Claude **"review and deploy"**. If Claude fin
 1. **Tenant isolation — zero tolerance.** Every query scoped by `client_number` (+ `user_id` where applicable). No default-tenant fallbacks in runtime paths (`|| 'TMC-0001'` class). Caches must be tenant-keyed.
 2. **The Brain never speaks or acts as the user** without an explicit user-initiated chain. Tenant WhatsApp sends identify as the assistant.
 3. **No hardcoded judgment.** Criticality/urgency/substance decisions are LLM-with-context; regex may pre-filter, never decide.
-4. **No hardcoded Brain replies.** Every user-facing Brain sentence is LLM-generated OR a bracketed `[system marker]` rendered by `answerSanitizer`. A hardcoded English sentence pretending to be the Brain is forbidden.
+4. **No hardcoded Brain replies.** Every user-facing Brain sentence is LLM-generated OR a bracketed `[system marker]` rendered by `answerSanitizer`. A hardcoded English sentence pretending to be the Brain is forbidden. **Exception (agreed 2026-07-17): minimal deterministic transport/activity signals are permitted, including native typing, native recording, reactions, `⏳ Thinking…`, and `🎙️ Listening…`. They may be emitted only for a registered inbound turn, at most once when used as a fallback, and must contain no semantic answer, business judgment, user-intent claim, dispatch claim, or completion claim. They must never replace the Brain's actual answer, and their failure must never block Brain processing.**
 5. **No fabricated completion.** Success wording only after a confirmed dispatch; `unconfirmed` never renders as done. Don't weaken `shouldInterceptCompletionClaim` / `EMPTY_PROMISE_RE` — gate, don't delete.
 6. **Fail closed.** Missing metadata/schema/ledger ⇒ visible degradation ('unknown'/'unsupported'), never silent success. Mutating jobs without their audit ledger must not mutate.
 7. **Cleanup is deterministic, reversible, capped.** Quarantine → grace → soft-close with audit metadata; never hard-delete user data; never let an LLM decide deletions.
-8. **Data windows/thresholds** go through `behaviorConfig` (user → tenant → env → default, clamped) — no new scattered constants for tunable behavior.
+8. **Data windows/thresholds** go through `behaviorConfig` (user → tenant → env → default, clamped) — no new scattered constants for tunable behavior. **Clarification (agreed 2026-07-17): low-level bounded connector/protocol retry backoffs (e.g. media re-fetch delays, provider retry spacing) are protocol constants owned by their module — they are not business policy and do not belong in behaviorConfig. Protocol constants must remain bounded, deterministic, documented, and tested; add an environment override when operational tuning is justified by production evidence.**
 
 ## 3. Codebase conventions
 
@@ -61,9 +63,28 @@ Basit triggers the gate by telling Claude **"review and deploy"**. If Claude fin
 - The app loads `.env` from its **cwd** — pm2 must start with `cwd = /var/www/tmcai/server` or `DATABASE_URL` is silently absent.
 - Standalone scripts on prod need `node -r dotenv/config dist/scripts/<x>.js`.
 - whatsapp-web.js is the fragile layer (@lid chats, sessions going deaf after restarts) — treat WA failures as session/runtime issues first, code second; check the incident archive before re-fixing.
+- **Production carries preserved local edits to `server/package.json` and `server/package-lock.json`.** These are never reset, checked out over, stashed away silently, or committed. If `git pull --ff-only` refuses due to any local modification, the REVIEWER stops and reports the exact refusing paths; no destructive git command (`reset --hard`, `clean`, `checkout --`) is permitted as a remedy.
 
-## 5. REVIEWER (Claude) — what the builder's work will be judged against
+## 5. REVIEWER (Claude) — review, publication, and deployment protocol
 
-On "review and deploy", Claude will: reread `Changes_Made.md` **and** the raw diff; re-run tsc/vitest/build and compare against the documented numbers; check archive↔scenario pairing, tenant scoping, invariant touches, migration idempotency + deploy ordering, and whether the fix covers the **class**, not just the reported instance; then either raise gaps (hold) or commit/push/deploy-guide and append the outcome to `Changes_Made.md`.
+**Review (on "review and deploy"):** reread `Changes_Made.md` **and** the raw diff; re-run the verification matrix below and compare against the documented numbers; check archive↔scenario pairing, tenant scoping, invariant touches, migration idempotency + deploy ordering, and whether the fix covers the **class**, not just the reported instance; then either raise gaps (hold) or proceed. Write for that audience: claims you can't back with a command output will stall the release.
 
-Write for that audience: claims you can't back with a command output will stall the release.
+**Verification matrix (agreed 2026-07-17):**
+- Always: server `npx tsc --noEmit`, full `npx vitest run` (0 failed, no unhandled errors), server `npm run build`, `git diff --check`.
+- When client files change: client `npm run build` (Vite chunk-size warnings are non-blocking).
+- When Prisma schema or migrations change: use the project-local Prisma version; verify Prisma generation, schema/migration parity, migration idempotency, and deployment ordering; after production application, verify the affected columns/tables through a metadata query without printing `DATABASE_URL` or credentials. Never use `npx prisma` on production.
+
+**Publication — release state is determined from Git, never from handoff prose.** Before publication, the REVIEWER runs `git status --short --branch`, inspects the complete diff, checks branch divergence, and verifies the intended release history. If the release is already committed and the remote branch is in sync, publication is complete: report the existing SHA and proceed to deployment review; **never recreate or re-commit an already-pushed release** (e.g. `7ef719b`). Stage only explicitly listed paths (never `git add -A` / `git add .`); exclude the preserved user-owned files. Use an available authenticated Git publication mechanism. Plain Git over HTTPS is sufficient for this repository; GitHub CLI is not required unless the selected workflow specifically needs it. Release safety depends on verified local/remote SHAs and reviewed file scope, not on a particular Git client.
+
+**Production HEAD verification:** before deployment, record the application release SHA and current `origin/feat/nexeo-one-brain` SHA. Inspect every commit and changed file between them. After `git pull --ff-only`, deployment proceeds only when production HEAD equals the pre-recorded remote SHA, `git merge-base --is-ancestor <application-release-sha> HEAD` succeeds, and all intervening commits were explicitly reviewed. A commit is documentation-only only when its actual file delta contains documentation files exclusively. Any unreviewed application-code change is a stop-and-report condition.
+
+**Deployment Records — `Changes_Made.md` is the two-way ledger.** BUILDER owns implementation sections and appends dated build entries. The REVIEWER appends clearly-marked, append-only **"Deployment Record — <date> — <SHA>"** sections; neither agent edits, reorders, or deletes the other's sections. Each Deployment Record distinguishes four SHAs explicitly:
+1. **application release SHA** (the reviewed code commit, e.g. `7ef719b`),
+2. **reviewed remote HEAD** (what origin pointed to at review time),
+3. **production deployed SHA** (`git rev-parse HEAD` on the box after pull),
+4. **documentation/report SHA** (any later docs-only commit recording the outcome, if one is made).
+A post-deployment documentation SHA must never be described as the SHA that was live-tested unless production was subsequently pulled to it and retested. The Deployment Record replaces any separate uncommitted `Deployment_Report.md`; the same report is also returned in the REVIEWER's response to Basit. The BUILDER reads the latest Deployment Record before starting new work.
+
+**Operational evidence (agreed 2026-07-17):** production claims may be evidenced by pm2/console logs, screenshots supplied by Basit, terminal output, health-endpoint responses, and schema metadata queries — each bounded (no message bodies, audio, transcripts, secrets, tokens, or `DATABASE_URL`).
+
+**Release status semantics (agreed 2026-07-17):** a messaging-affecting release is **VERIFIED** only after live acceptance passes on production (real inbound text/voice through the affected path). Until then its status is **PARTIAL** — even with all local tests green. **FAILED** = app offline, DB unavailable, WhatsApp cannot reconnect, or the agreed SHA is not running. Never claim live success from unit tests alone.
