@@ -1319,3 +1319,26 @@ Live acceptance remains: complete the fresh QR pairing, test one inbound text
 and voice-note turn, confirm only one Chromium process tree owns
 `session-TMC-0001`, and confirm no re-init occurs before the reported deadline.
 Codex changed no production state. Work remains uncommitted for Claude review.
+
+## Deployment Record — 2026-07-17 — 67801a58072edb3b0ddcf14808e53e29b38844e8 (REVIEWER)
+
+**Four-SHA ledger:**
+1. Application release SHA: `7ef719b0cd031db1ee8691512081e7adc2338157` (@lid activity fallback, PTT media acquisition, agent-session schema)
+2. Reviewed remote HEAD: `67801a58072edb3b0ddcf14808e53e29b38844e8` (two docs-only commits above release: eb48e75, 67801a5 — AGENTS.md only, verified by file delta)
+3. Production deployed SHA: `67801a58072edb3b0ddcf14808e53e29b38844e8` (`git rev-parse HEAD` on deepmarks after `git pull --ff-only`; ancestor check for 7ef719b passed)
+4. Documentation/report SHA: this commit. NOT live-tested; production remains on 67801a5.
+
+**Deployment evidence (deepmarks, 2026-07-17 ~11:25 UTC):**
+- Migration `20260717_whatsapp_agent_session_state`: `Script executed successfully`; metadata query confirmed all three columns (`active_agent_id`, `active_agent_name`, `agent_session_started_at`). No `active_agent_id` errors after restart.
+- Server build: Prisma 6.19.2 generate + tsc clean. Client build: not required (no client files in release).
+- pm2: only `tmcai-server` restarted; online, stable memory; other apps untouched.
+- Health: HTTP 200, `database: up (15ms)` at 11:26:06 UTC.
+
+**Release status: PARTIAL** (per agreed semantics). Live acceptance could not run: the tenant WhatsApp session was already wedged in `connecting` before the deploy and never produced a fresh Connected event.
+
+**Production incident found during acceptance (evidence: /root/.pm2 logs 11:17–11:46 UTC):**
+- Watchdog re-triggered `initialize()` while a prior init was in flight; up to 6 Chromium processes contended for `session-TMC-0001`; only surfaced error: `whatsapp:manager Init failed — Runtime.callFunctionOn timed out (protocolTimeout)`.
+- Operational remediation (no code change): stale Chromium processes killed; wedged profile MOVED (preserved) to `whatsapp-sessions/session-TMC-0001.bak-20260717`; fresh QR pairing initiated.
+- Both defects handed to BUILDER; fixed in application release SHA `04e1e45a4ea5b61feeb8fb339a15341caf637edd` (Section 24), reviewed and published, **deployment pending Basit's authorization**.
+
+**Reviewer verification of Section 24 release (pre-deploy):** 1007 passed / 0 failed / 21 skipped; focused init tests 11/11; tsc clean; server + client builds clean; `git diff --check` clean; staged only the 10 documented files; preserved documents untouched.
