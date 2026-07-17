@@ -986,6 +986,10 @@ The deterministic lifecycle policy cannot silently abandon work:
   intervention summary;
 - terminal, cancelled, or self-pruned items → no proactive contact.
 
+First-run adoption is bounded to three contacts per owner and 100 globally per
+governor run (environment-overridable), so a legacy backlog cannot create a
+notification burst after deployment.
+
 Silence no longer expires a DRAFT item. The existing daily slot question keeps
 running until priority/deadline are supplied or the user explicitly skips or
 cancels the item. The old “last call / I’ll drop it” behavior was removed.

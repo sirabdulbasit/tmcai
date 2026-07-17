@@ -55,7 +55,8 @@ implementation only and own no timers.
 manifest centrally governs prompt expiry, new-item gap questions, indefinite
 daily DRAFT slot completion, and the living action lifecycle (concerned-party
 follow-up, deadline renewal, delay history, evidence-based closure, and owner
-intervention). The retired followup/delegation workers remain available for
+intervention). Each run is capped at three contacts per owner and 100 globally
+by default, preventing a legacy-backlog burst. The retired followup/delegation workers remain available for
 historical tests or manual migration tooling but own no production timers.
 
 ## node-cron jobs (schedulerService/agentScheduler — pg-advisory

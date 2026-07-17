@@ -22,6 +22,8 @@ const ACTIVE = [
   'NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT',
   'new', 'triaged', 'in_progress', 'delegated', 'waiting_info', 'snoozed', 'draft',
 ];
+const MAX_CONTACTS_PER_USER_PER_RUN = Math.max(1, Number(process.env.ACTION_LIFECYCLE_MAX_PER_USER_PER_RUN ?? 3));
+const MAX_CONTACTS_GLOBAL_PER_RUN = Math.max(1, Number(process.env.ACTION_LIFECYCLE_MAX_GLOBAL_PER_RUN ?? 100));
 
 export interface ActionLifecycleRunResult {
   scanned: number;
@@ -225,6 +227,8 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
       }).catch(() => [] as Array<{ openItemId: string | null }>)
     : [];
   const itemWithActivePrompt = new Set(activePrompts.map((prompt) => prompt.openItemId).filter(Boolean));
+  const contactsByOwner = new Map<number, number>();
+  let contactsThisRun = 0;
 
   for (const item of items as any[]) {
     result.scanned += 1;
@@ -235,6 +239,11 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
       if (itemWithActivePrompt.has(item.id)) { result.held += 1; continue; }
       const plan = planActionLifecycle(item, now);
       if (plan.action === 'none') { result.held += 1; continue; }
+      const ownerContacts = contactsByOwner.get(item.userId) ?? 0;
+      if (contactsThisRun >= MAX_CONTACTS_GLOBAL_PER_RUN || ownerContacts >= MAX_CONTACTS_PER_USER_PER_RUN) {
+        result.held += 1;
+        continue;
+      }
       if (options.dryRun) {
         plan.action === 'escalate_user' ? result.escalated += 1 : result.contacted += 1;
         continue;
@@ -245,6 +254,8 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
         const sent = await contactOwner(item, plan, escalationQuestion(item, state, plan.reason));
         if (!sent.sent) { result.errors += 1; continue; }
         await claimAndRecord(item, plan, sent.channel);
+        contactsByOwner.set(item.userId, ownerContacts + 1);
+        contactsThisRun += 1;
         result.escalated += 1;
         continue;
       }
@@ -284,6 +295,8 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
               escalationPlan,
               ownerContact.channel,
             );
+            contactsByOwner.set(item.userId, ownerContacts + 1);
+            contactsThisRun += 1;
             result.escalated += 1;
           } else {
             result.errors += 1;
@@ -295,6 +308,8 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
       }
       if (!sent.sent) { result.errors += 1; continue; }
       await claimAndRecord(item, plan, sent.channel, sent.receipt);
+      contactsByOwner.set(item.userId, ownerContacts + 1);
+      contactsThisRun += 1;
       result.contacted += 1;
     } catch (error: any) {
       result.errors += 1;
