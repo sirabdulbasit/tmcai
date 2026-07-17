@@ -1438,3 +1438,118 @@ Codex did not change production, commit, push, or deploy.
 The separately reported `obsidian_vault_export` 540-second job timeout was
 deliberately not bundled and remains uninvestigated for a future standalone
 Builder task.
+
+## 26. WhatsApp Web.js bounded bootstrap-stage diagnostics (2026-07-17)
+
+### Reopened defect and corrected causal boundary
+
+Decisive production evidence superseded Section 25's causal explanation:
+production was already running `whatsapp-web.js 1.34.7` when a clean LocalAuth
+profile reached `Runtime.callFunctionOn timed out` without emitting QR. The
+exact 1.34.7 dependency pin from Section 25 remains valid repository/install
+hygiene, but upgrading 1.34.6 to 1.34.7 cannot explain or repair this specific
+production incident.
+
+Current upstream evidence confirms that this remains an active 1.34.7 failure
+class rather than a Nexeo-only networking problem:
+
+- upstream issue 201818 reports 1.34.7 on Ubuntu/LocalAuth/Chrome frequently
+  hanging at WhatsApp Web loading 99% while standalone Puppeteer succeeds:
+  https://github.com/wwebjs/whatsapp-web.js/issues/201818
+- upstream issue 201821 reports intermittent 1.34.7 readiness and a stall in
+  `attachEventListeners()` around frame refresh/removal:
+  https://github.com/wwebjs/whatsapp-web.js/issues/201821
+- the official release feed still identifies 1.34.7 as the latest stable
+  release; there is no stable 1.34.8/1.35 repair available to adopt:
+  https://github.com/wwebjs/whatsapp-web.js/releases/tag/v1.34.7
+
+### Web-version-cache decision
+
+No `webVersion` or `webVersionCache` override was added. The actively updated
+`wppconnect-team/wa-version` archive proves that historical HTML snapshots
+exist, but it does not certify a compatibility matrix for whatsapp-web.js
+1.34.7. Builds nearest the two current upstream reports are themselves
+implicated in hangs, while older/alpha snapshots have not passed Nexeo's clean
+QR/pairing acceptance. Calling one of them “known compatible” would therefore
+be an unverified production claim. An executable regression test now locks the
+fail-closed decision: Nexeo must not silently acquire a guessed cache pin.
+
+A future cache pin is appropriate only after a specific version and immutable
+HTML source pass a clean-profile production-equivalent pairing test. The
+absence of such evidence does not block the diagnostic repair below.
+
+### Implemented bounded stage telemetry
+
+Added a per-initialization telemetry recorder and integrated it with the
+existing tokenized init flight. It records only bounded operational facts:
+
+- last successfully observed stage: flight claimed, client created, browser
+  started, page created/reached, provider QR listener registered, loading
+  screen, QR emitted, authenticated, or ready;
+- safe page origin/path with query strings, fragments, credentials, and
+  non-HTTP URLs removed;
+- strictly validated WhatsApp Web version when obtainable by observing the
+  library's own version lookup, without issuing a competing DevTools call;
+- QR-listener/QR/authentication facts and bounded loading percentage;
+- at most eight browser console/page-error fingerprints by default, with a
+  clamped 1–20 operational override
+  (`WHATSAPP_WEBJS_INIT_CONSOLE_ERROR_CAP`).
+
+Raw browser console text is never stored or logged. It is immediately reduced
+to one of nine fixed categories (protocol timeout, passkey, missing module,
+lost execution context, closed browser target, network, CSP, JavaScript type,
+or unknown). Browser error locations receive the same URL sanitization.
+Telemetry listeners and polling are detached when initialization settles, and
+all diagnostic operations are best-effort so they cannot block WhatsApp.
+
+On failure, the existing `init_timeout`/`error` health state remains the failure
+classification while telemetry preserves the last successful stage instead of
+overwriting it with a generic “failed” stage. The safe snapshot is exposed by
+the existing Admin WhatsApp Health response, included in bounded PM2 metadata,
+and the persisted `last_error` now carries the stalled stage (for example
+`init_timeout[page_reached]`). This makes the next incident distinguish a
+Chromium launch, navigation, loading, QR, authentication, or ready-stage stall.
+
+### Complete file list
+
+- `server/src/services/whatsapp/webjsInitTelemetry.ts` (new)
+- `server/src/services/whatsapp/WebjsProvider.ts`
+- `server/tests/webjsInitTelemetry.test.ts` (new)
+- `server/tests/webjsInitLifecycle.test.ts`
+- `Changes_Made.md`
+
+No package file, client file, database schema, or migration is changed by
+Section 26. This incident is production runtime evidence rather than a Brain
+conversation, so the chat-archive/scenario exemption applies.
+
+The combined future deployment still includes Section 25's already-published
+package-file changes. Production's preserved local edits to `server/package.json`
+and `server/package-lock.json` must therefore still be inspected/reconciled by
+the Reviewer, followed by the documented IPv4-first, skip-Chromium dependency
+install. Section 26 itself adds no further dependency delta.
+
+### Tests and verification
+
+Six new pure telemetry tests cover URL secret removal, strict version
+validation, fixed error classification, capped/no-raw-text retention,
+lifecycle facts/defensive snapshots, and environment bounds. Lifecycle tests
+now also prove safe stage/version/error capture on the exact production timeout
+and absence of an unverified Web cache pin.
+
+```text
+Focused Web.js init policy/lifecycle/telemetry: 18 passed, 0 failed (3 files)
+Server: 1016 passed, 21 skipped, 0 failed (95 files passed, 1 skipped)
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2 generation + tsc)
+git diff --check: passed
+```
+
+Client build was not required because no client file changed. Live acceptance
+remains pending: a clean profile must emit QR within the deadline, pairing must
+complete, inbound text and voice turns must pass, and one Chromium tree must
+remain. If another timeout occurs, Admin/PM2 must show its safe stalled stage,
+page path, obtainable Web version, and bounded fingerprints. Codex did not
+commit, push, deploy, or change production.
+
+The separately reported `obsidian_vault_export` timeout remains explicitly out
+of scope and was not bundled.

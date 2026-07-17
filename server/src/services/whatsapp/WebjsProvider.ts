@@ -20,6 +20,10 @@ import {
   getWebjsInitPolicy,
   initTimeoutRetryDelayMs,
 } from './webjsInitPolicy';
+import {
+  WebjsInitTelemetry,
+  WebjsInitTelemetrySnapshot,
+} from './webjsInitTelemetry';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -45,6 +49,7 @@ export interface WebjsInitHealth {
   consecutiveTimeouts: number;
   requiresRepair: boolean;
   lastError?: string;
+  telemetry?: WebjsInitTelemetrySnapshot;
 }
 const initFlights = new Map<string, InitFlight>();
 const initHealth = new Map<string, WebjsInitHealth>();
@@ -207,6 +212,7 @@ export class WebjsProvider implements IWhatsAppProvider {
     if (current === 'connecting' && activeFlight && now < activeFlight.deadlineAt) return;
 
     const token = Symbol(clientNumber);
+    const telemetry = new WebjsInitTelemetry(now);
     const flight: InitFlight = {
       token,
       startedAt: now,
@@ -218,8 +224,15 @@ export class WebjsProvider implements IWhatsAppProvider {
     initHealth.set(clientNumber, {
       state: 'connecting', startedAt: flight.startedAt, deadlineAt: flight.deadlineAt,
       retryAt: null, consecutiveTimeouts: previousHealth.consecutiveTimeouts,
-      requiresRepair: false,
+      requiresRepair: false, telemetry: telemetry.snapshot(),
     });
+
+    const syncTelemetry = () => {
+      if (initFlights.get(clientNumber)?.token !== token) return;
+      const currentHealth = initHealth.get(clientNumber);
+      if (!currentHealth) return;
+      initHealth.set(clientNumber, { ...currentHealth, telemetry: telemetry.snapshot() });
+    };
 
     if (activeFlight) {
       log.warn('initialization deadline expired — replacing wedged client', {
@@ -299,6 +312,75 @@ export class WebjsProvider implements IWhatsAppProvider {
                '--disable-gpu'],
       },
     });
+    telemetry.mark('client_created');
+    syncTelemetry();
+    // Observe the library's own version lookup instead of issuing an extra
+    // DevTools evaluate while bootstrap may already be wedged. This records
+    // the actual loaded version when whatsapp-web.js can obtain it and adds no
+    // competing Runtime.callFunctionOn traffic.
+    if (typeof client.getWWebVersion === 'function') {
+      const getWwebVersion = client.getWWebVersion.bind(client);
+      client.getWWebVersion = async (...args: any[]) => {
+        const version = await getWwebVersion(...args);
+        telemetry.setWwebVersion(version);
+        syncTelemetry();
+        return version;
+      };
+    }
+
+    // Bounded, content-free bootstrap diagnostics. whatsapp-web.js can stall
+    // inside initialize() before emitting QR/ready; the library's exception
+    // alone does not identify whether Chromium, navigation, or WA injection
+    // was the last successful stage. Browser text is reduced immediately to
+    // fixed fingerprints by WebjsInitTelemetry and is never retained raw.
+    let observedPage: any = null;
+    let browserObserved = false;
+    let consoleHandler: ((entry: any) => void) | null = null;
+    let pageErrorHandler: ((error: any) => void) | null = null;
+    const detachPageTelemetry = () => {
+      if (!observedPage) return;
+      try {
+        if (consoleHandler) observedPage.off?.('console', consoleHandler);
+        if (pageErrorHandler) observedPage.off?.('pageerror', pageErrorHandler);
+      } catch { /* page may already be closed */ }
+      observedPage = null;
+      consoleHandler = null;
+      pageErrorHandler = null;
+    };
+    const observeBootstrap = () => {
+      if (initFlights.get(clientNumber)?.token !== token) return;
+      if (client.pupBrowser && !browserObserved) {
+        browserObserved = true;
+        telemetry.mark('browser_started');
+      }
+      const page = client.pupPage;
+      if (!page) {
+        syncTelemetry();
+        return;
+      }
+      if (page !== observedPage) {
+        detachPageTelemetry();
+        observedPage = page;
+        telemetry.mark('page_created');
+        consoleHandler = (entry: any) => {
+          try {
+            if (entry?.type?.() !== 'error') return;
+            telemetry.recordBrowserError('console', entry.text?.(), entry.location?.()?.url);
+            syncTelemetry();
+          } catch { /* diagnostics must never affect initialization */ }
+        };
+        pageErrorHandler = (error: any) => {
+          telemetry.recordBrowserError('pageerror', error);
+          syncTelemetry();
+        };
+        try {
+          page.on?.('console', consoleHandler);
+          page.on?.('pageerror', pageErrorHandler);
+        } catch { /* diagnostics must never affect initialization */ }
+      }
+      try { telemetry.setPageUrl(page.url?.()); } catch { /* closed/navigating page */ }
+      syncTelemetry();
+    };
 
     statusMap.set(clientNumber, 'connecting');
     clients.set(clientNumber, client);
@@ -313,6 +395,8 @@ export class WebjsProvider implements IWhatsAppProvider {
 
     client.on('qr', async (qr: string) => {
       if (clients.get(clientNumber) !== client) return;
+      telemetry.mark('qr_emitted');
+      syncTelemetry();
       try {
         const qrImage = await QRCode.toDataURL(qr);
         qrCodes.set(clientNumber, qrImage);
@@ -322,15 +406,32 @@ export class WebjsProvider implements IWhatsAppProvider {
         );
       } catch (e: any) { log.error('QR save failed', { error: e.message }); }
     });
+    telemetry.mark('provider_qr_listener_registered');
+    syncTelemetry();
+
+    client.on('loading_screen', (percent: number) => {
+      if (clients.get(clientNumber) !== client) return;
+      telemetry.setLoadingPercent(percent);
+      syncTelemetry();
+    });
+
+    client.on('authenticated', () => {
+      if (clients.get(clientNumber) !== client) return;
+      telemetry.mark('authenticated');
+      syncTelemetry();
+      observeBootstrap();
+    });
 
     client.on('ready', async () => {
       if (clients.get(clientNumber) !== client) return;
+      telemetry.mark('ready');
+      syncTelemetry();
       statusMap.set(clientNumber, 'connected');
       qrCodes.delete(clientNumber);
       reconnectAttempts.delete(clientNumber);  // reset backoff counter on a clean connection
       initHealth.set(clientNumber, {
         state: 'connected', startedAt: null, deadlineAt: null, retryAt: null,
-        consecutiveTimeouts: 0, requiresRepair: false,
+        consecutiveTimeouts: 0, requiresRepair: false, telemetry: telemetry.snapshot(),
       });
       const number = '+' + client.info.wid.user;
       await prisma.$executeRawUnsafe(
@@ -826,6 +927,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       initHealth.set(clientNumber, {
         state: 'error', startedAt: null, deadlineAt: null, retryAt: null,
         consecutiveTimeouts: 0, requiresRepair: true, lastError: msg,
+        telemetry: telemetry.snapshot(),
       });
       await prisma.$executeRawUnsafe(
         `UPDATE whatsapp_config SET status = 'error', last_error = $1, last_error_at = NOW() WHERE client_number = $2`,
@@ -834,6 +936,9 @@ export class WebjsProvider implements IWhatsAppProvider {
     });
 
     let deadlineTimer: NodeJS.Timeout | null = null;
+    observeBootstrap();
+    const telemetryTimer = setInterval(observeBootstrap, 1_000);
+    telemetryTimer.unref();
     try {
       await Promise.race([
         client.initialize(),
@@ -854,6 +959,9 @@ export class WebjsProvider implements IWhatsAppProvider {
       }
       const failureClass = classifyWebjsInitFailure(error);
       const message = String(error?.message ?? error ?? 'unknown initialization failure').slice(0, 500);
+      observeBootstrap();
+      syncTelemetry();
+      const telemetrySnapshot = telemetry.snapshot();
       const consecutiveTimeouts = failureClass === 'init_timeout'
         ? previousHealth.consecutiveTimeouts + 1
         : 0;
@@ -871,6 +979,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         state: failureClass === 'init_timeout' ? 'init_timeout' : 'error',
         startedAt: flight.startedAt, deadlineAt: flight.deadlineAt, retryAt,
         consecutiveTimeouts, requiresRepair, lastError: message,
+        telemetry: telemetrySnapshot,
       });
       await prisma.$executeRawUnsafe(
         `UPDATE whatsapp_config
@@ -878,11 +987,19 @@ export class WebjsProvider implements IWhatsAppProvider {
           WHERE client_number = $1`,
         clientNumber,
         failureClass === 'init_timeout' ? 'init_timeout' : 'error',
-        `${failureClass}: ${message}`,
+        `${failureClass}[${telemetrySnapshot.stage}]: ${message}`,
       ).catch(() => undefined);
       log.error('initialization failed', {
         clientNumber, failureClass, consecutiveTimeouts, retryAt, requiresRepair,
         protocolTimeoutMs: policy.protocolTimeoutMs, initDeadlineMs: policy.initDeadlineMs,
+        initStage: telemetrySnapshot.stage,
+        pageUrl: telemetrySnapshot.pageUrl,
+        wwebVersion: telemetrySnapshot.wwebVersion,
+        qrListenerRegistered: telemetrySnapshot.qrListenerRegistered,
+        qrEmitted: telemetrySnapshot.qrEmitted,
+        authenticated: telemetrySnapshot.authenticated,
+        loadingPercent: telemetrySnapshot.loadingPercent,
+        browserErrors: telemetrySnapshot.consoleErrors,
       });
       void import('../systemLogService').then(({ log: sysLog }) => sysLog({
         level: requiresRepair ? 'error' : 'warning',
@@ -907,6 +1024,8 @@ export class WebjsProvider implements IWhatsAppProvider {
       throw error;
     } finally {
       if (deadlineTimer) clearTimeout(deadlineTimer);
+      clearInterval(telemetryTimer);
+      detachPageTelemetry();
       // Release the initFlight lock — regardless of success/failure —
       // so a later reconnect can proceed once the current attempt
       // resolves.
