@@ -1342,3 +1342,99 @@ Codex changed no production state. Work remains uncommitted for Claude review.
 - Both defects handed to BUILDER; fixed in application release SHA `04e1e45a4ea5b61feeb8fb339a15341caf637edd` (Section 24), reviewed and published, **deployment pending Basit's authorization**.
 
 **Reviewer verification of Section 24 release (pre-deploy):** 1007 passed / 0 failed / 21 skipped; focused init tests 11/11; tsc clean; server + client builds clean; `git diff --check` clean; staged only the 10 documented files; preserved documents untouched.
+
+## 25. WhatsApp Web.js fresh-session bootstrap compatibility (2026-07-17)
+
+### Production evidence and confirmed dependency defect
+
+After Section 24 reached production, its new diagnostics proved that the
+remaining clean-profile failure was inside the Web.js bootstrap rather than
+networking or process contention: one Chromium tree loaded
+`https://web.whatsapp.com`, no QR event was emitted, and
+`Runtime.callFunctionOn` reached the bounded protocol timeout.
+
+Repository verification corrected the installed-version detail in the incident
+handoff: both the lockfile and local installation were `whatsapp-web.js 1.34.6`
+(declared as `^1.34.6`), not 1.34.7. Upstream evidence directly matches the
+production symptom:
+
+- the official 1.34.7 release includes “Fix: Frozen WhatsApp Start or Auth
+  Timeout”: https://github.com/wwebjs/whatsapp-web.js/releases/tag/v1.34.7
+- the merged upstream fix removes the obsolete bootstrap patch that caused
+  frozen starts/auth timeouts after WhatsApp's module changes, and was confirmed
+  by maintainers/testers: https://github.com/wwebjs/whatsapp-web.js/pull/127048
+- the 1.34.6 ready-state report reproduced the failure even with a remote
+  `webVersionCache`, so cache pinning alone is not an evidence-backed repair:
+  https://github.com/wwebjs/whatsapp-web.js/issues/127084
+
+### Implemented repair
+
+`whatsapp-web.js` is upgraded and exact-pinned to `1.34.7`. An exact package
+pin makes production installs deterministic while taking the official bootstrap
+fix and current LID handling. No `webVersion`/`webVersionCache` override was
+added: it would preserve the broken 1.34.6 injection code and introduce another
+remote runtime dependency without evidence that a particular cached WhatsApp
+Web build fixes this defect.
+
+The regenerated lockfile resolves the upstream package's declared dependency
+set, including its exact Puppeteer 24.38.0 dependency and removal of the old
+`@pedroslopez/moduleraid` bootstrap dependency. A new executable compatibility
+test locks all three assumptions that matter to Nexeo:
+
+- installed package version is exactly 1.34.7;
+- `Client.getContactLidAndPhone()` remains available for the Chat 11/12 LID
+  fallback;
+- `Message.downloadMedia()` remains available for bounded PTT/audio retrieval.
+
+### Complete file list
+
+- `server/package.json`
+- `server/package-lock.json`
+- `server/tests/webjsDependencyCompatibility.test.ts` (new)
+- `Changes_Made.md`
+
+No application source, client file, database schema, migration, or new direct
+dependency is included. The existing dependency is upgraded in place.
+
+### Production package-file warning
+
+Production is known to carry preserved local edits in both
+`server/package.json` and `server/package-lock.json`, which are the two tracked
+files changed by this release. The Reviewer must inspect and reconcile those
+exact production diffs before pulling. If `git pull --ff-only` refuses, stop and
+report the paths; do not reset, checkout over, silently stash, or discard the
+production edits.
+
+After the reviewed Git state is safely present, the production dependency
+install must use the established network/browser safeguards:
+
+```bash
+NODE_OPTIONS=--dns-result-order=ipv4first \
+PUPPETEER_SKIP_DOWNLOAD=true \
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+npm install --no-audit --no-fund
+```
+
+The Reviewer should verify `node_modules/whatsapp-web.js/package.json` reports
+1.34.7 before building/restarting only `tmcai-server`.
+
+### Verification and remaining acceptance
+
+```text
+Focused WhatsApp/dependency compatibility: 22 passed, 0 failed (5 files)
+Server: 1009 passed, 21 skipped, 0 failed (94 files passed, 1 skipped)
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2 generation + tsc)
+Dependency tree: whatsapp-web.js 1.34.7 -> puppeteer 24.38.0
+git diff --check: passed
+```
+
+Live acceptance remains the release gate: on a clean LocalAuth profile a QR
+must be emitted within the initialization deadline, pairing must complete, one
+inbound text and one voice-note turn must pass, only one Chromium tree may own
+the tenant profile, and `init_timeout` must remain reserved for genuine stalls.
+Codex did not change production, commit, push, or deploy.
+
+The separately reported `obsidian_vault_export` 540-second job timeout was
+deliberately not bundled and remains uninvestigated for a future standalone
+Builder task.
