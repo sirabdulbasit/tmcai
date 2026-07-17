@@ -205,16 +205,25 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
             // dropping the message silently.
             if (isVoice && message.audio?.id) {
               inputWasVoice = true;
+              let voiceFailureReason: import('../services/voiceService').VoiceTranscriptionFailure | undefined;
               try {
                 const audio = await downloadMetaMedia(clientNumber, message.audio.id);
                 if (audio) {
                   const { transcribeVoiceNote } = await import('../services/voiceService');
                   const t = await transcribeVoiceNote(audio.buffer, audio.mimeType);
                   messageBody = t.text;
-                  log.info('voice transcribed (meta)', { len: messageBody.length, lang: t.language });
+                  voiceFailureReason = t.failureReason;
+                  log.info('voice transcription completed (meta)', {
+                    provider: t.provider, outcome: messageBody ? 'success' : voiceFailureReason,
+                    textLen: messageBody.length, lang: t.language, bytes: audio.buffer.length,
+                    mimeType: (audio.mimeType || '').split(';')[0],
+                  });
+                } else {
+                  voiceFailureReason = 'invalid_media';
                 }
               } catch (err: any) {
                 log.error('meta voice transcription failed', { error: err.message });
+                voiceFailureReason = 'provider_failed';
               }
               if (!messageBody) {
                 // Bracketed system marker, NOT fake-Brain prose. Per Basit
@@ -222,9 +231,10 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
                 // in building AI". The previous "Sorry, I couldn't…" line
                 // was textbook fake-Brain. State error → bracket-wrapped.
                 const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                const { voiceTranscriptionFailureMarker } = await import('../services/voiceService');
                 await sendTenantWhatsAppText(
                   clientNumber, '+' + message.from,
-                  `[couldn't transcribe the voice note — try again or type the message]`,
+                  voiceTranscriptionFailureMarker(voiceFailureReason),
                   0,
                 );
                 continue;

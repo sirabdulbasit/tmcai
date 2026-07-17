@@ -1,7 +1,7 @@
 // ═════════════════════════════════════════════════════════════════════════════
 // voiceService.ts — Speech-to-Text and Text-to-Speech for WhatsApp voice notes
 //
-// Inbound: Voice note → Google Speech-to-Text → text (for processing)
+// Inbound: Voice note → Gemini / OpenAI / Google Speech fallback chain → text
 // Outbound: Text response → Google Text-to-Speech → voice note (OGG/Opus)
 //
 // Supports: Urdu, English, mixed (auto-detect)
@@ -10,6 +10,42 @@
 import createLogger from '../utils/logger';
 
 const log = createLogger('voice');
+const voiceGeminiModel = () => process.env.VOICE_TRANSCRIPTION_GEMINI_MODEL || 'gemini-2.5-flash';
+
+export type VoiceTranscriptionFailure =
+  | 'invalid_media'
+  | 'no_speech'
+  | 'provider_unavailable'
+  | 'provider_failed';
+
+export interface VoiceTranscriptionResult {
+  text: string;
+  language: string;
+  confidence: number;
+  provider: 'gemini' | 'openai' | 'google' | 'none';
+  failureReason?: VoiceTranscriptionFailure;
+}
+
+const emptyTranscription = (
+  failureReason: VoiceTranscriptionFailure,
+  provider: VoiceTranscriptionResult['provider'] = 'none',
+): VoiceTranscriptionResult => ({ text: '', language: 'unknown', confidence: 0, provider, failureReason });
+
+function boundedError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, ' ').slice(0, 180);
+}
+
+/** Honest, actionable WhatsApp marker; never impersonates a Brain answer. */
+export function voiceTranscriptionFailureMarker(reason?: VoiceTranscriptionFailure): string {
+  if (reason === 'no_speech') {
+    return '[I could not hear clear speech — please resend a slightly longer voice note or type the message]';
+  }
+  if (reason === 'invalid_media') {
+    return '[I could not read that voice note — please resend it or type the message]';
+  }
+  return '[voice transcription is temporarily unavailable — please type the message while it recovers]';
+}
 
 // ─── Speech-to-Text: transcribe voice note to text ────────────────────────────
 
@@ -21,36 +57,69 @@ export async function transcribeVoiceNote(
   text: string;
   language: string;
   confidence: number;
+  provider: VoiceTranscriptionResult['provider'];
+  failureReason?: VoiceTranscriptionFailure;
 }> {
-  // Try Gemini first (always available, supports Urdu + English + mixed).
+  const normalizedMime = geminiAudioMime(mimeType);
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length < 16) {
+    log.warn('Voice transcription rejected invalid media', { bytes: audioBuffer?.length ?? 0, mimeType: normalizedMime });
+    return emptyTranscription('invalid_media');
+  }
+
+  let attempted = 0;
+  let failed = 0;
+  let returnedNoSpeech = 0;
+
+  // Try Gemini first when configured (supports Urdu + English + mixed).
   // Pass the actual upload mime through — browser MediaRecorder usually
   // sends webm/opus, not ogg/opus, and Gemini rejects mime mismatches.
   // translateTo='english': Gemini transcribes AND translates in one call.
   // Per Basit preference 2026-07-08: "always transcribe voice note into
   // english" — even when the speaker uses Urdu, downstream Brain
   // reasoning + logs stay in English.
-  try {
-    const geminiResult = await transcribeWithGemini(audioBuffer, mimeType, opts?.translateTo === 'english');
-    if (geminiResult.text) return geminiResult;
-  } catch (e: any) {
-    log.error('Gemini transcription failed, trying Google Speech', { error: e.message });
+  const geminiConfigured = process.env.USE_VERTEX_AI === 'true' || Boolean(process.env.GEMINI_API_KEY);
+  if (geminiConfigured) {
+    attempted += 1;
+    try {
+      const geminiResult = await transcribeWithGemini(audioBuffer, mimeType, opts?.translateTo === 'english');
+      if (geminiResult.text) return { ...geminiResult, provider: 'gemini' };
+      returnedNoSpeech += 1;
+    } catch (e: unknown) {
+      failed += 1;
+      log.error('Voice transcription provider failed', {
+        provider: 'gemini', error: boundedError(e), bytes: audioBuffer.length, mimeType: normalizedMime,
+      });
+    }
   }
 
-  // Fallback to Google Cloud Speech-to-Text
-  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    return { text: '', language: 'unknown', confidence: 0 };
+  // OpenAI is an independent fallback for production installations that do
+  // not carry Google service-account credentials. WhatsApp audio is passed
+  // with its real MIME type; no local ffmpeg/Chromium dependency is needed.
+  if (process.env.OPENAI_API_KEY) {
+    attempted += 1;
+    try {
+      const openAIResult = await transcribeWithOpenAI(audioBuffer, mimeType, opts?.translateTo === 'english');
+      if (openAIResult.text) return { ...openAIResult, provider: 'openai' };
+      returnedNoSpeech += 1;
+    } catch (e: unknown) {
+      failed += 1;
+      log.error('Voice transcription provider failed', {
+        provider: 'openai', error: boundedError(e), bytes: audioBuffer.length, mimeType: normalizedMime,
+      });
+    }
   }
 
-  try {
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) try {
+    attempted += 1;
     const speech = await import('@google-cloud/speech');
     const client = new speech.SpeechClient();
 
     const audio = { content: audioBuffer.toString('base64') };
 
     // Auto-detect language: try Urdu first, fallback to English, or use multi-language
+    const encoding = googleRecognitionEncoding(mimeType);
     const config = {
-      encoding: 'OGG_OPUS' as any,
-      sampleRateHertz: 16000,
+      ...(encoding ? { encoding: encoding as any } : {}),
       languageCode: 'ur-PK',               // Primary: Urdu
       alternativeLanguageCodes: ['en-US', 'en-PK', 'hi-IN'], // Fallback: English, Hindi
       enableAutomaticPunctuation: true,
@@ -62,7 +131,8 @@ export async function transcribeVoiceNote(
 
     if (results.length === 0) {
       log.info('No speech detected in voice note');
-      return { text: '', language: 'unknown', confidence: 0 };
+      returnedNoSpeech += 1;
+      return emptyTranscription('no_speech', 'google');
     }
 
     const best = results[0]?.alternatives?.[0];
@@ -71,11 +141,71 @@ export async function transcribeVoiceNote(
     const detectedLang = results[0]?.languageCode || 'ur-PK';
 
     log.info('Voice transcribed', { textLen: text.length, language: detectedLang, confidence });
-    return { text, language: detectedLang, confidence };
-  } catch (error: any) {
-    log.error('Google Speech transcription also failed', { error: error.message });
-    return { text: '', language: 'unknown', confidence: 0 };
+    if (!text.trim()) return emptyTranscription('no_speech', 'google');
+    return { text, language: detectedLang, confidence, provider: 'google' };
+  } catch (error: unknown) {
+    failed += 1;
+    log.error('Voice transcription provider failed', {
+      provider: 'google', error: boundedError(error), bytes: audioBuffer.length, mimeType: normalizedMime,
+    });
   }
+
+  const failureReason: VoiceTranscriptionFailure = attempted === 0
+    ? 'provider_unavailable'
+    : failed === attempted
+      ? 'provider_failed'
+      : returnedNoSpeech > 0
+        ? 'no_speech'
+        : 'provider_failed';
+  log.warn('Voice transcription exhausted providers', {
+    attempted, failed, returnedNoSpeech, failureReason, bytes: audioBuffer.length, mimeType: normalizedMime,
+  });
+  return emptyTranscription(failureReason);
+}
+
+export function googleRecognitionEncoding(mimeType?: string): string | undefined {
+  const base = (mimeType ?? '').split(';')[0]!.trim().toLowerCase();
+  if (base === 'audio/ogg' || base === 'audio/opus') return 'OGG_OPUS';
+  if (base === 'audio/webm') return 'WEBM_OPUS';
+  if (base === 'audio/flac') return 'FLAC';
+  if (base === 'audio/mpeg' || base === 'audio/mp3') return 'MP3';
+  if (base === 'audio/wav' || base === 'audio/x-wav') return 'LINEAR16';
+  // MP4/M4A/AAC containers are deliberately left for header auto-detection;
+  // labelling them OGG_OPUS causes deterministic INVALID_ARGUMENT failures.
+  return undefined;
+}
+
+function audioExtension(mimeType?: string): string {
+  const base = (mimeType ?? '').split(';')[0]!.trim().toLowerCase();
+  const extensions: Record<string, string> = {
+    'audio/ogg': 'ogg', 'audio/opus': 'ogg', 'audio/webm': 'webm',
+    'audio/mp4': 'm4a', 'audio/m4a': 'm4a', 'audio/mpeg': 'mp3',
+    'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+    'audio/aac': 'aac', 'audio/flac': 'flac',
+  };
+  return extensions[base] ?? 'ogg';
+}
+
+async function transcribeWithOpenAI(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  translateToEnglish: boolean = false,
+): Promise<{ text: string; language: string; confidence: number }> {
+  const { default: OpenAI, toFile } = await import('openai');
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const normalizedMime = geminiAudioMime(mimeType);
+  const file = await toFile(audioBuffer, `voice.${audioExtension(mimeType)}`, { type: normalizedMime });
+  const model = process.env.VOICE_TRANSCRIPTION_OPENAI_MODEL || 'whisper-1';
+  const response: any = translateToEnglish
+    ? await client.audio.translations.create({ file, model, response_format: 'json' })
+    : await client.audio.transcriptions.create({ file, model, response_format: 'verbose_json' });
+  const text = String(response?.text ?? '').trim();
+  if (looksLikeSilence(text)) return { text: '', language: 'unknown', confidence: 0 };
+  return {
+    text,
+    language: translateToEnglish ? 'en-US' : String(response?.language ?? 'unknown'),
+    confidence: 0.75,
+  };
 }
 
 // ─── Fallback: Gemini audio transcription ─────────────────────────────────────
@@ -137,7 +267,7 @@ async function transcribeWithGemini(
   // script gymnastics entirely. One Gemini call, transcribe + translate.
   if (translateToEnglish) {
     const result = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: voiceGeminiModel(),
       contents: [
         {
           role: 'user',
@@ -157,7 +287,7 @@ NEVER produce a summary, a paraphrase, or a shortened version. Length of output 
     });
     const raw = (result.text ?? '').trim();
     if (looksLikeSilence(raw)) {
-      log.info('Gemini English-translate transcript looks like silence; returning empty', { raw: raw.slice(0, 80) });
+      log.info('Gemini English-translate transcript looks like silence; returning empty', { textLen: raw.length });
       return { text: '', language: 'unknown', confidence: 0 };
     }
     return { text: raw, language: 'en-US', confidence: 0.8 };
@@ -173,7 +303,7 @@ NEVER produce a summary, a paraphrase, or a shortened version. Length of output 
   // single most important rule here \u2014 the user 2026-05-13 flagged a KD
   // Bhatti voice note rendered in Hindi script and called it out.
   const result = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: voiceGeminiModel(),
     contents: [
       {
         role: 'user',
@@ -196,7 +326,7 @@ If the audio has no clear speech, return an empty response.` },
 
   let raw = (result.text ?? '').trim();
   if (looksLikeSilence(raw)) {
-    log.info('Gemini transcript looks like silence/boilerplate; returning empty', { raw: raw.slice(0, 80) });
+    log.info('Gemini transcript looks like silence/boilerplate; returning empty', { textLen: raw.length });
     return { text: '', language: 'unknown', confidence: 0 };
   }
   // Safety net: if Gemini ignored the rule and emitted Devanagari anyway,
@@ -205,10 +335,10 @@ If the audio has no clear speech, return an empty response.` },
   // asking for transliteration explicitly (last resort).
   const hasDevanagari = /[\u0900-\u097F]/.test(raw);
   if (hasDevanagari) {
-    log.warn('Gemini emitted Devanagari despite Urdu-only instruction; retrying', { raw: raw.slice(0, 80) });
+    log.warn('Gemini emitted Devanagari despite Urdu-only instruction; retrying', { textLen: raw.length });
     try {
       const retry = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: voiceGeminiModel(),
         contents: [
           {
             role: 'user',
@@ -271,7 +401,7 @@ export async function transliterateDevanagariToUrdu(text: string): Promise<strin
   const { getGenAI } = await import('./genaiClient');
   const ai = getGenAI();
   const r = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: voiceGeminiModel(),
     contents: [
       {
         role: 'user',

@@ -811,6 +811,42 @@ Client Vite production build: passed
 git diff --check: passed
 ```
 
+## 2026-07-17 — WhatsApp voice transcription resilience
+
+The WhatsApp text path was verified healthy in production, while a voice note
+reached Nexeo but failed before Brain reasoning. The transcription layer has
+been hardened without changing text-message behavior:
+
+- Gemini remains the primary speech provider, with its model configurable via
+  `VOICE_TRANSCRIPTION_GEMINI_MODEL` (default `gemini-2.5-flash`).
+- OpenAI audio transcription is now an independent second provider when
+  `OPENAI_API_KEY` is configured; its model can be overridden with
+  `VOICE_TRANSCRIPTION_OPENAI_MODEL` (default `whisper-1`). Google Speech
+  remains the final fallback. Both optional overrides are documented in
+  `server/.env.example`.
+- Google Speech no longer labels every upload `OGG_OPUS` at 16 kHz. Its
+  encoding is derived from the real WhatsApp MIME type, and MP4/M4A/AAC are
+  passed without a fabricated OGG encoding hint.
+- Transcription results now include the provider and a typed failure category:
+  invalid media, no clear speech, unavailable providers, or provider failure.
+- Web.js QR and Meta webhook ingress use the same honest failure markers. A
+  quiet/too-short note asks for a slightly longer retry; an outage says the
+  service is temporarily unavailable rather than pretending Brain understood.
+- Logs identify provider, outcome, byte count, MIME type, language, and output
+  length. Audio and transcript content are not logged.
+- Added `server/tests/voiceTranscriptionResilience.test.ts` for MIME mapping,
+  invalid-media short-circuiting, and safe user-facing failure wording.
+
+Verification after this change:
+
+```text
+Server: 973 passed, 21 skipped, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+Client Vite production build: passed
+git diff --check: passed
+```
+
 ## 21. Inbound `@lid` reply routing (2026-07-16)
 
 ### Production evidence

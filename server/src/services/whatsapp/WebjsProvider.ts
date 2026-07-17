@@ -392,6 +392,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         if (isVoice && message.hasMedia) {
           messageType = 'voice';
           inputWasVoice = true;
+          let voiceFailureReason: import('../voiceService').VoiceTranscriptionFailure | undefined;
           try {
             const media = await message.downloadMedia();
             if (media?.data) {
@@ -422,14 +423,24 @@ export class WebjsProvider implements IWhatsAppProvider {
               } catch { /* preference lookup is best-effort */ }
               const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo });
               messageBody = transcription.text;
-              log.info('Voice transcribed', { text: messageBody.slice(0, 80), lang: transcription.language, translated: translateTo === 'english' });
+              voiceFailureReason = transcription.failureReason;
+              log.info('Voice transcription completed', {
+                provider: transcription.provider, outcome: messageBody ? 'success' : voiceFailureReason,
+                textLen: messageBody.length, lang: transcription.language,
+                translated: translateTo === 'english', bytes: audioBuffer.length,
+                mimeType: (media.mimetype || '').split(';')[0],
+              });
+            } else {
+              voiceFailureReason = 'invalid_media';
             }
           } catch (e: any) {
             log.error('Voice transcription failed', { error: e.message });
+            voiceFailureReason = 'provider_failed';
             messageBody = '';
           }
           if (!messageBody) {
-            await sendInboundTextReply(message, '[voice transcription failed — please try again or type the message]');
+            const { voiceTranscriptionFailureMarker } = await import('../voiceService');
+            await sendInboundTextReply(message, voiceTranscriptionFailureMarker(voiceFailureReason));
             await activity?.stop();
             return;
           }
