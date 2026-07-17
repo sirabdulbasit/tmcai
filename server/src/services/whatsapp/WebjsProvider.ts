@@ -10,6 +10,7 @@ import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, Tes
 import { classifyWebjsSendResult } from './sendReceipt';
 import { sendInboundTextReply } from './inboundReplyTransport';
 import { startInboundActivity, InboundActivity } from './inboundActivity';
+import { resolveRegisteredWhatsAppUser } from './inboundIdentity';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import fs from 'fs';
@@ -371,18 +372,16 @@ export class WebjsProvider implements IWhatsAppProvider {
         // Show processing feedback only to registered users. Expected external
         // delegatee replies are captured silently and unknown senders remain
         // fully ignored by policy.
-        const regDigits = fromNumber.replace(/[^\d]/g, '');
-        const registered = await prisma.$queryRawUnsafe<any[]>(
-          `SELECT 1
-             FROM whatsapp_connections wc JOIN users u ON u.id = wc.user_id
-            WHERE u.client_number = $1 AND u.is_active = TRUE
-              AND wc.status = 'active'
-              AND wc.phone_number IN ($2, $3, $4, $5)
-            LIMIT 1`,
-          clientNumber, fromNumber, regDigits, `+${regDigits}`,
-          `0${regDigits.startsWith('92') ? regDigits.slice(2) : regDigits}`,
-        ).then((rows) => rows.length > 0).catch(() => false);
-        if (registered) activity = await startInboundActivity(message, isVoice);
+        let resolvedIdentity = await resolveRegisteredWhatsAppUser(clientNumber, fromNumber)
+          .catch((e: any) => {
+            log.warn('Inbound identity preflight failed', { clientNumber, error: e?.message });
+            return undefined;
+          });
+        if (resolvedIdentity) {
+          activity = await startInboundActivity(message, isVoice, {
+            clientNumber, userId: resolvedIdentity.userId, messageId: msgId,
+          });
+        }
 
         // Handle voice messages — transcribe audio to text
         let messageBody = message.body || '';
@@ -407,21 +406,19 @@ export class WebjsProvider implements IWhatsAppProvider {
               // explicit opt-in (brain_channel.translateVoiceInput).
               let translateTo: 'english' | null = null;
               try {
-                const rows = await prisma.$queryRawUnsafe<any[]>(
-                  `SELECT u.notification_preferences AS prefs
-                     FROM whatsapp_connections wc
-                     JOIN users u ON u.id = wc.user_id
-                    WHERE u.client_number = $1
-                      AND wc.status = 'active'
-                      AND u.is_active = TRUE
-                      AND wc.phone_number = $2
-                    LIMIT 1`,
-                  clientNumber, fromNumber,
-                );
+                const rows = resolvedIdentity
+                  ? await prisma.$queryRawUnsafe<any[]>(
+                    `SELECT notification_preferences AS prefs
+                       FROM users
+                      WHERE id = $1 AND client_number = $2 AND is_active = TRUE
+                      LIMIT 1`,
+                    resolvedIdentity.userId, clientNumber,
+                  )
+                  : [];
                 const { resolveInputTranslation } = await import('../voiceInputTranslation');
                 translateTo = resolveInputTranslation(rows[0]?.prefs ?? {});
               } catch { /* preference lookup is best-effort */ }
-              const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo });
+              const transcription = await transcribeVoiceNote(audioBuffer, media.mimetype, { translateTo, clientNumber });
               messageBody = transcription.text;
               voiceFailureReason = transcription.failureReason;
               log.info('Voice transcription completed', {
@@ -439,8 +436,15 @@ export class WebjsProvider implements IWhatsAppProvider {
             messageBody = '';
           }
           if (!messageBody) {
-            const { voiceTranscriptionFailureMarker } = await import('../voiceService');
-            await sendInboundTextReply(message, voiceTranscriptionFailureMarker(voiceFailureReason));
+            // Retry only when the preflight errored (undefined). A confirmed
+            // unregistered sender (null) must remain silent by policy.
+            if (resolvedIdentity === undefined) {
+              resolvedIdentity = await resolveRegisteredWhatsAppUser(clientNumber, fromNumber).catch(() => undefined);
+            }
+            if (resolvedIdentity) {
+              const { voiceTranscriptionFailureMarker } = await import('../voiceService');
+              await sendInboundTextReply(message, voiceTranscriptionFailureMarker(voiceFailureReason));
+            }
             await activity?.stop();
             return;
           }
@@ -469,6 +473,8 @@ export class WebjsProvider implements IWhatsAppProvider {
           messageType,
           waMessageId: msgId,
           timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
+          _resolvedUserId: resolvedIdentity?.userId,
+          _resolvedIdentity: resolvedIdentity,
           replyFn: async (text: string) => {
             // If input was voice, reply with voice note too
             if (inputWasVoice) {
@@ -832,11 +838,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       }
       const media = new MessageMedia(mimeType, audio.toString('base64'), `voice-${Date.now()}.ogg`);
       const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
-      const waMessageId = msg?.id?._serialized || msg?.id?.id;
-      if (!waMessageId) {
-        return { success: false, error: 'sendMessage returned no message id — send likely failed silently' };
-      }
-      return { success: true, messageId: waMessageId };
+      return classifyWebjsSendResult(msg);
     } catch (error: any) {
       return { success: false, error: error.message };
     }

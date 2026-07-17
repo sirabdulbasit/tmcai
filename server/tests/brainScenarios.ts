@@ -36,6 +36,9 @@ import {
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler';
 import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
+import { detectAudioMime } from '../src/services/voiceService';
+import { classifyWebjsSendResult } from '../src/services/whatsapp/sendReceipt';
+import { whatsappPhoneVariants } from '../src/services/whatsapp/inboundIdentity';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -324,6 +327,25 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const { join } = require('node:path') as typeof import('node:path');
       const bc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
       expect(bc).toMatch(/gateHumanFacingAction[\s\S]{0,400}IMMEDIATE_INTERNAL_ACTION_TYPES\.has/);
+    },
+  },
+  {
+    id: 'chat11',
+    date: '2026-07-17',
+    userMessage: 'A WhatsApp voice note to Nexeo; no visible processing state; reply: "voice transcription is temporarily unavailable".',
+    observedFailure:
+      'The activity preflight used a weaker identity lookup than Brain, all audio providers trusted the supplied MIME instead of the media signature, provider failures had no admin health surface, and QR voice sends still treated a missing receipt as a hard failure.',
+    symptomTags: ['whatsapp-voice-pipeline-unobservable', 'whatsapp-activity-missing'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      // WhatsApp frequently labels media generically; real Ogg bytes must win.
+      expect(detectAudioMime(Buffer.from('OggS0000'), 'application/octet-stream')).toBe('audio/ogg');
+      // Sender identity variants are shared by activity and Brain.
+      expect(whatsappPhoneVariants('+923226288256')).toContain('03226288256');
+      // A resolved id-less Web.js send is accepted/unconfirmed, never retried.
+      expect(classifyWebjsSendResult(undefined)).toMatchObject({
+        success: true, confirmation: 'transport_accepted',
+      });
     },
   },
 ];

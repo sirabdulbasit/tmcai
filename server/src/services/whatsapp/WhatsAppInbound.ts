@@ -10,6 +10,7 @@ import { sendWhatsAppMessage } from './WhatsAppManager';
 import { askBrainWithRetry } from './brainRetry';
 import { learnFromMessage } from '../learningService';
 import createLogger from '../../utils/logger';
+import { resolveRegisteredWhatsAppUser } from './inboundIdentity';
 
 const log = createLogger('whatsapp:inbound');
 
@@ -32,15 +33,23 @@ export interface InboundParams {
    *  sendReply so the outbound whatsapp_messages row carries a valid
    *  user_id (column is NOT NULL — previously the insert failed silently). */
   _resolvedUserId?: number;
+  _resolvedIdentity?: import('./inboundIdentity').RegisteredWhatsAppUser | null;
 }
 
 // Dedup: prevent processing same message twice (WhatsApp Web.js can fire duplicate events)
 const recentMessages = new Map<string, number>(); // key → timestamp
 const DEDUP_WINDOW_MS = 5000; // 5 seconds
 
+export function inboundDedupKey(params: Pick<InboundParams, 'waMessageId' | 'fromNumber' | 'messageBody'>): string {
+  return params.waMessageId
+    ? `id:${params.waMessageId}`
+    : `fallback:${params.fromNumber}:${params.messageBody}`;
+}
+
 export async function handleInboundMessage(params: InboundParams): Promise<void> {
+  const startedAt = Date.now();
   // Dedup check
-  const dedupKey = `${params.fromNumber}:${params.messageBody}`;
+  const dedupKey = inboundDedupKey(params);
   const now = Date.now();
   const lastSeen = recentMessages.get(dedupKey);
   if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
@@ -68,26 +77,9 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // unregistered. PM2 log line is the ONLY persisted record of
   // unregistered traffic — admins can grep it if they need to audit.
   //
-  // Normalize number for matching: strip +, leading 0, try multiple formats
-  const rawNum = params.fromNumber.replace(/[^\d]/g, ''); // digits only
-  const numVariants = [
-    params.fromNumber,                          // original: +923226288256
-    rawNum,                                     // digits: 923226288256
-    '+' + rawNum,                               // +923226288256
-    '0' + rawNum.slice(rawNum.startsWith('92') ? 2 : 0), // 03226288256 (local)
-  ];
-
-  // Tenant filter lives on the USER row — not on whatsapp_connections —
-  // because `wc.client_number` is allowed to be null (historical bug;
-  // see smoke log). The user's client_number is the authoritative
-  // tenant binding and is NOT NULL on every row.
-  const connections = await prisma.$queryRawUnsafe(
-    `SELECT wc.user_id, wc.id as connection_id, wc.display_name, u.name as user_name, u.client_number, u.department
-     FROM whatsapp_connections wc JOIN users u ON u.id = wc.user_id
-     WHERE u.client_number = $1 AND wc.status = 'active' AND u.is_active = TRUE
-       AND (wc.phone_number = $2 OR wc.phone_number = $3 OR wc.phone_number = $4 OR wc.phone_number = $5)`,
-    params.clientNumber, numVariants[0], numVariants[1], numVariants[2], numVariants[3],
-  ) as any[];
+  const resolvedIdentity = params._resolvedIdentity === undefined
+    ? await resolveRegisteredWhatsAppUser(params.clientNumber, params.fromNumber)
+    : params._resolvedIdentity;
 
   // Unknown number — silently drop the message.
   //
@@ -102,7 +94,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   //      via the Settings page; they don't need a reply from the bot.
   //
   // PM2 log line is the only persisted record — admins can grep it.
-  if (!connections.length) {
+  if (!resolvedIdentity) {
     // Narrow exception: a contact/delegatee may reply to a recent message
     // that the user explicitly asked Nexeo to send. Capture that evidence for
     // the owner/open item, but never enter the chatbot path or reply to them.
@@ -129,9 +121,8 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     return;
   }
 
-  const conn = connections[0];
-  const userId = conn.user_id;
-  const userName = conn.display_name || conn.user_name || 'there';
+  const userId = resolvedIdentity.userId;
+  const userName = resolvedIdentity.displayName || resolvedIdentity.userName || 'there';
   let queryText = params.messageBody;
 
   // Now that registration is confirmed, log the inbound to
@@ -153,6 +144,10 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   params._resolvedUserId = userId;
 
   log.info('Identified user', { from: params.fromNumber, userId, name: userName });
+  log.info('Inbound stage completed', {
+    stage: 'identity', userId, messageId: params.waMessageId,
+    elapsedMs: Date.now() - startedAt, type: params.messageType,
+  });
 
   // Show "typing..." indicator immediately so user knows bot is working
   if (params.typingFn) await params.typingFn().catch(() => {});
@@ -426,7 +421,13 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // logs). Sanitizing at THIS boundary guarantees no bracketed system
   // marker ever ships to a phone, whatever path produced the answer.
   const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
-  const responseText = sanitizeAnswerForUser(answer);
+  const responseText = sanitizeAnswerForUser(answer).trim()
+    || '[Brain returned no usable response — please retry]';
+  log.info('Inbound stage completed', {
+    stage: 'brain', userId, messageId: params.waMessageId,
+    elapsedMs: Date.now() - startedAt, degraded, answerLen: responseText.length,
+    intent: r?.intent ?? null, artifactKind: r?.artifact?.kind ?? null,
+  });
   if (!degraded && r) {
     log.info('Brain reply composed', { userId, queryLen: queryText.length, answerLen: responseText.length, sources: r.sources?.length ?? 0, historyTurns: brainHistory.length });
 
@@ -523,6 +524,10 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   // Send reply
   await sendReply(params, responseText);
+  log.info('Inbound processing completed', {
+    userId, messageId: params.waMessageId, type: params.messageType,
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 // ─── Send reply via provider or direct replyFn ────────────────────────────────

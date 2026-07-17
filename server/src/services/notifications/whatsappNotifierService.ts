@@ -115,6 +115,39 @@ export async function sendViaNotifier(
   }
 }
 
+/** Mark an inbound Meta message read and show WhatsApp's native typing state. */
+export async function sendTypingIndicatorViaNotifier(
+  clientNumber: string,
+  inboundMessageId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const n = await getNotifier(clientNumber);
+  if (!n || !n.isActive || !n.phoneNumberId || !n.accessTokenEncrypted) {
+    return { ok: false, error: 'no active WhatsApp notifier for tenant' };
+  }
+  let token: string;
+  try { token = decrypt(n.accessTokenEncrypted); }
+  catch { return { ok: false, error: 'notifier token decrypt failed' }; }
+  try {
+    const r = await fetch(`${META_GRAPH}/${n.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: inboundMessageId,
+        typing_indicator: { type: 'text' },
+      }),
+    });
+    if (!r.ok) {
+      const j: any = await r.json().catch(() => ({}));
+      return { ok: false, error: `Meta ${r.status}: ${j?.error?.message ?? 'typing indicator rejected'}` };
+    }
+    return { ok: true };
+  } catch (error: any) {
+    return { ok: false, error: error?.message ?? 'typing indicator failed' };
+  }
+}
+
 /**
  * Upload a media buffer to Meta and return the media id.
  * Used for voice notes (audio/ogg) but works for images, video, docs too.

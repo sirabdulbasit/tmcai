@@ -8,6 +8,7 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 import createLogger from '../utils/logger';
+import fs from 'fs';
 
 const log = createLogger('voice');
 const voiceGeminiModel = () => process.env.VOICE_TRANSCRIPTION_GEMINI_MODEL || 'gemini-2.5-flash';
@@ -22,8 +23,60 @@ export interface VoiceTranscriptionResult {
   text: string;
   language: string;
   confidence: number;
-  provider: 'gemini' | 'openai' | 'google' | 'none';
+  provider: 'gemini' | 'openai' | 'groq' | 'google' | 'none';
   failureReason?: VoiceTranscriptionFailure;
+}
+
+export interface VoiceProviderAttempt {
+  at: string;
+  clientNumber?: string;
+  provider: VoiceTranscriptionResult['provider'];
+  outcome: 'success' | 'no_speech' | 'failed';
+  latencyMs: number;
+  error?: string;
+  mimeType: string;
+  bytes: number;
+}
+
+const voiceAttemptHistory: VoiceProviderAttempt[] = [];
+function recordVoiceAttempt(attempt: VoiceProviderAttempt): void {
+  voiceAttemptHistory.push(attempt);
+  if (voiceAttemptHistory.length > 100) voiceAttemptHistory.splice(0, voiceAttemptHistory.length - 100);
+}
+export function getVoiceTranscriptionHealth(clientNumber?: string): VoiceProviderAttempt[] {
+  const scoped = clientNumber
+    ? voiceAttemptHistory.filter((attempt) => attempt.clientNumber === clientNumber)
+    : voiceAttemptHistory;
+  return scoped.slice(-20);
+}
+
+export function getVoiceProviderConfiguration(): Record<string, { configured: boolean; detail?: string }> {
+  const googlePath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  return {
+    gemini: { configured: process.env.USE_VERTEX_AI === 'true' || Boolean(process.env.GEMINI_API_KEY) },
+    openai: { configured: Boolean(process.env.OPENAI_API_KEY) },
+    groq: { configured: Boolean(process.env.GROQ_API_KEY) },
+    google: {
+      configured: Boolean(googlePath) && fs.existsSync(googlePath),
+      ...(googlePath && !fs.existsSync(googlePath) ? { detail: 'credential file path does not exist' } : {}),
+    },
+  };
+}
+
+async function withVoiceTimeout<T>(provider: string, work: Promise<T>): Promise<T> {
+  const timeoutMs = Math.max(5_000, Number(process.env.VOICE_TRANSCRIPTION_TIMEOUT_MS || 30_000));
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${provider} transcription timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const emptyTranscription = (
@@ -33,7 +86,12 @@ const emptyTranscription = (
 
 function boundedError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\s+/g, ' ').slice(0, 180);
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, 'sk-[redacted]')
+    .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, 'AIza[redacted]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 180);
 }
 
 /** Honest, actionable WhatsApp marker; never impersonates a Brain answer. */
@@ -52,7 +110,7 @@ export function voiceTranscriptionFailureMarker(reason?: VoiceTranscriptionFailu
 export async function transcribeVoiceNote(
   audioBuffer: Buffer,
   mimeType?: string,
-  opts?: { translateTo?: 'english' | null },
+  opts?: { translateTo?: 'english' | null; clientNumber?: string },
 ): Promise<{
   text: string;
   language: string;
@@ -60,7 +118,7 @@ export async function transcribeVoiceNote(
   provider: VoiceTranscriptionResult['provider'];
   failureReason?: VoiceTranscriptionFailure;
 }> {
-  const normalizedMime = geminiAudioMime(mimeType);
+  const normalizedMime = detectAudioMime(audioBuffer, mimeType);
   if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length < 16) {
     log.warn('Voice transcription rejected invalid media', { bytes: audioBuffer?.length ?? 0, mimeType: normalizedMime });
     return emptyTranscription('invalid_media');
@@ -69,6 +127,9 @@ export async function transcribeVoiceNote(
   let attempted = 0;
   let failed = 0;
   let returnedNoSpeech = 0;
+  const recordAttempt = (attempt: Omit<VoiceProviderAttempt, 'clientNumber'>) => {
+    recordVoiceAttempt({ ...attempt, ...(opts?.clientNumber ? { clientNumber: opts.clientNumber } : {}) });
+  };
 
   // Try Gemini first when configured (supports Urdu + English + mixed).
   // Pass the actual upload mime through — browser MediaRecorder usually
@@ -80,12 +141,18 @@ export async function transcribeVoiceNote(
   const geminiConfigured = process.env.USE_VERTEX_AI === 'true' || Boolean(process.env.GEMINI_API_KEY);
   if (geminiConfigured) {
     attempted += 1;
+    const started = Date.now();
     try {
-      const geminiResult = await transcribeWithGemini(audioBuffer, mimeType, opts?.translateTo === 'english');
-      if (geminiResult.text) return { ...geminiResult, provider: 'gemini' };
+      const geminiResult = await withVoiceTimeout('gemini', transcribeWithGemini(audioBuffer, normalizedMime, opts?.translateTo === 'english'));
+      if (geminiResult.text) {
+        recordAttempt({ at: new Date().toISOString(), provider: 'gemini', outcome: 'success', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+        return { ...geminiResult, provider: 'gemini' };
+      }
       returnedNoSpeech += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'gemini', outcome: 'no_speech', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
     } catch (e: unknown) {
       failed += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'gemini', outcome: 'failed', latencyMs: Date.now() - started, error: boundedError(e), mimeType: normalizedMime, bytes: audioBuffer.length });
       log.error('Voice transcription provider failed', {
         provider: 'gemini', error: boundedError(e), bytes: audioBuffer.length, mimeType: normalizedMime,
       });
@@ -97,57 +164,92 @@ export async function transcribeVoiceNote(
   // with its real MIME type; no local ffmpeg/Chromium dependency is needed.
   if (process.env.OPENAI_API_KEY) {
     attempted += 1;
+    const started = Date.now();
     try {
-      const openAIResult = await transcribeWithOpenAI(audioBuffer, mimeType, opts?.translateTo === 'english');
-      if (openAIResult.text) return { ...openAIResult, provider: 'openai' };
+      const openAIResult = await withVoiceTimeout('openai', transcribeWithOpenAI(audioBuffer, normalizedMime, opts?.translateTo === 'english'));
+      if (openAIResult.text) {
+        recordAttempt({ at: new Date().toISOString(), provider: 'openai', outcome: 'success', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+        return { ...openAIResult, provider: 'openai' };
+      }
       returnedNoSpeech += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'openai', outcome: 'no_speech', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
     } catch (e: unknown) {
       failed += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'openai', outcome: 'failed', latencyMs: Date.now() - started, error: boundedError(e), mimeType: normalizedMime, bytes: audioBuffer.length });
       log.error('Voice transcription provider failed', {
         provider: 'openai', error: boundedError(e), bytes: audioBuffer.length, mimeType: normalizedMime,
       });
     }
   }
 
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) try {
+  if (process.env.GROQ_API_KEY) {
     attempted += 1;
-    const speech = await import('@google-cloud/speech');
-    const client = new speech.SpeechClient();
+    const started = Date.now();
+    try {
+      const groqResult = await withVoiceTimeout('groq', transcribeWithGroq(audioBuffer, normalizedMime, opts?.translateTo === 'english'));
+      if (groqResult.text) {
+        recordAttempt({ at: new Date().toISOString(), provider: 'groq', outcome: 'success', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+        return { ...groqResult, provider: 'groq' };
+      }
+      returnedNoSpeech += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'groq', outcome: 'no_speech', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+    } catch (e: unknown) {
+      failed += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'groq', outcome: 'failed', latencyMs: Date.now() - started, error: boundedError(e), mimeType: normalizedMime, bytes: audioBuffer.length });
+      log.error('Voice transcription provider failed', {
+        provider: 'groq', error: boundedError(e), bytes: audioBuffer.length, mimeType: normalizedMime,
+      });
+    }
+  }
 
-    const audio = { content: audioBuffer.toString('base64') };
+  if (getVoiceProviderConfiguration().google.configured) {
+    attempted += 1;
+    const started = Date.now();
+    try {
+      const speech = await import('@google-cloud/speech');
+      const client = new speech.SpeechClient();
+
+      const audio = { content: audioBuffer.toString('base64') };
 
     // Auto-detect language: try Urdu first, fallback to English, or use multi-language
-    const encoding = googleRecognitionEncoding(mimeType);
-    const config = {
-      ...(encoding ? { encoding: encoding as any } : {}),
-      languageCode: 'ur-PK',               // Primary: Urdu
-      alternativeLanguageCodes: ['en-US', 'en-PK', 'hi-IN'], // Fallback: English, Hindi
-      enableAutomaticPunctuation: true,
-      model: 'default',
-    };
+      const encoding = googleRecognitionEncoding(normalizedMime);
+      const config = {
+        ...(encoding ? { encoding: encoding as any } : {}),
+        languageCode: 'ur-PK',
+        alternativeLanguageCodes: ['en-US', 'en-PK', 'hi-IN'],
+        enableAutomaticPunctuation: true,
+        model: 'default',
+      };
 
-    const [response] = await client.recognize({ audio, config });
-    const results = response.results || [];
+      const [response] = await withVoiceTimeout('google', client.recognize({ audio, config }));
+      const results = response.results || [];
 
-    if (results.length === 0) {
-      log.info('No speech detected in voice note');
-      returnedNoSpeech += 1;
-      return emptyTranscription('no_speech', 'google');
+      if (results.length === 0) {
+        log.info('No speech detected in voice note');
+        returnedNoSpeech += 1;
+        recordAttempt({ at: new Date().toISOString(), provider: 'google', outcome: 'no_speech', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+        return emptyTranscription('no_speech', 'google');
+      }
+
+      const best = results[0]?.alternatives?.[0];
+      const text = best?.transcript || '';
+      const confidence = best?.confidence || 0;
+      const detectedLang = results[0]?.languageCode || 'ur-PK';
+
+      log.info('Voice transcribed', { textLen: text.length, language: detectedLang, confidence });
+      if (!text.trim()) {
+        recordAttempt({ at: new Date().toISOString(), provider: 'google', outcome: 'no_speech', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+        return emptyTranscription('no_speech', 'google');
+      }
+      recordAttempt({ at: new Date().toISOString(), provider: 'google', outcome: 'success', latencyMs: Date.now() - started, mimeType: normalizedMime, bytes: audioBuffer.length });
+      return { text, language: detectedLang, confidence, provider: 'google' };
+    } catch (error: unknown) {
+      failed += 1;
+      recordAttempt({ at: new Date().toISOString(), provider: 'google', outcome: 'failed', latencyMs: Date.now() - started, error: boundedError(error), mimeType: normalizedMime, bytes: audioBuffer.length });
+      log.error('Voice transcription provider failed', {
+        provider: 'google', error: boundedError(error), bytes: audioBuffer.length, mimeType: normalizedMime,
+      });
     }
-
-    const best = results[0]?.alternatives?.[0];
-    const text = best?.transcript || '';
-    const confidence = best?.confidence || 0;
-    const detectedLang = results[0]?.languageCode || 'ur-PK';
-
-    log.info('Voice transcribed', { textLen: text.length, language: detectedLang, confidence });
-    if (!text.trim()) return emptyTranscription('no_speech', 'google');
-    return { text, language: detectedLang, confidence, provider: 'google' };
-  } catch (error: unknown) {
-    failed += 1;
-    log.error('Voice transcription provider failed', {
-      provider: 'google', error: boundedError(error), bytes: audioBuffer.length, mimeType: normalizedMime,
-    });
   }
 
   const failureReason: VoiceTranscriptionFailure = attempted === 0
@@ -161,6 +263,17 @@ export async function transcribeVoiceNote(
     attempted, failed, returnedNoSpeech, failureReason, bytes: audioBuffer.length, mimeType: normalizedMime,
   });
   return emptyTranscription(failureReason);
+}
+
+/** Prefer the container signature over unreliable browser/WhatsApp labels. */
+export function detectAudioMime(audio: Buffer, claimed?: string): string {
+  if (audio.length >= 4 && audio.subarray(0, 4).toString('ascii') === 'OggS') return 'audio/ogg';
+  if (audio.length >= 4 && audio[0] === 0x1a && audio[1] === 0x45 && audio[2] === 0xdf && audio[3] === 0xa3) return 'audio/webm';
+  if (audio.length >= 4 && audio.subarray(0, 4).toString('ascii') === 'RIFF') return 'audio/wav';
+  if (audio.length >= 4 && audio.subarray(0, 4).toString('ascii') === 'fLaC') return 'audio/flac';
+  if (audio.length >= 3 && audio.subarray(0, 3).toString('ascii') === 'ID3') return 'audio/mpeg';
+  if (audio.length >= 12 && audio.subarray(4, 8).toString('ascii') === 'ftyp') return 'audio/mp4';
+  return geminiAudioMime(claimed);
 }
 
 export function googleRecognitionEncoding(mimeType?: string): string | undefined {
@@ -199,6 +312,34 @@ async function transcribeWithOpenAI(
   const response: any = translateToEnglish
     ? await client.audio.translations.create({ file, model, response_format: 'json' })
     : await client.audio.transcriptions.create({ file, model, response_format: 'verbose_json' });
+  const text = String(response?.text ?? '').trim();
+  if (looksLikeSilence(text)) return { text: '', language: 'unknown', confidence: 0 };
+  return {
+    text,
+    language: translateToEnglish ? 'en-US' : String(response?.language ?? 'unknown'),
+    confidence: 0.75,
+  };
+}
+
+async function transcribeWithGroq(
+  audioBuffer: Buffer,
+  mimeType?: string,
+  translateToEnglish: boolean = false,
+): Promise<{ text: string; language: string; confidence: number }> {
+  const groqModule: any = await import('groq-sdk');
+  const Groq = groqModule.default || groqModule.Groq;
+  const { toFile } = await import('openai');
+  const client: any = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  const file = await toFile(audioBuffer, `voice.${audioExtension(mimeType)}`, { type: geminiAudioMime(mimeType) });
+  const configuredModel = process.env.VOICE_TRANSCRIPTION_GROQ_MODEL || 'whisper-large-v3-turbo';
+  const response = translateToEnglish && client.audio.translations?.create
+    ? await client.audio.translations.create({
+      file, model: process.env.VOICE_TRANSLATION_GROQ_MODEL || 'whisper-large-v3',
+      response_format: 'json',
+    })
+    : await client.audio.transcriptions.create({
+      file, model: configuredModel, response_format: 'verbose_json',
+    });
   const text = String(response?.text ?? '').trim();
   if (looksLikeSilence(text)) return { text: '', language: 'unknown', confidence: 0 };
   return {
@@ -443,11 +584,11 @@ export async function textToVoiceNote(text: string, language?: string): Promise<
         ? { languageCode: 'ur-IN', name: 'ur-IN-Standard-A', ssmlGender: 'FEMALE' as any }
         : { languageCode: 'en-US', name: 'en-US-Neural2-F', ssmlGender: 'FEMALE' as any };
 
-      const [response] = await client.synthesizeSpeech({
+      const [response] = await withVoiceTimeout('google_tts', client.synthesizeSpeech({
         input: { text },
         voice: voiceConfig,
         audioConfig: { audioEncoding: 'OGG_OPUS' as any, speakingRate: 1.0, pitch: 0 },
-      });
+      }));
 
       if (response.audioContent) {
         const buffer = Buffer.from(response.audioContent as Uint8Array);

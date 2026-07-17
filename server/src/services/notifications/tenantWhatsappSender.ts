@@ -29,6 +29,8 @@ export interface SendResult {
   warning?: string;
   /** Which channel actually delivered (or attempted) the send. */
   via?: 'meta' | 'webjs' | 'none';
+  /** Distinguishes a real voice bubble from the built-in text fallback. */
+  deliveredAs?: 'voice' | 'text';
 }
 
 /**
@@ -129,6 +131,7 @@ export async function sendTenantWhatsAppVoiceNote(
     if (r.ok) return {
       ok: true, waMessageId: r.waMessageId, via: 'meta',
       confirmation: r.waMessageId ? 'provider_receipt' : 'transport_accepted',
+      deliveredAs: 'voice',
     };
     log.warn('meta voice note send failed, trying legacy webjs voice', { err: r.error });
   }
@@ -144,13 +147,15 @@ export async function sendTenantWhatsAppVoiceNote(
       ok: true, waMessageId: r.messageId, via: 'webjs',
       confirmation: r.confirmation,
       warning: r.warning,
+      deliveredAs: 'voice',
     };
     log.warn('legacy webjs voice send failed, falling back to text', { err: r.error });
   }
 
   // Both voice paths failed (or were unavailable) — deliver the body as
   // text so the user still gets the message.
-  return await sendTenantWhatsAppText(clientNumber, toPhone, textFallback, userId);
+  const text = await sendTenantWhatsAppText(clientNumber, toPhone, textFallback, userId);
+  return { ...text, deliveredAs: 'text' };
 }
 
 // ─── webjs send + auto-recovery (extracted from brainOutboundService) ───

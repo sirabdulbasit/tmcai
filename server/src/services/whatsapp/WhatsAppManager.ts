@@ -49,6 +49,21 @@ export function clearProviderCache(clientNumber: string): void {
   providers.delete(clientNumber);
 }
 
+/** Stop a live inbound provider before changing its configured type. */
+async function disposeCachedProvider(clientNumber: string): Promise<void> {
+  const provider = providers.get(clientNumber);
+  if (!provider) return;
+  try {
+    await provider.disconnect(clientNumber);
+  } catch (error: any) {
+    log.warn('Provider disposal failed during config switch', {
+      clientNumber, error: error?.message,
+    });
+  } finally {
+    providers.delete(clientNumber);
+  }
+}
+
 // ─── Initialize all connected tenants on server startup ───────────────────────
 
 export async function initializeAllTenants(): Promise<void> {
@@ -315,8 +330,12 @@ export async function saveWhatsAppConfig(
   const encWebhookSecret = data.metaWebhookSecret ? await encrypt(data.metaWebhookSecret) : null;
 
   const exists = await prisma.$queryRawUnsafe(
-    `SELECT 1 FROM whatsapp_config WHERE client_number = $1`, clientNumber,
+    `SELECT provider FROM whatsapp_config WHERE client_number = $1`, clientNumber,
   ) as any[];
+
+  if (exists.length && exists[0].provider !== data.provider) {
+    await disposeCachedProvider(clientNumber);
+  }
 
   if (exists.length) {
     await prisma.$executeRawUnsafe(

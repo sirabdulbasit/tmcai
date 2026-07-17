@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   googleRecognitionEncoding,
+  detectAudioMime,
   transcribeVoiceNote,
   voiceTranscriptionFailureMarker,
 } from '../src/services/voiceService';
@@ -35,11 +36,23 @@ describe('voice transcription resilience', () => {
     vi.stubEnv('USE_VERTEX_AI', 'false');
     vi.stubEnv('GEMINI_API_KEY', '');
     vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('GROQ_API_KEY', '');
     vi.stubEnv('GOOGLE_APPLICATION_CREDENTIALS', '');
     const result = await transcribeVoiceNote(Buffer.alloc(32, 1), 'audio/ogg');
     expect(result).toMatchObject({
       text: '', provider: 'none', failureReason: 'provider_unavailable',
     });
+  });
+
+  it.each([
+    [Buffer.from('OggS0000'), 'audio/ogg'],
+    [Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), 'audio/webm'],
+    [Buffer.from('RIFF0000'), 'audio/wav'],
+    [Buffer.from('fLaC0000'), 'audio/flac'],
+    [Buffer.from('ID300000'), 'audio/mpeg'],
+    [Buffer.from('0000ftyp0000'), 'audio/mp4'],
+  ])('detects container signature as %s', (audio, expected) => {
+    expect(detectAudioMime(audio, 'application/octet-stream')).toBe(expected);
   });
 
   it('gives a specific retry instruction when speech is unclear', () => {

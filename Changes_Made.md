@@ -811,6 +811,93 @@ Client Vite production build: passed
 git diff --check: passed
 ```
 
+## 2026-07-17 — Complete WhatsApp pipeline hardening (post-deploy audit)
+
+The first voice-resilience deploy exposed that environment-variable presence
+was being mistaken for provider health and that activity feedback could fail
+silently. The complete tenant WhatsApp path was then audited from QR/Meta
+ingress through identity, media, Brain, action dispatch, response modality,
+wire receipt, health and recovery.
+
+### Canonical inbound identity and activity
+
+- Added `whatsapp/inboundIdentity.ts` as the single tenant-scoped phone matcher
+  used by both pre-processing activity and `WhatsAppInbound`. E.164, digits,
+  Pakistan-local and learned `@lid` aliases now produce one registration
+  decision; activity can no longer miss a user whom Brain later recognizes.
+- A preflight database error is represented as “unknown/retry”, not
+  “unregistered”. Confirmed unregistered traffic remains silent and receives
+  no voice-failure response.
+- QR messages now emit observable native typing/recording state plus an
+  hourglass reaction. WhatsApp API rejection is logged and recorded rather
+  than swallowed. Meta webhook messages request the native read/typing state
+  against the exact inbound message id.
+- Admin WhatsApp Health now shows the latest activity result, including whether
+  native state and reaction APIs were accepted.
+
+### Voice input and output
+
+- Audio container signatures (`OggS`, WebM/EBML, RIFF, FLAC, ID3 and MP4
+  `ftyp`) override unreliable WhatsApp/browser MIME labels.
+- The bounded transcription chain is now Gemini → OpenAI → Groq → Google.
+  Groq uses a speech-specific Whisper model and has a separate translation
+  model override. Every provider has a configurable timeout.
+- Google Speech runs only when its credentials file actually exists; a path
+  string alone no longer marks it configured.
+- A privacy-safe in-memory attempt ledger records provider, success/no-speech/
+  failure, latency, container and byte count. Errors are bounded and common
+  API-key formats are redacted. Audio and transcript content are never stored
+  in health telemetry.
+- Google TTS is timeout-bounded so a voice response cannot hang the complete
+  WhatsApp turn indefinitely.
+- QR voice sends now use the same receipt classifier as text: a resolved send
+  without an id is `transport_accepted`/`sent_unconfirmed`, never a false
+  failure and never automatically retried.
+- Meta voice fallback reports whether it delivered voice or text. The webhook
+  adds a readable text copy only after a real voice bubble; it no longer sends
+  the fallback text twice or ignores a failed send result.
+
+### Brain handoff, delivery and recovery
+
+- Inbound deduplication now keys on the immutable WhatsApp message id. Two
+  legitimate repeated messages such as “yes” are no longer collapsed merely
+  because their text and sender match within five seconds.
+- Brain handoff records bounded stage timing for identity, reasoning and wire
+  completion without logging message contents. An empty sanitized Brain answer
+  becomes an honest bracketed retry marker instead of an empty WhatsApp send.
+- Error replies use the originating message transport, preserving modern
+  `@lid` routing.
+- Switching the configured inbound provider disposes the cached live provider
+  first, preventing an orphan QR client from continuing to process messages
+  after a Meta/Web.js switch.
+- Tenant Nexeo QR/Meta transport remains separate from personal-user WhatsApp
+  ingestion by design. No QR session format, database schema, dependency or
+  outbound TTS format was replaced.
+
+### Observability and permanent regression coverage
+
+- `/admin/whatsapp-health` now includes configured speech providers, recent
+  voice attempts and recent activity signals, filtered to the authenticated
+  tenant.
+- `WhatsAppHealthPanel` renders provider readiness, credential-path problems,
+  the last transcription attempt and the last native activity outcome.
+- Added Chat 11 to the permanent Brain incident archive and regression corpus.
+- Added/expanded tests for canonical identity, container sniffing, provider
+  absence, activity API rejection, immutable-id dedup, Meta typing payload,
+  voice fallback single-send semantics, and accepted/unconfirmed receipts.
+
+No database migration or new package is required.
+
+Final verification:
+
+```text
+Server: 989 passed, 21 skipped, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+Client Vite production build: passed
+git diff --check: passed
+```
+
 ## 2026-07-17 — WhatsApp voice transcription resilience
 
 The WhatsApp text path was verified healthy in production, while a voice note

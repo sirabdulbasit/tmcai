@@ -35,9 +35,11 @@ export default function WhatsAppHealthPanel() {
   if (loading) return <div style={panelStyle()}>Loading health data…</div>;
   if (!data || data.error) return null;
 
-  const { stats, history, config, notifier } = data;
+  const { stats, history, config, notifier, voice = [], voiceProviders = {}, activity = [] } = data;
   const configConnected = config?.status === 'connected';
   const notifierReady = !!notifier?.is_active;
+  const lastVoice = voice.length ? voice[voice.length - 1] : null;
+  const lastActivity = activity.length ? activity[activity.length - 1] : null;
 
   return (
     <div style={panelStyle()}>
@@ -71,6 +73,37 @@ export default function WhatsAppHealthPanel() {
           value={config?.messages_today ?? 0}
           color="#a78bfa"
         />
+      </div>
+
+      <div style={{
+        padding: '9px 10px', marginBottom: 12, borderRadius: 6,
+        background: '#0f0f0f', border: '1px solid #333',
+      }}>
+        <div style={{ fontSize: 10, color: '#666', marginBottom: 7, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Voice transcription providers
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {Object.entries(voiceProviders).map(([name, state]) => (
+            <StatusPill
+              key={name}
+              ok={!!state?.configured}
+              label={`${name}${state?.detail ? ` — ${state.detail}` : ''}`}
+            />
+          ))}
+          {Object.keys(voiceProviders).length === 0 && (
+            <span style={{ fontSize: 11, color: '#666' }}>Provider status unavailable.</span>
+          )}
+        </div>
+        <div style={{ marginTop: 8, fontSize: 11, color: lastVoice?.outcome === 'success' ? '#4ade80' : lastVoice ? '#f59e0b' : '#666' }}>
+          {lastVoice
+            ? `Last voice attempt: ${lastVoice.provider} · ${lastVoice.outcome} · ${lastVoice.latencyMs}ms · ${lastVoice.mimeType} · ${lastVoice.bytes} bytes${lastVoice.error ? ` · ${lastVoice.error}` : ''}`
+            : 'No voice transcription attempt recorded since the last server restart.'}
+        </div>
+        <div style={{ marginTop: 5, fontSize: 11, color: lastActivity?.state === 'failed' || lastActivity?.state === 'unsupported' ? '#f59e0b' : lastActivity ? '#60a5fa' : '#666' }}>
+          {lastActivity
+            ? `Last activity signal: ${lastActivity.state} · reaction ${lastActivity.reactionOk ? 'accepted' : 'rejected'} · ${lastActivity.voice ? 'voice turn' : 'text turn'}`
+            : 'No QR activity signal recorded since the last server restart.'}
+        </div>
       </div>
 
       {/* Sparkline — last 60 probe samples as coloured dots */}

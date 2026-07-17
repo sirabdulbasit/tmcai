@@ -38,6 +38,12 @@ router.get('/whatsapp-health', async (req: Request, res: Response) => {
 
   const stats = getHealthStats(cn);
   const history = getHealthHistory(cn);
+  const voiceModule = await import('../../services/voiceService').catch(() => null);
+  const voice = voiceModule?.getVoiceTranscriptionHealth(cn) ?? [];
+  const voiceProviders = voiceModule?.getVoiceProviderConfiguration() ?? {};
+  const activity = await import('../../services/whatsapp/inboundActivity')
+    .then((m) => m.getInboundActivityHealth(cn))
+    .catch(() => []);
 
   res.json({
     tenant: cn,
@@ -45,6 +51,9 @@ router.get('/whatsapp-health', async (req: Request, res: Response) => {
     notifier,
     stats,
     history,
+    voice,
+    voiceProviders,
+    activity,
     generatedAt: new Date().toISOString(),
   });
 });

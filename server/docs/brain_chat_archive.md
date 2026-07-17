@@ -333,3 +333,17 @@ When the user pastes a new chat:
 **What worked:** verbatim transcription + echo, the voice-note reply channel, the morning brief itself.
 
 **Verification status:** unverified in prod — unit-locked by tests/preferenceImmediateAction.test.ts + brainScenarios chat10. Ships with this deploy.
+
+---
+
+## Chat 11 — 2026-07-17 (WhatsApp voice pipeline failed without visible processing state)
+
+**User:** sent a voice note to Nexeo after a successful text “Hi” exchange.
+
+**Observed failure:** Nexeo returned `[voice transcription is temporarily unavailable — please type the message while it recovers]`. No typing/recording state or hourglass reaction was visible. Production configuration reported three provider variables present, but did not prove that any provider could actually transcribe. The activity preflight also had its own sender lookup instead of sharing Brain’s identity decision.
+
+**Root causes fixed:** sender matching is now canonical across activity and Brain; audio container signatures override unreliable WhatsApp MIME labels; Gemini/OpenAI/Groq/Google attempts are bounded and recorded in the admin health surface; Meta and QR paths share honest failure semantics; voice sends use the same accepted/unconfirmed receipt contract as text; Meta text fallback cannot double-send.
+
+**Symptom tags:** `whatsapp-voice-pipeline-unobservable`, `whatsapp-activity-missing`.
+
+**Verification status:** unit-locked by voice, identity, activity, receipt, fallback, and Brain scenario tests. Live provider success and native WhatsApp activity remain deployment acceptance checks.

@@ -193,9 +193,24 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
 
           // Incoming messages
           for (const message of value.messages || []) {
+            const fromNumber = '+' + message.from;
+            const { resolveRegisteredWhatsAppUser } = await import('../services/whatsapp/inboundIdentity');
+            let resolvedIdentity = await resolveRegisteredWhatsAppUser(clientNumber, fromNumber)
+              .catch((err: any) => {
+                log.warn('meta inbound identity preflight failed', { clientNumber, error: err?.message });
+                return undefined;
+              });
             const isVoice = message.type === 'audio' || message.type === 'voice';
             let messageBody = message.text?.body || message.caption || '';
             let inputWasVoice = false;
+
+            if (resolvedIdentity && message.id) {
+              const { sendTypingIndicatorViaNotifier } = await import('../services/notifications/whatsappNotifierService');
+              const indicator = await sendTypingIndicatorViaNotifier(clientNumber, message.id);
+              if (!indicator.ok) {
+                log.warn('meta typing indicator failed', { clientNumber, error: indicator.error });
+              }
+            }
 
             // Voice note inbound — parity with the legacy webjs path. The
             // Meta webhook only delivers a media id; we fetch the actual
@@ -210,7 +225,7 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
                 const audio = await downloadMetaMedia(clientNumber, message.audio.id);
                 if (audio) {
                   const { transcribeVoiceNote } = await import('../services/voiceService');
-                  const t = await transcribeVoiceNote(audio.buffer, audio.mimeType);
+                  const t = await transcribeVoiceNote(audio.buffer, audio.mimeType, { clientNumber });
                   messageBody = t.text;
                   voiceFailureReason = t.failureReason;
                   log.info('voice transcription completed (meta)', {
@@ -230,13 +245,18 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
                 // 2026-05-20: "don't hardcode anything this is the crime
                 // in building AI". The previous "Sorry, I couldn't…" line
                 // was textbook fake-Brain. State error → bracket-wrapped.
-                const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
-                const { voiceTranscriptionFailureMarker } = await import('../services/voiceService');
-                await sendTenantWhatsAppText(
-                  clientNumber, '+' + message.from,
-                  voiceTranscriptionFailureMarker(voiceFailureReason),
-                  0,
-                );
+                if (resolvedIdentity === undefined) {
+                  resolvedIdentity = await resolveRegisteredWhatsAppUser(clientNumber, fromNumber).catch(() => undefined);
+                }
+                if (resolvedIdentity) {
+                  const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                  const { voiceTranscriptionFailureMarker } = await import('../services/voiceService');
+                  await sendTenantWhatsAppText(
+                    clientNumber, fromNumber,
+                    voiceTranscriptionFailureMarker(voiceFailureReason),
+                    resolvedIdentity.userId,
+                  );
+                }
                 continue;
               }
             }
@@ -250,26 +270,49 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
                   const audioBuf = await textToVoiceNote(text);
                   if (audioBuf) {
                     const { sendTenantWhatsAppVoiceNote } = await import('../services/notifications/tenantWhatsappSender');
-                    await sendTenantWhatsAppVoiceNote(clientNumber, '+' + message.from, audioBuf, text, 0);
-                    // Also send text version so the user can re-read it.
-                    const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
-                    await sendTenantWhatsAppText(clientNumber, '+' + message.from, text, 0);
+                    const voice = await sendTenantWhatsAppVoiceNote(
+                      clientNumber, fromNumber, audioBuf, text, resolvedIdentity?.userId ?? 0,
+                    );
+                    if (!voice.ok) return { success: false, error: voice.error };
+                    // Only add the readable copy when a voice bubble really
+                    // went out. The voice primitive already sends text when
+                    // media delivery is unavailable.
+                    if (voice.deliveredAs === 'voice') {
+                      const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
+                      const readable = await sendTenantWhatsAppText(
+                        clientNumber, fromNumber, text, resolvedIdentity?.userId ?? 0,
+                      );
+                      if (!readable.ok) {
+                        log.warn('meta voice reply readable copy failed', { clientNumber, error: readable.error });
+                      }
+                    }
+                    return {
+                      success: true, messageId: voice.waMessageId,
+                      confirmation: voice.confirmation,
+                    };
                   } else {
                     const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
-                    await sendTenantWhatsAppText(clientNumber, '+' + message.from, text, 0);
+                    const sent = await sendTenantWhatsAppText(
+                      clientNumber, fromNumber, text, resolvedIdentity?.userId ?? 0,
+                    );
+                    return sent.ok
+                      ? { success: true, messageId: sent.waMessageId, confirmation: sent.confirmation }
+                      : { success: false, error: sent.error };
                   }
                 }
               : undefined;
 
             await handleInboundMessage({
               clientNumber,
-              fromNumber: '+' + message.from,
+              fromNumber,
               messageBody,
               messageType: isVoice ? 'voice' : message.type === 'image' ? 'image' : 'text',
               mediaUrl: message.image?.id || message.audio?.id || undefined,
               waMessageId: message.id,
               timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
               replyFn,
+              _resolvedUserId: resolvedIdentity?.userId,
+              _resolvedIdentity: resolvedIdentity,
             });
           }
         }

@@ -30,4 +30,16 @@ describe('WhatsApp inbound processing feedback', () => {
     expect(sendStateRecording).toHaveBeenCalledOnce();
     await activity.stop();
   });
+
+  it('does not break Brain when WhatsApp rejects activity APIs', async () => {
+    const activity = await startInboundActivity({
+      react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
+      getChat: vi.fn(async () => ({
+        sendStateTyping: vi.fn(async () => { throw new Error('state rejected'); }),
+        clearState: vi.fn(async () => { throw new Error('clear rejected'); }),
+      })),
+    }, false, { clientNumber: 'TMC-0001', userId: 2, messageId: 'wa-1' });
+    await expect(activity.pulse()).resolves.toBeUndefined();
+    await expect(activity.stop()).resolves.toBeUndefined();
+  });
 });

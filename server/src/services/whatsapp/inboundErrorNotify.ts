@@ -19,13 +19,13 @@ const log = createLogger('whatsapp:error-notify');
 export const INBOUND_ERROR_REPLY = `[couldn't process that — please retry]`;
 
 export async function maybeNotifyInboundError(
-  message: { getChat: () => Promise<{ sendMessage: (text: string) => Promise<any> }> },
+  message: any,
   resolvedUserId: number | undefined,
 ): Promise<boolean> {
   if (!resolvedUserId) return false; // unregistered → stay silent by policy
   try {
-    const chat = await message.getChat();
-    await chat.sendMessage(INBOUND_ERROR_REPLY);
+    const { sendInboundTextReply } = await import('./inboundReplyTransport');
+    await sendInboundTextReply(message, INBOUND_ERROR_REPLY);
     return true;
   } catch (err: any) {
     log.warn('error notify failed', { err: err?.message });
