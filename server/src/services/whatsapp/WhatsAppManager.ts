@@ -220,7 +220,7 @@ export async function sendWhatsAppVoiceNote(params: {
   caption?: string;             // logged alongside the row for audit
   agentId?: number;
   userId?: number;
-}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+}): Promise<SendResult> {
   const configs = await prisma.$queryRawUnsafe<any[]>(
     `SELECT status, connected_number, daily_limit, messages_today FROM whatsapp_config WHERE client_number = $1`,
     params.clientNumber,
@@ -283,7 +283,7 @@ export async function sendWhatsAppVoiceNote(params: {
        VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
       params.clientNumber, logUserId, configs[0].connected_number || '',
       params.to, `[voice note] ${params.caption ?? ''}`.trim(),
-      r.messageId || null, r.success ? 'sent' : 'failed', params.agentId || null,
+      r.messageId || null, whatsappMessageLogStatus(r), params.agentId || null,
     );
     if (!r.success) await refundClaim();
     return r;

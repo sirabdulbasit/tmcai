@@ -170,12 +170,16 @@ const HANDLER_REGISTRY: Record<string, Record<string, (userId: number, payload: 
       const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
       const intro = `Hi ${payload.recipientName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
-        const r = await sendTenantWhatsAppText(ctx.clientNumber, String(payload.recipientPhone), `${intro}${payload.message}`, userId);
+        const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+        const substantive = normalizeWhatsAppSubstantiveMessage(String(payload.message), String(payload.recipientName));
+        const r = await sendTenantWhatsAppText(ctx.clientNumber, String(payload.recipientPhone), `${intro}${substantive}`, userId);
         if (!r.ok) return { ok: false, message: `WhatsApp send failed: ${r.error ?? 'unknown'}`, errorCode: 'wa_api' };
         return {
           ok: true,
           artifactId: r.waMessageId,
-          message: `Sent WhatsApp to ${payload.recipientName} (${payload.recipientPhone}) from the Nexeo number.`,
+          message: r.waMessageId
+            ? `Sent WhatsApp to ${payload.recipientName} (${payload.recipientPhone}) from the Nexeo number.`
+            : whatsappAcceptedMessage(String(payload.recipientName), String(payload.recipientPhone)),
         };
       } catch (e: any) {
         return { ok: false, message: `WhatsApp send failed: ${e?.message ?? 'unknown'}`, errorCode: 'exception' };

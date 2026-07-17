@@ -850,3 +850,103 @@ the required voice-note send options.
 
 Added `server/tests/whatsappInboundReplyTransport.test.ts` to lock exact-context
 routing and the compatibility fallback.
+
+## 22. Complete WhatsApp reply, voice-note, and activity repair (2026-07-17)
+
+### Production evidence and final root causes
+
+The destination screenshot proved that Nexeo's status request reached Muhammad
+Yousaf and that he replied. Nexeo nevertheless reported a failed send and later
+said there were no new WhatsApp messages. Voice notes could also disappear
+without a reply, and long-running text/voice turns did not consistently show
+that Nexeo was working.
+
+The remaining causes crossed several boundaries:
+
+- Brain Composer still required a provider message ID even after Web.js had
+  accepted a send, so the lower-level three-state receipt fix was not fully
+  propagated to user-facing action results.
+- the outbound action could add its canonical Nexeo introduction on top of a
+  model-authored recipient greeting/introduction, producing the duplicated
+  Yousaf message;
+- replies from a legitimate external delegatee were rejected by the registered
+  user gate, so they never became feed evidence or updated the related open
+  item;
+- the reduced `message_create` listener did not share the main listener's audio
+  handling, while Web.js versions can emit either `message`, `message_create`,
+  or both;
+- outbound audit rows were written as `sent` before the transport attempt.
+
+### Send semantics and honest confirmation
+
+`tenantWhatsappSender`, `WhatsAppManager`, Brain Composer, and the generic
+action dispatcher now preserve the provider's three-state result end to end:
+
+- a provider receipt ID is confirmed `sent`;
+- a resolved send without an ID is `sent_unconfirmed` / transport accepted and
+  is not retried automatically;
+- only a thrown or rejected send is `failed`.
+
+Brain now reports the accepted-without-receipt state honestly instead of
+claiming that the notifier was disconnected. `whatsappOutboundPolicy.ts`
+removes a model-authored assistant introduction or duplicate recipient greeting
+before the single canonical Nexeo on-behalf-of prefix is added.
+
+### Safe delegatee-reply ingestion
+
+Added `expectedExternalReplyService.ts`. The registered-user privacy boundary
+remains the default: unknown senders are neither stored nor answered. A narrow
+exception admits an external number only when it exactly matches the recipient
+of a successful tenant WhatsApp send from the previous 14 days.
+
+For a matched delegatee reply, the service:
+
+- treats the human reply as delivery evidence and promotes the outbound row to
+  `delivered`;
+- resolves the owner and contact within the tenant;
+- attaches the reply as evidence to the best matching active delegated open
+  item (title match first; a sole candidate is the safe fallback);
+- creates a canonical WhatsApp feed event and queues a routine Brain prompt for
+  the owner;
+- never enters the delegatee into the chatbot path and never auto-replies to
+  them.
+
+Webhook and Web.js inbound paths now carry the real WhatsApp message ID and
+normalized timestamp into this correlation flow.
+
+### Voice-note parity and visible processing state
+
+`WebjsProvider` now routes both `message` and `message_create` through one
+deduplicated handler. Therefore text and voice notes receive identical identity,
+transcription, Brain, reply, error, and audit behavior regardless of which
+event the installed Web.js version emits.
+
+For a registered user, every accepted inbound message now immediately reacts
+with an hourglass and shows WhatsApp typing state. Voice notes show recording
+state when supported. The state is refreshed every 15 seconds during long
+transcription/reasoning, and the timer, chat state, and reaction are cleared on
+both success and failure. Unknown senders and captured delegatees do not receive
+this feedback. A failed transcription returns an explicit bracketed failure
+marker instead of silently disappearing; a successful transcription is echoed
+before Brain acts on it.
+
+Outbound reply audit rows are now inserted after the wire attempt with
+`sent`, `sent_unconfirmed`, or `failed`, including the bounded transport error
+when relevant. They no longer claim success before attempting delivery.
+
+### Regression coverage and release verification
+
+Added:
+
+- `server/tests/whatsappOutboundPolicy.test.ts`;
+- `server/tests/expectedExternalWhatsappReply.test.ts`;
+- `server/tests/whatsappInboundActivity.test.ts`.
+
+Final verification:
+
+```text
+Server: 944 passed, 21 skipped, 0 failed
+TypeScript: clean
+Server production build: passed (Prisma 6.19.2)
+git diff --check: passed
+```

@@ -257,6 +257,8 @@ router.post('/webhooks/whatsapp/:clientNumber', async (req, res) => {
               messageBody,
               messageType: isVoice ? 'voice' : message.type === 'image' ? 'image' : 'text',
               mediaUrl: message.image?.id || message.audio?.id || undefined,
+              waMessageId: message.id,
+              timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
               replyFn,
             });
           }

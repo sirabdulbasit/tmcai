@@ -19,7 +19,14 @@ export interface InboundParams {
   messageBody: string;
   messageType: 'text' | 'image' | 'voice' | 'document';
   mediaUrl?: string;
-  replyFn?: (text: string) => Promise<void>;
+  waMessageId?: string;
+  timestamp?: number;
+  replyFn?: (text: string) => Promise<{
+    success: boolean;
+    messageId?: string;
+    confirmation?: 'provider_receipt' | 'transport_accepted';
+    error?: string;
+  } | void>;
   typingFn?: () => Promise<void>;  // Shows "typing..." indicator in WhatsApp
   /** Set by handleInboundMessage after identity resolution; used by
    *  sendReply so the outbound whatsapp_messages row carries a valid
@@ -96,6 +103,24 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   //
   // PM2 log line is the only persisted record — admins can grep it.
   if (!connections.length) {
+    // Narrow exception: a contact/delegatee may reply to a recent message
+    // that the user explicitly asked Nexeo to send. Capture that evidence for
+    // the owner/open item, but never enter the chatbot path or reply to them.
+    const { captureExpectedExternalReply } = await import('./expectedExternalReplyService');
+    const expected = await captureExpectedExternalReply({
+      clientNumber: params.clientNumber,
+      fromNumber: params.fromNumber,
+      body: params.messageBody,
+      messageType: params.messageType,
+      sourceId: params.waMessageId
+        ?? `external:${params.fromNumber}:${params.timestamp ?? Date.now()}:${params.messageBody.slice(0, 40)}`,
+      timestamp: params.timestamp,
+    }).catch((e: any) => {
+      log.warn('expected external reply check failed', { error: e.message });
+      return { matched: false };
+    });
+    if (expected.matched) return;
+
     log.info('Unregistered number — dropped (no save, no reply)', {
       from: params.fromNumber,
       clientNumber: params.clientNumber,
@@ -524,10 +549,9 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
     else clean += '...';
   }
 
-  // Log outbound message. `whatsapp_messages.user_id` is NOT NULL — if
-  // the resolver upstream didn't set one (edge case: reply before
-  // identity resolution, e.g., the "unregistered number" prompt), fall
-  // back to the tenant's first active SA so the log row is valid.
+  // Resolve the audit owner before sending. The row itself is written only
+  // AFTER the wire attempt so the Admin panel never claims `sent` for a reply
+  // that threw before leaving the process.
   let logUserId = params._resolvedUserId;
   if (!logUserId) {
     const sa = await prisma.$queryRawUnsafe<any[]>(
@@ -537,31 +561,43 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
     ).catch(() => [] as any[]);
     logUserId = sa[0]?.id;
   }
+  let status: 'sent' | 'sent_unconfirmed' | 'failed' = 'sent_unconfirmed';
+  let messageId: string | null = null;
+  let sendError: string | null = null;
+  try {
+    if (params.replyFn) {
+      const outcome = await params.replyFn(clean);
+      if (outcome && !outcome.success) throw new Error(outcome.error ?? 'reply provider rejected send');
+      messageId = outcome?.messageId ?? null;
+      status = messageId ? 'sent' : 'sent_unconfirmed';
+    } else {
+      const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+      const outcome = await sendTenantWhatsAppText(
+        params.clientNumber, params.fromNumber, clean, logUserId ?? 0,
+      );
+      if (!outcome.ok) throw new Error(outcome.error ?? 'reply provider rejected send');
+      messageId = outcome.waMessageId ?? null;
+      status = messageId ? 'sent' : 'sent_unconfirmed';
+    }
+  } catch (err: any) {
+    status = 'failed';
+    sendError = err?.message ?? 'unknown reply send error';
+  }
+
   try {
     if (logUserId) {
       await prisma.$executeRawUnsafe(
-        `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, status, created_at)
-         VALUES ($1, $2, 'outbound', $3, $4, $5, 'sent', NOW())`,
+        `INSERT INTO whatsapp_messages
+           (client_number, user_id, direction, from_number, to_number,
+            content, wa_message_id, status, error_message, created_at)
+         VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
         params.clientNumber, logUserId, '', params.fromNumber, clean,
+        messageId, status, sendError,
       );
     }
   } catch (err: any) {
     log.warn('outbound log insert failed', { error: err.message });
   }
 
-  if (params.replyFn) {
-    // Provider-supplied reply path (legacy webjs uses MessageMedia for
-    // voice). When inbound came over Meta webhook, no replyFn is passed
-    // and we route through the unified tenant-WhatsApp sender — which
-    // picks Meta Notifier when configured, falls back to webjs otherwise.
-    await params.replyFn(clean);
-  } else {
-    const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
-    await sendTenantWhatsAppText(
-      params.clientNumber,
-      params.fromNumber,
-      clean,
-      logUserId ?? 0,
-    );
-  }
+  if (status === 'failed') throw new Error(sendError ?? 'reply send failed');
 }

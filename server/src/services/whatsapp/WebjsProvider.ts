@@ -9,6 +9,7 @@
 import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, TestResult } from './IWhatsAppProvider';
 import { classifyWebjsSendResult } from './sendReceipt';
 import { sendInboundTextReply } from './inboundReplyTransport';
+import { startInboundActivity, InboundActivity } from './inboundActivity';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import fs from 'fs';
@@ -239,7 +240,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       log.info('Connected', { clientNumber, number });
     });
 
-    client.on('message', async (message: any) => {
+    const handleInboundEvent = async (message: any) => {
       if (message.fromMe) return;
 
       const rawFrom = message.from || '';
@@ -280,6 +281,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       // Declared outside the try so the catch can gate the error reply on
       // _resolvedUserId (set by handleInboundMessage after registration).
       let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
+      let activity: InboundActivity | null = null;
       try {
         // Extract real phone number — handle both @c.us and @lid formats
         let fromNumber = '';
@@ -366,8 +368,21 @@ export class WebjsProvider implements IWhatsAppProvider {
 
         log.info('Message received', { rawFrom, resolvedNumber: fromNumber, synthLidPhone });
 
-        // React with ⏳ to show we're processing
-        try { await message.react('⏳'); } catch {}
+        // Show processing feedback only to registered users. Expected external
+        // delegatee replies are captured silently and unknown senders remain
+        // fully ignored by policy.
+        const regDigits = fromNumber.replace(/[^\d]/g, '');
+        const registered = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT 1
+             FROM whatsapp_connections wc JOIN users u ON u.id = wc.user_id
+            WHERE u.client_number = $1 AND u.is_active = TRUE
+              AND wc.status = 'active'
+              AND wc.phone_number IN ($2, $3, $4, $5)
+            LIMIT 1`,
+          clientNumber, fromNumber, regDigits, `+${regDigits}`,
+          `0${regDigits.startsWith('92') ? regDigits.slice(2) : regDigits}`,
+        ).then((rows) => rows.length > 0).catch(() => false);
+        if (registered) activity = await startInboundActivity(message, isVoice);
 
         // Handle voice messages — transcribe audio to text
         let messageBody = message.body || '';
@@ -414,9 +429,8 @@ export class WebjsProvider implements IWhatsAppProvider {
             messageBody = '';
           }
           if (!messageBody) {
-            const chat = await message.getChat();
-            await chat.sendMessage('Sorry, I couldn\'t understand the voice note. Please try again or type your message.');
-            try { await message.react(''); } catch {}
+            await sendInboundTextReply(message, '[voice transcription failed — please try again or type the message]');
+            await activity?.stop();
             return;
           }
           // Transcription echo (Basit 2026-07-13): show the user what was
@@ -442,6 +456,8 @@ export class WebjsProvider implements IWhatsAppProvider {
           fromNumber,
           messageBody,
           messageType,
+          waMessageId: msgId,
+          timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
           replyFn: async (text: string) => {
             // If input was voice, reply with voice note too
             if (inputWasVoice) {
@@ -455,36 +471,33 @@ export class WebjsProvider implements IWhatsAppProvider {
                   const media = new MessageMedia('audio/ogg; codecs=opus', audioBuffer.toString('base64'));
                   await chat.sendMessage(media, { sendAudioAsVoice: true });
                   // Also send text version (for readability)
-                  await sendInboundTextReply(message, text);
-                  return;
+                  return await sendInboundTextReply(message, text);
                 }
               } catch (e: any) {
                 log.error('Voice reply failed, sending text only', { error: e.message });
               }
             }
-            await sendInboundTextReply(message, text);
+            return await sendInboundTextReply(message, text);
           },
           typingFn: async () => {
-            try {
-              const chat = await message.getChat();
-              await chat.sendStateTyping();
-            } catch {}
+            await activity?.pulse();
           },
         };
         await handleInboundMessage(inboundParams);
 
-        // Remove ⏳ after all processing + replies are done
-        try { await message.react(''); } catch {}
+        await activity?.stop();
       } catch (e: any) {
         // A7: tell the user something went wrong (bracketed system
         // marker, registered senders only) BEFORE clearing the ⏳ —
         // an unacknowledged instruction reads as a disobeyed one.
         const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
         await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
-        try { await message.react(''); } catch {} // remove even on error
+        await activity?.stop();
         log.error('Inbound handler error', { error: e.message });
       }
-    });
+    };
+
+    client.on('message', handleInboundEvent);
 
     // Older whatsapp-web.js fires `message`; newer fires `message_create`.
     // Some versions fire BOTH for the same inbound. Without a dedup
@@ -493,56 +506,7 @@ export class WebjsProvider implements IWhatsAppProvider {
     // the second handler invocation found the awaiting prompt already
     // answered and fell through to chat. Dedup at the message-id level
     // so each inbound is processed exactly once.
-    client.on('message_create', async (message: any) => {
-      if (message.fromMe) return;
-      const rawFrom = message.from || '';
-      if (rawFrom === 'status@broadcast' || rawFrom.includes('@g.us') || rawFrom.includes('@newsletter')) return;
-      if (!message.body || !message.body.trim()) return;
-      const msgId = message.id?._serialized ?? message.id?.id ?? `${rawFrom}:${message.timestamp}:${message.body?.slice(0, 16)}`;
-      if (markSeen(msgId)) {
-        log.info('message_create event — duplicate of a `message` event, skipping', { msgId });
-        return;
-      }
-
-      log.info('message_create event', { from: rawFrom, body: (message.body || '').slice(0, 50) });
-
-      let inboundParams: import('./WhatsAppInbound').InboundParams | null = null;
-      try {
-        let fromNumber = '';
-        if (rawFrom.includes('@c.us')) {
-          fromNumber = '+' + rawFrom.replace('@c.us', '');
-        } else if (rawFrom.includes('@lid')) {
-          try {
-            const contact = await message.getContact();
-            fromNumber = '+' + (contact?.number || contact?.id?.user || rawFrom.replace('@lid', ''));
-          } catch { fromNumber = '+' + rawFrom.replace('@lid', ''); }
-        } else {
-          fromNumber = '+' + rawFrom.replace(/@.*$/, '');
-        }
-
-        const { handleInboundMessage } = await import('./WhatsAppInbound');
-        inboundParams = {
-          clientNumber,
-          fromNumber,
-          messageBody: message.body,
-          messageType: message.hasMedia ? 'image' : 'text',
-          typingFn: async () => {
-            try { const chat = await message.getChat(); await chat.sendStateTyping(); } catch {}
-          },
-          replyFn: async (text: string) => {
-            await sendInboundTextReply(message, text);
-          },
-        };
-        await handleInboundMessage(inboundParams);
-        try { await message.react(''); } catch {}
-      } catch (e: any) {
-        // A7: bracketed error marker to registered senders before clearing ⏳
-        const { maybeNotifyInboundError } = await import('./inboundErrorNotify');
-        await maybeNotifyInboundError(message, inboundParams?._resolvedUserId);
-        try { await message.react(''); } catch {}
-        log.error('message_create handler error', { error: e.message });
-      }
-    });
+    client.on('message_create', handleInboundEvent);
 
     // ─── Incoming call auto-reject ────────────────────────────────────
     // Policy (Basit, 2026-06-10): "only brain will call user, where user

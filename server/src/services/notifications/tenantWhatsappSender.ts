@@ -25,6 +25,8 @@ export interface SendResult {
   ok: boolean;
   waMessageId?: string;
   error?: string;
+  confirmation?: 'provider_receipt' | 'transport_accepted';
+  warning?: string;
   /** Which channel actually delivered (or attempted) the send. */
   via?: 'meta' | 'webjs' | 'none';
 }
@@ -63,7 +65,10 @@ export async function sendTenantWhatsAppText(
 
   if (metaReady) {
     const meta = await sendViaNotifier(clientNumber, toPhone, body);
-    if (meta.ok) return { ok: true, waMessageId: meta.waMessageId, via: 'meta' };
+    if (meta.ok) return {
+      ok: true, waMessageId: meta.waMessageId, via: 'meta',
+      confirmation: meta.waMessageId ? 'provider_receipt' : 'transport_accepted',
+    };
     const configIssue = /token decrypt|no active|inactive/i.test(meta.error ?? '');
     if (!configIssue) return { ok: false, error: meta.error, via: 'meta' };
     log.warn('meta config issue, trying legacy webjs', { err: meta.error });
@@ -121,7 +126,10 @@ export async function sendTenantWhatsAppVoiceNote(
   if (metaReady) {
     const { sendVoiceNoteViaNotifier } = await import('./whatsappNotifierService');
     const r = await sendVoiceNoteViaNotifier(clientNumber, toPhone, audio, 'audio/ogg');
-    if (r.ok) return { ok: true, waMessageId: r.waMessageId, via: 'meta' };
+    if (r.ok) return {
+      ok: true, waMessageId: r.waMessageId, via: 'meta',
+      confirmation: r.waMessageId ? 'provider_receipt' : 'transport_accepted',
+    };
     log.warn('meta voice note send failed, trying legacy webjs voice', { err: r.error });
   }
 
@@ -132,7 +140,11 @@ export async function sendTenantWhatsAppVoiceNote(
       mimeType: 'audio/ogg; codecs=opus', userId,
       caption: textFallback.slice(0, 160),
     });
-    if (r.success) return { ok: true, waMessageId: r.messageId, via: 'webjs' };
+    if (r.success) return {
+      ok: true, waMessageId: r.messageId, via: 'webjs',
+      confirmation: r.confirmation,
+      warning: r.warning,
+    };
     log.warn('legacy webjs voice send failed, falling back to text', { err: r.error });
   }
 
@@ -148,11 +160,16 @@ async function sendViaLegacyWebjs(
   phone: string,
   body: string,
   userId: number,
-): Promise<{ ok: boolean; waMessageId?: string; error?: string }> {
+): Promise<SendResult> {
   const { sendWhatsAppMessage, getProvider } = await import('../whatsapp/WhatsAppManager');
 
   const first = await sendWhatsAppMessage({ clientNumber, to: phone, message: body, userId });
-  if (first.success) return { ok: true, waMessageId: first.messageId };
+  if (first.success) return {
+    ok: true,
+    waMessageId: first.messageId,
+    confirmation: first.confirmation,
+    warning: first.warning,
+  };
 
   if (!/not connected|not initialized/i.test(first.error ?? '')) {
     return { ok: false, error: first.error };
@@ -175,7 +192,12 @@ async function sendViaLegacyWebjs(
   const second = await sendWhatsAppMessage({ clientNumber, to: phone, message: body, userId });
   if (second.success) {
     log.info('webjs auto-recovery succeeded', { clientNumber });
-    return { ok: true, waMessageId: second.messageId };
+    return {
+      ok: true,
+      waMessageId: second.messageId,
+      confirmation: second.confirmation,
+      warning: second.warning,
+    };
   }
   return { ok: false, error: `webjs after re-init: ${second.error}` };
 }

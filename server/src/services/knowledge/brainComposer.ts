@@ -3494,18 +3494,21 @@ ${calLines.join('\n')}`;
             const { getBrainDisplayName } = await import('./outboundIdentity');
             const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
             const intro = `Hi ${introName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
-            const fullBody = `${intro}${act.message}`;
+            const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+            const substantive = normalizeWhatsAppSubstantiveMessage(act.message, recipientName);
+            const fullBody = `${intro}${substantive}`;
             const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, fullBody, userId);
-            if (r.ok && r.waMessageId) {
+            if (r.ok) {
               actionResult = {
                 ok: true,
                 artifactId: r.waMessageId,
-                message: `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number.`,
+                message: r.waMessageId
+                  ? `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number.`
+                  : whatsappAcceptedMessage(recipientName, recipientPhone),
               };
               answer = actionResult.message;
             } else {
-              // No messageId = fabrication-guard: don't claim sent.
-              actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'send returned no message id — likely the tenant notifier isn\'t connected or the recipient number isn\'t on WhatsApp'}]` };
+              actionResult = { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'provider rejected the send'}]` };
               answer = actionResult.message;
             }
           }
@@ -5719,18 +5722,19 @@ export async function dispatchPendingDirect(
       const brainDisplayName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
       const intro = `Hi ${recipientName.startsWith('contact at') ? 'there' : recipientName}, this is ${brainDisplayName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
-        const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, `${intro}${slots.message}`, userId);
-        if (r.ok && r.waMessageId) {
+        const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+        const substantive = normalizeWhatsAppSubstantiveMessage(String(slots.message), recipientName);
+        const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, `${intro}${substantive}`, userId);
+        if (r.ok) {
           return {
             ok: true,
             artifactId: r.waMessageId,
-            message: `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number. waMessageId=${r.waMessageId}`,
+            message: r.waMessageId
+              ? `Sent WhatsApp to ${recipientName} (${recipientPhone}) from the Nexeo number. waMessageId=${r.waMessageId}`
+              : whatsappAcceptedMessage(recipientName, recipientPhone),
           };
         }
-        // No waMessageId returned = actual failure. Do not claim sent.
-        // Per Basit 2026-07-07: fabrication class error — Brain used
-        // to say "message sent" when send silently failed.
-        return { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'send did not return a message id — likely the tenant notifier isn\'t connected or the recipient number isn\'t on WhatsApp'}]` };
+        return { ok: false, message: `[notify_via_whatsapp failed: ${r.error ?? 'provider rejected the send'}]` };
       } catch (e: any) {
         return { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
       }
