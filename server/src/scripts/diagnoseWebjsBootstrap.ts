@@ -238,20 +238,16 @@ export async function runWebjsBootstrapDiagnostic(
     });
   };
 
-  const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexeo-webjs-diagnostic-'));
+  // Everything fallible — including temp-dir creation — happens inside
+  // the protected lifecycle so the finalizers below fire on EVERY
+  // operational path while stdout remains writable (stdout failure
+  // cannot report through stdout).
+  let sessionRoot: string | null = null;
   let client: any = null;
   let pagePoll: NodeJS.Timeout | null = null;
   let deadline: NodeJS.Timeout | null = null;
   let observedPage: any = null;
   let emittedErrors = 0;
-
-  emit('diagnostic_start', {
-    timeoutMs: policy.timeoutMs,
-    errorCap: policy.errorCap,
-    headful: policy.headful,
-    sessionRoot,
-    persistence: 'stdout_only',
-  });
 
   const attachNetworkObserver = async (page: any): Promise<void> => {
     try {
@@ -371,6 +367,15 @@ export async function runWebjsBootstrapDiagnostic(
   };
 
   try {
+    sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexeo-webjs-diagnostic-'));
+    emit('diagnostic_start', {
+      timeoutMs: policy.timeoutMs,
+      errorCap: policy.errorCap,
+      headful: policy.headful,
+      sessionRoot,
+      persistence: 'stdout_only',
+    });
+
     const cache = await prepareVerifiedWebjsVersionCache({ sessionPath: sessionRoot, env });
     versionEvidence.pinnedCacheVersion = cache.version;
     emit('verified_cache', {
@@ -480,11 +485,13 @@ export async function runWebjsBootstrapDiagnostic(
     if (observedPage) {
       const timeoutMarker: unknown = Symbol('probe_timeout');
       let errored = false;
+      let probeTimer: NodeJS.Timeout | null = null;
       const raced: unknown = await Promise.race([
         Promise.resolve(observedPage.evaluate(() => (globalThis as any).Debug?.VERSION ?? null))
           .catch(() => { errored = true; return null; }),
-        new Promise((resolve) => setTimeout(() => resolve(timeoutMarker), 3_000)),
+        new Promise((resolve) => { probeTimer = setTimeout(() => resolve(timeoutMarker), 3_000); }),
       ]).catch(() => { errored = true; return null; });
+      if (probeTimer) clearTimeout(probeTimer);
       Object.assign(versionEvidence, classifyVersionProbe({
         pageAvailable: true,
         errored,
@@ -505,7 +512,9 @@ export async function runWebjsBootstrapDiagnostic(
     if (pagePoll) clearInterval(pagePoll);
     if (deadline) clearTimeout(deadline);
     if (client) await closeClient(client);
-    try { fs.rmSync(sessionRoot, { recursive: true, force: true }); } catch { /* bounded temp cleanup */ }
+    if (sessionRoot) {
+      try { fs.rmSync(sessionRoot, { recursive: true, force: true }); } catch { /* bounded temp cleanup */ }
+    }
   }
 }
 

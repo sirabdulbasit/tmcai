@@ -1966,3 +1966,28 @@ implementation, per AGENTS.md.
 ### Verification (exact, self-run)
 Full suite 1047 passed / 21 skipped / 0 failed (97 files + 1 skipped);
 focused 23/23; tsc clean; build clean; git diff --check clean.
+
+## 29d. Diagnostic lifecycle fix (2026-07-21, BUILDER: Claude — Codex blocking finding on a7b2ef2)
+
+- `mkdtempSync` + `diagnostic_start` moved INSIDE the protected
+  lifecycle; `sessionRoot` nullable until created; cleanup only when
+  creation succeeded; both idempotent finalizers stay in the outer
+  finally. A temp-dir failure now still emits one zero-state
+  `wweb_version_evidence` + one `network_summary`
+  (reason `fatal_before_bootstrap`). Guarantee scoped honestly: every
+  operational path while stdout remains writable.
+- Hardening: the 3s version-probe timer is cleared when page evaluation
+  settles first (no lingering timer prolonging process lifetime).
+- Regression test: forced mkdtempSync failure → run rejects, exactly one
+  zero-state evidence line + one summary, zero diagnostic_start lines.
+
+Timing disclosure: the matched Xvfb experiment was executed by Basit
+with a7b2ef2 already pulled, crossing the reviewer's hold in flight.
+Results (recorded in the Section 31 proposal): headless timeout/0
+sockets vs headful-under-Xvfb QR at T+13s with sockets+frames both
+directions and pin consumed (pageReportedVersion 2.3000.1043346688).
+Root cause established as headless-mode environment interaction.
+
+### Verification (exact, self-run)
+Full suite 1048 passed / 21 skipped / 0 failed (97 files + 1 skipped);
+focused 24/24; tsc clean; build clean; git diff --check clean.

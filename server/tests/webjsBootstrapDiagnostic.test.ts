@@ -188,3 +188,45 @@ describe('makeVersionEvidenceFinalizer — unconditional single emission', () =>
     expect(lines[0].probeStatus).toBe('not_attempted');
   });
 });
+
+// ── Section 29d: pre-lifecycle fatal still emits evidence (Codex blocking fix)
+import { vi } from 'vitest';
+import fs from 'fs';
+import { runWebjsBootstrapDiagnostic } from '../src/scripts/diagnoseWebjsBootstrap';
+
+describe('fatal before bootstrap — finalizers still fire', () => {
+  it('mkdtempSync failure yields exactly one zero-state wweb_version_evidence and one network_summary', async () => {
+    const lines: any[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: any) => {
+      try { lines.push(JSON.parse(String(chunk))); } catch { /* non-JSON chunk */ }
+      return true;
+    }) as any);
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtempSync').mockImplementation(() => {
+      throw new Error('EACCES: simulated temp-dir denial');
+    });
+    try {
+      await expect(runWebjsBootstrapDiagnostic({} as NodeJS.ProcessEnv))
+        .rejects.toThrow('simulated temp-dir denial');
+    } finally {
+      mkdtempSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+    const versionLines = lines.filter((l) => l.kind === 'wweb_version_evidence');
+    const summaryLines = lines.filter((l) => l.kind === 'network_summary');
+    expect(versionLines).toHaveLength(1);
+    expect(versionLines[0]).toMatchObject({
+      pinnedCacheVersion: null,
+      pageReportedVersion: null,
+      probeStatus: 'not_attempted',
+    });
+    expect(summaryLines).toHaveLength(1);
+    expect(summaryLines[0]).toMatchObject({
+      reason: 'fatal_before_bootstrap',
+      observerAttached: false,
+      coverage: 'pending',
+    });
+    expect(summaryLines[0].totals.ws_created).toBe(0);
+    // no diagnostic_start line — creation failed before it could emit
+    expect(lines.filter((l) => l.kind === 'diagnostic_start')).toHaveLength(0);
+  });
+});
