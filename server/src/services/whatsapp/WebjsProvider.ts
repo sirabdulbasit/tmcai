@@ -25,6 +25,7 @@ import {
   WebjsInitTelemetrySnapshot,
 } from './webjsInitTelemetry';
 import type { PreparedWebjsVersionCache } from './webjsVersionCache';
+import { resolveWebjsHeadlessMode, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -319,6 +320,34 @@ export class WebjsProvider implements IWhatsAppProvider {
       throw error;
     }
 
+    // Section 31: display-mode policy. Headful without a usable display
+    // fails closed with a typed error BEFORE client construction —
+    // through the same flight-cleanup path as cache preparation, so
+    // watchdog retry recovery is preserved and the status never lies
+    // with another silent bootstrap timeout.
+    const displayMode = resolveWebjsHeadlessMode();
+    try {
+      assertHeadfulDisplayAvailable();
+    } catch (error: any) {
+      const message = String(error?.message ?? error ?? 'display unavailable').slice(0, 300);
+      statusMap.set(clientNumber, 'error');
+      initHealth.set(clientNumber, {
+        state: 'error', startedAt: flight.startedAt, deadlineAt: flight.deadlineAt,
+        retryAt: null, consecutiveTimeouts: 0, requiresRepair: false,
+        lastError: message, telemetry: telemetry.snapshot(),
+      });
+      await prisma.$executeRawUnsafe(
+        `UPDATE whatsapp_config
+            SET status = 'error', last_error = $2, last_error_at = NOW()
+          WHERE client_number = $1`,
+        clientNumber, message,
+      ).catch(() => undefined);
+      if (initFlights.get(clientNumber)?.token === token) initFlights.delete(clientNumber);
+      log.error('headful display unavailable', { clientNumber, error: message });
+      throw error;
+    }
+    log.info('webjs display mode', { clientNumber, headful: !displayMode.headless });
+
     // Find Chrome/Chromium executable on the system. Honour both names:
     //   - PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
     //   - CHROME_PATH (older internal name, kept for back-compat)
@@ -336,7 +365,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       webVersion: verifiedWebCache.version,
       webVersionCache: verifiedWebCache.webVersionCache,
       puppeteer: {
-        headless: true,
+        headless: displayMode.headless,
         executablePath,
         protocolTimeout: policy.protocolTimeoutMs,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',

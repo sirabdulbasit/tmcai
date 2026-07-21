@@ -19,6 +19,7 @@ import createLogger from '../../utils/logger';
 import { ingest as ingestFeedEvent } from '../feed/feedIngestionService';
 import fs from 'fs';
 import path from 'path';
+import { resolveWebjsHeadlessMode, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
 
 const log = createLogger('whatsapp:user-webjs');
 
@@ -568,11 +569,22 @@ export async function startPairing(userId: number, clientNumber: string): Promis
   // import or a third utility file just for this 20-liner.
   cleanStaleSingletonLocks(path.join(sessionPath, `session-${clientId}`));
 
+  // Section 31: shared display-mode policy — same failure class as the
+  // tenant provider (same host, same Chrome). Headful without a usable
+  // display is a typed, bounded error before client construction.
+  try {
+    assertHeadfulDisplayAvailable();
+  } catch (e: any) {
+    const message = String(e?.message ?? e ?? 'display unavailable').slice(0, 300);
+    await writeMeta(userId, { status: 'error', lastError: message }, 'error');
+    return { status: 'error', qrDataUrl: null, connectedNumber: null, error: message };
+  }
+
   const client = new Client({
     authStrategy: new LocalAuth({ clientId, dataPath: sessionPath }),
     restartOnAuthFail: true,
     puppeteer: {
-      headless: true,
+      headless: resolveWebjsHeadlessMode().headless,
       executablePath: resolveChromePath(),
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-first-run', '--no-zygote', '--disable-gpu'],
     },

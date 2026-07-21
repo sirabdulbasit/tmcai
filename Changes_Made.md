@@ -1991,3 +1991,71 @@ Root cause established as headless-mode environment interaction.
 ### Verification (exact, self-run)
 Full suite 1048 passed / 21 skipped / 0 failed (97 files + 1 skipped);
 focused 24/24; tsc clean; build clean; git diff --check clean.
+
+## 31. Permanent fix: Web.js Chrome headful under Xvfb (2026-07-21, BUILDER: Claude — Codex-approved proposal)
+
+**Pin-wording correction (append-only, per reviewer):** the §29/§31
+experiment showed an *exact pin/page version match observed*
+(2.3000.1043346688); consumption of the configured cache is strongly
+supported but not independently proven. Supersedes my "pin consumed"
+phrasing.
+
+**Root cause (matched experiment, 2026-07-21):** WhatsApp Web bootstrap
+stalls indefinitely in headless Chrome on the production host (timeout,
+zero WebSockets); identical launch headful under Xvfb emits QR at T+13s
+with bidirectional socket frames.
+
+**Code (covers the failure class — BOTH QR providers):**
+- NEW `server/src/services/whatsapp/webjsRuntimeMode.ts`:
+  `resolveWebjsHeadlessMode` (headful ONLY on exact
+  WHATSAPP_WEBJS_HEADFUL==='1'; default and all other values headless)
+  + `assertHeadfulDisplayAvailable` (typed `WebjsDisplayError`:
+  `headful_display_missing` when DISPLAY is absent/empty;
+  `headful_display_unavailable` when a local ":N" DISPLAY has no
+  /tmp/.X11-unix/XN socket; non-local forms accepted; no-op when
+  headless). Env-driven bounded ops constant per AGENTS §2.8 — not
+  behaviorConfig.
+- `WebjsProvider.ts`: guard runs BEFORE client construction through the
+  same flight-cleanup path as cache preparation (statusMap/initHealth
+  'error', bounded last_error, flight token released → watchdog retry
+  recovery preserved); `headless:` from the helper; display mode logged
+  (boolean only).
+- `UserWebjsProvider.ts`: same guard before client construction
+  (writeMeta 'error' + typed bounded error in the status return);
+  `headless:` from the helper. No hardcoded headless flags remain at
+  any launch site (source-level test enforces).
+- MetaProvider untouched by the flag (test-enforced).
+
+**Tests (`tests/webjsRuntimeMode.test.ts`, 10):** default headless;
+exact-'1' opt-in; 'true'/'yes'/'0'/''/' 1'/'TRUE' stay headless;
+headless no-op without DISPLAY; missing/blank DISPLAY →
+headful_display_missing (message names nexeo-xvfb.service); local
+socketless DISPLAY → headful_display_unavailable; live socket + screen
+suffix passes; non-local DISPLAY skips socket check; both providers
+consume helper + no hardcoded headless (source-level); MetaProvider
+free of the flag.
+
+**Ops (executed by Basit; commands in Deployment Record):**
+`nexeo-xvfb.service` (Xvfb :99, -nolisten tcp, no -ac, 0600 Xauthority
+under 0700 /var/lib/nexeo-xvfb, ExecStartPost bounded socket-readiness
+check, Restart=always, journal-bounded logs, enabled at boot);
+pm2-root.service drop-in `Wants=nexeo-xvfb.service` +
+`After=nexeo-xvfb.service` (weak dep — four co-hosted apps must not
+fall with Xvfb; tmcai's guard is the fail-closed typed error); prod
+server/.env += DISPLAY=:99, XAUTHORITY=/var/lib/nexeo-xvfb/Xauthority,
+WHATSAPP_WEBJS_HEADFUL=1. No cookie or env values in Git.
+
+**Rollback:** remove the three .env lines → pm2 restart tmcai-server
+only → systemctl disable --now nexeo-xvfb → rm drop-in → daemon-reload
+→ verify app online + WhatsApp status honestly reported (expected back
+to init_timeout) → sessions untouched.
+
+**Status: PARTIAL** until the reviewer's acceptance gates pass on
+production (QR appears uncaptured → pairing ready → real inbound text
+AND voice each answered by the actual Brain → controlled restart
+reconnects without re-pair → runtime telemetry shows configured pin and
+page-reported version separately → co-hosted apps untouched).
+
+### Verification (exact, self-run)
+Full suite 1058 passed / 21 skipped / 0 failed (98 files + 1 skipped);
+focused 10/10; tsc clean; build clean; git diff --check clean.
