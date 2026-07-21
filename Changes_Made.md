@@ -1907,3 +1907,24 @@ The builder's earlier "stalls before attempting its socket" claim in the
 relay was an overreach and is withdrawn. Reruns must include
 requestWillBeSent tallies by type; conclusive no_socket_attempted requires
 observer enablement BEFORE navigation (full coverage).
+
+## 29b. Diagnostic: headful toggle + version evidence for the matched Xvfb experiment (2026-07-21, BUILDER: Claude)
+
+Scope: Codex-approved one-off matched headless-vs-headful experiment
+(mechanism only — no provider/pm2/display change). Host resource check
+came back pristine (12Gi available RAM, /dev/shm 7.8G at 0%, load 0.07,
+ZERO Chrome processes) — resource starvation eliminated as a cause.
+
+- `diagnoseWebjsBootstrap.ts`: `WHATSAPP_WEBJS_DIAGNOSTIC_HEADFUL=1`
+  launches Chrome headful (requires DISPLAY, e.g. xvfb-run); everything
+  else identical (same build/Chrome/webjs/verified cache/args/timeout).
+  Mode echoed in diagnostic_start. New `wweb_version_evidence` line per
+  run: pinned cache version vs page-reported live version (bounded 3s
+  in-page probe, 40-char cap) — recorded per Codex's condition that a
+  page-reported version alone doesn't prove pin consumption.
+- Tests: headful default-off, exact-'1' opt-in, existing policy
+  assertions extended.
+
+### Verification (exact, self-run)
+Full suite 1041 passed / 21 skipped / 0 failed (97 files + 1 skipped);
+focused 17/17; tsc clean; build clean; git diff --check clean.

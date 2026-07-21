@@ -32,6 +32,10 @@ export interface WebjsBootstrapDiagnosticPolicy {
   timeoutMs: number;
   errorCap: number;
   textCap: number;
+  /** Matched headless-vs-headful comparison (Codex-approved Xvfb
+   *  experiment): '1' launches Chrome headful — requires a DISPLAY
+   *  (e.g. under xvfb-run). Everything else stays identical. */
+  headful: boolean;
 }
 
 function boundedInteger(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -47,6 +51,7 @@ export function getWebjsBootstrapDiagnosticPolicy(
     timeoutMs: boundedInteger(env.WHATSAPP_WEBJS_DIAGNOSTIC_TIMEOUT_MS, 120_000, 30_000, 300_000),
     errorCap: boundedInteger(env.WHATSAPP_WEBJS_DIAGNOSTIC_ERROR_CAP, 50, 1, 100),
     textCap: boundedInteger(env.WHATSAPP_WEBJS_DIAGNOSTIC_TEXT_CAP, 8_000, 500, 20_000),
+    headful: env.WHATSAPP_WEBJS_DIAGNOSTIC_HEADFUL === '1',
   };
 }
 
@@ -198,6 +203,7 @@ export async function runWebjsBootstrapDiagnostic(
   emit('diagnostic_start', {
     timeoutMs: policy.timeoutMs,
     errorCap: policy.errorCap,
+    headful: policy.headful,
     sessionRoot,
     persistence: 'stdout_only',
   });
@@ -345,7 +351,7 @@ export async function runWebjsBootstrapDiagnostic(
       webVersion: cache.version,
       webVersionCache: cache.webVersionCache,
       puppeteer: {
-        headless: true,
+        headless: !policy.headful,
         executablePath,
         protocolTimeout: policy.timeoutMs,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
@@ -422,6 +428,19 @@ export async function runWebjsBootstrapDiagnostic(
     deadline = setTimeout(() => settleOutcome({ outcome: 'timeout', exitCode: 3 }), policy.timeoutMs);
     const outcome = await eventOutcome;
     outcomeReason = outcome.outcome;
+    // Version evidence (Codex condition): pinned cache version vs the
+    // page-reported live version, both recorded per run. A page-reported
+    // version alone does NOT prove the pin was consumed.
+    if (observedPage) {
+      const live = await Promise.race([
+        Promise.resolve(observedPage.evaluate(() => (globalThis as any).Debug?.VERSION ?? null)).catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 3_000)),
+      ]).catch(() => null);
+      emit('wweb_version_evidence', {
+        pinnedCacheVersion: cache.version,
+        pageReportedVersion: typeof live === 'string' ? live.slice(0, 40) : null,
+      });
+    }
     emit('diagnostic_complete', { ...outcome, capturedErrors: emittedErrors });
     return outcome.exitCode;
   } finally {

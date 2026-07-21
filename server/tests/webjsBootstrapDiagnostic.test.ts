@@ -10,6 +10,7 @@ describe('manual Web.js bootstrap diagnostic policy', () => {
       timeoutMs: 120_000,
       errorCap: 50,
       textCap: 8_000,
+      headful: false,
     });
   });
 
@@ -22,6 +23,7 @@ describe('manual Web.js bootstrap diagnostic policy', () => {
       timeoutMs: 300_000,
       errorCap: 1,
       textCap: 500,
+      headful: false,
     });
   });
 
@@ -113,5 +115,21 @@ describe('noteNetworkEvent — complete tallies, capped lines', () => {
     const caps = { ...NETWORK_LINE_CAPS, ws_created: 1 };
     for (let i = 0; i < 7; i++) noteNetworkEvent(tally, 'ws_created', caps);
     expect(tally.emitted.ws_created + tally.suppressed.ws_created).toBe(tally.totals.ws_created);
+  });
+});
+
+describe('headful toggle — matched Xvfb experiment (Codex-approved)', () => {
+  it('defaults to headless', () => {
+    expect(getWebjsBootstrapDiagnosticPolicy({} as NodeJS.ProcessEnv).headful).toBe(false);
+  });
+  it('enables headful only on the exact value "1"', () => {
+    expect(getWebjsBootstrapDiagnosticPolicy({
+      WHATSAPP_WEBJS_DIAGNOSTIC_HEADFUL: '1',
+    } as NodeJS.ProcessEnv).headful).toBe(true);
+    for (const v of ['true', 'yes', '0', '']) {
+      expect(getWebjsBootstrapDiagnosticPolicy({
+        WHATSAPP_WEBJS_DIAGNOSTIC_HEADFUL: v,
+      } as NodeJS.ProcessEnv).headful).toBe(false);
+    }
   });
 });
