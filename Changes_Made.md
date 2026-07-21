@@ -1847,3 +1847,47 @@ git diff --check: passed
 Client build was not required because no client file changed. The production
 diagnostic remains a manual Reviewer operation; Codex did not run it on
 production, commit, push, deploy, change egress, or switch providers.
+
+## 29. Bootstrap diagnostic: CDP WebSocket/network observer (2026-07-21, BUILDER: Claude)
+
+### Evidence and question
+Production: page boots, one nonfatal storage warning, silence to timeout — no
+exception, no QR (Section 28 diagnostic). Raw curl WS upgrade to
+web.whatsapp.com/ws/chat over HTTP/1.1 returns **101 Switching Protocols**
+from the box → network-level socket blocking eliminated. Remaining question:
+does the PAGE open its WebSocket, and does the server answer on it?
+
+### Change (Codex-approved proposal, all mandatory acceptance details honored)
+- `server/src/scripts/diagnoseWebjsBootstrap.ts`: CDP session per observed
+  page. All listeners registered BEFORE `Network.enable`; main-frame id via
+  supported `Page.getFrameTree` (no Puppeteer privates); document events
+  buffered until the frame id resolves so none are lost in the gap.
+  Coverage state machine: 'pending' → 'full' only when the enabled observer
+  itself sees the main-frame Document request to https://web.whatsapp.com
+  (evidence retained: sanitized origin/path + timestamp) → 'late' when the
+  page is found already navigated. Zero-socket classification is coverage-
+  gated: full→no_socket_attempted; late→observer_late_or_inconclusive;
+  pending→navigation_not_observed. Emitted events (each line-capped with
+  complete tallies): ws_created(10), ws_handshake_response(10),
+  ws_frame_sent(5), ws_frame_received(5), ws_frame_error(10), ws_closed(10),
+  request_failed(errorCap). Frame payloads NEVER printed — byte length only
+  (opcode 1 = UTF-8 bytes; others = decoded base64 bytes). All URLs through
+  new `safeSocketUrl` (http/https/ws/wss, origin+path, 160 cap). Exactly ONE
+  `network_summary` per execution (idempotent, emitted in finally before
+  client destruction, defined zero-state on fatal paths): reason, observer
+  status, coverage + evidence, zeroSocketClass, totals/emitted/suppressed.
+  Attribution language bounded: sent-without-received proves downstream
+  silence only; host attribution requires the matched Mac control.
+- `server/tests/webjsBootstrapDiagnostic.test.ts`: +9 tests — wss/ws
+  sanitization incl. query/fragment stripping and scheme rejection; unicode
+  UTF-8 byte length; base64 binary length; per-class emit/suppress caps with
+  tally reconciliation; coverage-gated zero-socket classification.
+
+No schema, package, client, runtime-app, provider-routing, or invariant
+changes. Manual-only; stdout-only; no server restart required to use.
+
+### Verification (exact, self-run)
+- Full server suite: 1039 passed / 21 skipped / 0 failed (97 files + 1 skipped)
+- Focused diagnostic tests: 15 passed / 0 failed
+- TypeScript: clean; server build: clean (Prisma 6.19.2); git diff --check: clean
+- No client build required (no client files changed)
