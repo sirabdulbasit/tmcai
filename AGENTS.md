@@ -2,23 +2,23 @@
 
 **Owner:** Basit Ahmed (user 2, tenant TMC-0001). **Product name:** Nexeo — never MyOS/HaseebOS/"TMC AI" in new work (internal `brain_*` table/route names stay for stability).
 
-Two agents work this repo in fixed roles:
+Two agents work this repo in fixed roles. **Roles flipped by Basit on 2026-07-21** (previously Codex built and Claude reviewed):
 
 | Role | Agent | Responsibility |
 |---|---|---|
-| **BUILDER** | Codex | Implement, test, document. **Never commit, push, or deploy.** |
-| **REVIEWER / RELEASE GATE** | Claude | Independently re-verify every claim, gap-analyze, enforce conventions, then commit → push → guide Basit's production deploy. |
+| **BUILDER / RELEASE** | Claude | Investigate, implement, test, document, commit, push, and hand Basit the production deploy commands. Self-verification is mandatory and published with exact numbers. |
+| **REVIEWER / ADVISOR** | Codex | Review published diffs and `Changes_Made.md` sections; give expert opinion, gap findings, and alternative approaches. **Never commit, push, or deploy.** |
 
-Model versions occupying either seat may change without renegotiating this contract. Basit triggers the gate by telling Claude **"review and deploy"**. If Claude finds gaps, it raises them and holds; otherwise it ships and appends its Deployment Record to `Changes_Made.md`. **Deployment authorization is exclusively Basit's.**
+Model versions occupying either seat may change without renegotiating this contract. Review timing: normal changes ship immediately and Codex reviews post-publication (findings return via Basit; the BUILDER answers each with evidence or a fix). Changes touching **safety invariants (§2), migrations, or package dependencies** are published but held for Codex's opinion BEFORE the deploy commands are issued. **Deployment authorization remains exclusively Basit's — he executes every production command.**
 
 **Contract precedence:** AGENTS.md is the canonical repository working contract. Both roles follow it unless it conflicts with a newer explicit instruction from Basit, platform/system requirements, tool permission boundaries, or verified evidence that following it would be unsafe or obsolete. In that event, stop, disclose the conflict, and propose an AGENTS.md amendment rather than silently diverging.
 
 ---
 
-## 1. BUILDER (Codex) — duties and hard limits
+## 1. BUILDER / RELEASE (Claude) — duties and hard limits
 
 **Do:**
-- Implement fixes/features on branch `feat/nexeo-one-brain`. Leave all work **uncommitted in the working tree**.
+- Implement fixes/features on branch `feat/nexeo-one-brain`. Commit and push completed, self-verified work (stage only intended paths — never `git add -A`).
 - Document EVERY change in **`Changes_Made.md`** (repo root, append a dated section). This is the binding handoff contract. Include: observed behavior, confirmed root cause (from code, not hypothesis), files changed (complete list — omissions have been caught before), tests added, exact verification numbers, known issues deliberately not fixed, and whether a migration is included.
 - For every bug that came from a real Brain conversation: append a `## Chat N` entry to `server/docs/brain_chat_archive.md` **and** a paired executable `chatN` scenario in `server/tests/brainScenarios.ts`. The archive-sync meta-test enforces this pairing — the suite goes red if you add one without the other.
 - Verify before handoff, from `tmcai/server/`:
@@ -28,10 +28,10 @@ Model versions occupying either seat may change without renegotiating this contr
   npm run build           # must pass
   git diff --check        # must be clean
   ```
-  Report the EXACT numbers in `Changes_Made.md`. They will be independently re-run; inflated or stale numbers break trust.
+  Report the EXACT numbers in `Changes_Made.md`. The REVIEWER may independently re-run them; inflated or stale numbers break trust.
 
 **Never:**
-- Never commit, push, deploy, or run anything against production.
+- Never run anything against production directly — production commands are handed to Basit, who executes them.
 - Never run `prisma migrate dev` (migration-ledger drift). New schema = a new folder under `server/prisma/migrations/<date>_<name>/migration.sql`, written **idempotently** (`IF NOT EXISTS`, guarded `DO $$` blocks), plus matching `schema.prisma` models. Runtime code must never `CREATE TABLE` — schema comes from migrations only.
 - Never send real email/WhatsApp/calendar invites from tests or scripts; providers stay mocked.
 - Never touch, delete, or commit these user-owned files: `server/docs/nexeo_self_learning&development.md`, `tenant-scope-audit-2026-05-22.md`. Never stage `.env`, tokens, or `whatsapp-sessions/`.
@@ -65,9 +65,9 @@ Model versions occupying either seat may change without renegotiating this contr
 - whatsapp-web.js is the fragile layer (@lid chats, sessions going deaf after restarts) — treat WA failures as session/runtime issues first, code second; check the incident archive before re-fixing.
 - **Production carries preserved local edits to `server/package.json` and `server/package-lock.json`.** These are never reset, checked out over, stashed away silently, or committed. If `git pull --ff-only` refuses due to any local modification, the REVIEWER stops and reports the exact refusing paths; no destructive git command (`reset --hard`, `clean`, `checkout --`) is permitted as a remedy.
 
-## 5. REVIEWER (Claude) — review, publication, and deployment protocol
+## 5. Release protocol (BUILDER) and review protocol (REVIEWER)
 
-**Review (on "review and deploy"):** reread `Changes_Made.md` **and** the raw diff; re-run the verification matrix below and compare against the documented numbers; check archive↔scenario pairing, tenant scoping, invariant touches, migration idempotency + deploy ordering, and whether the fix covers the **class**, not just the reported instance; then either raise gaps (hold) or proceed. Write for that audience: claims you can't back with a command output will stall the release.
+**REVIEWER (Codex) duties:** read the published diff **and** the `Changes_Made.md` section; check archive↔scenario pairing, tenant scoping, invariant touches, migration idempotency + deploy ordering, and whether the fix covers the **class**, not just the reported instance; return findings as expert opinion via Basit. The BUILDER answers every finding with evidence or a fix — findings are never silently dropped. Claims either agent can't back with command output don't count.
 
 **Verification matrix (agreed 2026-07-17):**
 - Always: server `npx tsc --noEmit`, full `npx vitest run` (0 failed, no unhandled errors), server `npm run build`, `git diff --check`.
