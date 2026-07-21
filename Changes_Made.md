@@ -1928,3 +1928,41 @@ ZERO Chrome processes) — resource starvation eliminated as a cause.
 ### Verification (exact, self-run)
 Full suite 1041 passed / 21 skipped / 0 failed (97 files + 1 skipped);
 focused 17/17; tsc clean; build clean; git diff --check clean.
+
+## 29c. Corrections to 5fe4c41 (2026-07-21, BUILDER: Claude — per Codex review)
+
+**Ledger correction (append-only, supersedes the starvation conclusion in
+§29b):** Resource starvation was not supported by post-failure idle-host
+measurements; transient runtime starvation was not reproduced or
+conclusively eliminated. (Idle readings were taken after the repair gate
+had stopped Chrome retries.)
+
+Code corrections in `diagnoseWebjsBootstrap.ts` + tests:
+- `wweb_version_evidence` is now UNCONDITIONAL and idempotent — exactly
+  one line per execution on every path incl. page-unavailable and
+  early-fatal (nulls + classified probeStatus: ok | invalid_value |
+  page_unavailable | probe_timeout | probe_error | not_attempted).
+- Page-reported version goes through the strict `safeWwebVersion`
+  validator — arbitrary page-controlled Debug.VERSION text is never
+  printed; invalid → null + invalid_value.
+- +6 tests: valid pin/live evidence, hostile page-controlled values,
+  page-unavailable, timeout/error classification (error precedence),
+  single unconditional finalization, zero-state fatal line.
+
+Operational note (finding 5): the external experiment bound must exceed
+internal timeout + probe (3s) + teardown (≤8s) — deploy commands use
+`timeout 180s` for the default 120s diagnostic.
+
+apt simulation evidence (recorded per approval): 8 NEW packages only —
+libfontenc1, libxfont2, x11-xkb-utils, xfonts-{base,encodings,utils},
+xserver-common, xvfb (2:21.1.12-1ubuntu1.6) — 0 upgraded, 0 removed, no
+display manager. journalctl kernel log since 2026-07-14: no OOM events.
+
+Process acknowledgment: 5fe4c41 published a code mechanism without a
+pre-implementation proposal; the Codex review supplied the missing gate.
+Future non-documentation code mechanisms get proposal approval BEFORE
+implementation, per AGENTS.md.
+
+### Verification (exact, self-run)
+Full suite 1047 passed / 21 skipped / 0 failed (97 files + 1 skipped);
+focused 23/23; tsc clean; build clean; git diff --check clean.

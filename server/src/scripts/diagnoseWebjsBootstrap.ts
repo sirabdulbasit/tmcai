@@ -27,6 +27,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { prepareVerifiedWebjsVersionCache } from '../services/whatsapp/webjsVersionCache';
+import { safeWwebVersion } from '../services/whatsapp/webjsInitTelemetry';
 
 export interface WebjsBootstrapDiagnosticPolicy {
   timeoutMs: number;
@@ -90,6 +91,44 @@ export function wsPayloadByteLength(opcode: number | undefined, payloadData: unk
 }
 
 export type ObserverCoverage = 'pending' | 'full' | 'late';
+
+export type VersionProbeStatus =
+  | 'ok' | 'invalid_value' | 'page_unavailable'
+  | 'probe_timeout' | 'probe_error' | 'not_attempted';
+
+/** Page-controlled Debug.VERSION goes through the strict version
+ *  validator — arbitrary page text is never printed; invalid → null
+ *  with a classified status. */
+export function classifyVersionProbe(input: {
+  pageAvailable: boolean; timedOut?: boolean; errored?: boolean; value?: unknown;
+}): { pageReportedVersion: string | null; probeStatus: VersionProbeStatus } {
+  if (!input.pageAvailable) return { pageReportedVersion: null, probeStatus: 'page_unavailable' };
+  if (input.errored) return { pageReportedVersion: null, probeStatus: 'probe_error' };
+  if (input.timedOut) return { pageReportedVersion: null, probeStatus: 'probe_timeout' };
+  const safe = safeWwebVersion(input.value);
+  return safe
+    ? { pageReportedVersion: safe, probeStatus: 'ok' }
+    : { pageReportedVersion: null, probeStatus: 'invalid_value' };
+}
+
+/** One wweb_version_evidence line per execution, unconditional —
+ *  page-unavailable and early-fatal paths emit nulls with a status
+ *  instead of omitting the line. Returns whether this call emitted. */
+export function makeVersionEvidenceFinalizer(
+  emitFn: (kind: string, detail: Record<string, unknown>) => void,
+): (evidence: {
+  pinnedCacheVersion: string | null;
+  pageReportedVersion: string | null;
+  probeStatus: VersionProbeStatus;
+}) => boolean {
+  let emitted = false;
+  return (evidence) => {
+    if (emitted) return false;
+    emitted = true;
+    emitFn('wweb_version_evidence', { ...evidence });
+    return true;
+  };
+}
 
 export function classifyZeroSocket(coverage: ObserverCoverage):
   'no_socket_attempted' | 'observer_late_or_inconclusive' | 'navigation_not_observed' {
@@ -178,6 +217,12 @@ export async function runWebjsBootstrapDiagnostic(
   } = { attached: false, coverage: 'pending', evidence: null };
   let summaryEmitted = false;
   let outcomeReason = 'fatal_before_bootstrap';
+  const versionEvidence: {
+    pinnedCacheVersion: string | null;
+    pageReportedVersion: string | null;
+    probeStatus: VersionProbeStatus;
+  } = { pinnedCacheVersion: null, pageReportedVersion: null, probeStatus: 'not_attempted' };
+  const finalizeVersionEvidence = makeVersionEvidenceFinalizer(emit);
   const emitNetworkSummary = (): void => {
     if (summaryEmitted) return;
     summaryEmitted = true;
@@ -327,6 +372,7 @@ export async function runWebjsBootstrapDiagnostic(
 
   try {
     const cache = await prepareVerifiedWebjsVersionCache({ sessionPath: sessionRoot, env });
+    versionEvidence.pinnedCacheVersion = cache.version;
     emit('verified_cache', {
       version: cache.version,
       sha256: cache.sha256,
@@ -429,23 +475,32 @@ export async function runWebjsBootstrapDiagnostic(
     const outcome = await eventOutcome;
     outcomeReason = outcome.outcome;
     // Version evidence (Codex condition): pinned cache version vs the
-    // page-reported live version, both recorded per run. A page-reported
+    // page-reported live version, recorded EVERY run. A page-reported
     // version alone does NOT prove the pin was consumed.
     if (observedPage) {
-      const live = await Promise.race([
-        Promise.resolve(observedPage.evaluate(() => (globalThis as any).Debug?.VERSION ?? null)).catch(() => null),
-        new Promise((resolve) => setTimeout(() => resolve(null), 3_000)),
-      ]).catch(() => null);
-      emit('wweb_version_evidence', {
-        pinnedCacheVersion: cache.version,
-        pageReportedVersion: typeof live === 'string' ? live.slice(0, 40) : null,
-      });
+      const timeoutMarker: unknown = Symbol('probe_timeout');
+      let errored = false;
+      const raced: unknown = await Promise.race([
+        Promise.resolve(observedPage.evaluate(() => (globalThis as any).Debug?.VERSION ?? null))
+          .catch(() => { errored = true; return null; }),
+        new Promise((resolve) => setTimeout(() => resolve(timeoutMarker), 3_000)),
+      ]).catch(() => { errored = true; return null; });
+      Object.assign(versionEvidence, classifyVersionProbe({
+        pageAvailable: true,
+        errored,
+        timedOut: raced === timeoutMarker,
+        value: raced === timeoutMarker ? null : raced,
+      }));
+    } else {
+      Object.assign(versionEvidence, classifyVersionProbe({ pageAvailable: false }));
     }
     emit('diagnostic_complete', { ...outcome, capturedErrors: emittedErrors });
     return outcome.exitCode;
   } finally {
-    // Exactly ONE summary per execution, on every path (approved
-    // acceptance detail #3), emitted BEFORE client destruction.
+    // Exactly ONE summary + ONE version-evidence line per execution,
+    // on every path (approved acceptance detail #3), emitted BEFORE
+    // client destruction.
+    finalizeVersionEvidence(versionEvidence);
     emitNetworkSummary();
     if (pagePoll) clearInterval(pagePoll);
     if (deadline) clearTimeout(deadline);

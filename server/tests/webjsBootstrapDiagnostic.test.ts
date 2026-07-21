@@ -133,3 +133,58 @@ describe('headful toggle — matched Xvfb experiment (Codex-approved)', () => {
     }
   });
 });
+
+// ── Section 29c corrections (Codex review of 5fe4c41) ───────────────
+import {
+  classifyVersionProbe,
+  makeVersionEvidenceFinalizer,
+} from '../src/scripts/diagnoseWebjsBootstrap';
+
+describe('classifyVersionProbe — strict, page-controlled input never printed raw', () => {
+  it('valid version passes the strict validator', () => {
+    expect(classifyVersionProbe({ pageAvailable: true, value: '2.3000.1043549335' }))
+      .toEqual({ pageReportedVersion: '2.3000.1043549335', probeStatus: 'ok' });
+    expect(classifyVersionProbe({ pageAvailable: true, value: '2.3000.1043346688-alpha' }).probeStatus)
+      .toBe('ok');
+  });
+  it('arbitrary page-controlled text becomes null with invalid_value', () => {
+    for (const hostile of ['<script>alert(1)</script>', 'v2.3000 OR 1=1', '2.3000.99;rm -rf /', '', null, undefined, {}]) {
+      expect(classifyVersionProbe({ pageAvailable: true, value: hostile }))
+        .toEqual({ pageReportedVersion: null, probeStatus: 'invalid_value' });
+    }
+  });
+  it('page unavailable classifies without touching the value', () => {
+    expect(classifyVersionProbe({ pageAvailable: false, value: '2.3000.1' }))
+      .toEqual({ pageReportedVersion: null, probeStatus: 'page_unavailable' });
+  });
+  it('probe timeout and probe error classify distinctly, error wins over timeout', () => {
+    expect(classifyVersionProbe({ pageAvailable: true, timedOut: true }).probeStatus).toBe('probe_timeout');
+    expect(classifyVersionProbe({ pageAvailable: true, errored: true }).probeStatus).toBe('probe_error');
+    expect(classifyVersionProbe({ pageAvailable: true, errored: true, timedOut: true }).probeStatus).toBe('probe_error');
+  });
+});
+
+describe('makeVersionEvidenceFinalizer — unconditional single emission', () => {
+  it('emits exactly once regardless of how many paths call it', () => {
+    const lines: any[] = [];
+    const finalize = makeVersionEvidenceFinalizer((kind, detail) => lines.push({ kind, ...detail }));
+    const evidence = { pinnedCacheVersion: '2.3000.1043346688-alpha', pageReportedVersion: null, probeStatus: 'probe_timeout' as const };
+    expect(finalize(evidence)).toBe(true);
+    expect(finalize(evidence)).toBe(false);
+    expect(finalize({ ...evidence, probeStatus: 'ok' })).toBe(false);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual({
+      kind: 'wweb_version_evidence',
+      pinnedCacheVersion: '2.3000.1043346688-alpha',
+      pageReportedVersion: null,
+      probeStatus: 'probe_timeout',
+    });
+  });
+  it('zero-state fatal path still yields a defined line (nulls + not_attempted)', () => {
+    const lines: any[] = [];
+    const finalize = makeVersionEvidenceFinalizer((kind, detail) => lines.push({ kind, ...detail }));
+    finalize({ pinnedCacheVersion: null, pageReportedVersion: null, probeStatus: 'not_attempted' });
+    expect(lines[0].pinnedCacheVersion).toBeNull();
+    expect(lines[0].probeStatus).toBe('not_attempted');
+  });
+});
