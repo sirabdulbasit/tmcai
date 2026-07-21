@@ -1891,3 +1891,19 @@ changes. Manual-only; stdout-only; no server restart required to use.
 - Focused diagnostic tests: 15 passed / 0 failed
 - TypeScript: clean; server build: clean (Prisma 6.19.2); git diff --check: clean
 - No client build required (no client files changed)
+
+### Section 29 production result — RECORDED CLASSIFICATION (correction, 2026-07-21)
+Production run (12:52–12:54 UTC): observer attached ~110ms after page
+creation → coverage='late'; 120s attached window; totals all zero
+(ws_created 0, request_failed 0). **Recorded classification:
+observer_late_or_inconclusive** — per the agreed coverage model, this does
+NOT prove the page never attempted a socket (inline/cached/service-worker
+execution in the pre-attach window is not excluded), and downstream/egress
+hypotheses are NOT declared moot. Accepted interpretation: no WebSocket
+activity and no tracked request failures were OBSERVED during the attached
+window; document navigation preceded coverage; early application/storage
+initialization is a reasonable next suspect, not a confirmed root cause.
+The builder's earlier "stalls before attempting its socket" claim in the
+relay was an overreach and is withdrawn. Reruns must include
+requestWillBeSent tallies by type; conclusive no_socket_attempted requires
+observer enablement BEFORE navigation (full coverage).
