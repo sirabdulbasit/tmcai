@@ -35,6 +35,7 @@ import {
 } from '../src/services/knowledge/brainComposer';
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler';
+import { parseRelevanceVerdict, mayConsumeAsAnswer, RELEVANCE_CONFIDENCE_THRESHOLD } from '../src/services/brainPrompts/promptReplyRelevance';
 import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
 import { detectAudioMime } from '../src/services/voiceService';
 import { classifyWebjsSendResult } from '../src/services/whatsapp/sendReceipt';
@@ -373,6 +374,33 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       ), 'utf-8');
       expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS active_agent_id/);
       expect(migration).toMatch(/ADD COLUMN IF NOT EXISTS agent_session_started_at/);
+    },
+  },
+  {
+    id: 'chat13',
+    date: '2026-07-22',
+    userMessage: 'Whatsup?',
+    observedFailure:
+      'With an action-status prompt awaiting, the greeting "Whatsup?" passed the hardcoded looksLikeAnswer regex (hi/hello/hey listed, whatsup absent) and was recorded as the prompt answer — the blocker/intervention side-effect replied "[blocker recorded — intervention flagged]" to a greeting.',
+    symptomTags: ['pending-prompt-eats-command', 'hardcoded-judgment', 'greeting-misrouted'],
+    fixCommits: ['741d907'],
+    assert: () => {
+      // Only a confident answers_pending_prompt verdict may consume.
+      expect(mayConsumeAsAnswer({ relevance: 'answers_pending_prompt', confidence: 0.9 })).toBe(true);
+      expect(mayConsumeAsAnswer({ relevance: 'new_conversation_turn', confidence: 0.99 })).toBe(false);
+      expect(mayConsumeAsAnswer({ relevance: 'ambiguous', confidence: 0.99 })).toBe(false);
+      expect(mayConsumeAsAnswer({ relevance: 'answers_pending_prompt', confidence: RELEVANCE_CONFIDENCE_THRESHOLD - 0.01 })).toBe(false);
+      expect(mayConsumeAsAnswer(null)).toBe(false); // classifier failure → no mutation
+      // Malformed classifier output is failure, not consumption.
+      expect(parseRelevanceVerdict('not json at all')).toBeNull();
+      expect(parseRelevanceVerdict('{"relevance":"answers_pending_prompt","confidence":2}')).toBeNull();
+      // The handler must gate through the classifier (source lock: the
+      // regex alone must never again be the final decision).
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(join(__dirname, '..', 'src', 'services', 'brainPrompts', 'promptReplyHandler.ts'), 'utf-8');
+      expect(src).toContain('classifyPromptReplyRelevance');
+      expect(src).toContain('mayConsumeAsAnswer');
     },
   },
 ];

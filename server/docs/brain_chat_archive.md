@@ -363,3 +363,28 @@ When the user pastes a new chat:
 **Symptom tags:** `whatsapp-lid-activity-rejected`, `whatsapp-ptt-media-not-ready`.
 
 **Verification status:** unit-locked by LID-mapping, visible-fallback, refreshed-media retry, bounded exhaustion, migration, and Chat 12 regression tests. Live Web.js acceptance remains required after deploy.
+
+## Chat 13 — 2026-07-22 (greeting captured as action-status answer by regex gate)
+
+**Channel:** WhatsApp (first hours after the 6-day outage recovery).
+**User sent:** "Whatsup?" — a casual greeting.
+**Observed failure:** an awaiting action-status prompt consumed the
+greeting as its ANSWER: `looksLikeAnswer`'s hardcoded new-chat regex
+lists "hi/hello/hey" but not "whatsup", so the message fell through to
+`recordAnswer` and the blocker/intervention side-effect replied
+"[blocker recorded — intervention flagged]" plus an off-context voice
+note. A regex was the final decision boundary for judgment — the exact
+class `feedback_no_hardcoded_judgement` forbids.
+**Symptom tags:** pending-prompt-eats-command, hardcoded-judgment,
+greeting-misrouted.
+**Root cause:** prompt consumption decided by keyword allowlist; every
+phrasing absent from the list is silently treated as an answer.
+**Fix:** LLM-with-context relevance gate (`promptReplyRelevance.ts`)
+ahead of `recordAnswer` — only a confident `answers_pending_prompt`
+verdict may mutate; new-turn/ambiguous/low-confidence/classifier-failure
+all fall through to normal chat with the prompt left awaiting. The
+regex remains as a fast prefilter only. Voice and text share the
+decision (transcripts enter the same handler path).
+**Verification:** `chat13` scenario + `promptReplyRelevance.test.ts`
+matrix (greetings incl. roman-Urdu, legitimate "done"/blocker/date
+answers, malformed classifier output, failure→no-mutation).

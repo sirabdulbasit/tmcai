@@ -2124,3 +2124,46 @@ Known follow-ups (queued): "Whatsup?" greeting misrouted into blocker/
 intervention flow with voice reply; ⏳ Thinking… should be reaction +
 native typing, not a separate message; Reset-Pairing UI hangs when no
 client exists; watchdog silent recycle; status/qr surface parity.
+
+## 32. WhatsApp UX fixes A+B (2026-07-22, BUILDER: Claude — Codex-approved with conditions)
+
+**Evidence-first (per reviewer conditions):**
+- A: production activity logs show `Activity state send failed`/
+  `LID-mapped activity state failed` (minified webjs error "r: r") with
+  NO reaction failure — the reaction succeeded, yet the code fell back
+  to the ⏳ text on state failure alone.
+- B: greeting "Whatsup?" consumed by an awaiting action-status prompt —
+  `looksLikeAnswer`'s regex lists hi/hello/hey but not whatsup; the
+  blocker/intervention side-effect answered a greeting.
+
+**A — either-limb visible activity** (`inboundActivity.ts`): text
+fallback only when BOTH reaction and native presence failed, still
+at-most-once; voice reacts 🎙️. Presence refresh (15s), @lid retry,
+non-blocking failures, idempotent stop, reaction removal unchanged.
+Tests: 8 (reaction-ok+state-fail → no fallback across pulses; both-fail
+→ exactly one; state-ok+reaction-fail → none; voice glyph; @lid).
+
+**B — LLM relevance gate** (`promptReplyRelevance.ts` + handler):
+regex demoted to prefilter; consumption requires confident
+`answers_pending_prompt` (threshold 0.7, bounded protocol constant);
+new_conversation_turn / ambiguous / low-confidence / malformed output /
+classifier failure ALL fall through to chat with the prompt left
+awaiting. Voice and text share the decision (transcripts enter the same
+handler). Archive `## Chat 13` + `chat13` scenario paired (fix commit
+741d907). Tests: 11 (verdict parsing incl. hostile shapes, decision
+rule, transport, handler integration: greeting declined / blocker
+answer consumed / classifier failure → no mutation / roman-Urdu
+ambiguous → chat).
+
+**Pin-wording correction (per reviewer):** §31's experiment showed an
+exact pin/page version match observed; cache consumption is strongly
+supported, not independently proven.
+
+**Deployment note:** messaging-path change — deploy held until the two
+§31 acceptance gates (voice inbound, controlled restart) pass or Basit
+waives them, per reviewer sequencing.
+
+### Verification (exact, self-run)
+Full suite 1079 passed / 21 skipped / 0 failed (99 files + 1 skipped);
+promptReplyRelevance 11/11; whatsappInboundActivity 8/8; tsc clean;
+build clean; git diff --check clean.
