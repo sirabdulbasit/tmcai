@@ -79,7 +79,11 @@ export async function startInboundActivity(
   };
 
   const sendVisibleFallback = async () => {
-    if (visibleFallbackSent || typeof message?.reply !== 'function') return;
+    // Either successful limb is sufficient visible activity (reviewer
+    // condition 2026-07-22): a reaction already sitting on the inbound
+    // message shows the Brain is working — the text fallback fires only
+    // when BOTH the reaction and native presence failed, and only once.
+    if (reactionOk || visibleFallbackSent || typeof message?.reply !== 'function') return;
     visibleFallbackSent = true;
     try {
       await message.reply(voice ? '🎙️ Listening…' : '⏳ Thinking…');
@@ -121,7 +125,7 @@ export async function startInboundActivity(
   };
 
   try {
-    await message.react('⏳');
+    await message.react(voice ? '🎙️' : '⏳');
     reactionOk = true;
   }
   catch (error: unknown) {

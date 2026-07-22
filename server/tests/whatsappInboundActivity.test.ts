@@ -76,16 +76,65 @@ describe('WhatsApp inbound processing feedback', () => {
     await activity.stop();
   });
 
-  it('uses a visible listening marker when recording state is rejected', async () => {
+  // Reviewer condition (2026-07-22): EITHER successful limb is
+  // sufficient visible activity — the text fallback fires only when
+  // both the reaction and native presence failed.
+  it('suppresses the text fallback when the reaction succeeded but presence failed', async () => {
+    vi.useFakeTimers();
+    const reply = vi.fn(async () => ({}));
+    const react = vi.fn(async () => {});
+    const activity = await startInboundActivity({
+      react, reply,
+      getChat: vi.fn(async () => ({
+        sendStateTyping: vi.fn(async () => { throw 'r'; }),
+        clearState: vi.fn(async () => {}),
+      })),
+    }, false);
+    expect(react).toHaveBeenCalledWith('⏳');
+    await vi.advanceTimersByTimeAsync(45_000); // repeated pulses keep failing
+    expect(reply).not.toHaveBeenCalled();      // reaction is the visible signal
+    await activity.stop();
+  });
+
+  it('voice: reacts 🎙️ and sends the listening marker only when BOTH limbs fail', async () => {
     const reply = vi.fn(async () => ({}));
     const activity = await startInboundActivity({
-      react: vi.fn(async () => {}), reply,
+      react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
+      reply,
       getChat: vi.fn(async () => ({
         sendStateRecording: vi.fn(async () => { throw 'r'; }),
         clearState: vi.fn(async () => {}),
       })),
     }, true);
     expect(reply).toHaveBeenCalledWith('🎙️ Listening…');
+    expect(reply).toHaveBeenCalledOnce();
+    await activity.stop();
+  });
+
+  it('voice: reaction emoji is the recording glyph', async () => {
+    const react = vi.fn(async () => {});
+    const activity = await startInboundActivity({
+      react,
+      getChat: vi.fn(async () => ({
+        sendStateRecording: vi.fn(async () => {}),
+        clearState: vi.fn(async () => {}),
+      })),
+    }, true);
+    expect(react).toHaveBeenCalledWith('🎙️');
+    await activity.stop();
+  });
+
+  it('reaction fails but native typing succeeds → no text fallback', async () => {
+    const reply = vi.fn(async () => ({}));
+    const activity = await startInboundActivity({
+      react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
+      reply,
+      getChat: vi.fn(async () => ({
+        sendStateTyping: vi.fn(async () => {}),
+        clearState: vi.fn(async () => {}),
+      })),
+    }, false);
+    expect(reply).not.toHaveBeenCalled();
     await activity.stop();
   });
 });

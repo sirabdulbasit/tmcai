@@ -74,9 +74,39 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     return { handled: false };
   }
 
+  // Section 32B: looksLikeAnswer is only a PREFILTER — the final
+  // consumption decision is LLM-with-context. Production 2026-07-22:
+  // "Whatsup?" slipped past the regex and a greeting was recorded as
+  // an action-status answer. Only a confident 'answers_pending_prompt'
+  // verdict may mutate; everything else (incl. classifier failure)
+  // falls through to normal chat with the prompt left awaiting.
+  const { classifyPromptReplyRelevance, mayConsumeAsAnswer } =
+    await import('./promptReplyRelevance');
+  const openItemTitle = awaiting.openItemId
+    ? await prisma.openItem.findFirst({
+        where: { id: awaiting.openItemId },
+        select: { title: true },
+      }).then((r) => r?.title ?? null).catch(() => null)
+    : null;
+  const verdict = await classifyPromptReplyRelevance({
+    pendingQuestion: awaiting.question,
+    sideEffectKind,
+    openItemTitle,
+    inboundText: text,
+    userId: input.userId,
+  });
+  if (!mayConsumeAsAnswer(verdict)) {
+    log.info('relevance gate declined prompt consumption — routing to chat', {
+      userId: input.userId, promptId: String(awaiting.id), sideEffectKind,
+      relevance: verdict?.relevance ?? 'classifier_failure',
+      confidence: verdict?.confidence ?? null,
+    });
+    return { handled: false };
+  }
+
   log.info('handling prompt reply', {
     userId: input.userId, promptId: String(awaiting.id),
-    sideEffectKind,
+    sideEffectKind, relevanceConfidence: verdict!.confidence,
   });
 
   // 1. Persist the answer immediately. Even if side-effect application
