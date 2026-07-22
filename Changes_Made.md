@@ -2167,3 +2167,98 @@ waives them, per reviewer sequencing.
 Full suite 1079 passed / 21 skipped / 0 failed (99 files + 1 skipped);
 promptReplyRelevance 11/11; whatsappInboundActivity 8/8; tsc clean;
 build clean; git diff --check clean.
+
+## 33a. Delegation lifecycle spine — capture/evidence/classification/owner-notify (2026-07-22, BUILDER: Claude — REQ-003 APPROVED)
+
+**Scope fence honored:** capture + evidence + classification + owner
+notification ONLY. Zero counterpart sends from any 33a code
+(source-level test); grants schema exists with ZERO create/read/consume
+(source-level test); autonomous outbound flag default OFF with no
+consumer; capture flag DEFAULT OFF (env kill switches
+DELEGATION_CAPTURE_ENABLED=0 / DELEGATION_AUTONOMOUS_OUTBOUND_ENABLED=0
+override everything).
+
+**Migration `20260722_delegation_threads`** (additive-only, idempotent —
+verified by double-apply locally): delegation_threads (NOT NULL
+counterpart_key 'wa:+E164'/'em:addr', channel-shape CHECK, state CHECK,
+active-state partial uniques + correlation/recovery indexes, scope
+unique for composite FKs), delegation_thread_events (append-only;
+inbound dedup partial unique; classification idempotency unique;
+outbound provider unique scoped to tenant+channel+sender_identity),
+delegation_authorization_grants (schema only), correlation_incidents
+(owner-in-dedup unique) + correlation_incident_candidates (composite
+scope FKs make cross-owner disclosure structurally impossible).
+
+**Code:**
+- `delegationThreadService.ts`: state machine (12 states, CAS-only
+  transitions transactional with their event; THREAD_TRANSITIONS is the
+  single legal table, test-locked to the migration's active set);
+  intent/receipt binding (activeIntentEventId — stale receipts are
+  audit-only; failed receipt: newly-created→cancelled judged from the
+  ledger, pre-existing→restore recorded prior state; late accepted on
+  receipt_unknown→awaiting_reply; late failed after inbound evidence
+  never rolls back); canonical keys; flags.
+- `delegationCaptureService.ts`: correlation = quoted provider id /
+  In-Reply-To first, else exactly-one-active-thread; dispatch_pending
+  eligible only with transport-attempt evidence; zero matches →
+  pre-existing silent drop (no notice, no storage); >1 → per-owner
+  correlation incidents (row-locked candidate cap + overflow, owner-tz
+  incident date w/ UTC fallback) with owner-scoped notices; consume =
+  inbound event + CAS → evaluating; classification persisted FIRST
+  (idempotent key) then thread transition (completed→
+  resolved_pending_owner, blocked/low-conf→awaiting_owner,
+  in_progress/unrelated→awaiting_reply; unrelated is silent);
+  classifier failure → processing_error + owner notice, state
+  unchanged; evidence via typed source refs; owner notices deduped per
+  (thread, class, day).
+- `actionLifecycleService.ts`: `interpretActionReplyStrict` (LLM-only,
+  null on failure — no regex fallback) + `mode:'thread_capture'` in
+  recordActionLifecycleReply (no transitionStatus close, no dueDate
+  mutation, interpretation required).
+- `WhatsAppInbound.ts`: unregistered branch now routes through
+  captureDelegationReply (flag-gated; OFF ⇒ silent drop);
+  quotedProviderId plumbed from WebjsProvider.
+- `WebjsProvider.ts`: 🎙️ "Heard:" transcription echo now gated on
+  registered identity — unregistered senders receive NOTHING.
+- `actionLifecycleWorker.ts`: WhatsApp counterpart sends register
+  intent-before-transport/receipt-after (correlation evidence only —
+  no grant, no 33b eligibility); counterpart sendUserEmail branch
+  DISABLED FAIL-CLOSED (user-identity email forbidden for
+  counterparts; owner-escalation path takes over).
+- RETIRED: expectedExternalReplyService (deprecated, zero callers —
+  test-pinned), delegateeFollowupWorker (was already unwired;
+  stays-retired test).
+- `delegationTrackerService.ts`: 33a adapter — email replies route
+  through thread correlation when capture is on; legacy behavior
+  intact when off. DISCLOSED: the delegatee-mirror update is deferred
+  to 33b when capture is enabled.
+- NEW `delegationRecoveryJob.ts` under centralActionGovernor
+  (protectedTick, hourly): dispatch_pending past recovery window →
+  receipt_unknown (never resends; deduped owner notice); active
+  threads past TTL → expired (marked, kept).
+- behaviorConfig: 5 new specs (2 flags def=0; recovery window 30min
+  [5-240]; thread TTL 30d [3-120]; ambiguity cap 10 [3-25]).
+
+**Tests:** `delegationThreads33a.test.ts` (27) — canonicalization incl.
+variants + fail-closed; transition-table integrity + migration
+lockstep + additive-only proof; flag defaults + env kills; illegal/
+CAS-conflict/duplicate-event semantics; stale-receipt audit-only; late
+receipt after inbound; newly-created-cancel vs prior-state-restore;
+upsert race re-select; strict classifier null-on-failure; thread_capture
+refuses without interpretation + never closes/mutates dueDate;
+source-level: zero counterpart sends, zero grant consumers, email
+branch fail-closed, voice echo gated, retired services stay retired,
+no regex injection gate. Plus governor manifest updated.
+
+### Verification (exact, self-run)
+Full suite 1106 passed / 21 skipped / 0 failed (100 files + 1 skipped);
+33a matrix 27/27; tsc clean; build clean; git diff --check clean;
+migration double-apply idempotent on local PG17 with all 5 tables
+verified.
+
+**DEPLOYMENT: HELD** per reviewer sequencing until §31 voice/reaction +
+formal restart gates close or Basit waives. Deploy order (prepared):
+pull SHA → verify HEAD → project-local `prisma db execute` migration →
+schema verification → build → restart tmcai-server only → enable
+capture for TMC-0001 (behaviorConfig) → live acceptance incl. the
+single authorized baseline dispatch.

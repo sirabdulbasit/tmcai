@@ -44,6 +44,11 @@ function phoneVariants(phone: string): string[] {
  * into the registered-user chat pipeline and never receives an automatic
  * response.
  */
+/** @deprecated Section 33a (2026-07-22): RETIRED — replaced by
+ *  delegationCaptureService's explicit thread correlation. No caller
+ *  remains; kept for history one release, then removable. The 14-day
+ *  any-outbound + title-substring inference this implemented is the
+ *  exact class the reviewer required removed. */
 export async function captureExpectedExternalReply(
   input: ExpectedExternalReplyInput,
 ): Promise<ExpectedExternalReplyResult> {

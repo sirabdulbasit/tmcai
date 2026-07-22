@@ -8,6 +8,7 @@ describe('central Action Center governor', () => {
       'new_item_gap_prompts',
       'draft_slot_completion',
       'living_action_lifecycle',
+      'delegation_thread_recovery',
     ]);
   });
 

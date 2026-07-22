@@ -170,10 +170,27 @@ function fallbackInterpretation(body: string): ActionReplyInterpretation {
   };
 }
 
-export async function interpretActionReply(body: string, context: {
+/** Section 33a thread_capture classifier: LLM only, NO deterministic
+ *  fallback. Timeout, parse failure, or strict-output failure return
+ *  null — the caller records a processing event and notifies the
+ *  owner without mutating thread or item state. Counterpart text is
+ *  untrusted data inside the prompt, never instructions. */
+export async function interpretActionReplyStrict(body: string, context: {
   title: string;
   currentDueDate?: Date | null;
-}): Promise<ActionReplyInterpretation> {
+}): Promise<ActionReplyInterpretation | null> {
+  try {
+    const result = await interpretActionReplyViaLLM(body, context);
+    return result; // null when the LLM output failed strict parsing
+  } catch {
+    return null;
+  }
+}
+
+async function interpretActionReplyViaLLM(body: string, context: {
+  title: string;
+  currentDueDate?: Date | null;
+}): Promise<ActionReplyInterpretation | null> {
   try {
     const { callLLM } = await import('../llmRouter');
     const r = await callLLM(
@@ -184,7 +201,7 @@ Rules: a future promise is not completion; preserve concrete dates/reasons; flag
       { maxTokens: 260, providers: ['gemini-flash', 'gemini', 'claude'], purpose: 'action_lifecycle_reply' },
     );
     const match = r.text.match(/\{[\s\S]*\}/);
-    if (!match) return fallbackInterpretation(body);
+    if (!match) return null; // strict-output failure — caller decides fallback policy
     const parsed = JSON.parse(match[0]);
     const allowed = ['completed', 'in_progress', 'blocked', 'unknown'];
     const parsedDeadline = parsed.newDeadline ? new Date(parsed.newDeadline) : null;
@@ -198,9 +215,24 @@ Rules: a future promise is not completion; preserve concrete dates/reasons; flag
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence ?? 0.5))),
     };
   } catch (error: any) {
-    log.warn('reply interpretation degraded to deterministic fallback', { error: error?.message });
-    return fallbackInterpretation(body);
+    log.warn('LLM reply interpretation failed', { error: error?.message });
+    throw error;
   }
+}
+
+/** Legacy interpretation used by pre-33a callers: LLM first, then the
+ *  deterministic fallback. thread_capture NEVER uses this — it calls
+ *  interpretActionReplyStrict (no fallback). */
+export async function interpretActionReply(body: string, context: {
+  title: string;
+  currentDueDate?: Date | null;
+}): Promise<ActionReplyInterpretation> {
+  try {
+    const viaLlm = await interpretActionReplyViaLLM(body, context);
+    if (viaLlm) return viaLlm;
+  } catch { /* fall through to deterministic */ }
+  log.warn('reply interpretation degraded to deterministic fallback');
+  return fallbackInterpretation(body);
 }
 
 export async function recordActionLifecycleReply(input: {
@@ -210,7 +242,16 @@ export async function recordActionLifecycleReply(input: {
   source: 'whatsapp' | 'email' | 'user' | 'chat';
   sourceId?: string;
   interpretation?: ActionReplyInterpretation;
+  /** Section 33a: 'thread_capture' fences this call to evidence-only —
+   *  no transitionStatus close, no dueDate mutation, no deterministic
+   *  fallback (interpretation MUST be supplied by the caller; absent ⇒
+   *  handled:false rather than guessing). Confident completion is the
+   *  THREAD's business (resolved_pending_owner) — the open item is not
+   *  closed here. */
+  mode?: 'legacy' | 'thread_capture';
 }): Promise<{ handled: boolean; outcome?: string; closed?: boolean; newDueDate?: string; needsUserIntervention?: boolean }> {
+  const threadCapture = input.mode === 'thread_capture';
+  if (threadCapture && !input.interpretation) return { handled: false };
   const item = await prisma.openItem.findFirst({ where: { id: input.openItemId, clientNumber: input.clientNumber } });
   if (!item) return { handled: false };
   const now = new Date();
@@ -238,7 +279,7 @@ export async function recordActionLifecycleReply(input: {
 
   // An explicit completion statement from the responsible person is durable
   // source evidence. A future promise ("will finish") is never accepted.
-  if (interpreted.outcome === 'completed' && interpreted.completionEvidence && interpreted.confidence >= 0.7) {
+  if (interpreted.outcome === 'completed' && interpreted.completionEvidence && interpreted.confidence >= 0.7 && !threadCapture) {
     const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
     const transition = await transitionStatus(item.id, 'CLOSED', {
       clientNumber: item.clientNumber,
@@ -280,7 +321,9 @@ export async function recordActionLifecycleReply(input: {
   await prisma.openItem.update({
     where: { id: item.id },
     data: {
-      ...(interpreted.newDeadline ? { dueDate: interpreted.newDeadline } : {}),
+      // thread_capture: counterpart-stated deadlines are evidence, not
+      // mutations — the owner decides deadline changes.
+      ...(interpreted.newDeadline && !threadCapture ? { dueDate: interpreted.newDeadline } : {}),
       notes: boundedHistory([...notes, note], 100) as any,
       metadata: { ...((item.metadata as any) ?? {}), actionLifecycle: lifecycle } as any,
     },

@@ -730,10 +730,18 @@ export class WebjsProvider implements IWhatsAppProvider {
           // receipt of the user's OWN words, clearly labelled — not a
           // Brain reply — so it's exempt from the LLM-only reply rule.
           // Best-effort: never block processing if the echo send fails.
-          try {
-            await sendInboundTextReply(message, `🎙️ Heard: "${messageBody}"`);
-          } catch (e: any) {
-            log.warn('transcription echo failed (non-blocking)', { error: e?.message });
+          // Section 33a (reviewer-required): the echo is REGISTERED USERS
+          // ONLY — unregistered senders must receive nothing, matching
+          // the failure-marker path and the silent-drop policy.
+          if (resolvedIdentity === undefined) {
+            resolvedIdentity = await resolveRegisteredWhatsAppUser(clientNumber, fromNumber).catch(() => undefined);
+          }
+          if (resolvedIdentity) {
+            try {
+              await sendInboundTextReply(message, `🎙️ Heard: "${messageBody}"`);
+            } catch (e: any) {
+              log.warn('transcription echo failed (non-blocking)', { error: e?.message });
+            }
           }
         }
 
@@ -747,6 +755,11 @@ export class WebjsProvider implements IWhatsAppProvider {
           messageBody,
           messageType,
           waMessageId: msgId,
+          // Quoted-message provider id (when present) — preferred key for
+          // Section 33a delegation correlation. Read defensively: webjs
+          // internals vary across WA Web builds.
+          quotedProviderId: (message as any)?._data?.quotedStanzaID
+            ?? (message as any)?._data?.quotedMsg?.id?._serialized ?? undefined,
           timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
           _resolvedUserId: resolvedIdentity?.userId,
           _resolvedIdentity: resolvedIdentity,

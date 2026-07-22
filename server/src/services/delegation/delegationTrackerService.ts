@@ -101,6 +101,31 @@ export async function checkInboundForDelegationUpdate(params: {
 }): Promise<{ handled: boolean; outcome?: DelegationOutcome; openItemId?: string }> {
   if (!params.senderEmail || params.sourceType !== 'gmail') return { handled: false };
 
+  // Section 33a adapter: with capture enabled, email delegation replies go
+  // through explicit thread correlation (In-Reply-To when available, else
+  // the single-active-thread rule) — this function's own most-recently-
+  // updated pick and its LLM side-effects are bypassed entirely. The
+  // delegatee-mirror update is deferred to 33b (disclosed in the ledger).
+  // Capture OFF ⇒ full legacy behavior below, unchanged.
+  const { isDelegationCaptureEnabled } = await import('./delegationThreadService');
+  if (await isDelegationCaptureEnabled(params.clientNumber)) {
+    const payloadForCorrelation: any = params.rawPayload ?? {};
+    const { captureDelegationReply } = await import('./delegationCaptureService');
+    const captured = await captureDelegationReply({
+      clientNumber: params.clientNumber,
+      channel: 'email',
+      fromIdentifier: params.senderEmail,
+      body: String(payloadForCorrelation.snippet ?? payloadForCorrelation.body ?? '').slice(0, 4000),
+      sourceId: `feed:${params.feedEventId}`,
+      inReplyTo: payloadForCorrelation.inReplyTo ? String(payloadForCorrelation.inReplyTo) : null,
+      evidenceSourceType: 'feed_event',
+      evidenceSourceId: params.feedEventId,
+    }).catch(() => ({ matched: false as const, openItemId: undefined as string | undefined }));
+    return captured.matched
+      ? { handled: true, openItemId: (captured as any).openItemId }
+      : { handled: false };
+  }
+
   // Find open DELEGATED items where the delegatee email matches this sender
   const candidates = await prisma.openItem.findMany({
     where: {

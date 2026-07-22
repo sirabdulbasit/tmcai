@@ -2610,3 +2610,108 @@ model OpsHealthState {
 
   @@map("ops_health_state")
 }
+
+// ─── Section 33a: delegation lifecycle spine (REQ-003 approved) ───────
+// Partial uniques, CHECK constraints, and composite scope-FKs live in
+// migration SQL (beyond Prisma's expressiveness); models mirror columns.
+
+model DelegationThread {
+  id                         String    @id @default(cuid())
+  clientNumber               String    @map("client_number") @db.VarChar(20)
+  ownerUserId                Int       @map("owner_user_id")
+  openItemId                 String    @map("open_item_id")
+  counterpartEntityId        String?   @map("counterpart_entity_id")
+  counterpartKey             String    @map("counterpart_key") @db.VarChar(200)
+  counterpartNumberCanonical String?   @map("counterpart_number_canonical") @db.VarChar(32)
+  counterpartEmailCanonical  String?   @map("counterpart_email_canonical") @db.VarChar(200)
+  channel                    String    @db.VarChar(12)
+  state                      String    @default("awaiting_reply") @db.VarChar(32)
+  origin                     String    @default("worker_send") @db.VarChar(24)
+  activeIntentEventId        String?   @map("active_intent_event_id")
+  priorState                 String?   @map("prior_state") @db.VarChar(32)
+  followupCount              Int       @default(0) @map("followup_count")
+  nextFollowupAt             DateTime? @map("next_followup_at")
+  grantId                    String?   @map("grant_id")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+  expiresAt                  DateTime? @map("expires_at")
+  closedAt                   DateTime? @map("closed_at")
+
+  @@unique([id, clientNumber, ownerUserId], map: "delegation_threads_scope_uq")
+  @@index([clientNumber, state, nextFollowupAt], map: "delegation_threads_recovery_ix")
+  @@map("delegation_threads")
+}
+
+model DelegationThreadEvent {
+  id                 String   @id @default(cuid())
+  clientNumber       String   @map("client_number") @db.VarChar(20)
+  threadId           String   @map("thread_id")
+  eventType          String   @map("event_type") @db.VarChar(32)
+  direction          String?  @db.VarChar(10)
+  channel            String   @db.VarChar(12)
+  senderIdentity     String?  @map("sender_identity") @db.VarChar(64)
+  providerMessageId  String?  @map("provider_message_id") @db.VarChar(160)
+  inboundSourceId    String?  @map("inbound_source_id") @db.VarChar(160)
+  quotedProviderId   String?  @map("quoted_provider_id") @db.VarChar(160)
+  emailMessageId     String?  @map("email_message_id") @db.VarChar(200)
+  inReplyTo          String?  @map("in_reply_to") @db.VarChar(200)
+  receiptStatus      String?  @map("receipt_status") @db.VarChar(20)
+  sourceEventId      String?  @map("source_event_id")
+  classifierKey      String?  @map("classifier_key") @db.VarChar(80)
+  classification     Json?
+  provenance         String   @db.VarChar(32)
+  priorState         String?  @map("prior_state") @db.VarChar(32)
+  evidenceSourceType String?  @map("evidence_source_type") @db.VarChar(24)
+  evidenceSourceId   String?  @map("evidence_source_id") @db.VarChar(64)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([threadId, createdAt], map: "dte_thread_ix")
+  @@map("delegation_thread_events")
+}
+
+model DelegationAuthorizationGrant {
+  id             String    @id @default(cuid())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  ownerUserId    Int       @map("owner_user_id")
+  openItemId     String    @map("open_item_id")
+  counterpartKey String    @map("counterpart_key") @db.VarChar(200)
+  channel        String    @db.VarChar(12)
+  source         String    @db.VarChar(40)
+  grantedAt      DateTime  @default(now()) @map("granted_at")
+  expiresAt      DateTime  @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  metadata       Json      @default("{}")
+
+  @@index([clientNumber, ownerUserId, openItemId, counterpartKey, channel], map: "dag_lookup_ix")
+  @@map("delegation_authorization_grants")
+}
+
+model CorrelationIncident {
+  id             String    @id @default(cuid())
+  clientNumber   String    @map("client_number") @db.VarChar(20)
+  ownerUserId    Int       @map("owner_user_id")
+  channel        String    @db.VarChar(12)
+  counterpartKey String    @map("counterpart_key") @db.VarChar(200)
+  incidentDate   DateTime  @map("incident_date") @db.Date
+  status         String    @default("open") @db.VarChar(16)
+  overflowCount  Int       @default(0) @map("overflow_count")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  resolvedAt     DateTime? @map("resolved_at")
+  resolutionNote String?   @map("resolution_note")
+
+  @@unique([clientNumber, ownerUserId, counterpartKey, channel, incidentDate], map: "correlation_incidents_dedup_uq")
+  @@unique([id, clientNumber, ownerUserId], map: "correlation_incidents_scope_uq")
+  @@map("correlation_incidents")
+}
+
+model CorrelationIncidentCandidate {
+  id           String   @id @default(cuid())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  ownerUserId  Int      @map("owner_user_id")
+  incidentId   String   @map("incident_id")
+  threadId     String   @map("thread_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([incidentId, threadId], map: "cic_candidate_uq")
+  @@map("correlation_incident_candidates")
+}

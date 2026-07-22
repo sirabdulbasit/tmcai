@@ -144,19 +144,69 @@ async function contactConcernedParty(item: any, body: string): Promise<{ sent: b
 
   const phone = await resolveConcernedPhone(item);
   if (phone) {
+    // Section 33a: register the send on its delegation thread —
+    // outbound_intent BEFORE transport, receipt AFTER — so counterpart
+    // replies correlate explicitly. CORRELATION EVIDENCE ONLY: no
+    // authorization grant is created and no 33b eligibility conferred.
+    // Registration is best-effort and must never block the send path.
+    const registration = await registerWorkerSend(item, 'whatsapp', phone).catch(() => null);
     const { sendTenantWhatsAppText } = await import('../services/notifications/tenantWhatsappSender');
     const r = await sendTenantWhatsAppText(item.clientNumber, phone, body, item.userId);
+    if (registration) {
+      await recordWorkerReceipt(item.clientNumber, registration, r.ok ? 'accepted' : 'failed', (r as any).waMessageId ?? null)
+        .catch(() => undefined);
+    }
     if (r.ok) return { sent: true, channel: 'whatsapp', receipt: r.waMessageId };
   }
 
+  // Section 33a (reviewer-BLOCKING, REQ-002 item 1): the counterpart
+  // email branch is DISABLED FAIL-CLOSED. sendUserEmail sends from the
+  // USER's identity — forbidden for delegation counterparts. Until 33b
+  // ships an approved assistant/tenant sender, a counterpart without a
+  // WhatsApp route escalates to the owner instead (structured prompt,
+  // caller handles it via sent:false → owner escalation path).
   if (item.delegateeEmail) {
-    const { sendUserEmail } = await import('../services/gmailService');
-    const subject = `Status and commitment: ${item.title.slice(0, 100)}`;
-    const html = `<p>${escapeHtml(body).replace(/\n/g, '<br/>')}</p><p style="color:#666;font-size:12px">Sent by Nexeo on behalf of ${escapeHtml(firstName(item.owner?.name))}. Replies are tracked against this action.</p>`;
-    const r = await sendUserEmail(item.userId, item.delegateeEmail, subject, html);
-    if (r.success) return { sent: true, channel: 'email', receipt: r.messageId };
+    log.info('counterpart email suppressed (no assistant identity yet — 33a fail-closed)', {
+      openItemId: item.id, clientNumber: item.clientNumber,
+    });
   }
   return { sent: false, channel: 'none' };
+}
+
+/** Upsert the thread and register outbound_intent (dispatch_pending).
+ *  Returns what recordWorkerReceipt needs, or null when the thread
+ *  cannot be created (bad destination) — the send proceeds regardless. */
+async function registerWorkerSend(item: any, channel: 'whatsapp', destination: string):
+  Promise<{ threadId: string; intentEventId: string; senderIdentity: string } | null> {
+  const {
+    upsertActiveThread, registerOutboundIntent,
+  } = await import('../services/delegation/delegationThreadService');
+  const thread = await upsertActiveThread({
+    clientNumber: item.clientNumber, ownerUserId: item.userId,
+    openItemId: item.id, channel, destination, origin: 'worker_send',
+  });
+  if (!thread) return null;
+  const senderIdentity = `tenant_wa:${item.clientNumber}`;
+  const intent = await registerOutboundIntent({
+    clientNumber: item.clientNumber, threadId: thread.id, channel,
+    senderIdentity, expectedState: thread.state as any,
+  });
+  if (!intent.ok || !intent.eventId) return null;
+  return { threadId: thread.id, intentEventId: intent.eventId, senderIdentity };
+}
+
+async function recordWorkerReceipt(
+  clientNumber: string,
+  reg: { threadId: string; intentEventId: string; senderIdentity: string },
+  status: 'accepted' | 'failed',
+  providerMessageId: string | null,
+): Promise<void> {
+  const { registerOutboundReceipt } = await import('../services/delegation/delegationThreadService');
+  await registerOutboundReceipt({
+    clientNumber, threadId: reg.threadId, channel: 'whatsapp',
+    senderIdentity: reg.senderIdentity, intentEventId: reg.intentEventId,
+    status, providerMessageId,
+  });
 }
 
 async function claimAndRecord(item: any, plan: LifecyclePlan, channel: string, receipt?: string): Promise<void> {

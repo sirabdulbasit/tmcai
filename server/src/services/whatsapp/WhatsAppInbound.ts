@@ -21,6 +21,9 @@ export interface InboundParams {
   messageType: 'text' | 'image' | 'voice' | 'document';
   mediaUrl?: string;
   waMessageId?: string;
+  /** Provider id of the message this inbound quotes/replies to, when
+   *  the transport exposes it — preferred delegation correlation key. */
+  quotedProviderId?: string;
   timestamp?: number;
   replyFn?: (text: string) => Promise<{
     success: boolean;
@@ -95,23 +98,26 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   //
   // PM2 log line is the only persisted record — admins can grep it.
   if (!resolvedIdentity) {
-    // Narrow exception: a contact/delegatee may reply to a recent message
-    // that the user explicitly asked Nexeo to send. Capture that evidence for
-    // the owner/open item, but never enter the chatbot path or reply to them.
-    const { captureExpectedExternalReply } = await import('./expectedExternalReplyService');
-    const expected = await captureExpectedExternalReply({
+    // Narrow exception (Section 33a, replaces expectedExternalReplyService's
+    // 14-day text-inference matcher): a delegatee may reply to a tracked
+    // delegation thread. Explicit correlation only — quoted provider id, or
+    // exactly one active thread for this counterpart. Capture is evidence +
+    // owner notification; it never enters the chatbot path, never replies,
+    // reacts, or echoes to the sender. Flag-gated; OFF ⇒ pre-33a silent drop.
+    const { captureDelegationReply } = await import('../delegation/delegationCaptureService');
+    const captured = await captureDelegationReply({
       clientNumber: params.clientNumber,
-      fromNumber: params.fromNumber,
+      channel: 'whatsapp',
+      fromIdentifier: params.fromNumber,
       body: params.messageBody,
-      messageType: params.messageType,
       sourceId: params.waMessageId
         ?? `external:${params.fromNumber}:${params.timestamp ?? Date.now()}:${params.messageBody.slice(0, 40)}`,
-      timestamp: params.timestamp,
+      quotedProviderId: params.quotedProviderId ?? null,
     }).catch((e: any) => {
-      log.warn('expected external reply check failed', { error: e.message });
-      return { matched: false };
+      log.warn('delegation capture failed', { error: e.message });
+      return { matched: false as const };
     });
-    if (expected.matched) return;
+    if (captured.matched) return;
 
     log.info('Unregistered number — dropped (no save, no reply)', {
       from: params.fromNumber,

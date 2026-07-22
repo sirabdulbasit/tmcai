@@ -36,6 +36,27 @@ export interface BehaviorSpec {
 }
 
 export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
+  // ── Section 33a: delegation capture (flags are 0/1 counts) ────────
+  'delegation.capture_enabled': {
+    key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
+    description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',
+  },
+  'delegation.autonomous_outbound_enabled': {
+    key: 'delegation.autonomous_outbound_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
+    description: '33b autonomous follow-up sends. DEFAULT OFF; no consumer exists in 33a. Env kill switch DELEGATION_AUTONOMOUS_OUTBOUND_ENABLED=0 overrides everything.',
+  },
+  'delegation.receipt_recovery_window_min': {
+    key: 'delegation.receipt_recovery_window_min', unit: 'minutes', def: 30, min: 5, max: 240, scope: 'tenant',
+    description: 'How long a dispatch_pending thread may wait for a transport receipt before recovery marks it receipt_unknown (never resends).',
+  },
+  'delegation.thread_ttl_days': {
+    key: 'delegation.thread_ttl_days', unit: 'days', def: 30, min: 3, max: 120, scope: 'tenant',
+    description: 'Idle TTL after which an active delegation thread is marked expired (kept, never deleted).',
+  },
+  'delegation.ambiguity_candidate_cap': {
+    key: 'delegation.ambiguity_candidate_cap', unit: 'count', def: 10, min: 3, max: 25, scope: 'tenant',
+    description: 'Max candidate threads recorded per correlation-ambiguity incident; extras are counted in overflow_count.',
+  },
   'preactive.meeting_prep_window_min': {
     key: 'preactive.meeting_prep_window_min', unit: 'minutes', def: 90, min: 10, max: 480, scope: 'user',
     description: 'How long before a meeting the preactive prep brief fires.',

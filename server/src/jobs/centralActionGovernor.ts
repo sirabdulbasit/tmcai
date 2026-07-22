@@ -57,6 +57,15 @@ const TASKS: ActionTask[] = [
       return runActionLifecycleSweep();
     },
   },
+  {
+    // Section 33a: receipt recovery + thread TTL expiry. CAS-only,
+    // never resends; the sole owner of these two transitions.
+    id: 'delegation_thread_recovery', cadenceMs: HOUR,
+    run: async () => {
+      const { runDelegationRecoverySweep } = await import('./delegationRecoveryJob');
+      return runDelegationRecoverySweep();
+    },
+  },
 ];
 
 export function getCentralActionManifest(): Array<{ id: string; cadenceMs: number }> {

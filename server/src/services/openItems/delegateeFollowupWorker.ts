@@ -250,6 +250,11 @@ async function appendTrail(item: any, entry: DelegationFollowupEntry): Promise<v
 }
 
 /** Schedule hourly. Pattern matches followupWorker.ts. */
+/** @deprecated Section 33a (2026-07-22): RETIRED — this worker
+ *  duplicated actionLifecycleWorker's delegatee chasing with no shared
+ *  dedup (double-chase risk). It was already unwired (never invoked at
+ *  boot); a regression test now pins that it STAYS unwired. The
+ *  thread-driven loop arrives in 33b. */
 export function scheduleDelegateeFollowupWorker(): void {
   const INTERVAL_MS = 60 * 60 * 1000; // hourly
   const FIRST_TICK_MS = 5 * 60 * 1000; // 5 min after boot
