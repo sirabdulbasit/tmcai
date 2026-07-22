@@ -25,7 +25,7 @@ import {
   WebjsInitTelemetrySnapshot,
 } from './webjsInitTelemetry';
 import type { PreparedWebjsVersionCache } from './webjsVersionCache';
-import { resolveWebjsHeadlessMode, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
+import { resolveWebjsHeadlessMode, resolveWebjsDisplayEnv, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -346,7 +346,16 @@ export class WebjsProvider implements IWhatsAppProvider {
       log.error('headful display unavailable', { clientNumber, error: message });
       throw error;
     }
-    log.info('webjs display mode', { clientNumber, headful: !displayMode.headless });
+    // Chrome child env: the dedicated WHATSAPP_WEBJS_DISPLAY wins over
+    // ambient DISPLAY, which SSH X11 forwarding poisons (2026-07-22:
+    // pm2 --update-env injected the operator's MobaXterm proxy display
+    // and Chrome died with "Missing X server").
+    const displayEnv = resolveWebjsDisplayEnv();
+    log.info('webjs display mode', {
+      clientNumber,
+      headful: !displayMode.headless,
+      display: displayEnv?.DISPLAY ?? null,
+    });
 
     // Find Chrome/Chromium executable on the system. Honour both names:
     //   - PUPPETEER_EXECUTABLE_PATH (puppeteer's official convention)
@@ -371,6 +380,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
                '--disable-gpu'],
+        ...(displayEnv ? { env: { ...process.env, ...displayEnv } } : {}),
       },
     });
     telemetry.mark('client_created');

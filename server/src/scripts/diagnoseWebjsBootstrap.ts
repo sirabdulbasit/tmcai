@@ -28,6 +28,7 @@ import os from 'os';
 import path from 'path';
 import { prepareVerifiedWebjsVersionCache } from '../services/whatsapp/webjsVersionCache';
 import { safeWwebVersion } from '../services/whatsapp/webjsInitTelemetry';
+import { resolveWebjsDisplayEnv } from '../services/whatsapp/webjsRuntimeMode';
 
 export interface WebjsBootstrapDiagnosticPolicy {
   timeoutMs: number;
@@ -407,6 +408,14 @@ export async function runWebjsBootstrapDiagnostic(
         protocolTimeout: policy.timeoutMs,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
           '--no-first-run', '--no-zygote', '--disable-gpu'],
+        // Same effective-display rule as the providers: the dedicated
+        // WHATSAPP_WEBJS_DISPLAY wins over ambient (SSH-forwarded) DISPLAY.
+        ...((() => {
+          const displayEnv = policy.headful
+            ? resolveWebjsDisplayEnv({ ...env, WHATSAPP_WEBJS_HEADFUL: '1' })
+            : null;
+          return displayEnv ? { env: { ...process.env, ...displayEnv } } : {};
+        })()),
       },
     });
 

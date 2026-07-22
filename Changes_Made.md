@@ -2059,3 +2059,34 @@ page-reported version separately → co-hosted apps untouched).
 ### Verification (exact, self-run)
 Full suite 1058 passed / 21 skipped / 0 failed (98 files + 1 skipped);
 focused 10/10; tsc clean; build clean; git diff --check clean.
+
+## 31b. Fix: SSH X11-forwarding poisons ambient DISPLAY (2026-07-22, BUILDER: Claude)
+
+**Production evidence:** first headful flight failed fast with
+puppeteer's "Missing X server" while the guard had passed. dumpio probe
+showed the truth: `node sees DISPLAY=localhost:11.0` + "MoTTY X11
+proxy: Unsupported authorisation protocol" — the operator's SSH client
+(MobaXterm) X11-forwards, `pm2 restart --update-env` injected that
+ambient DISPLAY, and dotenv (by design) does not override existing
+vars, so `.env DISPLAY=:99` silently lost; Chrome dialed the operator's
+laptop instead of the host Xvfb. Manual `DISPLAY=:99 chrome` on the
+service display succeeded, isolating the poisoning.
+
+**Fix (covers the class):** dedicated `WHATSAPP_WEBJS_DISPLAY` /
+`WHATSAPP_WEBJS_XAUTHORITY` env vars that no SSH session sets:
+- `webjsRuntimeMode.resolveWebjsDisplayEnv()` — effective display env
+  (dedicated vars win over ambient; null when headless or unset).
+- `assertHeadfulDisplayAvailable` validates the EFFECTIVE display
+  (socket check applies even when ambient DISPLAY is non-local).
+- Both providers + the diagnostic pass `env: {...process.env,
+  ...displayEnv}` to the Chrome child; display echoed (origin-free
+  string) in the display-mode log line.
+- Prod .env switches to the dedicated vars; ambient DISPLAY may be
+  anything an SSH session says — WhatsApp Chrome no longer cares.
+- Tests +6: headless→null, MobaXterm precedence scenario, ambient
+  fallback, null when unset, effective-display socket validation,
+  source-level both-providers-pass-env.
+
+### Verification (exact, self-run)
+Full suite 1064 passed / 21 skipped / 0 failed (98 files + 1 skipped);
+focused 16/16; tsc clean; build clean; git diff --check clean.

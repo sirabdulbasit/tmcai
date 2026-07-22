@@ -19,7 +19,7 @@ import createLogger from '../../utils/logger';
 import { ingest as ingestFeedEvent } from '../feed/feedIngestionService';
 import fs from 'fs';
 import path from 'path';
-import { resolveWebjsHeadlessMode, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
+import { resolveWebjsHeadlessMode, resolveWebjsDisplayEnv, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
 
 const log = createLogger('whatsapp:user-webjs');
 
@@ -580,6 +580,9 @@ export async function startPairing(userId: number, clientNumber: string): Promis
     return { status: 'error', qrDataUrl: null, connectedNumber: null, error: message };
   }
 
+  // WHATSAPP_WEBJS_DISPLAY wins over ambient DISPLAY (SSH X11
+  // forwarding poisons the latter — see webjsRuntimeMode).
+  const userDisplayEnv = resolveWebjsDisplayEnv();
   const client = new Client({
     authStrategy: new LocalAuth({ clientId, dataPath: sessionPath }),
     restartOnAuthFail: true,
@@ -587,6 +590,7 @@ export async function startPairing(userId: number, clientNumber: string): Promis
       headless: resolveWebjsHeadlessMode().headless,
       executablePath: resolveChromePath(),
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-first-run', '--no-zygote', '--disable-gpu'],
+      ...(userDisplayEnv ? { env: { ...process.env, ...userDisplayEnv } } : {}),
     },
   });
 

@@ -96,3 +96,53 @@ describe('provider consumption — source-level enforcement', () => {
     expect(src).not.toMatch(/headless/i);
   });
 });
+
+// ── §31b: SSH X11-forwarding poisoning (2026-07-22 production incident)
+import { resolveWebjsDisplayEnv } from '../src/services/whatsapp/webjsRuntimeMode';
+
+describe('resolveWebjsDisplayEnv — dedicated display beats ambient', () => {
+  it('returns null when headless (never leaks a display into headless launches)', () => {
+    expect(resolveWebjsDisplayEnv({ DISPLAY: ':99' } as NodeJS.ProcessEnv)).toBeNull();
+    expect(resolveWebjsDisplayEnv({
+      WHATSAPP_WEBJS_DISPLAY: ':99', WHATSAPP_WEBJS_HEADFUL: '0',
+    } as NodeJS.ProcessEnv)).toBeNull();
+  });
+  it('the MobaXterm scenario: WHATSAPP_WEBJS_DISPLAY wins over SSH-forwarded DISPLAY', () => {
+    expect(resolveWebjsDisplayEnv({
+      WHATSAPP_WEBJS_HEADFUL: '1',
+      DISPLAY: 'localhost:11.0',            // injected by SSH X11 forwarding
+      XAUTHORITY: '/home/op/.Xauthority',
+      WHATSAPP_WEBJS_DISPLAY: ':99',
+      WHATSAPP_WEBJS_XAUTHORITY: '/var/lib/nexeo-xvfb/Xauthority',
+    } as NodeJS.ProcessEnv)).toEqual({
+      DISPLAY: ':99',
+      XAUTHORITY: '/var/lib/nexeo-xvfb/Xauthority',
+    });
+  });
+  it('falls back to ambient DISPLAY/XAUTHORITY when no dedicated vars are set', () => {
+    expect(resolveWebjsDisplayEnv({
+      WHATSAPP_WEBJS_HEADFUL: '1', DISPLAY: ':99',
+    } as NodeJS.ProcessEnv)).toEqual({ DISPLAY: ':99' });
+  });
+  it('headful with no display at all returns null (assert turns this into a typed error)', () => {
+    expect(resolveWebjsDisplayEnv({ WHATSAPP_WEBJS_HEADFUL: '1' } as NodeJS.ProcessEnv)).toBeNull();
+  });
+  it('assert validates the EFFECTIVE display: local socket checked even when ambient is non-local', () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    expect(() => assertHeadfulDisplayAvailable({
+      WHATSAPP_WEBJS_HEADFUL: '1', DISPLAY: 'localhost:11.0', WHATSAPP_WEBJS_DISPLAY: ':99',
+    } as NodeJS.ProcessEnv)).toThrow(/headful_display_unavailable/);
+    vi.restoreAllMocks();
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    expect(() => assertHeadfulDisplayAvailable({
+      WHATSAPP_WEBJS_HEADFUL: '1', DISPLAY: 'localhost:11.0', WHATSAPP_WEBJS_DISPLAY: ':99',
+    } as NodeJS.ProcessEnv)).not.toThrow();
+  });
+  it('both providers pass the effective display env to the Chrome child', () => {
+    for (const provider of ['WebjsProvider.ts', 'UserWebjsProvider.ts']) {
+      const src = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'services', 'whatsapp', provider), 'utf8');
+      expect(src, `${provider} must resolve the display env`).toContain('resolveWebjsDisplayEnv');
+    }
+  });
+});

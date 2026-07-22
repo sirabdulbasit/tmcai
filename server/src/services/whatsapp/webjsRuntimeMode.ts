@@ -24,6 +24,23 @@ export function resolveWebjsHeadlessMode(
   return { headless: env.WHATSAPP_WEBJS_HEADFUL === '1' ? false : true };
 }
 
+/** Effective display environment for the WhatsApp Chrome child.
+ *  WHATSAPP_WEBJS_DISPLAY / WHATSAPP_WEBJS_XAUTHORITY take precedence
+ *  over ambient DISPLAY/XAUTHORITY — SSH sessions with X11 forwarding
+ *  (e.g. MobaXterm exporting DISPLAY=localhost:11.0) inject an ambient
+ *  DISPLAY that dotenv will not override, which silently pointed Chrome
+ *  at the operator's laptop instead of the host Xvfb (2026-07-22).
+ *  Returns null when headless or when no display is configured. */
+export function resolveWebjsDisplayEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): { DISPLAY: string; XAUTHORITY?: string } | null {
+  if (resolveWebjsHeadlessMode(env).headless) return null;
+  const display = String(env.WHATSAPP_WEBJS_DISPLAY ?? env.DISPLAY ?? '').trim();
+  if (!display) return null;
+  const xauthority = String(env.WHATSAPP_WEBJS_XAUTHORITY ?? env.XAUTHORITY ?? '').trim();
+  return xauthority ? { DISPLAY: display, XAUTHORITY: xauthority } : { DISPLAY: display };
+}
+
 export type WebjsDisplayFailure = 'headful_display_missing' | 'headful_display_unavailable';
 
 export class WebjsDisplayError extends Error {
@@ -45,11 +62,11 @@ export function assertHeadfulDisplayAvailable(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (resolveWebjsHeadlessMode(env).headless) return;
-  const display = String(env.DISPLAY ?? '').trim();
+  const display = resolveWebjsDisplayEnv(env)?.DISPLAY ?? '';
   if (!display) {
     throw new WebjsDisplayError(
       'headful_display_missing',
-      'WHATSAPP_WEBJS_HEADFUL=1 requires DISPLAY (is nexeo-xvfb.service running?)',
+      'WHATSAPP_WEBJS_HEADFUL=1 requires WHATSAPP_WEBJS_DISPLAY (or DISPLAY) — is nexeo-xvfb.service running?',
     );
   }
   const local = /^:(\d+)(?:\.\d+)?$/.exec(display);
