@@ -2090,3 +2090,37 @@ service display succeeded, isolating the poisoning.
 ### Verification (exact, self-run)
 Full suite 1064 passed / 21 skipped / 0 failed (98 files + 1 skipped);
 focused 16/16; tsc clean; build clean; git diff --check clean.
+
+## Deployment Record — 2026-07-22 — f04869b (WhatsApp restored)
+
+1. Application release SHA: f04869b7cbcc6179a1833236421909dee2cc54fe
+2. Reviewed remote HEAD: f04869b (same)
+3. Production deployed SHA: f04869b (verified on box)
+4. Documentation SHA: this commit
+
+Ops applied by Basit: nexeo-xvfb.service (Xvfb :99, auth cookie 0600
+under 0700 dir, socket-readiness ExecStartPost, enabled at boot);
+pm2-root.service.d/nexeo-xvfb-order.conf (Wants/After weak dep); prod
+.env → WHATSAPP_WEBJS_HEADFUL=1 + WHATSAPP_WEBJS_DISPLAY=:99 +
+WHATSAPP_WEBJS_XAUTHORITY (ambient DISPLAY/XAUTHORITY lines removed,
+.env.bak-20260722 kept). Stale restored session quarantined as
+session-TMC-0001.stale-restore-20260722.
+
+**Outcome: WhatsApp QR pairing restored 2026-07-22 ~09:14Z** after a
+6-day outage. Full cause chain (each proven by experiment):
+(1) WhatsApp Web bootstrap stalls in headless Chrome on this host →
+Xvfb headful; (2) SSH X11 forwarding poisoned ambient DISPLAY via
+pm2 --update-env → dedicated WHATSAPP_WEBJS_DISPLAY; (3) the 07-21
+restore experiment's stale session blocked fresh QR → quarantined;
+(4) watchdog recycles init flights silently (no init_timeout log,
+no repair-gate escalation) — OPEN BUG, hardening pass; (5) status
+field reads 'connecting' while a QR is live in qr_code — operator
+surface gap, hardening pass.
+
+Acceptance: inbound text → real Brain reply VERIFIED live ("Hi" →
+"Hi Sir. How can I help you?"). Voice-inbound gate and controlled-
+restart gate pending → release status **PARTIAL** until both pass.
+Known follow-ups (queued): "Whatsup?" greeting misrouted into blocker/
+intervention flow with voice reply; ⏳ Thinking… should be reaction +
+native typing, not a separate message; Reset-Pairing UI hangs when no
+client exists; watchdog silent recycle; status/qr surface parity.
