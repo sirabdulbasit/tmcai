@@ -74,6 +74,139 @@ export function getWebjsInitHealth(clientNumber: string): WebjsInitHealth {
 // Returns true if msgId was ALREADY seen (caller should skip).
 const seenMessageIds = new Map<string, number>();
 const SEEN_TTL_MS = 60 * 1000;
+
+// ── REQ-007: liveness probe orchestration ────────────────────────────
+// A passed probe (outbound transport + local echo) is the ONLY path to
+// status='connected'. Single in-flight probe per tenant; all listeners
+// and timers removed on every settle path.
+const probeInFlightMap = new Map<string, boolean>();
+
+export function isProbeInFlight(clientNumber: string): boolean {
+  return probeInFlightMap.get(clientNumber) === true;
+}
+
+/** Watchdog entry point for capped reprobes (decision table). */
+export async function requestLivenessProbe(clientNumber: string): Promise<void> {
+  const client = clients.get(clientNumber);
+  if (!client) return;
+  const generation = String((client as any).__livenessGeneration ?? '');
+  if (!generation) return;
+  await runLivenessProbe(clientNumber, client, generation);
+}
+
+async function runLivenessProbe(clientNumber: string, client: any, generation: string): Promise<void> {
+  const {
+    newProbeSession, matchProbeEcho, reconcileProbeProviderId, buildProbeMarker,
+    generateProbeNonce, recordProbePass, recordProbeFailure, mayReprobe,
+    noteProbeAttempt, shouldAlertDegradation, PROBE_TIMEOUT_MS, logLivenessTransition,
+  } = await import('./webjsLiveness');
+
+  if (probeInFlightMap.get(clientNumber)) return;              // single in-flight
+  if (clients.get(clientNumber) !== client) return;            // superseded
+  const gate = mayReprobe(clientNumber);
+  if (!gate.allowed) {
+    logLivenessTransition(clientNumber, { event: 'probe_withheld', reason: gate.reason });
+    return;
+  }
+  (client as any).__livenessGeneration = generation;
+  probeInFlightMap.set(clientNumber, true);
+  noteProbeAttempt(clientNumber);
+  const nonce = generateProbeNonce();
+  const session = newProbeSession(clientNumber, generation, nonce);
+  const startedAt = Date.now();
+  const selfId: string | null = client.info?.wid?._serialized ?? null;
+
+  const outcome = await new Promise<'pass' | 'fail'>((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    let listener: ((msg: any) => void) | null = null;
+    const settle = (result: 'pass' | 'fail') => {
+      if (settled) return;
+      settled = true;
+      session.settled = true;
+      if (timer) clearTimeout(timer);
+      try { if (listener) client.off?.('message_create', listener); } catch { /* client may be gone */ }
+      resolve(result);
+    };
+    if (!selfId) { settle('fail'); return; }
+    // Observer registered BEFORE the send; early echoes are buffered by
+    // the session and reconciled against the returned provider id.
+    listener = (msg: any) => {
+      try {
+        const match = matchProbeEcho(session, {
+          fromMe: msg?.fromMe === true,
+          chatId: msg?.to ?? msg?.from ?? null,
+          selfId,
+          body: String(msg?.body ?? ''),
+          providerId: msg?.id?._serialized ?? null,
+          generation: String((clients.get(clientNumber) === client ? generation : '__stale__')),
+          clientNumber,
+        });
+        if (match === 'matched') settle('pass');
+      } catch { /* probe diagnostics must never throw into webjs */ }
+    };
+    client.on('message_create', listener);
+    timer = setTimeout(() => settle('fail'), PROBE_TIMEOUT_MS);
+    void (async () => {
+      try {
+        const sent = await client.sendMessage(selfId, buildProbeMarker(nonce));
+        const reconciled = reconcileProbeProviderId(session, sent?.id?._serialized ?? null);
+        if (reconciled === 'matched') settle('pass');
+        else if (reconciled === 'failed') settle('fail');
+        // 'pending' → the live listener will settle (or the timer will)
+      } catch {
+        settle('fail');
+      }
+    })();
+  });
+
+  probeInFlightMap.delete(clientNumber);
+  const latencyMs = Date.now() - startedAt;
+  const health = initHealth.get(clientNumber);
+
+  if (outcome === 'pass') {
+    recordProbePass(clientNumber);
+    reconnectAttempts.delete(clientNumber); // backoff reset moved HERE from ready (lock 5)
+    statusMap.set(clientNumber, 'connected');
+    initHealth.set(clientNumber, {
+      ...(health as any), state: 'connected', requiresRepair: false,
+      probePassedAt: new Date().toISOString(), probeLatencyMs: latencyMs, probeGeneration: generation,
+    } as any);
+    await prisma.$executeRawUnsafe(
+      `UPDATE whatsapp_config SET status = 'connected', last_error = NULL WHERE client_number = $1`,
+      clientNumber,
+    ).catch(() => undefined);
+    logLivenessTransition(clientNumber, { event: 'probe_pass', latencyMs, generation });
+    return;
+  }
+
+  const action = recordProbeFailure(clientNumber);
+  const failedStatus = action === 'bounded_reinit' ? 'liveness_failed' : 'degraded';
+  statusMap.set(clientNumber, failedStatus);
+  initHealth.set(clientNumber, {
+    ...(health as any), state: failedStatus,
+    requiresRepair: failedStatus === 'degraded',
+    probeFailedAt: new Date().toISOString(), probeLatencyMs: latencyMs, probeGeneration: generation,
+  } as any);
+  await prisma.$executeRawUnsafe(
+    `UPDATE whatsapp_config SET status = $2, last_error = $3, last_error_at = NOW() WHERE client_number = $1`,
+    clientNumber, failedStatus,
+    `liveness probe failed (outbound transport + local echo); action=${action}`,
+  ).catch(() => undefined);
+  logLivenessTransition(clientNumber, { event: 'probe_fail', action, latencyMs, generation });
+  if (failedStatus === 'degraded' && shouldAlertDegradation(clientNumber)) {
+    // One primary alert per degradation episode, via the independent
+    // path (system log + admin surface) — never only the dead channel.
+    log.error('WhatsApp channel DEGRADED — liveness probes failing; sends withheld pending repair', { clientNumber });
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO system_logs (source, level, category, message, client_number, recurrence_count, last_seen_at)
+       VALUES ('whatsapp:liveness', 'error', 'health_transition', 'WhatsApp degraded: liveness probes failing; sends withheld', $1, 1, NOW())`,
+      clientNumber,
+    ).catch(() => undefined);
+  }
+  // bounded_reinit is executed by the watchdog's next tick (single
+  // owner of re-init flow; the init flight mutex prevents overlap).
+}
 function markSeen(msgId: string): boolean {
   const now = Date.now();
   // Clean entries older than TTL
@@ -237,8 +370,31 @@ export class WebjsProvider implements IWhatsAppProvider {
     };
 
     if (activeFlight) {
-      log.warn('initialization deadline expired — replacing wedged client', {
-        clientNumber, previousStartedAt: activeFlight.startedAt,
+      // REQ-007 lock 5 (silent-recycle root fix): the expired flight is
+      // CLASSIFIED as an initialization timeout BEFORE replacement —
+      // persisted failure, consecutive-timeout accounting, repair-gate
+      // progression, and telemetry. The superseded flight's rejected
+      // promise is already ignored downstream, so this counts each
+      // expired flight exactly once.
+      const policy = getWebjsInitPolicy();
+      const prevHealth = initHealth.get(clientNumber);
+      const consecutiveTimeouts = (prevHealth?.consecutiveTimeouts ?? 0) + 1;
+      const requiresRepair = consecutiveTimeouts >= policy.timeoutEscalationCount;
+      const expiredError = `init_timeout[expired_flight]: deadline passed without ready/qr; replaced wedged client (consecutive=${consecutiveTimeouts})`;
+      initHealth.set(clientNumber, {
+        ...(prevHealth as any),
+        state: 'init_timeout', retryAt: null,
+        consecutiveTimeouts, requiresRepair,
+        lastError: expiredError,
+      } as any);
+      await prisma.$executeRawUnsafe(
+        `UPDATE whatsapp_config SET status = 'init_timeout', last_error = $2, last_error_at = NOW() WHERE client_number = $1`,
+        clientNumber, expiredError,
+      ).catch(() => undefined);
+      log.error('initialization failed', {
+        clientNumber, failureClass: 'init_timeout', initStage: 'expired_flight_replaced',
+        consecutiveTimeouts, requiresRepair,
+        previousStartedAt: activeFlight.startedAt,
         previousDeadlineAt: activeFlight.deadlineAt,
       });
     }
@@ -497,19 +653,24 @@ export class WebjsProvider implements IWhatsAppProvider {
       if (clients.get(clientNumber) !== client) return;
       telemetry.mark('ready');
       syncTelemetry();
-      statusMap.set(clientNumber, 'connected');
+      // REQ-007: ready is NOT send-capable. Only a passed liveness
+      // probe promotes to 'connected'; reconnect/backoff counters are
+      // deliberately NOT reset here (lock 5) — repeated ready-but-deaf
+      // clients must not evade the caps.
+      statusMap.set(clientNumber, 'connected_unverified');
       qrCodes.delete(clientNumber);
-      reconnectAttempts.delete(clientNumber);  // reset backoff counter on a clean connection
       initHealth.set(clientNumber, {
-        state: 'connected', startedAt: null, deadlineAt: null, retryAt: null,
+        state: 'connected_unverified', startedAt: null, deadlineAt: null, retryAt: null,
         consecutiveTimeouts: 0, requiresRepair: false, telemetry: telemetry.snapshot(),
-      });
+        readyAt: new Date().toISOString(),
+      } as any);
       const number = '+' + client.info.wid.user;
       await prisma.$executeRawUnsafe(
-        `UPDATE whatsapp_config SET status = 'connected', connected_number = $1, connected_at = NOW(), qr_code = NULL, qr_expires_at = NULL, last_error = NULL WHERE client_number = $2`,
+        `UPDATE whatsapp_config SET status = 'connected_unverified', connected_number = $1, connected_at = NOW(), qr_code = NULL, qr_expires_at = NULL, last_error = NULL WHERE client_number = $2`,
         number, clientNumber,
       );
-      log.info('Connected', { clientNumber, number });
+      log.info('ready — connected_unverified, liveness probe starting', { clientNumber, number });
+      void runLivenessProbe(clientNumber, client, String(token));
     });
 
     const handleInboundEvent = async (message: any) => {

@@ -147,13 +147,45 @@ async function probeAllTenants(): Promise<void> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT client_number, connected_number, status
        FROM whatsapp_config
-      WHERE status IN ('connected', 'connecting', 'init_timeout')`,
+      WHERE status IN ('connected', 'connecting', 'init_timeout',
+                       'connected_unverified', 'liveness_failed', 'degraded')`,
   ).catch(() => [] as any[]);
 
   for (const row of rows) {
     const cn = row.client_number;
     const t0 = Date.now();
     try {
+      // REQ-007 decision table: liveness states are handled explicitly
+      // and are NEVER treated as send-capable or as ordinary drift.
+      if (['connected_unverified', 'liveness_failed', 'degraded'].includes(row.status)) {
+        const { decideWatchdogAction, mayReprobe } = await import('./webjsLiveness');
+        const { isProbeInFlight, requestLivenessProbe } = await import('./WebjsProvider');
+        const decision = decideWatchdogAction({
+          status: row.status,
+          probeInFlight: isProbeInFlight(cn),
+          reprobeAllowed: mayReprobe(cn).allowed,
+        });
+        if (decision === 'wait_for_probe') {
+          pushHealth(cn, { at: Date.now(), ok: false, error: `${row.status}: probe in flight`, action: 'init_wait' });
+          continue;
+        }
+        if (decision === 'capped_reprobe') {
+          await requestLivenessProbe(cn).catch(() => undefined);
+          pushHealth(cn, { at: Date.now(), ok: false, error: `${row.status}: reprobe requested`, action: 'init_wait' });
+          continue;
+        }
+        if (decision === 'bounded_reinit') {
+          const { getProvider } = await import('./WhatsAppManager');
+          const provider = await getProvider(cn);
+          await provider.initialize(cn).catch((e: any) =>
+            log.warn('liveness bounded re-init failed to start', { clientNumber: cn, error: e?.message }));
+          pushHealth(cn, { at: Date.now(), ok: false, error: 'liveness_failed: bounded re-init', action: 'reinit_failed' });
+          continue;
+        }
+        // withhold_for_repair: degraded with the episode cap exhausted.
+        pushHealth(cn, { at: Date.now(), ok: false, error: 'degraded: probe episode cap exhausted — manual repair required', action: 'init_timeout' });
+        continue;
+      }
       const { getProvider } = await import('./WhatsAppManager');
       const provider = await getProvider(cn);
       const providerStatus = await provider.getStatus(cn);

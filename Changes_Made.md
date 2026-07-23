@@ -2262,3 +2262,68 @@ pull SHA → verify HEAD → project-local `prisma db execute` migration →
 schema verification → build → restart tmcai-server only → enable
 capture for TMC-0001 (behaviorConfig) → live acceptance incl. the
 single authorized baseline dispatch.
+
+## 34. WhatsApp liveness self-verification (2026-07-23, BUILDER: Claude — REQ-007 build clearance with locks)
+
+**Claim boundary (documented + telemetry-labeled):** a passed probe
+verifies OUTBOUND TRANSPORT + LOCAL MESSAGE-EVENT ECHO liveness only —
+no remote-inbound claim; external canary out of scope unless the owner
+authorizes one. Probe = operational self-chat traffic (visible on the
+tenant phone/linked devices), opaque marker `[nexeo-liveness <nonce>]`,
+content never persisted.
+
+**Status truth:** ready → `connected_unverified` (send-blocked — the
+existing gates require exactly 'connected', verified unchanged); probe
+pass is the ONLY promotion to `connected` (single such write on the
+webjs path, test-pinned); 1st fail → `liveness_failed` + one bounded
+re-init (watchdog-owned, flight-fenced); 2nd consecutive → `degraded` +
+repair flag + one primary alert per episode via the independent path
+(system_logs + admin surface). Backoff/reconnect reset MOVED from ready
+to probe pass (lock 5). Counter is TENANT-scoped, survives generations,
+resets only on pass (lock 1). Degraded reprobes: 30-min spacing + a
+TOTAL episode cap of 6; exhausted ⇒ probes stop, sends stay blocked,
+manual repair required; pass opens a fresh episode (lock 4).
+
+**Probe engine** (`webjsLiveness.ts` pure core + provider
+orchestration): observer registered before send; strict identity —
+tenant + generation + fromMe + self-chat + exact nonce + provider-id
+reconciliation; early echo buffered until sendMessage() returns its id,
+mismatch fails (locks 2-3); single in-flight probe per tenant; all
+listeners/timers removed on every settle path; bypasses Brain routing,
+delegation capture, persistence, quotas, reactions/dedup (fromMe never
+enters the normal pipeline + probe path touches none of them,
+test-pinned).
+
+**Silent-recycle root fix:** the expired-flight replacement branch now
+classifies init_timeout, persists the failure + timestamp, increments
+consecutiveTimeouts, advances the repair gate at the policy cap, and
+emits the standard "initialization failed" telemetry BEFORE disposing
+the wedged client; the superseded flight's late rejection stays ignored
+(exactly-once accounting).
+
+**Watchdog/consumers:** DB scan extended to the three new states with
+the explicit decision table (wait_for_probe / capped_reprobe /
+bounded_reinit / withhold_for_repair); no consumer equates ready or
+client-existence with send-capable. whatsapp_config.status is
+VARCHAR(20) with no CHECK — 'connected_unverified' fits at exactly 20
+chars (flagged: widen to VARCHAR(32) in a future housekeeping
+migration).
+
+**Telemetry:** initHealth gains readyAt, probePassedAt/FailedAt,
+probeLatencyMs, probeGeneration; classified failures + liveness
+transitions logged; admin /whatsapp-health surfaces via existing init
+field.
+
+**Tests** (`webjsLiveness.test.ts`, 25): full Codex matrix + all 9
+locks — identity rejections (no-fromMe, non-self chat, stale gen, wrong
+tenant/nonce), duplicate-echo idempotence, early-echo buffering +
+id-mismatch failure, tenant counter across generations, pass-only
+reset, episode cap + once-per-episode alert, send-capability table,
+watchdog decisions, and source-level wiring proofs (ready≠connected,
+backoff-reset location, single connected-write, observer-before-send,
+expired-flight accounting, probe-bypass, gate integrity).
+
+### Verification (exact, self-run)
+Full suite 1131 passed / 21 skipped / 0 failed (101 files + 1 skipped);
+focused 25/25; tsc clean; build clean; git diff --check clean. No
+migration (status column verified unconstrained).
