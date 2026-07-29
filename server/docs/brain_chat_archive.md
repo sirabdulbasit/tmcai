@@ -388,3 +388,66 @@ decision (transcripts enter the same handler path).
 **Verification:** `chat13` scenario + `promptReplyRelevance.test.ts`
 matrix (greetings incl. roman-Urdu, legitimate "done"/blocker/date
 answers, malformed classifier output, failure→no-mutation).
+
+## Chat 14 — 2026-07-27/28 (delegation sends refused; voice + typing dead)
+
+**Channel:** WhatsApp (Basit ↔ Nexeo, tenant number +923274572102).
+**User sent:** "Brief my day" → "Ask status of leave request" → "send";
+later a voice note; repeated across 07-27 and 07-28.
+
+**Observed failure:** Brain replied to every text normally, previewed the
+delegation message correctly, then returned
+`[notifyviawhatsapp failed: no tenant whatsapp channel configured]` — and
+after an ops status flip, `[... webjs: webjs after re-init: WhatsApp not
+connected]`. No typing/⏳ indicator on any turn. Voice notes produced no
+response at all (turn died ~2s in, no STT attempted).
+
+**Production proof:** `whatsapp_config` = `degraded`, `last_error =
+"liveness probe failed (outbound transport + local echo);
+action=hold_degraded"`, `connected_at` 07-24 06:35, `last_error_at` 07-24
+08:40 — then three days of nothing. `session-TMC-0001/` was being written
+to the same day (07-28 11:13), and inbound replies kept working, so the
+client was demonstrably alive the whole time. 11:04 inbound: `ptt`,
+`hasMedia:true`, `from:173555350261799@lid`, `Activity started
+… state:"failed"`. Watchdog looped every 60s: `heartbeat detected drift`
+→ `initialize withheld — session requires re-pair` → `heartbeat self-heal
+failed`. The independent alert path was itself dead (SMTP 535 on
+basit.ahmed@tmcltd.com).
+
+**Root causes:**
+1. §34's probe compared its self-chat echo (`msg.to`) against
+   `client.info.wid._serialized` only. Under the @lid regime the echo can
+   carry the account's LID spelling → every probe failed.
+2. Three flags (`statusMap='degraded'`, `requiresRepair`, exhausted
+   `EPISODE_PROBE_CAP`) all cleared ONLY via `recordProbePass`, which
+   needs a probe, which the cap forbade — a closed loop with no exit.
+3. `requiresRepair` from a probe failure blocked `initialize()` and logged
+   "session requires re-pair", asserting a pairing fault nothing checked.
+4. `requestLivenessProbe` read `__livenessGeneration`, whose only writer
+   was `runLivenessProbe` itself → every watchdog reprobe was a silent
+   no-op before the first probe.
+5. Generation token was `Symbol(clientNumber)`; all generations stringified
+   to `"Symbol(TMC-0001)"`, so probe telemetry could not fence generations.
+6. THE RECURRENCE ENGINE: Chat 12's @lid fix (`getContactLidAndPhone`)
+   lived in a *private* function inside `inboundActivity.ts`. Every module
+   written afterwards — the probe, the media downloader — reopened the same
+   hole. Same class as Chat 12, third occurrence.
+
+**Symptom tags:** `whatsapp-lid-activity-rejected`,
+`whatsapp-ptt-media-not-ready`, `liveness-deadlock`,
+`connector-status-lies-not-connected`, `silent-withhold-no-alert`.
+
+**Fix:** new shared `waIdentity.ts` (normalizeWid/sameWid/resolveSelfIds/
+resolvePhoneChat/resolveMessageViaPhoneChat) consumed by the activity,
+media and probe layers; probe matches a self-identity SET (@lid + phone +
+device-suffix) while still rejecting foreign chats; `recordOutboundProof`
+lets a confirmed webjs reply re-arm the probe budget without promoting
+status (lock 6 intact); `repairReason` separates liveness-degraded (re-init
+allowed) from init_timeout/auth_failure (re-pair required); monotonic
+string generation tokens stamped at client registration; probe failures now
+record `send_threw` / `echo_unmatched` / `no_echo`.
+
+**Verification:** `waIdentityLiveness.test.ts` (32 tests) incl. a
+source-level guard that `waIdentity.ts` is the ONLY caller of
+`getContactLidAndPhone`, so a fourth recurrence fails CI. Full suite 963
+passed. **Live acceptance on the box still required** — see below.

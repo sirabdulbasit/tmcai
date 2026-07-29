@@ -12,6 +12,7 @@
  * user data; its content is never persisted.
  */
 import createLogger from '../../utils/logger';
+import { normalizeWid } from './waIdentity';
 
 const log = createLogger('whatsapp:liveness');
 
@@ -57,6 +58,18 @@ export interface ProbeEchoEvent {
   /** Chat id of the event; self-chat means it equals the account's own id. */
   chatId: string | null;
   selfId: string | null;
+  /**
+   * REQ-009: EVERY id that denotes this account — its phone Wid and its
+   * LID Wid (see waIdentity.resolveSelfIds). WhatsApp may stamp the echo
+   * of a self-chat send with either one, so matching a single id is what
+   * made every §34 probe fail and wedged the channel `degraded`.
+   *
+   * The self-chat requirement of lock 2 is UNCHANGED in strength: the
+   * echo must still be in this account's own chat. What widens is only
+   * the set of spellings that count as "this account". Absent/empty →
+   * falls back to `selfId`, so existing callers keep prior behaviour.
+   */
+  selfIds?: string[] | null;
   body: string;
   providerId: string | null;
   generation: string;
@@ -64,6 +77,23 @@ export interface ProbeEchoEvent {
 }
 
 export type ProbeMatch = 'matched' | 'buffered' | 'rejected';
+
+/**
+ * Is this echo in the account's OWN chat? (lock 2, @lid-aware.)
+ *
+ * Compares the event's chat id against every known spelling of this
+ * account, normalized for multi-device suffix and case. A chat belonging
+ * to anyone else still fails, which is what the gate is there for.
+ */
+function isOwnChat(evt: ProbeEchoEvent): boolean {
+  const chat = normalizeWid(evt.chatId);
+  if (!chat) return false;
+  const candidates = (evt.selfIds && evt.selfIds.length > 0 ? evt.selfIds : [evt.selfId])
+    .map(normalizeWid)
+    .filter((id) => id.length > 0);
+  if (candidates.length === 0) return false;
+  return candidates.includes(chat);
+}
 
 /** ALL identity evidence required (lock 2): active probe, current
  *  generation, fromMe, self-chat, exact nonce. A remote inbound whose
@@ -75,7 +105,7 @@ export function matchProbeEcho(session: ProbeSession | null, evt: ProbeEchoEvent
   if (evt.clientNumber !== session.clientNumber) return 'rejected';
   if (evt.generation !== session.generation) return 'rejected';
   if (evt.fromMe !== true) return 'rejected';
-  if (!evt.selfId || !evt.chatId || evt.chatId !== evt.selfId) return 'rejected';
+  if (!isOwnChat(evt)) return 'rejected';
   if (evt.body !== buildProbeMarker(session.nonce)) return 'rejected';
   if (session.expectedProviderId != null) {
     return evt.providerId === session.expectedProviderId ? 'matched' : 'rejected';
@@ -118,6 +148,52 @@ function counters(clientNumber: string): TenantLiveness {
 export function recordProbePass(clientNumber: string): void {
   // A pass starts a new healthy episode: counter reset + episode cap reset.
   tenantLiveness.set(clientNumber, { consecutiveFailures: 0, episodeProbeCount: 0, episodeAlerted: false, lastProbeAt: Date.now() });
+}
+
+/**
+ * REQ-009 — real outbound traffic RE-ARMS the probe episode.
+ *
+ * THE DEADLOCK THIS BREAKS (production, 07-24 → 07-28):
+ * Three flags withheld the channel — `statusMap='degraded'` (blocks
+ * sends), `requiresRepair` (blocks re-init), and an exhausted episode cap
+ * (blocks probes). Every one of them cleared ONLY via recordProbePass,
+ * which needs a probe, which the cap forbade. A closed loop with no exit,
+ * and the independent alert path (SMTP) was itself broken — so it sat
+ * wedged for four days while the client was demonstrably alive and
+ * answering the owner over the same transport.
+ *
+ * A user-visible outbound message that the provider ACCEPTED is direct,
+ * unfaked evidence that outbound transport works. Discarding that while
+ * trusting only a synthetic self-chat probe is what made the outage
+ * unrecoverable. So real success re-opens the probe budget.
+ *
+ * DELIBERATELY NOT a promotion to `connected` (lock 6 intact): a real
+ * send proves the transport limb, not the local-echo limb, and the probe
+ * remains the sole authority on send-capability. This only restores the
+ * system's RIGHT TO RETRY.
+ *
+ * Bounded by construction: re-arming needs a genuine accepted send, and
+ * each re-arm buys at most EPISODE_PROBE_CAP probes with the normal
+ * spacing restored after the first. Traffic cannot induce a probe storm.
+ *
+ * @returns true when this call actually restored an exhausted budget.
+ */
+export function recordOutboundProof(clientNumber: string): boolean {
+  const c = counters(clientNumber);
+  const wasExhausted = c.episodeProbeCount >= EPISODE_PROBE_CAP;
+  c.episodeProbeCount = 0;
+  c.episodeAlerted = false;
+  // Let the next reprobe happen immediately rather than waiting out the
+  // degraded spacing window — we have fresh evidence worth acting on.
+  c.lastProbeAt = 0;
+  // consecutiveFailures is left INTACT on purpose: the probe really did
+  // fail that many times, and only a probe pass may erase probe history.
+  if (wasExhausted) {
+    log.info('probe budget re-armed by confirmed outbound traffic', {
+      clientNumber, consecutiveFailures: c.consecutiveFailures,
+    });
+  }
+  return wasExhausted;
 }
 
 export type ProbeFailureAction = 'bounded_reinit' | 'degrade' | 'hold_degraded';

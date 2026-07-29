@@ -1,4 +1,5 @@
 import createLogger from '../../utils/logger';
+import { resolvePhoneChat } from './waIdentity';
 
 const log = createLogger('whatsapp:activity');
 
@@ -34,15 +35,15 @@ const activityError = (error: unknown): string => {
  * Modern WhatsApp delivers some 1:1 chats as @lid. whatsapp-web.js can reply
  * to those messages, but its Chat state helpers may reject the LID Wid. Resolve
  * the phone-number Wid explicitly and retry against that equivalent chat.
+ *
+ * REQ-009: the implementation now lives in the SHARED waIdentity module.
+ * It used to be private to this file, which is why the liveness probe and
+ * the media downloader — written later — each reopened the same @lid hole
+ * that Chat 12 believed it had closed. Keep it shared.
  */
-async function resolvePhoneChat(message: any, currentChat: any): Promise<any | null> {
+async function resolveActivityPhoneChat(message: any, currentChat: any): Promise<any | null> {
   const rawId = currentChat?.id?._serialized || message?.from || '';
-  const client = message?.client;
-  if (!rawId.endsWith('@lid') || typeof client?.getContactLidAndPhone !== 'function') return null;
-  const mappings = await client.getContactLidAndPhone([rawId]);
-  const phoneId = mappings?.[0]?.pn;
-  if (!phoneId || typeof client?.getChatById !== 'function') return null;
-  return client.getChatById(phoneId);
+  return resolvePhoneChat(message?.client, rawId);
 }
 
 /**
@@ -107,7 +108,7 @@ export async function startInboundActivity(
     } catch (firstError: unknown) {
       try {
         chat ??= await message.getChat();
-        const phoneChat = await resolvePhoneChat(message, chat);
+        const phoneChat = await resolveActivityPhoneChat(message, chat);
         if (phoneChat && await sendState(phoneChat)) {
           stateChat = phoneChat;
           log.info('Activity state sent through LID phone mapping', { ...context, voice });

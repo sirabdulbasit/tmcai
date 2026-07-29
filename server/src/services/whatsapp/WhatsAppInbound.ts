@@ -581,6 +581,19 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
       if (outcome && !outcome.success) throw new Error(outcome.error ?? 'reply provider rejected send');
       messageId = outcome?.messageId ?? null;
       status = messageId ? 'sent' : 'sent_unconfirmed';
+      // REQ-009: this reply went out over webjs and WhatsApp accepted it —
+      // hard evidence that outbound transport is alive. Feed it back into
+      // the liveness budget. Without this the 07-24 outage was terminal:
+      // Brain answered the owner over this exact path for four days while
+      // the probe budget stayed exhausted and every send to a counterpart
+      // was refused. Never promotes status — only restores the right to
+      // reprobe (see recordOutboundProof).
+      if (messageId) {
+        try {
+          const { recordOutboundProof } = await import('./webjsLiveness');
+          recordOutboundProof(params.clientNumber);
+        } catch { /* liveness bookkeeping must never break a reply */ }
+      }
     } else {
       const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
       const outcome = await sendTenantWhatsAppText(

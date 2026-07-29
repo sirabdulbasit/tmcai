@@ -71,10 +71,40 @@ export async function downloadInboundMedia(
     });
   }
 
+  // REQ-009 — final limb: re-fetch the message through its PHONE-Wid chat.
+  //
+  // On an @lid chat the originally emitted PTT object can stay
+  // permanently unresolvable while the identical message is downloadable
+  // via the phone-identity chat. Chat 12's ladder only ever reloaded the
+  // SAME identity, so a voice note in this state failed every attempt and
+  // the turn died silently ~2s in — exactly what production showed on
+  // 2026-07-28 11:04. Tried last: the direct object is correct whenever
+  // it works, and this costs an extra page round-trip.
+  try {
+    const { resolveMessageViaPhoneChat } = await import('./waIdentity');
+    const viaPhone = await resolveMessageViaPhoneChat(message);
+    if (viaPhone) {
+      const media = await viaPhone.downloadMedia();
+      if (media?.data) {
+        log.info('Inbound media downloaded via LID phone mapping', {
+          clientNumber: options.clientNumber,
+          messageId: options.messageId,
+          bytesBase64: media.data.length,
+          mimeType: String(media.mimetype || '').split(';')[0],
+        });
+        return media;
+      }
+      lastError = 'phone-chat re-fetch returned no media data';
+    }
+  } catch (error: unknown) {
+    lastError = describeMediaError(error);
+  }
+
   log.error('Inbound media download exhausted retries', {
     clientNumber: options.clientNumber,
     messageId: options.messageId,
     attempts: delays.length,
+    phoneChatLimbTried: true,
     error: lastError,
   });
   return null;

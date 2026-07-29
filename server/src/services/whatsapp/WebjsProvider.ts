@@ -39,10 +39,24 @@ const statusMap = new Map<string, string>();       // connection status
 //   - reconnectTimer: a scheduled reconnect handle we can cancel
 //   - reconnectAttempt: exponential-backoff counter, reset on successful ready
 interface InitFlight {
-  token: symbol;
+  /**
+   * REQ-009: a MONOTONIC STRING, not a Symbol.
+   *
+   * This was `Symbol(clientNumber)`. Symbols compare by identity, which
+   * fenced flights correctly, but every diagnostic that stringified one
+   * printed the identical `"Symbol(TMC-0001)"` for every generation — so
+   * the liveness telemetry could not distinguish generations at all, and
+   * `probeGeneration` was decorative. The string form fences by equality
+   * exactly as before AND is legible in logs.
+   */
+  token: string;
   startedAt: number;
   deadlineAt: number;
 }
+/** Monotonic source for flight/generation tokens. Never reused. */
+let initGenerationSeq = 0;
+const nextGenerationToken = (clientNumber: string): string =>
+  `${clientNumber}#gen${++initGenerationSeq}`;
 export interface WebjsInitHealth {
   state: 'idle' | 'connecting' | 'connected' | 'init_timeout' | 'error';
   startedAt: number | null;
@@ -50,6 +64,19 @@ export interface WebjsInitHealth {
   retryAt: number | null;
   consecutiveTimeouts: number;
   requiresRepair: boolean;
+  /**
+   * REQ-009 — WHY repair was demanded.
+   *   'init_timeout' → initialization genuinely could not complete;
+   *                    re-running it unattended just burns Chromiums, so
+   *                    a human/re-pair is the right gate.
+   *   'auth_failure' → WhatsApp rejected the credentials. Genuinely needs
+   *                    a re-pair; re-init cannot help.
+   *   'liveness'     → the client initialized fine and a liveness probe
+   *                    later failed. Re-initializing IS the self-heal
+   *                    here, so it must NOT be withheld.
+   * Undefined for healthy states.
+   */
+  repairReason?: 'init_timeout' | 'auth_failure' | 'liveness';
   lastError?: string;
   telemetry?: WebjsInitTelemetrySnapshot;
 }
@@ -115,6 +142,20 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
   const session = newProbeSession(clientNumber, generation, nonce);
   const startedAt = Date.now();
   const selfId: string | null = client.info?.wid?._serialized ?? null;
+  // REQ-009: the echo of a self-chat send may be stamped with either this
+  // account's phone Wid or its LID Wid. Matching only wid._serialized is
+  // what failed every probe from 07-24 on. The send TARGET stays the phone
+  // Wid (that limb was never the problem); only matching widens.
+  const { resolveSelfIds } = await import('./waIdentity');
+  const selfIds = await resolveSelfIds(client).catch(() => [] as string[]);
+
+  // Failure forensics. The previous implementation recorded only
+  // pass/fail + latency, so a probe that sent fine but never matched its
+  // echo was indistinguishable from one whose send threw — the two need
+  // opposite fixes, and telling them apart cost days of production
+  // archaeology. Capture the discriminator at the source.
+  let sendError: string | null = null;
+  let ownEchoSeen = false;
 
   const outcome = await new Promise<'pass' | 'fail'>((resolve) => {
     let settled = false;
@@ -133,10 +174,16 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     // the session and reconciled against the returned provider id.
     listener = (msg: any) => {
       try {
+        // Our own marker coming back at all proves the send reached
+        // WhatsApp, whatever the identity gate then decides.
+        if (msg?.fromMe === true && String(msg?.body ?? '') === buildProbeMarker(nonce)) {
+          ownEchoSeen = true;
+        }
         const match = matchProbeEcho(session, {
           fromMe: msg?.fromMe === true,
           chatId: msg?.to ?? msg?.from ?? null,
           selfId,
+          selfIds,
           body: String(msg?.body ?? ''),
           providerId: msg?.id?._serialized ?? null,
           generation: String((clients.get(clientNumber) === client ? generation : '__stale__')),
@@ -154,7 +201,8 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
         if (reconciled === 'matched') settle('pass');
         else if (reconciled === 'failed') settle('fail');
         // 'pending' → the live listener will settle (or the timer will)
-      } catch {
+      } catch (err: any) {
+        sendError = String(err?.message ?? err ?? 'unknown send error').slice(0, 200);
         settle('fail');
       }
     })();
@@ -182,18 +230,31 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
 
   const action = recordProbeFailure(clientNumber);
   const failedStatus = action === 'bounded_reinit' ? 'liveness_failed' : 'degraded';
+  // REQ-009: name the failure mode. `send_threw` = transport is genuinely
+  // broken. `echo_unmatched` = the send left the process but the echo did
+  // not satisfy the identity gate (the @lid class). `no_echo` = sent, but
+  // nothing came back within the window.
+  const failureMode = sendError ? 'send_threw' : ownEchoSeen ? 'echo_unmatched' : 'no_echo';
   statusMap.set(clientNumber, failedStatus);
   initHealth.set(clientNumber, {
     ...(health as any), state: failedStatus,
     requiresRepair: failedStatus === 'degraded',
+    // A degraded PROBE is not a broken PAIRING. Recording why repair was
+    // demanded lets initialize() distinguish "re-pairing needed" from
+    // "self-heal by re-init", instead of refusing both.
+    repairReason: failedStatus === 'degraded' ? 'liveness' : undefined,
     probeFailedAt: new Date().toISOString(), probeLatencyMs: latencyMs, probeGeneration: generation,
+    probeFailureMode: failureMode,
   } as any);
   await prisma.$executeRawUnsafe(
     `UPDATE whatsapp_config SET status = $2, last_error = $3, last_error_at = NOW() WHERE client_number = $1`,
     clientNumber, failedStatus,
-    `liveness probe failed (outbound transport + local echo); action=${action}`,
+    `liveness probe failed (${failureMode}); action=${action}${sendError ? `; send: ${sendError}` : ''}`,
   ).catch(() => undefined);
-  logLivenessTransition(clientNumber, { event: 'probe_fail', action, latencyMs, generation });
+  logLivenessTransition(clientNumber, {
+    event: 'probe_fail', action, latencyMs, generation,
+    failureMode, sendError, ownEchoSeen, selfIds,
+  });
   if (failedStatus === 'degraded' && shouldAlertDegradation(clientNumber)) {
     // One primary alert per degradation episode, via the independent
     // path (system log + admin surface) — never only the dead channel.
@@ -333,11 +394,25 @@ export class WebjsProvider implements IWhatsAppProvider {
       return;
     }
     const previousHealth = getWebjsInitHealth(clientNumber);
-    if (previousHealth.requiresRepair) {
-      log.warn('initialize withheld — session requires re-pair', {
-        clientNumber, consecutiveTimeouts: previousHealth.consecutiveTimeouts,
+    // REQ-009: withhold ONLY for a genuine initialization failure. A
+    // liveness-degraded client initialized successfully and was paired the
+    // whole time — re-init is its self-heal, and blocking it is what made
+    // the 07-24 outage unrecoverable: every heartbeat logged "session
+    // requires re-pair" (asserting a pairing fault nothing had checked)
+    // and then "self-heal failed", for four days, while the pairing was
+    // fine and the session file was being written to by a live client.
+    if (previousHealth.requiresRepair && previousHealth.repairReason !== 'liveness') {
+      log.warn('initialize withheld — initialization repeatedly failed, re-pair required', {
+        clientNumber,
+        consecutiveTimeouts: previousHealth.consecutiveTimeouts,
+        repairReason: previousHealth.repairReason ?? 'init_timeout',
       });
       return;
+    }
+    if (previousHealth.requiresRepair) {
+      log.info('re-initializing a liveness-degraded client (pairing intact)', {
+        clientNumber, consecutiveTimeouts: previousHealth.consecutiveTimeouts,
+      });
     }
     const current = statusMap.get(clientNumber);
     if (current === 'connected' && clients.has(clientNumber)) {
@@ -346,7 +421,7 @@ export class WebjsProvider implements IWhatsAppProvider {
     }
     if (current === 'connecting' && activeFlight && now < activeFlight.deadlineAt) return;
 
-    const token = Symbol(clientNumber);
+    const token = nextGenerationToken(clientNumber);
     const telemetry = new WebjsInitTelemetry(now);
     const flight: InitFlight = {
       token,
@@ -385,6 +460,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         ...(prevHealth as any),
         state: 'init_timeout', retryAt: null,
         consecutiveTimeouts, requiresRepair,
+        repairReason: requiresRepair ? 'init_timeout' : undefined,
         lastError: expiredError,
       } as any);
       await prisma.$executeRawUnsafe(
@@ -610,6 +686,13 @@ export class WebjsProvider implements IWhatsAppProvider {
     };
 
     statusMap.set(clientNumber, 'connecting');
+    // REQ-009: stamp the generation at REGISTRATION, not at first probe.
+    // requestLivenessProbe (the watchdog's only reprobe entry point) reads
+    // this and returns early when it is unset — and the sole writer used
+    // to be runLivenessProbe itself. So until `ready` had fired in this
+    // exact process, every watchdog `capped_reprobe` decision was a silent
+    // no-op: no probe, no log, no recovery.
+    (client as any).__livenessGeneration = token;
     clients.set(clientNumber, client);
     await prisma.$executeRawUnsafe(
       `UPDATE whatsapp_config
@@ -1172,6 +1255,7 @@ export class WebjsProvider implements IWhatsAppProvider {
       initHealth.set(clientNumber, {
         state: 'error', startedAt: null, deadlineAt: null, retryAt: null,
         consecutiveTimeouts: 0, requiresRepair: true, lastError: msg,
+        repairReason: 'auth_failure',
         telemetry: telemetry.snapshot(),
       });
       await prisma.$executeRawUnsafe(
@@ -1224,6 +1308,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         state: failureClass === 'init_timeout' ? 'init_timeout' : 'error',
         startedAt: flight.startedAt, deadlineAt: flight.deadlineAt, retryAt,
         consecutiveTimeouts, requiresRepair, lastError: message,
+        repairReason: requiresRepair ? 'init_timeout' : undefined,
         telemetry: telemetrySnapshot,
       });
       await prisma.$executeRawUnsafe(
