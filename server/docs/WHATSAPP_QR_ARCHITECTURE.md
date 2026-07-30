@@ -1,5 +1,18 @@
 # WhatsApp QR-Code 2-Way Communication — Reference Architecture
 
+> ⚠️ **STALE as of 2026-07-28 — do not treat this document as current.** It predates
+> several shipped changes and is known to be wrong in at least these ways: it assumes
+> **headless** Chromium (production now requires headful under Xvfb), pins **no
+> `whatsapp-web.js` version** (pinned at 1.34.7, and `@lid` identity handling depends on
+> it), describes the **pre-§34 status model** (there is now a liveness probe, and only
+> `connected` is send-capable), and predates both **delegation threads** and the
+> **initialization hardening**.
+>
+> Current records instead: **`server/docs/brain_architecture.md`** (the single source of
+> truth) and **`server/docs/brain_chat_archive.md`** (incident/regression log — read Chat 14
+> for the `@lid` identity and liveness-deadlock history). A full rewrite of this file is
+> tracked separately; this banner only stops it being trusted by mistake.
+
 **Purpose:** Complete blueprint for building QR-code WhatsApp (send + receive)
 into a Node.js/TypeScript app using `whatsapp-web.js`. Battle-tested in
 Nexeo/TMCAI in production since April 2026. Hand this doc to any coding
