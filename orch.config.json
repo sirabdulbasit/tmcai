@@ -1,0 +1,31 @@
+{
+  "projectName": "tmcai",
+  "models": {
+    "codex": "gpt-5.6-sol"
+  },
+  "contextFile": "APP_MENTAL_MODEL.md",
+  "harness": {
+    "dir": "server",
+    "port": 4002,
+    "timeoutMin": 5
+  },
+  "codex": {
+    "auto": true
+  },
+  "caps": {
+    "cycles": 2,
+    "revisions": 3,
+    "loopBreak": 3
+  },
+  "deploy": {
+    "command": ""
+  },
+  "selfUpdate": {
+    "enabled": true,
+    "kitDir": "/Users/tmc_ai_node_02/orch-kit",
+    "remote": "origin",
+    "branch": "main",
+    "checkEveryMin": 60,
+    "channel": "release"
+  }
+}

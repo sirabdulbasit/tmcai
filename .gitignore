@@ -76,3 +76,12 @@ Required\ Architect/
 # Tenant phone session data + auth artifacts
 **/whatsapp-sessions/
 **/whatsapp-user-sessions/
+
+# --- orch-kit: audit trail is working state, not product ---
+crs/*
+!crs/CR-TEMPLATE.md
+logs/*
+!logs/CR-*.jsonl
+.orch-update/
+.orch-backup/
+.orch.lock
