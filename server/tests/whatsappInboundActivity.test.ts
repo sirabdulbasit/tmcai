@@ -79,7 +79,7 @@ describe('WhatsApp inbound processing feedback', () => {
   // Reviewer condition (2026-07-22): EITHER successful limb is
   // sufficient visible activity — the text fallback fires only when
   // both the reaction and native presence failed.
-  it('suppresses the text fallback when the reaction succeeded but presence failed', async () => {
+  it('sends the text marker even when the reaction succeeded (owner override 2026-07-31) — once', async () => {
     vi.useFakeTimers();
     const reply = vi.fn(async () => ({}));
     const react = vi.fn(async () => {});
@@ -92,11 +92,12 @@ describe('WhatsApp inbound processing feedback', () => {
     }, false);
     expect(react).toHaveBeenCalledWith('⏳');
     await vi.advanceTimersByTimeAsync(45_000); // repeated pulses keep failing
-    expect(reply).not.toHaveBeenCalled();      // reaction is the visible signal
+    expect(reply).toHaveBeenCalledTimes(1);    // visible signal on every turn…
+    expect(reply).toHaveBeenCalledWith('⏳ Thinking…'); // …but never more than once
     await activity.stop();
   });
 
-  it('voice: reacts 🎙️ and sends the listening marker only when BOTH limbs fail', async () => {
+  it('voice: sends the recording marker when native recording fails', async () => {
     const reply = vi.fn(async () => ({}));
     const activity = await startInboundActivity({
       react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
@@ -106,7 +107,7 @@ describe('WhatsApp inbound processing feedback', () => {
         clearState: vi.fn(async () => {}),
       })),
     }, true);
-    expect(reply).toHaveBeenCalledWith('🎙️ Listening…');
+    expect(reply).toHaveBeenCalledWith('🎙️ Recording…');
     expect(reply).toHaveBeenCalledOnce();
     await activity.stop();
   });

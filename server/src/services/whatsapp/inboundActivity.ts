@@ -80,14 +80,19 @@ export async function startInboundActivity(
   };
 
   const sendVisibleFallback = async () => {
-    // Either successful limb is sufficient visible activity (reviewer
-    // condition 2026-07-22): a reaction already sitting on the inbound
-    // message shows the Brain is working — the text fallback fires only
-    // when BOTH the reaction and native presence failed, and only once.
-    if (reactionOk || visibleFallbackSent || typeof message?.reply !== 'function') return;
+    // Owner override 2026-07-31 (supersedes the reviewer condition of
+    // 2026-07-22 that treated a successful reaction as sufficient): the
+    // owner wants an unmistakable "Brain is working" signal on EVERY
+    // turn. While whatsapp-web.js's chat-state APIs are broken upstream
+    // (the minified `r: r` class — native typing/recording throw), a
+    // tiny reaction emoji does not read as one, so the text marker fires
+    // whenever native presence fails, reaction or not — still at most
+    // once per turn (invariant §2.4: bounded deterministic transport
+    // signal, no semantic content, never blocks Brain processing).
+    if (visibleFallbackSent || typeof message?.reply !== 'function') return;
     visibleFallbackSent = true;
     try {
-      await message.reply(voice ? '🎙️ Listening…' : '⏳ Thinking…');
+      await message.reply(voice ? '🎙️ Recording…' : '⏳ Thinking…');
       log.info('Visible activity fallback sent', { ...context, voice });
     } catch (error: unknown) {
       log.warn('Visible activity fallback failed', { ...context, voice, error: activityError(error) });

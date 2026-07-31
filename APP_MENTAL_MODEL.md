@@ -94,7 +94,7 @@ Violations are release blockers. Full list in `AGENTS.md` §2; the ones reviewer
    LLM-with-context. A regex may pre-filter; it may never be the decision boundary.
 4. **No hardcoded Brain replies.** Every user-facing Brain sentence is LLM-generated or a
    bracketed `[system marker]`. Narrow exception: minimal deterministic transport signals
-   (native typing/recording, reactions, `⏳ Thinking…`, `🎙️ Listening…`) carrying no
+   (native typing/recording, reactions, `⏳ Thinking…`, `🎙️ Recording…` (wording changed from `🎙️ Listening…`, owner 2026-07-31)) carrying no
    semantic content, at most once, never blocking Brain processing.
 5. **No fabricated completion.** Success wording only after confirmed dispatch;
    `unconfirmed` never renders as done. The Brain also never invents message content,
