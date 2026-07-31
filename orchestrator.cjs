@@ -6,7 +6,7 @@
  Pauses at human states (DEPLOY_WAIT etc.); stops on ESCALATED.
 */
 
-const ORCH_VERSION = "v100-kit";  // TDZ crash on pre-build FAIL fixed; harness dir/port from config (was silently skipped outside SRA); Codex resume rounds stop re-buying the CR; `lessons` = central cross-project analysis.
+const ORCH_VERSION = "v107-kit";  // Test gate applies TESTING_MODEL.md (P1 requirement fidelity / P2 assertions / P3 security-in-harness); post-deploy smoke is required evidence for Sign-off.
 // codex.auto (orch.config.json): when true, Codex gates run AUTOMATICALLY via `codex exec`
 // (recorded directly, retries on infra errors) instead of pausing for the human to relay
 // the IDE review — the owner's original full-automation ask (2026-07-26). Reversible:
@@ -24,6 +24,21 @@ const HARNESS_TIMEOUT_MIN = (ORCH_CFG_EARLY().harness || {}).timeoutMin || 5;
 function ORCH_CFG_EARLY(){ try { return JSON.parse(require("fs").readFileSync(require("path").join(process.cwd(), "orch.config.json"), "utf8")); } catch { return {}; } }
 const ORCH_CFG = (()=>{ try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), "orch.config.json"), "utf8")); } catch { return {}; } })();
 const SELF_BYTES = (()=>{ try { return fs.readFileSync(__filename); } catch { return Buffer.alloc(0); } })();   // for byte-exact hot-reload detection
+// v104: REAL Claude usage measurement (orch/claude-usage.cjs reads the Claude Code
+// session transcripts). Optional at runtime — a project missing the module simply
+// records tokens=? (honest unknown), never a fabricated number.
+const CU = (()=>{ try { return require(path.join(__dirname, "orch", "claude-usage.cjs")); } catch { return null; } })();
+// Spend class per gate (v104): what a solo agent would also pay (build/spec) vs
+// pipeline-only cost (rework/ceremony). Report-side logic reclassifies runs 2..n of
+// any gate as rework; this is the NATURAL class written at record time.
+function gateClass(gate){
+    if (/^(Building|Fast build)/i.test(gate)) return "build";
+    if (/^(Requirement|Prepare deploy)/i.test(gate)) return "spec";
+    if (/^(Revise|Root cause)/i.test(gate)) return "rework";
+    if (/^(Sign-off|Fast close|Retrospective)/i.test(gate)) return "ceremony";
+    if (/^Solo baseline/i.test(gate)) return "solo";
+    return "review";   // codex clearances/tests/security
+}
 const POLL_MS = 3000;
 
 // ---- one-shot CLI commands (verified working) ----
@@ -420,6 +435,59 @@ const INFRA_REALITY =
   "the separate security session's adversarial pass + code-level review for security. Reject ONLY if the " +
   "substitute itself is missing, wrong, or insufficient — never for the absent automation.";
 
+// v105: the security gates apply SECURITY_MODEL.md (repo root) — ten buckets, a
+// product-specific severity ranking (cross-tenant first), an applicability routing
+// table, and a binding honesty contract (explicit ten-bucket triage; absence of
+// evidence is a finding; a CR's own claim is never evidence). The document is read
+// ON DEMAND by path; only this ~300-token pointer rides in the prompt.
+const SECURITY_STANDARD =
+  "SECURITY STANDARD: apply SECURITY_MODEL.md (repo root) — read it now if you have not. " +
+  "It defines ten buckets (identity, authorization, tenancy, input handling, data protection, " +
+  "business-logic abuse, supply chain, observability, transport/response hygiene, client-side " +
+  "trust), a product-specific severity ranking, and an applicability routing table keyed to " +
+  "the files this CR declares.\n" +
+  "TRIAGE IS MANDATORY AND EXPLICIT: list ALL TEN buckets, each marked APPLIES / N/A (with a " +
+  "one-line reason) / COVERED (with where). A bucket you omit counts as an unexamined APPLIES. " +
+  "Do NOT mark N/A because the CR asserts it — a CR's claim is under review, not evidence. Do " +
+  "NOT mark a harness-assertable bucket COVERED by code review alone.\n" +
+  "THE CLIENT IS NOT A TRUST BOUNDARY: anything the browser receives is visible in DevTools. " +
+  "A UI filter, a hidden button, or a client-side export is never access control. For any " +
+  "data-returning route, the question is what the ENDPOINT returned, not what the UI displayed.\n" +
+  "HONESTY: absence of evidence is a finding, not a pass — say what you could not verify and " +
+  "what would settle it. If you find yourself building an argument for why something needn't " +
+  "be checked, report that tension instead of resolving it toward PASS. Under-declared risk is " +
+  "itself a finding; higher class wins on the RISK line.\n" +
+  "OUTPUT: FIRST line PASS or FAIL. SECOND line RISK=<Low|Moderate|Material|Critical>. THEN " +
+  "the ten-bucket triage, one line each. THEN findings with bucket, file:line, impact, fix.";
+
+// v106: the Test gate applies TESTING_MODEL.md — three proof obligations (P1 requirement
+// fidelity vs the owner's VERBATIM words, P2 functional correctness, P3 harness-asserted
+// security buckets), the self-verification rules (mutation check, no tautologies), and
+// the judgement that a green harness with weak assertions is a FAIL with reasons.
+const TESTING_STANDARD =
+  "TESTING STANDARD: apply TESTING_MODEL.md (repo root) — read it now if you have not. " +
+  "The orchestrator ALREADY ran the harness on the host and its output is in the gate file; do " +
+  "NOT try to run it. 'Did it pass' is settled. Your question is whether PASSING MEANS ANYTHING, " +
+  "across THREE obligations.\n" +
+  "P1 REQUIREMENT FIDELITY: read the VERBATIM owner requirement in CR section 1, not just the " +
+  "ACs. Every distinct phrase must appear in the CR's requirement trace table. Any owner-specified " +
+  "literal string that was renamed, reordered, or dropped without a named deviation and rationale " +
+  "is a FINDING — the ACs are an interpretation, and drift between them and the owner's words is " +
+  "invisible to any test that starts from the ACs.\n" +
+  "P2 FUNCTIONAL: (a) AC coverage — every AC mapped to a named assertion, list any that is not; " +
+  "(b) assertion strength — would it pass on wrong behaviour? (c) class balance — anything beyond " +
+  "happy path (negative, regression, boundary)? (d) tautology — does any assertion compare the " +
+  "code against itself rather than the CR's specified value? (e) mutation evidence — did the " +
+  "builder record that critical assertions FAIL when the change is reverted?\n" +
+  "P3 SECURITY: for every SECURITY_MODEL.md bucket the security triage marked APPLIES and that is " +
+  "marked [H] harness-assertable, there must be an assertion. A bucket that is applicable AND " +
+  "assertable but only code-reviewed is a downgrade — report it.\n" +
+  "A green harness with weak assertions is a FAIL WITH REASONS, not a PASS. A declared gap is " +
+  "honest and judged on its merits; a silently untested AC is a finding. Absence of evidence is a " +
+  "finding — say what you could not verify and what would settle it.\n" +
+  "OUTPUT: FIRST line PASS or FAIL. THEN P1 trace result. THEN P2 AC coverage, one line each. " +
+  "THEN P3 bucket coverage. THEN findings.";
+
 // v25 squeezed TEAM lane — ONE review pass (v24 ran feasibility+risk at DRAFT and then
 // tech+security again at APPROVED: 4 review gates per CR; halved to 2). Human stays in
 // the loop at deploy: nothing ships until they run the commands and paste output.
@@ -428,7 +496,7 @@ const PIPELINE = [
       { agent:"codex", gate:"Technical Clearance", inSession:true,
         role:"(in-session) You are Codex, the independent technical reviewer. Run the review in your Codex session, then record the verdict." },
       { agent:"codex", gate:"Security Clearance",
-        role:"You are the independent security/risk reviewer per WORKFLOW.md (single combined pass). Attack the change: authz/IDOR, cross-tenant isolation, injection, abuse paths, secrets. "+INFRA_REALITY+" FIRST line: PASS or FAIL. SECOND line: RISK=<Low|Moderate|Material|Critical> (if you disagree with the proposal, higher class wins). Then reasons." },
+        role:"You are the independent security/risk reviewer per WORKFLOW.md (single combined pass, PRE-BUILD: you review the CR's design). "+SECURITY_STANDARD+" "+INFRA_REALITY },
     ], next:()=>"BUILD" },
 
   // ---- FAST lane (cosmetic-only CRs, verified by classify.cjs) ----
@@ -455,9 +523,9 @@ const PIPELINE = [
 
   { status:"TESTING", gates:[
       { agent:"codex", gate:"Test", inSession:true,
-        role:"(in-session) Codex tests the diff against the ACs in your Codex session (the orch already ran the harness on the host — its output is in the gate file), then record the verdict." },
+        role:"You are the independent Test reviewer: judge the committed diff AND whether the harness's green run proves the CR. "+TESTING_STANDARD },
       { agent:"codex", gate:"Security Review (code)",
-        role:"You are the independent security reviewer. LEAN LANE: you review the COMMITTED CODE of this change (harness output + gate history are in the gate file) — attack authz/IDOR, cross-tenant isolation, injection, abuse paths, secrets IN THE ACTUAL DIFF, not the prose. "+INFRA_REALITY+" Materiality standard: FAIL only for real, exploitable/damaging defects. FIRST line: PASS or FAIL. Then terse reasons." },
+        role:"You are the independent security reviewer. LEAN LANE: you review the COMMITTED CODE of this change (harness output + gate history are in the gate file) — attack THE ACTUAL DIFF, not the prose. On the lean lane this is the ONLY security review a Low/Moderate CR receives. "+SECURITY_STANDARD+" "+INFRA_REALITY },
     ], next:()=>"BUILD_DEPLOY" },
 
   { status:"BUILD_DEPLOY", gates:[
@@ -547,10 +615,38 @@ function lifecycleFromLog(crPath){
   return { rows: phases.join("\n"), total: fmt(closed-startTs), startISO: new Date(startTs).toISOString() };
 }
 
+// v107: attribute wall-clock so a slow human answer counts as HUMAN latency, not pipeline
+// cost. Owner-wait = time the CR sat in a human-gated state (ESCALATED / DEPLOY_WAIT /
+// FAST_DEPLOY). Active = agent gate-seconds. System = the remainder (transitions/polling).
+function timeAttribution(crPath, byAgent){
+  const id = path.basename(crPath).replace(/\.md$/i,"");
+  let all;
+  try { all = fs.readFileSync(path.join(LOG_DIR, `${id}.jsonl`),"utf8").trim().split("\n").map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean); }
+  catch { return null; }
+  if (!all.length) return null;
+  let anchor=0; for(let i=all.length-1;i>=0;i--){ if(all[i].type==="classify"){anchor=i;break;} }
+  const ev = all.slice(anchor);
+  const T = s=>new Date(s).getTime();
+  const start=T(ev[0].ts), end=T(ev[ev.length-1].ts), wall=Math.max(0,end-start);
+  const statuses = ev.filter(e=>e.type==="status");
+  const HUMAN = new Set(["ESCALATED","DEPLOY_WAIT","FAST_DEPLOY"]);
+  let ownerWait=0;
+  for(let i=0;i<statuses.length;i++){
+    if(HUMAN.has(statuses[i].to)){
+      const nextTs = i+1<statuses.length ? T(statuses[i+1].ts) : end;
+      ownerWait += Math.max(0, nextTs - T(statuses[i].ts));
+    }
+  }
+  const claudeSec=(byAgent.claude&&byAgent.claude.sec)||0, codexSec=(byAgent.codex&&byAgent.codex.sec)||0;
+  const activeMs=(claudeSec+codexSec)*1000;
+  const systemMs=Math.max(0, wall - activeMs - ownerWait);
+  return { wall, ownerWait, claudeSec, codexSec, activeMs, systemMs };
+}
+
 function writeConsumptionReport(crPath){
   const text = readGates(crPath);   // metrics + verdicts live in the sidecar now
   // rev= is optional so reports still parse metrics written before this field existed.
-  const metrics = [...text.matchAll(/<!--METRIC gate="([^"]*)" agent="([^"]*)"(?: model="([^"]*)")?(?: rev=(\d+))? seconds=(\d+) tokens=(\S+) at="([^"]*)"-->/g)];
+  const metrics = [...text.matchAll(/<!--METRIC gate="([^"]*)" agent="([^"]*)"(?: model="([^"]*)")?(?: rev=(\d+))?(?: class="[^"]*")? seconds=(\d+) tokens=(\S+)[^>]*? at="([^"]*)"[^>]*-->/g)];
   if (!metrics.length) return;
 
   // --- per gate rows + totals, per agent-model rollup, AND per revision-iteration ---
@@ -613,11 +709,58 @@ function writeConsumptionReport(crPath){
 
   const life = lifecycleFromLog(crPath);
   const activeMin = (totSec/60).toFixed(1);
+
+  // === v107: real-work token separation, time attribution, solo baseline ===
+  const _blobs = [...text.matchAll(/<!--METRIC ([^>]*?)-->/g)].map(x=>x[1]);
+  const _f = (a,k)=>{ const m = a.match(new RegExp(k+'="([^"]*)"')) || a.match(new RegExp(k+'=([^\\s]+)')); return m?m[1]:null; };
+  const _n = v => (v!=null && /^\d+$/.test(v)) ? +v : 0;
+  let clWorkIn=0, clWorkOut=0, clCacheR=0, clCacheW=0, clTeq=0, clUnmeasured=0, cxTok=0, cxPasses=0;
+  for(const a of _blobs){
+    const ag=_f(a,"agent"), t=_f(a,"tokens");
+    if(ag==="claude"){
+      clWorkIn+=_n(_f(a,"tokens_in")); clWorkOut+=_n(_f(a,"tokens_out"));
+      clCacheR+=_n(_f(a,"cache_read")); clCacheW+=_n(_f(a,"cache_write"));
+      if(/^\d+$/.test(t||"")) clTeq+=+t; else clUnmeasured++;
+    } else if(ag==="codex" && /^\d+$/.test(t||"")){ cxTok+=+t; cxPasses++; }
+  }
+  const clWork = clWorkIn + clWorkOut;
+  const attr = timeAttribution(crPath, byAgent);
+  const fmM = ms => ms>=3600000 ? `${(ms/3600000).toFixed(1)}h` : ms>=60000 ? `${(ms/60000).toFixed(1)}m` : `${Math.round(ms/1000)}s`;
+  // solo baseline: one clean build pass (max single Building work), no Codex, no laps
+  const _bw = _blobs.filter(a=>_f(a,"agent")==="claude" && /Building/.test(_f(a,"gate")||"")).map(a=>_n(_f(a,"tokens_in"))+_n(_f(a,"tokens_out"))).filter(x=>x>0);
+  const soloWork = _bw.length ? Math.max(..._bw) : clWork;
+  const _bs = metrics.filter(m=>m[2]==="claude" && /Building/.test(m[1])).map(m=>+m[5]);
+  const soloSec = _bs.length ? Math.max(..._bs) : Math.round(totSec/2);
+  const reviewFails = [...text.matchAll(/### Gate: [^\n]*\((?:codex|grok)\)[\s\S]{0,400}?\n\n\**?(FAIL|REJECT)/gi)].length;
+  const laps = gateRuns["Building"]||0;
+  const timeSection = attr ? `### Time (attributed)\n`+
+    `- **Total wall-clock:** ${fmM(attr.wall)}\n`+
+    `- **Active agent work:** ${fmM(attr.activeMs)} — Claude ${fmM(attr.claudeSec*1000)} · Codex ${fmM(attr.codexSec*1000)}\n`+
+    `- **Waiting on owner** (human latency — NOT pipeline cost): ${fmM(attr.ownerWait)}\n`+
+    `- **System / transitions:** ${fmM(attr.systemMs)}\n`+
+    `_Owner-wait = time the CR sat at an escalation or the deploy handoff waiting for you; tagged to the human. A large value here is human latency, not agent spend._\n\n` : "";
+  const tokenSection = `### Actual Claude tokens (own subscription — never summed with Codex)\n`+
+    `- **Real work (input + output): ${clWork.toLocaleString()}** ← the true build cost\n`+
+    `- Context re-read (cache-read, billed 0.1×): ${clCacheR.toLocaleString()} — session-length overhead, NOT work\n`+
+    `- Cache-write: ${clCacheW.toLocaleString()} · weighted TEQ (incl. cache): ${clTeq.toLocaleString()}\n`+
+    (clUnmeasured?`- ⚠ ${clUnmeasured} Claude gate(s) unmeasured (transcript race) — true work is at least the above\n`:``)+`\n`+
+    `### Codex tokens (separate subscription)\n`+
+    `- ${cxTok.toLocaleString()} across ${cxPasses} review pass(es) (~${cxPasses?Math.round(cxTok/cxPasses).toLocaleString():0}/pass) — total is driven by LAP COUNT, not per-review cost\n\n`;
+  const soloSection = `### Solo-Claude baseline (estimate — one Claude, no pipeline)\n`+
+    `| | Solo Claude (est.) | This pipeline (actual) |\n|---|---|---|\n`+
+    `| Claude work tokens | ~${soloWork.toLocaleString()} (1 build pass) | ${clWork.toLocaleString()} |\n`+
+    `| Codex tokens | 0 | ${cxTok.toLocaleString()} |\n`+
+    `| Active time | ~${fmM(soloSec*1000)} | ${fmM(attr?attr.activeMs:totSec*1000)} |\n`+
+    `| Build laps | 1 | ${laps} |\n`+
+    `| Independent defects caught | 0 (self-review) | ${reviewFails} — issues solo would risk shipping |\n`+
+    `_Solo is cheaper & faster but self-reviews; the pipeline's extra cost buys the ${reviewFails} independent catch(es). Use solo/FAST lane for low-risk changes, the pipeline for auth/data/money._\n\n`;
+
   const report = `\n\n## Consumption Report — ${new Date().toISOString()}\n\n`+
     (life ? `### Lifecycle (pipeline entry → close)\n`+
       `Entered pipeline: ${life.startISO} · **total wall-clock: ${life.total}** · active agent time: ${totSec}s (${activeMin} min)\n`+
       `_(The requirement→CR authoring happens in the Claude session before pipeline entry and is not metered here.)_\n\n`+
       `| Phase | Duration |\n|---|---|\n${life.rows}\n\n` : "")+
+    timeSection + tokenSection + soloSection +
     `### Per-gate\n`+
     `| Rev | Gate | Agent (model) | Time | Tokens |\n|---|---|---|---|---|\n`+
     rows.join("\n")+
@@ -865,10 +1008,33 @@ async function runGate(crPath, crText, g, status){
     .replace(/^.*(?:CR revisions|build→test cycles).*$/gm, " ");
   const codexTok = clean.match(/tokens used\s*[\n:]?\s*([\d,]+)/i);
   const jsonTok  = clean.match(/"(?:total_)?tokens"\s*:\s*(\d+)/i);   // real JSON only
-  const genTok   = clean.match(/\b(\d[\d,]{2,})\s*tokens?\b/i);
+  // v104: the old fallback (\b(\d[\d,]{2,})\s*tokens?\b) matched an agent WRITING about
+  // tokens in prose ("this saves about 4,000 tokens"). Require line start or an explicit
+  // used/total prefix.
+  const genTok   = clean.match(/(?:^|\b(?:used|total)\b[^\S\n]*:?[^\S\n]*)(\d[\d,]{2,})\s*tokens?\b/im);
   if (codexTok) tokens = codexTok[1].replace(/,/g,"");
   else if (jsonTok) tokens = jsonTok[1];
   else if (genTok) tokens = genTok[1].replace(/,/g,"");
+  // v104: a RESUMED codex session reports CUMULATIVE session tokens, not this round's —
+  // summing rounds counted earlier rounds triangularly (the report's `suspect` heuristic
+  // was patching this symptom). Record the per-round DELTA and persist the running
+  // cumulative on the session marker; a counter that went BACKWARDS means a fresh
+  // counter (session restarted) and is taken as-is.
+  if (g.agent === "codex" && /^\d+$/.test(tokens)){
+    const _mk = g.__sessionMarker || "CODEX-SESSION";
+    const cur = Number(tokens);
+    if (_codexSid){
+      const last = [...readGates(crPath).matchAll(new RegExp('<!--' + _mk + ' id="' + _codexSid + '"(?: cumulative="(\\d+)")?-->', "gi"))].pop();
+      const prev = last && last[1] ? Number(last[1]) : 0;
+      if (cur >= prev && prev > 0) tokens = String(cur - prev);
+      appendGates(crPath, `\n\n<!--${_mk} id="${_codexSid}" cumulative="${cur}"-->`);
+    } else {
+      // fresh session this round: the sid was captured just above (marker without a
+      // cumulative). Stamp the baseline now so ROUND 2 subtracts round 1 correctly.
+      const justSid = (readGates(crPath).match(new RegExp('<!--' + _mk + ' id="([0-9a-f-]{36})"', "i")) || [])[1];
+      if (justSid) appendGates(crPath, `\n\n<!--${_mk} id="${justSid}" cumulative="${cur}"-->`);
+    }
+  }
   const verdict = parseVerdict(out) || (out.trim().split("\n")[0]||"").slice(0,40);
   // NO per-gate console line, NO remark dump — the 7-step lane (in the caller) is the
   // whole display. Only a genuine escalation breaks through the board.
@@ -914,7 +1080,7 @@ async function runGate(crPath, crText, g, status){
   let body = out.trim();
   { const pv = parseVerdict(body);
     if (pv && !VERDICT_RE.test((body.split("\n")[0]||"").trim())) body = pv + "\n\n" + body; }
-  appendGates(crPath, `\n\n<!--METRIC gate="${g.gate}" agent="${g.agent}"${model?` model="${model}"`:""} rev=${rev} seconds=${secs} tokens=${tokens} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: ${g.gate} (${g.agent}) — rev ${rev} — ${new Date().toISOString()}\n\n${body}\n`);
+  appendGates(crPath, `\n\n<!--METRIC gate="${g.gate}" agent="${g.agent}"${model?` model="${model}"`:""} rev=${rev} class="${gateClass(g.gate)}" seconds=${secs} tokens=${tokens} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: ${g.gate} (${g.agent}) — rev ${rev} — ${new Date().toISOString()}\n\n${body}\n`);
   return out;
 }
 
@@ -1044,15 +1210,25 @@ async function tick(){
     // immune to agent persuasion, survives every reset; each owner consent buys exactly
     // one more window, so unbounded spend without a human touch is impossible.
     {
-      const CR_WINDOW = 400000;
+      const CR_WINDOW = 400000;   // budget of REAL WORK tokens (constant unchanged; v107)
       const gW = readGates(crPath);
       const od = gW.lastIndexOf("### Owner decision");
       const win = od >= 0 ? gW.slice(od) : gW;
+      // v107 FIX: measure REAL WORK (input+output), NOT the TEQ `tokens=` figure — which
+      // includes cache-read (the whole session context re-fed on every tool call) and so
+      // inflated the wall in long sessions, tripping a 12h false park on CR-0021. For a
+      // measured Claude gate, work = tokens_in + tokens_out (cache-read EXCLUDED). Codex
+      // self-reports work tokens directly. Unmeasured gates contribute 0.
       let tok = 0;
-      for (const m of win.matchAll(/<!--METRIC [^>]*? tokens=(\d+)/g)) tok += +m[1];
+      for (const m of win.matchAll(/<!--METRIC ([^>]*?)-->/g)) {
+        const a = m[1];
+        const inM = a.match(/tokens_in=(\d+)/), outM = a.match(/tokens_out=(\d+)/);
+        if (inM || outM) tok += (inM?+inM[1]:0) + (outM?+outM[1]:0);
+        else { const tM = a.match(/ tokens=(\d+)/); if (tM) tok += +tM[1]; }
+      }
       if (tok > CR_WINDOW){
-        banner(`[${f}] total spend ${Math.round(tok/1000)}k tokens since last owner decision exceeds the ${Math.round(CR_WINDOW/1000)}k budget window → owner decides`, C.red);
-        appendGates(crPath, `\n\nNEEDS-HUMAN: This change has consumed ${Math.round(tok/1000)}k tokens since your last decision. Continue (one more budget window), re-file smaller, or park it?\n`);
+        banner(`[${f}] real-work spend ${Math.round(tok/1000)}k tokens (input+output; cache-read excluded) since last owner decision exceeds the ${Math.round(CR_WINDOW/1000)}k window → owner decides`, C.red);
+        appendGates(crPath, `\n\nNEEDS-HUMAN: This change has consumed ${Math.round(tok/1000)}k WORK tokens (real input+output, not session context re-reads) since your last decision. Continue (one more budget window), re-file smaller, or park it?\n`);
         setStatus(crPath, text, "ESCALATED");
         didSomething = true;
         continue;
@@ -1207,6 +1383,11 @@ async function tick(){
         const _el = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime())/1000));
         opts = { runLabel: (g.agent==="codex" ? "in review " : "working ") + _fmtT(_el),
                  prompt: busyLine(C.yellow, g.agent, g.gate, "awaiting its recorded verdict") };
+      } else if (g.agent === "claude") {
+        // ALWAYS AUTO (owner rule 2026-07-28): Claude gates are picked up by the session
+        // monitor — the board must not read as a demand on the human. Label it truthfully.
+        opts = { runLabel: "queued (auto)",
+                 prompt: _fitLine(`${C.dim}▶ CLAUDE picks this up automatically — nothing needed from you${C.reset}`) };
       } else {
         const trigger = g.agent==="codex" ? "review" : (/deploy/i.test(g.gate) ? "deploy" : "build");
         opts = { awaiting:true,
@@ -1488,7 +1669,10 @@ function suCheck(opts){
 // set    <CR> <STATUS>                                            — manual status set (e.g. ESCALATED)
 {
   const cliArgs = process.argv.slice(2);
-  const [cmd, a1, a2, a3, a4, a5, a6] = cliArgs;
+  const [rawCmd, a1, a2, a3, a4, a5, a6] = cliArgs;
+  // A leading --flag (e.g. --until-idle) is NOT a command — it's a watch option. Treat it
+  // as "no command" so it falls through to the board/watch instead of "unknown command".
+  const cmd = (rawCmd && rawCmd.startsWith("--")) ? undefined : rawCmd;
   // Confine the resolved CR inside CR_DIR — reject anything that escapes it (`../`, absolute
   // paths, embedded separators). Returns null on any violation so callers print usage + exit.
   const CR_ROOT = path.resolve(CR_DIR);
@@ -1570,6 +1754,16 @@ function suCheck(opts){
       if (deployStamp && testStamp && !deployStamp[1].startsWith(testStamp[1]) && !testStamp[1].startsWith(deployStamp[1]))
         problems.push(`shipped commit ${deployStamp[1]} != tested commit ${testStamp[1]} — the deployed build was never verified`);
       if (deployStamp && !succeeded) problems.push("deploy output shows no success marker (pm2 reload / Deploy complete)");
+      // v106 (TESTING_MODEL.md §7): a reload proves a restart, not a working app.
+      // Require a commit-stamped POST-DEPLOY smoke run — same mechanical pattern as the
+      // migration evidence. Only enforced when the standing smoke script exists, so
+      // pre-v106 projects (and the kit before adoption) keep closing as before.
+      if (fs.existsSync(path.join(process.cwd(), "server", "scripts", "smoke.mjs"))){
+        const smokeStamp = [...g.matchAll(/### Smoke test[^\n]*@ ([0-9a-f]{7,40})[^\n]*— OK/gi)].pop();
+        if (!smokeStamp) problems.push("no post-deploy '### Smoke test … — OK' entry (run: node orchestrator.cjs smoke <CR> after the deploy)");
+        else if (deployStamp && !smokeStamp[1].startsWith(deployStamp[1]) && !deployStamp[1].startsWith(smokeStamp[1]))
+          problems.push(`smoke test ran at commit ${smokeStamp[1]} but the deploy shipped ${deployStamp[1]} — re-run smoke after the deploy`);
+      }
       if (problems.length){
         console.log(`${C.yellow}record refused:${C.reset} Sign-off CLOSE requires mechanical deploy evidence.`);
         for (const pb of problems) console.log(`  · ${pb}`);
@@ -1585,7 +1779,11 @@ function suCheck(opts){
     }
     if(!/^[A-Za-z0-9 +/&().-]{1,60}$/.test(gate)){ console.log("record: gate name has unexpected characters"); process.exit(1); }
     if(model && !/^[A-Za-z0-9._-]{1,40}$/.test(model)){ console.log("record: model tag has unexpected characters"); process.exit(1); }
-    const remarksRequired = (agent === "codex" && ["Technical Clearance","Test"].includes(gate)) || BAD_VERDICT.test(verdict);
+    // v105: Security Review (code) added — on the lean lane it is the ONLY security
+    // review a Low/Moderate CR receives; a bare PASS with no triage/findings file must
+    // not be recordable. (The ten-bucket triage from SECURITY_MODEL.md lives in the
+    // remarks, so requiring remarks IS requiring the triage.)
+    const remarksRequired = (agent === "codex" && ["Technical Clearance","Test","Security Review (code)","Security Clearance"].includes(gate)) || BAD_VERDICT.test(verdict);
     let remarks = "";
     let remarksVerdict = null;
     if (remarksArg){
@@ -1618,9 +1816,44 @@ function suCheck(opts){
     }
     const rev = getRevisions(fs.readFileSync(crPath,"utf8"));
     const body = remarks ? `${verdict}\n\n${remarks}` : verdict;
-    appendGates(crPath, `\n\n<!--METRIC gate="${gate}" agent="${agent}"${model?` model="${model}"`:""} rev=${rev} seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: ${gate} (${agent}) — rev ${rev} — ${new Date().toISOString()}\n\n${body}\n`);
-    crLog(crPath, { type:"gate", agent, gate, model:model||undefined, rev, verdict, secs, tokens: tokRaw==="?"?null:Number(tokRaw), source:"in-session", remarks:remarks||undefined });
-    console.log(`${C.green}✓ recorded${C.reset} ${gate} (${agent}${model?"·"+model:""}) ${verdict} · ${secs}s · ${tokRaw} tok → ${a1}`);
+    // v104: for Claude gates the ledger figure is MEASURED from the session transcript
+    // (begin marker -> now). The typed <tokens> argument is accepted for compatibility
+    // but IGNORED — a measurement that fails records "?" (honest unknown), never the
+    // self-reported guess: every prior Claude figure was fabricated by the session,
+    // which cannot see its own usage counters.
+    let tokensField = tokRaw, extraAttrs = "", notes = [];
+    if (agent === "claude"){
+      const startAt = runStartedAt(crPath, gate);
+      // Claude Code flushes the transcript line for the CURRENT turn only after its tool
+      // call returns — a measurement taken at that exact instant can miss the last entry
+      // by ~100ms. Retry briefly before declaring the window unmeasurable.
+      let m = null;
+      if (CU && startAt){
+        for (let t = 0; t < 3 && !m; t++){
+          if (t) spawnSync("sleep", ["1"]);
+          m = CU.measureWindow(startAt, new Date().toISOString());
+        }
+      }
+      if (m){
+        tokensField = String(m.teq);   // tokens= carries TEQ so budget walls stay meaningful
+        extraAttrs = ` tokens_in=${m.total.input} tokens_out=${m.total.output} cache_read=${m.total.cacheRead} cache_write=${m.total.cacheWrite} teq=${m.teq} measured=1`;
+        notes.push(`  measured: ${CU.fmtTok(m.total.input)} in · ${CU.fmtTok(m.total.output)} out · ${CU.fmtTok(m.total.cacheRead)} cache read · ${CU.fmtTok(m.total.cacheWrite)} cache write · ${CU.fmtTok(m.teq)} TEQ`);
+        if (/^\d+$/.test(tokRaw) && Number(tokRaw) > 0 && Math.abs(m.teq - Number(tokRaw)) / Number(tokRaw) > 0.2)
+          notes.push(`  ${C.yellow}⚠ self-reported ${Number(tokRaw).toLocaleString()} — ignored (measured TEQ is ${(m.teq / Number(tokRaw)).toFixed(1)}x)${C.reset}`);
+      } else {
+        tokensField = "?"; extraAttrs = " measured=0";
+        notes.push(startAt
+          ? `  ${C.yellow}⚠ unmeasured — transcript unreadable for this window; recorded tokens=?${C.reset}`
+          : `  ${C.yellow}⚠ unmeasured — no begin marker for this gate (run begin first); recorded tokens=?${C.reset}`);
+      }
+    }
+    const cls = gateClass(gate);
+    appendGates(crPath, `\n\n<!--METRIC gate="${gate}" agent="${agent}"${model?` model="${model}"`:""} rev=${rev} class="${cls}" seconds=${secs} tokens=${tokensField}${extraAttrs} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: ${gate} (${agent}) — rev ${rev} — ${new Date().toISOString()}\n\n${body}\n`);
+    crLog(crPath, { type:"gate", agent, gate, model:model||undefined, rev, verdict, secs,
+      tokens: tokensField==="?"?null:Number(tokensField),
+      measured: agent==="claude" ? tokensField !== "?" : undefined, source:"in-session", remarks:remarks||undefined });
+    console.log(`${C.green}✓ recorded${C.reset} ${gate} (${agent}${model?"·"+model:""}) ${verdict} · ${secs}s${agent==="claude" ? "" : ` · ${tokRaw} tok`} → ${a1}`);
+    for (const n of notes) console.log(n);
     process.exit(0);
   }
   if (cmd === "revise"){
@@ -1647,7 +1880,7 @@ function suCheck(opts){
       }
     }
     const nr = bumpRevisions(crPath);
-    appendGates(crPath, `\n\n<!--METRIC gate="Revise" agent="claude" model="in-session" rev=${nr} seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: Revise (claude) — rev ${nr} — ${new Date().toISOString()}\n\nREVISED\n\n## Revision ${nr} — ${new Date().toISOString()}\n`);
+    appendGates(crPath, `\n\n<!--METRIC gate="Revise" agent="claude" model="in-session" rev=${nr} class="rework" seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Gate: Revise (claude) — rev ${nr} — ${new Date().toISOString()}\n\nREVISED\n\n## Revision ${nr} — ${new Date().toISOString()}\n`);
     crLog(crPath, { type:"gate", agent:"claude", gate:"Revise", rev:nr, verdict:"REVISED", secs, tokens: tokRaw==="?"?null:Number(tokRaw), source:"in-session" });
     setStatus(crPath, fs.readFileSync(crPath,"utf8"), "DRAFT");
     console.log(`${C.green}✓ revision ${nr}/3 recorded${C.reset} · scope reset → review re-runs (${a1})`);
@@ -1704,7 +1937,7 @@ function suCheck(opts){
   if (cmd === "rootcause"){
     const crPath = resolveCR(a1); const note=(a2||"").trim(); const secs=Number(a3)||0; const tokRaw=a4&&/^\d+$/.test(a4)?a4:"?";
     if(!crPath||!fs.existsSync(crPath)||!note){ console.log('usage: rootcause <CR> "<defect class + class-complete fix plan>" <secs> [tokens]'); process.exit(1); }
-    appendGates(crPath, `\n\n<!--METRIC gate="Root cause" agent="claude" model="in-session" rev=0 seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Root cause (claude) — ${new Date().toISOString()}\n\n${note}\n`);
+    appendGates(crPath, `\n\n<!--METRIC gate="Root cause" agent="claude" model="in-session" rev=0 class="rework" seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Root cause (claude) — ${new Date().toISOString()}\n\n${note}\n`);
     crLog(crPath, { type:"rootcause", agent:"claude", note, secs, tokens: tokRaw==="?"?null:Number(tokRaw), source:"in-session" });
     console.log(`${C.green}✓ root cause recorded${C.reset} — one class-complete retry unlocks; another same-gate FAIL escalates to decompose.`);
     process.exit(0);
@@ -1753,7 +1986,7 @@ function suCheck(opts){
     }
     const crPath = resolveCR(a1); const note=(a2||"").trim(); const secs=Number(a3)||0; const tokRaw=a4&&/^\d+$/.test(a4)?a4:"?";
     if(!crPath||!fs.existsSync(crPath)||!note){ console.log('usage: retro <CR> "<lessons + pipeline changes made>" <secs> [tokens]'); process.exit(1); }
-    appendGates(crPath, `\n\n<!--METRIC gate="Retrospective" agent="claude" model="in-session" rev=0 seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Retrospective (claude) — ${new Date().toISOString()}\n\n${note}\n`);
+    appendGates(crPath, `\n\n<!--METRIC gate="Retrospective" agent="claude" model="in-session" rev=0 class="ceremony" seconds=${secs} tokens=${tokRaw} at="${new Date().toISOString()}" orch="${ORCH_VERSION}"-->\n### Retrospective (claude) — ${new Date().toISOString()}\n\n${note}\n`);
     crLog(crPath, { type:"retro", note, secs, tokens: tokRaw==="?"?null:Number(tokRaw), source:"in-session" });
     console.log(`${C.green}✓ retrospective recorded${C.reset} — the pipeline learned from ${a1}.`);
     // CROSS-PROJECT LEARNING: a lesson recorded only in this project's ledger is invisible
@@ -1835,6 +2068,33 @@ function suCheck(opts){
     console.log("\n" + C.dim + "read a lesson's full text: " + path.join(kit, "RETRO_LOG.md") + C.reset);
     process.exit(0);
   }
+  if (cmd === "smoke"){
+    // v106 (TESTING_MODEL.md §7): post-deploy smoke against the DEPLOYED host. A clean
+    // pm2 reload proves a process restarted, not that the app works (CR-0012 shipped
+    // without its schema and every gate passed). runCmd commit-stamps the entry; the
+    // sign-off gate refuses CLOSE without a matching "### Smoke test … — OK".
+    const crPath = resolveCR(a1);
+    if(!crPath||!fs.existsSync(crPath)){ console.log("usage: smoke <CR>   (runs server/scripts/smoke.mjs against deploy.smokeUrl)"); process.exit(1); }
+    const smokeUrl = (ORCH_CFG.deploy && ORCH_CFG.deploy.smokeUrl) || process.env.SMOKE_URL;
+    if (!smokeUrl){ console.log(`${C.yellow}smoke refused:${C.reset} no deploy.smokeUrl in orch.config.json (and no SMOKE_URL env) — set it to the deployed host, e.g. "https://your-app.example".`); process.exit(1); }
+    if (!fs.existsSync(path.join(process.cwd(), "server", "scripts", "smoke.mjs"))){ console.log(`${C.yellow}smoke refused:${C.reset} server/scripts/smoke.mjs not found — the standing smoke script is required (TESTING_MODEL.md §7).`); process.exit(1); }
+    const ok = runCmd(crPath, "Smoke test", `SMOKE_URL=${JSON.stringify(smokeUrl)} node server/scripts/smoke.mjs`, false, { timeoutMs: 120000 });
+    console.log(ok ? `${C.green}✓ smoke OK — commit-stamped in the ledger; Sign-off can now close.${C.reset}`
+                   : `${C.red}✗ smoke FAILED — the deployed app is not healthy; fix before closing (the entry is recorded).${C.reset}`);
+    process.exit(ok ? 0 : 1);
+  }
+  if (cmd === "report"){
+    // On-demand (re)generation of a CR's consumption report — appends a fresh report to
+    // the gate ledger and prints it. Useful after a close, or to inspect a CR's spend.
+    const crPath = resolveCR(a1);
+    if(!crPath||!fs.existsSync(crPath)){ console.log("usage: report <CR>"); process.exit(1); }
+    const before = readGates(crPath).length;
+    writeConsumptionReport(crPath);
+    const g = readGates(crPath);
+    const idx = g.lastIndexOf("## Consumption Report");
+    console.log(idx>=0 ? g.slice(idx) : "(no metrics found for this CR)");
+    process.exit(0);
+  }
   if (cmd === "update"){
     // Explicit upgrade, on demand: same safety rules as the automatic path.
     const dry = cliArgs.includes("--check");
@@ -1872,7 +2132,7 @@ function suCheck(opts){
         process.exit(0);
       }
       const parked = infos.find(i => i.s && PARKED(i.s));
-      if (parked && parked.s==="DEPLOY_WAIT") console.log(`⏸ ${parked.f.replace(/\.md$/,"")} — DEPLOY_WAIT: human runs the deploy + pastes output; then Codex signs off (auto). Nothing in-session.`);
+      if (parked && parked.s==="DEPLOY_WAIT") console.log(`⏸ ${parked.f.replace(/\.md$/,"")} — DEPLOY_WAIT: human runs the deploy + pastes output; Claude then closes through the machine gate. Nothing in-session.`);
       else if (parked && parked.s==="FAST_DEPLOY") console.log(`⏸ ${parked.f.replace(/\.md$/,"")} — FAST_DEPLOY: human deploys + pastes output. Nothing in-session.`);
       else if (parked && parked.s==="ESCALATED") console.log(`⛔ ${parked.f.replace(/\.md$/,"")} — ESCALATED: waiting on a human decision. Nothing in-session.`);
       else console.log("✓ nothing awaiting in-session work — no active CR.");
@@ -1937,7 +2197,7 @@ function suCheck(opts){
                  : "implement crs/"+act.f+", commit, then record COMPLETED";
       console.log(`  ${C.dim}mark started:${C.reset} ${beg("claude")}`);
       console.log(`  Claude (this session): ${verb}.`);
-      console.log(`  record: ${C.bold}${rec("claude:opus")} <COMPLETED|READY|FAIL> <secs> <tokens>${C.reset}`);
+      console.log(`  record: ${C.bold}${rec("claude:opus")} <COMPLETED|READY|FAIL> <secs>${C.reset}${C.dim}  (tokens are MEASURED from the session transcript — v104)${C.reset}`);
     } else {
       console.log(`  ${C.dim}${g.gate} belongs to ${g.agent} — nothing in-session; wait for the board.${C.reset}`);
     }
@@ -1947,12 +2207,43 @@ function suCheck(opts){
   // silently started a second board instead of reporting the typo. Fail loudly instead.
   if (cmd){
     console.log(`${C.yellow}unknown command:${C.reset} ${cmd}`);
-    console.log(`${C.dim}commands: now · begin · record · revise · set · authorize · ask · rootcause · prompts · retro · lessons · update [--check]`);
+    console.log(`${C.dim}commands: now · begin · record · revise · set · authorize · ask · rootcause · prompts · retro · lessons · smoke · update [--check]`);
     console.log(`(no command at all = run the board/watch)${C.reset}`);
     process.exit(1);
   }
 }
 
+
+
+// ─── SINGLE-INSTANCE LOCK: one board per project, enforced mechanically ─────
+// 2026-07-28: ~14 orphaned watches accumulated (operator restarts whose kill
+// pattern missed full-path cmdlines) and EACH dispatched its own Codex review of
+// the same gate — quadruplicate ledger entries, ~50k tokens burned on one CR.
+// Operator discipline failed, so the engine now refuses: a second watch in the
+// same project exits immediately. The lockfile carries the owner pid; a stale
+// lock (dead pid, or pid that is no longer an orchestrator) is reclaimed. The
+// hot-reload child inherits legitimately (its parent holds the lock).
+const WATCH_LOCK = path.join(process.cwd(), ".orch.lock");
+function acquireWatchLock(){
+  try {
+    const prev = parseInt(fs.readFileSync(WATCH_LOCK, "utf8"), 10);
+    if (prev && prev !== process.pid && prev !== process.ppid){
+      let alive = false;
+      try { process.kill(prev, 0); alive = true; } catch { /* dead → stale */ }
+      if (alive){
+        const cmd = spawnSync("ps", ["-p", String(prev), "-o", "command="], { encoding:"utf8" }).stdout || "";
+        if (/orchestrator\.cjs/.test(cmd)){
+          banner(`another watch (pid ${prev}) is already running in this project — exiting. One board per project; stop it with: kill ${prev}`, C.red);
+          process.exit(1);
+        }
+      }
+    }
+  } catch { /* no lock file → free */ }
+  fs.writeFileSync(WATCH_LOCK, String(process.pid));
+  const drop = () => { try { if (parseInt(fs.readFileSync(WATCH_LOCK, "utf8"), 10) === process.pid) fs.unlinkSync(WATCH_LOCK); } catch { /* */ } };
+  process.on("exit", drop);
+}
+acquireWatchLock();
 
 checkAuth();
 
@@ -1970,6 +2261,38 @@ process.on("SIGINT", ()=>{ console.log("\n"+C.dim+"stopping."+C.reset); process.
 // stops: alive at 0% CPU, ledger untouched, board frozen. v60: `finally` guarantees the
 // reset on throw, and a watchdog abandons any tick stuck >2min so polling resumes on its
 // own (worst case the abandoned tick later completes into a redundant render — harmless).
+// --- v107: --until-idle — auto-start/stop lifecycle. Launched when a CR lands (e.g. via
+// orch/board.command); runs the board while work exists, and when EVERY CR is CLOSED (and
+// it actually did work this run) it prints the consumption report(s) for the CR(s) it
+// worked and exits. It never exits while a CR is mid-build or parked at a human gate
+// (DEPLOY_WAIT/ESCALATED are non-CLOSED, so the board stays up and waits). Cold start with
+// nothing open just waits for the first CR to land. ---
+const UNTIL_IDLE = process.argv.includes("--until-idle");
+let sawOpenCR = false;
+const openSeen = new Set();
+function crStatusList(){
+  let files=[]; try{ files=fs.readdirSync(CR_DIR).filter(f=>/^CR-\d+\.md$/.test(f)); }catch{ return []; }
+  return files.map(f=>{ let s="?"; try{ const m=fs.readFileSync(path.join(CR_DIR,f),"utf8").match(/\*\*Status:\*\*\s*([A-Z_]+)/); if(m) s=m[1]; }catch{} return { f, id:f.replace(/\.md$/,""), status:s }; });
+}
+function maybeExitWhenIdle(){
+  if (!UNTIL_IDLE) return;
+  const list = crStatusList();
+  const open = list.filter(c => c.status !== "CLOSED");
+  for (const c of open){ openSeen.add(c.id); sawOpenCR = true; }
+  if (open.length) return;                 // still building, or parked at a human gate → keep the board up
+  if (!sawOpenCR) return;                   // launched cold; wait for a CR to land
+  banner("All CRs closed — pipeline idle. Report(s) for this run below, then stopping.", C.green);
+  for (const id of openSeen){
+    try {
+      const g = readGates(path.join(CR_DIR, id + ".md"));
+      const idx = g.lastIndexOf("## Consumption Report");
+      if (idx >= 0) console.log(`\n${C.bold}${id}${C.reset}\n` + g.slice(idx));
+    } catch { /* */ }
+  }
+  log(`${C.dim}--until-idle: work complete; watch stopping.${C.reset}`);
+  process.exit(0);
+}
+
 let running=false, tickStart=0;
 setInterval(async ()=>{
   if (running){
@@ -2000,7 +2323,7 @@ setInterval(async ()=>{
           suOnce("selfbusy:"+onDisk, "orch changed on disk (" + onDisk + ") — hot-reload held until the board is quiet (" + busy + " is mid-gate)", C.cyan);
         } else {
           log(`${C.green}${C.bold}orch updated on disk (${onDisk}) — hot-reloading in place…${C.reset}`);
-          const r = spawnSync(process.execPath, [__filename], { stdio: "inherit" });
+          const r = spawnSync(process.execPath, [__filename, ...process.argv.slice(2)], { stdio: "inherit" }); // v107: preserve flags (e.g. --until-idle)
           process.exit(r.status || 0);
         }
       }
@@ -2015,4 +2338,53 @@ setInterval(async ()=>{
   running=true; tickStart=Date.now();
   try { await tick(); } catch(e){ log(`${C.red}tick error: ${e.message}${C.reset}`); }
   finally { running=false; tickStart=0; }
+  maybeExitWhenIdle();   // v107: --until-idle auto-stop (prints report(s), then exits)
 }, POLL_MS);
+
+// v107: ALWAYS-ON HEARTBEAT — a ticking spinner + live clock + the ACTIVE STEP (who owns it,
+// what they're doing, and a per-step elapsed timer) so the board is visibly LIVE at every
+// step — working / reviewing / revising / waiting-on-you (owner request). TTY only.
+function _fmtE(ms){ if(ms==null) return ""; const s=Math.floor(ms/1000); if(s>=3600) return ` ${Math.floor(s/3600)}h${Math.floor(s%3600/60)}m`; if(s>=60) return ` ${Math.floor(s/60)}m${s%60}s`; return ` ${s}s`; }
+function activeStepInfo(active){
+  const crPath = path.join(CR_DIR, active.id + ".md");
+  const status = active.status;
+  let sinceMs=null, log=[];
+  try { log = fs.readFileSync(path.join(LOG_DIR, active.id + ".jsonl"),"utf8").trim().split("\n").map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean); } catch {}
+  const lastTo = [...log].reverse().find(e=>e.type==="status" && e.to===status);
+  if (lastTo) sinceMs = Date.now() - new Date(lastTo.ts).getTime();
+  if (status==="ESCALATED") return { who:"you", verb:"decision needed", gate:"", sinceMs };
+  if (status==="DEPLOY_WAIT"||status==="FAST_DEPLOY") return { who:"you", verb:"deploy + paste output", gate:"", sinceMs };
+  const stage = PIPELINE.find(s=>s.status===status);
+  let who="orch", gate=status;
+  if (stage && stage.gates && stage.gates.length){ const g = stage.gates.find(g2=>!gateDone(crPath, g2.gate)) || stage.gates[stage.gates.length-1]; if(g){ who=g.agent; gate=g.gate; } }
+  // TRUTHFUL verb: only "working/reviewing/revising" once the gate has actually BEGUN (a
+  // begin marker with no verdict yet). A gate NOT begun is QUEUED — waiting for its owner's
+  // session to pick it up (a Claude gate stalls between sessions; codex.auto starts shortly).
+  // Never show "working" for a step nobody has started (the "claude working 59m" confusion).
+  const begun = runStartedAt(crPath, gate);
+  let elapsed = sinceMs, verb;
+  if (begun) {
+    elapsed = Date.now() - new Date(begun).getTime();
+    const failedThisScope = /verdict":"(FAIL|REJECT)/.test(readGates(crPath).split(/### (?:Build retry|Owner decision|Revision)/).pop()||"");
+    verb = who==="codex" ? "reviewing" : (/build/i.test(gate) && failedThisScope ? "revising" : "working");
+  } else {
+    verb = who==="claude" ? "QUEUED · awaiting Claude — needs pickup" : who==="codex" ? "queued · auto-review starting" : "queued";
+  }
+  return { who, verb, gate, sinceMs: elapsed };
+}
+if (process.stdout.isTTY) {
+  const HB = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+  let hb = 0;
+  setInterval(() => {
+    let line;
+    try {
+      const list = crStatusList();
+      const active = list.find(c => c.status !== "CLOSED");
+      if (!active) line = list.length ? "all CRs closed — stopping shortly" : "no CRs — waiting for one to land";
+      else { const s = activeStepInfo(active); line = `${active.id} · ${s.who} ${s.verb}${s.gate?` ${s.gate}`:""}${_fmtE(s.sinceMs)}`; }
+    } catch { line = "watching"; }
+    const clock = new Date().toTimeString().slice(0, 8);
+    process.stdout.write(`\r${C.dim}${HB[hb++ % HB.length]} ${clock} · ${C.reset}${C.cyan}${line}${C.reset}\x1b[K`);
+  }, 1000);
+}
+

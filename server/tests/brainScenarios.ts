@@ -41,6 +41,12 @@ import { detectAudioMime } from '../src/services/voiceService';
 import { classifyWebjsSendResult } from '../src/services/whatsapp/sendReceipt';
 import { whatsappPhoneVariants } from '../src/services/whatsapp/inboundIdentity';
 import { downloadInboundMedia } from '../src/services/whatsapp/inboundMedia';
+import {
+  newProbeSession, matchProbeEcho, buildProbeMarker, recordOutboundProof,
+  recordProbeFailure, mayReprobe, noteProbeAttempt, getConsecutiveLivenessFailures,
+  isSendCapableStatus, EPISODE_PROBE_CAP, __resetTenantLivenessForTests,
+} from '../src/services/whatsapp/webjsLiveness';
+import { normalizeWid, sameWid } from '../src/services/whatsapp/waIdentity';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -401,6 +407,66 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const src = readFileSync(join(__dirname, '..', 'src', 'services', 'brainPrompts', 'promptReplyHandler.ts'), 'utf-8');
       expect(src).toContain('classifyPromptReplyRelevance');
       expect(src).toContain('mayConsumeAsAnswer');
+    },
+  },
+  {
+    id: 'chat14',
+    date: '2026-07-31',
+    userMessage: 'Ask status of leave request → "send"',
+    observedFailure:
+      'Brain replied to text normally and previewed the delegation message, then returned "[notifyviawhatsapp failed: no tenant whatsapp channel configured]". The tenant channel had been status=degraded since 07-24 with outbound sends withheld, because every liveness probe failed: the self-chat echo was matched against client.info.wid._serialized alone, so an echo carrying the account @lid spelling was rejected. Three flags (statusMap=degraded, requiresRepair, exhausted EPISODE_PROBE_CAP) each cleared only via recordProbePass, which needs a probe the cap forbade — a closed loop. Reproduced identically on 07-24, 07-29 and 07-31.',
+    symptomTags: [
+      'whatsapp-lid-activity-rejected', 'liveness-deadlock',
+      'connector-status-lies-not-connected', 'silent-withhold-no-alert',
+    ],
+    fixCommits: ['5e3f3c1'],
+    assert: () => {
+      __resetTenantLivenessForTests();
+      const TENANT = 'TMC-0001';
+      const PHONE = '923274572102@c.us';
+      const LID = '173555350261799@lid';
+      const session = () => {
+        const s = newProbeSession(TENANT, 'TMC-0001#gen1', 'nonceA');
+        s.expectedProviderId = 'prov_1';
+        return s;
+      };
+      const echo = (s: any, over: Record<string, unknown> = {}) => matchProbeEcho(s, {
+        fromMe: true, chatId: PHONE, selfId: PHONE, selfIds: [PHONE, LID],
+        body: buildProbeMarker(s.nonce), providerId: 'prov_1',
+        generation: s.generation, clientNumber: TENANT, ...over,
+      });
+
+      // THE OUTAGE: an echo stamped with the account's LID spelling must match.
+      expect(echo(session(), { chatId: LID })).toBe('matched');
+      expect(echo(session())).toBe('matched');                          // phone form still matches
+      expect(echo(session(), { chatId: '923274572102:9@c.us' })).toBe('matched'); // device suffix
+
+      // The gate keeps its purpose: foreign chats and forged echoes still rejected.
+      expect(echo(session(), { chatId: '92300111222@c.us' })).toBe('rejected');
+      expect(echo(session(), { chatId: '999999999@lid' })).toBe('rejected');
+      expect(echo(session(), { fromMe: false })).toBe('rejected');
+      expect(echo(session(), { body: buildProbeMarker('other') })).toBe('rejected');
+
+      // Domains never collapse: a LID must not equal a phone Wid by digits alone.
+      expect(sameWid(LID, '173555350261799@c.us')).toBe(false);
+      expect(normalizeWid('923274572102:12@c.us')).toBe(PHONE);
+
+      // The deadlock has an exit: confirmed outbound traffic re-arms the budget…
+      for (let i = 0; i < EPISODE_PROBE_CAP; i++) noteProbeAttempt(TENANT);
+      expect(mayReprobe(TENANT)).toEqual({ allowed: false, reason: 'episode_cap_exhausted' });
+      expect(recordOutboundProof(TENANT)).toBe(true);
+      expect(mayReprobe(TENANT).allowed).toBe(true);
+
+      // …without erasing probe history and without granting send-capability.
+      __resetTenantLivenessForTests();
+      recordProbeFailure(TENANT); recordProbeFailure(TENANT); recordProbeFailure(TENANT);
+      recordOutboundProof(TENANT);
+      expect(getConsecutiveLivenessFailures(TENANT)).toBe(3);
+      for (const s of ['degraded', 'connected_unverified', 'liveness_failed']) {
+        expect(isSendCapableStatus(s)).toBe(false);
+      }
+      expect(isSendCapableStatus('connected')).toBe(true);
+      __resetTenantLivenessForTests();
     },
   },
 ];
