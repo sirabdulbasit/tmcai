@@ -63,7 +63,6 @@ export async function startInboundActivity(
   let stateChat: any = null;
   let lastState: 'typing' | 'recording' | 'unsupported' | 'failed' = 'unsupported';
   let reactionOk = false;
-  let visibleFallbackSent = false;
 
   const sendState = async (target: any): Promise<boolean> => {
     if (voice && typeof target?.sendStateRecording === 'function') {
@@ -80,23 +79,15 @@ export async function startInboundActivity(
   };
 
   const sendVisibleFallback = async () => {
-    // Owner override 2026-07-31 (supersedes the reviewer condition of
-    // 2026-07-22 that treated a successful reaction as sufficient): the
-    // owner wants an unmistakable "Brain is working" signal on EVERY
-    // turn. While whatsapp-web.js's chat-state APIs are broken upstream
-    // (the minified `r: r` class — native typing/recording throw), a
-    // tiny reaction emoji does not read as one, so the text marker fires
-    // whenever native presence fails, reaction or not — still at most
-    // once per turn (invariant §2.4: bounded deterministic transport
-    // signal, no semantic content, never blocks Brain processing).
-    if (visibleFallbackSent || typeof message?.reply !== 'function') return;
-    visibleFallbackSent = true;
-    try {
-      await message.reply(voice ? '🎙️ Recording…' : '⏳ Thinking…');
-      log.info('Visible activity fallback sent', { ...context, voice });
-    } catch (error: unknown) {
-      log.warn('Visible activity fallback failed', { ...context, voice, error: activityError(error) });
-    }
+    // Owner ruling 2026-07-31 (final, supersedes both the 2026-07-22
+    // reviewer condition and the same-day always-send override): NO text
+    // marker messages, ever. The working signal must be WhatsApp's
+    // native presence ("typing…" / "recording audio…") — a message in
+    // the thread is not acceptable as a substitute. While the native
+    // chat-state APIs are broken upstream (whatsapp-web.js `r: r`
+    // class), the reaction emoji is the only permitted fallback signal;
+    // when that fails too, the turn shows no indicator, by owner choice.
+    log.info('Activity fallback suppressed (owner ruling: native presence only)', { ...context, voice });
   };
 
   const pulse = async () => {

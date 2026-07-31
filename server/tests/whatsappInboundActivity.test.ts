@@ -41,9 +41,11 @@ describe('WhatsApp inbound processing feedback', () => {
         clearState: vi.fn(async () => { throw new Error('clear rejected'); }),
       })),
     }, false, { clientNumber: 'TMC-0001', userId: 2, messageId: 'wa-1' });
-    expect(reply).toHaveBeenCalledWith('⏳ Thinking…');
+    // Owner ruling 2026-07-31: no text-marker messages, ever — even when
+    // every native limb throws, the turn proceeds with no thread message.
+    expect(reply).not.toHaveBeenCalled();
     await expect(activity.pulse()).resolves.toBeUndefined();
-    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
     await expect(activity.stop()).resolves.toBeUndefined();
   });
 
@@ -79,7 +81,7 @@ describe('WhatsApp inbound processing feedback', () => {
   // Reviewer condition (2026-07-22): EITHER successful limb is
   // sufficient visible activity — the text fallback fires only when
   // both the reaction and native presence failed.
-  it('sends the text marker even when the reaction succeeded (owner override 2026-07-31) — once', async () => {
+  it('never sends a thread message when presence fails (owner ruling 2026-07-31)', async () => {
     vi.useFakeTimers();
     const reply = vi.fn(async () => ({}));
     const react = vi.fn(async () => {});
@@ -90,14 +92,13 @@ describe('WhatsApp inbound processing feedback', () => {
         clearState: vi.fn(async () => {}),
       })),
     }, false);
-    expect(react).toHaveBeenCalledWith('⏳');
+    expect(react).toHaveBeenCalledWith('⏳'); // the reaction remains the only fallback signal
     await vi.advanceTimersByTimeAsync(45_000); // repeated pulses keep failing
-    expect(reply).toHaveBeenCalledTimes(1);    // visible signal on every turn…
-    expect(reply).toHaveBeenCalledWith('⏳ Thinking…'); // …but never more than once
+    expect(reply).not.toHaveBeenCalled();      // and never a message in the thread
     await activity.stop();
   });
 
-  it('voice: sends the recording marker when native recording fails', async () => {
+  it('voice: no thread message even when native recording fails (owner ruling 2026-07-31)', async () => {
     const reply = vi.fn(async () => ({}));
     const activity = await startInboundActivity({
       react: vi.fn(async () => { throw new Error('reaction unsupported'); }),
@@ -107,8 +108,7 @@ describe('WhatsApp inbound processing feedback', () => {
         clearState: vi.fn(async () => {}),
       })),
     }, true);
-    expect(reply).toHaveBeenCalledWith('🎙️ Recording…');
-    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
     await activity.stop();
   });
 
