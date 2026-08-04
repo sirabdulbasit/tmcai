@@ -5,7 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { probeWebjsModules, PROBED_MODULES } from '../src/services/whatsapp/webjsModuleProbe';
+import { probeWebjsModules, PROBED_MODULES, PROBED_SURFACES } from '../src/services/whatsapp/webjsModuleProbe';
 
 const pageWith = (impl: (names: string[]) => any) => ({
   pupPage: { evaluate: async (_fn: any, names: string[]) => impl(names) },
@@ -56,10 +56,23 @@ describe('probe reports facts, never throws', () => {
 
 describe('probe covers the broken paths and stays read-only', () => {
   const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'whatsapp', 'webjsModuleProbe.ts'), 'utf8');
-  it('probes the modules media and chat-state actually use', () => {
-    for (const m of ['WAWebCollections', 'WAWebDownloadManager', 'WAWebChatPresence']) {
+  it('probes only module names the library actually requires', () => {
+    // Grep-confirmed against the installed library. An earlier list guessed
+    // WAWebChatPresence / WAWebSendPresenceJob, which the library never
+    // calls — the probe dutifully reported them missing and sent us chasing
+    // a module that was never involved.
+    for (const m of ['WAWebCollections', 'WAWebDownloadManager', 'WAWebChatStateBridge']) {
       expect(PROBED_MODULES).toContain(m as any);
     }
+    for (const ghost of ['WAWebChatPresence', 'WAWebSendPresenceJob']) {
+      expect(PROBED_MODULES).not.toContain(ghost as any);
+    }
+  });
+
+  it('probes the deep call surfaces, since a module can resolve while its method is gone', () => {
+    expect(PROBED_SURFACES).toContain("require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt" as any);
+    expect(PROBED_SURFACES).toContain("require('WAWebChatStateBridge').sendChatStateComposing" as any);
+    expect(PROBED_SURFACES).toContain('WWebJS.arrayBufferToBase64Async' as any);
   });
   it('never sends or mutates', () => {
     expect(SRC).not.toMatch(/sendMessage|sendStateTyping|sendSeen|\$executeRaw/);

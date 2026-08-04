@@ -23,20 +23,54 @@ import createLogger from '../../utils/logger';
 
 const log = createLogger('whatsapp:module-probe');
 
-/** Modules whatsapp-web.js@1.34.7 depends on for the broken paths. */
+/**
+ * Modules whatsapp-web.js@1.34.7 ACTUALLY requires on the broken paths.
+ *
+ * Verified against the installed library, not guessed — an earlier version
+ * of this list probed 'WAWebChatPresence' and 'WAWebSendPresenceJob',
+ * which the library never calls, and duly reported them missing. That was
+ * a self-inflicted false lead. Every name below is grep-confirmed:
+ *   Message.js:519,531       → WAWebCollections
+ *   Message.js:559           → WAWebDownloadManager
+ *   Injected/Utils.js:1202   → WAWebWidFactory
+ *   Injected/Utils.js:1204   → WAWebChatStateBridge   (typing/recording)
+ */
 export const PROBED_MODULES = [
   // media download (Message.downloadMedia)
   'WAWebCollections',
   'WAWebDownloadManager',
-  // chat presence / typing + recording state
-  'WAWebChatPresence',
-  'WAWebSendPresenceJob',
+  // chat state: typing + recording + stop (WWebJS.sendChatstate)
+  'WAWebChatStateBridge',
   // reactions + generic send
   'WAWebSendReactionMsgAction',
   'WAWebSendMsgChatAction',
-  // identity / lid mapping (already working — control group)
+  // identity / lid mapping (working — control group)
   'WAWebApiContact',
   'WAWebWidFactory',
+] as const;
+
+/**
+ * The exact call surfaces the two broken paths touch. Module resolution is
+ * not enough: both media modules resolve on this build, so the media
+ * failure lives in a property or method INSIDE them (a renamed field, a
+ * changed signature, or a missing injected helper). Each entry is
+ * evaluated as a dotted path and reported as present / missing / throwing.
+ */
+export const PROBED_SURFACES = [
+  // media chain, in call order
+  "require('WAWebCollections').Msg",
+  "require('WAWebCollections').Msg.get",
+  "require('WAWebCollections').Msg.getMessagesById",
+  "require('WAWebDownloadManager').downloadManager",
+  "require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt",
+  'WWebJS.arrayBufferToBase64Async',
+  // chat-state chain
+  "require('WAWebChatStateBridge').sendChatStateComposing",
+  "require('WAWebChatStateBridge').sendChatStateRecording",
+  "require('WAWebChatStateBridge').sendChatStatePaused",
+  "require('WAWebWidFactory').createWid",
+  // the injected entry point the Chat methods call
+  'WWebJS.sendChatstate',
 ] as const;
 
 export interface ModuleProbeResult {
@@ -47,6 +81,12 @@ export interface ModuleProbeResult {
   missing: Array<{ name: string; error: string }>;
   /** Candidate names discovered by scanning the module registry. */
   suggestions?: Record<string, string[]>;
+  /**
+   * Per-call-surface verdict: 'function' | 'object' | 'undefined' |
+   * 'error: …'. A module can resolve while the method inside it is gone —
+   * that is where the media failure must live on this build.
+   */
+  surfaces?: Record<string, string>;
   error?: string;
 }
 
@@ -64,13 +104,14 @@ export async function probeWebjsModules(client: any): Promise<ModuleProbeResult>
   }
 
   try {
-    const result = await page.evaluate(async (names: string[]) => {
+    const result = await page.evaluate(async (names: string[], surfaces: string[]) => {
       const out: {
         requireAvailable: boolean;
         resolved: string[];
         missing: Array<{ name: string; error: string }>;
         suggestions: Record<string, string[]>;
-      } = { requireAvailable: false, resolved: [], missing: [], suggestions: {} };
+        surfaces: Record<string, string>;
+      } = { requireAvailable: false, resolved: [], missing: [], suggestions: {}, surfaces: {} };
 
       const req = (window as any).require;
       out.requireAvailable = typeof req === 'function';
@@ -107,8 +148,32 @@ export async function probeWebjsModules(client: any): Promise<ModuleProbeResult>
         }
       } catch { /* registry introspection is best-effort */ }
 
+      // Walk each call surface. Resolution alone hides the real fault when
+      // the module exists but the method inside it was renamed.
+      for (const expr of surfaces) {
+        try {
+          const target = expr.startsWith('require(')
+            ? (() => {
+              const m = /^require\('([^']+)'\)(.*)$/.exec(expr)!;
+              let v: any = req(m[1]);
+              for (const key of m[2].split('.').filter(Boolean)) v = v?.[key];
+              return v;
+            })()
+            : (() => {
+              let v: any = window as any;
+              for (const key of expr.split('.').filter(Boolean)) v = v?.[key];
+              return v;
+            })();
+          out.surfaces[expr] = target === undefined || target === null
+            ? 'undefined'
+            : typeof target;
+        } catch (err: any) {
+          out.surfaces[expr] = `error: ${err?.message ?? String(err)}`.slice(0, 160);
+        }
+      }
+
       return out;
-    }, [...PROBED_MODULES]);
+    }, [...PROBED_MODULES], [...PROBED_SURFACES]);
 
     const out: ModuleProbeResult = {
       // `ok` requires BOTH a reachable require AND nothing missing. Without
@@ -120,11 +185,15 @@ export async function probeWebjsModules(client: any): Promise<ModuleProbeResult>
       resolved: result.resolved,
       missing: result.missing,
       suggestions: Object.keys(result.suggestions ?? {}).length ? result.suggestions : undefined,
+      surfaces: result.surfaces,
     };
     log.info('module probe complete', {
       requireAvailable: out.requireAvailable,
       resolvedCount: out.resolved.length,
       missing: out.missing.map((m) => m.name),
+      brokenSurfaces: Object.entries<string>(result.surfaces ?? {})
+        .filter(([, v]) => v === 'undefined' || v.startsWith('error:'))
+        .map(([k]) => k),
     });
     return out;
   } catch (error: any) {
