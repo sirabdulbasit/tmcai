@@ -90,6 +90,105 @@ export interface ModuleProbeResult {
   error?: string;
 }
 
+export interface MediaStepProbeResult {
+  ok: boolean;
+  /** The voice/media message the probe found, if any. */
+  message?: Record<string, unknown>;
+  /** Each step of downloadMedia's real chain, in order. */
+  steps: Record<string, string>;
+  error?: string;
+}
+
+/**
+ * MEDIA STEP probe — walks Message.downloadMedia's real chain on the newest
+ * media message in the page's collection, and reports which step throws.
+ *
+ * Existence probes have all come back healthy, so the fault is a runtime
+ * value. This is the only remaining way to see it: replay the library's own
+ * sequence (Msg lookup → mediaStage → resolve → downloadAndMaybeDecrypt →
+ * base64) with a REAL message, catching each step separately so the
+ * minified `r` is attributed to one line instead of the whole function.
+ *
+ * Downloads media (a read). Sends nothing, replies to nothing.
+ */
+export async function probeMediaSteps(client: any): Promise<MediaStepProbeResult> {
+  const page = client?.pupPage;
+  if (!page || typeof page.evaluate !== 'function') {
+    return { ok: false, steps: {}, error: 'no pupPage on client (not initialized?)' };
+  }
+  try {
+    const res = await page.evaluate(async () => {
+      const steps: Record<string, string> = {};
+      const req = (window as any).require;
+      const note = (k: string, v: unknown) => { steps[k] = String(v).slice(0, 240); };
+
+      let Msg: any;
+      try { Msg = req('WAWebCollections').Msg; note('1.Msg collection', 'ok'); }
+      catch (e: any) { note('1.Msg collection', `THROWS ${e?.message}`); return { steps, message: null }; }
+
+      // Newest media message in the page's collection.
+      let models: any[] = [];
+      try {
+        models = (typeof Msg.getModelsArray === 'function' ? Msg.getModelsArray() : Msg.models) ?? [];
+        note('2.collection size', models.length);
+      } catch (e: any) { note('2.collection size', `THROWS ${e?.message}`); }
+
+      const media = models.filter((m: any) => m?.mediaData && (m.type === 'ptt' || m.type === 'audio' || m.hasMedia));
+      const msg = media[media.length - 1];
+      if (!msg) { note('3.find media message', 'NONE FOUND — send a voice note, then re-run'); return { steps, message: null }; }
+
+      const info = {
+        id: msg.id?._serialized ?? String(msg.id ?? ''),
+        type: msg.type,
+        mediaStage: msg.mediaData?.mediaStage,
+        hasDirectPath: !!msg.directPath,
+        hasMediaKey: !!msg.mediaKey,
+        hasEncFilehash: !!msg.encFilehash,
+        fromMe: !!msg.id?.fromMe,
+      };
+      note('3.find media message', `found ${info.type} stage=${info.mediaStage}`);
+
+      if (msg.mediaData?.mediaStage !== 'RESOLVED') {
+        try {
+          await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+          note('4.msg.downloadMedia(resolve)', `ok, stage now ${msg.mediaData?.mediaStage}`);
+        } catch (e: any) {
+          note('4.msg.downloadMedia(resolve)', `THROWS ${e?.name}: ${e?.message}`);
+        }
+      } else note('4.msg.downloadMedia(resolve)', 'skipped — already RESOLVED');
+
+      let decrypted: any;
+      try {
+        const mockQpl = { addAnnotations() { return this; }, addPoint() { return this; } };
+        decrypted = await req('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
+          directPath: msg.directPath, encFilehash: msg.encFilehash, filehash: msg.filehash,
+          mediaKey: msg.mediaKey, mediaKeyTimestamp: msg.mediaKeyTimestamp, type: msg.type,
+          signal: new AbortController().signal, downloadQpl: mockQpl,
+        });
+        note('5.downloadAndMaybeDecrypt', `ok, ${decrypted?.byteLength ?? '?'} bytes`);
+      } catch (e: any) {
+        note('5.downloadAndMaybeDecrypt', `THROWS ${e?.name}: ${e?.message}`);
+      }
+
+      if (decrypted) {
+        try {
+          const b64 = await (window as any).WWebJS.arrayBufferToBase64Async(decrypted);
+          note('6.arrayBufferToBase64Async', `ok, ${b64?.length ?? 0} chars`);
+        } catch (e: any) { note('6.arrayBufferToBase64Async', `THROWS ${e?.name}: ${e?.message}`); }
+      } else note('6.arrayBufferToBase64Async', 'skipped — no buffer from step 5');
+
+      return { steps, message: info };
+    });
+
+    const broken = Object.values<string>(res.steps).filter((v) => v.includes('THROWS'));
+    log.info('media step probe complete', { broken, message: res.message });
+    return { ok: broken.length === 0, steps: res.steps, message: res.message ?? undefined };
+  } catch (error: any) {
+    log.warn('media step probe failed', { error: error?.message });
+    return { ok: false, steps: {}, error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
+
 export interface CallProbeResult {
   ok: boolean;
   steps: Record<string, string>;

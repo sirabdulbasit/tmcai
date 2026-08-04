@@ -5,7 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { probeWebjsModules, probeWebjsCallArguments, PROBED_MODULES, PROBED_SURFACES } from '../src/services/whatsapp/webjsModuleProbe';
+import { probeWebjsModules, probeWebjsCallArguments, probeMediaSteps, PROBED_MODULES, PROBED_SURFACES } from '../src/services/whatsapp/webjsModuleProbe';
 
 const pageWith = (impl: (names: string[]) => any) => ({
   pupPage: { evaluate: async (_fn: any, names: string[]) => impl(names) },
@@ -120,5 +120,48 @@ describe('argument probe — createWid against the real @lid identity', () => {
     const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'whatsapp', 'webjsModuleProbe.ts'), 'utf8');
     const fn = SRC.slice(SRC.indexOf('export async function probeWebjsCallArguments'));
     expect(fn).not.toMatch(/sendChatState|downloadAndMaybeDecrypt|sendMessage/);
+  });
+});
+
+describe('media step probe — attributes the throw to one line', () => {
+  const pg = (impl: () => any) => ({ pupPage: { evaluate: async () => impl() } });
+
+  it('pinpoints the failing step and keeps the earlier ones', async () => {
+    const r = await probeMediaSteps(pg(() => ({
+      steps: {
+        '1.Msg collection': 'ok',
+        '2.collection size': '412',
+        '3.find media message': 'found ptt stage=FETCHING',
+        '4.msg.downloadMedia(resolve)': 'THROWS Error: r',
+        '5.downloadAndMaybeDecrypt': 'THROWS Error: r',
+        '6.arrayBufferToBase64Async': 'skipped — no buffer from step 5',
+      },
+      message: { id: 'false_1735@lid_AC0E', type: 'ptt', mediaStage: 'FETCHING', hasMediaKey: true },
+    })));
+    expect(r.ok).toBe(false);
+    expect(r.steps['4.msg.downloadMedia(resolve)']).toContain('THROWS');
+    expect(r.message?.type).toBe('ptt');
+  });
+
+  it('a fully working chain reports ok', async () => {
+    const r = await probeMediaSteps(pg(() => ({
+      steps: { '5.downloadAndMaybeDecrypt': 'ok, 8421 bytes', '6.arrayBufferToBase64Async': 'ok, 11228 chars' },
+      message: { type: 'ptt' },
+    })));
+    expect(r.ok).toBe(true);
+  });
+
+  it('no media in the collection says so instead of failing obscurely', async () => {
+    const r = await probeMediaSteps(pg(() => ({
+      steps: { '3.find media message': 'NONE FOUND — send a voice note, then re-run' }, message: null,
+    })));
+    expect(r.steps['3.find media message']).toContain('NONE FOUND');
+    expect(r.message).toBeUndefined();
+  });
+
+  it('never sends or replies', () => {
+    const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'whatsapp', 'webjsModuleProbe.ts'), 'utf8');
+    const fn = SRC.slice(SRC.indexOf('export async function probeMediaSteps'), SRC.indexOf('export interface CallProbeResult'));
+    expect(fn).not.toMatch(/sendMessage|\.reply\(|sendChatState/);
   });
 });

@@ -158,6 +158,28 @@ router.get('/diagnose-call', async (req: Request, res: Response) => {
   }
 });
 
+// ─── GET /diagnose-media — which STEP of the voice download throws ───────────
+//
+// Existence probes are exhausted: every module and method the media path uses
+// is present on this build. So the fault is a runtime value, and the only way
+// to see it is to replay downloadMedia's own sequence on a real voice message
+// with each step caught separately — attributing the minified `r` to one line.
+// Send a voice note to Nexeo first, then call this. Downloads media (a read);
+// sends nothing.
+router.get('/diagnose-media', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  try {
+    const { getRawClientForDiagnostics } = await import('../../services/whatsapp/WebjsProvider');
+    const client = getRawClientForDiagnostics(cn);
+    if (!client) return res.status(409).json({ error: 'no live webjs client for this tenant' });
+    const { probeMediaSteps } = await import('../../services/whatsapp/webjsModuleProbe');
+    const result = await probeMediaSteps(client);
+    res.json({ clientNumber: cn, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /qr — get current QR code (webjs only, poll every 3s) ───────────────
 router.get('/qr', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
