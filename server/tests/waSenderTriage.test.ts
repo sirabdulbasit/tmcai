@@ -24,6 +24,7 @@ vi.mock('../src/services/notifications/brainOutboundService', () => ({
 
 import {
   triageUnregisteredInbound, gatherConcernEvidence, interpretSenderDecision,
+  resolveSenderName, describeSender,
 } from '../src/services/whatsapp/senderTriage';
 
 const OWNER = [{ id: 2 }];
@@ -47,12 +48,41 @@ describe('door policy honors standing decisions', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('allowed → message relayed to the owner', async () => {
-    q.mockResolvedValueOnce(OWNER).mockResolvedValueOnce([{ policy: 'allowed' }]);
+  it('allowed → message relayed to the owner, naming the contact', async () => {
+    q.mockResolvedValueOnce(OWNER).mockResolvedValueOnce([{ policy: 'allowed' }])
+      .mockResolvedValueOnce([{ name: 'Hamna Latif' }]); // person lookup
     const r = await triageUnregisteredInbound(PARAMS);
     expect(r.action).toBe('relayed_allowed');
     expect(contact).toHaveBeenCalledTimes(1);
-    expect(String(contact.mock.calls[0][0].body)).toContain('AoA, need approval');
+    const sent = contact.mock.calls[0][0];
+    expect(String(sent.body)).toContain('AoA, need approval');
+    expect(String(sent.body)).toContain('Hamna Latif');
+    expect(String(sent.summary)).toContain('Hamna Latif');
+  });
+});
+
+describe('sender is named, never invented (owner request 2026-08-04)', () => {
+  it('uses the contact catalog name when the phone matches', async () => {
+    q.mockResolvedValueOnce([{ name: 'Ali Haidar' }]);
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBe('Ali Haidar');
+  });
+  it('falls back to a WhatsApp connection display name', async () => {
+    q.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'Asad Ahmed Taj' }]);
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBe('Asad Ahmed Taj');
+  });
+  it('rejects the synthetic auto-learned @lid label — that is not a person', async () => {
+    q.mockResolvedValueOnce([]).mockResolvedValueOnce([{ name: 'auto-learned LID alias (376309)' }]);
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBeNull();
+  });
+  it('unknown phone → null, and the ask shows the bare number', async () => {
+    q.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBeNull();
+    expect(describeSender('+923001234567', null)).toBe('+923001234567');
+    expect(describeSender('+923001234567', 'Hamna Latif')).toBe('+923001234567 (Hamna Latif)');
+  });
+  it('lookup failure → null, never a guessed name', async () => {
+    q.mockRejectedValue(new Error('db down'));
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBeNull();
   });
 });
 
@@ -69,15 +99,17 @@ describe('unknown sender — evidence, then ask-once', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
-  it('no evidence → pending row + ONE neutral owner ask', async () => {
-    q.mockResolvedValueOnce(OWNER).mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+  it('no evidence → pending row + ONE neutral owner ask, naming the sender', async () => {
+    q.mockResolvedValueOnce(OWNER).mockResolvedValueOnce([])          // owner, no policy
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([]) // evidence: none
+      .mockResolvedValueOnce([{ name: 'Ahmad Sheikh' }]);            // name lookup
     const r = await triageUnregisteredInbound(PARAMS);
     expect(r.action).toBe('asked_owner');
     expect(enqueue).toHaveBeenCalledTimes(1);
     const ask = enqueue.mock.calls[0][0];
     expect(ask.dedupKey).toBe('wa_sender_triage:+923001234567');
     expect(ask.sideEffect.kind).toBe('wa_sender_policy_decision');
+    expect(ask.question).toContain('+923001234567 (Ahmad Sheikh)');
     // The ask is neutral — the Brain must never recommend ignoring.
     expect(ask.question).not.toMatch(/recommend|should ignore|suggest ignoring/i);
   });

@@ -74,8 +74,8 @@ export async function gatherConcernEvidence(
     ).catch(() => [] as any[]),
     prisma.$queryRawUnsafe<any[]>(
       `SELECT pf.id FROM person_facets pf
-         JOIN entity_person ep ON ep.id = pf.person_id
-        WHERE ep.client_number = $1 AND pf.facet_type = 'phone'
+         JOIN persons p ON p.id = pf.person_id
+        WHERE p.client_number = $1 AND pf.facet_type = 'phone'
           AND regexp_replace(pf.facet_value, '[^0-9]', '', 'g') LIKE '%' || $2
         LIMIT 1`,
       clientNumber, digits,
@@ -86,6 +86,58 @@ export async function gatherConcernEvidence(
   if (priorOutbound.length) evidence.push('prior_brain_outbound');
   if (facet.length) evidence.push('contact_phone_match');
   return evidence;
+}
+
+/**
+ * Best-known human name for a phone, or null.
+ *
+ * Owner request 2026-08-04: the triage ask must name the person, not just
+ * the number — "+92… (Hamna Latif) sent…" is answerable at a glance;
+ * a bare number is not. Sources, in order of trust: the contact catalog
+ * (persons + phone facet), then a WhatsApp connection display name.
+ * Returns null rather than guessing — an unnamed sender is shown as the
+ * number alone, never with an invented or closest-match name.
+ */
+export async function resolveSenderName(
+  clientNumber: string,
+  phone: string,
+): Promise<string | null> {
+  const variants = whatsappPhoneVariants(phone);
+  if (!variants.length) return null;
+  const digits = variants[1];
+  try {
+    const person = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT COALESCE(p.canonical_name, p.display_name) AS name
+         FROM person_facets pf
+         JOIN persons p ON p.id = pf.person_id
+        WHERE p.client_number = $1 AND pf.facet_type = 'phone'
+          AND regexp_replace(pf.facet_value, '[^0-9]', '', 'g') LIKE '%' || $2
+        ORDER BY pf.verified DESC, pf.confidence DESC
+        LIMIT 1`,
+      clientNumber, digits,
+    );
+    const name = String(person[0]?.name ?? '').trim();
+    if (name) return name;
+
+    const conn = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT display_name AS name FROM whatsapp_connections
+        WHERE client_number = $1 AND regexp_replace(phone_number, '[^0-9]', '', 'g') LIKE '%' || $2
+        LIMIT 1`,
+      clientNumber, digits,
+    );
+    const connName = String(conn[0]?.name ?? '').trim();
+    // Auto-learned @lid alias rows carry a synthetic label, not a person.
+    if (connName && !/^auto-learned/i.test(connName)) return connName;
+    return null;
+  } catch (error: any) {
+    log.warn('sender name lookup failed', { error: error?.message });
+    return null;
+  }
+}
+
+/** "+92300… (Hamna Latif)" when known, "+92300…" when not. */
+export function describeSender(phone: string, name: string | null): string {
+  return name ? `${phone} (${name})` : phone;
 }
 
 /**
@@ -179,18 +231,22 @@ export async function triageUnregisteredInbound(params: {
     }
 
     if (policy === 'allowed') {
-      await relayToOwner(params, ownerUserId, ['owner_allowed']);
+      const name = await resolveSenderName(params.clientNumber, params.fromNumber);
+      await relayToOwner(params, ownerUserId, ['owner_allowed'], name);
       return { action: 'relayed_allowed', policy };
     }
 
     // No policy row — evidence check, then ask.
-    const evidence = await gatherConcernEvidence(params.clientNumber, params.fromNumber);
+    const [evidence, senderName] = await Promise.all([
+      gatherConcernEvidence(params.clientNumber, params.fromNumber),
+      resolveSenderName(params.clientNumber, params.fromNumber),
+    ]);
     if (evidence.length > 0) {
       await decideSenderPolicy({
         clientNumber: params.clientNumber, phone: params.fromNumber, ownerUserId,
         policy: 'allowed', decidedBy: 'concern_evidence', evidence,
       });
-      await relayToOwner(params, ownerUserId, evidence);
+      await relayToOwner(params, ownerUserId, evidence, senderName);
       return { action: 'relayed_allowed', policy: 'allowed', evidence };
     }
 
@@ -203,7 +259,8 @@ export async function triageUnregisteredInbound(params: {
       userId: ownerUserId,
       clientNumber: params.clientNumber,
       question:
-        `${params.fromNumber} sent me a message: "${params.body.slice(0, 120)}". ` +
+        `${describeSender(params.fromNumber, senderName)} sent me a message: ` +
+        `"${params.body.slice(0, 120)}". ` +
         `Should I reply to them, or ignore this number? (An ignore stays until you tell me otherwise.)`,
       criticality: 'normal',
       dedupKey: `wa_sender_triage:${params.fromNumber}`,
@@ -227,14 +284,16 @@ async function relayToOwner(
   params: { clientNumber: string; fromNumber: string; body: string },
   ownerUserId: number,
   evidence: string[],
+  senderName: string | null,
 ): Promise<void> {
   const { brainContactsUser } = await import('../notifications/brainOutboundService');
+  const who = describeSender(params.fromNumber, senderName);
   await brainContactsUser({
     userId: ownerUserId,
     kind: 'wa_counterpart_message',
-    summary: `WhatsApp from ${params.fromNumber}`,
+    summary: `WhatsApp from ${who}`,
     body:
-      `${params.fromNumber} (${evidence.join(', ') || 'allowed'}) says:\n` +
+      `${who} — ${evidence.join(', ') || 'allowed'} — says:\n` +
       `"${params.body.slice(0, 500)}"`,
     urgency: 'normal',
     dedupKey: `wa_counterpart:${params.fromNumber}:${params.body.slice(0, 40)}`,
