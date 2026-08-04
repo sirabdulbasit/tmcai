@@ -502,3 +502,63 @@ rendered as "5 AM", meeting prep in UTC.
 **Verification status:** unit-locked (`lidToPhone` matrix + chat15
 scenario). Live acceptance = Yousaf's next reply captured, thread updated,
 owner notified.
+
+## Chat 16 — 2026-08-04 (ROOT CAUSE: voice notes unreadable on @lid chats)
+
+**Symptom (repeated since 07-17):** every voice note answered
+`[I could not read that voice note — please resend it or type the message]`.
+Logs showed `Inbound media download attempt failed … error:"r: r"` three
+times, ~30ms apart, then `exhausted retries`. Same opaque `r: r` for chat
+state (typing/recording), reactions and clear-state.
+
+**Three theories tested and DISPROVED, in order:**
+1. "Upstream fix unreleased" — the installed whatsapp-web.js 1.34.7 already
+   passes `downloadQpl` (Message.js:551). Not the fault.
+2. "Pinned WhatsApp Web build is wrong" — rejected; the fault appears under
+   both pins, and grepping the bootstrap HTML proves nothing (modules load
+   from separate bundles).
+3. "A required module is missing" — a live probe resolved EVERY module and
+   EVERY call surface: `Msg.get`, `Msg.getMessagesById`,
+   `downloadManager.downloadAndMaybeDecrypt`, `WWebJS.arrayBufferToBase64Async`,
+   all three `ChatStateBridge` senders, `WidFactory.createWid`. An earlier
+   probe list reported `WAWebChatPresence`/`WAWebSendPresenceJob` missing —
+   those are names the builder invented; the library never calls them. A
+   guessed probe list produced a confident false lead.
+
+**ROOT CAUSE (proven):** `Message.downloadMedia()` first resolves the message
+from its serialized id:
+`Msg.get(msgId) || (await Msg.getMessagesById([msgId]))?.messages?.[0]`.
+On a LID chat the id EMBEDS the identity —
+`false_173555350261799@lid_3BF638C7C45849106817` — so the lookup must parse a
+LID Wid. WhatsApp keeps LID constructors SEPARATE (`createUserLidOrThrow`,
+`asUserLidOrThrow`, beside `createWid`), and the parse throws the minified `r`
+before any network call. That is why every attempt died in ~30ms with no
+media log line.
+
+**Proof that everything else is healthy:** a step-by-step probe on a real
+voice note, bypassing the id lookup, returned
+`msg.downloadMedia(resolve) → RESOLVED`,
+`downloadAndMaybeDecrypt → 3646 bytes`,
+`arrayBufferToBase64Async → 4864 chars`. Message shape intact
+(`type=ptt`, `hasDirectPath/hasMediaKey/hasEncFilehash` all true).
+
+**Fix:** `webjsMediaDirect.downloadMediaDirect` finds the message by STRING
+comparison on `id._serialized` over the in-page collection — no id parsing,
+no Wid construction — then runs the library's own download + encode calls.
+Wired as the FIRST limb of `downloadInboundMedia`, with the old ladder kept
+as fallback. Never throws; failures degrade to a reason string.
+
+**Symptom tags:** `whatsapp-ptt-media-not-ready`,
+`whatsapp-lid-activity-rejected`, `lid-id-parse-throws`.
+
+**Still open (same root cause family, not fixed here):** typing/recording —
+`WWebJS.sendChatstate` calls `WidFactory.createWid(chatId)` FIRST
+(Injected/Utils.js:1202) with the `@lid` chat id; the LID-specific
+constructors above are strong evidence `createWid` rejects that domain. The
+fix is to resolve to the phone Wid (waIdentity.lidToPhone) before calling
+chat state.
+
+**Verification:** unit-locked (`webjsMediaDirect.test.ts` — @lid id happy
+path, in-page reason surfacing, never-throws, plus source guards that the
+poisoned lookups are never called and the direct limb runs first). Live
+acceptance = a voice note returns `🎙️ Heard:` with a transcript.

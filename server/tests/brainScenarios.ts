@@ -504,4 +504,33 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(lidBranch).toContain('lidToPhone');
     },
   },
+  {
+    id: 'chat16',
+    date: '2026-08-04',
+    userMessage: '(voice note to Nexeo)',
+    observedFailure:
+      'Every voice note answered "[I could not read that voice note]". Media download failed 3x in ~30ms with the opaque "r: r". Root cause: Message.downloadMedia resolves the message via Msg.get(msgId)/Msg.getMessagesById([msgId]), and a LID chat message id EMBEDS the identity (false_173555350261799@lid_3BF638...), so the lookup parses a LID Wid and throws before any network call. WhatsApp keeps LID constructors separate (createUserLidOrThrow). Everything after the lookup was proven healthy: 3646 bytes decrypted, 4864 base64 chars.',
+    symptomTags: ['whatsapp-ptt-media-not-ready', 'whatsapp-lid-activity-rejected', 'lid-id-parse-throws'],
+    // 72ed7f6 shipped the shared @lid resolver this builds on; the direct
+    // media limb ships WITH this scenario (the wiring assertions prove it).
+    fixCommits: ['72ed7f6'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const dir = join(__dirname, '..', 'src', 'services', 'whatsapp');
+      const direct = readFileSync(join(dir, 'webjsMediaDirect.ts'), 'utf-8');
+      const code = direct.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      // The poisoned lookups must never be called: they parse the @lid id.
+      expect(code).not.toMatch(/Msg\.get\(/);
+      expect(code).not.toMatch(/getMessagesById/);
+      // Message located by string comparison instead.
+      expect(code).toContain('_serialized');
+      // The healthy library calls are still used.
+      expect(code).toContain('downloadAndMaybeDecrypt');
+      expect(code).toContain('arrayBufferToBase64Async');
+      // And the direct limb runs BEFORE the old retry ladder.
+      const media = readFileSync(join(dir, 'inboundMedia.ts'), 'utf-8');
+      expect(media.indexOf('downloadMediaDirect')).toBeLessThan(media.indexOf('for (let attempt = 0'));
+    },
+  },
 ];
