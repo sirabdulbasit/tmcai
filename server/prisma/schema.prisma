@@ -2615,6 +2615,27 @@ model OpsHealthState {
 // Partial uniques, CHECK constraints, and composite scope-FKs live in
 // migration SQL (beyond Prisma's expressiveness); models mirror columns.
 
+/// Section 35 Phase 1 — per-sender door policy for the tenant WhatsApp
+/// channel. Unknown senders get ONE owner ask; the decision persists until
+/// countermanded. `decided_by` is 'owner_decision' or 'concern_evidence',
+/// never a Brain recommendation.
+model WaSenderPolicy {
+  clientNumber  String    @map("client_number") @db.VarChar(20)
+  phone         String    @db.VarChar(32)
+  ownerUserId   Int       @map("owner_user_id")
+  policy        String    @default("pending") @db.VarChar(12)
+  decidedBy     String?   @map("decided_by") @db.VarChar(24)
+  decidedAt     DateTime? @map("decided_at")
+  evidence      Json?
+  note          String?   @db.VarChar(300)
+  firstSeenAt   DateTime  @default(now()) @map("first_seen_at")
+  lastInboundAt DateTime? @map("last_inbound_at")
+
+  @@id([clientNumber, phone])
+  @@index([clientNumber, ownerUserId, policy], map: "wa_sender_policy_owner_idx")
+  @@map("wa_sender_policy")
+}
+
 model DelegationThread {
   id                         String    @id @default(cuid())
   clientNumber               String    @map("client_number") @db.VarChar(20)

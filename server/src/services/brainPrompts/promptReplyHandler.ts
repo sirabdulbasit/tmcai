@@ -206,6 +206,27 @@ async function applySideEffect(
       return { status: 'applied' };
     }
 
+    case 'wa_sender_policy_decision': {
+      // Section 35 Phase 1 — the owner's answer to "reply or ignore?" for
+      // an unknown WhatsApp sender. Strict forms fast-path; everything
+      // else is LLM-classified (never a regex final boundary). An unclear
+      // answer keeps the sender pending and says so — no guessing.
+      const phone = String(side?.data?.phone ?? '');
+      const clientNumber = String(side?.data?.clientNumber ?? '');
+      const ownerUserId = Number(side?.data?.ownerUserId ?? 0);
+      if (!phone || !clientNumber || !ownerUserId) return { status: 'failed', detail: 'missing_sender_ref' };
+      const { interpretSenderDecision, decideSenderPolicy } = await import('../whatsapp/senderTriage');
+      const decision = await interpretSenderDecision(answer);
+      if (decision === 'unclear') return { status: 'failed', detail: 'unclear_decision' };
+      await decideSenderPolicy({
+        clientNumber, phone, ownerUserId,
+        policy: decision === 'ignore' ? 'ignored' : 'allowed',
+        decidedBy: 'owner_decision',
+        note: answer.slice(0, 200),
+      }).catch((err: any) => log.warn('sender policy write failed', { err: err?.message }));
+      return { status: 'applied', detail: `${phone}:${decision === 'ignore' ? 'ignored' : 'allowed'}` };
+    }
+
     case 'action_status_update': {
       if (!openItemId) return { status: 'failed', detail: 'no_open_item' };
       const item = await prisma.openItem.findFirst({ where: { id: openItemId }, select: { clientNumber: true } });

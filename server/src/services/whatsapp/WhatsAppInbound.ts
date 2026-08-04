@@ -119,9 +119,20 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     });
     if (captured.matched) return;
 
-    log.info('Unregistered number — dropped (no save, no reply)', {
+    // Section 35 Phase 1 (owner ruling 2026-08-04): no more silent drop.
+    // Standing ignore → drop; allowed/concern-evidence → relay to owner;
+    // unknown → mark pending + ask the owner ONCE. Triage never throws
+    // and never replies to the sender (that is Phase 2).
+    const { triageUnregisteredInbound } = await import('./senderTriage');
+    const outcome = await triageUnregisteredInbound({
+      clientNumber: params.clientNumber,
+      fromNumber: params.fromNumber,
+      body: params.messageBody,
+    });
+    log.info('Unregistered number — triaged', {
       from: params.fromNumber,
       clientNumber: params.clientNumber,
+      action: outcome.action,
       bodyPrefix: params.messageBody.slice(0, 60),
     });
     return;
