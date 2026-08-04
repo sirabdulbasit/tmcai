@@ -90,8 +90,31 @@ export async function startInboundActivity(
     log.info('Activity fallback suppressed (owner ruling: native presence only)', { ...context, voice });
   };
 
+  /**
+   * FIRST LIMB (2026-08-04) — native presence without webjs's Wid
+   * construction. The library's Chat.sendStateTyping/Recording route through
+   * WWebJS.sendChatstate, which calls the GENERIC createWid() on the chat id;
+   * that throws minified `r` for an `@lid` chat, which is why typing,
+   * recording and clearState all failed identically here while
+   * message.reply() kept working. Same root cause as the voice-note bug.
+   * sendChatStateDirect picks a Wid constructor that matches the domain and
+   * then calls WhatsApp's own ChatStateBridge sender.
+   */
+  const directState = async (want: 'typing' | 'recording' | 'stop'): Promise<boolean> => {
+    const chatId = message?.from ?? chat?.id?._serialized;
+    const client = message?.client;
+    if (!chatId || !client) return false;
+    const { sendChatStateDirect } = await import('./webjsChatStateDirect');
+    const r = await sendChatStateDirect(client, chatId, want);
+    if (r.ok && want !== 'stop') lastState = want;
+    if (r.ok) log.info('native chat state sent directly', { ...context, want, via: r.via });
+    return r.ok;
+  };
+
   const pulse = async () => {
     if (stopped) return;
+    // Try the direct path first — on @lid chats the library path cannot work.
+    if (await directState(voice ? 'recording' : 'typing').catch(() => false)) return;
     try {
       chat ??= await message.getChat();
       if (!stateChat) stateChat = chat;
@@ -145,6 +168,12 @@ export async function startInboundActivity(
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
+      // Clear via the direct path too — clearState() hits the same createWid.
+      if (await directState('stop').catch(() => false)) {
+        try { await message.react(''); } catch { /* reaction clear is best-effort */ }
+        log.info('Activity stopped', { ...context, voice, state: lastState });
+        return;
+      }
       try {
         const target = stateChat || chat || await message.getChat();
         if (typeof target?.clearState === 'function') await target.clearState();
