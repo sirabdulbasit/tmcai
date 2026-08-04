@@ -90,6 +90,66 @@ export interface ModuleProbeResult {
   error?: string;
 }
 
+export interface CallProbeResult {
+  ok: boolean;
+  steps: Record<string, string>;
+  error?: string;
+}
+
+/**
+ * ARGUMENT probe — the step past existence checks.
+ *
+ * The surface probe came back entirely healthy on production: every module
+ * and every method the broken paths call is present. So `r: r` is thrown
+ * when those methods run against REAL arguments, and the most likely
+ * suspect is the identity itself: chats arrive as `<digits>@lid`, and
+ * `WidFactory.createWid` may reject that domain outright — which would
+ * break typing/recording exactly where the archive says it breaks, on
+ * @lid chats, while leaving `message.reply()` (no Wid construction) alive.
+ *
+ * This calls createWid on both spellings and reports the real error. It is
+ * PURE: constructing a Wid sends nothing and mutates nothing. No presence
+ * is emitted, no media fetched, no message sent.
+ */
+export async function probeWebjsCallArguments(
+  client: any,
+  args: { lidId?: string | null; phoneId?: string | null },
+): Promise<CallProbeResult> {
+  const page = client?.pupPage;
+  if (!page || typeof page.evaluate !== 'function') {
+    return { ok: false, steps: {}, error: 'no pupPage on client (not initialized?)' };
+  }
+  try {
+    const steps = await page.evaluate((lidId: string | null, phoneId: string | null) => {
+      const out: Record<string, string> = {};
+      const req = (window as any).require;
+      const tryCall = (label: string, fn: () => any) => {
+        try {
+          const v = fn();
+          out[label] = v == null ? 'returned null/undefined' : `ok: ${typeof v}`;
+        } catch (err: any) {
+          out[label] = `THROWS ${err?.name ?? 'Error'}: ${err?.message ?? String(err)}`.slice(0, 200);
+        }
+      };
+      const WidFactory = (() => { try { return req('WAWebWidFactory'); } catch { return null; } })();
+      out['WidFactory'] = WidFactory ? 'ok' : 'unavailable';
+      if (WidFactory) {
+        if (phoneId) tryCall(`createWid('${phoneId}')  [control]`, () => WidFactory.createWid(phoneId));
+        if (lidId) tryCall(`createWid('${lidId}')  [lid]`, () => WidFactory.createWid(lidId));
+        // Some builds expose a LID-aware constructor; report whether one exists.
+        out['WidFactory keys'] = Object.keys(WidFactory).slice(0, 20).join(',');
+      }
+      return out;
+    }, args.lidId ?? null, args.phoneId ?? null);
+    const broken = Object.values<string>(steps).filter((v) => v.startsWith('THROWS'));
+    log.info('call-argument probe complete', { brokenCount: broken.length });
+    return { ok: broken.length === 0, steps };
+  } catch (error: any) {
+    log.warn('call-argument probe failed', { error: error?.message });
+    return { ok: false, steps: {}, error: String(error?.message ?? error).slice(0, 300) };
+  }
+}
+
 /**
  * Probe the live page. `client` must be an initialized webjs client
  * (its `pupPage` is used). Never throws.

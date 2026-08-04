@@ -5,7 +5,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { probeWebjsModules, PROBED_MODULES, PROBED_SURFACES } from '../src/services/whatsapp/webjsModuleProbe';
+import { probeWebjsModules, probeWebjsCallArguments, PROBED_MODULES, PROBED_SURFACES } from '../src/services/whatsapp/webjsModuleProbe';
 
 const pageWith = (impl: (names: string[]) => any) => ({
   pupPage: { evaluate: async (_fn: any, names: string[]) => impl(names) },
@@ -81,5 +81,44 @@ describe('probe covers the broken paths and stays read-only', () => {
     const route = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'admin', 'whatsappAdminRoutes.ts'), 'utf8');
     expect(route).toContain("router.get('/diagnose-modules'");
     expect(route).toContain('no live webjs client');
+  });
+});
+
+describe('argument probe — createWid against the real @lid identity', () => {
+  const call = (impl: (lid: string | null, phone: string | null) => any) => ({
+    pupPage: { evaluate: async (_fn: any, lid: string | null, phone: string | null) => impl(lid, phone) },
+  });
+
+  it('reports a THROWING createWid as the fault, with the real error', async () => {
+    const r = await probeWebjsCallArguments(call(() => ({
+      WidFactory: 'ok',
+      "createWid('923274572102@c.us')  [control]": 'ok: object',
+      "createWid('173555350261799@lid')  [lid]": 'THROWS TypeError: invalid wid domain',
+    })), { lidId: '173555350261799@lid', phoneId: '923274572102@c.us' });
+    expect(r.ok).toBe(false);
+    expect(r.steps["createWid('173555350261799@lid')  [lid]"]).toContain('invalid wid domain');
+    // The control must still pass, proving it is the domain and not the call.
+    expect(r.steps["createWid('923274572102@c.us')  [control]"]).toContain('ok');
+  });
+
+  it('all calls fine → ok true (theory refuted, say so)', async () => {
+    const r = await probeWebjsCallArguments(call(() => ({
+      WidFactory: 'ok',
+      "createWid('x@c.us')  [control]": 'ok: object',
+      "createWid('y@lid')  [lid]": 'ok: object',
+    })), { lidId: 'y@lid', phoneId: 'x@c.us' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('no live client / exploding page → reported, never thrown', async () => {
+    expect((await probeWebjsCallArguments({}, {})).error).toMatch(/no pupPage/);
+    const boom = { pupPage: { evaluate: async () => { throw new Error('detached'); } } };
+    expect((await probeWebjsCallArguments(boom, {})).error).toContain('detached');
+  });
+
+  it('stays pure — constructs a Wid, never sends presence or media', () => {
+    const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'whatsapp', 'webjsModuleProbe.ts'), 'utf8');
+    const fn = SRC.slice(SRC.indexOf('export async function probeWebjsCallArguments'));
+    expect(fn).not.toMatch(/sendChatState|downloadAndMaybeDecrypt|sendMessage/);
   });
 });

@@ -119,6 +119,45 @@ router.get('/diagnose-modules', async (req: Request, res: Response) => {
   }
 });
 
+// ─── GET /diagnose-call — does createWid reject the @lid domain? ─────────────
+//
+// The surface probe found every module and method healthy, so `r: r` must be
+// thrown by a real ARGUMENT. Prime suspect: chats arrive as <digits>@lid and
+// WidFactory.createWid may reject that domain — which would break
+// typing/recording exactly on @lid chats while leaving message.reply() (no
+// Wid construction) working, matching the archive precisely.
+//
+// The @lid candidate is derived server-side from the auto-learned alias rows
+// in whatsapp_connections, so there is nothing to look up by hand. PURE:
+// constructing a Wid sends nothing, emits no presence, fetches no media.
+router.get('/diagnose-call', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  try {
+    const { getRawClientForDiagnostics } = await import('../../services/whatsapp/WebjsProvider');
+    const client = getRawClientForDiagnostics(cn);
+    if (!client) {
+      return res.status(409).json({ error: 'no live webjs client for this tenant' });
+    }
+    // Synthetic alias rows hold the @lid digits; real rows hold the phone.
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT phone_number, display_name FROM whatsapp_connections
+        WHERE client_number = $1 AND status = 'active' ORDER BY id DESC LIMIT 20`,
+      cn,
+    ).catch(() => [] as any[]);
+    const digits = (v: string) => String(v ?? '').replace(/[^\d]/g, '');
+    const synthetic = rows.find((r) => /^auto-learned/i.test(String(r.display_name ?? '')));
+    const real = rows.find((r) => r !== synthetic && digits(r.phone_number).length >= 10);
+    const lidId = (req.query.lidId as string) || (synthetic ? `${digits(synthetic.phone_number)}@lid` : null);
+    const phoneId = (req.query.phoneId as string) || (real ? `${digits(real.phone_number)}@c.us` : null);
+
+    const { probeWebjsCallArguments } = await import('../../services/whatsapp/webjsModuleProbe');
+    const result = await probeWebjsCallArguments(client, { lidId, phoneId });
+    res.json({ clientNumber: cn, probed: { lidId, phoneId }, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /qr — get current QR code (webjs only, poll every 3s) ───────────────
 router.get('/qr', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
