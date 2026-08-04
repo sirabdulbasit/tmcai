@@ -40,6 +40,15 @@ export type PendingActionKind =
   | 'send_email'
   | 'notify_via_whatsapp'
   | 'delegate_open_item'
+  // Plan-step kinds. These are never a TOP-LEVEL pending action (they need
+  // no preview of their own) but they ARE valid steps inside an action_plan,
+  // which the dispatcher fans out one at a time. `update_open_item` was
+  // missing here AND from the dispatcher's switch, so a confirmed plan of
+  // three dictated priority+deadline updates died with "[Unknown pending
+  // action kind]" on 2026-08-04.
+  | 'update_open_item'
+  | 'add_open_item'
+  | 'update_contact'
   // Compound plan (2026-07-14): several outbound steps previewed and
   // confirmed TOGETHER ("send followup on email AND whatsapp" → one
   // preview, one "send", both dispatch). slots = { steps: [{kind,

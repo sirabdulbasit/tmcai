@@ -98,6 +98,29 @@ export type ComposedAction =
 /** Internal, reversible actions that apply immediately. They do not
  * contact another person and must never enter the outbound preview /
  * "reply send" flow. */
+/**
+ * Kinds `dispatchPendingDirect` can actually EXECUTE as a confirmed-plan step.
+ *
+ * Must mirror that function's `switch` exactly. Being in the action registry
+ * is NOT sufficient: on 2026-08-04 `update_open_item` was registry-valid,
+ * passed plan validation, rendered in the preview and was confirmed by the
+ * owner — then died with "[Unknown pending action kind]", losing three
+ * dictated priority+deadline updates. A test pins this set against the
+ * switch so the two cannot drift apart again.
+ */
+export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
+  'add_open_item',
+  'update_open_item',
+  'update_contact',
+  'schedule_meeting',
+  'reschedule_meeting',
+  'cancel_meeting',
+  'send_email',
+  'notify_via_whatsapp',
+  'delegate_open_item',
+  // 'action_plan' is deliberately absent — nested plans are rejected.
+]);
+
 export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']> = new Set([
   'add_open_item',
   'update_open_item',
@@ -1880,6 +1903,16 @@ export async function compose(
             if (!step?.type || step.type === 'action_plan') { invalid = `step ${i + 1}: missing or nested type`; break; }
             const errs = await validateReasoningAction({ type: step.type, payload: step.payload ?? {} });
             if (errs && errs.length > 0) { invalid = `step ${i + 1} (${step.type}): ${errs[0]}`; break; }
+            // DISPATCHABILITY (2026-08-04): registry presence is not enough.
+            // update_open_item passed validation, rendered in the preview and
+            // was confirmed — then died because dispatchPendingDirect had no
+            // case for it, losing three dictated updates. Never ask the owner
+            // to confirm something that cannot execute; fail here, where it
+            // costs a message, instead of after "yes".
+            if (!DISPATCHABLE_PLAN_STEP_KINDS.has(step.type)) {
+              invalid = `step ${i + 1} (${step.type}): no dispatcher for this action in a confirmed plan`;
+              break;
+            }
           }
           if (invalid) {
             return {
@@ -5525,6 +5558,24 @@ export async function dispatchPendingDirect(
         }
       }
       return { ok: true, artifactId: firstArtifact, message: results.join('\n') };
+    }
+    case 'update_open_item': {
+      // 2026-08-04: this case did NOT exist, so a confirmed plan whose steps
+      // were update_open_item died with "[Unknown pending action kind]" and
+      // three dictated priority+deadline updates were lost. The registry
+      // listed the action, the validator accepted it, the preview rendered
+      // it, the owner confirmed it — and nothing could execute it. Shares
+      // one implementation with the inline path (applyOpenItemUpdate).
+      const { applyOpenItemUpdate } = await import('../openItems/applyOpenItemUpdate');
+      const r = await applyOpenItemUpdate({
+        clientNumber, userId,
+        openItemId: String(slots.openItemId ?? ''),
+        title: slots.title as string | undefined,
+        priority: slots.priority as string | undefined,
+        dueDateRaw: slots.dueDateRaw as string | undefined,
+        note: slots.note as string | undefined,
+      });
+      return { ok: r.ok, artifactId: r.artifactId, message: r.message };
     }
     case 'add_open_item': {
       // Plan-step only (single add_open_item dispatches inline in
