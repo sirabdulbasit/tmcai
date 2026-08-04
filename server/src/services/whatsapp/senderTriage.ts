@@ -72,11 +72,18 @@ export async function gatherConcernEvidence(
         LIMIT 1`,
       clientNumber, digits,
     ).catch(() => [] as any[]),
+    // The contact catalog lives in wiki_pages (page_type='entity_person')
+    // with the number in metadata.phone — NOT in persons/person_facets.
+    // Google Contacts import, WhatsApp ingest and manual entry all land
+    // here, so this is the join that actually sees the owner's address
+    // book. Same status filter as the Contacts screen: archived/deleted
+    // rows are not evidence of concern.
     prisma.$queryRawUnsafe<any[]>(
-      `SELECT pf.id FROM person_facets pf
-         JOIN persons p ON p.id = pf.person_id
-        WHERE p.client_number = $1 AND pf.facet_type = 'phone'
-          AND regexp_replace(pf.facet_value, '[^0-9]', '', 'g') LIKE '%' || $2
+      `SELECT id FROM wiki_pages
+        WHERE client_number = $1
+          AND page_type = 'entity_person'
+          AND status NOT IN ('archived', 'inactive', 'deleted', 'contradicted')
+          AND regexp_replace(COALESCE(metadata->>'phone', ''), '[^0-9]', '', 'g') LIKE '%' || $2
         LIMIT 1`,
       clientNumber, digits,
     ).catch(() => [] as any[]),
@@ -94,7 +101,8 @@ export async function gatherConcernEvidence(
  * Owner request 2026-08-04: the triage ask must name the person, not just
  * the number — "+92… (Hamna Latif) sent…" is answerable at a glance;
  * a bare number is not. Sources, in order of trust: the contact catalog
- * (persons + phone facet), then a WhatsApp connection display name.
+ * (wiki_pages entity_person, phone in metadata.phone — where the Google
+ * Contacts import lands), then a WhatsApp connection display name.
  * Returns null rather than guessing — an unnamed sender is shown as the
  * number alone, never with an invented or closest-match name.
  */
@@ -106,18 +114,24 @@ export async function resolveSenderName(
   if (!variants.length) return null;
   const digits = variants[1];
   try {
+    // Contact catalog = wiki_pages(page_type='entity_person'), phone in
+    // metadata.phone. This is where the Google Contacts import lands, so
+    // a phone synced from the owner's Android address book resolves here.
+    // Highest confidence first; archived/contradicted rows excluded.
     const person = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT COALESCE(p.canonical_name, p.display_name) AS name
-         FROM person_facets pf
-         JOIN persons p ON p.id = pf.person_id
-        WHERE p.client_number = $1 AND pf.facet_type = 'phone'
-          AND regexp_replace(pf.facet_value, '[^0-9]', '', 'g') LIKE '%' || $2
-        ORDER BY pf.verified DESC, pf.confidence DESC
+      `SELECT title AS name
+         FROM wiki_pages
+        WHERE client_number = $1
+          AND page_type = 'entity_person'
+          AND status NOT IN ('archived', 'inactive', 'deleted', 'contradicted')
+          AND regexp_replace(COALESCE(metadata->>'phone', ''), '[^0-9]', '', 'g') LIKE '%' || $2
+        ORDER BY confidence DESC NULLS LAST, last_updated_at DESC
         LIMIT 1`,
       clientNumber, digits,
     );
     const name = String(person[0]?.name ?? '').trim();
-    if (name) return name;
+    // A page titled with the bare number (no name known yet) is not a name.
+    if (name && name.replace(/[^\d]/g, '') !== digits.replace(/[^\d]/g, '')) return name;
 
     const conn = await prisma.$queryRawUnsafe<any[]>(
       `SELECT display_name AS name FROM whatsapp_connections

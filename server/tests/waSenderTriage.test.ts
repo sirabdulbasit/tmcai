@@ -169,3 +169,27 @@ describe('wiring proofs', () => {
     expect(sql).toMatch(/DO \$\$/);
   });
 });
+
+describe('contact lookup targets the REAL catalog store', () => {
+  const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'whatsapp', 'senderTriage.ts'), 'utf8');
+  it('queries wiki_pages entity_person, not persons/person_facets', () => {
+    // The Google Contacts import (googleContactsService.syncAllContactsFromGoogle
+    // → ensureEntityForSender) writes wiki_pages rows with metadata.phone.
+    // Querying persons/person_facets silently found nothing.
+    expect(SRC).toContain("page_type = 'entity_person'");
+    expect(SRC).toContain("metadata->>'phone'");
+    // No QUERY may target persons/person_facets (prose mentioning the
+    // trap is fine — asserting on the bare word caught its own comment).
+    expect(SRC).not.toMatch(/(FROM|JOIN)\s+person_facets/i);
+    expect(SRC).not.toMatch(/(FROM|JOIN)\s+persons\b/i);
+  });
+  it('excludes archived/deleted contacts from both name and evidence', () => {
+    const matches = SRC.match(/status NOT IN \('archived', 'inactive', 'deleted', 'contradicted'\)/g) ?? [];
+    expect(matches.length).toBe(2); // name lookup + evidence join
+  });
+  it('a page titled with the bare number is not treated as a name', async () => {
+    q.mockReset();
+    q.mockResolvedValueOnce([{ name: '+923001234567' }]).mockResolvedValueOnce([]);
+    expect(await resolveSenderName('TMC-0001', '+923001234567')).toBeNull();
+  });
+});
