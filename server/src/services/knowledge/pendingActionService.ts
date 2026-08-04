@@ -25,6 +25,9 @@
  */
 import prisma from '../../db/prisma';
 import crypto from 'crypto';
+import createLogger from '../../utils/logger';
+
+const log = createLogger('pending-action');
 
 /** Action kinds tracked as pending. Internal actions (add_open_item,
  *  set_brain_name) are NOT tracked — they're one-shot, no slot-fill
@@ -151,14 +154,42 @@ export async function startPending(args: {
   missingSlots: string[];
 }): Promise<PendingAction> {
   // Cancel any existing active pending for this user/channel.
-  await (prisma as any).brainPendingAction.updateMany({
-    where: {
-      userId: args.userId,
-      channel: args.channel,
-      status: { in: ACTIVE_STATUSES },
-    },
-    data: { status: 'cancelled', updatedAt: new Date() },
-  });
+  //
+  // DEFENCE IN DEPTH (2026-08-04): the correct DB shape is a PARTIAL unique
+  // index on (user_id, channel) over the active statuses only. Where a
+  // legacy UNIQUE(user_id, channel, status) still exists, this transition
+  // collides with an already-'cancelled' row for the same pair and throws
+  // "Unique constraint failed on the fields: (userid,channel,status)" —
+  // which killed a confirmed task on 08-03 and a batch of three
+  // priority+deadline updates on 08-04, because the caller treats a throw
+  // here as "action plan failed to queue".
+  //
+  // 20260804_pending_unique_any_name repairs the schema (the earlier attempt
+  // dropped a hand-picked constraint name and silently no-op'd). This guard
+  // exists because the schema fix silently doing nothing is exactly the
+  // failure we just lived through: if the transition still collides, retire
+  // the stale rows by DELETING them instead, so the user's work survives.
+  try {
+    await (prisma as any).brainPendingAction.updateMany({
+      where: {
+        userId: args.userId,
+        channel: args.channel,
+        status: { in: ACTIVE_STATUSES },
+      },
+      data: { status: 'cancelled', updatedAt: new Date() },
+    });
+  } catch (err: any) {
+    log.warn('cancel-active collided with a legacy unique constraint — deleting stale rows instead', {
+      userId: args.userId, channel: args.channel, error: String(err?.message ?? err).slice(0, 200),
+    });
+    await (prisma as any).brainPendingAction.deleteMany({
+      where: {
+        userId: args.userId,
+        channel: args.channel,
+        status: { in: ACTIVE_STATUSES },
+      },
+    });
+  }
   const now = new Date();
   const row = await (prisma as any).brainPendingAction.create({
     data: {
