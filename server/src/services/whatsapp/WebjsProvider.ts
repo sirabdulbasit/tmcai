@@ -108,6 +108,17 @@ const SEEN_TTL_MS = 60 * 1000;
 // and timers removed on every settle path.
 const probeInFlightMap = new Map<string, boolean>();
 
+/**
+ * Diagnostics-only accessor for the live webjs client.
+ *
+ * Exposed so the WhatsApp Web internal-module probe can ask the page which
+ * module names still resolve (see webjsModuleProbe). Read-only use ONLY —
+ * senders must go through the tenant sender so the status gates apply.
+ */
+export function getRawClientForDiagnostics(clientNumber: string): any | null {
+  return clients.get(clientNumber) ?? null;
+}
+
 export function isProbeInFlight(clientNumber: string): boolean {
   return probeInFlightMap.get(clientNumber) === true;
 }

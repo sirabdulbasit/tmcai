@@ -93,6 +93,32 @@ router.post('/connect', async (req: Request, res: Response) => {
   }
 });
 
+// ─── GET /diagnose-modules — why media + typing throw `r: r` ─────────────────
+//
+// Read-only probe of WhatsApp Web's internal module names on the LIVE page.
+// whatsapp-web.js calls window.require('WAWebCollections') etc; Meta renames
+// those between builds, and every failure surfaces as the same opaque `r: r`
+// (media download, typing/recording state, reactions). This names the modules
+// that actually moved — and suggests renamed candidates — so the fix targets
+// facts instead of guesses. Sends nothing; mutates nothing.
+router.get('/diagnose-modules', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  try {
+    const { getRawClientForDiagnostics } = await import('../../services/whatsapp/WebjsProvider');
+    const client = getRawClientForDiagnostics(cn);
+    if (!client) {
+      return res.status(409).json({
+        error: 'no live webjs client for this tenant — connect it first, then re-run',
+      });
+    }
+    const { probeWebjsModules } = await import('../../services/whatsapp/webjsModuleProbe');
+    const result = await probeWebjsModules(client);
+    res.json({ clientNumber: cn, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /qr — get current QR code (webjs only, poll every 3s) ───────────────
 router.get('/qr', async (req: Request, res: Response) => {
   const cn = getTargetClient(req);
