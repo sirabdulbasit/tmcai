@@ -451,3 +451,54 @@ record `send_threw` / `echo_unmatched` / `no_echo`.
 source-level guard that `waIdentity.ts` is the ONLY caller of
 `getContactLidAndPhone`, so a fourth recurrence fails CI. Full suite 963
 passed. **Live acceptance on the box still required** — see below.
+
+## Chat 15 — 2026-08-03/04 (delegatee reply dropped at the door; fabricated "degraded" excuse; commands eaten)
+
+**Channel:** WhatsApp (Basit ↔ Nexeo).
+**User did:** dispatched an EXIM status ask to Muhammad Yousaf (11:44 PKT,
+send accepted, no receipt id), then a series of task commands, then asked at
+17:24 whether Yousaf had replied.
+
+**Observed failures:**
+1. Yousaf replied 17 minutes after the ask — inbound
+   `from:+160838254092493` ("Working boss", 07:01:12Z) — and it was dropped
+   as "Unregistered number — dropped (no save, no reply)". A second sender
+   (+211200755376309) was dropped the same way for days. The follow-up
+   worker kept pinging Yousaf daily (03:0x–03:3xZ rows, all
+   `sent_unconfirmed`) while discarding his answers.
+2. Pressed about the missing reply, Brain said twice "my WhatsApp
+   connection is currently degraded" — `whatsapp_config` shows `connected`
+   continuously since 07-31 (last_error_at 2026-07-31T14:04Z). The excuse
+   was FABRICATED system status.
+3. Compound command "Priority High, due date today and delegate to Hamna
+   Latif" was consumed piecemeal by the pending-prompt path: deadline
+   recorded as **2024-03-29**, a junk task literally titled "Priority High"
+   created, delegation dropped. Later "And deligate it to Hamna Latif" →
+   `[status update recorded]`; "Yes ask him" → `[noted]` (no dispatch).
+   Chat 13 class, RECURRENCE despite 741d907.
+4. "[actionplan failed to queue: Unique constraint failed on
+   (userid,channel,status)]" — the confirmed SAP-integration task was lost.
+
+**Root cause fixed in THIS entry's commit (failure 1 only):** modern
+WhatsApp delivers counterpart 1:1 chats under LID identities; the inbound
+door's ONLY real-phone resolver was `message.getContact()`, which broke
+with the same upstream class as chat-state/media (`r: r`). Every @lid
+counterpart therefore degraded to the synthetic phone (`+<lid-digits>`),
+matching no registration row and no delegation thread → silent drop.
+@lid class recurrence **#4**, first time on the counterpart inbound path.
+Fix: `waIdentity.lidToPhone` (shared, cached `getContactLidAndPhone`
+mapping) as the door's second limb; synthetic remains last resort.
+
+**Symptom tags:** `whatsapp-lid-activity-rejected` (counterpart-inbound
+variant), `delegatee-reply-dropped`, `fabricated-system-status`,
+`pending-prompt-eats-command` (recurrence), `pending-action-unique-constraint`.
+
+**Known NOT fixed by this commit (queued):** failure 2 (Brain must cite
+channel health only from a ground-truth block), failure 3 (compound-command
+consumption — needs structural fix, 2nd recurrence), failure 4 (pending
+action unique constraint), duplicate priority prompts, all-day events
+rendered as "5 AM", meeting prep in UTC.
+
+**Verification status:** unit-locked (`lidToPhone` matrix + chat15
+scenario). Live acceptance = Yousaf's next reply captured, thread updated,
+owner notified.

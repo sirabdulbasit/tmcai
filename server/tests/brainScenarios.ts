@@ -46,7 +46,9 @@ import {
   recordProbeFailure, mayReprobe, noteProbeAttempt, getConsecutiveLivenessFailures,
   isSendCapableStatus, EPISODE_PROBE_CAP, __resetTenantLivenessForTests,
 } from '../src/services/whatsapp/webjsLiveness';
-import { normalizeWid, sameWid } from '../src/services/whatsapp/waIdentity';
+import {
+  normalizeWid, sameWid, lidToPhone, __resetWaIdentityCacheForTests,
+} from '../src/services/whatsapp/waIdentity';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -467,6 +469,39 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       }
       expect(isSendCapableStatus('connected')).toBe(true);
       __resetTenantLivenessForTests();
+    },
+  },
+  {
+    id: 'chat15',
+    date: '2026-08-03',
+    userMessage: 'Ask status of EXIM → send → (Yousaf replies "Working boss") → Did u get exim update from Yousaf?',
+    observedFailure:
+      'The delegatee\'s reply arrived as an @lid inbound (+160838254092493) and was dropped as "Unregistered number" because message.getContact() — the door\'s only real-phone resolver — broke upstream, so the sender degraded to a synthetic phone matching no registration row and no delegation thread. The follow-up worker kept pinging him daily while every answer vanished. Brain then fabricated "my WhatsApp connection is currently degraded" (DB: connected since 07-31).',
+    symptomTags: [
+      'whatsapp-lid-activity-rejected', 'delegatee-reply-dropped',
+      'fabricated-system-status', 'pending-prompt-eats-command',
+    ],
+    // 5e3f3c1 created the shared waIdentity module; the door commit that
+    // wires lidToPhone into the @lid inbound branch ships WITH this
+    // scenario (same tree — the wiring assertion below proves it's here).
+    fixCommits: ['5e3f3c1'],
+    assert: async () => {
+      __resetWaIdentityCacheForTests();
+      // The door recovers the real phone for a LID counterpart…
+      const client = { getContactLidAndPhone: async () => [{ lid: '160838254092493@lid', pn: '923028000553@c.us' }] };
+      expect(await lidToPhone(client, '160838254092493@lid')).toBe('+923028000553');
+      // …and when the mapping is unavailable it returns null (caller falls
+      // back to the synthetic) rather than inventing an identity.
+      __resetWaIdentityCacheForTests();
+      expect(await lidToPhone({ getContactLidAndPhone: async () => { throw new Error('r'); } }, '160838254092493@lid')).toBeNull();
+      // Non-LID senders never pass through the mapping.
+      expect(await lidToPhone(client, '923028000553@c.us')).toBeNull();
+      // Door wiring: the @lid inbound branch consults the shared resolver.
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(join(__dirname, '..', 'src', 'services', 'whatsapp', 'WebjsProvider.ts'), 'utf-8');
+      const lidBranch = src.slice(src.indexOf("rawFrom.includes('@lid')"));
+      expect(lidBranch).toContain('lidToPhone');
     },
   },
 ];

@@ -120,6 +120,25 @@ export async function resolveSelfIds(client: any): Promise<string[]> {
 }
 
 /**
+ * Real E.164-ish phone (`+<digits>`) for a LID sender, or null.
+ *
+ * The inbound door needs the COUNTERPART's real number: registration
+ * lookup, delegation-thread correlation and the audit log all key on it.
+ * `message.getContact()` was the door's only resolver and it broke with
+ * the same upstream class as chat-state/media — so every `@lid` sender
+ * degraded to a synthetic phone (`+<lid-digits>`) that matches nothing,
+ * and their messages were dropped as "Unregistered number". That is how
+ * a delegatee's answer ("Working boss", 2026-08-03 07:01Z) vanished
+ * while the follow-up worker kept pinging him daily.
+ */
+export async function lidToPhone(client: any, rawId: string | null | undefined): Promise<string | null> {
+  if (!isLidId(rawId)) return null;
+  const ids = await resolveIdentityIds(client, rawId!);
+  const pn = ids.find((id) => id.endsWith('@c.us'));
+  return pn ? `+${pn.slice(0, -'@c.us'.length)}` : null;
+}
+
+/**
  * The phone-Wid `Chat` equivalent of a possibly-LID chat, or null.
  *
  * Some Chat state helpers (sendStateTyping / sendStateRecording /

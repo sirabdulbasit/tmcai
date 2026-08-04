@@ -12,7 +12,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   normalizeWid, sameWid, isLidId, resolveIdentityIds, resolveSelfIds,
-  resolvePhoneChat, resolveMessageViaPhoneChat, __resetWaIdentityCacheForTests,
+  resolvePhoneChat, resolveMessageViaPhoneChat, lidToPhone,
+  __resetWaIdentityCacheForTests,
 } from '../src/services/whatsapp/waIdentity';
 import {
   newProbeSession, matchProbeEcho, buildProbeMarker, recordOutboundProof,
@@ -185,6 +186,26 @@ describe('phone-chat resolution helpers', () => {
   });
   it('resolveMessageViaPhoneChat returns null for a non-LID message', async () => {
     expect(await resolveMessageViaPhoneChat({ from: PHONE, id: { _serialized: 'M' } })).toBeNull();
+  });
+});
+
+describe('lidToPhone — the inbound door limb (counterpart identity)', () => {
+  const COUNTERPART_LID = '160838254092493@lid';
+  const COUNTERPART_PHONE = '923028000553@c.us';
+
+  it('recovers the real phone for a LID sender', async () => {
+    const client = { getContactLidAndPhone: async () => [{ lid: COUNTERPART_LID, pn: COUNTERPART_PHONE }] };
+    expect(await lidToPhone(client, COUNTERPART_LID)).toBe('+923028000553');
+  });
+  it('returns null for non-LID input (the @c.us fast path is untouched)', async () => {
+    const client = { getContactLidAndPhone: async () => [{ pn: COUNTERPART_PHONE }] };
+    expect(await lidToPhone(client, COUNTERPART_PHONE)).toBeNull();
+    expect(await lidToPhone(client, null)).toBeNull();
+  });
+  it('returns null — never a synthetic — when the mapping is unavailable', async () => {
+    expect(await lidToPhone({}, COUNTERPART_LID)).toBeNull();
+    const broken = { getContactLidAndPhone: async () => { throw new Error('r'); } };
+    expect(await lidToPhone(broken, COUNTERPART_LID)).toBeNull();
   });
 });
 

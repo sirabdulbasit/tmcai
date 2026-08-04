@@ -822,13 +822,24 @@ export class WebjsProvider implements IWhatsAppProvider {
             const contactNumber = contact?.number || contact?.id?.user || '';
             if (contactNumber && !contactNumber.includes('@')) {
               fromNumber = '+' + contactNumber;
-            } else {
-              // Fallback: use synthetic as identity
-              fromNumber = synthLidPhone;
             }
-          } catch {
-            fromNumber = synthLidPhone;
+          } catch { /* fall through to the shared resolver */ }
+          if (!fromNumber) {
+            // Second limb (2026-08-04, @lid class recurrence #4):
+            // getContact() broke with the same upstream failure as
+            // chat-state/media, so every @lid COUNTERPART collapsed to
+            // the synthetic phone — matching no registration row and no
+            // delegation thread. A delegatee's reply was dropped as
+            // "Unregistered number" while the follow-up worker kept
+            // pinging him daily. waIdentity is the shared, cached
+            // resolver; the synthetic remains the last-resort identity.
+            try {
+              const { lidToPhone } = await import('./waIdentity');
+              const realPhone = await lidToPhone(client, rawFrom);
+              if (realPhone) fromNumber = realPhone;
+            } catch { /* resolver is best-effort; synthetic still works */ }
           }
+          if (!fromNumber) fromNumber = synthLidPhone;
         } else {
           fromNumber = '+' + rawFrom.replace(/@.*$/, '');
         }
