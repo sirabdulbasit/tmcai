@@ -45,10 +45,17 @@ export async function downloadInboundMedia(
   // look the message up by string-comparing id._serialized and then run
   // the library's own download sequence.
   try {
-    const serializedId = message?.id?._serialized;
-    if (serializedId && message?.client) {
+    if (!message?.client) {
+      // Log rather than skip in silence — an earlier version returned here
+      // quietly, which is why production showed no direct-limb line at all.
+      log.warn('Direct media lookup skipped — no client on the message object', {
+        clientNumber: options.clientNumber, messageId: options.messageId,
+      });
+    } else {
       const { downloadMediaDirect } = await import('./webjsMediaDirect');
-      const direct = await downloadMediaDirect(message.client, serializedId);
+      const direct = await downloadMediaDirect(message.client, [
+        message?.id?._serialized, message?.id?.id, options.messageId,
+      ]);
       if (direct.media?.data) {
         log.info('Inbound media downloaded (direct collection lookup)', {
           clientNumber: options.clientNumber,

@@ -49,25 +49,42 @@ export interface DirectMediaOutcome {
  */
 export async function downloadMediaDirect(
   client: any,
-  serializedId: string,
+  candidateIds: Array<string | null | undefined>,
 ): Promise<DirectMediaOutcome> {
   const page = client?.pupPage;
   if (!page || typeof page.evaluate !== 'function') {
     return { media: null, reason: 'no live page' };
   }
-  if (!serializedId) return { media: null, reason: 'no message id' };
+  // Accept SEVERAL spellings of the id. Production showed the inbound
+  // message object logging only the short id ("3B5730909A5EE9DA2D45"),
+  // meaning `id._serialized` can be absent on the event object — which both
+  // made an earlier version of this limb skip silently AND is very likely
+  // what the library feeds into Msg.get(), explaining the original throw.
+  const ids = candidateIds.map((v) => String(v ?? '').trim()).filter(Boolean);
+  if (!ids.length) return { media: null, reason: 'no usable message id on the event object' };
 
   try {
-    const out = await page.evaluate(async (msgId: string) => {
+    const out = await page.evaluate(async (msgIds: string[]) => {
       const req = (window as any).require;
       const Msg = req('WAWebCollections').Msg;
 
       // STRING comparison only. Msg.get()/getMessagesById() are deliberately
       // avoided: they parse the id, and a @lid id throws in the parser.
+      // Match on the serialized form OR the short id, since the event object
+      // and the collection model do not always agree.
       const models: any[] = (typeof Msg.getModelsArray === 'function'
         ? Msg.getModelsArray() : Msg.models) ?? [];
-      const msg = models.find((m: any) => (m?.id?._serialized ?? '') === msgId);
-      if (!msg) return { error: 'message not in page collection' };
+      const hit = (m: any) => {
+        const ser = String(m?.id?._serialized ?? '');
+        const short = String(m?.id?.id ?? '');
+        return msgIds.some((id) => id === ser || (!!short && id === short) || (!!ser && ser.endsWith(`_${id}`)));
+      };
+      const msg = models.filter(hit).pop();
+      if (!msg) {
+        return {
+          error: `message not in page collection (searched ${models.length} models for ${msgIds.join(' | ')})`,
+        };
+      }
       if (!msg.mediaData) return { error: 'message has no mediaData' };
       if (msg.mediaData.mediaStage === 'REUPLOADING') {
         return { error: 'media expired (REUPLOADING)' };
@@ -107,7 +124,7 @@ export async function downloadMediaDirect(
       } catch (err: any) {
         return { error: `download failed: ${err?.message ?? String(err)}` };
       }
-    }, serializedId);
+    }, ids);
 
     if (!out || out.error || !out.data) {
       return { media: null, reason: out?.error ?? 'no data returned' };
