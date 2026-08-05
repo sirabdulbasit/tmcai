@@ -30,6 +30,29 @@ let running = false;
 
 const TASKS: ActionTask[] = [
   {
+    // DEF-054 — the queue's dispatcher. Every other task here PRODUCES
+    // prompts; until 2026-08-05 nothing consumed them, so notifications were
+    // written for the owner and expired unread 30 minutes later by the task
+    // directly below this one.
+    //
+    // Cadence is set below the governor's own tick interval (server.ts runs it
+    // every 5 min, first tick 3 min after boot) so this task is due on EVERY
+    // tick. Effective delivery latency is therefore up to ~5 minutes, not 2 —
+    // the number here only means "never skip a tick". Stating it plainly
+    // because a comment that overstates its own guarantee is how the empty
+    // promise regex ended up documented as "kept in sync" while it was not.
+    //
+    // Fast on purpose: a direct answer to a question the owner asked is
+    // something he is actively waiting on. sendNextPrompt's in-flight guard
+    // means a short cadence cannot produce a burst — one prompt per user until
+    // he replies.
+    id: 'brain_prompt_dispatch', cadenceMs: 2 * MINUTE,
+    run: async () => {
+      const { dispatchDuePrompts } = await import('../services/brainPrompts/brainPromptQueueService');
+      return dispatchDuePrompts();
+    },
+  },
+  {
     id: 'prompt_expiry', cadenceMs: 30 * MINUTE,
     run: async () => {
       const { expireStalePrompts } = await import('../services/brainPrompts/brainPromptQueueService');

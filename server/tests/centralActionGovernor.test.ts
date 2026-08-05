@@ -4,6 +4,10 @@ import { executeActionTaskSet, getCentralActionManifest } from '../src/jobs/cent
 describe('central Action Center governor', () => {
   it('centrally owns every action-lifecycle concern', () => {
     expect(getCentralActionManifest().map((task) => task.id)).toEqual([
+      // DEF-054: the queue's CONSUMER. Every other task here produces prompts;
+      // until 2026-08-05 nothing delivered them, so they were written for the
+      // owner and expired unread by 'prompt_expiry' below.
+      'brain_prompt_dispatch',
       'prompt_expiry',
       'new_item_gap_prompts',
       'draft_slot_completion',

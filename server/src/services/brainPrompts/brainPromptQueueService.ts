@@ -287,6 +287,48 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
 }
 
 /**
+ * DEF-054 — DRAIN THE QUEUE. Until 2026-08-05 nothing did.
+ *
+ * `sendNextPrompt` was complete, correct, and called from five smoke-test
+ * scripts and nowhere else. Every production path — delegation replies, stale
+ * connectors, trust promotions, gap prompts — ENQUEUED, and the only job that
+ * touched the queue was `expireStalePrompts`, which DELETES rows after 30
+ * minutes. So notifications were written for the owner and expired unread.
+ *
+ * The owner found it the way it deserved to be found: he asked Brain to ask
+ * Hamna a question, and asked what would happen when she answered. Nothing
+ * would have. "A question you can't get the answer to is worse than not
+ * asking — it looks like it worked."
+ *
+ * A producer with no consumer is the third instance of that exact shape in one
+ * day (DEF-023's dispatcher-less action kind, autonomous_outbound's missing
+ * consumer, this). Writing the row is not delivering the message.
+ *
+ * One prompt per user per sweep is deliberate, not a limitation:
+ * `sendNextPrompt` refuses while a conversation is in flight, so the queue
+ * advances as the owner answers rather than arriving as a burst.
+ */
+export async function dispatchDuePrompts(): Promise<{ users: number; sent: number }> {
+  const rows = await prisma.brainPromptQueue.findMany({
+    where: { state: 'queued' },
+    select: { userId: true },
+    distinct: ['userId'],
+    take: 200,
+  });
+  let sent = 0;
+  for (const { userId } of rows) {
+    try {
+      // Failure for one user must never stop the sweep for the others.
+      if (await sendNextPrompt(userId)) sent += 1;
+    } catch (error: any) {
+      log.warn('prompt dispatch failed for user', { userId, error: error?.message?.slice(0, 200) });
+    }
+  }
+  if (sent > 0) log.info('prompt queue drained', { users: rows.length, sent });
+  return { users: rows.length, sent };
+}
+
+/**
  * Auto-skip prompts whose expires_at has passed. Returns count of
  * skipped rows. Cron caller (every 15m or so) advances the queue when
  * the user has gone silent — otherwise a single unanswered prompt would
