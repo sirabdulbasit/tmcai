@@ -1153,7 +1153,12 @@ Schema:
         | { "type": "add_open_item",
             "title": string,
             "dueDate"?: "YYYY-MM-DD",
-            "note"?: string }
+            "note"?: string,
+            // Set ONLY when the user is waiting on an answer from this person.
+            // Creates the item, assigns it, sends it, and opens the thread that
+            // lets their reply be recognised and reported back. See the
+            // "TELLING is not ASKING" rule above.
+            "delegateeCandidateId"?: string }
         | { "type": "delegate_open_item",
             "openItemId": string,         // MUST be an id from the "Open items snapshot" block above
             "delegateeEmail": string,     // MUST come from a candidate in the "Candidates for X" block above
@@ -1214,6 +1219,12 @@ When to emit \`action\`:
   - Allowed: sending FROM the Nexeo tenant notifier number, with an explicit introduction ("Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know: ..."). Recipient sees a different number, knows an assistant is writing, sees the message clearly attributed.
   - Use \`notify_via_whatsapp\` when the user EXPLICITLY asks to inform/notify/tell someone — e.g. "tell Asad I'll be in office", "let Yousuf know the meeting moved", "ping Debby that the plan is ready". The dispatcher auto-prepends the introduction; you write only the substantive message in \`message\`.
   - Do NOT use \`notify_via_whatsapp\` to "reply" on the user's existing WhatsApp thread with a contact — that creates split-identity confusion (contact sees half the thread from user's number, half from Nexeo's). For reply intent, draft for the user to copy/paste instead.
+
+- **TELLING someone is not the same as ASKING them. If the user is waiting on an answer, the ask must be TRACKED.**
+  - \`notify_via_whatsapp\` is fire-and-forget: it delivers a statement and keeps no record that anything is outstanding. Correct for "tell Asad I'll be in office" — nothing is expected back.
+  - When the user wants an ANSWER — "ask Hamna whether she's coming to office tomorrow", "find out from Yousuf if the invoice cleared", "check with Debby whether Friday works" — emit \`add_open_item\` with \`title\` = the question and \`delegateeCandidateId\` = that person. ONE action: it records the question, assigns it to them, sends it, and opens the thread that lets their reply be recognised and reported back to the user.
+  - Use \`notify_via_whatsapp\` for a question ONLY if the user explicitly says not to track it. On 2026-08-05 the user asked "Ask Hamna that will she come office tomorrow", this was sent as a bare notify, and when she replied there was nothing to attach her answer to — the user got no answer to a question he had asked. An untracked question is a dropped question.
+  - The test is simple: **after this message goes out, is the user waiting on something?** If yes, it is an open item assigned to that person. If no, it is a notify.
 
 - **Identity-by-channel: emails go to email addresses, meetings go to email addresses, WhatsApp replies are forbidden.** When a contact has BOTH email and phone in the Candidates block (most TMC contacts do), pick by the channel the action requires:
   - send_email \`to\` → MUST be the email address (the one with @), never the phone number.
@@ -5307,7 +5318,7 @@ Output ONLY a JSON object — no prose, no explanation, no markdown:
 }
 
 ActionSchema is one of these (set "type" to one of these values):
-- { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string }
+- { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string, "delegateeCandidateId"?: string }  // delegateeCandidateId ONLY when an answer is expected back
 - { "type": "delegate_open_item", "openItemId": string, "delegateeEmail": string, "delegateeName": string, "note"?: string }
 - { "type": "schedule_meeting", "title": string, "whenIso": "YYYY-MM-DDTHH:MM", "durationMin"?: number, "attendeeEmails": string[], "attendeeNames": string[], "note"?: string }
 - { "type": "cancel_meeting", "eventId": string, "titleHint"?: string, "reason"?: string }
@@ -5749,7 +5760,12 @@ export async function renderPlanPreview(
         break;
       }
       case 'add_open_item':
-        line = `Add open item "${s.title ?? ''}"`;
+        // DEF-048: an addressed item sends a message to a person, so the
+        // preview must say so. "Add open item" alone would understate what
+        // approving it actually does (DEF-018's rule: name what changes).
+        line = (s.delegateeCandidateId || s.delegateeAdHocEmail)
+          ? `Ask ${s.delegateeName ?? s.delegateeCandidateId ?? s.delegateeAdHocEmail}: "${s.title ?? ''}" (tracked — I'll report their answer)`
+          : `Add open item "${s.title ?? ''}"`;
         break;
       case 'cancel_meeting':
         line = `Cancel meeting ${s.titleHint ?? s.eventId ?? ''}`;
@@ -6370,7 +6386,17 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     if (!title) return null;
     const dueDateRaw = typeof r.dueDateRaw === 'string' && r.dueDateRaw.trim() ? r.dueDateRaw.trim() : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'add_open_item', title, dueDateRaw, note };
+    // DEF-048: an item may be ADDRESSED to someone ("ask Hamna whether she's
+    // coming tomorrow"). Dropping these here would silently turn a tracked ask
+    // back into an untracked note — the model would emit the field, the
+    // normaliser would eat it, and nothing downstream could tell the
+    // difference. The delegatee is still grounded by actionTargetGuard before
+    // anything is created.
+    const delegateeCandidateId = typeof r.delegateeCandidateId === 'string' && r.delegateeCandidateId.trim()
+      ? r.delegateeCandidateId.trim() : undefined;
+    const delegateeAdHocEmail = typeof r.delegateeAdHocEmail === 'string' && r.delegateeAdHocEmail.trim()
+      ? r.delegateeAdHocEmail.trim() : undefined;
+    return { type: 'add_open_item', title, dueDateRaw, note, delegateeCandidateId, delegateeAdHocEmail };
   }
   if (type === 'update_open_item') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';

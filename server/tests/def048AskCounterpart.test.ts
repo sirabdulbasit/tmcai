@@ -125,3 +125,40 @@ describe('DEF-048 — assignment has exactly one implementation', () => {
     expect(CODE).toMatch(/ok:\s*false[\s\S]{0,200}could not assign it/);
   });
 });
+
+/**
+ * The chain from "ask Hamna…" to a tracked item has FOUR links, and the whole
+ * thing is dead if any one is missing. On 2026-08-05 17:17 the capability was
+ * deployed and unused: the model chose notify_via_whatsapp, no thread opened,
+ * and when Hamna replied there was nothing to attach her answer to.
+ *
+ * Link 3 was the quiet one — `normaliseAction` rebuilt the action field by
+ * field and dropped `delegateeCandidateId` on the floor. The model could have
+ * emitted it perfectly and the ask would still have become an untracked note,
+ * with nothing anywhere reporting a problem.
+ */
+describe('DEF-048 — every link from "ask X" to a tracked item', () => {
+  const PROMPT = SRC; // prompt text lives in comments/templates — do NOT strip
+
+  it('1. the prompt distinguishes telling from asking', () => {
+    expect(PROMPT).toMatch(/TELLING someone is not the same as ASKING/);
+    expect(PROMPT).toMatch(/after this message goes out, is the user waiting on something/);
+  });
+
+  it('2. both advertised schemas expose delegateeCandidateId', () => {
+    const occurrences = (PROMPT.match(/"delegateeCandidateId"\?: string/g) ?? []).length;
+    expect(occurrences, 'the model can only emit a field the schema declares').toBe(2);
+  });
+
+  it('3. normaliseAction preserves it instead of dropping it', () => {
+    const body = CODE.slice(CODE.indexOf("if (type === 'add_open_item')"));
+    const branch = body.slice(0, body.indexOf('\n  if (type ==='));
+    expect(branch).toContain('delegateeCandidateId');
+    expect(branch).toMatch(/return \{ type: 'add_open_item',[^}]*delegateeCandidateId/);
+  });
+
+  it('4. the preview says a person will be contacted, not just "add open item"', () => {
+    expect(CODE).toMatch(/Ask \$\{s\.delegateeName/);
+    expect(CODE).toMatch(/I'll report their answer/);
+  });
+});
