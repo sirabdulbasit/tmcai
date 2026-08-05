@@ -35,11 +35,29 @@ export interface ValidationOutcome {
   replacement?: string;                 // present when a block-severity rule wins
 }
 
-// Same regex used by the inline empty-promise guard (Sprint 1+). Kept
-// in sync there for compatibility; this validator is the canonical
-// definition going forward.
-const EMPTY_PROMISE_RE =
-  /\b(?:i'?ve|i\s+have|i'?ll|i'?m|i\s+just|i\s+already|i)\s+(?:delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|set|setting|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change)\b|\bdone\s+—|\b(?:kar\s+diya|kar\s+di\s+hai|ho\s+gaya|ho\s+gai)\b/i;
+// ── DEF-041 (2026-08-05): this file used to keep its OWN copy. ──────────
+//
+// The comment above it read "Same regex used by the inline empty-promise
+// guard. Kept in sync there for compatibility; this validator is the canonical
+// definition going forward." Both halves of that were false. The copies had
+// diverged, and the one that actually runs at the egress — this one — was the
+// WEAKER of the two. It was first-person-only: no `i will`, no passive voice,
+// no headless past tense.
+//
+// So it matched NEITHER of the two sentences in the 14:07 incident:
+//     "I will delegate all four unassigned items to Hamna Latif Bhutta now."
+//     "These items have been delegated to you."
+// The second is the literal body of the email sent to a colleague. DEF-002
+// widened the composer's copy to cover passive voice in July precisely so that
+// "The email has been sent to Asad" could not recur — that widening never
+// reached the copy on the live path.
+//
+// There is now ONE definition, owned by brainComposer, and
+// `def041ReasoningExemption.test.ts` fails the build if a second appears.
+// Third time today this shape has bitten (DEF-039 duplicated guards,
+// DEF-041 duplicated regex): a protection with two implementations has one
+// real implementation and one comforting fiction.
+import { EMPTY_PROMISE_RE } from './brainComposer';
 
 // Fabricated process / escalation language. Per rule H7a in the
 // prompt — Brain must never invent teams/channels/processes that
@@ -111,36 +129,56 @@ export function validateBeforeRender(
 
   // 1. EMPTY PROMISE — completion claim without successful action.
   //
-  // Skip this check when the turn was decided by reasoning. Reasoning
-  // emits structured output — its answer text is either a clarifying
-  // question, a preview template, a templated decline, or an
-  // act-fallback string. Phrases like "I delegate" or "should I
-  // schedule" can legitimately appear in those (e.g. "Which Yousaf
-  // should I delegate to?") and they are NOT hallucinated completion
-  // claims. Observed 2026-05-22: reasoning emitted a perfectly valid
-  // ask question for yousaf-delegate clarification; this regex
-  // overwrote it with the generic empty-promise message. The regex
-  // was tuned for the legacy LLM's free-form prose, not reasoning's
-  // structured output — gate accordingly.
+  // The original false-positive this guard had to avoid is real and still
+  // avoided: on 2026-05-22 reasoning emitted a valid clarifying question
+  // ("Which Yousaf should I delegate to?") and the regex overwrote it with a
+  // generic empty-promise message. Phrases like "should I delegate" belong in
+  // questions and preview templates and are NOT completion claims.
   //
-  // Additional skip: actionResult.message ∈ structured states from
-  // reasoning or inline guards (clarification_needed, preview_required,
-  // schema_violation, declined, empty_promise_blocked). These are
-  // honest "no action attempted / preview shown" signals, not empty
-  // promises.
-  const sourceIsReasoning = result.source === 'reasoning';
+  // What changed on 2026-08-05 (DEF-041) is HOW that is avoided. It used to be
+  // avoided by exempting the whole reasoning code path; it is now avoided by
+  // looking at the state of the turn — a structured state (clarification,
+  // preview, decline, schema violation) or a successful dispatch. See below.
+  // ── DEF-041 (2026-08-05) — this rule was switched OFF on the live path ──
+  //
+  // It used to read:
+  //     const emptyPromiseEligible = !sourceIsReasoning && !hasStructuredState;
+  // which disabled the empty-promise rule for EVERY reasoning-sourced answer —
+  // and reasoning has been the default path since `f8ff5a1`. At 14:07 on
+  // 2026-08-05 Brain said "I will delegate all four unassigned items to Hamna
+  // Latif Bhutta now", delegated nothing, and then emailed Hamna from the
+  // owner's own address stating the items HAD been delegated. The rule that
+  // exists to catch precisely that was reached, and skipped.
+  //
+  // The exemption was added for a real reason: reasoning emits previews,
+  // clarifying questions and templated act-answers that legitimately contain
+  // "delegate"-class verbs, and regex-gating those produced false blocks.
+  // But every one of those cases is already covered WITHOUT consulting the
+  // code path:
+  //     preview / clarification / decline → hasStructuredState (below)
+  //     a real dispatch                   → actionResult.ok === true (below)
+  // The path check was therefore redundant with the two conditions on either
+  // side of it, and the redundancy is what let a fabricated promise reach a
+  // real person.
+  //
+  // RULE: judge the STATE of the turn, never the code path that produced it.
+  // A path-shaped exemption silently widens every time a new path is added.
   const structuredStates = new Set([
     'clarification_needed', 'preview_required', 'declined',
     'empty_promise_blocked', 'malformed_action',
   ]);
+  // Prefix-matched markers: these carry a detail suffix (`plan_invalid: …`).
+  // All of them already render as bracketed system markers, never as prose
+  // claiming work was done, so exempting them cannot hide a fabrication.
+  const structuredPrefixes = ['schema_violation', 'plan_invalid', 'plan_persist_failed'];
   const hasStructuredState =
     !!result.actionResult &&
     typeof result.actionResult.message === 'string' &&
     (
       structuredStates.has(result.actionResult.message) ||
-      result.actionResult.message.startsWith('schema_violation')
+      structuredPrefixes.some((p) => result.actionResult!.message.startsWith(p))
     );
-  const emptyPromiseEligible = !sourceIsReasoning && !hasStructuredState;
+  const emptyPromiseEligible = !hasStructuredState;
   if (
     emptyPromiseEligible &&
     EMPTY_PROMISE_RE.test(answer) &&
