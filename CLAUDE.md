@@ -31,6 +31,17 @@ architecture map. This file holds the short-form stack notes only.
 - **Product name is "Nexeo"** — never MyOS / HaseebOS / "TMC AI" in new work (internal
   `brain_*` table and route names stay as-is for stability).
 
+## Defect ledger — read BEFORE fixing any Brain defect
+
+`server/docs/brain_evaluation_ledger.md` is the single view of what broke, whether it was
+really fixed, and what is coming back. It carries the OPEN defect queue (§4) — previously
+that queue lived only in chat messages and was lost whenever a session ended.
+
+Rules: log an owner-reported issue in §4 the SAME session; grep §2's recurrence table
+before fixing (a tag already there means the earlier fix did not close the class —
+escalate to a structural fix); a defect reaches §3 only with root cause + fix commit +
+executable scenario + live acceptance for messaging paths.
+
 ## Regression discipline (survives the pipeline removal)
 
 Every Brain bug reported from a real conversation gets BOTH:

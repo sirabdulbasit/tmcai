@@ -5,7 +5,8 @@
 > Deeper canonical docs: `server/docs/brain_architecture.md` (single source of truth for
 > the Brain), `server/docs/security_isolation_model.md`, `server/docs/capability_matrix.md`,
 > `server/docs/background_jobs_inventory.md`, `server/docs/brain_chat_archive.md`
-> (incident/regression log — read before re-fixing any Brain or WhatsApp bug).
+> (incident/regression log — read before re-fixing any Brain or WhatsApp bug),
+> `server/docs/brain_evaluation_ledger.md` (defect ledger: recurrence table + OPEN queue).
 
 ## What this application does
 
