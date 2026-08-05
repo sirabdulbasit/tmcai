@@ -79,6 +79,18 @@ export async function recordOutboundAck(input: RecordAckInput): Promise<boolean>
       data: { status },
     });
     log.info('delivery ack recorded', { providerId: input.providerId.slice(-12), status });
+
+    // Owner, 2026-08-05: "when received then just update me that 'Message sent
+    // to Hamna'". Recording the tick is not telling him about it — the gap he
+    // found by asking "will brain notify me when message will be received by
+    // other?".
+    //
+    // On DELIVERED only. `sent` means it left our side and he saw that at send
+    // time; `read` would be a second ping about one message and is available
+    // from the ledger on request. One notice per message.
+    if (status === 'delivered') {
+      void notifyOwnerOfDelivery(input.clientNumber, input.providerId).catch(() => undefined);
+    }
     return true;
   } catch (error: any) {
     log.warn('ack record failed', { error: error?.message?.slice(0, 200) });
@@ -102,4 +114,39 @@ export async function getDeliveryState(providerId: string): Promise<{
   } catch {
     return null;
   }
+}
+
+/**
+ * Tell the owner his message landed.
+ *
+ * The recipient's name is NOT on `whatsapp_messages` — that table records who
+ * SENT and never who received, which is the hole DEF-052 opened with. The name
+ * comes from the dispatch artifact keyed on the same provider id: the ledger
+ * knows, because that is where the target was recorded at send time.
+ *
+ * Silent when the artifact is missing. A delivery notice naming nobody is
+ * worse than none, and this must never invent a recipient (DEF-041's class).
+ */
+async function notifyOwnerOfDelivery(clientNumber: string, providerId: string): Promise<void> {
+  const artifact = await (prisma as any).brainActionArtifact.findFirst({
+    where: { clientNumber, artifactExtId: providerId },
+    select: { userId: true, payload: true },
+  }).catch(() => null);
+  if (!artifact?.userId) return;
+
+  const payload = (artifact.payload ?? {}) as Record<string, any>;
+  const full = typeof payload.recipientName === 'string' ? payload.recipientName.trim() : '';
+  if (!full) return; // never "delivered to someone"
+  const first = full.split(/\s+/)[0];
+
+  const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
+  await enqueueBrainPrompt({
+    userId: artifact.userId,
+    clientNumber,
+    question: `Message delivered to ${first}.`,
+    criticality: 'routine',
+    // One notice per message, forever — a redelivered ack must not re-ping.
+    dedupKey: `wa_delivered:${providerId}`,
+    metadata: { source: 'delivery_ack', providerId, recipientName: full },
+  });
 }
