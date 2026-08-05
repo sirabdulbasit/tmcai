@@ -108,6 +108,24 @@ export type ComposedAction =
  * dictated priority+deadline updates. A test pins this set against the
  * switch so the two cannot drift apart again.
  */
+/**
+ * DEF-032 — a visible notice when a NEW preview displaced an unconfirmed one.
+ *
+ * Silent displacement made "send" mean something the owner never saw: a
+ * dictated 5-step plan was replaced by a canned test email, and his "send"
+ * dispatched the email to a real colleague. The cancellation is correct; the
+ * silence was not.
+ */
+export function displacementNotice(
+  replaced: { actionKind: string; stepCount: number } | undefined,
+): string {
+  if (!replaced) return '';
+  const what = replaced.stepCount > 1
+    ? `a ${replaced.stepCount}-step plan`
+    : `a pending ${replaced.actionKind.replace(/_/g, ' ')}`;
+  return `\u26a0\ufe0f Heads up: this replaces ${what} you hadn't confirmed yet — "send" now applies to what's below, not that.\n\n`;
+}
+
 export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
   'add_open_item',
   'update_open_item',
@@ -1190,7 +1208,8 @@ When to emit \`action\`:
   - The disclosure footer "Sent by Nexeo, <user>'s AI assistant" is appended automatically by the dispatcher — do NOT include it in your \`body\`.
   - **PREVIEW BEFORE SENDING for fresh outbound.** Per Rule D of conversational rules: when the user hasn't seen the draft yet, your first reply states {to, subject, body} in your \`answer\` text and DOES NOT emit \`action\`. Emit the structured action only on the user's next-turn confirmation ("yes send", "go ahead", "send it"). For obvious one-step requests where the user already gave the exact recipient + topic in this same message, you may emit directly — but only when ambiguity is zero.
 
-  - **Test emails are a one-shot exception.** When the user says "send a test email to X" / "send test email to X@y" / similar, you have permission to auto-fill subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — emit \`send_email\` on the FIRST turn. Do NOT ask "want me to send?" — a test email is its own confirmation. The user is checking the channel; they don't care about wording.
+  - **Test emails are a one-shot exception — and ONLY when the user literally says "test".** When the user's own words contain "test email" / "test message" / "test mail" naming a recipient, you may auto-fill subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." and emit \`send_email\` on the FIRST turn. Do NOT ask "want me to send?" — a test email is its own confirmation.
+  - **NEVER apply the test-email template to any other request.** On 2026-08-05 the user said "You email them" about three delegated actionable items and received the canned TEST email instead — sent to a real colleague under the user's own name. That is content fabrication and it damaged trust. If the user asks you to email someone but has NOT said what to write, you MUST ask what the message should say, or compose it from the ACTUAL subject under discussion (the open items, the delegation, the thread). A vague "email them" is never a test email.
 
   - **Confirmation turn ("yes", "go ahead", "send it") MUST emit the action.** If your previous turn previewed an email or asked "want me to send?", the user's confirmation OBLIGATES you to emit \`send_email\` this turn. Forbidden alternatives:
     - "Alright, I'm sending it now." (prose claiming you sent without emitting) — that's the empty-promise failure mode.
@@ -1924,6 +1943,7 @@ export async function compose(
           }
           const planSteps = steps.map((s) => ({ kind: s.type, slots: s.payload ?? {} }));
           const preview = await renderPlanPreview(planSteps, userId, clientNumber);
+          let previewWithNotice = preview;
           try {
             const { startPending, hashProposedAction, markPreviewShown } = await import('./pendingActionService');
             const pending = await startPending({
@@ -1934,6 +1954,8 @@ export async function compose(
               missingSlots: [],
             });
             await markPreviewShown(pending.id, hashProposedAction('action_plan', { steps: planSteps }));
+            const notice = displacementNotice((pending as any).replaced);
+            if (notice) previewWithNotice = notice + preview;
             console.info('[compose] action_plan preview persisted', {
               userId, clientNumber, pendingId: pending.id, stepKinds: planSteps.map((s) => s.kind),
             });
@@ -1947,7 +1969,7 @@ export async function compose(
             };
           }
           return {
-            answer: preview,
+            answer: previewWithNotice,
             citedPageIds: [], gaps: [], sources: [], action: null,
             actionResult: { ok: false, message: 'preview_required' },
             source: 'reasoning',
@@ -5152,7 +5174,7 @@ Slot grounding rules (MUST follow):
 - openItemId MUST come from the Open Items snapshot.
 - eventId for cancel_meeting / reschedule_meeting MUST come from the Recent action artifacts block. If no matching artifact exists, set action=null and missing_slot="eventId" (Brain will ask the user which meeting).
 - whenIso resolves relative dates ("tomorrow", "Friday") against today's date.
-- For test emails: if user said "test email to <addr>", use subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — these are the canonical test defaults.
+- For test emails: ONLY if the user's own words contain "test email"/"test message"/"test mail", use subject="Test email from Nexeo" and body="This is a test message from your AI assistant. If you received this, the integration is working." — these are the canonical test defaults. For ANY other email request, never substitute this template: compose from the actual subject under discussion, or ask what to write. (2026-08-05: "You email them" about three delegated items sent the canned test email to a real colleague under the user's own name.)
 - A user message like "first one" / "the first" / "option 1" maps to candidate #1 in the Candidates block.
 
 If the user's CURRENT message is a slot-fill or disambiguation answer to YOUR previous question:

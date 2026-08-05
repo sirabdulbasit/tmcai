@@ -161,7 +161,35 @@ export async function startPending(args: {
   actionKind: PendingActionKind;
   slots: Record<string, unknown>;
   missingSlots: string[];
-}): Promise<PendingAction> {
+}): Promise<PendingAction & { replaced?: { actionKind: string; stepCount: number } }> {
+  // DEF-032 (2026-08-05): what is about to be DISPLACED must be reported.
+  //
+  // One-active-pending-per-channel means a new proposal silently cancels an
+  // unconfirmed one. Production: the owner dictated a 5-step plan (update +
+  // delegate three items), saw a correct preview, then asked a follow-up
+  // question. That created a NEW pending action, which cancelled the plan. His
+  // next "send" confirmed the replacement — a canned test email to a real
+  // colleague — while the plan he had actually dictated was gone. He then spent
+  // five more minutes discovering nothing had been delegated.
+  //
+  // The cancellation itself is correct; doing it INVISIBLY is not. The caller
+  // uses this to warn the owner that "send" no longer means what they saw.
+  const displaced = await (prisma as any).brainPendingAction.findFirst({
+    where: {
+      userId: args.userId,
+      channel: args.channel,
+      status: { in: ACTIVE_STATUSES },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { actionKind: true, slots: true },
+  }).catch(() => null);
+  const replaced = displaced
+    ? {
+      actionKind: String(displaced.actionKind),
+      stepCount: Array.isArray((displaced.slots as any)?.steps)
+        ? (displaced.slots as any).steps.length : 1,
+    }
+    : undefined;
   // Cancel any existing active pending for this user/channel.
   //
   // DEFENCE IN DEPTH (2026-08-04): the correct DB shape is a PARTIAL unique
@@ -215,7 +243,7 @@ export async function startPending(args: {
       expiresAt: new Date(now.getTime() + await ttlMsFor(args.userId)),
     },
   });
-  return rowToPending(row);
+  return { ...rowToPending(row), replaced };
 }
 
 /** Merge new slot data into an existing pending. Updates missingSlots
