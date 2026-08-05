@@ -1898,40 +1898,69 @@ export async function compose(
   // — so what executes is exactly what was displayed, never a re-derivation.
   {
     const confirmChannel: 'web' | 'whatsapp' = opts.channel ?? 'web';
-    const q = question.trim().toLowerCase().replace(/[.!]+$/, '');
-    const isBareConfirm = q.length <= 30
-      && /^(yes|yep|yeah|send|send it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|sure|approve|approved|ship\s+it|please\s+do|kar\s+do|theek\s+hai|haan)$/i.test(q);
-    // ── DEF-055 (2026-08-05 18:00) — "yes" MUST answer the LAST question ──
+    const q = question.trim();
+
+    // ── DEF-056 (2026-08-05) — THE BRAIN DECIDES WHAT "yes" REFERS TO ──
     //
-    // A bare confirmation is not a licence to dispatch any stored preview. At
-    // 18:00 the owner was asked "I can record a note on her contact profile —
-    // would you like me to do that?", answered "yes", and this guard found a
-    // STALE preview_shown pending from the 17:17 Hamna flow and sent that
-    // instead. A WhatsApp went to a third party that he had not authorised in
-    // that turn, and the note he did ask for was never written.
+    // This guard used to answer "is this a confirmation?" with a regex over a
+    // fixed vocabulary (yes|send|ok|haan|kar do…), and then, after DEF-055,
+    // a second regex over Brain's last message. Both were hardcoded judgements
+    // sitting exactly where the owner's standing rule forbids them: a decision
+    // boundary, not a prefilter.
     //
-    // My DEF-035 guard caused it. It asked two questions — is this a bare
-    // confirmation, and does a preview exist — and never the one that matters:
-    // IS THAT PREVIEW WHAT BRAIN JUST ASKED ABOUT? A human assistant who asks
-    // "shall I add a note?" and hears "yes" does not send yesterday's email.
+    // They also failed, twice, in the way hardcoded judgement always fails —
+    // by being confidently wrong about meaning:
+    //   17:17  "yes" matched the vocabulary and dispatched a stale preview to a
+    //          third party while Brain had actually just asked a different
+    //          question (DEF-055).
+    //   before that, the same list decided that any "ok" anywhere was consent.
     //
-    // So the preview must be the most recent thing Brain said. If Brain has
-    // since asked anything else, the confirmation belongs to that, and this
-    // turn falls through to normal reasoning where the question can be
-    // answered properly.
-    const lastBrainTurn = [...history].reverse().find((h) => h.role === 'brain')?.text ?? '';
-    const lastBrainWasThePreview = /\b(?:reply\s+"?send"?\s+to\s+confirm|please\s+confirm|before\s+i\s+(?:send|proceed|do that))\b/i
-      .test(lastBrainTurn);
-    if (isBareConfirm && !lastBrainWasThePreview && lastBrainTurn) {
-      console.info('[compose] early-confirm SKIPPED — a bare confirm, but the last thing Brain said was not the preview', {
-        userId, clientNumber, lastBrainHead: lastBrainTurn.slice(0, 80),
-      });
-    }
-    if (isBareConfirm && (lastBrainWasThePreview || !lastBrainTurn)) {
+    // Resolving what a short reply REFERS TO is a language problem, and
+    // `resolveAmbiguousWithLlm` already solves it — it takes the message, the
+    // pending action, and Brain's last message, and returns confirm_preview /
+    // new_task / answer_question / cancel_pending. The turn reducer 400 lines
+    // below has used it for months. This guard simply never called it.
+    //
+    // What remains hardcoded here is a PREFILTER and nothing else: only run the
+    // classifier when a preview is actually outstanding and the reply is short
+    // enough to be a reference rather than a fresh instruction. That is the one
+    // use of a pattern the rule permits, because it can only cause us to fall
+    // through to the normal reasoning path — never to send something.
+    const outstandingPending = q.length > 0 && q.length <= 60
+      ? await (async () => {
+        try {
+          const { getActivePending } = await import('./pendingActionService');
+          return await getActivePending(userId, confirmChannel).catch(() => null);
+        } catch { return null; }
+      })()
+      : null;
+
+    let confirmsTheStoredPreview = false;
+    if (outstandingPending && outstandingPending.status === 'preview_shown') {
       try {
-        const { getActivePending } = await import('./pendingActionService');
-        const outstanding = await getActivePending(userId, confirmChannel).catch(() => null);
-        if (outstanding && outstanding.status === 'preview_shown') {
+        const { resolveAmbiguousWithLlm } = await import('./turnRelationReducer');
+        const lastBrainText = [...history].reverse().find((h) => h.role === 'brain')?.text ?? '';
+        const relation = await resolveAmbiguousWithLlm({
+          question, pending: outstandingPending, lastBrainText,
+        });
+        confirmsTheStoredPreview = relation.type === 'confirm_preview';
+        if (!confirmsTheStoredPreview) {
+          console.info('[compose] early-confirm declined by the turn classifier', {
+            userId, clientNumber, relation: relation.type,
+            pendingId: outstandingPending.id, lastBrainHead: lastBrainText.slice(0, 80),
+          });
+        }
+      } catch (e: any) {
+        // Classifier unavailable → do NOT guess. Falling through costs a
+        // re-plan; guessing wrong sends a real message to a real person.
+        console.warn('[compose] turn classifier unavailable, skipping early-confirm', { userId, error: e?.message });
+      }
+    }
+
+    if (confirmsTheStoredPreview) {
+      try {
+        const outstanding = outstandingPending!;
+        {
           console.info('[compose] early-confirm: dispatching the stored preview without re-reasoning', {
             userId, clientNumber, channel: confirmChannel,
             pendingId: outstanding.id, kind: outstanding.actionKind,

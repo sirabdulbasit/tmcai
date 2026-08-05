@@ -43,14 +43,18 @@ describe('confirmation beats re-planning', () => {
 
   it('only fires on a preview the owner actually SAW', () => {
     const g = CODE.slice(CODE.indexOf('const confirmChannel'), CODE.indexOf('resolveReasoningMode'));
-    expect(g).toContain("outstanding.status === 'preview_shown'");
+    expect(g).toMatch(/outstandingPending\.status === 'preview_shown'/);
   });
 
-  it('accepts the words the owner actually used, including Urdu', () => {
-    const m = CODE.match(/const isBareConfirm[\s\S]*?\.test\(q\)/)!;
-    for (const w of ['send', 'confirm', 'yes', 'go\\s+ahead', 'do\\s+it', 'haan', 'kar\\s+do', 'theek\\s+hai']) {
-      expect(m[0]).toContain(w);
-    }
+  it('understands any phrasing, because a classifier reads it — not a word list', () => {
+    // DEF-056 replaced the fixed vocabulary (yes|send|haan|kar do…) with
+    // resolveAmbiguousWithLlm. A list could only ever cover the phrasings
+    // someone thought of; worse, it decided MEANING, which is the owner's
+    // no-hardcoded-judgement rule. Urdu, English or anything else is now the
+    // classifier's problem, and it sees Brain's last message for context.
+    const g = CODE.slice(CODE.indexOf('const confirmChannel'), CODE.indexOf('resolveReasoningMode'));
+    expect(g).toContain('resolveAmbiguousWithLlm');
+    expect(g).not.toContain('isBareConfirm');
   });
 
   it('marks the pending terminal so it cannot be confirmed twice', () => {
@@ -69,12 +73,12 @@ describe('confirmation beats re-planning', () => {
   });
 });
 
-describe('the confirm vocabulary is a prefilter, not a judgement', () => {
-  it('is length-bounded so a sentence containing "send" is not swallowed', () => {
-    const m = CODE.match(/const isBareConfirm[\s\S]*?\.test\(q\)/)!;
-    expect(m[0]).toContain('q.length <= 30');
-    // Anchored — "send the email to Asad instead" must NOT match.
-    expect(m[0]).toContain('/^(');
-    expect(m[0]).toContain('$/i');
+describe('what remains hardcoded is a prefilter, and can only cause a fall-through', () => {
+  it('length bound gates the CLASSIFIER CALL, not the decision', () => {
+    const g = CODE.slice(CODE.indexOf('const confirmChannel'), CODE.indexOf('resolveReasoningMode'));
+    // Its only power is to skip asking the classifier, which falls through to
+    // the normal reasoning path. It can never cause something to be sent.
+    expect(g).toMatch(/q\.length <= 60/);
+    expect(g).toMatch(/confirmsTheStoredPreview = relation\.type === 'confirm_preview'/);
   });
 });
