@@ -49,6 +49,7 @@ import {
 import {
   normalizeWid, sameWid, lidToPhone, __resetWaIdentityCacheForTests,
 } from '../src/services/whatsapp/waIdentity';
+import { DISPATCHABLE_PLAN_STEP_KINDS } from '../src/services/knowledge/brainComposer';
 
 export interface BrainScenario {
   /** Stable id — chatN. */
@@ -531,6 +532,33 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // And the direct limb runs BEFORE the old retry ladder.
       const media = readFileSync(join(dir, 'inboundMedia.ts'), 'utf-8');
       expect(media.indexOf('downloadMediaDirect')).toBeLessThan(media.indexOf('for (let attempt = 0'));
+    },
+  },
+  {
+    id: 'chat17',
+    date: '2026-08-04',
+    userMessage: 'make all of these high priority … Vision Metric until Friday … → yes',
+    observedFailure:
+      'A 3-step plan was previewed, the owner confirmed with "yes", and dispatch returned "[Unknown pending action kind: updateopenitem]" then stopped — all three priority+deadline updates lost. update_open_item was registry-valid so validation accepted it and the preview rendered it, but dispatchPendingDirect had no case for that kind. Registry presence was treated as capability.',
+    symptomTags: ['phantom-capability', 'confirmed-action-lost', 'registry-vs-dispatcher-drift'],
+    fixCommits: ['666fb2a'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      // The kind that lost the work must be BOTH declared and dispatchable.
+      expect(DISPATCHABLE_PLAN_STEP_KINDS.has('update_open_item')).toBe(true);
+      const disp = code.slice(code.indexOf('async function dispatchPendingDirect'));
+      expect(disp).toContain("case 'update_open_item':");
+      // Every declared kind must have a real case — no phantom capability.
+      const cases = new Set([...disp.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]));
+      for (const kind of DISPATCHABLE_PLAN_STEP_KINDS) expect(cases.has(kind)).toBe(true);
+      // And plans are rejected BEFORE the owner is asked to confirm.
+      expect(code).toContain('DISPATCHABLE_PLAN_STEP_KINDS.has(step.type)');
+      expect(code.indexOf('no dispatcher for this action')).toBeLessThan(code.indexOf('renderPlanPreview'));
+      // One shared update implementation, not a second copy.
+      expect(code).toContain("await import('../openItems/applyOpenItemUpdate')");
     },
   },
 ];

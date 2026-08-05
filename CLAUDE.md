@@ -31,16 +31,28 @@ architecture map. This file holds the short-form stack notes only.
 - **Product name is "Nexeo"** — never MyOS / HaseebOS / "TMC AI" in new work (internal
   `brain_*` table and route names stay as-is for stability).
 
-## Defect ledger — read BEFORE fixing any Brain defect
+## Working protocol for Brain changes (owner ruling, 2026-08-05)
 
-`server/docs/brain_evaluation_ledger.md` is the single view of what broke, whether it was
-really fixed, and what is coming back. It carries the OPEN defect queue (§4) — previously
-that queue lived only in chat messages and was lost whenever a session ended.
+Two documents govern every Brain change. Both are updated in the SAME session as the work:
 
-Rules: log an owner-reported issue in §4 the SAME session; grep §2's recurrence table
-before fixing (a tag already there means the earlier fix did not close the class —
-escalate to a structural fix); a defect reaches §3 only with root cause + fix commit +
-executable scenario + live acceptance for messaging paths.
+- `server/docs/brain_chat_log.md` — every chat log the owner sends, registered as
+  `CL-NNN` with date-time and what was OBSERVED (their side, before diagnosis).
+- `server/docs/brain_evaluation_ledger.md` — what was DONE: `DEF-NNN` with reported and
+  resolved date-times, root cause, fix commit, verification, and the §2 recurrence table.
+  Carries a ledger version + revision history.
+
+**The three rules:**
+
+1. **Log first.** A chat log gets its CL row, and each observation a DEF id, the same
+   session it arrives. A defect that lives only in a chat message will be lost — that is
+   exactly what made months of real progress look like circling.
+2. **Every change moves a row.** No fix ships without its DEF row updated (resolved
+   date-time, commit, verification). A defect reaches §3 only with root cause + fix commit
+   + executable scenario + live acceptance for anything on a messaging path.
+3. **Check both docs BEFORE coding, and say the verdict out loud:** *progressing* (new root
+   cause, first occurrence) or *circling* (symptom tag already in §2 — the earlier fix
+   failed to close the class, so a STRUCTURAL fix is required, never another patch on the
+   reported instance).
 
 ## Regression discipline (survives the pipeline removal)
 

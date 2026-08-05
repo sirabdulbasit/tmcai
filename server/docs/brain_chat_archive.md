@@ -562,3 +562,47 @@ chat state.
 path, in-page reason surfacing, never-throws, plus source guards that the
 poisoned lookups are never called and the direct limb runs first). Live
 acceptance = a voice note returns `🎙️ Heard:` with a transcript.
+
+## Chat 17 — 2026-08-04 19:57 PKT (confirmed plan died: "Unknown pending action kind")
+
+**Channel:** WhatsApp (voice dictation + text confirmation).
+**User did:** dictated "make all of these high priority… Vision Metric until
+Friday, service packages until Thursday, ShireMe for tomorrow", was shown a
+3-step preview, replied "yes".
+
+**Observed failure:**
+```
+•  ✗ [Unknown pending action kind: updateopenitem]
+   (stopped — 2 remaining steps not attempted)
+```
+All three priority+deadline updates lost. Second time in two days that a
+CONFIRMED action evaporated after "yes" (see Chat 15 note re: the SAP task).
+
+**Root cause:** `update_open_item` is in the action registry, so
+`validateReasoningAction` accepted it, `renderPlanPreview` rendered it and the
+owner confirmed it — but `dispatchPendingDirect` had NO case for that kind and
+`PendingActionKind` did not list it. A working implementation existed the whole
+time, inline in `brainComposer`, unreachable from the confirmed path. **Registry
+presence was treated as capability.**
+
+**Also observed in the same chat (logged as OPEN defects, not fixed here):**
+preview showed "• update open item" ×3 with no item names/priorities/dates
+(DEF-018); a machine-translated pronoun ("unko" → "him") made Brain argue the
+owner had called Hamna "he" (DEF-020); a corrected title reverted to the stale
+STT text (DEF-021); the prompt queue interrupted mid-conversation asking for a
+priority already dictated twice (DEF-022).
+
+**Fix:** `applyOpenItemUpdate` — ONE shared implementation used by both the
+inline and confirmed paths; the missing `update_open_item` dispatcher case;
+`PendingActionKind` extended with the plan-step kinds. Plus a structural guard:
+plan validation now rejects any step whose kind the dispatcher cannot execute
+(`DISPATCHABLE_PLAN_STEP_KINDS`), so the owner is never asked to confirm
+something that cannot run.
+
+**Symptom tags:** `phantom-capability`, `confirmed-action-lost`,
+`registry-vs-dispatcher-drift`.
+
+**Verification:** `planStepDispatchability.test.ts` pins the declared set
+against the dispatcher's real `case` labels in BOTH directions — a phantom
+capability or an unreachable dispatcher fails CI. Live acceptance = dictate a
+multi-item priority/deadline batch and receive real "Updated …" lines.

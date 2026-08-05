@@ -1,11 +1,35 @@
 # Brain Evaluation Ledger
 
-**Purpose:** answer three questions at a glance, with evidence — *what broke, was it
-really fixed, and is the same thing coming back?* Created 2026-08-04 because the owner
-could not tell whether the work was progressing or circling. Neither could the builder,
-from the artefacts that existed.
+**Ledger version:** v1.1 · **Last updated:** 2026-08-05 10:40 PKT
+**Companion register:** `brain_chat_log.md` (every chat log received, CL-NNN)
+**Technical post-mortems:** `brain_chat_archive.md` (Chat N + paired executable scenario)
 
-**What already existed and why it was not enough**
+## Working protocol (owner ruling, 2026-08-05)
+
+1. **This file is updated with EVERY change.** Each defect carries a stable `DEF-NNN`,
+   the date-time it was reported, the date-time it was resolved, the fix commit, and how
+   it was verified. No change ships without its row moving.
+2. **Every chat log the owner sends is registered in `brain_chat_log.md`** as `CL-NNN`
+   with date-time received, so the two files can be compared: what was OBSERVED (CL) vs
+   what was DONE about it (DEF).
+3. **Before any new change, both files are checked** and the answer stated out loud:
+   *progressing* (new root cause, first occurrence) or *circling* (a tag already in §2 —
+   which means the earlier fix failed to close the class and a structural fix is required,
+   not another patch on the reported instance).
+
+### Revision history
+
+| Ledger ver | Date-time (PKT) | Change |
+|---|---|---|
+| v1.0 | 2026-08-04 22:15 | Created. Backfilled 17 incidents, recurrence table, 11 open defects. |
+| v1.1 | 2026-08-05 10:40 | Owner protocol adopted. Stable DEF-NNN ids + reported/resolved date-times. Chat 17 archived with paired scenario (process gap: it had been fixed but not archived). `brain_chat_log.md` register created. |
+
+---
+
+## 0. Why this file exists
+
+The owner asked, on 2026-08-04, whether any log existed of what had been changed to improve
+Brain — because it felt like circling. Four artefacts existed and none answered it:
 
 | Artefact | Holds | Missing |
 |---|---|---|
@@ -19,18 +43,20 @@ verbally. If a session ended, the queue was lost. This file is the fix.
 
 ---
 
-## 1. Scoreboard (2026-08-04)
+## 1. Scoreboard — as of 2026-08-05 10:40 PKT
 
-- **17** incidents reported and root-caused
-- **16** locked by an executable scenario (100% of chats have a regression test)
+- **18** incidents reported and root-caused (`CL`/Chat 1–17)
+- **17** locked by an executable scenario (`chat1`…`chat17`) — 100% pairing
 - **14** never recurred after their fix
 - **3** symptom classes recurred — see §2
 - **11** defects currently OPEN — see §4
+- **DEF ids issued:** DEF-001 → DEF-022
 
-**Verdict on "are we circling?"** Partly, and precisely: **not** across the 14 closed
-incidents, but **yes** inside two classes. One of those (`@lid`) is now believed
-structurally closed; the other (`pending-prompt-eats-command`) is genuinely unresolved
-after three appearances and is the top open item.
+**Verdict on "are we circling?"** Precisely: **not** across the closed incidents, but
+**yes** inside one live class. `@lid` recurred 4× with four *different* root causes and is
+now believed structurally contained; PTT media is closed at the root and live-verified;
+**`pending-prompt-eats-command` is genuinely unresolved after 3 appearances (DEF-017) and
+is the top open item.**
 
 ---
 
@@ -68,23 +94,26 @@ mean this containment failed — record it here first.
 
 ## 3. Closed defects
 
-Each row is verifiable: read the archive entry, run the scenario, check the commit.
+Each row is independently verifiable: read the archive entry, run the scenario, check the
+commit. "Verified" means the fix is locked by CI; "LIVE" means it was also confirmed on
+production traffic.
 
-| # | Reported | Symptom (owner-visible) | Root cause | Fix | Locked by |
-|---|---|---|---|---|---|
-| 1 | 07-07 | Empty "With:" line on a meeting for a non-contact | ad-hoc attendee email dropped by the parser | `682bbc1` | `chat1` |
-| 2 | 07-08 | "The email has been sent to Asad" — never sent | passive-voice completion claim escaped the guard | `259f972`, `459bd4d` | `chat2` |
-| 3 | 07-08 | "send a test email…" answered `[noted]` | stale prompt captured a command | `c977a3d` | `chat3` |
-| 4 | 07-10 | Proposed messaging Asad about Yousaf's item | owner NAME without routable id in the prompt block | `680c441` | `chat4` |
-| 5–10 | 07-10→07-16 | see archive Chats 5–10 | — | — | `chat5`–`chat10` |
-| 11 | 07-17 | Voice pipeline silent, no processing state | no observable activity signal | — | `chat11` |
-| 12 | 07-17 | `@lid` activity rejected; PTT unavailable | LID Wid rejected by chat-state helpers | — | `chat12` |
-| 13 | 07-22 | "Whatsup?" answered `[blocker recorded]` | regex allowlist was the decision boundary | `741d907` | `chat13` |
-| 14 | 07-27 | Delegation sends refused for 6 days | probe echo matched one Wid spelling; 3 flags self-locked | `5e3f3c1` | `chat14` |
-| 15 | 08-03 | Yousaf's reply vanished; "connection degraded" excuse | door resolved counterpart phone via `getContact()` only | `72ed7f6` | `chat15` |
-| 16 | 08-04 | **Voice notes unreadable** | message id embeds `@lid`; lookup throws before any network call | `889edc0`, `b11fa3c` | `chat16` |
-
-**Live-verified on production:** #16 (voice reading + English transcripts, 08-04 19:37).
+| DEF | Reported | Resolved | Symptom (owner-visible) | Root cause | Fix commit | Locked by | Verified |
+|---|---|---|---|---|---|---|---|
+| DEF-001 | 07-07 | 07-07 | Empty "With:" line for a non-contact meeting | ad-hoc attendee email dropped by the parser | `682bbc1` | `chat1` | CI |
+| DEF-002 | 07-08 | 07-08 | "The email has been sent to Asad" — never sent | passive-voice completion claim escaped the guard | `259f972`, `459bd4d` | `chat2` | CI |
+| DEF-003 | 07-08 | 07-08 | "send a test email…" answered `[noted]` | stale prompt captured a command | `c977a3d` | `chat3` | CI |
+| DEF-004 | 07-10 | 07-10 | Proposed messaging Asad about Yousaf's item | owner NAME without routable id in the prompt block | `680c441` | `chat4` | CI |
+| DEF-005…010 | 07-10→07-16 | — | see archive Chats 5–10 | — | — | `chat5`–`chat10` | CI |
+| DEF-011 | 07-17 | 07-17 | Voice pipeline silent, no processing state | no observable activity signal | — | `chat11` | CI |
+| DEF-012 | 07-17 | 07-17 | `@lid` activity rejected; PTT unavailable | LID Wid rejected by chat-state helpers | — | `chat12` | CI |
+| DEF-013 | 07-22 | 07-22 | "Whatsup?" answered `[blocker recorded]` | regex allowlist was the decision boundary | `741d907` | `chat13` | CI |
+| DEF-014 | 07-27 | 07-31 | Delegation sends refused for 6 days | probe echo matched one Wid spelling; 3 flags self-locked | `5e3f3c1` | `chat14` | **LIVE** 07-31 |
+| DEF-015 | 08-03 | 08-04 | Yousaf's reply vanished; "degraded" excuse | door resolved counterpart phone via `getContact()` only | `72ed7f6` | `chat15` | CI |
+| DEF-016 | 08-04 | 08-04 19:15 | **Voice notes unreadable** | message id embeds `@lid`; lookup throws before any network call | `889edc0`, `b11fa3c` | `chat16` | **LIVE** 08-04 19:37 |
+| DEF-023 | 08-04 20:00 | 08-04 20:10 | Confirmed 3-step plan died: `[Unknown pending action kind: updateopenitem]`, all updates lost | `update_open_item` was registry-valid and previewed but had NO dispatcher case — registry presence treated as capability | `666fb2a` | `chat17` | CI |
+| DEF-024 | 08-03 | 08-04 20:05 | `[actionplan failed to queue: Unique constraint failed]` — lost a confirmed task, then a batch of three | legacy `UNIQUE(user_id,channel,status)`; the 07-22 repair migration dropped a **guessed** constraint name and silently no-op'd | `76739af` | — | CI |
+| DEF-025 | 08-04 | 08-04 19:41 | Native typing/recording absent on every turn | `sendChatstate` calls generic `createWid()` on an `@lid` id; LID needs `createUserLidOrThrow` | `c1e5ceb` | — | **pending live** |
 
 ---
 
@@ -92,19 +121,19 @@ Each row is verifiable: read the archive entry, run the scenario, check the comm
 
 Ordered by cost to the owner. **This section is the one to keep current.**
 
-| ID | Symptom | Root cause (if known) | Evidence | Status |
-|---|---|---|---|---|
-| **O1** | Compound commands partially consumed. "Priority High, due date today and delegate to Hamna" → deadline set to **2024-03-29**, junk task titled "Priority High" created, delegation dropped. "yes"/"deligate it" → `[noted]`, nothing happens | pending-prompt/confirmation layer consumes part of a multi-intent message; Chat 13's LLM relevance gate handles single-intent only | 08-03, 08-04 chats | **OPEN — top priority** (3rd appearance of the class) |
-| **O2** | Preview lists "• update open item ×3" with no item names, priorities or dates — owner asked to approve blind | `renderPlanPreview` has no case for `update_open_item`, falls to a default printing the bare kind | 08-04 19:57 | OPEN — safety consequence |
-| **O3** | Brain fabricated "my WhatsApp connection is currently degraded" while the DB said `connected` for 4 days | channel health inferred rather than read from a ground-truth block | 08-03 17:25 | OPEN |
-| **O4** | Machine-translated pronoun treated as the owner's assertion. Urdu "unko" → English "him" → Brain argued the owner called Hamna "he", costing 3 turns | translated transcripts carry invented gender; no marker telling the composer the text is a translation | 08-04 19:58–19:59 | OPEN |
-| **O5** | Corrected title reverts. Owner fixed "Shair Mi" → "ShireMe Recruiting Portal", Brain confirmed, then said "Shiny Recruitment Portal" one minute later | reasoning re-reads stale STT text instead of the persisted title | 08-04 19:59 | OPEN |
-| **O6** | Prompt queue interrupts mid-conversation, asking for a priority the owner had already dictated twice; hint text offers date phrases for a priority question | no conversation-turn suppression; mismatched prompt copy | 08-04 19:58 | OPEN |
-| **O7** | "Morning, Sir" at 3:30 PM / 5:26 PM / 8:30 AM | prompt gets `getUserLocalDate` (date, no clock) while the persona few-shot opens "Morning, …" | 3+ occurrences | OPEN (`time-of-day-drift`) |
-| **O8** | All-day calendar events rendered with a start time ("Office at 5 AM") | all-day events not distinguished in the calendar view | repeated | OPEN |
-| **O9** | `whatsapp_messages.error_message` NULL on every failed row | failure reason discarded at the write path | 07-28 | OPEN (observability) |
-| **O10** | Alert email dead — `535 Authentication unsuccessful` for basit.ahmed@tmcltd**.com** | SMTP credentials/domain | every boot | OPEN (this is why the 6-day outage went unnoticed) |
-| **O11** | Owner's personal WA client down — `[fetchThreadContext] no client in user map, userId 2` | separate `UserWebjsProvider` session not initialised | 07-28 | OPEN |
+| DEF | Reported | Symptom | Root cause (if known) | Evidence (CL) | Status |
+|---|---|---|---|---|---|
+| **DEF-017** | Compound commands partially consumed. "Priority High, due date today and delegate to Hamna" → deadline set to **2024-03-29**, junk task titled "Priority High" created, delegation dropped. "yes"/"deligate it" → `[noted]`, nothing happens | pending-prompt/confirmation layer consumes part of a multi-intent message; Chat 13's LLM relevance gate handles single-intent only | 08-03, 08-04 chats | **OPEN — top priority** (3rd appearance of the class) |
+| **DEF-018** | Preview lists "• update open item ×3" with no item names, priorities or dates — owner asked to approve blind | `renderPlanPreview` has no case for `update_open_item`, falls to a default printing the bare kind | 08-04 19:57 | OPEN — safety consequence |
+| **DEF-019** | Brain fabricated "my WhatsApp connection is currently degraded" while the DB said `connected` for 4 days | channel health inferred rather than read from a ground-truth block | 08-03 17:25 | OPEN |
+| **DEF-020** | Machine-translated pronoun treated as the owner's assertion. Urdu "unko" → English "him" → Brain argued the owner called Hamna "he", costing 3 turns | translated transcripts carry invented gender; no marker telling the composer the text is a translation | 08-04 19:58–19:59 | OPEN |
+| **DEF-021** | Corrected title reverts. Owner fixed "Shair Mi" → "ShireMe Recruiting Portal", Brain confirmed, then said "Shiny Recruitment Portal" one minute later | reasoning re-reads stale STT text instead of the persisted title | 08-04 19:59 | OPEN |
+| **DEF-022** | Prompt queue interrupts mid-conversation, asking for a priority the owner had already dictated twice; hint text offers date phrases for a priority question | no conversation-turn suppression; mismatched prompt copy | 08-04 19:58 | OPEN |
+| **DEF-026** | "Morning, Sir" at 3:30 PM / 5:26 PM / 8:30 AM | prompt gets `getUserLocalDate` (date, no clock) while the persona few-shot opens "Morning, …" | 3+ occurrences | OPEN (`time-of-day-drift`) |
+| **DEF-027** | All-day calendar events rendered with a start time ("Office at 5 AM") | all-day events not distinguished in the calendar view | repeated | OPEN |
+| **DEF-028** | `whatsapp_messages.error_message` NULL on every failed row | failure reason discarded at the write path | 07-28 | OPEN (observability) |
+| **DEF-029** | Alert email dead — `535 Authentication unsuccessful` for basit.ahmed@tmcltd**.com** | SMTP credentials/domain | every boot | OPEN (this is why the 6-day outage went unnoticed) |
+| **DEF-030** | Owner's personal WA client down — `[fetchThreadContext] no client in user map, userId 2` | separate `UserWebjsProvider` session not initialised | 07-28 | OPEN |
 
 **Not defects — absent by design:** WhatsApp calling (no foundation; owner excluded it).
 
