@@ -217,8 +217,13 @@ export async function triageUnregisteredInbound(params: {
   fromNumber: string;
   body: string;
 }): Promise<TriageOutcome> {
+  // Hoisted out of the try so the DEF-060 fallback below can still reach the
+  // owner when the main path throws. Scoping them inside the try is what made
+  // "who do I tell?" unanswerable at the moment it mattered most.
+  let ownerUserId: number | null = null;
+  let senderName: string | null = null;
   try {
-    const ownerUserId = await resolveOwner(params.clientNumber);
+    ownerUserId = await resolveOwner(params.clientNumber);
     if (!ownerUserId) return { action: 'no_owner', policy: null };
 
     const existing = await prisma.$queryRawUnsafe<any[]>(
@@ -251,10 +256,13 @@ export async function triageUnregisteredInbound(params: {
     }
 
     // No policy row — evidence check, then ask.
-    const [evidence, senderName] = await Promise.all([
+    // Assigns the hoisted binding rather than shadowing it, so the fallback
+    // in the catch can still name the sender.
+    const [evidence, resolvedName] = await Promise.all([
       gatherConcernEvidence(params.clientNumber, params.fromNumber),
       resolveSenderName(params.clientNumber, params.fromNumber),
     ]);
+    senderName = resolvedName;
     if (evidence.length > 0) {
       await decideSenderPolicy({
         clientNumber: params.clientNumber, phone: params.fromNumber, ownerUserId,
@@ -276,18 +284,60 @@ export async function triageUnregisteredInbound(params: {
         `${describeSender(params.fromNumber, senderName)} sent me a message: ` +
         `"${params.body.slice(0, 120)}". ` +
         `Should I reply to them, or ignore this number? (An ignore stays until you tell me otherwise.)`,
-      criticality: 'normal',
+      // DEF-060 (2026-08-05): this said 'normal', which is not a Criticality.
+      // The valid set is routine | high | top and the DB enforces it with a
+      // CHECK constraint, so EVERY enqueue from this path failed with Postgres
+      // 23514 and the inbound was silently "held". No owner has been asked
+      // about an unknown sender since the constraint landed — the owner found
+      // it as "Hamna responded and it didn't notify me".
+      //
+      // 'routine', not 'high': channelForCriticality escalates high to a voice
+      // note or a business call, and a wrong number must never ring the owner.
+      criticality: 'routine',
       dedupKey: `wa_sender_triage:${params.fromNumber}`,
       sideEffect: {
         kind: 'wa_sender_policy_decision',
         data: { phone: params.fromNumber, clientNumber: params.clientNumber, ownerUserId },
       },
       metadata: { source: 'sender_triage', from: params.fromNumber },
-    } as any);
+      // No `as any`. The cast is what let 'normal' past the compiler and left
+      // the database to reject it at runtime, five days later, in a swallowed
+      // catch. A type error here is worth more than a clean-looking call site.
+    });
     log.info('owner asked about unknown sender', { from: params.fromNumber });
     return { action: 'asked_owner', policy: 'pending' };
   } catch (error: any) {
     log.warn('sender triage failed — inbound held', { error: error?.message, from: params.fromNumber });
+
+    // DEF-060 — a failure HERE must not mean the owner hears nothing.
+    //
+    // For five days every enqueue on this path threw (criticality 'normal'
+    // violated a CHECK constraint) and the only trace was this warn line. Real
+    // people messaged and the owner was never told, because the sole route to
+    // him was a queue that was rejecting the insert.
+    //
+    // brainContactsUser is a direct send and does not touch brain_prompt_queue,
+    // so it survives exactly the class of failure that caused this. A notice
+    // that says less is worth far more than silence.
+    try {
+      const { brainContactsUser } = await import('../notifications/brainOutboundService');
+      const who = describeSender(params.fromNumber, senderName);
+      await brainContactsUser({
+        userId: ownerUserId,
+        kind: 'wa_counterpart_message',
+        summary: `WhatsApp from ${who}`,
+        body: `${who} messaged me:\n"${params.body.slice(0, 300)}"\n\n`
+          + 'I could not queue this for a proper decision, so I am passing it straight on. '
+          + 'Tell me to reply or to ignore that number.',
+        urgency: 'normal',
+        dedupKey: `wa_triage_fallback:${params.fromNumber}`,
+      } as any);
+      log.info('triage fallback relayed direct to owner', { from: params.fromNumber });
+    } catch (fallbackError: any) {
+      log.error('triage fallback ALSO failed — owner not informed', {
+        from: params.fromNumber, error: fallbackError?.message,
+      });
+    }
     return { action: 'held_pending', policy: null };
   }
 }
