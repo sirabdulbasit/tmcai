@@ -56,7 +56,6 @@ export default function ContactsPage() {
   const [cleanupApplying, setCleanupApplying] = useState(false);
   // Advanced section hidden by default — Brain handles reclaim + reset
   // autonomously via Smart cleanup, so these are escape hatches only.
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Inline toast queue (replaces alert()). Each toast auto-dismisses
   // after 6s; click-to-dismiss is also wired.
@@ -340,58 +339,19 @@ export default function ContactsPage() {
             >
               {importing === 'google' ? 'Importing…' : 'Import: Google'}
             </button>
-            <button
-              onClick={() => importFrom('microsoft')}
-              disabled={importing === 'microsoft'}
-              style={btnStyle(importing === 'microsoft', 'subtle')}
-              title="Import contacts from your connected Outlook account"
-            >
-              {importing === 'microsoft' ? 'Importing…' : 'Import: Microsoft'}
-            </button>
-            <button onClick={triggerSweep} disabled={refreshing} style={btnStyle(refreshing, 'subtle')}>
-              {refreshing ? 'Refreshing…' : 'Refresh from feed'}
-            </button>
+            {/* Owner ruling 2026-08-05: keep Add, Google import and Prune.
+                Import: Microsoft, Refresh from feed and the Advanced escape
+                hatches were removed — the feed sweep runs automatically and
+                the escape hatches duplicated what Prune already does. */}
             <button
               onClick={startCleanup}
               disabled={cleanupBusy}
               style={btnStyle(cleanupBusy, 'subtle')}
-              title="Brain reviews your contacts: repoints anything misowned, archives junk + no-evidence rows, suggests merges. Brain also runs this nightly — manual is just for an instant refresh."
+              title="Merge duplicate people, repoint anything misowned, and archive junk rows. Runs nightly on its own — this is just an instant pass."
             >
-              {cleanupBusy ? 'Scanning…' : '🧠 Smart cleanup'}
-            </button>
-            <button
-              onClick={() => setShowAdvanced((v) => !v)}
-              style={{ ...btnStyle(false, 'subtle'), opacity: 0.7 }}
-              title="Manual escape hatches. Smart cleanup handles the same things automatically — only use these if Brain's autonomous cleanup hasn't run yet."
-            >
-              {showAdvanced ? '▴ Advanced' : '▾ Advanced'}
+              {cleanupBusy ? 'Scanning…' : '🧹 Prune'}
             </button>
           </div>
-          {showAdvanced && (
-            <div style={{
-              marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap',
-              paddingTop: 8, borderTop: '1px dashed var(--border, #28323e)',
-              opacity: 0.85,
-            }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted, #98a0a8)', alignSelf: 'center', marginRight: 4 }}>
-                Manual tools (Brain handles these automatically):
-              </span>
-              <button
-                onClick={() => setReclaimFlow({ typed: '' })}
-                style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(167,139,250,0.45)', color: '#c4b5fd' }}
-                title="Take ownership of every contact you can see. Brain does this automatically per evidence — only use if you want to override."
-              >
-                👤 Reclaim ownership
-              </button>
-              <button
-                onClick={() => setResetFlow({ typed: '' })}
-                style={{ ...btnStyle(false, 'subtle'), borderColor: 'rgba(220,38,38,0.4)', color: '#fca5a5' }}
-                title="Delete ALL your contacts and re-discover them from feed. Destructive."
-              >
-                ⟲ Reset &amp; rebuild
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Reclaim ownership panel — non-destructive, types login email */}
@@ -820,7 +780,8 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
           <tr style={{ background: 'var(--panel-2, #1b232d)', textAlign: 'left' }}>
             <Th>Stars</Th>
             <Th>Name</Th>
-            <Th>Email / Phone</Th>
+            <Th>Email</Th>
+            <Th>Phone</Th>
             <Th>Source</Th>
             <Th align="right">Strength</Th>
             <Th align="right">This week</Th>
@@ -955,9 +916,20 @@ function ContactsTable({ entities, onSetStars, visibility = '', onLinkContacts, 
                   );
                 })()}
               </Td>
+              {/* Owner ruling 2026-08-05: email and phone are separate
+                  columns. They were always separate COLUMNS in the database —
+                  collapsing them here hid which identifier a row actually
+                  had, which is precisely what made two Hamna rows look
+                  interchangeable when one had only an email and the other
+                  only a phone. */}
               <Td>
                 <span style={{ color: 'var(--text-muted, #98a0a8)' }}>
-                  {e.email ?? e.phone ?? '—'}
+                  {e.email || '—'}
+                </span>
+              </Td>
+              <Td>
+                <span style={{ color: 'var(--text-muted, #98a0a8)' }}>
+                  {e.phone || '—'}
                 </span>
               </Td>
               <Td>

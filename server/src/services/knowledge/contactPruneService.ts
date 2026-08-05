@@ -161,6 +161,70 @@ export async function runContactPrune(clientNumber: string): Promise<PruneResult
     if (await executeMerge(clientNumber, plan)) out.merged += 1;
   }
 
+  // ── 1b: SHARED-IDENTIFIER groups (DEF-051, 2026-08-05) ───────────
+  //
+  // The pass above groups by exact name, which cannot see the commonest
+  // duplicate this system produces. A person WhatsApps before they are saved,
+  // auto-discovery creates a row from their pushname ("Hamna ABAP TMC"), and
+  // later the owner supplies the number for the contact he already had
+  // ("Hamna Latif Bhutta"). Two rows, one phone, names that will never match.
+  //
+  // The Contacts UI has flagged exactly this the whole time — it groups by
+  // shared phone or email (`ContactsPage.jsx:741`) and offers Merge. So the
+  // system knew, and the only component able to act unattended was using the
+  // weaker rule. This closes that gap by grouping the same way the UI does.
+  //
+  // Safety is unchanged and comes from `planMerge`: a group merges only when
+  // at most ONE distinct email and ONE distinct phone appear across it. Two
+  // people sharing an office landline therefore conflict on email and are
+  // flagged, never merged.
+  const dupIdents = await prisma.$queryRawUnsafe<Array<{ ident: string }>>(
+    `SELECT ident FROM (
+       SELECT lower(email) AS ident FROM entities
+         WHERE client_number = $1 AND entity_type = 'contact'
+           AND email IS NOT NULL AND length(email) >= 5
+       UNION ALL
+       SELECT regexp_replace(phone, '[^0-9]', '', 'g') AS ident FROM entities
+         WHERE client_number = $1 AND entity_type = 'contact'
+           AND phone IS NOT NULL AND length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 7
+     ) t
+     GROUP BY ident HAVING count(*) > 1
+     LIMIT 50`,
+    clientNumber,
+  ).catch(() => []);
+
+  for (const g of dupIdents) {
+    if (out.merged >= maxMerges) break;
+    out.groupsSeen += 1;
+    const rows = await prisma.entity.findMany({
+      where: {
+        clientNumber, entityType: 'contact',
+        OR: [
+          { email: { equals: g.ident, mode: 'insensitive' as any } } as any,
+          { phone: { contains: g.ident } } as any,
+        ],
+      },
+      select: { id: true, name: true, email: true, phone: true, ownerUserId: true, createdAt: true, metadata: true } as any,
+    }).catch(() => [] as any[]) as unknown as ContactRow[];
+    // Phone `contains` can over-match on a short digit run; require the
+    // normalised digits to be equal before treating rows as the same person.
+    const sameIdent = rows.filter((r) => {
+      const e = (r.email ?? '').toLowerCase();
+      const p = (r.phone ?? '').replace(/[^0-9]/g, '');
+      return e === g.ident || p === g.ident;
+    });
+    if (sameIdent.length < 2) continue;
+    const plan = planMerge(sameIdent);
+    if (!plan) {
+      out.conflictsFlagged += 1;
+      log.info('shared-identifier group with conflicting identifiers — flagged, not merged', {
+        clientNumber, ident: g.ident.slice(0, 4) + '…', ids: sameIdent.map((r) => r.id),
+      });
+      continue;
+    }
+    if (await executeMerge(clientNumber, plan)) out.merged += 1;
+  }
+
   // ── 2: name-less junk rows (name == email) absorbed into named
   //       contacts that own that address ────────────────────────────
   const junk = await prisma.$queryRawUnsafe<Array<{ id: string; email: string }>>(
