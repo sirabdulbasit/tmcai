@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.7 · **Last updated:** 2026-08-05 14:25 PKT
+**Version:** v2.8 · **Last updated:** 2026-08-05 14:40 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -154,6 +154,10 @@ did not close the class.**
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
 | `pending-prompt-eats-command` | **3** | 3, 13, 17 | fix written (DEF-017) — **structural: the verdict can now SPLIT a message**; undeployed |
 | `confirm-never-dispatches` | **4** | 15, 17, CL-020, CL-023 | DEF-024 (schema) deployed and did NOT close it — the 4th recurrence exposed the real cause, DEF-035 (ordering), deployed 13:44 and **unverified**. Structural follow-up: DEF-038 removes the confirm step for instructed actions, which deletes the class rather than fixing it |
+| **`guard-below-early-return`** | **3 in ONE DAY** | DEF-035, DEF-039, DEF-041 | **NEW TAG, 2026-08-05 — the dominant failure shape.** `compose()` has ~14 early return points and its protections sit near the bottom, so whichever branch returns first skips them. DEF-035: confirm reducer below the reasoning gate. DEF-039: idempotency + artifact ledger inside the branch the new guard bypassed. DEF-041: the empty-promise guard at 2705/3794 unreachable from the reasoning path that returns at 2100 — which let a false statement reach a real person. **Three instances in one day is not coincidence; it is DEF-036 (the 2,176-line function) producing defects on schedule.** No further patch in this class is acceptable — the decomposition is the fix |
+| `fabricated-status` | **3** | DEF-019, DEF-034, DEF-041 | inferred rather than read from a ledger; DEF-037 is the structural parent |
+| `translated-transcript-misread` | **2** | DEF-020, CL-026 | "Yes, we didn't give Latif" — negation invented by machine translation, then argued back at the owner. Second occurrence ⇒ structural |
+| `time-of-day-drift` | **4** | DEF-026 ×4 | "Morning, Sir" at 2:04 PM. Still open, still unfixed, cheap to fix |
 | `preview-unconfirmable` | **2** | 17, CL-020 | fix written (DEF-018) — undeployed |
 | `phantom-capability` | 1 | 17 | closed (`DISPATCHABLE_PLAN_STEP_KINDS`) |
 
