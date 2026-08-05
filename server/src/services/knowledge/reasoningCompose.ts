@@ -121,6 +121,13 @@ export interface ReasoningInput {
     // Reasoning is required to narrate IN ORDER, no re-ranking,
     // no drops, no additions.
     dayBrief?: string;
+    // DEF-037 (2026-08-05) — the DISPATCH RECORD, read from
+    // brain_action_artifacts rather than from the conversation transcript.
+    // "Did you inform Hamna?" was answered "No Sir, I have not" an hour after
+    // the email went out, because the only dispatch view available was a
+    // filter over the trimmed history window. This block cannot be
+    // fabricated: every line is a row with an id and a timestamp.
+    dispatchLedger?: string;
   };
 }
 
@@ -308,6 +315,10 @@ function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset
     if (input.dataBlocks.recentEmails) parts.push(input.dataBlocks.recentEmails);
     if (input.dataBlocks.recentWhatsApp) parts.push(input.dataBlocks.recentWhatsApp);
   }
+  // DEF-037: pushed unconditionally when present, INCLUDING when empty —
+  // "(no actions dispatched)" is a fact and must reach the model. Omitting the
+  // block on empty would leave it inferring, which is the entire defect.
+  if (input.dataBlocks.dispatchLedger) parts.push(input.dataBlocks.dispatchLedger);
   if (input.dataBlocks.contactProvenance) parts.push(input.dataBlocks.contactProvenance);
   if (input.dataBlocks.artifacts) parts.push(input.dataBlocks.artifacts);
   if (input.dataBlocks.replyContext) parts.push(input.dataBlocks.replyContext);

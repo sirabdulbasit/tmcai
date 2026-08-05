@@ -53,7 +53,11 @@ const GREETING = 'Hi,';
  * is identical either way — the counterpart always knows who is writing and
  * for whom, so the distinction lives in the sentence, not in the furniture.
  */
-export function renderOutboundMessage(body: string, sig: OutboundSignature): string {
+export function renderOutboundMessage(
+  body: string,
+  sig: OutboundSignature,
+  opts: { firstContact?: boolean } = {},
+): string {
   const text = (body ?? '').trim();
   const brain = (sig.brainName ?? '').trim() || 'Nexeo';
   const user = (sig.userName ?? '').trim();
@@ -66,7 +70,22 @@ export function renderOutboundMessage(body: string, sig: OutboundSignature): str
   // Retries and re-renders must not stack greetings.
   if (text.startsWith(GREETING) && text.includes(signOff)) return text;
 
-  return `${GREETING}\n${text}\n\n${signOff}`;
+  // DEF-049 — introduce ONCE per person, then stop.
+  //
+  // A real assistant says who they are on first contact and then simply talks.
+  // Repeating "this is X, Y's assistant" on every message is what made the old
+  // preamble read like a mail merge. The signature below already discloses on
+  // every message; this line adds, once, the two things a stranger needs: who
+  // is writing, and what happens to what they say back.
+  //
+  // The reply disclosure is not decoration. People tell machines things they
+  // would not tell a person, and everything said here reaches the owner. Not
+  // saying so would be a quiet trap.
+  const intro = opts.firstContact && user
+    ? `${brain} here — I'm ${user}'s assistant. Anything you reply comes straight to ${user}.\n\n`
+    : '';
+
+  return `${GREETING}\n${intro}${text}\n\n${signOff}`;
 }
 
 /** True when a string already looks like a rendered outbound message. Used by
@@ -74,4 +93,45 @@ export function renderOutboundMessage(body: string, sig: OutboundSignature): str
  *  owner's own prose. */
 export function looksLikeOutboundTemplate(text: string): boolean {
   return /^\s*Hi,\s*\n/.test(text ?? '') && /\n\s*Assistant .+\s*$/.test(text ?? '');
+}
+
+/**
+ * Has this person been introduced to before? Recorded on the contact itself so
+ * the answer survives restarts, history trimming and channel switches — the
+ * same mistake as DEF-037 would be to infer it from the conversation.
+ *
+ * Fails toward INTRODUCING: if we cannot tell, a stranger gets one extra line
+ * of context. The opposite error is messaging someone who has no idea who this
+ * is or where their reply goes.
+ */
+export async function isFirstContactWith(candidateId: string | undefined): Promise<boolean> {
+  if (!candidateId) return true;
+  try {
+    const { default: prisma } = await import('../../db/prisma');
+    const row = await prisma.entity.findFirst({
+      where: { id: candidateId },
+      select: { metadata: true },
+    });
+    const meta = (row?.metadata ?? {}) as Record<string, unknown>;
+    return !meta.introducedAt;
+  } catch {
+    return true;
+  }
+}
+
+/** Mark the introduction as done. Never throws — a failure here costs one
+ *  repeated intro, which is far cheaper than a failed send. */
+export async function markIntroduced(candidateId: string | undefined): Promise<void> {
+  if (!candidateId) return;
+  try {
+    const { default: prisma } = await import('../../db/prisma');
+    const row = await prisma.entity.findFirst({
+      where: { id: candidateId }, select: { metadata: true },
+    });
+    if (!row) return;
+    const meta = { ...((row.metadata ?? {}) as Record<string, unknown>) };
+    if (meta.introducedAt) return;
+    meta.introducedAt = new Date().toISOString();
+    await prisma.entity.update({ where: { id: candidateId }, data: { metadata: meta as any } });
+  } catch { /* one repeated introduction is an acceptable failure mode */ }
 }

@@ -1241,6 +1241,8 @@ When to emit \`action\`:
 - **NEVER source action subjects from the Open Items snapshot for items the user hasn't named.** The snapshot is for RESOLVING references the user made; it's not a menu to pick from. If you can't quote a recent line containing the action subject (recipient, delegatee, item title), do NOT emit an action — ask for the missing detail in text.
 - **If the user's ask maps to an action TYPE not in the list above** (making a phone call, posting to Slack, sending SMS, sending a WhatsApp message AS the user from their personal WhatsApp identity), do NOT pick the nearest type that "sort of" fits. Say so plainly and offer the closest legitimate alternative or ask the user to clarify.
 
+- **"DID YOU…?" IS ANSWERED FROM THE DISPATCH RECORD, NEVER FROM THIS CONVERSATION.** When the user asks whether you did something — sent, told, informed, delegated, scheduled, saved — the ONLY valid source is the "What you actually did" block. Listed there ⇒ you did it, and say when, even if this conversation never mentions it. Absent from it ⇒ you did not, in that window. **Never answer from what you can or cannot remember in the thread.** On 2026-08-05 the user asked "did you inform Hamna about items delegated to her?" and got "No Sir, I have not" — one hour after the email went out, with her email and phone both on file. The record was there; only the transcript had moved on. Your memory of a conversation is not evidence about the world.
+
 - **NO CLOSEST-MATCH SUBSTITUTION — SAFETY-CRITICAL, ZERO EXCEPTIONS.** When the user provides an EXACT target (raw phone number, exact email address, or a name that doesn't appear verbatim in the Candidates block), you MUST NOT substitute a "closest match" or "similarly-named" contact. Silent substitution has caused real harm — sending a test message to the wrong person (Ahmad Sheikh received an unsolicited "Suzi-Smoke test" when the user meant a different number). If the exact target isn't in Candidates, respond: *"I don't have <exact target> in your contacts. Give me the correct email/number, or tell me who exactly you mean."* Never guess. Never pick "the closest one". Never assume the user meant someone else just because their query is close to another contact's name. This applies to send_email, notify_via_whatsapp, schedule_meeting, delegate_open_item — every action that dispatches to a human.
 
 - **WhatsApp from the user's personal number is FORBIDDEN. WhatsApp from the Nexeo notifier number on the user's behalf is ALLOWED via \`notify_via_whatsapp\`.** Distinction matters and the user can tell:
@@ -2143,6 +2145,17 @@ export async function compose(
       // follow-up ("tell me its status") resolves against the exact
       // record id, not just the previous answer's prose.
       const artifactsBlockForReasoning = renderArtifactsBlock(history);
+      // DEF-037: renderArtifactsBlock reads the TRANSCRIPT, so an action drops
+      // out of view the moment it leaves the trimmed history window. That is
+      // why "did you inform Hamna?" got "No Sir, I have not" an hour after the
+      // email went out. This block is read from brain_action_artifacts — the
+      // row was always there — so "did I?" becomes a lookup, not a guess.
+      const dispatchLedgerBlock = await (async () => {
+        try {
+          const { buildDispatchLedgerBlock } = await import('./dispatchLedgerService');
+          return await buildDispatchLedgerBlock(userId, clientNumber);
+        } catch { return ''; }
+      })();
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -2158,6 +2171,7 @@ export async function compose(
           contactProvenance: contactProvenanceBlock || undefined,
           dayBrief: dayBriefBlock || undefined,
           artifacts: artifactsBlockForReasoning || undefined,
+          dispatchLedger: dispatchLedgerBlock || undefined,
         },
       });
       if (result) {
@@ -6338,16 +6352,26 @@ export async function dispatchPendingDirect(
       const brainDisplayName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
       try {
         const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
-        const { renderOutboundMessage } = await import('../notifications/outboundMessageTemplate');
+        const {
+          renderOutboundMessage, isFirstContactWith, markIntroduced,
+        } = await import('../notifications/outboundMessageTemplate');
         const substantive = normalizeWhatsAppSubstantiveMessage(String(slots.message), recipientName);
+        // DEF-049: a stranger gets one line saying who is writing and where
+        // their reply goes; everyone after that just gets the message.
+        const candidateId = typeof slots.recipientCandidateId === 'string'
+          ? slots.recipientCandidateId : undefined;
+        const firstContact = await isFirstContactWith(candidateId);
         // Owner-specified template (2026-08-05). One renderer for every
         // channel — the previous per-channel wording is exactly how WhatsApp
         // and email came to speak in two different voices.
         const outbound = renderOutboundMessage(substantive, {
           brainName: brainDisplayName, userName,
-        });
+        }, { firstContact });
         const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, outbound, userId);
         if (r.ok) {
+          // Only after a confirmed send — a failed send must not consume the
+          // introduction and leave the next message reading like a stranger's.
+          if (firstContact) void markIntroduced(candidateId);
           return {
             ok: true,
             artifactId: r.waMessageId,
