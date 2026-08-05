@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.5 · **Last updated:** 2026-08-05 13:15 PKT
+**Version:** v2.6 · **Last updated:** 2026-08-05 14:10 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -36,6 +36,7 @@ is the point: this record has to be able to say "this did not help".
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
 | v2.1 | 2026-08-05 11:20 | CL-020 assessed. DEF-024 recorded as having recurred TWICE while undeployed — the infinite "send" loop is that defect. DEF-018 added to D-6 scope. |
+| v2.6 | 2026-08-05 14:10 | **D-8 deployed** at `8d4e2a7`, unverified. Two cognitive-architecture proposals reviewed against measured evidence (CL-024) — both rejected as rewrites, four concepts adopted. Three structural defects opened: DEF-036 (2,176-line `compose()` as a defect generator), DEF-037 (untyped knowledge provenance, parent of four open defects), DEF-038 (confirmation policy — owner rule: confirm only for abnormal or risky, after naming the risk). |
 | v2.5 | 2026-08-05 13:15 | DEF-035 root cause found (confirmation checked AFTER re-reasoning). D-8 opened. The DEF-032 warning shipped in D-7 is what exposed it — a diagnostic paying for itself. |
 | v2.4 | 2026-08-05 12:05 | D-7 deployed. BLD-001 fully reversed — the owner-owned file removed from production (it had never been there before my commit; local copy intact). Awaiting one live dictation test to verify D-6 + D-7 together. |
 | v2.3 | 2026-08-05 11:55 | DEF-017 fixed structurally (partial-answer split + residual to the shared compose path + due-date sanity window). D-7 opened with pre-deploy analysis. |
@@ -59,7 +60,8 @@ Assessed 2026-08-05 11:00 PKT. **LIVE** = confirmed on production traffic, not j
 | Counterpart reply → open-item update | ⚠️ deployed, **unverified** | needs a delegatee reply |
 | Native typing / recording indicator | ❌ fixed, **not deployed** | DEF-025 |
 | Multi-item dictation (priority + deadline batch) | ⚠️ fixed, **not deployed** | DEF-017, DEF-023 |
-| Confirming a plan with "send" | ⚠️ root cause found + fixed, **not deployed** | DEF-035 — ordering, not the constraint |
+| Confirming a plan with "send" | ⚠️ **deployed 13:44, unverified** | DEF-035 — ordering, not the constraint |
+| Acting on an instruction WITHOUT asking to confirm | ❌ not built | DEF-038 — blanket preview on every action |
 | Preview shows WHICH items are affected | ❌ fixed, **not deployed** | DEF-018 |
 | WhatsApp calling | ⛔ absent by design | owner excluded it |
 
@@ -78,7 +80,7 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
-| D-8 | *pending* | `HEAD` | DEF-035, DEF-032, DEF-033 | **Predicted:** "send"/"confirm" DISPATCHES the plan shown — the loop ends and items are actually delegated. **Risk:** the guard is narrow (bare confirmation + `preview_shown` only) so a mis-phrased confirmation still falls through to the old path; a guard failure falls through rather than breaking the turn. **Judged by:** list undelegated items → "delegate these to hamna latif" → "send" → expect real delegation lines, then ask "what is delegated to Hamna" and expect the items to appear. | — | UNVERIFIED |
+| D-8 | **08-05 13:44** | `8d4e2a7` | DEF-035 (DEF-032/033 reached prod earlier, ~13:00) | **Predicted:** "send"/"confirm" DISPATCHES the plan shown — the loop ends and items are actually delegated. **Risk:** the guard is narrow (bare confirmation + `preview_shown` only) so a mis-phrased confirmation still falls through to the old path; a guard failure falls through rather than breaking the turn. **Judged by:** list undelegated items → "delegate these to hamna latif" → "send" → expect real delegation lines, then ask "what is delegated to Hamna" and expect the items to appear. | Build clean (`tsc` silent), boot 13:44:38, WhatsApp ready 13:44:49 on `+923274572102`, 4 min clean traffic, no stack traces. **Behaviour NOT exercised — the 4-step sequence has not been run.** Correction to the handoff: production was on `1880538`, not `4ec5d99`, so DEF-032/033 were already live — and CL-023 proves the DEF-032 displacement notice fired correctly on the owner's own "send", which is what exposed DEF-035. | **UNVERIFIED** |
 | D-7 | **08-05 12:02** | `4ec5d99` | DEF-017 | **Predicted:** a dictated compound instruction no longer loses its tail — the priority is recorded AND the due date + delegation are acted on; a past/absurd deadline is refused instead of written. **Risk:** the classifier could split badly and send a wrong residual to chat — mitigated because an incomplete split is rejected outright and low confidence falls through unchanged. **Judged by:** with a priority prompt awaiting, say "Priority High, due date Friday and delegate to Hamna" → expect the priority recorded AND a follow-up acting on date+delegation. | build clean, service online; behaviour **not yet exercised**. Side effect: the pull also REVERSED BLD-001 — `nexeo_self_learning&development.md` removed from production (1681 lines). It had never existed there before my commit created it, so prod is back to its original state and the local copy is intact at 42KB. | UNVERIFIED |
 | D-6 | **08-05 11:40** | `7ace0f5` | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | **schema VERIFIED**: `pg_indexes` shows only the partial `…active_uq`, no `(user_id,channel,status)` index → DEF-024's root cause is gone from production. Build clean, app up. Behaviour (send-loop, previews, typing) **not yet exercised** | **PARTIAL** — 1 of 4 verified |
 
@@ -128,6 +130,16 @@ from evidence — never from expectation:
 | **Still broken** | DEF-017 compound commands (structural, untouched) · DEF-019–022 · DEF-026–031 |
 | **Verdict** | **PARTIAL** — 1 of 4 verified. Next action: one live test (delegate 3 items → preview should name them → "send" should dispatch, not loop). |
 
+#### D-8 report — 2026-08-05 13:44 PKT · HEAD `8d4e2a7`
+
+| | |
+|---|---|
+| **Intended** | DEF-035 confirmation beats re-planning (the send loop) · DEF-032 displacement made visible · DEF-033 test-email template locked |
+| **Verified** | **DEF-032 VERIFIED (LIVE)** — but at `1880538`, before this deploy: CL-023 shows the displacement notice firing on the owner's own "send". A diagnostic that paid for itself by exposing DEF-035. Infrastructure this deploy: build clean, boot 13:44:38, WhatsApp ready 13:44:49. |
+| **Not verified** | **DEF-035 — the one that matters.** The 4-step sequence has not been run. Process online is not behaviour. DEF-033 also unexercised. |
+| **Still broken** | The owner still cannot complete a delegation without saying "send" (DEF-038, now the top product defect) · DEF-019–022, DEF-026–031, DEF-034 · the two structural parents DEF-036, DEF-037 |
+| **Verdict** | **UNVERIFIED.** Next action: run `list undelegated → delegate to hamna latif → send → what is delegated to Hamna`. If step 3 returns the preview again, the DEF-035 root cause was wrong and the ordering theory dies with it. |
+
 ---
 
 ## 3. Recurrence table — the anti-circling instrument
@@ -140,7 +152,7 @@ did not close the class.**
 | `whatsapp-lid-activity-rejected` | **4** | 12, 14, 15, 16 | contained structurally — see below |
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
 | `pending-prompt-eats-command` | **3** | 3, 13, 17 | fix written (DEF-017) — **structural: the verdict can now SPLIT a message**; undeployed |
-| `confirm-never-dispatches` | **3** | 15, 17, CL-020 | fix written (DEF-024) — **undeployed, so it keeps recurring** |
+| `confirm-never-dispatches` | **4** | 15, 17, CL-020, CL-023 | DEF-024 (schema) deployed and did NOT close it — the 4th recurrence exposed the real cause, DEF-035 (ordering), deployed 13:44 and **unverified**. Structural follow-up: DEF-038 removes the confirm step for instructed actions, which deletes the class rather than fixing it |
 | `preview-unconfirmable` | **2** | 17, CL-020 | fix written (DEF-018) — undeployed |
 | `phantom-capability` | 1 | 17 | closed (`DISPATCHABLE_PLAN_STEP_KINDS`) |
 
