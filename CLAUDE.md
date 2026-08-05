@@ -33,13 +33,16 @@ architecture map. This file holds the short-form stack notes only.
 
 ## Working protocol for Brain changes (owner ruling, 2026-08-05)
 
-Two documents govern every Brain change. Both are updated in the SAME session as the work:
+THREE documents govern every Brain change. All are updated in the SAME session as the work:
 
-- `server/docs/brain_chat_log.md` — every chat log the owner sends, registered as
-  `CL-NNN` with date-time and what was OBSERVED (their side, before diagnosis).
-- `server/docs/brain_evaluation_ledger.md` — what was DONE: `DEF-NNN` with reported and
-  resolved date-times, root cause, fix commit, verification, and the §2 recurrence table.
-  Carries a ledger version + revision history.
+- `server/docs/brain_change_log.md` — errors recorded → root cause → solution → commit →
+  DEPLOYED? → verification. Stable `DEF-NNN`. `DEPLOYED` is never the same as `VERIFIED`.
+- `server/docs/brain_chat_log.md` — every chat log the owner sends, as `CL-NNN` with
+  date-time and what was OBSERVED (their side, before diagnosis), plus what went RIGHT.
+- `server/docs/brain_evaluation_chart.md` — are we moving ahead? A row PER DEPLOY with
+  predicted impact and regression risk written BEFORE, observed result written AFTER, and a
+  verdict (PROGRESS / NEUTRAL / REGRESSION / UNVERIFIED). Holds the capability state, the
+  recurrence table and the trend.
 
 **The three rules:**
 
@@ -49,8 +52,8 @@ Two documents govern every Brain change. Both are updated in the SAME session as
 2. **Every change moves a row.** No fix ships without its DEF row updated (resolved
    date-time, commit, verification). A defect reaches §3 only with root cause + fix commit
    + executable scenario + live acceptance for anything on a messaging path.
-3. **Check both docs BEFORE coding, and say the verdict out loud:** *progressing* (new root
-   cause, first occurrence) or *circling* (symptom tag already in §2 — the earlier fix
+3. **Check all three docs BEFORE coding, and say the verdict out loud:** *progressing* (new root
+   cause, first occurrence) or *circling* (symptom tag already in the chart §3 — the earlier fix
    failed to close the class, so a STRUCTURAL fix is required, never another patch on the
    reported instance).
 
