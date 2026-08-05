@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v3.1 · **Last updated:** 2026-08-05 15:15 PKT
+**Version:** v3.2 · **Last updated:** 2026-08-05 18:05 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -157,6 +157,7 @@ did not close the class.**
 | `whatsapp-lid-activity-rejected` | **4** | 12, 14, 15, 16 | contained structurally — see below |
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
 | `pending-prompt-eats-command` | **3** | 3, 13, 17 | fix written (DEF-017) — **structural: the verdict can now SPLIT a message**; undeployed |
+| **`confirm-misfires`** | **5** | 15, 17, CL-020, CL-023, CL-029 | DEF-024 → DEF-032 → DEF-035 → DEF-055. **Two of the four were introduced by the fix before them.** A patch on the reported instance has now failed four times running; DEF-038 (no confirmation step for instructed actions) is the only remaining structural move and it is overdue |
 | `confirm-never-dispatches` | **4** | 15, 17, CL-020, CL-023 | DEF-024 (schema) deployed and did NOT close it — the 4th recurrence exposed the real cause, DEF-035 (ordering), deployed 13:44 and **unverified**. Structural follow-up: DEF-038 removes the confirm step for instructed actions, which deletes the class rather than fixing it |
 | **`guard-below-early-return`** | **2** | DEF-035, DEF-039 | **NEW TAG, 2026-08-05 — the dominant failure shape.** `compose()` has ~14 early return points and its protections sit near the bottom, so whichever branch returns first skips them. DEF-035: confirm reducer below the reasoning gate. DEF-039: idempotency + artifact ledger inside the branch the new guard bypassed. DEF-041: the empty-promise guard at 2705/3794 unreachable from the reasoning path that returns at 2100 — which let a false statement reach a real person. **Three instances in one day is not coincidence; it is DEF-036 (the 2,176-line function) producing defects on schedule.** No further patch in this class is acceptable — the decomposition is the fix |
 | **`protection-with-two-implementations`** | **4 in ONE DAY** | DEF-039, DEF-041, DEF-044, DEF-045 | **The most expensive shape found today.** DEF-039: idempotency + artifact ledger existed only inside the branch a new guard bypassed. DEF-041: the empty-promise regex existed twice — the copy on the live path was the weaker one, under a comment asserting the two were in sync and that it was canonical. Both false for months. **A protection with two implementations has one real implementation and one comforting fiction, and the fiction is what gets read during review.** DEF-044: preview renderer names items by title, result renderer prints raw cuids. DEF-045: the target guard runs at dispatch but not at preview, so the same lookup returning null means "show a placeholder" in one place and "refuse" in the other. Containment in every case: one owner, one implementation, CI-enforced. **This is now the dominant defect shape in the system — ahead of the monolith (DEF-036) that I ranked first this morning.** |

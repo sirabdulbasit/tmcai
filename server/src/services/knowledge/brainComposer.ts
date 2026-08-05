@@ -1901,7 +1901,33 @@ export async function compose(
     const q = question.trim().toLowerCase().replace(/[.!]+$/, '');
     const isBareConfirm = q.length <= 30
       && /^(yes|yep|yeah|send|send it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|sure|approve|approved|ship\s+it|please\s+do|kar\s+do|theek\s+hai|haan)$/i.test(q);
-    if (isBareConfirm) {
+    // ── DEF-055 (2026-08-05 18:00) — "yes" MUST answer the LAST question ──
+    //
+    // A bare confirmation is not a licence to dispatch any stored preview. At
+    // 18:00 the owner was asked "I can record a note on her contact profile —
+    // would you like me to do that?", answered "yes", and this guard found a
+    // STALE preview_shown pending from the 17:17 Hamna flow and sent that
+    // instead. A WhatsApp went to a third party that he had not authorised in
+    // that turn, and the note he did ask for was never written.
+    //
+    // My DEF-035 guard caused it. It asked two questions — is this a bare
+    // confirmation, and does a preview exist — and never the one that matters:
+    // IS THAT PREVIEW WHAT BRAIN JUST ASKED ABOUT? A human assistant who asks
+    // "shall I add a note?" and hears "yes" does not send yesterday's email.
+    //
+    // So the preview must be the most recent thing Brain said. If Brain has
+    // since asked anything else, the confirmation belongs to that, and this
+    // turn falls through to normal reasoning where the question can be
+    // answered properly.
+    const lastBrainTurn = [...history].reverse().find((h) => h.role === 'brain')?.text ?? '';
+    const lastBrainWasThePreview = /\b(?:reply\s+"?send"?\s+to\s+confirm|please\s+confirm|before\s+i\s+(?:send|proceed|do that))\b/i
+      .test(lastBrainTurn);
+    if (isBareConfirm && !lastBrainWasThePreview && lastBrainTurn) {
+      console.info('[compose] early-confirm SKIPPED — a bare confirm, but the last thing Brain said was not the preview', {
+        userId, clientNumber, lastBrainHead: lastBrainTurn.slice(0, 80),
+      });
+    }
+    if (isBareConfirm && (lastBrainWasThePreview || !lastBrainTurn)) {
       try {
         const { getActivePending } = await import('./pendingActionService');
         const outstanding = await getActivePending(userId, confirmChannel).catch(() => null);
