@@ -5748,6 +5748,43 @@ async function updateContactGuarded(
     if (edit.newPhone) { data.phone = edit.newPhone; changes.push(`phone → ${edit.newPhone}`); }
     if (edit.newName) { data.name = edit.newName; changes.push(`name → ${edit.newName}`); }
     if (changes.length === 0) return { ok: false, message: `[update_contact: no fields to change]` };
+
+    // ── DEF-051 (2026-08-05) — the collision check, at the WRITER ─────
+    //
+    // This is where the two Hamna rows were actually created. On 14 July
+    // auto-discovery correctly made a pushname row for +923134199294 because
+    // no contact held that number. At 14:09 on 08-05 the owner said "this is
+    // her number" and this function wrote it onto the OTHER Hamna row without
+    // ever asking whether somebody already had it. Two rows, one phone,
+    // instantly — and names too different for the janitor to group.
+    //
+    // Merging afterwards (DEF-051's pruner half) cleans up the backlog. Only a
+    // check here stops new ones, and the sequence that creates them is the
+    // ordinary one: someone messages before they are saved, then the owner
+    // supplies their number for the contact he already had.
+    const collidingWith = await (async () => {
+      const digits = (edit.newPhone ?? '').replace(/[^0-9]/g, '');
+      const or: any[] = [];
+      if (edit.newEmail) or.push({ email: { equals: edit.newEmail, mode: 'insensitive' } });
+      if (digits.length >= 7) or.push({ phone: { contains: digits.slice(-9) } });
+      if (or.length === 0) return null;
+      return prisma.entity.findFirst({
+        where: { clientNumber, entityType: 'contact', id: { not: ent.id }, OR: or } as any,
+        select: { id: true, name: true, email: true, phone: true },
+      }).catch(() => null);
+    })();
+    if (collidingWith) {
+      // Do not merge unilaterally — the owner may genuinely have two people on
+      // one office line. Name who holds it and let him decide.
+      const what = edit.newEmail && collidingWith.email ? 'email' : 'number';
+      return {
+        ok: false,
+        artifactId: ent.id,
+        message: `That ${what} is already on ${collidingWith.name}. `
+          + `Tell me to merge them into one contact, or which of the two should keep it.`,
+      };
+    }
+
     const { updateEntity } = await import('../entityService');
     await updateEntity(ent.id, clientNumber, data as any);
     // Keep the entity_person wiki page metadata in sync so the stale

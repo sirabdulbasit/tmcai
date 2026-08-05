@@ -1079,6 +1079,37 @@ export class WebjsProvider implements IWhatsAppProvider {
     // so each inbound is processed exactly once.
     client.on('message_create', handleInboundEvent);
 
+    // ─── DEF-052: delivery acknowledgements ───────────────────────────
+    //
+    // Owner, 2026-08-05: "there is a whatsapp standard function showing
+    // single tick mean message has sent and double tick mean messages has
+    // received so why don't it read it?" He was right — nothing in the
+    // codebase listened for `message_ack`, so after every send Brain said
+    // "WhatsApp accepted the message but did not return a receipt ID", and
+    // the uncertainty was entirely self-inflicted: the answer arrives seconds
+    // later on an event we never subscribed to.
+    //
+    // ack levels: 1 sent (✓) · 2 delivered (✓✓) · 3 read (blue) · 4 played.
+    // Recorded against whatsapp_messages by provider message id so "did she
+    // get it?" is answered from a fact rather than an inference (DEF-037).
+    //
+    // Guarded and non-fatal throughout: an ack is observability, and losing
+    // one must never disturb the message pipeline.
+    client.on('message_ack', (msg: any, ack: number) => {
+      void (async () => {
+        try {
+          if (!msg?.fromMe) return;
+          const providerId = msg?.id?._serialized ?? msg?.id?.id ?? null;
+          if (!providerId || typeof ack !== 'number' || ack < 1) return;
+          const status = ack >= 3 ? 'read' : ack === 2 ? 'delivered' : 'sent';
+          const { recordOutboundAck } = await import('./outboundAckService');
+          await recordOutboundAck({ clientNumber, providerId, ack, status });
+        } catch {
+          /* observability only — never disturb the pipeline */
+        }
+      })();
+    });
+
     // ─── Incoming call auto-reject ────────────────────────────────────
     // Policy (Basit, 2026-06-10): "only brain will call user, where user
     // will not call to brain, if user calls, that will not be entertained".

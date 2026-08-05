@@ -2092,7 +2092,7 @@ router.post('/decide', async (req: Request, res: Response) => {
       } else {
         const { callLLM } = await import('../services/llmRouter');
         const { withUserPrompts } = await import('../services/knowledge/userPromptService');
-        const baseSys = `You are drafting a concise, professional reply on behalf of the user. 2-4 sentences. Match the MD's tone — polite, direct, no filler. Do NOT fabricate facts; if more info is needed, ask one clear question. NEVER mention MyOS, Brain, AI, or automation.`;
+        const baseSys = `You are drafting a concise, professional reply on behalf of the user. 2-4 sentences. Match the MD's tone — polite, direct, no filler. Do NOT fabricate facts; if more info is needed, ask one clear question. If asked directly whether this is automated, answer truthfully — never claim to be a person.`;
         const sys = await withUserPrompts(baseSys, user.id, 'draft_reply');
         const userMsg = `Incoming email:\nFrom: ${(event.rawPayload as any)?.from ?? event.senderEmail ?? ''}\nSubject: ${(event.rawPayload as any)?.subject ?? ''}\nPreview: ${String((event.rawPayload as any)?.snippet ?? '').slice(0, 600)}\n${body.note ? `\nWhat the user wants to say: ${body.note}` : ''}\n\nWrite only the reply body. No salutation or signature.`;
         const r = await callLLM(sys, userMsg, {
