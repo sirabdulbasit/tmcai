@@ -1538,9 +1538,84 @@ If the "Open items snapshot" block above contains a row whose title fragment mat
  *  so the prompt stays bounded. We include rows where ownerUserId
  *  matches this user OR scope='tenant' OR createdBy matches this
  *  user (the same filter contactResolver uses post-leak-fix). */
+/** DEF-050 — name tokens in the user's message, for CONTACT RETRIEVAL.
+ *
+ *  A prefilter, never a decision: it only widens which rows are shown to the
+ *  model. The model still chooses, and `actionTargetGuard` still grounds the
+ *  choice at dispatch. That is the allowed use of a regex under the
+ *  no-hardcoded-judgement rule.
+ *
+ *  Deliberately broader than `pickToneRecipientsFromMessage`'s pattern, which
+ *  requires to|email|message|reply|draft|notify and therefore missed the
+ *  owner's actual phrasing — "ASK Hamna that will she come office tomorrow".
+ */
+export function extractNameTokens(question: string): string[] {
+  const STOP = new Set([
+    'ask', 'tell', 'send', 'email', 'message', 'reply', 'draft', 'notify', 'remind',
+    'with', 'about', 'that', 'will', 'she', 'her', 'him', 'his', 'they', 'them',
+    'come', 'office', 'tomorrow', 'today', 'yesterday', 'please', 'kindly', 'sir',
+    'the', 'and', 'for', 'from', 'this', 'what', 'when', 'where', 'have', 'has',
+    'delegate', 'delegated', 'follow', 'check', 'status', 'update', 'item', 'items',
+    'whether', 'coming', 'going', 'coffee', 'call', 'meeting', 'schedule',
+  ]);
+  const raw = (question ?? '').trim();
+  if (raw.length < 3) return [];
+
+  // Capitalised words are the strongest signal for a person's name, so they
+  // are tried first — but only when they are not sentence-initial noise.
+  const capitalised = (raw.match(/\b[A-Z][a-zA-Z'’-]{2,}\b/g) ?? [])
+    .map((t) => t.toLowerCase())
+    .filter((t) => !STOP.has(t));
+
+  // Fallback for all-lowercase typing: whatever follows an addressing verb.
+  const after = raw.toLowerCase()
+    .match(/\b(?:ask|tell|to|email|message|reply|notify|remind|with)\s+([a-z][a-z\s.'’-]{2,40})/i);
+  const afterTokens = after
+    ? after[1].trim().split(/\s+/).map((t) => t.replace(/[^a-z'’-]/gi, '')).filter((t) => t.length >= 3 && !STOP.has(t))
+    : [];
+
+  return Array.from(new Set([...capitalised, ...afterTokens])).slice(0, 4);
+}
+
+/** DEF-050 — contacts the user NAMED in this turn, retrieved regardless of
+ *  rank. Unlike the ranked list this is not capped by popularity: if you said
+ *  a name, that person must be visible to the model. Email is not required —
+ *  a phone-only row is exactly what a WhatsApp ask needs. */
+async function findContactsNamedIn(
+  question: string,
+  userId: number,
+  clientNumber: string,
+): Promise<Array<{ id: string; name: string; email: string | null; phone: string | null; relationshipStrength: number | null }>> {
+  const tokens = extractNameTokens(question);
+  if (tokens.length === 0) return [];
+  try {
+    return await prisma.entity.findMany({
+      where: {
+        clientNumber, entityType: 'contact',
+        OR: [
+          { scope: 'tenant' as any },
+          { ownerUserId: userId } as any,
+          { AND: [{ ownerUserId: null } as any, { createdBy: userId }] },
+        ],
+        // ANY token may match — "Hamna" alone must find "Hamna Latif Bhutta".
+        // Requiring ALL tokens (as the tone matcher does) fails the moment the
+        // user types a first name only, which is the common case.
+        AND: [{ OR: tokens.map((t) => ({ name: { contains: t, mode: 'insensitive' as any } } as any)) }],
+      } as any,
+      select: { id: true, name: true, email: true, phone: true, relationshipStrength: true },
+      orderBy: [{ relationshipStrength: 'desc' as any }, { lastInteraction: 'desc' }],
+      take: 12,
+    }) as any;
+  } catch (e: any) {
+    console.warn('[reasoning] findContactsNamedIn failed', { error: e?.message, userId });
+    return [];
+  }
+}
+
 async function buildCandidatesBlockForReasoning(
   userId: number,
   clientNumber: string,
+  question = '',
 ): Promise<string> {
   try {
     const rows = await prisma.entity.findMany({
@@ -1563,6 +1638,27 @@ async function buildCandidatesBlockForReasoning(
       ],
       take: 60,
     });
+
+    // ── DEF-050 (2026-08-05) — the cap used to decide who EXISTS ────────
+    //
+    // `take: 60` over 620 contacts, ranked by relationship strength, built
+    // WITHOUT reference to the question. "Hamna Latif Bhutta" ranks 419, so she
+    // was never in the list. Brain told the owner "I don't have contact details
+    // for Hamna Latif" — and on an earlier turn emitted
+    // `cmowq07k70gkqrtk53b8b1a8f`, a well-formed cuid belonging to no row in
+    // any table. Shown a list without the person in it, the model invented a
+    // plausible id rather than reporting that it could not see them.
+    //
+    // Raising the cap only moves the cliff. The real error was building a
+    // generic top-N and hoping the person the user just NAMED was inside it.
+    // So the people named in the message are retrieved explicitly and put
+    // first; the ranked list fills the remainder.
+    const named = await findContactsNamedIn(question, userId, clientNumber);
+    const seen = new Set(named.map((r: any) => r.id));
+    const merged = [...named, ...rows.filter((r: any) => !seen.has(r.id))];
+    rows.length = 0;
+    rows.push(...(merged as any[]).slice(0, 80));
+
     if (rows.length === 0) return '';
     // Format: candidateId = entity row id (already stable). Reasoning
     // MUST emit candidateId (not raw email) for recipient/attendee
@@ -1880,7 +1976,7 @@ export async function compose(
             const data = await getDayBrief({ clientNumber, userId });
             return renderDayBriefBlock(data);
           })().catch(() => ''),
-          buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+          buildCandidatesBlockForReasoning(userId, clientNumber, question).catch(() => ''),
           buildContactProvenanceBlock(clientNumber, userId, question).catch(() => ''),
         ]);
         dayBriefBlock = brief;
@@ -1896,7 +1992,7 @@ export async function compose(
           contactProvenanceBlock,
         ] = await Promise.all([
           buildOpenItemsBlockForReasoning(userId, clientNumber).catch(() => ''),
-          buildCandidatesBlockForReasoning(userId, clientNumber).catch(() => ''),
+          buildCandidatesBlockForReasoning(userId, clientNumber, question).catch(() => ''),
           mentionsEmail
             ? buildRecentEmailsBlock(clientNumber, userId).catch(() => '')
             : Promise.resolve(''),
