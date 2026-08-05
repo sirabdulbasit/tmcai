@@ -52,7 +52,13 @@ THREE documents govern every Brain change. All are updated in the SAME session a
 2. **Every change moves a row.** No fix ships without its DEF row updated (resolved
    date-time, commit, verification). A defect reaches §3 only with root cause + fix commit
    + executable scenario + live acceptance for anything on a messaging path.
-3. **Check all three docs BEFORE coding, and say the verdict out loud:** *progressing* (new root
+3. **Report the evaluation chart at EVERY deploy** (owner ruling 2026-08-05). The standing
+   five-line format is in the chart §2.1: Deploy · Intended · Verified (with evidence) ·
+   Still broken · Verdict + next action. Anything not exercised is stated as NOT VERIFIED,
+   never assumed.
+4. **Never `git add <directory>`** — always name files. A directory add committed an
+   owner-owned file that AGENTS.md forbids (BLD-001, 2026-08-05).
+5. **Check all three docs BEFORE coding, and say the verdict out loud:** *progressing* (new root
    cause, first occurrence) or *circling* (symptom tag already in the chart §3 — the earlier fix
    failed to close the class, so a STRUCTURAL fix is required, never another patch on the
    reported instance).

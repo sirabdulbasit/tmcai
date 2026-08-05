@@ -1,6 +1,6 @@
 # Brain Change Log
 
-**Version:** v1.1 · **Last updated:** 2026-08-05 11:20 PKT
+**Version:** v1.2 · **Last updated:** 2026-08-05 11:45 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -41,10 +41,10 @@
 | DEF-014 | 07-27 17:25 | Delegation sends refused **6 days**; `[no tenant whatsapp channel configured]` | probe echo compared against ONE Wid spelling; then 3 in-memory flags self-locked with no exit | `@lid`-aware echo set; `recordOutboundProof` re-arms; `repairReason` splits liveness from pairing | `5e3f3c1` | 07-31 | **VERIFIED (LIVE)** 07-31 |
 | DEF-015 | 08-03 | Yousaf's reply vanished; Brain claimed "connection degraded" | inbound door resolved counterpart phone via `getContact()` only, which throws on `@lid` | shared `waIdentity.lidToPhone` as second limb | `72ed7f6` | 08-04 | DEPLOYED (unverified) — needs a counterpart reply |
 | DEF-016 | 08-04 | **Voice notes unreadable** ("I could not read that voice note") | `downloadMedia` resolves the message from an id that EMBEDS `@lid`; the lookup throws before any network call | `webjsMediaDirect` — locate by string compare, then run the library's own download | `889edc0`, `b11fa3c` | 08-04 | **VERIFIED (LIVE)** 08-04 19:37 |
-| DEF-023 | 08-04 20:00 | Confirmed 3-step plan died: `[Unknown pending action kind: updateopenitem]` — all updates lost | `update_open_item` was registry-valid, validated, previewed and confirmed but had NO dispatcher case | shared `applyOpenItemUpdate`; missing case added; `DISPATCHABLE_PLAN_STEP_KINDS` guard rejects undispatchable steps before confirmation | `666fb2a` | not yet | FIXED (not deployed) |
-| DEF-024 | 08-03 | `[actionplan failed to queue]`, then **08-04 20:25 the infinite preview loop** — "send" twice, same preview back, nothing dispatched | legacy `UNIQUE(user_id,channel,status)`; `startPending` throws, compose swallows it, **no pending row persisted, so "send" has nothing to confirm** and reasoning re-proposes forever. The 20260522 migration documents this EXACT symptom but dropped a **guessed** constraint name and silently no-op'd for 74 migrations | migration matching by COLUMN SET not name; `startPending` survives the collision by deleting stale rows | `76739af` | **not yet — this is why the loop persists** | FIXED (not deployed) · **2 recurrences while undeployed** |
-| DEF-025 | 08-04 | No native typing/recording indicator on any turn | `sendChatstate` calls generic `createWid()` on an `@lid` id; WhatsApp keeps LID constructors separate | `webjsChatStateDirect` picks the constructor by domain | `c1e5ceb` | not yet | FIXED (not deployed) |
-| DEF-018 | 08-04 19:57, again 20:25 | Preview unconfirmable: "update open item" ×3, then "Delegate item to Hamna Latif Bhutta" ×3 — no item names, so three indistinguishable approvals | `renderPlanPreview` had no case for either kind; the default branch stringifies the bare kind | explicit cases naming the item TITLE plus every changed field; tenant+user scoped lookup | `HEAD` | not yet | FIXED (not deployed) |
+| DEF-023 | 08-04 20:00 | Confirmed 3-step plan died: `[Unknown pending action kind: updateopenitem]` — all updates lost | `update_open_item` was registry-valid, validated, previewed and confirmed but had NO dispatcher case | shared `applyOpenItemUpdate`; missing case added; `DISPATCHABLE_PLAN_STEP_KINDS` guard rejects undispatchable steps before confirmation | `666fb2a` | 08-05 11:40 | DEPLOYED (unverified) |
+| DEF-024 | 08-03 | `[actionplan failed to queue]`, then **08-04 20:25 the infinite preview loop** — "send" twice, same preview back, nothing dispatched | legacy `UNIQUE(user_id,channel,status)`; `startPending` throws, compose swallows it, **no pending row persisted, so "send" has nothing to confirm** and reasoning re-proposes forever. The 20260522 migration documents this EXACT symptom but dropped a **guessed** constraint name and silently no-op'd for 74 migrations | migration matching by COLUMN SET not name; `startPending` survives the collision by deleting stale rows | `76739af` | **08-05 11:40** | **DEPLOYED · schema VERIFIED** (legacy index absent from `pg_indexes`); send-loop behaviour not yet exercised |
+| DEF-025 | 08-04 | No native typing/recording indicator on any turn | `sendChatstate` calls generic `createWid()` on an `@lid` id; WhatsApp keeps LID constructors separate | `webjsChatStateDirect` picks the constructor by domain | `c1e5ceb` | 08-05 11:40 | DEPLOYED (unverified) |
+| DEF-018 | 08-04 19:57, again 20:25 | Preview unconfirmable: "update open item" ×3, then "Delegate item to Hamna Latif Bhutta" ×3 — no item names, so three indistinguishable approvals | `renderPlanPreview` had no case for either kind; the default branch stringifies the bare kind | explicit cases naming the item TITLE plus every changed field; tenant+user scoped lookup | `7ace0f5` | 08-05 11:40 | DEPLOYED (unverified) |
 
 ## B. Open
 
@@ -66,10 +66,22 @@
 
 ---
 
-## C. Undeployed work waiting on the box
+## C. Builder-process defects (mine, not Brain's)
 
-`DEF-018`, `DEF-023`, `DEF-024`, `DEF-025` are fixed, pushed and **not yet on production**.
-**DEF-024 has now recurred twice while sitting undeployed** — the infinite "send" loop the
-owner hit on 08-04 20:25 is that exact defect. Deploying is the single highest-value action
-available. `DEF-024` includes a migration
+Recorded because they cost the owner real time and must not repeat.
+
+| ID | Date | What I did wrong | Consequence | Correction |
+|---|---|---|---|---|
+| BLD-001 | 08-05 11:40 | Used `git add server/docs/` (directory add) instead of naming files | Committed and pushed `server/docs/nexeo_self_learning&development.md` — a file AGENTS.md explicitly forbids ever committing — and it landed on production via the pull | `git rm --cached` (kept on disk), added to `.gitignore`. **Rule: always name files in `git add`, never a directory.** History still contains it; purge available on request |
+| BLD-002 | 07-28→08-04 | Carried the open-defect queue in conversation instead of a document | Made months of real progress look like circling to the owner | The three-doc protocol |
+| BLD-003 | 08-04 | Reported a suite figure measured BEFORE the final edit | Claimed green while the tree was red | Re-run after the last change; quote commit-stamped numbers |
+| BLD-004 | 08-04 | Left DEF-024's fix pushed but undeployed while diagnosing other things | The same defect hit the owner three separate times | Deploy blockers before starting new diagnosis |
+
+## D. Undeployed work waiting on the box
+
+All of `DEF-018`, `DEF-023`, `DEF-024`, `DEF-025` were **deployed 2026-08-05 11:40** at HEAD
+`7ace0f5`. Nothing is waiting on the box.
+
+Awaiting live exercise: does "send" dispatch (DEF-024), do previews name items (DEF-018),
+do plan steps update (DEF-023), does native typing appear (DEF-025). `DEF-024` includes a migration
 (`20260804_pending_unique_any_name`), so the deploy needs `prisma migrate deploy`.

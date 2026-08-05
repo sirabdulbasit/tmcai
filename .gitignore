@@ -80,3 +80,6 @@ Required\ Architect/
 # Retained local history from the removed orch pipeline (kept on disk, never committed)
 crs/
 logs/
+
+# Owner-owned, never committed (AGENTS.md)
+server/docs/nexeo_self_learning&development.md

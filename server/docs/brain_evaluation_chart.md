@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.1 · **Last updated:** 2026-08-05 11:20 PKT
+**Version:** v2.2 · **Last updated:** 2026-08-05 11:45 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -36,6 +36,7 @@ is the point: this record has to be able to say "this did not help".
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
 | v2.1 | 2026-08-05 11:20 | CL-020 assessed. DEF-024 recorded as having recurred TWICE while undeployed — the infinite "send" loop is that defect. DEF-018 added to D-6 scope. |
+| v2.2 | 2026-08-05 11:45 | **D-6 deployed.** Schema side of DEF-024 verified on production by index list. Owner ruling: this chart is reported at EVERY deploy — §2.1 added as the standing post-deploy report format. |
 
 ---
 
@@ -74,7 +75,7 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
-| D-6 | *pending* | `d093e15`+ | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | — | UNVERIFIED |
+| D-6 | **08-05 11:40** | `7ace0f5` | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | **schema VERIFIED**: `pg_indexes` shows only the partial `…active_uq`, no `(user_id,channel,status)` index → DEF-024's root cause is gone from production. Build clean, app up. Behaviour (send-loop, previews, typing) **not yet exercised** | **PARTIAL** — 1 of 4 verified |
 
 ### D-6 pre-deploy analysis *(written before the deploy)*
 
@@ -95,6 +96,32 @@ deploy.
   `pg_indexes` shows only the partial `…active_uq`; text Nexeo → native "typing…".
 - **Explicitly NOT fixed by D-6:** DEF-017 (compound commands — the structural one),
   DEF-019–022, DEF-026–031.
+
+---
+
+### 2.1 Standing post-deploy report (owner ruling, 2026-08-05)
+
+**This chart is reported at EVERY deploy.** The report is exactly these five lines, filled
+from evidence — never from expectation:
+
+1. **Deploy** — id, HEAD, date-time.
+2. **Intended** — the DEFs it was supposed to fix.
+3. **Verified** — which of them are now confirmed working, and by what evidence
+   (owner report / DB query / log line). Anything not exercised is stated as *not verified*,
+   not assumed.
+4. **Still broken** — what a user can still not do after this deploy.
+5. **Verdict** — PROGRESS / NEUTRAL / REGRESSION / PARTIAL / UNVERIFIED, plus the single
+   highest-value next action.
+
+#### D-6 report — 2026-08-05 11:40 PKT · HEAD `7ace0f5`
+
+| | |
+|---|---|
+| **Intended** | DEF-018 previews name items · DEF-023 plan steps dispatch · DEF-024 "send" persists · DEF-025 native typing |
+| **Verified** | **DEF-024 root cause GONE from the database** — `pg_indexes` on `brain_pending_actions` returns only `pkey`, two plain indexes and the partial `brain_pending_actions_user_channel_active_uq`. No index over `(user_id, channel, status)`. The legacy constraint that swallowed every pending row is confirmed absent. Build clean, service online. |
+| **Not verified** | The three behaviours: does "send" dispatch, do previews name items, does native "typing…" appear. None exercised yet. |
+| **Still broken** | DEF-017 compound commands (structural, untouched) · DEF-019–022 · DEF-026–031 |
+| **Verdict** | **PARTIAL** — 1 of 4 verified. Next action: one live test (delegate 3 items → preview should name them → "send" should dispatch, not loop). |
 
 ---
 
