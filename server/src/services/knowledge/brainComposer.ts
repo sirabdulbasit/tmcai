@@ -5427,6 +5427,17 @@ export async function renderPlanPreview(
     const r = await resolveCandidate(id, userId, clientNumber).catch(() => null);
     return r ? r.name : `(unknown contact ${id})`;
   };
+  /** Title of an open item, for previews. A preview naming only the ACTION
+   *  ("Delegate item to Hamna" ×3) is unconfirmable — the owner cannot tell
+   *  which items they are approving. Reported twice: 08-04 19:57 (update) and
+   *  08-04 20:25 (delegate). */
+  const itemTitleOf = async (id: unknown): Promise<string> => {
+    if (typeof id !== 'string' || !id) return '(no item)';
+    const row = await prisma.openItem.findFirst({
+      where: { id, clientNumber, userId }, select: { title: true },
+    }).catch(() => null);
+    return row?.title ? `"${row.title}"` : `(unknown item ${id.slice(0, 8)})`;
+  };
   const lines: string[] = [];
   for (const [i, step] of steps.entries()) {
     const s = step.slots as any;
@@ -5454,8 +5465,20 @@ export async function renderPlanPreview(
         break;
       }
       case 'delegate_open_item':
-        line = `Delegate item to ${s.delegateeAdHocEmail ?? await nameOf(s.delegateeCandidateId)}`;
+        line = `Delegate ${await itemTitleOf(s.openItemId)} to ${s.delegateeAdHocEmail ?? await nameOf(s.delegateeCandidateId)}`;
         break;
+      case 'update_open_item': {
+        // Name the item AND every field being changed — this case did not
+        // exist, so three updates rendered as "update open item" ×3.
+        const changes = [
+          s.priority && `priority → ${s.priority}`,
+          s.dueDateRaw && `due → ${s.dueDateRaw}`,
+          s.title && `rename → "${s.title}"`,
+          s.note && 'note added',
+        ].filter(Boolean).join(', ');
+        line = `Update ${await itemTitleOf(s.openItemId)}: ${changes || '(no changes specified)'}`;
+        break;
+      }
       case 'update_contact': {
         const changes = [s.newEmail && `email → ${s.newEmail}`, s.newPhone && `phone → ${s.newPhone}`, s.newName && `name → ${s.newName}`].filter(Boolean).join(', ');
         line = `Update contact ${await nameOf(s.contactCandidateId)}: ${changes}`;

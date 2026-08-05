@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.0 · **Last updated:** 2026-08-05 11:00 PKT
+**Version:** v2.1 · **Last updated:** 2026-08-05 11:20 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -35,6 +35,7 @@ is the point: this record has to be able to say "this did not help".
 | v1.0 | 2026-08-04 22:15 | Created as the evaluation ledger — 17 incidents backfilled, recurrence table, open queue. |
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
+| v2.1 | 2026-08-05 11:20 | CL-020 assessed. DEF-024 recorded as having recurred TWICE while undeployed — the infinite "send" loop is that defect. DEF-018 added to D-6 scope. |
 
 ---
 
@@ -54,6 +55,8 @@ Assessed 2026-08-05 11:00 PKT. **LIVE** = confirmed on production traffic, not j
 | Counterpart reply → open-item update | ⚠️ deployed, **unverified** | needs a delegatee reply |
 | Native typing / recording indicator | ❌ fixed, **not deployed** | DEF-025 |
 | Multi-item dictation (priority + deadline batch) | ❌ **broken** | DEF-017, DEF-023 |
+| Confirming a plan with "send" | ❌ **broken — infinite loop** | DEF-024, CL-020 08-04 20:25 |
+| Preview shows WHICH items are affected | ❌ fixed, **not deployed** | DEF-018 |
 | WhatsApp calling | ⛔ absent by design | owner excluded it |
 
 ---
@@ -71,13 +74,18 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
-| D-6 | *pending* | `aaefa18`+ | DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | — | UNVERIFIED |
+| D-6 | *pending* | `d093e15`+ | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | — | UNVERIFIED |
 
 ### D-6 pre-deploy analysis *(written before the deploy)*
 
-- **Predicted improvement:** a dictated batch of priority+deadline updates returns real
-  "Updated …: priority=high, due=…" lines instead of `[Unknown pending action kind]`;
-  `[actionplan failed to queue]` disappears; native "typing…" appears under the name.
+- **Predicted improvement:** (a) **"send" actually dispatches** — the infinite preview loop
+  ends, because the pending row will persist (DEF-024); (b) previews name the items, e.g.
+  `Delegate "ShireMe Recruiting Portal Application Testing" to Hamna Latif Bhutta`
+  (DEF-018); (c) a dictated priority+deadline batch returns real "Updated …" lines instead
+  of `[Unknown pending action kind]` (DEF-023); (d) native "typing…" appears (DEF-025).
+- **Note on urgency:** DEF-024 has now caused THREE owner-visible failures (08-03 lost task,
+  08-04 lost batch, 08-04 infinite loop) while the fix sat pushed-but-undeployed. Deploying
+  is the highest-value action available and no further code is needed for it.
 - **Regression risk:** DEF-024 carries a migration that DROPS objects **by shape**. If the
   detection query is wrong it could drop an index it shouldn't — mitigated by excluding
   partial indexes and by idempotency, but it is the riskiest item in the batch. DEF-025
@@ -85,8 +93,8 @@ deploy.
   must still complete (guarded, never throws).
 - **How it will be judged:** dictate a 3-item batch → expect 3 "Updated …" lines;
   `pg_indexes` shows only the partial `…active_uq`; text Nexeo → native "typing…".
-- **Explicitly NOT fixed by D-6:** DEF-017 (compound commands), DEF-018 (blind previews),
-  DEF-019–022, DEF-026–030.
+- **Explicitly NOT fixed by D-6:** DEF-017 (compound commands — the structural one),
+  DEF-019–022, DEF-026–031.
 
 ---
 
@@ -100,6 +108,8 @@ did not close the class.**
 | `whatsapp-lid-activity-rejected` | **4** | 12, 14, 15, 16 | contained structurally — see below |
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
 | `pending-prompt-eats-command` | **3** | 3, 13, 17 | **OPEN — DEF-017, structural fix required** |
+| `confirm-never-dispatches` | **3** | 15, 17, CL-020 | fix written (DEF-024) — **undeployed, so it keeps recurring** |
+| `preview-unconfirmable` | **2** | 17, CL-020 | fix written (DEF-018) — undeployed |
 | `phantom-capability` | 1 | 17 | closed (`DISPATCHABLE_PLAN_STEP_KINDS`) |
 
 ### Why `@lid` recurred four times
