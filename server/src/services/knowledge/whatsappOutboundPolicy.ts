@@ -32,5 +32,20 @@ export function normalizeWhatsAppSubstantiveMessage(
 }
 
 export function whatsappAcceptedMessage(recipientName: string, recipientPhone: string): string {
-  return `WhatsApp accepted the message to ${recipientName} (${recipientPhone}) from the Nexeo number, but did not return a receipt ID. I won't retry automatically because that could send a duplicate.`;
+  // Owner, 2026-08-05: "why it sent 'Whatsapp accepted the message to
+  // Hamna…' where it should read the tick […] when received then just update
+  // me that 'Message sent to Hamna'".
+  //
+  // The old wording leaked three pieces of plumbing into a human
+  // conversation — "accepted", "did not return a receipt ID", "I won't retry
+  // automatically" — and framed a successful send as a partial failure. It
+  // existed because nothing read the delivery acknowledgements, so the send
+  // path genuinely did not know what had happened.
+  //
+  // It does now (DEF-052): `message_ack` is recorded against the message, so
+  // the tick is the source of truth for delivery and this line only has to
+  // report that the message went. Anything more precise ("delivered", "read")
+  // is answered from the ledger when asked, not guessed at send time.
+  const first = (recipientName ?? '').trim().split(/\s+/)[0] || 'them';
+  return `Message sent to ${first}.`;
 }

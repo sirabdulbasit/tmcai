@@ -5180,6 +5180,53 @@ async function gateHumanFacingAction(
   // The externality is a property of the slots, so it is read from the slots.
   if (IMMEDIATE_INTERNAL_ACTION_TYPES.has(act.type) && !actionReachesACounterpart(act)) return null;
 
+  // ── DEF-038 (2026-08-05, owner ruling) — CONFIRM ONLY WHEN IT EARNS IT ──
+  //
+  // Owner, this morning: "why do I need to say 'send' where I am
+  // instructing?" and then the rule — *confirm only when the request is not
+  // normal or carries risk, and then only after naming the risk*.
+  //
+  // He is right, and the cost of the blanket gate is not just friction: the
+  // confirmation step is where DEF-024, DEF-032, DEF-035 and DEF-055 all
+  // lived. Four defects in one family, two of them introduced while fixing
+  // the one before. A step that exists for actions the owner already ordered
+  // is a step that can only misfire.
+  //
+  // The distinction he drew is between confirming UNDERSTANDING (useful, when
+  // the check-in carries information he does not already have) and confirming
+  // PERMISSION (redundant, because his instruction already granted it). So
+  // this asks one question: given what he said and what is about to happen,
+  // is there something he would want to know BEFORE it happens?
+  //
+  // Decided by the brain, never by a rule table — "is this abnormal or
+  // risky?" is exactly the judgement the no-hardcoded-judgement rule reserves
+  // for the LLM. It is given facts, not vibes: whether this counterpart has
+  // been contacted before, whether the action can be undone, whose identity
+  // it goes out under.
+  //
+  // Fails CLOSED. Any error, any low confidence, any uncertainty about its own
+  // assessment → preview. Skipping a preview that was needed sends a real
+  // message to a real person; showing one that was not costs a tap.
+  if (typeof userId === 'number') {
+    try {
+      const { assessConfirmationNeed } = await import('./confirmationPolicyService');
+      const verdict = await assessConfirmationNeed({
+        action: act, question, history, userId,
+      });
+      if (!verdict.needsConfirmation) {
+        console.info('[compose] preview skipped — instructed, grounded, unremarkable', {
+          userId, kind: act.type, why: verdict.reason.slice(0, 120),
+        });
+        return null;
+      }
+      console.info('[compose] preview required', {
+        userId, kind: act.type, why: verdict.reason.slice(0, 120),
+      });
+    } catch (e: any) {
+      console.warn('[compose] confirmation policy unavailable — previewing', { userId, error: e?.message });
+    }
+  }
+
   // Earned autonomy (Phase 1C, 2026-07-14): the user can CONSENT to
   // skipping the preview for a kind after the brain proves itself
   // (10 unmodified approvals → offer → "auto-send emails"). Consent
@@ -6289,11 +6336,17 @@ export async function dispatchPendingDirect(
 
       const { getBrainDisplayName } = await import('./outboundIdentity');
       const brainDisplayName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
-      const intro = `Hi ${recipientName.startsWith('contact at') ? 'there' : recipientName}, this is ${brainDisplayName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
         const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+        const { renderOutboundMessage } = await import('../notifications/outboundMessageTemplate');
         const substantive = normalizeWhatsAppSubstantiveMessage(String(slots.message), recipientName);
-        const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, `${intro}${substantive}`, userId);
+        // Owner-specified template (2026-08-05). One renderer for every
+        // channel — the previous per-channel wording is exactly how WhatsApp
+        // and email came to speak in two different voices.
+        const outbound = renderOutboundMessage(substantive, {
+          brainName: brainDisplayName, userName,
+        });
+        const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, outbound, userId);
         if (r.ok) {
           return {
             ok: true,
