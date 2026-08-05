@@ -31,7 +31,11 @@ describe('confirmation beats re-planning', () => {
   it('dispatches the STORED pending, never a re-derivation', () => {
     const g = CODE.slice(CODE.indexOf('const confirmChannel'), CODE.indexOf('resolveReasoningMode'));
     expect(g).toContain('getActivePending');
-    expect(g).toContain('dispatchPendingDirect(clientNumber, userId, outstanding as any)');
+    // DEF-039: dispatch goes through the shared chokepoint, which carries the
+    // idempotency wrapper and the artifact ledger transitions. Calling
+    // dispatchPendingDirect raw here is what shipped the duplicate-send bug.
+    expect(g).toContain('dispatchConfirmedPending(');
+    expect(g).not.toContain('dispatchPendingDirect(');
     // Re-planning must not appear inside the guard.
     expect(g).not.toContain('reasoningCompose');
     expect(g).not.toContain('startPending');
@@ -50,9 +54,13 @@ describe('confirmation beats re-planning', () => {
   });
 
   it('marks the pending terminal so it cannot be confirmed twice', () => {
-    const g = CODE.slice(CODE.indexOf('const confirmChannel'), CODE.indexOf('resolveReasoningMode'));
-    expect(g).toContain('markCompleted');
-    expect(g).toContain('markFailed');
+    // DEF-039 moved this into dispatchConfirmedPending so both confirm paths
+    // share one implementation — assert it there, not in the guard.
+    const chokepoint = CODE.slice(
+      CODE.indexOf('async function dispatchConfirmedPending'),
+      CODE.indexOf('async function dispatchConfirmedPending') + 3000);
+    expect(chokepoint).toContain('markCompleted');
+    expect(chokepoint).toContain('markFailed');
   });
 
   it('a guard failure falls through instead of breaking the turn', () => {

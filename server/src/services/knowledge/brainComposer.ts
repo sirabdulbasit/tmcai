@@ -1777,16 +1777,24 @@ export async function compose(
       && /^(yes|yep|yeah|send|send it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|sure|approve|approved|ship\s+it|please\s+do|kar\s+do|theek\s+hai|haan)$/i.test(q);
     if (isBareConfirm) {
       try {
-        const { getActivePending, markCompleted, markFailed } = await import('./pendingActionService');
+        const { getActivePending } = await import('./pendingActionService');
         const outstanding = await getActivePending(userId, confirmChannel).catch(() => null);
         if (outstanding && outstanding.status === 'preview_shown') {
           console.info('[compose] early-confirm: dispatching the stored preview without re-reasoning', {
             userId, clientNumber, channel: confirmChannel,
             pendingId: outstanding.id, kind: outstanding.actionKind,
           });
-          const dispatched = await dispatchPendingDirect(clientNumber, userId, outstanding as any);
-          if (dispatched.ok) await markCompleted(outstanding.id, dispatched.artifactId ?? '').catch(() => undefined);
-          else await markFailed(outstanding.id, dispatched.message.slice(0, 300)).catch(() => undefined);
+          // DEF-039: go through the shared chokepoint. It carries the
+          // idempotency wrapper and the artifact ledger transitions — this
+          // branch originally called dispatchPendingDirect raw and lost both.
+          const { result: dispatched, replayed } = await dispatchConfirmedPending(
+            clientNumber, userId, outstanding as any,
+          );
+          if (replayed) {
+            console.info('[compose] early-confirm: idempotency replay, not dispatched twice', {
+              userId, clientNumber, pendingId: outstanding.id,
+            });
+          }
           return {
             answer: dispatched.message,
             citedPageIds: [], gaps: [], sources: [], action: null,
@@ -2240,49 +2248,18 @@ export async function compose(
       userId, clientNumber, channel, kind: activePending.actionKind, pendingId: activePending.id,
     });
 
-    // Q5b finish: transition the existing 'previewed' artifact through
-    // confirmed → dispatching → succeeded/failed. Lookup by pendingId.
-    let artifactRowId: string | null = null;
     try {
-      const existing = await (prisma as any).brainActionArtifact.findFirst({
-        where: { pendingActionId: activePending.id, status: 'previewed' },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (existing) {
-        artifactRowId = existing.id;
-        const { updateArtifactStatus } = await import('./brainActionArtifactService');
-        await updateArtifactStatus(artifactRowId, 'confirmed');
-        await updateArtifactStatus(artifactRowId, 'dispatching');
-      }
-    } catch { /* artifact tracking is non-fatal */ }
-
-    try {
-      const { withIdempotency } = await import('../actionIdempotencyService');
-      const idemActionType = brainActionTypeToIdem(activePending.actionKind);
-      const idemReferenceId = activePending.id; // pendingId is unique per (user, channel, preview)
-      const { result: dispatchResult, replayed } = await wrapDispatchIdem(
-        idemActionType, clientNumber, userId, idemReferenceId,
-        () => dispatchPendingDirect(clientNumber, userId, activePending),
+      // DEF-039: artifact transitions + idempotency now live in the shared
+      // chokepoint, so the early-confirm guard above cannot diverge from this
+      // path again. Both branches dispatch through exactly one function.
+      const { result: dispatchResult, replayed } = await dispatchConfirmedPending(
+        clientNumber, userId, activePending,
       );
       if (replayed) {
         console.info('[brain-chat] pending.confirm idempotency replay', {
           userId, clientNumber, pendingId: activePending.id,
         });
       }
-      if (dispatchResult.ok && dispatchResult.artifactId) {
-        await markCompleted(activePending.id, dispatchResult.artifactId);
-      } else if (!dispatchResult.ok) {
-        await markFailed(activePending.id, dispatchResult.message);
-      }
-      // Q5b finish: terminal status transition.
-      try {
-        const { updateArtifactStatus } = await import('./brainActionArtifactService');
-        await updateArtifactStatus(artifactRowId, dispatchResult.ok ? 'succeeded' : 'failed', {
-          result: dispatchResult,
-          artifactExtId: dispatchResult.artifactId ?? null,
-          errorMessage: dispatchResult.ok ? null : dispatchResult.message,
-        });
-      } catch { /* non-fatal */ }
       // Earned autonomy (Phase 1C): after a successful confirmed
       // dispatch, check whether the user has now approved this kind
       // enough times unmodified to EARN an auto-send offer. Marker is
@@ -2304,14 +2281,10 @@ export async function compose(
         actionResult: { ok: dispatchResult.ok, artifactId: dispatchResult.artifactId, message: dispatchResult.message },
       };
     } catch (e: any) {
-      await markFailed(activePending.id, e?.message);
-      try {
-        const { updateArtifactStatus } = await import('./brainActionArtifactService');
-        await updateArtifactStatus(artifactRowId, 'failed', {
-          errorCode: 'dispatch_threw',
-          errorMessage: String(e?.message ?? 'unknown'),
-        });
-      } catch { /* non-fatal */ }
+      // DEF-039: the artifact row is recorded failed inside
+      // dispatchConfirmedPending, which owns it. This handler covers throws
+      // from anywhere else in the branch (e.g. the autonomy offer below).
+      await markFailed(activePending.id, e?.message).catch(() => undefined);
       return {
         answer: `[Action failed: ${e?.message ?? 'unknown error'}]`,
         citedPageIds: [], gaps: [], sources: [], action: null,
@@ -5417,6 +5390,100 @@ async function wrapDispatchIdem(
     dispatchFn,
   );
   return { result, replayed: false };
+}
+
+/** DEF-039 — THE ONLY PLACE A CONFIRMED PENDING IS DISPATCHED.
+ *
+ *  Extracted 2026-08-05 after an audit found the DEF-035 early-confirm guard
+ *  calling `dispatchPendingDirect` raw, bypassing BOTH protections the legacy
+ *  confirm branch had carried for months:
+ *
+ *    1. IDEMPOTENCY. A double-tapped "send", or a retried WhatsApp webhook,
+ *       dispatched the same external action twice — real duplicate emails and
+ *       WhatsApp messages to real counterparts. The DEF-035 fix made this
+ *       reachable for the first time: before it, "send" never dispatched at
+ *       all, so there was nothing to duplicate.
+ *
+ *    2. THE ARTIFACT LEDGER transition previewed → confirmed → dispatching →
+ *       succeeded/failed. Without it an early-confirmed dispatch stays
+ *       `previewed` forever — and Brain reads that ledger to answer "did you
+ *       do it?", so it would report that nothing happened immediately after
+ *       acting. That is DEF-034's exact family.
+ *
+ *  Why this is a function and not a copied block: both guards lived INSIDE the
+ *  branch they protected, so bypassing the branch silently bypassed them, with
+ *  nothing failing. `dispatchPendingDirect` now has exactly one caller and
+ *  `tests/confirmDispatchSingleCaller.test.ts` fails the build if a second one
+ *  appears. Same containment shape as `waIdentity.ts` for the `@lid` class.
+ */
+async function dispatchConfirmedPending(
+  clientNumber: string,
+  userId: number,
+  pending: { id: string; actionKind: string },
+): Promise<{ result: { ok: boolean; artifactId?: string; message: string }; replayed: boolean }> {
+  // previewed → confirmed → dispatching. Non-fatal throughout: artifact
+  // tracking must never block a dispatch the user has already approved.
+  let artifactRowId: string | null = null;
+  try {
+    const existing = await (prisma as any).brainActionArtifact.findFirst({
+      where: { pendingActionId: pending.id, status: 'previewed' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) {
+      artifactRowId = existing.id;
+      const { updateArtifactStatus } = await import('./brainActionArtifactService');
+      await updateArtifactStatus(artifactRowId, 'confirmed');
+      await updateArtifactStatus(artifactRowId, 'dispatching');
+    }
+  } catch { /* artifact tracking is non-fatal */ }
+
+  let result: { ok: boolean; artifactId?: string; message: string };
+  let replayed: boolean;
+  try {
+    ({ result, replayed } = await wrapDispatchIdem(
+      brainActionTypeToIdem(pending.actionKind),
+      clientNumber, userId,
+      pending.id, // unique per (user, channel, preview)
+      () => dispatchPendingDirect(clientNumber, userId, pending as any),
+    ));
+  } catch (e: any) {
+    // The dispatch THREW rather than returning ok:false. The artifact row is
+    // owned by this function, so the failure has to be recorded here — the
+    // caller can no longer see the row id. Rethrown so the caller still
+    // renders its own error answer.
+    const { markFailed } = await import('./pendingActionService');
+    await markFailed(pending.id, String(e?.message ?? 'unknown').slice(0, 300)).catch(() => undefined);
+    if (artifactRowId) {
+      try {
+        const { updateArtifactStatus } = await import('./brainActionArtifactService');
+        await updateArtifactStatus(artifactRowId, 'failed', {
+          errorCode: 'dispatch_threw',
+          errorMessage: String(e?.message ?? 'unknown'),
+        });
+      } catch { /* non-fatal */ }
+    }
+    throw e;
+  }
+
+  const { markCompleted, markFailed } = await import('./pendingActionService');
+  if (result.ok && result.artifactId) {
+    await markCompleted(pending.id, result.artifactId).catch(() => undefined);
+  } else if (!result.ok) {
+    await markFailed(pending.id, result.message.slice(0, 300)).catch(() => undefined);
+  }
+
+  if (artifactRowId) {
+    try {
+      const { updateArtifactStatus } = await import('./brainActionArtifactService');
+      await updateArtifactStatus(artifactRowId, result.ok ? 'succeeded' : 'failed', {
+        result,
+        artifactExtId: result.artifactId ?? null,
+        errorMessage: result.ok ? null : result.message,
+      });
+    } catch { /* non-fatal */ }
+  }
+
+  return { result, replayed };
 }
 
 /** Guarded in-place contact edit (2026-07-13, extracted 2026-07-14 so
