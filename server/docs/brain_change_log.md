@@ -1,6 +1,6 @@
 # Brain Change Log
 
-**Version:** v1.4 · **Last updated:** 2026-08-05 12:10 PKT
+**Version:** v1.5 · **Last updated:** 2026-08-05 13:15 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -49,6 +49,8 @@
 
 | DEF-032 | 08-05 11:54 | A dictated 5-step plan was **silently displaced** by a follow-up turn; "send" then dispatched the replacement (a test email) instead of the plan, and the plan was lost | one-active-pending-per-channel cancels an unconfirmed pending with no user-visible signal, so "send" silently changes meaning | `startPending` now reports what it displaced; the new preview carries a visible ⚠️ notice naming what was replaced and that "send" applies to the new thing | `HEAD` | not yet | FIXED (not deployed) |
 | DEF-033 | 08-05 11:55 | "You email them" (about three delegated items) produced a **canned "Test email from Nexeo"** sent to a real colleague from the owner's own address | the prompt's test-email auto-fill exception said "or similar", and the LLM over-applied it to a vague email request | exception now requires the user to literally say "test"; template forbidden elsewhere; must ask or compose from the real subject | `HEAD` | not yet | FIXED (not deployed) |
+
+| **DEF-035** | 08-04 20:25, 08-05 13:05 | **"send" → same preview → "confirm" → same preview.** Nothing ever dispatched; the owner could not complete a single delegation | **ORDERING.** The reasoning gate ran FIRST in `compose` and returned early with a preview whenever it decided to act. The pending/confirm reducer sat ~200 lines below and was therefore UNREACHABLE on a confirmation turn: "send" was fed back into reasoning, which re-proposed the identical plan, called `startPending` (displacing the plan just approved) and re-rendered the preview. My DEF-032 displacement warning is what finally exposed it | An early-confirm guard placed BEFORE the reasoning gate: if a `preview_shown` pending exists and the turn is an unambiguous confirmation, dispatch the STORED slots and never re-reason. Confirmation beats re-planning | `HEAD` | not yet | FIXED (not deployed) |
 
 ## B. Open
 

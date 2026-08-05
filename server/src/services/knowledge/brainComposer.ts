@@ -1750,6 +1750,58 @@ export async function compose(
     }
   }
 
+  // ── DEF-035 — CONFIRMATION IS CHECKED BEFORE RE-REASONING ──────────
+  //
+  // THE ROOT CAUSE OF THE "send → same preview → send → same preview" LOOP.
+  //
+  // The reasoning gate below runs FIRST and returns early with a preview when
+  // it decides to act. The pending/confirm reducer lives ~200 lines further
+  // down and was therefore UNREACHABLE on a confirmation turn: "send" was fed
+  // back into reasoning, which re-proposed the identical plan, called
+  // startPending (displacing the plan the owner had just approved) and
+  // re-rendered the preview. Forever. The owner hit this on 08-04 20:25 and
+  // again on 08-05 13:05 with "send" AND "confirm".
+  //
+  // A human assistant shown a list and told "send" does not re-read the list
+  // and ask again — it acts. So the order is inverted here: if a preview is
+  // outstanding and this turn is a confirmation, DISPATCH THE STORED PLAN and
+  // never re-reason. Confirmation must beat re-planning.
+  //
+  // Deliberately narrow: only `preview_shown` (a preview the owner actually
+  // saw), only an unambiguous confirmation, and it dispatches the STORED slots
+  // — so what executes is exactly what was displayed, never a re-derivation.
+  {
+    const confirmChannel: 'web' | 'whatsapp' = opts.channel ?? 'web';
+    const q = question.trim().toLowerCase().replace(/[.!]+$/, '');
+    const isBareConfirm = q.length <= 30
+      && /^(yes|yep|yeah|send|send it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|sure|approve|approved|ship\s+it|please\s+do|kar\s+do|theek\s+hai|haan)$/i.test(q);
+    if (isBareConfirm) {
+      try {
+        const { getActivePending, markCompleted, markFailed } = await import('./pendingActionService');
+        const outstanding = await getActivePending(userId, confirmChannel).catch(() => null);
+        if (outstanding && outstanding.status === 'preview_shown') {
+          console.info('[compose] early-confirm: dispatching the stored preview without re-reasoning', {
+            userId, clientNumber, channel: confirmChannel,
+            pendingId: outstanding.id, kind: outstanding.actionKind,
+          });
+          const dispatched = await dispatchPendingDirect(clientNumber, userId, outstanding as any);
+          if (dispatched.ok) await markCompleted(outstanding.id, dispatched.artifactId ?? '').catch(() => undefined);
+          else await markFailed(outstanding.id, dispatched.message.slice(0, 300)).catch(() => undefined);
+          return {
+            answer: dispatched.message,
+            citedPageIds: [], gaps: [], sources: [], action: null,
+            actionResult: { ok: dispatched.ok, message: dispatched.message, artifactId: dispatched.artifactId },
+            source: 'reasoning',
+          };
+        }
+      } catch (e: any) {
+        // Never break the turn on a confirm-guard failure — fall through to
+        // the normal path, which is the pre-existing behaviour.
+        console.warn('[compose] early-confirm guard failed, falling through', { userId, error: e?.message });
+      }
+    }
+  }
+
   // ── Phase 8 (2026-05-22): reasoning-first gate ────────────────────
   // When opts.useReasoning is on (or env says so), short-circuit
   // through the new reasoning composer. Falls through to legacy on

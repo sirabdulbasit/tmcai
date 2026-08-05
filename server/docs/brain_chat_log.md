@@ -1,6 +1,6 @@
 # Brain Chat Log Register
 
-**Register version:** v1.3 · **Last updated:** 2026-08-05 12:10 PKT
+**Register version:** v1.4 · **Last updated:** 2026-08-05 13:15 PKT
 **Companions:** `brain_change_log.md` (what we DID — DEF-NNN + deploy status) · `brain_evaluation_chart.md` (per-deploy before/after impact)
 **Post-mortems:** `brain_chat_archive.md` (root cause + paired executable scenario)
 
@@ -38,6 +38,7 @@ this: *did what we observed actually get treated, or did we go round again?*
 | CL-017 | 2026-08-04 20:00 | WhatsApp | **Voice now works** (`🎙️ Heard:` + English transcripts). But: 3-step preview showed "• update open item ×3" with no detail; "yes" → `[Unknown pending action kind: updateopenitem]`, all three updates lost; gender argument from a translated pronoun; corrected title reverted; queue interrupted mid-conversation | DEF-018, DEF-020, DEF-021, DEF-022, DEF-023 | mixed — DEF-016 CONFIRMED FIXED; rest NEW |
 | CL-018 | 2026-08-05 10:20 | direct | "Do you have any log of what we changed… I feel we are moving in circles" — process observation, not a defect | — (produced this register + the change log + the evaluation chart) | NEW (process) |
 | CL-020 | 2026-08-04 20:22 | WhatsApp | **"send" never dispatches — infinite preview loop.** Said "send" twice, got the identical 3-step preview back both times. Preview again blind: "Delegate item to Hamna Latif Bhutta" ×3 with no item names. Junk task "Priority High (due yesterday)" still listed. Correctly reported the 3 items are NOT yet delegated to Hamna | DEF-024 (recurrence), DEF-018 (2nd), DEF-031 | **RECURRING — DEF-024, fix already written and pushed but NOT DEPLOYED** |
+| CL-023 | 2026-08-05 13:03–13:06 | WhatsApp | **The loop, caught red-handed.** Correct 4-step delegation preview → "send" → identical preview WITH my new displacement warning → "confirm" → identical preview again. The warning proved the mechanism: each confirmation was creating a NEW plan instead of confirming the stored one. Also visible: "Morning, Sir" at 1:03 PM (DEF-026) and a due date of **Mar 29, 2024** still on Leave Request (DEF-031 debris) | DEF-035 | **ROOT CAUSE FOUND — ordering** |
 | CL-022 | 2026-08-05 11:52–11:57 | WhatsApp | **DEF-017 + DEF-018 CONFIRMED WORKING** — one dictated compound voice note decomposed into a correct 5-step preview naming every item and field. Then it went wrong: an ambiguous follow-up displaced the plan, "send" dispatched a **canned test email to a real colleague under the owner's own name**, Brain then said "nothing was executed on my end" right after sending it, and five minutes later reported "no actionable items delegated to Hamna Latif" — the plan was gone | DEF-032, DEF-033, DEF-034 | DEF-017/018 VERIFIED; three NEW |
 | CL-021 | 2026-08-05 11:50 | direct | "ok go ahead" — authorised the DEF-017 structural fix | DEF-017 | — |
 | CL-019 | 2026-08-05 11:00 | direct | Owner ruling: keep THREE docs — change log (errors + solutions + deployed), chat log (this file), evaluation chart (before/after deploy impact) | — (three-doc split implemented) | NEW (process) |

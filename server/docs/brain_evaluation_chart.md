@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.4 · **Last updated:** 2026-08-05 12:05 PKT
+**Version:** v2.5 · **Last updated:** 2026-08-05 13:15 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -36,6 +36,7 @@ is the point: this record has to be able to say "this did not help".
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
 | v2.1 | 2026-08-05 11:20 | CL-020 assessed. DEF-024 recorded as having recurred TWICE while undeployed — the infinite "send" loop is that defect. DEF-018 added to D-6 scope. |
+| v2.5 | 2026-08-05 13:15 | DEF-035 root cause found (confirmation checked AFTER re-reasoning). D-8 opened. The DEF-032 warning shipped in D-7 is what exposed it — a diagnostic paying for itself. |
 | v2.4 | 2026-08-05 12:05 | D-7 deployed. BLD-001 fully reversed — the owner-owned file removed from production (it had never been there before my commit; local copy intact). Awaiting one live dictation test to verify D-6 + D-7 together. |
 | v2.3 | 2026-08-05 11:55 | DEF-017 fixed structurally (partial-answer split + residual to the shared compose path + due-date sanity window). D-7 opened with pre-deploy analysis. |
 | v2.2 | 2026-08-05 11:45 | **D-6 deployed.** Schema side of DEF-024 verified on production by index list. Owner ruling: this chart is reported at EVERY deploy — §2.1 added as the standing post-deploy report format. |
@@ -58,7 +59,7 @@ Assessed 2026-08-05 11:00 PKT. **LIVE** = confirmed on production traffic, not j
 | Counterpart reply → open-item update | ⚠️ deployed, **unverified** | needs a delegatee reply |
 | Native typing / recording indicator | ❌ fixed, **not deployed** | DEF-025 |
 | Multi-item dictation (priority + deadline batch) | ⚠️ fixed, **not deployed** | DEF-017, DEF-023 |
-| Confirming a plan with "send" | ❌ **broken — infinite loop** | DEF-024, CL-020 08-04 20:25 |
+| Confirming a plan with "send" | ⚠️ root cause found + fixed, **not deployed** | DEF-035 — ordering, not the constraint |
 | Preview shows WHICH items are affected | ❌ fixed, **not deployed** | DEF-018 |
 | WhatsApp calling | ⛔ absent by design | owner excluded it |
 
@@ -77,6 +78,7 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
+| D-8 | *pending* | `HEAD` | DEF-035, DEF-032, DEF-033 | **Predicted:** "send"/"confirm" DISPATCHES the plan shown — the loop ends and items are actually delegated. **Risk:** the guard is narrow (bare confirmation + `preview_shown` only) so a mis-phrased confirmation still falls through to the old path; a guard failure falls through rather than breaking the turn. **Judged by:** list undelegated items → "delegate these to hamna latif" → "send" → expect real delegation lines, then ask "what is delegated to Hamna" and expect the items to appear. | — | UNVERIFIED |
 | D-7 | **08-05 12:02** | `4ec5d99` | DEF-017 | **Predicted:** a dictated compound instruction no longer loses its tail — the priority is recorded AND the due date + delegation are acted on; a past/absurd deadline is refused instead of written. **Risk:** the classifier could split badly and send a wrong residual to chat — mitigated because an incomplete split is rejected outright and low confidence falls through unchanged. **Judged by:** with a priority prompt awaiting, say "Priority High, due date Friday and delegate to Hamna" → expect the priority recorded AND a follow-up acting on date+delegation. | build clean, service online; behaviour **not yet exercised**. Side effect: the pull also REVERSED BLD-001 — `nexeo_self_learning&development.md` removed from production (1681 lines). It had never existed there before my commit created it, so prod is back to its original state and the local copy is intact at 42KB. | UNVERIFIED |
 | D-6 | **08-05 11:40** | `7ace0f5` | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | **schema VERIFIED**: `pg_indexes` shows only the partial `…active_uq`, no `(user_id,channel,status)` index → DEF-024's root cause is gone from production. Build clean, app up. Behaviour (send-loop, previews, typing) **not yet exercised** | **PARTIAL** — 1 of 4 verified |
 
