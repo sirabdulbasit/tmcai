@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v2.2 · **Last updated:** 2026-08-05 11:45 PKT
+**Version:** v2.3 · **Last updated:** 2026-08-05 11:55 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -36,6 +36,7 @@ is the point: this record has to be able to say "this did not help".
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
 | v2.1 | 2026-08-05 11:20 | CL-020 assessed. DEF-024 recorded as having recurred TWICE while undeployed — the infinite "send" loop is that defect. DEF-018 added to D-6 scope. |
+| v2.3 | 2026-08-05 11:55 | DEF-017 fixed structurally (partial-answer split + residual to the shared compose path + due-date sanity window). D-7 opened with pre-deploy analysis. |
 | v2.2 | 2026-08-05 11:45 | **D-6 deployed.** Schema side of DEF-024 verified on production by index list. Owner ruling: this chart is reported at EVERY deploy — §2.1 added as the standing post-deploy report format. |
 
 ---
@@ -55,7 +56,7 @@ Assessed 2026-08-05 11:00 PKT. **LIVE** = confirmed on production traffic, not j
 | Unknown-sender triage (ask-once, persistent ignore) | ⚠️ deployed, **unverified** | `wa_sender_policy` n=1 |
 | Counterpart reply → open-item update | ⚠️ deployed, **unverified** | needs a delegatee reply |
 | Native typing / recording indicator | ❌ fixed, **not deployed** | DEF-025 |
-| Multi-item dictation (priority + deadline batch) | ❌ **broken** | DEF-017, DEF-023 |
+| Multi-item dictation (priority + deadline batch) | ⚠️ fixed, **not deployed** | DEF-017, DEF-023 |
 | Confirming a plan with "send" | ❌ **broken — infinite loop** | DEF-024, CL-020 08-04 20:25 |
 | Preview shows WHICH items are affected | ❌ fixed, **not deployed** | DEF-018 |
 | WhatsApp calling | ⛔ absent by design | owner excluded it |
@@ -75,6 +76,7 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
+| D-7 | *pending* | `HEAD` | DEF-017 | **Predicted:** a dictated compound instruction no longer loses its tail — the priority is recorded AND the due date + delegation are acted on; a past/absurd deadline is refused instead of written. **Risk:** the classifier could split badly and send a wrong residual to chat — mitigated because an incomplete split is rejected outright and low confidence falls through unchanged. **Judged by:** with a priority prompt awaiting, say "Priority High, due date Friday and delegate to Hamna" → expect the priority recorded AND a follow-up acting on date+delegation. | — | UNVERIFIED |
 | D-6 | **08-05 11:40** | `7ace0f5` | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | **schema VERIFIED**: `pg_indexes` shows only the partial `…active_uq`, no `(user_id,channel,status)` index → DEF-024's root cause is gone from production. Build clean, app up. Behaviour (send-loop, previews, typing) **not yet exercised** | **PARTIAL** — 1 of 4 verified |
 
 ### D-6 pre-deploy analysis *(written before the deploy)*
@@ -134,7 +136,7 @@ did not close the class.**
 |---|---|---|---|
 | `whatsapp-lid-activity-rejected` | **4** | 12, 14, 15, 16 | contained structurally — see below |
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
-| `pending-prompt-eats-command` | **3** | 3, 13, 17 | **OPEN — DEF-017, structural fix required** |
+| `pending-prompt-eats-command` | **3** | 3, 13, 17 | fix written (DEF-017) — **structural: the verdict can now SPLIT a message**; undeployed |
 | `confirm-never-dispatches` | **3** | 15, 17, CL-020 | fix written (DEF-024) — **undeployed, so it keeps recurring** |
 | `preview-unconfirmable` | **2** | 17, CL-020 | fix written (DEF-018) — undeployed |
 | `phantom-capability` | 1 | 17 | closed (`DISPATCHABLE_PLAN_STEP_KINDS`) |

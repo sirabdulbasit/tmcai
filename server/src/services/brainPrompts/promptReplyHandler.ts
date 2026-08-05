@@ -48,6 +48,15 @@ export interface HandleReplyResult {
   /** Side-effect outcome for telemetry. */
   sideEffectStatus?: 'applied' | 'failed' | 'noop' | 'unknown_kind';
   promptId?: string;
+  /**
+   * DEF-017: the part of a COMPOUND message that was NOT the answer, rewritten
+   * as a standalone request. When present the caller MUST still route this
+   * through the normal chat path — the answer half has been recorded, but the
+   * instruction half has not been acted on yet. Ignoring it is the bug:
+   * "Priority High, due date today and delegate to Hamna" previously had the
+   * date and the delegation silently discarded.
+   */
+  residualText?: string;
 }
 
 export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
@@ -80,7 +89,7 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
   // an action-status answer. Only a confident 'answers_pending_prompt'
   // verdict may mutate; everything else (incl. classifier failure)
   // falls through to normal chat with the prompt left awaiting.
-  const { classifyPromptReplyRelevance, mayConsumeAsAnswer } =
+  const { classifyPromptReplyRelevance, mayConsumeAsAnswer, mayConsumePartially } =
     await import('./promptReplyRelevance');
   const openItemTitle = awaiting.openItemId
     ? await prisma.openItem.findFirst({
@@ -95,7 +104,8 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     inboundText: text,
     userId: input.userId,
   });
-  if (!mayConsumeAsAnswer(verdict)) {
+  const partial = mayConsumePartially(verdict);
+  if (!mayConsumeAsAnswer(verdict) && !partial) {
     log.info('relevance gate declined prompt consumption — routing to chat', {
       userId: input.userId, promptId: String(awaiting.id), sideEffectKind,
       relevance: verdict?.relevance ?? 'classifier_failure',
@@ -104,25 +114,35 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     return { handled: false };
   }
 
+  // DEF-017: on a partial match, ONLY the answering half is recorded and fed
+  // to the side effect. The whole string used to be used, which is how
+  // "Priority High, due date today and delegate to Hamna Latif" produced a
+  // fabricated 2024-03-29 deadline — the date parser was handed the entire
+  // sentence.
+  const answerText = partial ? String(verdict!.answerPart).trim() : text;
+  const residualText = partial ? String(verdict!.residual).trim() : undefined;
+
   log.info('handling prompt reply', {
     userId: input.userId, promptId: String(awaiting.id),
     sideEffectKind, relevanceConfidence: verdict!.confidence,
+    partial, answerPreview: answerText.slice(0, 60),
+    residualPreview: residualText?.slice(0, 80),
   });
 
   // 1. Persist the answer immediately. Even if side-effect application
   //    fails, the conversation must advance; we don't want a broken
   //    side-effect handler to deadlock the queue.
-  await recordAnswer(awaiting.id, text);
+  await recordAnswer(awaiting.id, answerText);
 
   // 2. Apply side-effect.
   const seResult = await applySideEffect(
     awaiting.sideEffect as any,
-    text,
+    answerText,
     awaiting.openItemId ?? null,
   );
 
   // 3. Compose ack — short, factual, no fluff.
-  const ack = composeAck(text, awaiting.sideEffect as any, seResult);
+  const ack = composeAck(answerText, awaiting.sideEffect as any, seResult);
 
   // 4. Dispatch next prompt. If this errors we still ack — the queue
   //    is consistent, just delayed by one tick.
@@ -135,6 +155,7 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     ackMessage: ack,
     sideEffectStatus: seResult.status,
     promptId: String(awaiting.id),
+    residualText,
   };
 }
 
@@ -256,25 +277,46 @@ async function applySideEffect(
 
 const WEEKDAYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
+/**
+ * Sanity window for a parsed deadline (DEF-017, 2026-08-05).
+ *
+ * Production wrote a due date of **2024-03-29** — over two years in the past —
+ * from a compound instruction, and reported it back as
+ * `[new deadline recorded: 2024-03-29]`. `resolveDate` (the canonical parser)
+ * already refuses anything older than a year; this parser, which has FIVE
+ * callers, had no guard at all. A deadline in the past is far more likely a
+ * parse error than an intention, and writing one silently is worse than
+ * refusing: returning null routes the caller into its existing
+ * "unparseable date — ask the user" path.
+ */
+function withinSaneDueWindow(d: Date, todayMidnight: Date): boolean {
+  const oneDayBefore = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
+  const fiveYearsAhead = new Date(todayMidnight.getTime() + 5 * 365 * 24 * 60 * 60 * 1000);
+  return d >= oneDayBefore && d <= fiveYearsAhead;
+}
+
 export function parseDuePhrase(raw: string): Date | null {
   const s = raw.trim().toLowerCase();
   const now = new Date();
   const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sane = (d: Date | null): Date | null =>
+    d && withinSaneDueWindow(d, todayMidnight) ? d : null;
 
   if (/^(today|eod|asap|now)\b/.test(s)) return todayMidnight;
   if (/^tomorrow\b/.test(s)) return addDays(todayMidnight, 1);
 
   const inDays = s.match(/^in\s+(\d+)\s+day/);
-  if (inDays) return addDays(todayMidnight, parseInt(inDays[1] as string, 10));
+  if (inDays) return sane(addDays(todayMidnight, parseInt(inDays[1] as string, 10)));
 
   const nDays = s.match(/^(\d+)\s+day/);
-  if (nDays) return addDays(todayMidnight, parseInt(nDays[1] as string, 10));
+  if (nDays) return sane(addDays(todayMidnight, parseInt(nDays[1] as string, 10)));
 
   // ISO date
   const iso = s.match(/(\d{4}-\d{2}-\d{2})/);
   if (iso) {
     const d = new Date(iso[1] as string);
-    if (!Number.isNaN(d.getTime())) return d;
+    // The 2024-03-29 write came through an absolute date like this one.
+    if (!Number.isNaN(d.getTime())) return sane(d);
   }
 
   // weekday names — "friday" / "next monday" / "this thursday"
@@ -287,7 +329,7 @@ export function parseDuePhrase(raw: string): Date | null {
       let delta = target - cur;
       const isNext = /\bnext\s+/.test(s);
       if (delta <= 0 || isNext) delta += 7;
-      return addDays(todayMidnight, delta);
+      return sane(addDays(todayMidnight, delta));
     }
   }
 

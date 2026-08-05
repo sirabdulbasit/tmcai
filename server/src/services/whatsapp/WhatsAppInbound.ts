@@ -215,7 +215,24 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       if (pb.dispatched && pb.ackMessage) {
         await sendReply(params, pb.ackMessage);
       }
-      return;  // do NOT continue to chat router
+      // DEF-017 (2026-08-05, 3rd recurrence of pending-prompt-eats-command):
+      // a COMPOUND message ("Priority High, due date today and delegate to
+      // Hamna Latif") has its answer half recorded above; the instruction half
+      // must still be acted on. Previously we returned here unconditionally and
+      // the rest was silently discarded — a fabricated deadline, a junk task,
+      // and no delegation. Route the residual through the SAME chat path every
+      // other turn uses rather than a parallel extractor with a narrower
+      // vocabulary (invariant: one compose path, no surface-specific
+      // shortcuts).
+      if (r.residualText) {
+        log.info('prompt reply was partial — routing the residual to chat', {
+          userId, promptId: r.promptId, residualPreview: r.residualText.slice(0, 80),
+        });
+        queryText = r.residualText;
+        // fall through — do NOT return
+      } else {
+        return;  // whole message was the answer; do NOT continue to chat router
+      }
     }
   } catch (err: any) {
     log.warn('prompt reply handler errored — falling through to chat', { err: err.message });
