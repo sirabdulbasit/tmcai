@@ -109,10 +109,16 @@ describe('claimsCompletion — must NOT flag innocuous prose', () => {
   });
 
   it('documents which conversational acknowledgements still match the regex — the composer gates the intercept on isActionTurn to avoid the 2026-05-22 false-positive class', () => {
-    // "noted" is NOT in the dispatchable-verb list (no Brain action
-    // called "note X"), so this stays false. Recording as an intended
-    // exclusion for future reviewers.
-    expect(claimsCompletion("I've noted that.")).toBe(false);
+    // CHANGED 2026-08-05 (DEF-058). The old premise — "no Brain action
+    // called note X" — is no longer true: record_preference stores notes, and
+    // create_contact carries a `note` slot. More to the point, "I've noted
+    // that" when nothing was written is precisely the fabrication the owner
+    // hit at 18:21, alongside "I've created a contact for your friend".
+    //
+    // So it now matches, and is protected the same way "removed" below is:
+    // the composer gates the intercept on isActionTurn, so a conversational
+    // aside is not rewritten unless the user's message was an imperative.
+    expect(claimsCompletion("I've noted that.")).toBe(true);
 
     // "removed" IS in the verb list (mark_contact_inactive semantics).
     // This DOES match the regex — but the composer's intercept is

@@ -284,6 +284,32 @@ export const ACTIONS: Seed[] = [
     previewTemplate: 'Mark "{nameHint}" inactive?',
   },
   {
+    // DEF-058 (2026-08-05): Brain could UPDATE a contact but not CREATE one,
+    // and rather than saying so it narrated the creation anyway — "I've
+    // created a contact for your friend Arjamand Bano" when nothing was
+    // written. A capability the model believes it has is more dangerous than
+    // one it lacks, because the refusal never comes.
+    type: 'create_contact',
+    displayName: 'Save a new contact',
+    description: "Create a NEW contact when the user gives you someone's details and that person is not already in the contacts block — e.g. \"note Arjamand Bano is my friend, her number is +92…\". Requires `name` plus at least one of `email` / `phone`; a contact with neither is unreachable and must not be created. `note` records context the user gave about them (\"special respected friend\"). If the email or phone already belongs to an existing contact the action REFUSES and names them — use `update_contact` on that person instead, never create a second row for someone you already have.",
+    schema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: { type: 'string' },
+        email: { type: 'string' },
+        phone: { type: 'string' },
+        note: { type: 'string' },
+      },
+    },
+    handlerModule: 'entityService',
+    handlerFunction: 'createEntity',
+    operationalMetadata: { external: false },
+    requiresCapability: 'manage_contacts',
+    isHumanFacing: false,
+    previewTemplate: 'Save contact {name}?',
+  },
+  {
     type: 'update_contact',
     displayName: 'Update a contact\'s details',
     description: "Edit an existing contact's email, phone, or name IN PLACE. Emit `contactCandidateId` (entity row id from the contacts block) plus at least one of `newEmail`, `newPhone`, `newName`. Use this for corrections like \"his email is actually X\" or \"update her number\". NEVER create a new/duplicate contact to work around a wrong field — edit the existing one. Do NOT claim you can't edit contacts; this action does exactly that.",

@@ -98,6 +98,13 @@ export type ComposedAction =
   // contact's email" and offered to create a DUPLICATE contact instead.
   // This is the real emittable action. At least one of newEmail/newPhone/
   // newName must be present.
+  // create_contact (DEF-058, 2026-08-05): Brain could UPDATE a contact but had
+  // no way to CREATE one — so when the owner said "Note Arjamand Bano is my
+  // friend, her contact is +92…", it replied "I've created a contact for your
+  // friend" and created nothing. The claim was guaranteed false, because the
+  // capability did not exist in any form. A missing capability that the model
+  // narrates anyway is worse than one it refuses.
+  | { type: 'create_contact'; name: string; email?: string; phone?: string; note?: string }
   | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
   | { type: 'record_preference'; key: string; value: unknown; description?: string };
 
@@ -136,6 +143,7 @@ export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
   'add_open_item',
   'update_open_item',
   'update_contact',
+  'create_contact',
   'schedule_meeting',
   'reschedule_meeting',
   'cancel_meeting',
@@ -160,6 +168,10 @@ export function actionReachesACounterpart(act: ComposedAction): boolean {
 
 export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']> = new Set([
   'add_open_item',
+  // DEF-058: saving a contact contacts nobody. Under the owner's rule
+  // (confirm only when abnormal or risky) an explicit "note X's number is Y"
+  // is instructed, grounded and harmless — so it applies immediately.
+  'create_contact',
   'update_open_item',
   'mark_open_item_done',
   'update_contact',
@@ -178,7 +190,7 @@ export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
   'schedule_meeting', 'cancel_meeting', 'reschedule_meeting',
   'send_email', 'notify_via_whatsapp',
   'set_brain_name', 'archive_wiki_page', 'delete_wiki_page',
-  'set_contact_scope', 'mark_contact_inactive', 'update_contact',
+  'set_contact_scope', 'mark_contact_inactive', 'update_contact', 'create_contact',
   'record_preference',
 ]);
 
@@ -746,8 +758,20 @@ export interface ComposeOptions {
 // claim triggers the safety nets. Extended 2026-07-08 (audit round 2)
 // after coverage gaps found for archive_wiki_page, mark_contact_inactive,
 // record_preference, set_brain_name, mark_open_item_done.
-const _COMPLETION_VERBS_ANY = 'delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting|archived|archiving|archive|marked|marking|mark|saved|saving|save|remembered|remembering|remember|renamed|renaming|rename|completed|completing|complete|closed|closing|close';
-const _COMPLETION_VERBS_PAST = 'delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set|archived|marked|saved|remembered|renamed|completed|closed';
+// DEF-058 (2026-08-05): "created" was absent, so "I've created a contact for
+// your friend Arjamand Bano" — a claim that was guaranteed false because no
+// create capability existed at all — passed the guard untouched.
+//
+// Adding the word is the smaller half of the fix. The larger point is that an
+// enumerated vocabulary can never be complete: it has now been extended after
+// the fact in July (passive voice, DEF-002), on 2026-08-05 for `i will`
+// (DEF-041), and again here. Each extension was written the day after a real
+// fabrication reached the owner. The structural answer is the one the audit
+// and DEF-037 both point at — verify the claim against the DISPATCH LEDGER
+// rather than against a list of words. Until that exists this list is the net,
+// so it is kept honest.
+const _COMPLETION_VERBS_ANY = 'created|creating|create|saved|saving|noted|noting|registered|registering|recorded|recording|delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting|archived|archiving|archive|marked|marking|mark|saved|saving|save|remembered|remembering|remember|renamed|renaming|rename|completed|completing|complete|closed|closing|close';
+const _COMPLETION_VERBS_PAST = 'created|saved|noted|registered|recorded|delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set|archived|marked|saved|remembered|renamed|completed|closed';
 export const EMPTY_PROMISE_RE = new RegExp(
   [
     // (1) First-person WITH auxiliary — safe to match any verb form.
@@ -1150,6 +1174,11 @@ const ACTION_RULES = `# Actions you can actually perform (when the user asks you
 Schema:
 \`\`\`
 "action": null
+        | { "type": "create_contact",
+            "name": string,
+            "email"?: string,
+            "phone"?: string,          // at least ONE of email/phone required
+            "note"?: string }          // e.g. "special respected friend"
         | { "type": "add_open_item",
             "title": string,
             "dueDate"?: "YYYY-MM-DD",
@@ -5373,6 +5402,7 @@ Output ONLY a JSON object — no prose, no explanation, no markdown:
 }
 
 ActionSchema is one of these (set "type" to one of these values):
+- { "type": "create_contact", "name": string, "email"?: string, "phone"?: string, "note"?: string }
 - { "type": "add_open_item", "title": string, "dueDate"?: "YYYY-MM-DD", "note"?: string, "delegateeCandidateId"?: string }  // delegateeCandidateId ONLY when an answer is expected back
 - { "type": "delegate_open_item", "openItemId": string, "delegateeEmail": string, "delegateeName": string, "note"?: string }
 - { "type": "schedule_meeting", "title": string, "whenIso": "YYYY-MM-DDTHH:MM", "durationMin"?: number, "attendeeEmails": string[], "attendeeNames": string[], "note"?: string }
@@ -5554,6 +5584,7 @@ function brainActionTypeToIdem(kind: string): import('../actionIdempotencyServic
     case 'notify_via_whatsapp': return 'BRAIN_NOTIFY_WA';
     case 'delegate_open_item':  return 'BRAIN_DELEGATE_OPEN_ITEM';
     case 'add_open_item':       return 'BRAIN_ADD_OPEN_ITEM';
+    case 'create_contact':      return 'REPLY'; // internal write, no external side effect
     default:                    return 'REPLY'; // safe fallback
   }
 }
@@ -5814,6 +5845,9 @@ export async function renderPlanPreview(
         line = `Update contact ${await nameOf(s.contactCandidateId)}: ${changes}`;
         break;
       }
+      case 'create_contact':
+        line = `Save contact "${s.name ?? ''}"`;
+        break;
       case 'add_open_item':
         // DEF-048: an addressed item sends a message to a person, so the
         // preview must say so. "Add open item" alone would understate what
@@ -5979,6 +6013,64 @@ export async function dispatchPendingDirect(
           };
       }
       return { ok: res.ok, artifactId: newItemId, message: res.message };
+    }
+    case 'create_contact': {
+      // DEF-058. Before creating, check whether either identifier already
+      // belongs to somebody — this is the collision check that would have
+      // stopped the two Hamna rows ever existing (DEF-051). Creating a second
+      // row for a person we already know is how the list reached 620.
+      const cName = String(slots.name ?? '').trim();
+      const cEmail = typeof slots.email === 'string' ? slots.email.trim() : '';
+      const cPhone = typeof slots.phone === 'string' ? slots.phone.trim() : '';
+      if (!cName || (!cEmail && !cPhone)) {
+        return { ok: false, message: '[create_contact: need a name plus an email or phone]' };
+      }
+      const digits = cPhone.replace(/[^0-9]/g, '');
+      const existing = await prisma.entity.findFirst({
+        where: {
+          clientNumber, entityType: 'contact',
+          OR: [
+            ...(cEmail ? [{ email: { equals: cEmail, mode: 'insensitive' as any } } as any] : []),
+            ...(digits.length >= 7 ? [{ phone: { contains: digits.slice(-9) } } as any] : []),
+          ],
+        },
+        select: { id: true, name: true, email: true, phone: true },
+      }).catch(() => null);
+      if (existing) {
+        // Do not silently create a duplicate, and do not silently overwrite
+        // someone else's record. Say what we found and let the owner decide.
+        return {
+          ok: false,
+          message: `That ${cEmail && existing.email ? 'email' : 'number'} already belongs to ${existing.name}. `
+            + `Tell me to update ${existing.name} instead, or give me a different identifier.`,
+        };
+      }
+      try {
+        const { createEntity } = await import('../entityService');
+        const created = await createEntity(clientNumber, userId, {
+          entityType: 'contact',
+          name: cName,
+          email: cEmail || undefined,
+          phone: cPhone || undefined,
+          // Contacts are user-scoped on creation — tenant visibility is an
+          // explicit owner opt-in, never inferred (standing rule).
+          metadata: {
+            scope: 'user', ownerUserId: userId, source: 'brain_chat',
+            ...(slots.note ? { note: String(slots.note) } : {}),
+          },
+        });
+        await prisma.entity.update({
+          where: { id: created.id },
+          data: { ownerUserId: userId, scope: 'user' } as any,
+        }).catch(() => undefined);
+        return {
+          ok: true,
+          artifactId: created.id,
+          message: `Saved ${cName}${cPhone ? ` (${cPhone})` : ''}${cEmail ? ` <${cEmail}>` : ''}.`,
+        };
+      } catch (e: any) {
+        return { ok: false, message: `[create_contact failed: ${e?.message ?? 'unknown'}]` };
+      }
     }
     case 'update_contact': {
       // Plan-step only — same guarded in-place edit as the inline
@@ -6452,6 +6544,17 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     const delegateeAdHocEmail = typeof r.delegateeAdHocEmail === 'string' && r.delegateeAdHocEmail.trim()
       ? r.delegateeAdHocEmail.trim() : undefined;
     return { type: 'add_open_item', title, dueDateRaw, note, delegateeCandidateId, delegateeAdHocEmail };
+  }
+  if (type === 'create_contact') {
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (!name) return null;
+    const email = typeof r.email === 'string' && r.email.includes('@') ? r.email.trim() : undefined;
+    const phone = typeof r.phone === 'string' && r.phone.trim() ? r.phone.trim() : undefined;
+    // A contact with neither identifier is a note, not a contact — and an
+    // unreachable row is exactly the debris that grew the list to 620.
+    if (!email && !phone) return null;
+    const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
+    return { type: 'create_contact', name, email, phone, note };
   }
   if (type === 'update_open_item') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';

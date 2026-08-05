@@ -48,6 +48,7 @@ export type PendingActionKind =
   // action kind]" on 2026-08-04.
   | 'update_open_item'
   | 'add_open_item'
+  | 'create_contact'
   | 'update_contact'
   // Compound plan (2026-07-14): several outbound steps previewed and
   // confirmed TOGETHER ("send followup on email AND whatsapp" → one
@@ -60,6 +61,7 @@ export type PendingActionKind =
   // inline without preview). They're in the union so the plan fan-out
   // can type its synthetic per-step pendings.
   | 'add_open_item'
+  | 'create_contact'
   | 'update_contact';
 
 export type PendingActionStatus =
