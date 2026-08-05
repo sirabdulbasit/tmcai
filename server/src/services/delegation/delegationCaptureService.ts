@@ -60,6 +60,9 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
 
   // ── correlation ────────────────────────────────────────────────────
   let thread: { id: string; state: string; ownerUserId: number; openItemId: string } | null = null;
+  /** DEF-047: thread ids that were plausible but not chosen. Non-empty means
+   *  the correlation is an INFERENCE, and the owner is told so. */
+  let correlationInferredOver: string[] = [];
 
   const referencedId = input.quotedProviderId || input.inReplyTo || null;
   if (referencedId) {
@@ -85,7 +88,10 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
         clientNumber: input.clientNumber, counterpartKey, channel: input.channel,
         state: { in: ACTIVE_THREAD_STATES },
       },
-      select: { id: true, state: true, ownerUserId: true, openItemId: true, activeIntentEventId: true },
+      select: {
+        id: true, state: true, ownerUserId: true, openItemId: true,
+        activeIntentEventId: true, updatedAt: true,
+      },
       take: 30,
     });
     // Unsent new threads cannot consume unrelated inbound: dispatch_pending
@@ -95,8 +101,33 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
     if (eligible.length === 1) {
       thread = eligible[0];
     } else if (eligible.length > 1) {
+      // ── DEF-047 (2026-08-05) — this used to REFUSE and return early ──
+      //
+      // The rule was "exactly one active thread, or no match". Measured
+      // consequence on production: `delegation_thread_events` held 15 events
+      // over four days, every one OUTBOUND. Not a single inbound reply had
+      // EVER been correlated, while the follow-up worker kept messaging the
+      // same counterparts daily. Hamna had two active threads on one number,
+      // so no plain reply from her could ever be read.
+      //
+      // Refusing looks like the safe choice and is not: it converts "we might
+      // attach this to the wrong item" into "we never hear from anyone, and we
+      // keep nagging people who already answered". A person with two questions
+      // outstanding who receives a reply attaches it to the more recent one and
+      // asks if unsure. That is what happens here.
+      //
+      // The inference is CONSUMED but never presented as certain: the owner is
+      // told which item it was attached to and what the alternatives were, so a
+      // wrong guess is correctable. The incident row is still written, so the
+      // audit trail is unchanged.
+      const ordered = [...eligible].sort(
+        (a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      thread = ordered[0];
+      correlationInferredOver = ordered.slice(1).map((t: any) => t.id);
+      log.info('correlation inferred by recency', {
+        counterpartKey, chosen: thread!.id, alternatives: correlationInferredOver.length,
+      });
       await recordAmbiguityIncidents(input, counterpartKey, eligible);
-      return { matched: false, outcome: 'ambiguous' };
     }
   }
 
@@ -125,7 +156,7 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
     return { matched: false, outcome: 'no_thread' };
   }
 
-  await classifyAndRecord(input, thread, consumed.eventId!);
+  await classifyAndRecord(input, thread, consumed.eventId!, correlationInferredOver);
   return { matched: true, outcome: 'consumed', threadId: thread.id, openItemId: thread.openItemId };
 }
 
@@ -135,6 +166,9 @@ async function classifyAndRecord(
   input: DelegationCaptureInput,
   thread: { id: string; ownerUserId: number; openItemId: string },
   inboundEventId: string,
+  /** DEF-047: non-empty when the thread was chosen by recency among several
+   *  candidates, i.e. the correlation is an inference the owner should see. */
+  correlationInferredOver: string[] = [],
 ): Promise<void> {
   const item = await prisma.openItem.findFirst({
     where: { id: thread.openItemId, clientNumber: input.clientNumber },
@@ -212,9 +246,37 @@ async function classifyAndRecord(
   } else if (outcome === 'low_confidence') {
     await notifyOwner(input.clientNumber, thread, 'low_confidence',
       { kind: 'delegation_reply_unclear', threadId: thread.id, openItemId: thread.openItemId });
+  } else if (outcome === 'in_progress') {
+    // ── DEF-048 (2026-08-05) — the owner was never told a reply arrived ──
+    //
+    // Only `completed` and `low_confidence` notified. A counterpart answering
+    // the actual question — "yes, I'll be in tomorrow" — classifies as
+    // in_progress, was filed silently onto the open item, and the owner was
+    // never informed. From his side that is indistinguishable from no reply at
+    // all, which is exactly what he reported: "is Brain reading responses from
+    // those to whom it sent message?"
+    //
+    // An answer to a question you asked is the POINT of asking. It is reported.
+    await notifyOwner(input.clientNumber, thread, 'reply_received',
+      {
+        kind: 'delegation_reply_received', threadId: thread.id,
+        openItemId: thread.openItemId, summary: interpretation.summary.slice(0, 300),
+      });
   }
   // blocked → recordActionLifecycleReply's existing deduped intervention
   // prompt covers the owner notice; unrelated → deliberately silent.
+
+  // DEF-047: the correlation above was a RECENCY GUESS between several open
+  // threads with the same counterpart. Tell the owner, so a wrong attachment is
+  // correctable instead of silent. Separate from the reply notice on purpose —
+  // this is about our confidence, not about what they said.
+  if (correlationInferredOver.length > 0) {
+    await notifyOwner(input.clientNumber, thread, 'correlation_inferred',
+      {
+        kind: 'delegation_reply_correlation_inferred', threadId: thread.id,
+        openItemId: thread.openItemId, alternatives: correlationInferredOver.length,
+      });
+  }
 }
 
 // ── ambiguity incidents (owner-scoped, capped, transactional) ────────
@@ -335,6 +397,10 @@ function buildOwnerQuestion(metadata: Record<string, unknown>): string {
       return 'A delegatee reply was received but classification failed. The reply is stored as evidence; please review the item.';
     case 'delegation_reply_ambiguous':
       return 'A reply arrived from a contact with more than one open delegation. Please tell me which item it belongs to.';
+    case 'delegation_reply_received':
+      return `They replied: ${String(metadata.summary ?? '').slice(0, 300)} — tell me if you want anything done about it.`;
+    case 'delegation_reply_correlation_inferred':
+      return `That reply matched ${Number(metadata.alternatives ?? 0) + 1} open threads with the same contact; I attached it to the most recent one. Tell me if it belongs to a different item.`;
     default:
       return 'A delegation thread needs your attention.';
   }
