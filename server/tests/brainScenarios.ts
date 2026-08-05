@@ -336,8 +336,17 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // 3. The gate consults the immediate set (not a stale hardcoded list).
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
       const { join } = require('node:path') as typeof import('node:path');
-      const bc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      // Comments are stripped BEFORE asserting. This assertion measures the
+      // distance between two identifiers, so explanatory prose between them
+      // used to break it — the standing repo rule (source-guard tests strip
+      // comments first) exists because that has now happened five times.
+      const bc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
       expect(bc).toMatch(/gateHumanFacingAction[\s\S]{0,400}IMMEDIATE_INTERNAL_ACTION_TYPES\.has/);
+      // DEF-048: and the gate must ALSO consult the slots, because
+      // add_open_item is only internal when it carries no delegatee.
+      expect(bc).toMatch(/IMMEDIATE_INTERNAL_ACTION_TYPES\.has\(act\.type\)\s*&&\s*!actionReachesACounterpart\(act\)/);
     },
   },
   {

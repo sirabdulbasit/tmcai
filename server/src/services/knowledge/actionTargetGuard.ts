@@ -127,6 +127,18 @@ export async function verifyActionTargets(
       if (await candidateResolves(s.delegateeCandidateId, userId, clientNumber)) return { ok: true };
       return ask('who to delegate to — name the exact contact or give a valid email');
     }
+    // DEF-048 (2026-08-05): add_open_item may carry a delegatee ("ask Hamna
+    // whether she's coming tomorrow"). A plain item needs no target and is
+    // always allowed; one addressed to somebody must ground that person by the
+    // same rule as delegate_open_item, so an unreachable ask is refused up
+    // front rather than silently creating an item nobody will ever answer.
+    case 'add_open_item': {
+      const addressed = s.delegateeCandidateId != null || s.delegateeAdHocEmail != null;
+      if (!addressed) return { ok: true };
+      if (validEmail(s.delegateeAdHocEmail)) return { ok: true };
+      if (await candidateResolves(s.delegateeCandidateId, userId, clientNumber)) return { ok: true };
+      return ask('who to ask — name the exact contact or give a valid email');
+    }
     case 'set_contact_scope':
     case 'mark_contact_inactive':
     case 'update_contact': {

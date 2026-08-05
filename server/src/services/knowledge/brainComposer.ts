@@ -72,7 +72,13 @@ export type ComposedAction =
   // real email at dispatch. Eliminates email hallucinations structurally.
   // Date fields emit `*Raw` (the user's literal phrase); server resolves
   // via chrono with the user's timezone. The LLM does NOT do date math.
-  | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string }
+  // add_open_item carries an OPTIONAL delegatee (DEF-048, 2026-08-05) so that
+  // "ask <person> <question>" is one action: the item is created and assigned
+  // in a single step. Assignment is what opens the delegation thread, and the
+  // thread is the only thing that can correlate their reply back to the ask.
+  // Chaining add → delegate as two plan steps cannot work: the second step
+  // would need the id of an item that does not exist when the plan is built.
+  | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string }
   | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDateRaw?: string; note?: string }
   | { type: 'mark_open_item_done'; openItemId: string; completionNote?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string; note?: string }
@@ -138,6 +144,19 @@ export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
   'delegate_open_item',
   // 'action_plan' is deliberately absent — nested plans are rejected.
 ]);
+
+/** DEF-048 — does this action, with THESE slots, reach another human?
+ *
+ *  `IMMEDIATE_INTERNAL_ACTION_TYPES` classifies by type, which was safe while
+ *  every member was purely internal. `add_open_item` broke that: with a
+ *  delegatee it assigns the item, which opens a delegation thread and messages
+ *  the counterpart. Externality is therefore a property of the SLOTS, and
+ *  anything that reaches a person must pass the human-facing gate.
+ */
+export function actionReachesACounterpart(act: ComposedAction): boolean {
+  return act.type === 'add_open_item'
+    && !!((act as any).delegateeCandidateId || (act as any).delegateeAdHocEmail);
+}
 
 export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']> = new Set([
   'add_open_item',
@@ -4960,7 +4979,15 @@ async function gateHumanFacingAction(
   // Internal-only, reversible actions apply immediately. In
   // particular, record_preference must not fall through to the generic
   // "reply send" preview: there is no recipient or external effect.
-  if (IMMEDIATE_INTERNAL_ACTION_TYPES.has(act.type)) return null;
+  //
+  // DEF-048 (2026-08-05): membership of that set is a claim that the action
+  // "does not contact another person". For `add_open_item` that claim is now
+  // conditional — an item carrying a delegatee gets assigned, which opens a
+  // delegation thread and sends the counterpart a message. Judging by TYPE
+  // alone would let an outbound message skip the human-facing gate entirely,
+  // which is the same silently-false classification that produced DEF-045.
+  // The externality is a property of the slots, so it is read from the slots.
+  if (IMMEDIATE_INTERNAL_ACTION_TYPES.has(act.type) && !actionReachesACounterpart(act)) return null;
 
   // Earned autonomy (Phase 1C, 2026-07-14): the user can CONSENT to
   // skipping the preview for a kind after the brain proves itself
@@ -5753,7 +5780,38 @@ export async function dispatchPendingDirect(
           params: { itemTitle: slots.title, itemDueDate: slots.dueDate, itemNote: slots.note },
         } as any,
       });
-      return { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+      // DEF-048 (2026-08-05): "ask Hamna whether she's coming to office
+      // tomorrow" is an open item that happens to be a question, addressed to
+      // someone. Creating it and assigning it in ONE action is what makes the
+      // answer come back — assignment is what opens the delegation thread, and
+      // the thread is the only thing that can correlate her reply.
+      //
+      // Owner's choice (2026-08-05) over making DelegationThread.openItemId
+      // nullable: an unanswered question genuinely IS an open item, so it gets
+      // a status and a follow-up cadence for free instead of a second
+      // tracking concept that every reader would have to learn.
+      const newItemId = (res as any).artifactId;
+      const hasDelegatee = !!(slots.delegateeCandidateId || slots.delegateeAdHocEmail);
+      if (res.ok && hasDelegatee && newItemId) {
+        const assigned = await assignItemToCounterpart(clientNumber, userId, {
+          openItemId: String(newItemId),
+          titleHint: String(slots.title ?? ''),
+          delegateeCandidateId: slots.delegateeCandidateId != null ? String(slots.delegateeCandidateId) : undefined,
+          delegateeAdHocEmail: typeof slots.delegateeAdHocEmail === 'string' ? slots.delegateeAdHocEmail : undefined,
+          note: slots.note != null ? String(slots.note) : undefined,
+        });
+        // The item exists either way. If assignment failed, say so plainly
+        // rather than reporting a clean success — the owner's ask was
+        // "get me an answer", and an unassigned item will never produce one.
+        return assigned.ok
+          ? { ok: true, artifactId: String(newItemId), message: assigned.message }
+          : {
+            ok: false,
+            artifactId: String(newItemId),
+            message: `Created "${slots.title}" but could not assign it — ${assigned.message}`,
+          };
+      }
+      return { ok: res.ok, artifactId: newItemId, message: res.message };
     }
     case 'update_contact': {
       // Plan-step only — same guarded in-place edit as the inline
@@ -5954,41 +6012,72 @@ export async function dispatchPendingDirect(
         return { ok: false, message: `[notify_via_whatsapp failed: ${e?.message ?? 'unknown'}]` };
       }
     }
-    case 'delegate_open_item': {
-      // Two recipient paths (structural fix 2026-07-07):
-      //   (a) delegateeCandidateId → resolveCandidate
-      //   (b) delegateeAdHocEmail  → synthesize a matched-like row
-      const { resolveCandidate } = await import('./candidateResolver');
-      const { delegateItem } = await import('../openItemsService');
-      const adHocEmail = typeof slots.delegateeAdHocEmail === 'string' ? slots.delegateeAdHocEmail.trim() : '';
-      let matched: { name: string; email: string | null; phone: string | null } | null = null;
-      if (adHocEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adHocEmail)) {
-        matched = { name: adHocEmail.split('@')[0], email: adHocEmail, phone: null };
-      } else {
-        matched = await resolveCandidate(String(slots.delegateeCandidateId ?? ''), userId, clientNumber);
-      }
-      if (!matched) return { ok: false, message: `[delegate_open_item: recipient not resolved]` };
-      if (!matched.email) return { ok: false, message: `[delegate_open_item: ${matched.name} has no email]` };
-      try {
-        const r = await delegateItem(
-          String(slots.openItemId),
-          clientNumber,
-          null,
-          matched.name,
-          matched.email,
-          slots.note ? String(slots.note) : undefined,
-        );
-        return {
-          ok: !!r,
-          artifactId: String(slots.openItemId),
-          message: `Delegated "${slots.titleHint ?? slots.openItemId}" to ${matched.name} <${matched.email}>.`,
-        };
-      } catch (e: any) {
-        return { ok: false, message: `[delegate failed: ${e?.message ?? 'unknown'}]` };
-      }
-    }
+    case 'delegate_open_item':
+      return assignItemToCounterpart(clientNumber, userId, {
+        openItemId: String(slots.openItemId),
+        titleHint: slots.titleHint != null ? String(slots.titleHint) : undefined,
+        delegateeCandidateId: slots.delegateeCandidateId != null ? String(slots.delegateeCandidateId) : undefined,
+        delegateeAdHocEmail: typeof slots.delegateeAdHocEmail === 'string' ? slots.delegateeAdHocEmail : undefined,
+        note: slots.note != null ? String(slots.note) : undefined,
+      });
   }
   return { ok: false, message: `[Unknown pending action kind: ${pending.actionKind}]` };
+}
+
+/** DEF-048 — THE ONLY PLACE AN OPEN ITEM IS ASSIGNED TO A COUNTERPART.
+ *
+ *  Extracted 2026-08-05 when `add_open_item` gained a delegatee, so that
+ *  "ask Hamna whether she is coming to office tomorrow" becomes ONE action:
+ *  create the item, assign it, and let the existing lifecycle worker send it
+ *  and open the delegation thread that makes her reply readable.
+ *
+ *  It is a shared function rather than a second copy because copying is what
+ *  produced four defects on 2026-08-05 alone (DEF-039 idempotency, DEF-041 the
+ *  empty-promise regex, DEF-044 the item-title renderer, DEF-045 the target
+ *  guard). Two implementations of a rule means one real implementation and one
+ *  that quietly drifts.
+ *
+ *  Two recipient paths, unchanged from the original (structural fix 2026-07-07):
+ *    (a) delegateeCandidateId → resolveCandidate
+ *    (b) delegateeAdHocEmail  → synthesize a matched-like row
+ */
+async function assignItemToCounterpart(
+  clientNumber: string,
+  userId: number,
+  input: {
+    openItemId: string;
+    titleHint?: string;
+    delegateeCandidateId?: string;
+    delegateeAdHocEmail?: string;
+    note?: string;
+  },
+): Promise<{ ok: boolean; artifactId?: string; message: string }> {
+  const { resolveCandidate } = await import('./candidateResolver');
+  const { delegateItem } = await import('../openItemsService');
+  const adHocEmail = (input.delegateeAdHocEmail ?? '').trim();
+  let matched: { name: string; email: string | null; phone: string | null } | null = null;
+  if (adHocEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adHocEmail)) {
+    matched = { name: adHocEmail.split('@')[0], email: adHocEmail, phone: null };
+  } else {
+    matched = await resolveCandidate(String(input.delegateeCandidateId ?? ''), userId, clientNumber);
+  }
+  if (!matched) return { ok: false, message: `[delegate_open_item: recipient not resolved]` };
+  if (!matched.email) return { ok: false, message: `[delegate_open_item: ${matched.name} has no email]` };
+  try {
+    const r = await delegateItem(
+      input.openItemId, clientNumber, null, matched.name, matched.email, input.note,
+    );
+    return {
+      ok: !!r,
+      artifactId: input.openItemId,
+      // DEF-044: name the item, never the raw record id. `titleHint` is the
+      // title the preview showed, so what the owner reads back matches what
+      // he approved.
+      message: `Delegated "${input.titleHint ?? input.openItemId}" to ${matched.name} <${matched.email}>.`,
+    };
+  } catch (e: any) {
+    return { ok: false, message: `[delegate failed: ${e?.message ?? 'unknown'}]` };
+  }
 }
 
 /** Describe what Brain attempted in the previous (rejected) response,
