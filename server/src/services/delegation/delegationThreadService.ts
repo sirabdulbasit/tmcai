@@ -53,6 +53,31 @@ export const THREAD_TRANSITIONS: Record<string, DelegationThreadState[]> = {
   closed: [], expired: [], cancelled: [],
 };
 
+/** DEF-064 — states from which an inbound reply can legally be consumed.
+ *
+ *  `ACTIVE_THREAD_STATES` is a much wider set: it includes `awaiting_owner`,
+ *  `resolved_pending_owner`, `followup_scheduled` and `reopened`, none of which
+ *  permit `→ evaluating`. Correlation used the wide set, so recency could pick
+ *  a thread that was structurally incapable of accepting the reply, and capture
+ *  then returned `no_thread` and threw a correctly-identified counterpart to
+ *  stranger-triage.
+ *
+ *  2026-08-06 14:00, verbatim: `lid alias hit` → `correlation inferred by
+ *  recency` → `inbound consume failed, reason: illegal_transition` →
+ *  `Unregistered number — triaged`. Hamna's answer, three links after identity
+ *  was finally solved.
+ *
+ *  Derived from THREAD_TRANSITIONS rather than hand-listed, so a change to the
+ *  state machine cannot leave this stale.
+ */
+export const REPLY_CONSUMABLE_STATES: DelegationThreadState[] =
+  (Object.keys(THREAD_TRANSITIONS) as DelegationThreadState[])
+    .filter((from) => THREAD_TRANSITIONS[from]?.includes('evaluating'));
+
+export function canConsumeReply(state: string): boolean {
+  return (REPLY_CONSUMABLE_STATES as string[]).includes(state);
+}
+
 // ── Canonical counterpart keys (NULL-safe uniqueness, REQ-002 §2) ────
 
 export function canonicalWhatsAppNumber(raw: unknown): string | null {

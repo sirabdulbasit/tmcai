@@ -27,7 +27,7 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import {
   ACTIVE_THREAD_STATES, appendEventWithTransition, counterpartKeyFor,
-  isDelegationCaptureEnabled, DelegationChannel, DelegationThreadState,
+  isDelegationCaptureEnabled, canConsumeReply, DelegationChannel, DelegationThreadState,
 } from './delegationThreadService';
 
 const log = createLogger('delegation-capture');
@@ -97,6 +97,11 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
   /** DEF-047: thread ids that were plausible but not chosen. Non-empty means
    *  the correlation is an INFERENCE, and the owner is told so. */
   let correlationInferredOver: string[] = [];
+  /** DEF-064: set when this counterpart IS known but no thread of theirs can
+   *  currently accept a reply. Distinguishes "who is this?" from "we know
+   *  exactly who this is and our bookkeeping has moved on". */
+  let knownButClosedToReplies = false;
+  let knownThreadOwnerUserId: number | null = null;
 
   const referencedId = input.quotedProviderId || input.inReplyTo || null;
   if (referencedId) {
@@ -130,8 +135,27 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
     });
     // Unsent new threads cannot consume unrelated inbound: dispatch_pending
     // qualifies only when its intent reached transport (activeIntentEventId set).
-    const eligible = candidates.filter((c: any) =>
+    //
+    // DEF-064: and the state must actually PERMIT consuming a reply.
+    // ACTIVE_THREAD_STATES is far wider than that — awaiting_owner,
+    // resolved_pending_owner, followup_scheduled and reopened are all "active"
+    // and none of them allows `→ evaluating`. Picking one produced
+    // `illegal_transition`, and capture then reported no_thread and sent a
+    // known counterpart to stranger-triage. Filtering here means recency can
+    // only ever choose a thread that can receive the reply.
+    // Two separate filters, and the order matters for the fallback below.
+    // First: was anything actually SENT to this person? An unsent
+    // dispatch_pending thread means we never messaged them, so an inbound is
+    // not a reply to us and must not be treated as one.
+    const actuallySent = candidates.filter((c: any) =>
       c.state !== 'dispatch_pending' || c.activeIntentEventId != null);
+    // Second: can that thread's state legally take a reply (DEF-064)?
+    const eligible = actuallySent.filter((c: any) => canConsumeReply(c.state));
+    // "We messaged this person and they answered, but every one of those
+    // threads has moved past accepting replies." Distinct from "we never
+    // messaged them" — only the former earns the relay.
+    knownButClosedToReplies = eligible.length === 0 && actuallySent.length > 0;
+    knownThreadOwnerUserId = actuallySent[0]?.ownerUserId ?? null;
     if (eligible.length === 1) {
       thread = eligible[0];
     } else if (eligible.length > 1) {
@@ -165,7 +189,19 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
     }
   }
 
-  if (!thread) return { matched: false, outcome: 'no_thread' }; // silent drop upstream
+  if (!thread) {
+    // DEF-064 — a KNOWN person's reply is never thrown away.
+    //
+    // If we have threads with this counterpart but none can take a reply (all
+    // resolved, or awaiting the owner), the honest outcome is not "unknown
+    // sender". He asked her something; she answered; he is told. The thread
+    // state machine is our bookkeeping problem, not a reason to lose her words.
+    if (knownButClosedToReplies) {
+      await notifyOwnerOfUnattachedReply(input, knownThreadOwnerUserId);
+      return { matched: true, outcome: 'consumed' };
+    }
+    return { matched: false, outcome: 'no_thread' }; // silent drop upstream
+  }
 
   // ── consume: inbound event + CAS → evaluating ─────────────────────
   const consumed = await appendEventWithTransition({
@@ -192,6 +228,52 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
 
   await classifyAndRecord(input, thread, consumed.eventId!, correlationInferredOver);
   return { matched: true, outcome: 'consumed', threadId: thread.id, openItemId: thread.openItemId };
+}
+
+/**
+ * DEF-064 — a known person answered, and we cannot file it. Tell him anyway.
+ *
+ * Every thread with this counterpart has moved past taking replies — resolved,
+ * or waiting on the owner. The state machine has no slot for her words. That is
+ * OUR bookkeeping problem; he asked her a question and she answered it, so he
+ * hears it.
+ *
+ * Deliberately plain: her name, what she said, and an honest note that it is
+ * not attached to anything. No classification, no completion inference, no
+ * silent close — the thread is untouched.
+ */
+async function notifyOwnerOfUnattachedReply(
+  input: DelegationCaptureInput,
+  ownerUserId: number | null,
+): Promise<void> {
+  if (!ownerUserId) return;
+  try {
+    const digits = input.fromIdentifier.replace(/[^0-9]/g, '').slice(-9);
+    const contact = await prisma.entity.findFirst({
+      where: {
+        clientNumber: input.clientNumber, entityType: 'contact',
+        phone: { contains: digits },
+      },
+      select: { name: true },
+    }).catch(() => null);
+    const who = contact?.name ?? input.fromIdentifier;
+
+    const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
+    await enqueueBrainPrompt({
+      userId: ownerUserId,
+      clientNumber: input.clientNumber,
+      question: `${who} replied: "${input.body.slice(0, 300)}"\n\n`
+        + '(Not attached to an open request — everything I had with them is already closed or waiting on you.)',
+      criticality: 'routine',
+      // An answer is news, not a question — it must never hold the lock.
+      expectsReply: false,
+      dedupKey: `unattached_reply:${input.sourceId}`,
+      metadata: { source: 'unattached_counterpart_reply', from: input.fromIdentifier },
+    });
+    log.info('unattached reply relayed to owner', { who, ownerUserId });
+  } catch (error: any) {
+    log.warn('unattached reply relay failed', { error: error?.message?.slice(0, 200) });
+  }
 }
 
 // ── DEF-075: LID alias binding ───────────────────────────────────────
@@ -364,11 +446,20 @@ async function classifyAndRecord(
   }).catch((e: any) => log.warn('thread_capture lifecycle record failed', { error: e.message }));
 
   if (outcome === 'completed') {
+    // DEF-080: the ANSWER is news and must not queue behind an unrelated
+    // question. On 2026-08-06 prompt 277 ("that reply matched 3 open threads")
+    // reached the owner because I had marked it a notice, while 276 — the
+    // actual answer, "reports completion: Issue resolved" — sat queued because
+    // I had left it expecting a reply. He got the footnote and not the content.
+    // Confirming the close is a separate, later question; hearing the answer is
+    // not optional.
     await notifyOwner(input.clientNumber, thread, 'completion_reported',
-      { kind: 'delegation_completion_reported', threadId: thread.id, openItemId: thread.openItemId, summary: interpretation.summary.slice(0, 300) });
+      { kind: 'delegation_completion_reported', threadId: thread.id, openItemId: thread.openItemId, summary: interpretation.summary.slice(0, 300) },
+      { expectsReply: false });
   } else if (outcome === 'low_confidence') {
     await notifyOwner(input.clientNumber, thread, 'low_confidence',
-      { kind: 'delegation_reply_unclear', threadId: thread.id, openItemId: thread.openItemId });
+      { kind: 'delegation_reply_unclear', threadId: thread.id, openItemId: thread.openItemId },
+      { expectsReply: false });
   } else if (outcome === 'in_progress') {
     // ── DEF-048 (2026-08-05) — the owner was never told a reply arrived ──
     //
