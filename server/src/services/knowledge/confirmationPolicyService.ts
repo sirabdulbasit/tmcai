@@ -139,7 +139,11 @@ just asked, act.
 Reply with JSON only:
 {"needsConfirmation": boolean, "reason": "<= 15 words, what you'd tell him>", "confidence": 0..1}
 
-If you are not confident, set needsConfirmation true — a wrong send costs more than a wasted question.`;
+Set "confidence" to how sure you are that the check-in is WORTH MAKING — that it
+carries something the owner does not already know. If you are unsure, say so with
+a LOW confidence rather than defaulting to true: being unsure whether a check is
+warranted is not a reason to make it. Reserve high confidence for a concrete,
+nameable concern.`;
 
     const userPrompt = `Owner's message: ${JSON.stringify(input.question)}
 Brain's previous message: ${JSON.stringify(lastBrain.slice(0, 300))}
@@ -151,10 +155,35 @@ Facts: ${JSON.stringify(facts)}`;
     const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
     const reason = typeof parsed.reason === 'string' ? parsed.reason : '';
 
-    // Low confidence resolves to asking, per the asymmetry above.
-    if (confidence < 0.6) return ASK(reason || 'not confident this is routine');
-    if (parsed.needsConfirmation === true) return ASK(reason || 'worth checking first');
-    return { needsConfirmation: false, reason: reason || 'routine and clearly instructed' };
+    // ── DEF-079 — CONFIDENCE DECIDES, and the owner sets the bar ─────
+    //
+    // This used to read: `confidence < 0.6 → ASK`. So being UNSURE produced a
+    // question, which is backwards for someone whose standing complaint is
+    // being asked to confirm things he just instructed. Uncertainty about
+    // whether a check is warranted is not a reason to run the check.
+    //
+    // Now it asks only when the assessment is CONFIDENT the check-in carries
+    // information he lacks. The bar is `confirmation.min_confidence_pct`
+    // (default 75), a tenant config — his knob, tunable without a deploy,
+    // rather than a magic number I chose.
+    //
+    // The two hard cases below this are unchanged and deliberately not
+    // governed by confidence: an unresolved recipient and a failed assessment
+    // mean we cannot judge at all, which is different from judging "routine".
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const minPct = await getBehaviorValue('confirmation.min_confidence_pct', { userId: input.userId })
+      .catch(() => 75);
+    const bar = Math.max(0, Math.min(100, minPct)) / 100;
+
+    if (parsed.needsConfirmation === true && confidence >= bar) {
+      return ASK(reason || 'worth checking first');
+    }
+    return {
+      needsConfirmation: false,
+      reason: parsed.needsConfirmation === true
+        ? `${reason || 'possible concern'} — below the ${Math.round(bar * 100)}% bar, acting`
+        : (reason || 'routine and clearly instructed'),
+    };
   } catch (error: any) {
     log.warn('confirmation assessment failed — defaulting to ask', {
       error: error?.message?.slice(0, 200),

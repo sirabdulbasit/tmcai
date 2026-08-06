@@ -77,10 +77,23 @@ describe('DEF-038 — it asks when the check-in carries information', () => {
 });
 
 describe('DEF-038 — it fails closed, always', () => {
-  it('asks when the model is not confident', async () => {
-    H.callGemini.mockResolvedValue('{"needsConfirmation": false, "reason": "probably fine", "confidence": 0.3}');
+  // CHANGED by owner ruling 2026-08-06 (DEF-079). This asserted the opposite —
+  // that low confidence resolves to asking. He overruled it: "agreed if you
+  // controlled it through confidence level." Being UNSURE whether a check is
+  // warranted is not a reason to make it, and for someone whose standing
+  // complaint is being asked to confirm what he just instructed, the old
+  // direction was exactly backwards.
+  it('ACTS when the model is not confident a check is warranted', async () => {
+    H.callGemini.mockResolvedValue('{"needsConfirmation": true, "reason": "recipient is new", "confidence": 0.3}');
     const v = await ask({ type: 'send_email', toCandidateIds: ['c1'], subject: 's', body: 'b' });
-    expect(v.needsConfirmation, 'low confidence must resolve to asking').toBe(true);
+    expect(v.needsConfirmation, 'a weak concern must not interrupt him').toBe(false);
+    expect(v.reason, 'but it must say what it chose not to ask about').toMatch(/below the .*bar/);
+  });
+
+  it('asks when the model IS confident a check is warranted', async () => {
+    H.callGemini.mockResolvedValue('{"needsConfirmation": true, "reason": "content looks sensitive", "confidence": 0.9}');
+    const v = await ask({ type: 'send_email', toCandidateIds: ['c1'], subject: 's', body: 'b' });
+    expect(v.needsConfirmation).toBe(true);
   });
 
   it('asks when the model errors', async () => {

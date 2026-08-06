@@ -37,6 +37,19 @@ export interface BehaviorSpec {
 
 export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
   // ── Section 33a: delegation capture (flags are 0/1 counts) ────────
+  // DEF-076/079 — how sure must Brain be before it interrupts the owner?
+  //
+  // He asked for this to be governed by confidence rather than by rules:
+  // "agreed if you controlled it through confidence level". Raise it and Brain
+  // acts more and asks less; lower it and it checks in more often. A tenant
+  // config value so it can be tuned without a deploy.
+  //
+  // 75 means: only stop and ask when the assessment is at least 75% sure the
+  // check-in tells him something he does not already know.
+  'confirmation.min_confidence_pct': {
+    key: 'confirmation.min_confidence_pct', unit: 'count', def: 75, min: 0, max: 100, scope: 'tenant',
+    description: 'Confidence (%) required before Brain asks the owner to confirm an action he already instructed. Higher = acts more, asks less. Hard safety cases (unresolved recipient, failed assessment) ask regardless.',
+  },
   'delegation.capture_enabled': {
     key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',
