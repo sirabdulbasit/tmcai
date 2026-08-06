@@ -52,7 +52,15 @@ const REACHES_A_PERSON = new Set([
 
 /** Facts the model needs, gathered from the database rather than guessed. */
 async function gatherFacts(act: ComposedAction, userId: number): Promise<Record<string, unknown>> {
+  // DEF-076 — ANCHOR TODAY.
+  //
+  // 2026-08-06 10:14, on a routine ask: "The last contact date with Hamna is in
+  // the future (2026). Is this correct?" It is 2026. The model had no current
+  // date, so it fell back on its own sense of the year and invented a
+  // contradiction — then correctly asked about it. A sound gate on a false
+  // premise. Same family as DEF-026, where the prompt had the date but no clock.
   const facts: Record<string, unknown> = {
+    today: new Date().toISOString().slice(0, 10),
     action: act.type,
     reachesAPerson: REACHES_A_PERSON.has(act.type),
     // A sent message cannot be unsent; an open-item edit can.
@@ -115,7 +123,18 @@ Confirm when, and only when, the check-in would tell the owner something he does
 - the instruction is ambiguous about who or what
 - something in the facts looks stale, wrong, or contradictory
 
+TODAY'S DATE IS GIVEN TO YOU in facts.today. Use it and nothing else. Any date on
+or before it is in the PAST. Never call a date "in the future" from your own
+sense of what year it is — on 2026-08-06 that produced a confirmation over a
+last-contact date of 2026, which was simply yesterday.
+
 Do NOT confirm merely because an action sends a message. The owner instructed it; repeating his instruction back is not information. Routine, clearly-worded requests to known people should just happen.
+
+THE DEFAULT IS TO ACT. The owner has said twice that unnecessary confirmation is
+the single thing he most dislikes about this assistant. A question you cannot
+finish — "…and here is what he does not already know: ___" — is not worth
+asking. If the only thing you would tell him is that you are about to do what he
+just asked, act.
 
 Reply with JSON only:
 {"needsConfirmation": boolean, "reason": "<= 15 words, what you'd tell him>", "confidence": 0..1}
