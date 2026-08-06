@@ -261,7 +261,10 @@ async function classifyAndRecord(
       {
         kind: 'delegation_reply_received', threadId: thread.id,
         openItemId: thread.openItemId, summary: interpretation.summary.slice(0, 300),
-      });
+      },
+      // DEF-063: an answer is news, not a question. It must not take the
+      // conversational lock and block the NEXT counterpart's reply.
+      { expectsReply: false });
   }
   // blocked → recordActionLifecycleReply's existing deduped intervention
   // prompt covers the owner notice; unrelated → deliberately silent.
@@ -275,7 +278,8 @@ async function classifyAndRecord(
       {
         kind: 'delegation_reply_correlation_inferred', threadId: thread.id,
         openItemId: thread.openItemId, alternatives: correlationInferredOver.length,
-      });
+      },
+      { expectsReply: false });
   }
 }
 
@@ -364,6 +368,7 @@ async function notifyOwner(
   thread: { id: string; ownerUserId: number; openItemId: string },
   dedupClass: string,
   metadata: Record<string, unknown>,
+  opts: { expectsReply?: boolean } = {},
 ): Promise<void> {
   try {
     const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
@@ -377,6 +382,7 @@ async function notifyOwner(
       criticality: metadata.kind === 'delegation_completion_reported' ? 'high' : 'routine',
       dedupKey: `delegation:${thread.id}:${dedupClass}:${day}`,
       metadata: { source: 'delegation_capture', ...metadata },
+      expectsReply: opts.expectsReply,
     });
   } catch (error: any) {
     log.warn('owner notification failed', { error: error?.message?.slice(0, 200) });

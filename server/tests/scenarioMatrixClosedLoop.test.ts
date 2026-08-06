@@ -185,13 +185,40 @@ describe('S15 · DEF-071 — the reply mentions a different item', () => {
 });
 
 describe('DEF-063 — an informational update must not take the conversational lock', () => {
-  it.fails('only prompts that expect an answer set awaiting_reply', () => {
-    // Babar answers at 10:30 and the notice becomes awaiting_reply. Farooq
-    // answers at 10:45 and sendNextPrompt returns null because a prompt is in
-    // flight — so the second update waits, then expireStalePrompts deletes it.
-    // The owner never learns Farooq said 65%, which is the only figure that
-    // made the pair worth reporting.
-    expect(QUEUE, 'the in-flight guard must distinguish updates from questions')
-      .toMatch(/expectsReply|expects_reply/);
+  // FIXED 2026-08-06. Flipped from it.fails() because it started passing —
+  // which is the whole point of the marker: a defect cannot be quietly fixed
+  // and left documented as broken.
+  it('only prompts that expect an answer set awaiting_reply', () => {
+    expect(QUEUE).toMatch(/expectsReply/);
+  });
+
+  it('a notice is closed immediately after sending, so it never holds the lock', () => {
+    // Babar answered at 10:30 and the notice took the lock; Farooq's 10:45
+    // answer waited behind it until expireStalePrompts deleted it. The owner
+    // got one of two figures and never learned they disagreed — which was the
+    // only thing worth telling him.
+    expect(QUEUE).toMatch(/promptExpectsReply/);
+    expect(QUEUE).toMatch(/state: 'answered'/);
+  });
+
+  it("uses an EXISTING state — no new enum value against a CHECK constraint", () => {
+    // DEF-060 was exactly this mistake: 'normal' was not a valid criticality
+    // and every insert died with Postgres 23514, silently, for five days.
+    const states = [...QUEUE.matchAll(/state: '([a-z_]+)'/g)].map((m) => m[1]);
+    for (const st of states) {
+      expect(['queued', 'awaiting_reply', 'answered', 'expired', 'skipped'],
+        `'${st}' must already exist in the schema`).toContain(st);
+    }
+  });
+
+  it('defaults to expecting a reply, so existing callers are unchanged', () => {
+    expect(QUEUE).toMatch(/input\.expectsReply !== false/);
+  });
+
+  it('a delegatee reply and a delivery notice are both marked as notices', () => {
+    const capture = strip(read('services/delegation/delegationCaptureService.ts'));
+    const ack = strip(read('services/whatsapp/outboundAckService.ts'));
+    expect(capture).toMatch(/expectsReply: false/);
+    expect(ack).toMatch(/expectsReply: false/);
   });
 });

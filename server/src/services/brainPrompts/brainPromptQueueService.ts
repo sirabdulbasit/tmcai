@@ -57,6 +57,20 @@ export interface EnqueueInput {
   ttlMs?: number;
   /** Free-form audit metadata. */
   metadata?: Record<string, unknown>;
+  /**
+   * DEF-063 — does this prompt WAIT for the owner to answer?
+   *
+   * `sendNextPrompt` refuses to dispatch while a conversation is in flight,
+   * which is right for a question and wrong for a notice. On 2026-08-05 Babar's
+   * answer took the lock at 10:30 and Farooq's at 10:45 sat behind it until
+   * `expireStalePrompts` deleted it — so the owner learned one of two figures,
+   * and the discrepancy that was the only news never reached him.
+   *
+   * `false` means: send it, then close it. It never holds the lock and never
+   * blocks the next one. Defaults TRUE so every existing caller keeps its
+   * current behaviour.
+   */
+  expectsReply?: boolean;
 }
 
 export interface EnqueueResult {
@@ -76,6 +90,10 @@ const VOICE_CALL_COOLDOWN_MS = 30 * 60 * 1000;
 
 export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueResult> {
   const criticality: Criticality = input.criticality ?? 'routine';
+  // Carried in metadata rather than a column: additive, no migration, and
+  // reversible. DEF-060 was a schema constraint rejecting a bad enum value —
+  // not a mistake worth risking twice in one day for a boolean.
+  const expectsReply = input.expectsReply !== false;
   const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS;
   const expiresAt = new Date(Date.now() + ttlMs);
 
@@ -159,7 +177,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       state: 'queued',
       dedupKey: input.dedupKey ?? null,
       expiresAt,
-      metadata: (input.metadata ?? {}) as any,
+      metadata: { ...(input.metadata ?? {}), expectsReply } as any,
     },
     select: { id: true },
   });
@@ -265,10 +283,27 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     },
   });
 
+  // ── DEF-063 — a NOTICE must not hold the conversational lock ──────
+  //
+  // The guard at the top of this function refuses to dispatch while a prompt
+  // sits in `awaiting_reply`. Correct for a question; wrong for an update.
+  // 2026-08-05: Babar's answer took the lock at 10:30, Farooq's arrived at
+  // 10:45 and waited behind it until expireStalePrompts deleted it — so the
+  // owner got one of two figures and never learned they disagreed, which was
+  // the only thing worth telling him.
+  //
+  // `answered` is used deliberately: it is an existing state already written
+  // elsewhere in this file, so no new enum value meets the CHECK constraint
+  // that caused DEF-060.
+  const promptExpectsReply = ((next.metadata as Record<string, unknown> | null) ?? {}).expectsReply !== false;
+
   // Record the wa_message_id for reply correlation.
   await prisma.brainPromptQueue.update({
     where: { id: promoted.id },
     data: {
+      ...(r.sent && !promptExpectsReply
+        ? { state: 'answered', answeredAt: new Date() }
+        : {}),
       channelUsed: r.channelsUsed[0] ?? channel,
       ackMessageId: r.waMessageIds[0] ?? null,
       // If the outbound layer suppressed (quiet hours / no phone), roll

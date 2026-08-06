@@ -93,6 +93,89 @@ router.post('/connect', async (req: Request, res: Response) => {
   }
 });
 
+// ─── GET /diagnose-lid — DEF-075: why an @lid counterpart never resolves ─────
+//
+// Read-only. Sends nothing, writes nothing.
+//
+// 2026-08-06 10:16: Hamna's reply arrived as `255043747987458@lid` and
+// collapsed to the synthetic phone `+255043747987458`, matching no thread
+// (`wa:+923134199294`). Fifth recurrence of the @lid class.
+//
+// `waIdentity.lidToPhone` already calls the right API — `getContactLidAndPhone`,
+// typed as returning `{ lid, pn }[]` — and produced nothing usable. The call
+// site swallows the error, so the logs cannot tell these apart:
+//
+//   A. the API threw        → upstream broken again, as in recurrence #4
+//   B. returned []          → cannot map a contact outside the address book;
+//                             no resolver-side fix will ever work and the
+//                             thread must carry the LID instead
+//   C. row with empty `pn`  → our parsing, and a small fix
+//
+// Three causes, three different responses. Guessing between them is how this
+// class reached five recurrences, so this asks the live client instead.
+//
+// Runs IN-PROCESS on purpose: the client lives in an in-memory map, so a
+// standalone script finds nothing (and the box has no npm registry access).
+router.get('/diagnose-lid', async (req: Request, res: Response) => {
+  const cn = getTargetClient(req);
+  const lid = String(req.query.lid ?? '').trim();
+  const phone = String(req.query.phone ?? '').replace(/[^0-9]/g, '');
+  if (!lid.endsWith('@lid')) {
+    return res.status(400).json({ error: 'pass ?lid=<digits>@lid (and optionally &phone=<digits>)' });
+  }
+  try {
+    const { getRawClientForDiagnostics } = await import('../../services/whatsapp/WebjsProvider');
+    const client = getRawClientForDiagnostics(cn);
+    if (!client) {
+      return res.status(409).json({ error: 'no live webjs client for this tenant' });
+    }
+
+    const out: Record<string, unknown> = {
+      clientNumber: cn,
+      lid,
+      apiPresent: typeof client.getContactLidAndPhone === 'function',
+    };
+
+    // The decisive call: LID → phone.
+    try {
+      const byLid = await client.getContactLidAndPhone([lid]);
+      out.lidLookup = byLid;
+      out.outcome = !Array.isArray(byLid) || byLid.length === 0
+        ? 'B_EMPTY — the API cannot map this contact; no resolver fix will work'
+        : !byLid[0]?.pn
+          ? 'C_NO_PN — a row came back but `pn` is empty; parsing or field name'
+          : 'RESOLVES — the mapping exists, so lidToPhone should have worked; the bug is ours';
+    } catch (e: any) {
+      out.lidLookup = { threw: e?.message ?? String(e) };
+      out.outcome = 'A_THREW — upstream API broken, same as @lid recurrence #4';
+    }
+
+    // Reverse direction. A send-time mapping would depend on this.
+    if (phone) {
+      try {
+        out.phoneLookup = await client.getContactLidAndPhone([`${phone}@c.us`]);
+      } catch (e: any) {
+        out.phoneLookup = { threw: e?.message ?? String(e) };
+      }
+    }
+
+    // What the contact object itself knows — the first limb that failed.
+    try {
+      const c = await client.getContactById(lid);
+      out.contact = {
+        id: c?.id?._serialized, number: c?.number, isMyContact: c?.isMyContact,
+        pushname: c?.pushname, name: c?.name, lid: (c as any)?.lid,
+      };
+    } catch (e: any) {
+      out.contact = { threw: e?.message ?? String(e) };
+    }
+
+    res.json(out);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── GET /diagnose-modules — why media + typing throw `r: r` ─────────────────
 //
 // Read-only probe of WhatsApp Web's internal module names on the LIVE page.

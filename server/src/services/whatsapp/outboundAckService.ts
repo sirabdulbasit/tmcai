@@ -147,6 +147,9 @@ async function notifyOwnerOfDelivery(clientNumber: string, providerId: string): 
     criticality: 'routine',
     // One notice per message, forever — a redelivered ack must not re-ping.
     dedupKey: `wa_delivered:${providerId}`,
+    // DEF-063: "delivered" is a notice — it must never block the reply that
+    // follows it, which is the thing the owner is actually waiting for.
+    expectsReply: false,
     metadata: { source: 'delivery_ack', providerId, recipientName: full },
   });
 }
