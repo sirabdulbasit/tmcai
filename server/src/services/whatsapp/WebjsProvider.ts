@@ -1018,6 +1018,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         inboundParams = {
           clientNumber,
           fromNumber,
+          rawSenderId: rawFrom,
           messageBody,
           messageType,
           waMessageId: msgId,

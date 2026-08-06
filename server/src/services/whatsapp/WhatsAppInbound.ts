@@ -24,6 +24,12 @@ export interface InboundParams {
   /** Provider id of the message this inbound quotes/replies to, when
    *  the transport exposes it — preferred delegation correlation key. */
   quotedProviderId?: string;
+  /** DEF-075 — the RAW WhatsApp sender id, e.g. `255043747987458@lid`.
+   *  `fromNumber` may be a SYNTHETIC phone derived from a LID when neither
+   *  getContact() nor the mapping API could resolve the real number. The
+   *  synthetic matches nothing, so correlation needs the raw id to bind by
+   *  alias instead. */
+  rawSenderId?: string;
   timestamp?: number;
   replyFn?: (text: string) => Promise<{
     success: boolean;
@@ -109,6 +115,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       clientNumber: params.clientNumber,
       channel: 'whatsapp',
       fromIdentifier: params.fromNumber,
+      rawSenderId: params.rawSenderId ?? null,
       body: params.messageBody,
       sourceId: params.waMessageId
         ?? `external:${params.fromNumber}:${params.timestamp ?? Date.now()}:${params.messageBody.slice(0, 40)}`,

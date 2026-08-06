@@ -37,6 +37,12 @@ export interface DelegationCaptureInput {
   channel: DelegationChannel;
   /** Raw sender identifier: phone (possibly @lid-resolved upstream) or email. */
   fromIdentifier: string;
+  /** DEF-075 — the untouched provider id, e.g. `255043747987458@lid`, when the
+   *  transport had one. `fromIdentifier` may be a SYNTHETIC phone built from a
+   *  LID because neither getContact() nor the mapping API resolved the real
+   *  number; that synthetic matches no thread, which is why every counterpart
+   *  reply has been triaged as a stranger. */
+  rawSenderId?: string | null;
   body: string;
   sourceId: string;                 // provider message id / feed event id — dedup anchor
   quotedProviderId?: string | null; // WhatsApp quoted message id
@@ -55,8 +61,36 @@ export interface DelegationCaptureResult {
 export async function captureDelegationReply(input: DelegationCaptureInput): Promise<DelegationCaptureResult> {
   if (!await isDelegationCaptureEnabled(input.clientNumber)) return { matched: false, outcome: 'disabled' };
 
-  const counterpartKey = counterpartKeyFor(input.channel, input.fromIdentifier);
+  let counterpartKey = counterpartKeyFor(input.channel, input.fromIdentifier);
   if (!counterpartKey) return { matched: false, outcome: 'no_thread' };
+
+  // ── DEF-075 — bind the LID once, then match exactly forever after ────
+  //
+  // Fifth recurrence of the @lid class, and the first four all tried the same
+  // thing: resolve LID → phone at read time. That depends on an upstream API
+  // which has now failed four times, and when it fails `WebjsProvider` falls
+  // back to `'+' + lid` — a SYNTHETIC number that matches nothing. Hamna's
+  // reply arrived as `+255043747987458` while her thread is keyed
+  // `wa:+923134199294`, so she was triaged as a stranger. That is the whole
+  // reason no counterpart reply has ever been correlated.
+  //
+  // This stops depending on resolution. Two steps, neither calling the API:
+  //
+  //   1. KNOWN ALIAS — a contact already carrying this LID gives the real
+  //      phone. Exact, permanent, and the path every reply after the first
+  //      takes.
+  //   2. BOOTSTRAP — an unknown LID replying while EXACTLY ONE thread is
+  //      awaiting a reply from someone we messaged in the last 6 hours is
+  //      almost certainly that person. Bind the alias to their contact, then
+  //      proceed. One temporal inference buys permanent exactness.
+  //
+  // Deliberately narrow. Two candidates ⇒ no bind, because a wrong bind is
+  // durable and would misroute that person's replies indefinitely. A known
+  // alias is never overwritten by a guess.
+  if (isSyntheticLidIdentity(input)) {
+    const bound = await resolveByLidAlias(input);
+    if (bound) counterpartKey = bound;
+  }
 
   // ── correlation ────────────────────────────────────────────────────
   let thread: { id: string; state: string; ownerUserId: number; openItemId: string } | null = null;
@@ -158,6 +192,95 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
 
   await classifyAndRecord(input, thread, consumed.eventId!, correlationInferredOver);
   return { matched: true, outcome: 'consumed', threadId: thread.id, openItemId: thread.openItemId };
+}
+
+// ── DEF-075: LID alias binding ───────────────────────────────────────
+
+/** How far back an outbound counts as "we just messaged them". Long enough for
+ *  a working reply, short enough that two unrelated conversations rarely
+ *  overlap. */
+const BOOTSTRAP_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/** True when `fromIdentifier` is the synthetic `'+' + lid` that WebjsProvider
+ *  falls back to. A real phone never equals the LID digits. */
+function isSyntheticLidIdentity(input: DelegationCaptureInput): boolean {
+  const raw = (input.rawSenderId ?? '').trim();
+  if (!raw.endsWith('@lid')) return false;
+  return input.fromIdentifier.replace(/[^0-9]/g, '') === raw.replace('@lid', '');
+}
+
+/**
+ * Turn a raw `@lid` into the counterpart key of a REAL phone, or null.
+ *
+ * Never calls the WhatsApp mapping API — that is precisely the dependency that
+ * has failed four times and produced this fifth recurrence.
+ */
+async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string | null> {
+  const lid = (input.rawSenderId ?? '').trim();
+  if (!lid) return null;
+
+  // 1. Known alias — exact, and the path every reply after the first takes.
+  const known = await prisma.entity.findFirst({
+    where: {
+      clientNumber: input.clientNumber, entityType: 'contact',
+      metadata: { path: ['waLid'], equals: lid } as any,
+    },
+    select: { id: true, name: true, phone: true },
+  }).catch(() => null);
+  if (known?.phone) {
+    const key = counterpartKeyFor(input.channel, known.phone);
+    if (key) {
+      log.info('lid alias hit', { lid, contact: known.name });
+      return key;
+    }
+  }
+
+  // 2. Bootstrap. Exactly ONE thread awaiting a reply from someone messaged
+  //    recently ⇒ this is almost certainly them. Two candidates and we do not
+  //    guess: a wrong bind is durable and would misroute them indefinitely.
+  const since = new Date(Date.now() - BOOTSTRAP_WINDOW_MS);
+  const waiting = await prisma.delegationThread.findMany({
+    where: {
+      clientNumber: input.clientNumber, channel: input.channel,
+      state: { in: ACTIVE_THREAD_STATES },
+      updatedAt: { gte: since },
+      counterpartNumberCanonical: { not: null },
+    },
+    select: { counterpartNumberCanonical: true, counterpartKey: true },
+    take: 10,
+  }).catch(() => [] as any[]);
+
+  const distinct = Array.from(new Set(
+    waiting.map((t: any) => t.counterpartNumberCanonical).filter(Boolean)));
+  if (distinct.length !== 1) {
+    log.info('lid bootstrap declined', { lid, candidates: distinct.length });
+    return null;
+  }
+
+  const phone = String(distinct[0]);
+  const key = counterpartKeyFor(input.channel, phone);
+  if (!key) return null;
+
+  // Persist so this is the LAST time we infer for this person.
+  const contact = await prisma.entity.findFirst({
+    where: {
+      clientNumber: input.clientNumber, entityType: 'contact',
+      phone: { contains: phone.replace(/[^0-9]/g, '').slice(-9) },
+    },
+    select: { id: true, name: true, metadata: true },
+  }).catch(() => null);
+  if (contact) {
+    const meta = { ...((contact.metadata ?? {}) as Record<string, unknown>) };
+    if (!meta.waLid) {
+      meta.waLid = lid;
+      meta.waLidBoundAt = new Date().toISOString();
+      meta.waLidBoundBy = 'reply_bootstrap';
+      await prisma.entity.update({ where: { id: contact.id }, data: { metadata: meta as any } })
+        .catch(() => undefined);
+      log.info('lid alias bound', { lid, contact: contact.name, phone });
+    }
+  }
+  return key;
 }
 
 // ── classification (persisted, idempotent) ───────────────────────────
