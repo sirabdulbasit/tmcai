@@ -206,13 +206,49 @@ export interface SendNextResult {
  * promoting a row to awaiting_reply; the other gets P2002 and we treat
  * it as "someone else dispatched", returning null.
  */
+/** DEF-077 — how long an unanswered question may hold the conversational lock.
+ *
+ *  Prompt 271 held it for 28 HOURS on 2026-08-06: sent, never answered (the
+ *  relevance gate kept deciding the owner's messages were new turns, not
+ *  replies), and the 48h TTL meant it would have blocked everything for another
+ *  day. Five notifications stacked behind it, including Hamna's answer.
+ *
+ *  A question the owner has ignored for two hours is not a live conversation.
+ *  It stops blocking; it is not deleted, and its side effect is untouched. */
+const LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
 export async function sendNextPrompt(userId: number): Promise<SendNextResult | null> {
-  // Already a conversation in flight? Don't dispatch.
-  const inFlight = await prisma.brainPromptQueue.findFirst({
+  // ── DEF-077 / DEF-063 second half — the lock is not absolute ────────
+  //
+  // The guard used to be "anything in flight ⇒ send nothing". That is right
+  // for another QUESTION and wrong for a NOTICE, and this morning I only fixed
+  // the direction where a notice TAKES the lock. It still WAITED for one, so
+  // Hamna's answer was correlated, classified and queued — then sat behind a
+  // day-old reminder until it would have expired unread.
+  //
+  // Two changes: a stale lock is released, and a notice is exempt from a live
+  // one. A notice is not part of the conversation, so the lock does not apply
+  // to it in either direction.
+  let inFlight = await prisma.brainPromptQueue.findFirst({
     where: { userId, state: 'awaiting_reply' },
-    select: { id: true },
+    select: { id: true, sentAt: true, question: true },
   });
-  if (inFlight) return null;
+
+  if (inFlight) {
+    const heldFor = Date.now() - new Date(inFlight.sentAt ?? Date.now()).getTime();
+    if (heldFor > LOCK_MAX_AGE_MS) {
+      // Not deleted — expired. The owner never answered, and holding the whole
+      // notification channel hostage to that is worse than letting it go.
+      await prisma.brainPromptQueue.update({
+        where: { id: inFlight.id },
+        data: { state: 'expired' },
+      }).catch(() => undefined);
+      log.info('stale conversational lock released', {
+        userId, promptId: String(inFlight.id), heldForHours: Math.round(heldFor / 3600000),
+      });
+      inFlight = null;
+    }
+  }
 
   // Pick highest-criticality, oldest first. We can't use `orderBy:
   // { criticality: 'desc' }` directly because the values are strings
@@ -237,21 +273,45 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     return Number.isNaN(at) || at <= now;
   });
   if (dueCandidates.length === 0) return null;
-  dueCandidates.sort((a, b) => {
+
+  // A live lock only blocks another QUESTION. Notices go regardless — they are
+  // not part of the conversation, so waiting for it makes no sense. This is the
+  // half of DEF-063 I missed: I stopped a notice TAKING the lock and left it
+  // still WAITING for one.
+  // NOTE: a copy, not an alias. `sendable = dueCandidates` and then clearing
+  // dueCandidates emptied both — they were the same array — and every prompt
+  // silently vanished. Caught by def054 immediately, which is what those tests
+  // are for.
+  const sendable = (inFlight
+    ? dueCandidates.filter((c) =>
+      ((c.metadata as Record<string, unknown> | null) ?? {}).expectsReply === false)
+    : [...dueCandidates]);
+  if (sendable.length === 0) return null;
+
+  sendable.sort((a, b) => {
     const wa = CRIT_WEIGHT[a.criticality] ?? 0;
     const wb = CRIT_WEIGHT[b.criticality] ?? 0;
     if (wa !== wb) return wb - wa;             // higher weight first
     return a.queuedAt.getTime() - b.queuedAt.getTime();  // older first
   });
-  const next = dueCandidates[0]!;
+  const next = sendable[0]!;
 
-  // Promote to awaiting_reply atomically. If the partial unique index
-  // rejects (someone else got there first), fall through with null.
+  // A notice must NOT be promoted to awaiting_reply. `uq_bpq_one_awaiting_per_user`
+  // is a partial unique index, so doing that while a question already holds the
+  // slot would throw P2002 and silently drop the notice — reintroducing the very
+  // bug this bypass exists to fix. It goes straight to a terminal state: sent,
+  // recorded, and out of the way.
+  const promptExpectsReply = ((next.metadata as Record<string, unknown> | null) ?? {}).expectsReply !== false;
+
+  // Promote atomically. If the partial unique index rejects (someone else got
+  // there first), fall through with null.
   let promoted;
   try {
     promoted = await prisma.brainPromptQueue.update({
       where: { id: next.id },
-      data: { state: 'awaiting_reply', sentAt: new Date() },
+      data: promptExpectsReply
+        ? { state: 'awaiting_reply', sentAt: new Date() }
+        : { state: 'answered', sentAt: new Date(), answeredAt: new Date() },
     });
   } catch (err: any) {
     if (err?.code === 'P2002') return null; // race lost
@@ -295,15 +355,10 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // `answered` is used deliberately: it is an existing state already written
   // elsewhere in this file, so no new enum value meets the CHECK constraint
   // that caused DEF-060.
-  const promptExpectsReply = ((next.metadata as Record<string, unknown> | null) ?? {}).expectsReply !== false;
-
   // Record the wa_message_id for reply correlation.
   await prisma.brainPromptQueue.update({
     where: { id: promoted.id },
     data: {
-      ...(r.sent && !promptExpectsReply
-        ? { state: 'answered', answeredAt: new Date() }
-        : {}),
       channelUsed: r.channelsUsed[0] ?? channel,
       ackMessageId: r.waMessageIds[0] ?? null,
       // If the outbound layer suppressed (quiet hours / no phone), roll

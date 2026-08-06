@@ -124,3 +124,69 @@ describe('DEF-054 — the dispatcher stays wired', () => {
     expect(Number(dispatch![1])).toBeLessThan(Number(expiry![1]));
   });
 });
+
+/**
+ * DEF-077 — one unanswered reminder froze every notification for 28 hours.
+ *
+ * Production, 2026-08-06 12:15. Hamna's answer completed the whole chain: LID
+ * bound, thread correlated, classified as a completion, notification written.
+ * Then the queue read:
+ *
+ *   277 queued          "That reply matched 3 open threads…"
+ *   276 queued  high    "The responsible person reports completion: Issue resolved…"
+ *   275 queued          "A reply arrived from a contact with more than one…"
+ *   274 queued  high    "Leave Request is now overdue…"
+ *   272 queued  high    "Intervention needed on Leave Request…"
+ *   271 awaiting_reply  sent 2026-08-05 09:47   ← holding the lock for 28h
+ *
+ * The owner never answered 271, the relevance gate kept classifying his
+ * messages as new turns rather than replies, and the 48h TTL meant it would
+ * have blocked everything for another day.
+ *
+ * Two faults, and I had introduced the second one that morning: a stale lock is
+ * never released, and a NOTICE waits for a lock it should ignore. I fixed a
+ * notice TAKING the lock and left it still WAITING for one — half a fix reads
+ * exactly like a whole one until something real goes through it.
+ */
+describe('DEF-077 — the conversational lock is not indefinite', () => {
+  const STALE = new Date(Date.now() - 28 * 60 * 60 * 1000);
+  const FRESH = new Date(Date.now() - 5 * 60 * 1000);
+  const NOTICE = { ...CANDIDATE, id: 'p_notice', metadata: { expectsReply: false } };
+  const QUESTION = { ...CANDIDATE, id: 'p_question', metadata: {} };
+
+  it('releases a lock held longer than two hours and dispatches', async () => {
+    queueFor([2], [QUESTION]);
+    H.prismaMock.brainPromptQueue.findFirst.mockResolvedValue({ id: 271, sentAt: STALE, question: 'old reminder' });
+    const out = await dispatchDuePrompts();
+    expect(out.sent, 'a question ignored for a day is not a live conversation').toBe(1);
+    const expiry = H.prismaMock.brainPromptQueue.update.mock.calls
+      .find((c: any) => c[0]?.data?.state === 'expired');
+    expect(expiry?.[0]?.where?.id).toBe(271);
+  });
+
+  it('a NOTICE goes out even while a fresh question holds the lock', async () => {
+    queueFor([2], [NOTICE]);
+    H.prismaMock.brainPromptQueue.findFirst.mockResolvedValue({ id: 271, sentAt: FRESH, question: 'live' });
+    const out = await dispatchDuePrompts();
+    expect(out.sent, "Hamna's answer must not wait behind an unrelated question").toBe(1);
+  });
+
+  it('a QUESTION still waits behind a fresh one — the lock still means something', async () => {
+    queueFor([2], [QUESTION]);
+    H.prismaMock.brainPromptQueue.findFirst.mockResolvedValue({ id: 271, sentAt: FRESH, question: 'live' });
+    const out = await dispatchDuePrompts();
+    expect(out.sent).toBe(0);
+  });
+
+  it('a notice is never promoted to awaiting_reply — the unique index would reject it', async () => {
+    // uq_bpq_one_awaiting_per_user is partial-unique. Promoting a notice while a
+    // question holds the slot throws P2002 and silently drops it, reintroducing
+    // the exact bug the bypass exists to fix.
+    queueFor([2], [NOTICE]);
+    H.prismaMock.brainPromptQueue.findFirst.mockResolvedValue({ id: 271, sentAt: FRESH, question: 'live' });
+    await dispatchDuePrompts();
+    const promote = H.prismaMock.brainPromptQueue.update.mock.calls[0][0];
+    expect(promote.data.state).toBe('answered');
+    expect(promote.data.state).not.toBe('awaiting_reply');
+  });
+});
