@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v3.2 · **Last updated:** 2026-08-05 18:05 PKT
+**Version:** v3.3 · **Last updated:** 2026-08-06 10:30 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -154,7 +154,7 @@ did not close the class.**
 
 | Symptom tag | Times | Chats | Status |
 |---|---|---|---|
-| `whatsapp-lid-activity-rejected` | **4** | 12, 14, 15, 16 | contained structurally — see below |
+| `whatsapp-lid-activity-rejected` | **5** | 12, 14, 15, 16, **DEF-075** | **CONTAINMENT FAILED.** The rule said a fifth recurrence must be recorded here before any code change — this is it. Recurrences 1–4 each fixed a module that parsed an id; #5 is different in kind: the resolver itself cannot resolve an unknown counterpart, and the code then FALLS BACK to a synthetic phone that matches nothing. Four fixes treated symptom modules; none questioned whether LID→phone resolution can be relied on at all. It cannot. The next change must remove the dependency, not repair it |
 | `whatsapp-ptt-media-not-ready` | **3** | 12, 14, 16 | CLOSED at root, LIVE-verified 08-04 |
 | `pending-prompt-eats-command` | **3** | 3, 13, 17 | fix written (DEF-017) — **structural: the verdict can now SPLIT a message**; undeployed |
 | **`confirm-misfires`** | **5** | 15, 17, CL-020, CL-023, CL-029 | DEF-024 → DEF-032 → DEF-035 → DEF-055. **Two of the four were introduced by the fix before them.** A patch on the reported instance has now failed four times running; DEF-038 (no confirmation step for instructed actions) is the only remaining structural move and it is overdue |
