@@ -55,13 +55,19 @@ function stripMarkdown(s: string): string {
   out = out.replace(/```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g, '$1');
   // Inline code — drop the backticks, keep the content.
   out = out.replace(/`([^`]+)`/g, '$1');
-  // Bold / italic — drop the markers.
-  out = out.replace(/\*\*([^*]+)\*\*/g, '$1');
-  out = out.replace(/__([^_]+)__/g, '$1');
-  out = out.replace(/\*([^*]+)\*/g, '$1');
-  out = out.replace(/_([^_]+)_/g, '$1');
-  // Headers — drop the # prefix.
-  out = out.replace(/^#{1,6}\s+/gm, '');
+  // DEF-072 — TRANSLATE emphasis to WhatsApp markup, don't discard it.
+  //
+  // WhatsApp has its own syntax: *bold*, _italic_, ```mono```. The old code
+  // dropped every marker, so a section header arrived as an ordinary sentence
+  // and a scannable brief became a wall of text. Markdown's `**bold**` does
+  // render literally on WA and had to go — but converting is what was needed,
+  // not deleting.
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '*$1*');
+  out = out.replace(/__([^_\n]+)__/g, '*$1*');
+  // Single-underscore italics map straight across; single-asterisk italics are
+  // already WhatsApp bold, so they are left alone rather than guessed at.
+  // Headers become a bold line — the only heading WhatsApp has.
+  out = out.replace(/^#{1,6}\s+(.*)$/gm, '*$1*');
   // Blockquote prefix.
   out = out.replace(/^>\s+/gm, '');
   // Bullets — convert "- " / "* " / "1. " to "• " for readability on WA.
