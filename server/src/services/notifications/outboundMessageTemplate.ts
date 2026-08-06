@@ -7,7 +7,7 @@
  *     Sir Basit is asking if you will be coming to the office tomorrow
  *
  *     Suzi
- *     Assistant Basit Ahmed
+ *     Basit's Assistant
  *
  * Replaces the old per-channel wording, which had grown three problems the
  * owner named directly:
@@ -62,9 +62,10 @@ export function renderOutboundMessage(
   const brain = (sig.brainName ?? '').trim() || 'Nexeo';
   const user = (sig.userName ?? '').trim();
 
-  // Never sign "Assistant" with an empty name — better to omit the line than
-  // to send a dangling label.
-  const signOff = user ? `${brain}\nAssistant ${user}` : brain;
+  // Owner ruling 2026-08-06: "Basit's Assistant", not "Assistant Basit".
+  // Never sign with an empty name — better to omit the line than to send a
+  // dangling "'s Assistant".
+  const signOff = user ? `${brain}\n${user}'s Assistant` : brain;
 
   // Idempotent: a body that already carries the signature is not re-wrapped.
   // Retries and re-renders must not stack greetings.
@@ -96,7 +97,7 @@ export function renderOutboundMessage(
  *  tone-sampling and reply-parsing so the signature is not mistaken for the
  *  owner's own prose. */
 export function looksLikeOutboundTemplate(text: string): boolean {
-  return /^\s*Hi,\s*\n/.test(text ?? '') && /\n\s*Assistant .+\s*$/.test(text ?? '');
+  return /^\s*Hi,\s*\n/.test(text ?? '') && /\n\s*.+'s Assistant\s*$/.test(text ?? '');
 }
 
 /**

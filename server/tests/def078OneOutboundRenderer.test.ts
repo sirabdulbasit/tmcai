@@ -69,7 +69,7 @@ describe('DEF-078 — exactly one outbound renderer', () => {
 
   it('the seeded preview matches what is actually sent', () => {
     const seed = read('scripts/seedActionDefinitions.ts');
-    expect(seed).toMatch(/Assistant \{userName\}/);
+    expect(seed).toMatch(/\{userName\}\\'s Assistant/);
     expect(seed).not.toMatch(/asked me to let you know/);
   });
 
@@ -77,6 +77,6 @@ describe('DEF-078 — exactly one outbound renderer', () => {
     const { renderOutboundMessage } = await import('../src/services/notifications/outboundMessageTemplate');
     expect(renderOutboundMessage('Sir is asking for an update on the Vision Metric Integration.',
       { brainName: 'Suzi', userName: 'Basit' }))
-      .toBe('Hi,\nSir is asking for an update on the Vision Metric Integration.\n\nSuzi\nAssistant Basit');
+      .toBe("Hi,\nSir is asking for an update on the Vision Metric Integration.\n\nSuzi\nBasit's Assistant");
   });
 });

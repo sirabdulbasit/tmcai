@@ -106,17 +106,17 @@ describe('DEF-049 — introduced once, then just talked to', () => {
   it('the second message has no preamble at all', () => {
     const out = renderOutboundMessage('Any update on the portal?', sig, { firstContact: false });
     expect(out).not.toContain('assistant.');
-    expect(out).toBe('Hi,\nAny update on the portal?\n\nSuzi\nAssistant Basit Ahmed');
+    expect(out).toBe('Hi,\nAny update on the portal?\n\nSuzi\nBasit Ahmed\'s Assistant');
   });
 
   it('matches the owner-specified format exactly', () => {
     expect(renderOutboundMessage('Sir Basit is asking if you will be coming to the office tomorrow', sig))
-      .toBe('Hi,\nSir Basit is asking if you will be coming to the office tomorrow\n\nSuzi\nAssistant Basit Ahmed');
+      .toBe('Hi,\nSir Basit is asking if you will be coming to the office tomorrow\n\nSuzi\nBasit Ahmed\'s Assistant');
   });
 
   it('both names come from the caller — nothing hardcoded', () => {
     const out = renderOutboundMessage('hello', { brainName: 'Jarvis', userName: 'Someone Else' });
-    expect(out).toContain('Jarvis\nAssistant Someone Else');
+    expect(out).toContain("Jarvis\nSomeone Else's Assistant");
     expect(out).not.toContain('Suzi');
     expect(out).not.toContain('Basit');
   });

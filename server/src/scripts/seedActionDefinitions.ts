@@ -225,7 +225,7 @@ export const ACTIONS: Seed[] = [
     operationalMetadata: { external: true, connectors: { anyOf: ['tenant_whatsapp'] } },
     requiresCapability: 'notify_via_whatsapp',
     isHumanFacing: true,
-    previewTemplate: 'Hi,\n{message}\n\n{brainName}\nAssistant {userName}',
+    previewTemplate: 'Hi,\n{message}\n\n{brainName}\n{userName}\'s Assistant',
   },
   {
     type: 'set_brain_name',
