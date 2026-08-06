@@ -199,7 +199,17 @@ export function sanitizeAnswerForUser(answer: string): string {
   // / "dispatched"). Preserves legitimate uses of square brackets.
   let result = result0;
   const embeddedMarker = /\[(?:[a-z_]+\s+(?:preview\s+expired|validation\s+failed|failed:|dispatched)|no action dispatched|status read failed|cancelled|Action failed:|Brain unavailable|Brain output malformed|fabricated escalation path|LLM returned empty response)[^\]]*\]/g;
-  result = result.replace(embeddedMarker, '').replace(/\s{2,}/g, ' ').trim();
+  // DEF-073 (2026-08-06): this was `/\s{2,}/g`, and `\s` matches newlines.
+  // Two characters — "\n\n" — collapsed to a single space, so EVERY blank
+  // line in EVERY reply was destroyed while single newlines survived. The Day
+  // Brief arrived with each section heading glued to the end of the previous
+  // bullet, because the blank line before it was eaten.
+  //
+  // The intent was only ever to tidy the double space left behind after
+  // deleting a marker from mid-sentence. `[ \t]` does exactly that and leaves
+  // paragraph structure alone. Note the marker removal itself is a no-op when
+  // no marker is present — but this collapse always ran.
+  result = result.replace(embeddedMarker, '').replace(/[ \t]{2,}/g, ' ').trim();
 
   return result || answer;
 }

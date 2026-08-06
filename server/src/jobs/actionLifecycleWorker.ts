@@ -46,16 +46,28 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#039;');
 }
 
+/** DEF-074 (2026-08-06) — the follow-up path had its OWN message format.
+ *
+ *  `Hi <who>, this is <brain> — <owner>'s AI assistant. …` was written inline
+ *  here, while `notify_via_whatsapp` used the owner-specified template. So the
+ *  SAME counterpart received two different-looking messages from the same
+ *  number depending on which code path sent them.
+ *
+ *  Second implementations of a shared rule are what produced DEF-039, DEF-041,
+ *  DEF-044, DEF-045 and DEF-051. This one only cost consistency, but it is the
+ *  same mistake. The body is composed here; the wrapper belongs to
+ *  `renderOutboundMessage` and nowhere else.
+ */
 function questionFor(item: any, plan: LifecyclePlan, brainName: string, ownerName: string): string {
-  const who = firstName(item.delegateeName);
-  const identity = `Hi ${who}, this is ${brainName} — ${firstName(ownerName)}'s AI assistant.`;
-  if (plan.action === 'ask_deadline') {
-    return `${identity} I'm tracking "${item.title}" through completion. What date can you commit to? If it is delayed, please include the reason and the new deadline.`;
-  }
-  if (plan.action === 'ask_completion_evidence') {
-    return `${identity} You indicated that "${item.title}" is complete. Please confirm what was delivered or share the completion reference so I can close it accurately.`;
-  }
-  return `${identity} The committed date for "${item.title}" has arrived. Is it completed? If not, please share the reason for delay and a new committed deadline.`;
+  const owner = firstName(ownerName);
+  const body = plan.action === 'ask_deadline'
+    ? `Sir ${owner} is tracking "${item.title}" through completion. What date can you commit to? If it is delayed, please include the reason and the new deadline.`
+    : plan.action === 'ask_completion_evidence'
+      ? `Sir ${owner} noted that "${item.title}" is complete. Please confirm what was delivered, or share the completion reference.`
+      : `The committed date for "${item.title}" has arrived. Is it completed? If not, please share the reason for the delay and a new committed date.`;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { renderOutboundMessage } = require('../services/notifications/outboundMessageTemplate');
+  return renderOutboundMessage(body, { brainName, userName: ownerName });
 }
 
 function ownerQuestion(item: any, plan: LifecyclePlan): string {

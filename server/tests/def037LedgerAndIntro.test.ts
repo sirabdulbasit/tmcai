@@ -96,9 +96,11 @@ describe('DEF-049 — introduced once, then just talked to', () => {
 
   it('a stranger is told who is writing and where their reply goes', () => {
     const out = renderOutboundMessage('Sir Basit is asking if you will be coming to the office tomorrow.', sig, { firstContact: true });
-    expect(out).toContain("Suzi here — I'm Basit Ahmed's assistant");
+    // First name only — spelling the full name three times in four lines is
+    // the wordiness the owner rejected in the Day Brief (2026-08-06).
+    expect(out).toContain("Suzi here — I'm Basit's assistant");
     expect(out, 'people over-share with machines; the reply destination must be stated')
-      .toContain('comes straight to Basit Ahmed');
+      .toContain('comes straight to Basit');
   });
 
   it('the second message has no preamble at all', () => {

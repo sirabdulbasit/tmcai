@@ -81,8 +81,12 @@ export function renderOutboundMessage(
   // The reply disclosure is not decoration. People tell machines things they
   // would not tell a person, and everything said here reaches the owner. Not
   // saying so would be a quiet trap.
+  // First name in the intro. Spelling the full name three times in four lines
+  // is the same wordiness the owner rejected in the Day Brief ("Hamna Latif
+  // Bhutta" three times cost three wrapped lines on a phone).
+  const firstName = user.split(/\s+/)[0];
   const intro = opts.firstContact && user
-    ? `${brain} here — I'm ${user}'s assistant. Anything you reply comes straight to ${user}.\n\n`
+    ? `${brain} here — I'm ${firstName}'s assistant. Anything you reply comes straight to ${firstName}.\n\n`
     : '';
 
   return `${GREETING}\n${intro}${text}\n\n${signOff}`;
