@@ -164,9 +164,14 @@ describe('enqueueBrainPrompt — routine', () => {
 });
 
 describe('enqueueBrainPrompt — high', () => {
-  it('uses voicenote channel', async () => {
+  // CHANGED by owner ruling 2026-08-06 (DEF-084): "always send text message
+  // instead of voice (sometime unable to understand)". `high` used to mean a
+  // voice note, so every overdue reminder arrived as audio — which cannot be
+  // skimmed, searched or re-read, and where a mishearing is silent. Voice is
+  // now opt-in via `brain.voice_prompt_min_criticality`; text is the default.
+  it('uses TEXT by default, not a voice note', async () => {
     sendMock.mockImplementationOnce(async () => ({
-      sent: true, channelsUsed: ['voicenote'], waMessageIds: ['wa_v_1'],
+      sent: true, channelsUsed: ['text'], waMessageIds: ['wa_v_1'],
     }));
     const r = await enqueueBrainPrompt({
       userId: 1, clientNumber: 'TMC-0001',
@@ -174,7 +179,7 @@ describe('enqueueBrainPrompt — high', () => {
       criticality: 'high',
     });
     expect(r.status).toBe('sent_now');
-    expect(sendMock.mock.calls[0][0].channel).toBe('voicenote');
+    expect(sendMock.mock.calls[0][0].channel).toBe('text');
     expect(sendMock.mock.calls[0][0].urgency).toBe('high');
   });
 });

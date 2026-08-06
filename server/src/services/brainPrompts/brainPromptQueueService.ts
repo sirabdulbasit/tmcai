@@ -215,7 +215,13 @@ export interface SendNextResult {
  *
  *  A question the owner has ignored for two hours is not a live conversation.
  *  It stops blocking; it is not deleted, and its side effect is untouched. */
-const LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+async function lockMaxAgeMs(userId: number): Promise<number> {
+  try {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const hours = await getBehaviorValue('prompt.lock_max_age_hours', { userId });
+    return Math.max(1, hours) * 60 * 60 * 1000;
+  } catch { return 2 * 60 * 60 * 1000; }
+}
 
 export async function sendNextPrompt(userId: number): Promise<SendNextResult | null> {
   // ── DEF-077 / DEF-063 second half — the lock is not absolute ────────
@@ -236,7 +242,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
 
   if (inFlight) {
     const heldFor = Date.now() - new Date(inFlight.sentAt ?? Date.now()).getTime();
-    if (heldFor > LOCK_MAX_AGE_MS) {
+    if (heldFor > await lockMaxAgeMs(userId)) {
       // Not deleted — expired. The owner never answered, and holding the whole
       // notification channel hostage to that is worse than letting it go.
       await prisma.brainPromptQueue.update({
@@ -318,7 +324,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     throw err;
   }
 
-  const channel = channelForCriticality(next.criticality as Criticality);
+  const channel = await channelForCriticality(next.criticality as Criticality, userId);
   const urgency: Urgency = next.criticality === 'high' ? 'high' : 'normal';
 
   // Propagate the queue row's metadata (smoke flag, starCadence info,
@@ -371,6 +377,24 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   if (!r.sent) {
     log.info('prompt rolled back to queued', { promptId: String(promoted.id), reason: r.reason });
     return null;
+  }
+
+  // ── DEF-081 — record that the owner was actually TOLD ────────────────
+  //
+  // Owner: "you should keep record what was asked through Brain and when it
+  // notified, then it will be closed."
+  //
+  // Every failure today was silent because the ask lived in delegation_threads,
+  // the notification in this table, and nothing joined them — so "she answered
+  // and he never heard" was not a question the database could answer. Stamped
+  // HERE, after a confirmed send, never at enqueue: written is not delivered,
+  // and conflating the two is the entire class of bug.
+  const notifiedThreadId = (queueMeta as Record<string, unknown>).threadId;
+  if (typeof notifiedThreadId === 'string' && notifiedThreadId) {
+    await prisma.delegationThread.updateMany({
+      where: { id: notifiedThreadId, ownerNotifiedAt: null },
+      data: { ownerNotifiedAt: new Date() },
+    }).catch(() => undefined);
   }
 
   return { promptId: String(promoted.id), channelUsed: r.channelsUsed[0] ?? channel };
@@ -485,12 +509,34 @@ export async function recordAnswer(promptId: string | bigint, answerText: string
 
 // ─── Internal helpers ────────────────────────────────────────────
 
-function channelForCriticality(c: Criticality): 'text' | 'voicenote' | 'call_business' {
-  switch (c) {
-    case 'routine': return 'text';
-    case 'high':    return 'voicenote';
-    case 'top':     return 'call_business';
-  }
+/** DEF-084 — the owner reads, he does not listen.
+ *
+ *  `high` mapped to a voice note, so every overdue reminder arrived as audio:
+ *  "always send text message instead of voice (sometime unable to understand)".
+ *  Synthesised speech is strictly worse than text for a status line — it cannot
+ *  be skimmed, searched or re-read, and a mishearing is silent.
+ *
+ *  `brain.voice_prompt_min_criticality` decides where voice starts: 'never'
+ *  (default), 'high', or 'top'. A voice CALL for `top` stays available because
+ *  its purpose is to interrupt, not to be read.
+ */
+async function channelForCriticality(
+  c: Criticality,
+  userId: number,
+): Promise<'text' | 'voicenote' | 'call_business'> {
+  if (c === 'top') return pickTopChannel(userId);
+  let threshold = 'never';
+  try {
+    const { getConfig } = await import('../configService');
+    const row = await prisma.user.findUnique({
+      where: { id: userId }, select: { clientNumber: true },
+    });
+    if (row?.clientNumber) {
+      threshold = (await getConfig(row.clientNumber, 'brain.voice_prompt_min_criticality')) ?? 'never';
+    }
+  } catch { /* unreadable config → text, the safe and preferred default */ }
+  if (c === 'high' && threshold === 'high') return 'voicenote';
+  return 'text';
 }
 
 /**

@@ -278,10 +278,18 @@ async function notifyOwnerOfUnattachedReply(
 
 // ── DEF-075: LID alias binding ───────────────────────────────────────
 
-/** How far back an outbound counts as "we just messaged them". Long enough for
- *  a working reply, short enough that two unrelated conversations rarely
- *  overlap. */
-const BOOTSTRAP_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** How far back an outbound counts as "we just messaged them". Owner-tunable
+ *  (`delegation.lid_bootstrap_window_hours`): longer catches overnight replies
+ *  but also raises the chance two counterparts overlap, in which case it
+ *  refuses to bind at all. The literal is only the fallback when config is
+ *  unreachable. */
+async function bootstrapWindowMs(clientNumber: string): Promise<number> {
+  try {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const hours = await getBehaviorValue('delegation.lid_bootstrap_window_hours', { clientNumber });
+    return Math.max(1, hours) * 60 * 60 * 1000;
+  } catch { return 6 * 60 * 60 * 1000; }
+}
 
 /** True when `fromIdentifier` is the synthetic `'+' + lid` that WebjsProvider
  *  falls back to. A real phone never equals the LID digits. */
@@ -320,7 +328,7 @@ async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string 
   // 2. Bootstrap. Exactly ONE thread awaiting a reply from someone messaged
   //    recently ⇒ this is almost certainly them. Two candidates and we do not
   //    guess: a wrong bind is durable and would misroute them indefinitely.
-  const since = new Date(Date.now() - BOOTSTRAP_WINDOW_MS);
+  const since = new Date(Date.now() - await bootstrapWindowMs(input.clientNumber));
   const waiting = await prisma.delegationThread.findMany({
     where: {
       clientNumber: input.clientNumber, channel: input.channel,

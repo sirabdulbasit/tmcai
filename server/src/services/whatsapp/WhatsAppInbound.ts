@@ -209,7 +209,13 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
         userId, promptId: r.promptId, sideEffect: r.sideEffectStatus,
       });
       if (r.ackMessage) {
-        await sendReply(params, r.ackMessage);
+        // DEF-083: sanitise here too. The composer path runs
+        // sanitizeAnswerForUser; this one never did, so promptReplyHandler's
+        // machine markers reached the owner verbatim — 2026-08-06 20:52 he got
+        // a bare "[noted]" as an answer. The marker vocabulary was correct and
+        // the renderer was simply not on this path.
+        const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
+        await sendReply(params, sanitizeAnswerForUser(r.ackMessage));
       }
       // A6: the answer may carry a piggybacked directive ("tomorrow,
       // and always remind me at 5pm"). The LLM extractor judges the
@@ -220,6 +226,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
         text: queryText, clientNumber: params.clientNumber, userId,
       });
       if (pb.dispatched && pb.ackMessage) {
+        // Same boundary, same reason.
         await sendReply(params, pb.ackMessage);
       }
       // DEF-017 (2026-08-05, 3rd recurrence of pending-prompt-eats-command):

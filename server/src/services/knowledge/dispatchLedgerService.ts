@@ -31,7 +31,12 @@ const log = createLogger('dispatch-ledger');
 /** How far back "recently" reaches. Long enough to cover a working day, so
  *  "did you send that this morning?" is answerable at 6pm — the 08-05 failure
  *  was a one-hour gap and the transcript window had already lost it. */
-const LOOKBACK_HOURS = 36;
+async function lookbackHours(clientNumber: string): Promise<number> {
+  try {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    return await getBehaviorValue('brain.dispatch_ledger_lookback_hours', { clientNumber });
+  } catch { return 36; }
+}
 
 const TERMINAL_OK = new Set(['succeeded', 'completed', 'sent']);
 
@@ -83,7 +88,7 @@ export async function getRecentDispatches(
   clientNumber: string,
   limit = 25,
 ): Promise<LedgerEntry[]> {
-  const since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
+  const since = new Date(Date.now() - (await lookbackHours(clientNumber)) * 60 * 60 * 1000);
   try {
     const rows = await (prisma as any).brainActionArtifact.findMany({
       where: { userId, clientNumber, createdAt: { gte: since } },
@@ -133,13 +138,14 @@ export async function buildDispatchLedgerBlock(
 ): Promise<string> {
   const entries = await getRecentDispatches(userId, clientNumber);
 
-  const header = '# What you actually did (last 36h — the DISPATCH RECORD, not the conversation)\n'
+  const hrs = await lookbackHours(clientNumber);
+  const header = `# What you actually did (last ${hrs}h — the DISPATCH RECORD, not the conversation)\n`
     + 'This is the only valid source for "did you…?" / "have you…?" questions about your own\n'
     + 'actions. If something is not listed here, you did NOT do it in this window — say so.\n'
     + 'If it IS listed, you did, even if this conversation does not mention it.\n';
 
   if (entries.length === 0) {
-    return `${header}(no actions dispatched in the last 36 hours)`;
+    return `${header}(no actions dispatched in the last ${hrs} hours)`;
   }
 
   const lines = entries.map((e) => {

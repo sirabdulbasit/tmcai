@@ -2653,6 +2653,12 @@ model DelegationThread {
   followupCount              Int       @default(0) @map("followup_count")
   nextFollowupAt             DateTime? @map("next_followup_at")
   grantId                    String?   @map("grant_id")
+  /// DEF-081 — when the OWNER was actually told what came back. Not when a
+  /// notification was written; when it was delivered. Every failure on
+  /// 2026-08-06 was invisible because the ask lived here, the notification
+  /// lived in brain_prompt_queue, and nothing joined them — so "she answered
+  /// and he never heard" had no query. An ask is not finished until this is set.
+  ownerNotifiedAt            DateTime? @map("owner_notified_at")
   createdAt                  DateTime  @default(now()) @map("created_at")
   updatedAt                  DateTime  @updatedAt @map("updated_at")
   expiresAt                  DateTime? @map("expires_at")

@@ -37,6 +37,28 @@ export interface BehaviorSpec {
 
 export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
   // ── Section 33a: delegation capture (flags are 0/1 counts) ────────
+  // ── DEF-082 — every threshold I invented today, handed to the owner ──
+  //
+  // "nothing should be hardcoded". Each of these started as a number I chose
+  // in a hurry, and each is a real product decision: how long to trust a
+  // temporal guess, how long an ignored question may block everything, how far
+  // back "recently" reaches. They belong to him, tunable without a deploy.
+  'delegation.lid_bootstrap_window_hours': {
+    key: 'delegation.lid_bootstrap_window_hours', unit: 'hours', def: 6, min: 1, max: 72, scope: 'tenant',
+    description: 'DEF-075. How recently a counterpart must have been messaged for an unknown @lid reply to be bound to them. Longer catches overnight replies; also raises the chance two counterparts overlap, in which case it refuses to bind at all.',
+  },
+  'prompt.lock_max_age_hours': {
+    key: 'prompt.lock_max_age_hours', unit: 'hours', def: 2, min: 1, max: 48, scope: 'tenant',
+    description: 'DEF-077. How long an unanswered question may hold the conversational lock before it is released. One ignored reminder held it 28 hours on 2026-08-06 and blocked five notifications.',
+  },
+  'brain.dispatch_ledger_lookback_hours': {
+    key: 'brain.dispatch_ledger_lookback_hours', unit: 'hours', def: 36, min: 6, max: 168, scope: 'tenant',
+    description: 'DEF-037. How far back the "what you actually did" block reads. Must comfortably exceed a working day: the failure it fixes was a one-hour gap.',
+  },
+  'brain.contact_block_size': {
+    key: 'brain.contact_block_size', unit: 'count', def: 80, min: 20, max: 300, scope: 'tenant',
+    description: 'DEF-050. How many contacts reach the prompt. People NAMED in the message are always included regardless of this cap — the cap only bounds the ranked filler.',
+  },
   // DEF-076/079 — how sure must Brain be before it interrupts the owner?
   //
   // He asked for this to be governed by confidence rather than by rules:

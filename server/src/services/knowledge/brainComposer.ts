@@ -1699,7 +1699,16 @@ async function buildCandidatesBlockForReasoning(
     const seen = new Set(named.map((r: any) => r.id));
     const merged = [...named, ...rows.filter((r: any) => !seen.has(r.id))];
     rows.length = 0;
-    rows.push(...(merged as any[]).slice(0, 80));
+    // Owner-tunable (`brain.contact_block_size`). Named people are already in
+    // `named` and sit at the front, so this only ever bounds the ranked filler
+    // — it can never hide someone the owner just asked for (DEF-050).
+    const blockSize = await (async () => {
+      try {
+        const { getBehaviorValue } = await import('../behaviorConfig');
+        return await getBehaviorValue('brain.contact_block_size', { clientNumber });
+      } catch { return 80; }
+    })();
+    rows.push(...(merged as any[]).slice(0, Math.max(named.length, blockSize)));
 
     if (rows.length === 0) return '';
     // Format: candidateId = entity row id (already stable). Reasoning
