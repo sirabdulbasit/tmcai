@@ -168,11 +168,14 @@ const HANDLER_REGISTRY: Record<string, Record<string, (userId: number, payload: 
       // Custom brain name when set ("Suzi"), Nexeo otherwise.
       const { getBrainDisplayName } = await import('./outboundIdentity');
       const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
-      const intro = `Hi ${payload.recipientName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
       try {
+        // DEF-078: one renderer for every outbound. A private copy here is why
+        // the same contact saw two different formats in consecutive messages.
         const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+        const { renderOutboundMessage } = await import('../notifications/outboundMessageTemplate');
         const substantive = normalizeWhatsAppSubstantiveMessage(String(payload.message), String(payload.recipientName));
-        const r = await sendTenantWhatsAppText(ctx.clientNumber, String(payload.recipientPhone), `${intro}${substantive}`, userId);
+        const body = renderOutboundMessage(substantive, { brainName, userName });
+        const r = await sendTenantWhatsAppText(ctx.clientNumber, String(payload.recipientPhone), body, userId);
         if (!r.ok) return { ok: false, message: `WhatsApp send failed: ${r.error ?? 'unknown'}`, errorCode: 'wa_api' };
         return {
           ok: true,

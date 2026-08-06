@@ -225,7 +225,7 @@ export const ACTIONS: Seed[] = [
     operationalMetadata: { external: true, connectors: { anyOf: ['tenant_whatsapp'] } },
     requiresCapability: 'notify_via_whatsapp',
     isHumanFacing: true,
-    previewTemplate: 'Hi {recipientName}, this is Nexeo — {userName}\'s AI assistant. {userName} asked me to let you know:\n\n{message}',
+    previewTemplate: 'Hi,\n{message}\n\n{brainName}\nAssistant {userName}',
   },
   {
     type: 'set_brain_name',

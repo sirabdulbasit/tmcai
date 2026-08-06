@@ -1219,7 +1219,7 @@ Schema:
         | { "type": "notify_via_whatsapp",
             "recipientCandidateId"?: string,         // candidateId from the Candidates block — use this when the user names an existing contact.
             "recipientAdHocPhone"?: string,          // E.164 phone (e.g. "+923710042740") — use ONLY when the user explicitly provided a raw phone number that isn't in Candidates. Never guess; never substitute a contact.
-            "message": string }                      // The substantive text. Introduction "Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know:\\n\\n" is prepended automatically — do NOT include it. EXACTLY ONE of recipientCandidateId / recipientAdHocPhone MUST be present.
+            "message": string }                      // The substantive text ONLY. The greeting and the "<brain> / Assistant <user>" sign-off are added by the dispatcher — do NOT include either. EXACTLY ONE of recipientCandidateId / recipientAdHocPhone MUST be present.
         | { "type": "set_brain_name",
             "name": string }                         // The new name the user chose. Empty string / "reset" / "none" clears the custom name (you go back to "your AI assistant"). Examples: "Suzi", "Friday", "Atlas". Length cap 40 chars.
         | { "type": "record_preference",
@@ -1247,7 +1247,7 @@ When to emit \`action\`:
 
 - **WhatsApp from the user's personal number is FORBIDDEN. WhatsApp from the Nexeo notifier number on the user's behalf is ALLOWED via \`notify_via_whatsapp\`.** Distinction matters and the user can tell:
   - Forbidden: replying to a contact AS the user, from the user's paired WhatsApp number — recipient would see the user's number and assume the user wrote it. Hard rule, no exceptions, ever.
-  - Allowed: sending FROM the Nexeo tenant notifier number, with an explicit introduction ("Hi <name>, this is Nexeo — <user>'s AI assistant. <user> asked me to let you know: ..."). Recipient sees a different number, knows an assistant is writing, sees the message clearly attributed.
+  - Allowed: sending FROM the Nexeo tenant notifier number. The dispatcher wraps your text in the owner's template — a "Hi," greeting and a "<brain name> / Assistant <owner>" sign-off — so the recipient sees a different number, knows an assistant is writing, and sees who it is for. Write only the substantive sentence.
   - Use \`notify_via_whatsapp\` when the user EXPLICITLY asks to inform/notify/tell someone — e.g. "tell Asad I'll be in office", "let Yousuf know the meeting moved", "ping Debby that the plan is ready". The dispatcher auto-prepends the introduction; you write only the substantive message in \`message\`.
   - Do NOT use \`notify_via_whatsapp\` to "reply" on the user's existing WhatsApp thread with a contact — that creates split-identity confusion (contact sees half the thread from user's number, half from Nexeo's). For reply intent, draft for the user to copy/paste instead.
 
@@ -3792,17 +3792,24 @@ ${calLines.join('\n')}`;
           }
 
           if (canDispatch && recipientPhone) {
-            const introName = recipientName.startsWith('contact at') ? 'there' : recipientName;
-            // Intro name = custom brain name when set ("Suzi"), Nexeo
-            // otherwise (Basit 2026-07-14).
+            // Brain name = the owner's custom name when set ("Suzi").
             const { getBrainDisplayName } = await import('./outboundIdentity');
             const brainName = await getBrainDisplayName(userId).catch(() => 'Nexeo');
-            const intro = `Hi ${introName}, this is ${brainName} — ${userName}'s AI assistant. ${userName} asked me to let you know:\n\n`;
+            // DEF-078: the owner's template, from the ONE renderer. This site
+            // and genericActionDispatcher both carried private copies of the
+            // old intro, so the same person received two different-looking
+            // messages depending on which path ran — he spotted it in two
+            // consecutive messages to Hamna.
             const { normalizeWhatsAppSubstantiveMessage, whatsappAcceptedMessage } = await import('./whatsappOutboundPolicy');
+            const { renderOutboundMessage, isFirstContactWith, markIntroduced } = await import('../notifications/outboundMessageTemplate');
             const substantive = normalizeWhatsAppSubstantiveMessage(act.message, recipientName);
-            const fullBody = `${intro}${substantive}`;
+            const introCandidateId = typeof (act as any).recipientCandidateId === 'string'
+              ? (act as any).recipientCandidateId : undefined;
+            const isFirst = await isFirstContactWith(introCandidateId);
+            const fullBody = renderOutboundMessage(substantive, { brainName, userName }, { firstContact: isFirst });
             const r = await sendTenantWhatsAppText(clientNumber, recipientPhone, fullBody, userId);
             if (r.ok) {
+              if (isFirst) void markIntroduced(introCandidateId);
               actionResult = {
                 ok: true,
                 artifactId: r.waMessageId,
