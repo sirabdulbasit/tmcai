@@ -22,8 +22,13 @@ export async function detectAgentMessage(
   clientNumber: string,
   message: string,
 ): Promise<{ agentId: number; agentName: string; command: string } | null> {
+  // DEF-089: this selected `display_name`, which does not exist on `agents` —
+  // not in the table, not in the Prisma model. Postgres answered 42703 and the
+  // caller swallowed it into `Agent detection failed`, so agent routing has been
+  // dead on EVERY inbound turn while looking like a handled edge case. Selecting
+  // only columns that exist is the fix; `name` is the only name there is.
   const agents = await prisma.$queryRawUnsafe(
-    `SELECT id, name, display_name FROM agents WHERE user_id = $1 AND client_number = $2 AND is_active = TRUE`,
+    `SELECT id, name FROM agents WHERE user_id = $1 AND client_number = $2 AND is_active = TRUE`,
     userId, clientNumber,
   ) as any[];
 
@@ -32,27 +37,27 @@ export async function detectAgentMessage(
   const lower = message.toLowerCase().trim();
 
   for (const agent of agents) {
-    const names = [agent.display_name?.toLowerCase(), agent.name.toLowerCase()].filter(Boolean) as string[];
+    const names = [agent.name.toLowerCase()].filter(Boolean) as string[];
 
     for (const name of names) {
       // Exact match: just the name alone
       if (lower === name) {
-        return { agentId: agent.id, agentName: agent.display_name || agent.name, command: '' };
+        return { agentId: agent.id, agentName: agent.name, command: '' };
       }
       // Name at start: "Faria check this" / "Faria, how are you" / "Faria?"
       if (lower.startsWith(name + ' ') || lower.startsWith(name + ',') || lower.startsWith(name + '?') || lower.startsWith(name + '!')) {
         const command = message.slice(name.length).replace(/^[,\s?!]+/, '').trim();
-        return { agentId: agent.id, agentName: agent.display_name || agent.name, command };
+        return { agentId: agent.id, agentName: agent.name, command };
       }
       // Name anywhere with addressing intent: "hi Faria", "ask Faria", "tell Faria", "hey Faria"
       const anywhereMatch = lower.match(new RegExp(`\\b(hi|hey|hello|ask|tell|yo|dear|meri|apni|bhai)\\s+${name}\\b(.*)`, 'i'));
       if (anywhereMatch) {
         const command = (anywhereMatch[2] || '').replace(/^[,\s]+/, '').trim();
-        return { agentId: agent.id, agentName: agent.display_name || agent.name, command };
+        return { agentId: agent.id, agentName: agent.name, command };
       }
       // Name mentioned with context: "how is Faria", "what's Faria doing", "Faria ka kya haal"
       if (lower.includes(name) && lower !== name) {
-        return { agentId: agent.id, agentName: agent.display_name || agent.name, command: message };
+        return { agentId: agent.id, agentName: agent.name, command: message };
       }
     }
   }
@@ -69,30 +74,52 @@ export async function handleAgentMessage(
 ): Promise<string> {
 
   // Load full agent context
+  // Two defects in one query.
+  //
+  // DEF-089: `display_name` and `personality` do not exist on `agents`, so this
+  // threw 42703 every time and the whole agent path died silently.
+  //
+  // TENANT ISOLATION: it also loaded an agent by PRIMARY KEY ALONE. `agentId`
+  // reaches here from a message, and `$queryRawUnsafe` bypasses the Prisma
+  // middleware that auto-injects `client_number` — so the one guard this read
+  // had was that nobody guessed another tenant's id. Scoping by
+  // (id, user_id, client_number) makes a cross-tenant read return zero rows
+  // instead of another tenant's agent. Owner instruction, 2026-08-07: keep
+  // things with tenant and user isolation.
   const agents = await prisma.$queryRawUnsafe(
-    `SELECT id, name, display_name, instructions, personality, schedule, data_sources,
+    `SELECT id, name, instructions, schedule, data_sources,
             notify_email, notify_whatsapp, memory_context, run_count, error_count,
             last_run_at, last_result, last_error, created_at
-     FROM agents WHERE id = $1`, match.agentId,
+     FROM agents WHERE id = $1 AND user_id = $2 AND client_number = $3`,
+    match.agentId, userId, clientNumber,
   ) as any[];
 
   if (!agents.length) return `Agent not found.`;
 
   const agent = agents[0];
-  const agentName = agent.display_name || agent.name;
+  const agentName = agent.name;
   const memory = agent.memory_context || {};
   const command = match.command;
 
   log.info('Agent conversation', { agentId: agent.id, name: agentName, command: command.slice(0, 80) });
 
   // Load boss's gender and preferred title
+  // Tenant isolation: scoped by client_number as well as id. `$queryRawUnsafe`
+  // bypasses the Prisma middleware that would otherwise inject it, and a user
+  // id is a small integer — the cheapest possible thing to collide across
+  // tenants. Owner instruction, 2026-08-07.
   const userRows = await prisma.$queryRawUnsafe(
-    `SELECT name, gender, preferred_title FROM users WHERE id = $1`, userId,
+    `SELECT name, gender, preferred_title FROM users WHERE id = $1 AND client_number = $2`,
+    userId, clientNumber,
   ) as any[];
   const bossName = userRows[0]?.name || 'Boss';
   const bossGender = userRows[0]?.gender || '';
   const bossTitle = userRows[0]?.preferred_title || '';
-  const agentGender = agent.gender || '';
+  // DEF-090: `agents.gender` does not exist, so this was always undefined and
+  // the gendered self-reference lines below never fired. Typed as string rather
+  // than the '' literal so the branches stay in place for when the column is
+  // added back — deleting them would lose the intent along with the bug.
+  const agentGender: string = '';
 
   // Load recent run history
   const runs = await getAgentRuns(match.agentId, 5);
@@ -144,7 +171,7 @@ export async function handleAgentMessage(
     '══ YOUR IDENTITY ══',
     `Name: ${agentName}`,
     agentGender ? `Gender: ${agentGender} — use ${agentGender === 'female' ? 'she/her, feminine language (main, meri, mujhe)' : 'he/him, masculine language (main, mera, mujhe)'}` : '',
-    agent.personality ? `Personality/Style: ${agent.personality}` : 'Professional and respectful.',
+    'Professional and respectful.', // DEF-090: `agents.personality` does not exist.
     `Hired on: ${hiredDate}`,
     `Your assigned task: ${agent.instructions}`,
     `Schedule: ${agent.schedule || 'Manual only — boss triggers you'}`,
@@ -227,29 +254,29 @@ export async function handleAgentMessage(
           executeAgentRun(match.agentId, 'whatsapp').catch(() => {});
           break;
         case 'update_task':
-          if (value) await prisma.$executeRawUnsafe(`UPDATE agents SET instructions = $1, updated_at = NOW() WHERE id = $2`, value, match.agentId);
+          if (value) await prisma.$executeRawUnsafe(`UPDATE agents SET instructions = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 AND client_number = $4`, value, match.agentId, userId, clientNumber);
           break;
         case 'add_task':
           if (value) {
             const current = agent.instructions || '';
-            await prisma.$executeRawUnsafe(`UPDATE agents SET instructions = $1, updated_at = NOW() WHERE id = $2`, `${current}\n${value}`, match.agentId);
+            await prisma.$executeRawUnsafe(`UPDATE agents SET instructions = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 AND client_number = $4`, `${current}\n${value}`, match.agentId, userId, clientNumber);
           }
           break;
         case 'update_schedule':
           if (value) {
-            await prisma.$executeRawUnsafe(`UPDATE agents SET schedule = $1, updated_at = NOW() WHERE id = $2`, value, match.agentId);
+            await prisma.$executeRawUnsafe(`UPDATE agents SET schedule = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 AND client_number = $4`, value, match.agentId, userId, clientNumber);
             const { scheduleAgent } = await import('./agentScheduler');
             scheduleAgent(match.agentId, agentName, value);
           }
           break;
-        case 'update_personality':
-          if (value) await prisma.$executeRawUnsafe(`UPDATE agents SET personality = $1, updated_at = NOW() WHERE id = $2`, value, match.agentId);
-          break;
+        // 'update_personality' removed (DEF-090): `agents.personality` does not
+        // exist, so this branch could only ever throw. Restoring the capability
+        // needs a migration, which is the owner's call — not a silent add.
         case 'notify_email':
-          await prisma.$executeRawUnsafe(`UPDATE agents SET notify_email = $1 WHERE id = $2`, value === 'true', match.agentId);
+          await prisma.$executeRawUnsafe(`UPDATE agents SET notify_email = $1 WHERE id = $2 AND user_id = $3 AND client_number = $4`, value === 'true', match.agentId, userId, clientNumber);
           break;
         case 'notify_whatsapp':
-          await prisma.$executeRawUnsafe(`UPDATE agents SET notify_whatsapp = $1 WHERE id = $2`, value === 'true', match.agentId);
+          await prisma.$executeRawUnsafe(`UPDATE agents SET notify_whatsapp = $1 WHERE id = $2 AND user_id = $3 AND client_number = $4`, value === 'true', match.agentId, userId, clientNumber);
           break;
       }
       log.info('Agent action executed', { agentId: match.agentId, action, value: value?.slice(0, 50) });
