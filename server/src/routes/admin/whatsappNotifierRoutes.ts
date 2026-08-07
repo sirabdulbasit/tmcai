@@ -290,4 +290,48 @@ router.post('/whatsapp-notifier/test-brain', requireAdmin, async (req: Request, 
   res.json(r);
 });
 
+/**
+ * POST /admin/nexeo-loop/notify — stage 5 of the autonomous loop.
+ *
+ * Owner ruling 2026-08-07: *"after every deploy i want you to evaluate the brain
+ * capability if you have improved it significantly improved then notify me"*,
+ * delivered *"through whatsapp"*.
+ *
+ * WHY A ROUTE AND NOT A SCRIPT: the first attempt was a standalone CLI calling
+ * `brainContactsUser` directly. It worked exactly once and cost 45 seconds of
+ * channel liveness — an out-of-process caller constructs its OWN webjs client
+ * against the same LocalAuth session directory the running server holds, clears
+ * what it thinks are stale chromium locks, and the live client fails its next
+ * liveness probe (`probe_fail → bounded_reinit`, 2026-08-07 19:02:15). This is
+ * the "sessions going deaf after restart" trap AGENTS.md §4 warns about. Only
+ * the process that owns the WhatsApp client may send on it, so the loop asks
+ * the server over loopback rather than reaching for the session itself.
+ *
+ * Distinct from `/whatsapp-notifier/test-brain`, which is a verify-panel probe
+ * and hardcodes `kind: 'admin_test_brain'`. Deploy reports must carry their own
+ * kind and summary, because `brain_user_messages` is the ledger that answers
+ * "was the owner actually TOLD?" — filing real reports under a test kind would
+ * corrupt the one record that question depends on.
+ */
+router.post('/nexeo-loop/notify', requireAdmin, async (req: Request, res: Response) => {
+  const { toUserId, kind, summary, body, urgency, dedupKey } = req.body ?? {};
+  if (!toUserId) return res.status(400).json({ error: 'toUserId required' });
+  if (!summary || !body) return res.status(400).json({ error: 'summary and body are both required' });
+
+  const { brainContactsUser } = await import('../../services/notifications/brainOutboundService');
+  const r = await brainContactsUser({
+    userId: Number(toUserId),
+    kind: String(kind || 'nexeo_loop_report'),
+    summary: String(summary),
+    body: String(body),
+    urgency: (urgency ?? 'normal') as any,
+    // DEF-084 is an owner ruling, not a default: a deploy report is the worst
+    // possible thing to deliver as synthesised speech — it cannot be skimmed,
+    // searched or re-read, and a mishearing is silent.
+    channel: 'text',
+    dedupKey: dedupKey === null ? null : String(dedupKey ?? `nexeo_loop:${new Date().toISOString().slice(0, 10)}`),
+  });
+  res.json(r);
+});
+
 export default router;
