@@ -2789,3 +2789,39 @@ model BrainHealthFinding {
   @@index([clientNumber, kind, firstSeenAt(sort: Desc)], map: "brain_health_findings_kind_ix")
   @@map("brain_health_findings")
 }
+
+/// Living Assistant Standard §6 — every Brain response, scored against the
+/// standard in `docs/brain_living_assistant_standard.md`.
+///
+/// Owner ruling 2026-08-07: describe the standard, then analyse every response
+/// against it, continuously. Scoring is LLM-judged against the turn's actual
+/// content — never keyword matching, which would be the hardcoding the standard
+/// exists to prevent and is defeated by rephrasing.
+model BrainResponseEvaluation {
+  id            String   @id @default(cuid())
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  surface       String   @default("whatsapp") @db.VarChar(24)
+  messageId     String?  @map("message_id")
+  userMessage   String?  @map("user_message")
+  brainResponse String?  @map("brain_response")
+  /// Mean of the criterion scores. <50 is a defect and opens a finding.
+  overallScore  Int      @map("overall_score")
+  /// { "C1": { "score": 90, "reason": "..." }, ... } — JSONB so the standard can
+  /// grow a criterion without a migration on the hot path.
+  criteria      Json
+  /// Criteria below band, extracted so "which criterion keeps failing?" is a
+  /// cheap grouped query rather than a JSON scan. This is what the learning
+  /// loop reads.
+  weakCriteria  String[] @map("weak_criteria")
+  improvement   String?
+  /// Which model judged — so a scoring shift can be distinguished from a
+  /// behaviour shift. Without it "Brain got worse" is unfalsifiable.
+  judgeProvider String?  @map("judge_provider") @db.VarChar(32)
+  findingId     String?  @map("finding_id")
+  evaluatedAt   DateTime @default(now()) @map("evaluated_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, userId, evaluatedAt(sort: Desc)], map: "brain_response_evaluations_recent_ix")
+  @@map("brain_response_evaluations")
+}

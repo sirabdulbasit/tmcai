@@ -741,4 +741,80 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
   }
 
   if (status === 'failed') throw new Error(sendError ?? 'reply send failed');
+
+  // ── Living Assistant Standard §6 — score the turn we just had ─────────────
+  //
+  // Owner ruling 2026-08-07: "analyze brain every response as per that standard
+  // and keep analyzing through armed/alive watcher".
+  //
+  // Placed AFTER the send, deliberately and unconditionally fire-and-forget.
+  // The reply is already on its way, so nothing the judge does — slow model,
+  // bad JSON, dead provider — can delay, alter or break the turn it is
+  // judging. Same rule as `recordFinding`: a monitor that can break what it
+  // monitors is worse than no monitor.
+  //
+  // Skipped when we could not resolve who this was for: an evaluation row
+  // without a real (clientNumber, userId) is unattributable and would pollute
+  // the per-user trend the learning loop reads.
+  if (logUserId) {
+    void evaluateTurn(params, clean, logUserId, messageId);
+  }
+}
+
+/**
+ * Gather the context C3 (continuity) needs, then score the exchange.
+ *
+ * C3 is the criterion that catches the defects which have actually hurt —
+ * DEF-093 (an answer to Brain's own question became a task) and DEF-095 (a late
+ * reply matched nothing). Both replies looked perfectly good in isolation. They
+ * were only wrong in the light of what Brain had outstanding, so the judge is
+ * given exactly that.
+ */
+async function evaluateTurn(
+  params: InboundParams,
+  brainResponse: string,
+  userId: number,
+  messageId: string | null,
+): Promise<void> {
+  try {
+    const { evaluateBrainResponse } = await import('../knowledge/brainResponseEvaluator');
+
+    // Questions Brain still had open, scoped to this user in this tenant.
+    const openQuestions = await prisma.brainPromptQueue.findMany({
+      where: {
+        userId,
+        clientNumber: params.clientNumber,
+        state: { in: ['awaiting_reply', 'expired'] },
+        sentAt: { not: null, gte: new Date(Date.now() - 24 * 3600_000) },
+      },
+      orderBy: [{ sentAt: 'desc' }],
+      take: 5,
+      select: { question: true },
+    }).then((rs) => rs.map((r) => r.question).filter(Boolean) as string[])
+      .catch(() => [] as string[]);
+
+    // The turns immediately before this one, oldest first.
+    const previousTurns = await prisma.$queryRawUnsafe<Array<{ direction: string; content: string }>>(
+      `SELECT direction, content FROM whatsapp_messages
+        WHERE client_number = $1 AND user_id = $2
+        ORDER BY created_at DESC LIMIT 7`,
+      params.clientNumber, userId,
+    ).then((rows) => rows
+      .slice(1)                 // drop the reply we just logged — it is the subject, not context
+      .reverse()
+      .map((r) => ({ role: (r.direction === 'inbound' ? 'user' : 'brain') as 'user' | 'brain', text: r.content ?? '' })))
+      .catch(() => [] as Array<{ role: 'user' | 'brain'; text: string }>);
+
+    await evaluateBrainResponse({
+      clientNumber: params.clientNumber,
+      userId,
+      userMessage: params.messageBody,
+      brainResponse,
+      surface: 'whatsapp',
+      messageId,
+      context: { openQuestions, previousTurns },
+    });
+  } catch (err: any) {
+    log.warn('turn evaluation skipped', { error: err?.message });
+  }
 }
