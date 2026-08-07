@@ -22,6 +22,53 @@
 import * as chrono from 'chrono-node';
 import { getUserTimezoneOffset, getTimezoneOffset, systemDefaultTimezone } from '../userTimezoneService';
 
+
+/**
+ * Urgency phrases chrono cannot parse, mapped to the anchor they mean.
+ *
+ * DEF-094 — 2026-08-07 21:14 the owner set a deadline of **"immediate"** and got
+ * back `[update_open_item: couldn't parse dueDate "immediate" — try a specific
+ * date]`. He then said "High immediate" and hit it again. "Immediate" is not an
+ * edge case; it is how people actually give deadlines, and being told to
+ * "try a specific date" is the assistant arguing with its user.
+ *
+ * This belongs in the calculator, not the brain. The module's own principle
+ * (Basit, 2026-05-23) is that the LLM extracts the raw phrase and the calculator
+ * resolves it — so the calculator needs the vocabulary. This is date lexicon,
+ * not judgement: it decides no priority and infers no intent, it only knows that
+ * "asap" anchors to today the same way "tomorrow" anchors to +1.
+ *
+ * Deliberately narrow. Only phrases that unambiguously mean "as soon as
+ * possible" are listed. "Soon" and "shortly" are NOT here — they are genuinely
+ * vague, and silently turning them into today's date would be the fabrication
+ * this codebase keeps fighting.
+ */
+const URGENCY_TO_TODAY = [
+  /^\s*immediate(ly)?\s*$/i,
+  /^\s*a\.?s\.?a\.?p\.?\s*$/i,
+  /^\s*as\s+soon\s+as\s+possible\s*$/i,
+  /^\s*right\s+(away|now)\s*$/i,
+  /^\s*now\s*$/i,
+  /^\s*urgent(ly)?\s*$/i,
+  /^\s*today\s+itself\s*$/i,
+  // Roman Urdu / Urdu — the owner and his counterparts mix languages freely,
+  // and an English-only lexicon fails exactly the users this product has.
+  /^\s*(abhi|abhee)\s*$/i,
+  /^\s*(foran|fauran|fawran)\s*$/i,
+  /^\s*aaj\s*(hi)?\s*$/i,
+  /^\s*فوراً?\s*$/,
+  /^\s*ابھی\s*$/,
+  /^\s*آج\s*$/,
+];
+
+/**
+ * Rewrite an urgency phrase into something chrono understands.
+ * Anything not recognised passes through untouched.
+ */
+function normaliseUrgencyPhrase(raw: string): string {
+  return URGENCY_TO_TODAY.some((re) => re.test(raw)) ? 'today' : raw;
+}
+
 interface ResolveOpts {
   /** Anchor for relative dates. Defaults to now(). */
   referenceDate?: Date;
@@ -46,7 +93,7 @@ export async function resolveDate(
   // chrono ignores TZ offset in the input string; we resolve in the
   // user's local frame by parsing with `ref` as a local-time anchor.
 
-  const parsed = chrono.parseDate(trimmed, ref, { forwardDate: true });
+  const parsed = chrono.parseDate(normaliseUrgencyPhrase(trimmed), ref, { forwardDate: true });
   if (!parsed || Number.isNaN(parsed.getTime())) return null;
 
   // Hallucination guard: reject dates > 1 year before today (catches the
@@ -76,7 +123,7 @@ export async function resolveDateTime(
   const ref = opts.referenceDate ?? new Date();
   const offset = await getUserTimezoneOffset(userId).catch(() => getTimezoneOffset(systemDefaultTimezone()));
 
-  const parsed = chrono.parseDate(trimmed, ref, { forwardDate: true });
+  const parsed = chrono.parseDate(normaliseUrgencyPhrase(trimmed), ref, { forwardDate: true });
   if (!parsed || Number.isNaN(parsed.getTime())) return null;
 
   if (!opts.allowFarPast) {

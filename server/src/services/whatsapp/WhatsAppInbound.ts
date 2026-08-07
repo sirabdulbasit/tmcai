@@ -255,13 +255,31 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
           userMessage: params.messageBody,
         }));
       }
-      // A6: the answer may carry a piggybacked directive ("tomorrow,
-      // and always remind me at 5pm"). The LLM extractor judges the
-      // full message; plain answers return 'none'. Dispatched
-      // directives get their own ack so nothing is silently eaten.
+      // A6: the answer may carry a piggybacked directive ("tomorrow, and always
+      // remind me at 5pm"). Plain answers must come back intent='none'.
+      //
+      // DEF-093 — that guarantee failed on 2026-08-07 22:09 and cost the owner a
+      // junk task. Brain asked "what priority and deadline?", he answered "High
+      // immediate", the prompt handler consumed it correctly (`sideEffect:
+      // applied`), and one second later this extractor read the same two words
+      // with no idea a question had been asked, judged them a new instruction,
+      // and created an open item titled "High immediate".
+      //
+      // Two mechanisms were deciding the same thing. The relevance classifier
+      // already splits a compound reply into answer + residual (DEF-017); this
+      // extractor was independently re-reading the FULL text. One rule, two
+      // implementations — the shape behind DEF-039/041/044/045/051/074/078.
+      //
+      // Single-sourced now: when the classifier found a residual, only the
+      // residual is offered. Either way the extractor is told what question was
+      // answered, so it judges what is LEFT OVER instead of guessing in the
+      // blind.
       const { handlePiggybackedInstruction } = await import('../brainPrompts/piggybackedInstruction');
       const pb = await handlePiggybackedInstruction({
-        text: queryText, clientNumber: params.clientNumber, userId,
+        text: r.residualText ?? queryText,
+        clientNumber: params.clientNumber,
+        userId,
+        answeredQuestion: r.answeredQuestion ?? null,
       });
       if (pb.dispatched && pb.ackMessage) {
         // Same boundary, same reason.

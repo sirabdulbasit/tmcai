@@ -57,6 +57,16 @@ export interface HandleReplyResult {
    * date and the delegation silently discarded.
    */
   residualText?: string;
+  /**
+   * DEF-093: the question the user was answering.
+   *
+   * Exposed so the piggyback extractor can judge the RESIDUAL rather than
+   * re-reading the whole message blind. Without it, "High immediate" — a
+   * perfectly good answer to "what priority and deadline?" — was read in
+   * isolation, judged a new instruction, and became an open item titled "High
+   * immediate" on 2026-08-07 22:09.
+   */
+  answeredQuestion?: string;
 }
 
 export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
@@ -156,6 +166,7 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     sideEffectStatus: seResult.status,
     promptId: String(awaiting.id),
     residualText,
+    answeredQuestion: awaiting.question ?? undefined,
   };
 }
 

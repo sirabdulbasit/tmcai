@@ -201,6 +201,23 @@ export async function extractInstruction(args: {
   clientNumber: string;
   userId: number;
   triggerFeedEventId?: string | null; // if this came from a voice note feed_event, exclude self from context
+  /**
+   * DEF-093 — the question Brain had just asked, when this text was already
+   * consumed as the answer to it.
+   *
+   * Without this the extractor sees a bare fragment with no idea it is a reply.
+   * On 2026-08-07 22:09 Brain asked *"what priority and deadline should I put on
+   * this?"*, the owner answered **"High immediate"**, the prompt handler
+   * correctly consumed it — and then this extractor read the same two words in
+   * isolation, judged them a new instruction, and created an open item titled
+   * "High immediate".
+   *
+   * A6 exists to rescue a directive that rides ALONGSIDE an answer ("tomorrow,
+   * and always remind me at 5pm"). The question it must actually ask is
+   * therefore "is anything left over once the answer is accounted for?" — and
+   * it cannot ask that without knowing what was asked.
+   */
+  answeredQuestion?: string | null;
 }): Promise<ExtractedInstruction> {
   const text = (args.text ?? '').trim();
   if (!text) return { intent: 'none', confidence: 0, params: {}, summary: '' };
@@ -216,13 +233,30 @@ export async function extractInstruction(args: {
     .map((c, i) => `[${i + 1}] id=${c.id} src=${c.sourceType} from=${c.senderName ?? c.senderEmail ?? 'unknown'} subject="${c.subject}" preview="${c.preview.slice(0, 100)}" at=${c.receivedAt}`)
     .join('\n');
 
+  // When the message was already consumed as a prompt answer, the extractor's
+  // job narrows to the RESIDUAL. Stated as an explicit instruction rather than
+  // left to inference, because the failure mode is silent: a wrong 'none' loses
+  // a directive, a wrong intent invents a task out of the user's own words.
+  const answeredBlock = args.answeredQuestion
+    ? `This message has ALREADY been consumed as the answer to a question Brain asked:
+Question Brain asked: "${String(args.answeredQuestion).slice(0, 400)}"
+
+Your ONLY job now is the RESIDUAL — anything the user asked for BEYOND answering that question.
+If the message is fully explained as an answer to that question, return intent "none" with confidence 0.
+Do NOT turn the answer itself, or any part of it, into a task, item, note or reminder.
+
+────────────────
+
+`
+    : '';
+
   const userMessage = `Recent feed (most recent first):
 
 ${ctxBlock || '(no recent items)'}
 
 ────────────────
 
-Instruction: ${text}
+${answeredBlock}Instruction: ${text}
 
 JSON:`;
 
