@@ -165,8 +165,36 @@ const MARKERS: MarkerRule[] = [
 ];
 
 /**
+ * The curated meaning of a whole-answer marker, when we have one.
+ *
+ * These 25 replacements are not throwaway strings — several were reworded
+ * against real chat transcripts to stop them implying a dispatch that never
+ * happened, or demanding a recipient on a read-only turn. That precision is
+ * worth keeping. What is NOT worth keeping is saying them the same way every
+ * time, which is what makes Brain sound like a machine.
+ *
+ * So `sanitizeAnswerInBrainVoice` uses this as the FACT and lets the LLM choose
+ * the words. The careful semantics survive; the sameness does not.
+ */
+export function curatedMarkerMeaning(answer: string): string | null {
+  if (!answer) return null;
+  for (const rule of MARKERS) {
+    if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
+  }
+  return null;
+}
+
+/** True when the answer is nothing but a bracketed marker. */
+export function isWholeMarker(answer: string): boolean {
+  return /^\s*\[[^\]]{2,200}\]\s*$/.test(answer ?? '');
+}
+
+/**
  * Rewrite bracketed system markers to user-friendly language.
  * Preserves all other content unchanged.
+ *
+ * Kept synchronous and unchanged: it is the fallback for
+ * `sanitizeAnswerInBrainVoice` and is what non-conversational surfaces use.
  */
 export function sanitizeAnswerForUser(answer: string): string {
   if (!answer) return answer;
@@ -212,4 +240,47 @@ export function sanitizeAnswerForUser(answer: string): string {
   result = result.replace(embeddedMarker, '').replace(/[ \t]{2,}/g, ' ').trim();
 
   return result || answer;
+}
+
+/**
+ * The conversational path: same truth, said like a person.
+ *
+ * Owner, 2026-08-07: *"i don't want robotic answers if i talk to brain neither
+ * anyone else talk to brain"* — objective, *"smart thinking of brain like living
+ * assistant"*.
+ *
+ * Three cases, and the third is the one that was actually hurting:
+ *
+ *   1. Whole-answer marker WITH a curated meaning → the LLM rephrases that
+ *      meaning. The careful wording is preserved as fact; only the phrasing
+ *      varies.
+ *   2. Whole-answer marker with NO curated meaning → the LLM renders the marker
+ *      itself. Previously 77 of 102 markers fell here and were stripped to
+ *      SILENCE, so the user watched their request vanish. Silence reads as
+ *      broken far more than plain wording does.
+ *   3. Prose with embedded markers → unchanged synchronous strip. An embedded
+ *      marker is a fragment inside a real sentence; rewriting the whole reply
+ *      around it would risk the fabrication this codebase keeps fighting.
+ *
+ * Never throws. On any failure the synchronous sanitizer is the fallback, so
+ * the worst case is the behaviour we had before, not a lost reply.
+ */
+export async function sanitizeAnswerInBrainVoice(
+  answer: string,
+  ctx: { clientNumber?: string; userId?: number; audience?: 'owner' | 'counterpart'; userMessage?: string } = {},
+): Promise<string> {
+  if (!answer) return answer;
+  if (!isWholeMarker(answer)) return sanitizeAnswerForUser(answer);
+
+  try {
+    const { renderMarkerInBrainVoice } = await import('./markerVoice');
+    const curated = curatedMarkerMeaning(answer);
+    // When a curated meaning exists, hand THAT to the renderer as the fact —
+    // it is a plain-language statement of what happened, already vetted. The
+    // renderer's job narrows to saying it naturally.
+    const spoken = await renderMarkerInBrainVoice(curated ?? answer.trim(), ctx);
+    return spoken || sanitizeAnswerForUser(answer);
+  } catch {
+    return sanitizeAnswerForUser(answer);
+  }
 }

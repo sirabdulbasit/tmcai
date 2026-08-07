@@ -56,6 +56,34 @@ export function inboundDedupKey(params: Pick<InboundParams, 'waMessageId' | 'fro
     : `fallback:${params.fromNumber}:${params.messageBody}`;
 }
 
+
+/**
+ * Speak a system marker instead of printing it.
+ *
+ * Owner, 2026-08-07: *"i don't want robotic answers if i talk to brain neither
+ * anyone else talk to brain"*. These three session-transition markers were the
+ * worst offenders in the codebase — they never went through the sanitizer at
+ * all, so the owner received literal square brackets describing his own session
+ * state, e.g. `[agent session ended — Faria idle 10+ min; routing to main AI]`.
+ *
+ * The marker remains the honest internal signal (no invented prose about what
+ * happened); only its delivery changes. Falls back to the raw marker if the
+ * renderer is unavailable, because a bracket the user can read beats silence.
+ */
+async function sayMarker(params: InboundParams, marker: string, userId?: number): Promise<void> {
+  try {
+    const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+    await sendReply(params, await sanitizeAnswerInBrainVoice(marker, {
+      clientNumber: params.clientNumber,
+      userId,
+      audience: 'owner',
+      userMessage: params.messageBody,
+    }));
+  } catch {
+    await sendReply(params, marker);
+  }
+}
+
 export async function handleInboundMessage(params: InboundParams): Promise<void> {
   const startedAt = Date.now();
   // Dedup check
@@ -215,8 +243,17 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
         // machine markers reached the owner verbatim — 2026-08-06 20:52 he got
         // a bare "[noted]" as an answer. The marker vocabulary was correct and
         // the renderer was simply not on this path.
-        const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
-        await sendReply(params, sanitizeAnswerForUser(r.ackMessage));
+        // 2026-08-07, owner: *"i don't want robotic answers"*. A bare "[noted]"
+        // became "Got it — noted." every single time, which is the same machine
+        // wearing a politer mask. The marker stays the internal signal; the
+        // spoken form is now generated, so it varies and matches his language.
+        const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+        await sendReply(params, await sanitizeAnswerInBrainVoice(r.ackMessage, {
+          clientNumber: params.clientNumber,
+          userId,
+          audience: 'owner',
+          userMessage: params.messageBody,
+        }));
       }
       // A6: the answer may carry a piggybacked directive ("tomorrow,
       // and always remind me at 5pm"). The LLM extractor judges the
@@ -265,7 +302,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       `UPDATE whatsapp_sessions SET closed_at = NOW() WHERE user_id = $1 AND client_number = $2 AND closed_at IS NULL`,
       userId, params.clientNumber,
     );
-    await sendReply(params, `[session ended — send any message to resume]`);
+    await sayMarker(params, `[session ended — send any message to resume]`);
     return;
   }
 
@@ -350,7 +387,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
         await prisma.$executeRawUnsafe(
           `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
         );
-        await sendReply(params, `[agent session ended \u2014 ${agentName} idle 10+ min; routing to main AI]`);
+        await sayMarker(params, `[agent session ended — ${agentName} idle 10+ min; routing to main AI]`, userId);
       } else {
         // Session still active — check if user wants to leave
         const switchingAway = /\b(main ai|tmc ai|exit|back|leave|stop|bye|shukriya|thanks|theek hai)\b/i.test(lower);
@@ -360,7 +397,7 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
             `UPDATE whatsapp_sessions SET active_agent_id = NULL, active_agent_name = NULL WHERE id = $1`, session.id,
           );
           // Bracketed marker, no fake-Brain prose. Per Basit 2026-05-20.
-          await sendReply(params, `[agent session ended — ${agentName} closed; routing to main AI]`);
+          await sayMarker(params, `[agent session ended — ${agentName} closed; routing to main AI]`, userId);
           return;
         }
 
