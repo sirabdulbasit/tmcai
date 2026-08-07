@@ -98,6 +98,32 @@ describe('DEF-092 marker voice — a marker is spoken, never printed', () => {
     expect(isWholeMarker('')).toBe(false);
   });
 
+  it('DEF-102: the whole-answer marker that leaked to the owner is now spoken', async () => {
+    // 2026-08-08 02:43, verbatim from his phone. D-14 rendered markers at four
+    // call sites and missed the main answer path, so this one shipped raw.
+    // Rendering now lives in sendReply, the single chokepoint every reply
+    // passes through.
+    callLLM.mockResolvedValue({
+      text: "I couldn't find that item to update — the reference I had is out of date.",
+      provider: 'gemini',
+    });
+    const leaked = '[update_open_item: id not found — reference may be stale, retry by title]';
+    const out = await sanitizeAnswerInBrainVoice(leaked, { clientNumber: 'TMC-0001', userId: 2 });
+    expect(out.startsWith('[')).toBe(false);
+    expect(out).not.toContain('update_open_item');
+    expect(out).not.toContain('retry by title');
+  });
+
+  it('DEF-102: an UNCURATED marker is still spoken, never passed through raw', async () => {
+    // The sync sanitizer maps 25 markers and strips a narrow embedded set; this
+    // one matched neither, which is exactly why it shipped verbatim. The voice
+    // renderer must not depend on anyone having curated it first.
+    callLLM.mockResolvedValue({ text: 'I could not find that one.', provider: 'gemini' });
+    const out = await sanitizeAnswerInBrainVoice('[some_action: a marker nobody curated]', {});
+    expect(out.startsWith('[')).toBe(false);
+    expect(callLLM).toHaveBeenCalled();
+  });
+
   it('keeps the synchronous sanitizer working for non-conversational surfaces', () => {
     // It is the fallback path, so a regression here silently degrades every
     // failure case above.

@@ -71,17 +71,11 @@ export function inboundDedupKey(params: Pick<InboundParams, 'waMessageId' | 'fro
  * renderer is unavailable, because a bracket the user can read beats silence.
  */
 async function sayMarker(params: InboundParams, marker: string, userId?: number): Promise<void> {
-  try {
-    const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
-    await sendReply(params, await sanitizeAnswerInBrainVoice(marker, {
-      clientNumber: params.clientNumber,
-      userId,
-      audience: 'owner',
-      userMessage: params.messageBody,
-    }));
-  } catch {
-    await sendReply(params, marker);
-  }
+  // DEF-102: rendering now happens inside sendReply, so this is simply a send.
+  // Kept as a named function because the CALL SITES read better for it — these
+  // three are session-transition markers, and naming that is worth a wrapper.
+  if (userId && !params._resolvedUserId) params._resolvedUserId = userId;
+  await sendReply(params, marker);
 }
 
 export async function handleInboundMessage(params: InboundParams): Promise<void> {
@@ -543,9 +537,10 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // some internal path bypassed it (root cause under diagnosis via prod
   // logs). Sanitizing at THIS boundary guarantees no bracketed system
   // marker ever ships to a phone, whatever path produced the answer.
-  const { sanitizeAnswerForUser } = await import('../knowledge/answerSanitizer');
-  const responseText = sanitizeAnswerForUser(answer).trim()
-    || '[Brain returned no usable response — please retry]';
+  // DEF-102: rendering moved INTO sendReply, the one place every reply passes
+  // through. Sanitising here as well would be a second implementation of the
+  // same rule — the exact shape this codebase keeps being bitten by.
+  const responseText = answer.trim() || 'Something went wrong on my end and I could not put together an answer. Try me again?';
   log.info('Inbound stage completed', {
     stage: 'brain', userId, messageId: params.waMessageId,
     elapsedMs: Date.now() - startedAt, degraded, answerLen: responseText.length,
@@ -656,8 +651,40 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 // ─── Send reply via provider or direct replyFn ────────────────────────────────
 
 async function sendReply(params: InboundParams, text: string): Promise<void> {
+  // ── DEF-102: the ONE place a machine marker can be caught ────────────────
+  //
+  // On 2026-08-08 02:43 the owner asked to set a deadline and received the
+  // literal text:
+  //   [update_open_item: id not found — reference may be stale, retry by title]
+  //
+  // D-14 had already "fixed" this by rendering markers into voice — at four
+  // call sites. It missed the main answer path, and two ack paths besides.
+  // Four of seven is worse than none, because it looks fixed. That is this
+  // project's most-repeated defect (DEF-039, 041, 044, 045, 051, 074, 078) and
+  // patching the two newly-discovered sites would have been the same mistake a
+  // third time.
+  //
+  // So it moves to the chokepoint. EVERY reply to a human goes through
+  // sendReply, so every reply is rendered here and nowhere else. Prose passes
+  // through untouched and costs nothing — only a whole-answer marker reaches
+  // the renderer.
+  const rendered = await (async () => {
+    try {
+      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+      return await sanitizeAnswerInBrainVoice(text, {
+        clientNumber: params.clientNumber,
+        userId: params._resolvedUserId,
+        audience: 'owner',
+        userMessage: params.messageBody,
+      });
+    } catch {
+      // Never let rendering cost the reply itself.
+      return text;
+    }
+  })();
+
   // Strip markdown formatting — WhatsApp has its own formatting (*bold*, _italic_)
-  let clean = text
+  let clean = rendered
     .replace(/\*\*(.+?)\*\*/g, '*$1*')    // **bold** → *bold* (WhatsApp native bold)
     .replace(/^#{1,6}\s+/gm, '')           // Remove ## headers
     .replace(/```[\s\S]*?```/g, '')        // Remove code blocks

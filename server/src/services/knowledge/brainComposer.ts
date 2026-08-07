@@ -79,7 +79,11 @@ export type ComposedAction =
   // Chaining add → delegate as two plan steps cannot work: the second step
   // would need the id of an item that does not exist when the plan is built.
   | { type: 'add_open_item'; title: string; dueDateRaw?: string; note?: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string }
-  | { type: 'update_open_item'; openItemId: string; title?: string; priority?: string; dueDateRaw?: string; note?: string }
+  // DEF-103: `title` RENAMES the item; `titleRef` only says WHICH item is meant.
+  // They must stay separate — reasoningCompose forbids emitting `title` unless
+  // the user explicitly asked to rename, and rightly so, but that left nothing
+  // to fall back on when the openItemId went stale.
+  | { type: 'update_open_item'; openItemId: string; title?: string; titleRef?: string; priority?: string; dueDateRaw?: string; note?: string }
   | { type: 'mark_open_item_done'; openItemId: string; completionNote?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; attendeeAdHocEmails?: string[]; note?: string }
@@ -3207,14 +3211,50 @@ ${calLines.join('\n')}`;
         // in a follow-up turn. Reasoning passes the openItemId from
         // the open-items context block we feed it.
         try {
-          const existing = await prisma.openItem.findFirst({
+          let existing = await prisma.openItem.findFirst({
             where: { id: act.openItemId, clientNumber, userId },
             select: { id: true, title: true, status: true, priority: true, dueDate: true },
           });
+
+          // DEF-103 — the id went stale, but the user told us the title.
+          //
+          // 2026-08-08 02:41-02:43: Brain listed Hamna's three items BY TITLE,
+          // the owner said "set Vision Metric Integration deadline is monday",
+          // and Brain replied "id not found — reference may be stale, retry by
+          // title". He HAD used the title. Asking a person to repeat what they
+          // just said, using information the system already holds, is the
+          // system making the user do its work.
+          //
+          // So when the id misses, resolve by title before giving up. Exact
+          // match first, then a unique prefix/contains match — never a fuzzy
+          // best-guess, because updating the WRONG item silently is far worse
+          // than asking. Ambiguity still falls through to the failure path.
+          const lookupTitle = act.titleRef ?? act.title;
+          if (!existing && lookupTitle) {
+            const byTitle = await prisma.openItem.findMany({
+              where: {
+                clientNumber, userId,
+                status: { notIn: ['DONE', 'CANCELLED'] },
+                title: { contains: lookupTitle.trim(), mode: 'insensitive' },
+              },
+              select: { id: true, title: true, status: true, priority: true, dueDate: true },
+              take: 5,
+            }).catch(() => []);
+            const exact = byTitle.filter(
+              (i: any) => i.title.trim().toLowerCase() === lookupTitle.trim().toLowerCase(),
+            );
+            // Exactly one candidate is a resolution; two is a question.
+            if (exact.length === 1) existing = exact[0];
+            else if (byTitle.length === 1) existing = byTitle[0];
+          }
+
           if (!existing) {
             actionResult = {
               ok: false,
-              message: `[update_open_item: id not found — reference may be stale, retry by title]`,
+              // Names what was looked for, so the voice renderer can say
+              // something the user can act on instead of an instruction to
+              // repeat themselves.
+              message: `[update_open_item: could not find an open item matching ${lookupTitle ? `"${lookupTitle}"` : 'that reference'}]`,
             };
             answer = actionResult.message;
           } else {
@@ -6693,7 +6733,8 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     const priority = typeof r.priority === 'string' && r.priority.trim() ? r.priority.trim() : undefined;
     const dueDateRaw = typeof r.dueDateRaw === 'string' && r.dueDateRaw.trim() ? r.dueDateRaw.trim() : undefined;
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
-    return { type: 'update_open_item', openItemId, title, priority, dueDateRaw, note };
+    const titleRef = typeof r.titleRef === 'string' && r.titleRef.trim() ? r.titleRef.trim() : undefined;
+    return { type: 'update_open_item', openItemId, title, titleRef, priority, dueDateRaw, note };
   }
   if (type === 'mark_open_item_done') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';

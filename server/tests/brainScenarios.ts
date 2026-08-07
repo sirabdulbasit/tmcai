@@ -267,9 +267,23 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const rc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'reasoningCompose.ts'), 'utf-8');
       expect(rc).toContain('Provided-identifier contract');
       expect(rc).toMatch(/MUST emit update_contact/);
-      // 2. WhatsApp boundary sanitize (defence-in-depth for the leak).
+      // 2. No bracketed marker can ship to a phone.
+      //
+      // DEF-102 (2026-08-08) moved this guarantee rather than removing it. The
+      // original assertion pinned one LINE — `sanitizeAnswerForUser(answer)` at
+      // the composer boundary — and that line was exactly the problem: it
+      // covered the composer path only, so `[update_open_item: id not found …]`
+      // reached the owner verbatim through a different route on 08-08 02:43.
+      //
+      // Rendering now lives inside sendReply, the single function every reply
+      // to a human passes through. So the scenario asserts the PROPERTY at its
+      // chokepoint instead of an implementation detail that could move again.
       const wa = readFileSync(join(__dirname, '..', 'src', 'services', 'whatsapp', 'WhatsAppInbound.ts'), 'utf-8');
-      expect(wa).toMatch(/const responseText = sanitizeAnswerForUser\(answer\)/);
+      const sendReplyBody = wa.slice(wa.indexOf('async function sendReply('));
+      expect(sendReplyBody).toMatch(/sanitizeAnswerInBrainVoice/);
+      // and it must render BEFORE the text is cleaned and sent, not after
+      expect(sendReplyBody.indexOf('sanitizeAnswerInBrainVoice'))
+        .toBeLessThan(sendReplyBody.indexOf('let clean = rendered'));
       // 3. Dedup block reason is human, not machinery.
       const sd = readFileSync(join(__dirname, '..', 'src', 'services', 'openItems', 'semanticDedupService.ts'), 'utf-8');
       expect(sd).not.toMatch(/reason: `Semantic duplicate of/);
