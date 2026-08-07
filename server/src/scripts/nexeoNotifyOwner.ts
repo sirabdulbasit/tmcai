@@ -52,7 +52,21 @@
 import crypto from 'crypto';
 import prisma from '../db/prisma';
 
-const OWNER_USER_ID = Number(process.env.NEXEO_OWNER_USER_ID || 2);
+/**
+ * Who receives the report.
+ *
+ * Owner instruction, 2026-08-07: *"always remember i am the user and
+ * communicating with brain through client's whatsapp. later we can have another
+ * user so nothing should be hardcoded related me it should be user under
+ * tenant/client"*.
+ *
+ * So there is no "the owner" constant. `--user <id>` names the recipient, or
+ * NEXEO_NOTIFY_USER_ID configures a default per deployment. When neither is
+ * given the recipient is RESOLVED — the active super-admin of the tenant — and
+ * the script refuses rather than guessing if that is ambiguous.
+ */
+const ENV_USER_ID = process.env.NEXEO_NOTIFY_USER_ID ? Number(process.env.NEXEO_NOTIFY_USER_ID) : null;
+const ENV_CLIENT_NUMBER = process.env.NEXEO_NOTIFY_CLIENT_NUMBER || null;
 const PORT = Number(process.env.PORT || 4002);
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
 const SESSION_TTL_MS = 2 * 60 * 1000;
@@ -66,6 +80,8 @@ interface Args {
   urgency: string;
   dedupKey: string | null;
   dryRun: boolean;
+  /** Explicit recipient. No default person — see resolveRecipient. */
+  userId: number | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -92,16 +108,61 @@ function parseArgs(argv: string[]): Args {
     // report. `--dedup-key none` is for a genuine one-off.
     dedupKey: rawDedup === 'none' ? null : (rawDedup || `${kind}:${new Date().toISOString().slice(0, 10)}`),
     dryRun: argv.includes('--dry-run'),
+    userId: get('user') ? Number(get('user')) : null,
   };
 }
 
-async function mintSession(): Promise<string> {
+/**
+ * Resolve the recipient without hardcoding a person.
+ *
+ * Explicit id wins. Otherwise: the active super-admin of the named tenant, or
+ * of the only tenant if there is exactly one. More than one candidate is an
+ * error, not a coin flip — sending a health report to the wrong user of the
+ * wrong tenant is a data leak, not an inconvenience.
+ */
+async function resolveRecipient(explicitUserId: number | null): Promise<{ id: number; clientNumber: string }> {
+  if (explicitUserId != null) {
+    const u = await prisma.user.findUnique({
+      where: { id: explicitUserId },
+      select: { id: true, isActive: true, clientNumber: true },
+    });
+    if (!u) throw new Error(`user ${explicitUserId} not found`);
+    if (!u.isActive) throw new Error(`user ${explicitUserId} is not active`);
+    return { id: u.id, clientNumber: u.clientNumber };
+  }
+
+  // Super-admin types are derived from USER_TYPES rather than a literal, so a
+  // new type with isSuperAdmin never silently drops out of this lookup.
+  const { USER_TYPES } = await import('../config/userTypes');
+  const saTypes = Object.entries(USER_TYPES).filter(([, c]) => c.isSuperAdmin).map(([k]) => k);
+
+  const candidates = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      userType: { in: saTypes },
+      ...(ENV_CLIENT_NUMBER ? { clientNumber: ENV_CLIENT_NUMBER } : {}),
+    },
+    select: { id: true, clientNumber: true },
+    orderBy: { id: 'asc' },
+    take: 5,
+  });
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 0) {
+    throw new Error('no active super-admin found — pass --user <id> or set NEXEO_NOTIFY_USER_ID');
+  }
+  throw new Error(
+    `${candidates.length} active super-admins found (${candidates.map((c) => `${c.id}@${c.clientNumber}`).join(', ')}) — ` +
+    'pass --user <id> or set NEXEO_NOTIFY_CLIENT_NUMBER to disambiguate',
+  );
+}
+
+async function mintSession(userId: number): Promise<string> {
   const user = await prisma.user.findUnique({
-    where: { id: OWNER_USER_ID },
+    where: { id: userId },
     select: { id: true, isActive: true, clientNumber: true },
   });
-  if (!user) throw new Error(`owner user ${OWNER_USER_ID} not found`);
-  if (!user.isActive) throw new Error(`owner user ${OWNER_USER_ID} is not active`);
+  if (!user) throw new Error(`user ${userId} not found`);
+  if (!user.isActive) throw new Error(`user ${userId} is not active`);
 
   const token = crypto.randomBytes(48).toString('hex');
   await prisma.session.create({
@@ -134,19 +195,20 @@ async function main(): Promise<number> {
   if (args.dryRun) {
     process.stdout.write(
       `[dry-run] would POST ${BASE}/admin/nexeo-loop/notify\n` +
-      `  toUserId: ${OWNER_USER_ID}\n  kind: ${args.kind}\n  urgency: ${args.urgency}\n` +
+      `  toUserId: ${args.userId ?? ENV_USER_ID ?? '(resolved at send time)'}\n  kind: ${args.kind}\n  urgency: ${args.urgency}\n` +
       `  dedupKey: ${args.dedupKey ?? '(none)'}\n  summary: ${args.summary}\n  body:\n${args.body}\n`,
     );
     return 0;
   }
 
-  const token = await mintSession();
+  const recipient = await resolveRecipient(args.userId ?? ENV_USER_ID);
+  const token = await mintSession(recipient.id);
   try {
     const res = await fetch(`${BASE}/admin/nexeo-loop/notify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        toUserId: OWNER_USER_ID,
+        toUserId: recipient.id,
         kind: args.kind,
         summary: args.summary,
         body: args.body,

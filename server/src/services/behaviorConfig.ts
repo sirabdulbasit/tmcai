@@ -72,6 +72,33 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'confirmation.min_confidence_pct', unit: 'count', def: 75, min: 0, max: 100, scope: 'tenant',
     description: 'Confidence (%) required before Brain asks the owner to confirm an action he already instructed. Higher = acts more, asks less. Hard safety cases (unresolved recipient, failed assessment) ask regardless.',
   },
+  // DEF-095 — how far back Brain looks to find the question a reply answers.
+  //
+  // The owner, 2026-08-07: "if brain ask me any question... after an hour when i
+  // reply to it with 'High Tomorrow' it didnt corelated my this with his last
+  // message... don't you think it will read last n number message to correlated
+  // what i had asked it".
+  //
+  // He is right, and correlation was far narrower than he assumed: it looked at
+  // exactly ONE row in exactly ONE state (`awaiting_reply`), with no ordering
+  // and no history. At the time he raised it there were 0 rows in that state and
+  // 119 expired ones — so any reply arriving late correlated to nothing at all
+  // and was re-read as a brand-new instruction.
+  //
+  // Hours, not minutes: a person answers when they get to their phone, and the
+  // measured average lifetime of an expired prompt here is ~19 hours. Tenant
+  // scope so a busier tenant can shorten it without a deploy.
+  'prompt_reply.lookback_hours': {
+    key: 'prompt_reply.lookback_hours', unit: 'hours', def: 24, min: 1, max: 168, scope: 'tenant',
+    description: 'DEF-095. How far back Brain searches its own recent questions when deciding which one an incoming reply answers. Covers questions that already expired — a question the user finally answers is still answered.',
+  },
+  // How many recent questions are offered to the relevance classifier. Small on
+  // purpose: every candidate is an opportunity to attach an answer to the WRONG
+  // question, which is worse than failing to attach it at all.
+  'prompt_reply.max_candidates': {
+    key: 'prompt_reply.max_candidates', unit: 'count', def: 5, min: 1, max: 20, scope: 'tenant',
+    description: 'DEF-095. Maximum recent unanswered questions considered as correlation candidates for one incoming reply, newest first.',
+  },
   'delegation.capture_enabled': {
     key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',

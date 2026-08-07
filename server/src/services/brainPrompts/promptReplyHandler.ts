@@ -28,7 +28,7 @@
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
-import { getAwaitingPrompt, recordAnswer, sendNextPrompt } from './brainPromptQueueService';
+import { getAwaitingPrompt, getAnswerableQuestions, reviveExpiredPrompt, recordAnswer, sendNextPrompt } from './brainPromptQueueService';
 
 const log = createLogger('prompt-reply-handler');
 
@@ -36,6 +36,14 @@ export interface HandleReplyInput {
   userId: number;
   /** Verbatim text the user sent. */
   text: string;
+  /**
+   * Tenant this user belongs to. Correlation is per-user under a tenant —
+   * never a global "the owner" (owner instruction, 2026-08-07: *"nothing should
+   * be hardcoded related me it should be user under tenant/client"*).
+   * Optional only so existing callers keep compiling; when absent the search
+   * falls back to the single-awaiting-prompt behaviour.
+   */
+  clientNumber?: string;
 }
 
 export interface HandleReplyResult {
@@ -69,60 +77,140 @@ export interface HandleReplyResult {
   answeredQuestion?: string;
 }
 
-export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
-  const awaiting = await getAwaitingPrompt(input.userId);
-  if (!awaiting) return { handled: false };
 
+/**
+ * The questions this user could still plausibly be answering, newest first.
+ *
+ * Falls back to the old single-awaiting-prompt behaviour when the caller could
+ * not supply a tenant — correlation is per-user under a tenant, and searching
+ * history without one would be exactly the cross-tenant read DEF-091 closed.
+ */
+async function findCandidates(input: HandleReplyInput) {
+  if (!input.clientNumber) {
+    const one = await getAwaitingPrompt(input.userId);
+    return one ? [one] : [];
+  }
+  const { getBehaviorValue } = await import('../behaviorConfig');
+  const ctx = { userId: input.userId, clientNumber: input.clientNumber };
+  const [lookbackHours, limit] = await Promise.all([
+    getBehaviorValue('prompt_reply.lookback_hours', ctx).catch(() => 24),
+    getBehaviorValue('prompt_reply.max_candidates', ctx).catch(() => 5),
+  ]);
+  return getAnswerableQuestions({
+    userId: input.userId,
+    clientNumber: input.clientNumber,
+    lookbackHours,
+    limit,
+  });
+}
+
+export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
   const text = input.text.trim();
   if (!text) return { handled: false };  // empty body — let normal flow ignore it
 
-  // Don't consume messages that clearly aren't answers to this prompt.
-  // Previously: ANY non-empty text was treated as the answer, so MD's
-  // unrelated "Brief my day" got eaten as a date-parse attempt against
-  // a stale set_due_date prompt and never reached the chat router.
-  // Now: if the text looks like a new chat command or doesn't match
-  // the side-effect's expected shape, leave the prompt awaiting and
-  // fall through to chat. The prompt can be answered later when MD
-  // actually addresses it.
-  const sideEffectKind = ((awaiting.sideEffect as any)?.kind as string | undefined) ?? 'noop';
-  if (!looksLikeAnswer(text, sideEffectKind)) {
-    log.info('skipping prompt consumption — message doesn\'t look like an answer', {
-      userId: input.userId, promptId: String(awaiting.id),
-      sideEffectKind, textPreview: text.slice(0, 60),
-    });
-    return { handled: false };
-  }
+  // DEF-095 — which question is this answering?
+  //
+  // This used to be one row in one state: `findFirst({ state: 'awaiting_reply' })`,
+  // unordered. The owner hit the consequence on 2026-08-07 — he answered an hour
+  // later and Brain had no idea what he was replying to. At that moment there
+  // were ZERO rows in `awaiting_reply` and 119 expired ones, so the answer
+  // correlated to nothing and was re-read as a new instruction.
+  //
+  // Now: the recent questions he could plausibly be answering, newest first,
+  // still-awaiting before expired. Each is judged by the SAME relevance
+  // classifier that already guarded the single-candidate path — no second
+  // implementation of "does this answer that" (the DEF-039/041/074/078 shape),
+  // and no keyword matching, because whether a message answers a question is a
+  // judgement (owner ruling: no hardcoded judgement).
+  const candidates = await findCandidates(input);
+  if (candidates.length === 0) return { handled: false };
 
-  // Section 32B: looksLikeAnswer is only a PREFILTER — the final
-  // consumption decision is LLM-with-context. Production 2026-07-22:
-  // "Whatsup?" slipped past the regex and a greeting was recorded as
-  // an action-status answer. Only a confident 'answers_pending_prompt'
-  // verdict may mutate; everything else (incl. classifier failure)
-  // falls through to normal chat with the prompt left awaiting.
+  // Each candidate gets the SAME two gates the single-candidate path always
+  // had — the `looksLikeAnswer` prefilter, then the LLM relevance verdict. The
+  // first candidate that genuinely answers wins; the rest are left untouched.
+  //
+  // Order matters only for which plausible question is TESTED first, never for
+  // whether a wrong one can be accepted: a candidate the classifier declines is
+  // skipped, exactly as before.
   const { classifyPromptReplyRelevance, mayConsumeAsAnswer, mayConsumePartially } =
     await import('./promptReplyRelevance');
-  const openItemTitle = awaiting.openItemId
-    ? await prisma.openItem.findFirst({
-        where: { id: awaiting.openItemId },
-        select: { title: true },
-      }).then((r) => r?.title ?? null).catch(() => null)
-    : null;
-  const verdict = await classifyPromptReplyRelevance({
-    pendingQuestion: awaiting.question,
-    sideEffectKind,
-    openItemTitle,
-    inboundText: text,
-    userId: input.userId,
-  });
-  const partial = mayConsumePartially(verdict);
-  if (!mayConsumeAsAnswer(verdict) && !partial) {
-    log.info('relevance gate declined prompt consumption — routing to chat', {
-      userId: input.userId, promptId: String(awaiting.id), sideEffectKind,
-      relevance: verdict?.relevance ?? 'classifier_failure',
-      confidence: verdict?.confidence ?? null,
+
+  let awaiting: (typeof candidates)[number] | null = null;
+  let sideEffectKind = 'noop';
+  let verdict: Awaited<ReturnType<typeof classifyPromptReplyRelevance>> = null;
+
+  for (const cand of candidates) {
+    const kind = ((cand.sideEffect as any)?.kind as string | undefined) ?? 'noop';
+
+    // Prefilter. Previously: ANY non-empty text was treated as the answer, so an
+    // unrelated "Brief my day" got eaten as a date-parse attempt against a stale
+    // set_due_date prompt and never reached the chat router.
+    if (!looksLikeAnswer(text, kind)) {
+      log.info('skipping prompt consumption — message doesn\'t look like an answer', {
+        userId: input.userId, promptId: String(cand.id),
+        sideEffectKind: kind, textPreview: text.slice(0, 60),
+      });
+      continue;
+    }
+
+    // Section 32B: looksLikeAnswer is only a PREFILTER — the final consumption
+    // decision is LLM-with-context. Production 2026-07-22: "Whatsup?" slipped
+    // past the regex and a greeting was recorded as an action-status answer.
+    // Only a confident verdict may mutate; classifier failure included.
+    const openItemTitle = cand.openItemId
+      ? await prisma.openItem.findFirst({
+          // Tenant-scoped: the title is read for a specific tenant's item, and
+          // a bare id lookup is how cross-tenant reads happen (DEF-091).
+          where: { id: cand.openItemId, clientNumber: cand.clientNumber },
+          select: { title: true },
+        }).then((r) => r?.title ?? null).catch(() => null)
+      : null;
+
+    const v = await classifyPromptReplyRelevance({
+      pendingQuestion: cand.question,
+      sideEffectKind: kind,
+      openItemTitle,
+      inboundText: text,
+      clientNumber: cand.clientNumber,
+      userId: input.userId,
     });
-    return { handled: false };
+
+    if (mayConsumeAsAnswer(v) || mayConsumePartially(v)) {
+      awaiting = cand; sideEffectKind = kind; verdict = v;
+      if (candidates.length > 1) {
+        log.info('correlated reply to an earlier question', {
+          userId: input.userId, promptId: String(cand.id), state: cand.state,
+          candidatesConsidered: candidates.length,
+          ageMinutes: cand.sentAt ? Math.round((Date.now() - cand.sentAt.getTime()) / 60000) : null,
+          relevance: v?.relevance ?? null,
+        });
+      }
+      break;
+    }
+
+    log.info('relevance gate declined prompt consumption', {
+      userId: input.userId, promptId: String(cand.id), sideEffectKind: kind,
+      relevance: v?.relevance ?? 'classifier_failure',
+      confidence: v?.confidence ?? null,
+    });
   }
+
+  // No candidate answered — route to chat with every question left as it was.
+  if (!awaiting) return { handled: false };
+
+  // DEF-095: an expired question the user has just answered is not expired.
+  // Returned to `awaiting_reply` first so `recordAnswer`'s
+  // `awaiting_reply → answered` transition stays truthful; a row jumping
+  // `expired → answered` would make the queue's own history unreadable.
+  if (awaiting.state === 'expired') {
+    await reviveExpiredPrompt(awaiting.id).catch((err) => {
+      log.warn('could not revive expired prompt before recording answer', {
+        promptId: String(awaiting!.id), err: err?.message,
+      });
+    });
+  }
+
+  const partial = mayConsumePartially(verdict);
 
   // DEF-017: on a partial match, ONLY the answering half is recorded and fed
   // to the side effect. The whole string used to be used, which is how

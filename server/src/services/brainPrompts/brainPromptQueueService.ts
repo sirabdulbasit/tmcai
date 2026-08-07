@@ -480,14 +480,86 @@ export async function expireStalePrompts(): Promise<{ expired: number; advanced:
  * Look up the user's currently-awaiting prompt. Used by the reply
  * handler to route an inbound WhatsApp message to its answer.
  */
-export async function getAwaitingPrompt(userId: number) {
+const PROMPT_SELECT = {
+  id: true, clientNumber: true, userId: true, question: true,
+  openItemId: true, sideEffect: true, criticality: true,
+  ackMessageId: true, sentAt: true, metadata: true, state: true,
+} as const;
+
+export async function getAwaitingPrompt(userId: number, clientNumber?: string) {
   return prisma.brainPromptQueue.findFirst({
-    where: { userId, state: 'awaiting_reply' },
-    select: {
-      id: true, clientNumber: true, userId: true, question: true,
-      openItemId: true, sideEffect: true, criticality: true,
-      ackMessageId: true, sentAt: true, metadata: true,
+    where: { userId, state: 'awaiting_reply', ...(clientNumber ? { clientNumber } : {}) },
+    // DEF-095: previously unordered. With two questions outstanding, WHICH one a
+    // reply attached to was whatever order Postgres happened to return — so an
+    // answer could silently be recorded against the wrong question. Newest asked
+    // wins, which is what a person means by "the question you just asked me".
+    orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+    select: PROMPT_SELECT,
+  });
+}
+
+/**
+ * DEF-095 — every question this user could still plausibly be answering.
+ *
+ * Owner, 2026-08-07: *"if brain ask me any question... after an hour when i reply
+ * to it... it didnt corelated my this with his last message... don't you think it
+ * will read last n number message to correlated what i had asked it"*.
+ *
+ * He was right, and the reality was narrower than he assumed. Correlation
+ * considered exactly ONE row in exactly ONE state. When he raised this there
+ * were **zero** rows in `awaiting_reply` and **119** expired — so a reply that
+ * arrived an hour later matched nothing, fell through to chat, and got re-read
+ * as a brand-new instruction. That is the same failure as DEF-064, where a
+ * counterpart's answer was discarded because the thread had moved on: Brain
+ * keeps forgetting that it asked.
+ *
+ * Expired questions are INCLUDED deliberately. Expiry is Brain's bookkeeping,
+ * not the user's deadline — a question he finally gets round to answering has
+ * still been answered, and discarding it teaches him that replying is pointless.
+ *
+ * Ordering is deliberate too: still-awaiting questions come before expired ones,
+ * newest first within each group. The caller judges each candidate with the
+ * relevance classifier and takes the first real match, so ordering decides only
+ * which plausible question is tested first.
+ *
+ * Scoped by (clientNumber, userId): this is per-user under a tenant, never a
+ * global "the owner" (owner instruction, 2026-08-07 — *"nothing should be
+ * hardcoded related me it should be user under tenant/client"*).
+ */
+export async function getAnswerableQuestions(args: {
+  userId: number;
+  clientNumber: string;
+  lookbackHours: number;
+  limit: number;
+}) {
+  const since = new Date(Date.now() - args.lookbackHours * 60 * 60 * 1000);
+  const rows = await prisma.brainPromptQueue.findMany({
+    where: {
+      userId: args.userId,
+      clientNumber: args.clientNumber,
+      state: { in: ['awaiting_reply', 'expired'] },
+      sentAt: { not: null, gte: since },
     },
+    orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+    take: Math.max(args.limit * 3, args.limit),
+    select: PROMPT_SELECT,
+  });
+  const rank = (state: string) => (state === 'awaiting_reply' ? 0 : 1);
+  return rows.sort((a, b) => rank(a.state) - rank(b.state)).slice(0, args.limit);
+}
+
+/**
+ * DEF-095 — an expired question the user has just answered is not expired.
+ *
+ * Returning it to `awaiting_reply` before recording the answer keeps the state
+ * machine honest: `recordAnswer` moves `awaiting_reply → answered`, and a row
+ * that jumped straight from `expired → answered` would make the queue's own
+ * history unreadable.
+ */
+export async function reviveExpiredPrompt(promptId: string | bigint): Promise<void> {
+  await prisma.brainPromptQueue.updateMany({
+    where: { id: BigInt(promptId), state: 'expired' },
+    data: { state: 'awaiting_reply' },
   });
 }
 

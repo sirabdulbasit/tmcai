@@ -232,7 +232,11 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
   // and burn a chat turn.
   try {
     const { handlePromptReply } = await import('../brainPrompts/promptReplyHandler');
-    const r = await handlePromptReply({ userId, text: queryText });
+    // clientNumber is required for DEF-095's look-back: correlation searches this
+    // user's recent questions WITHIN their tenant. Without it the handler falls
+    // back to the old single-awaiting-prompt behaviour rather than searching
+    // across tenants (DEF-091).
+    const r = await handlePromptReply({ userId, text: queryText, clientNumber: params.clientNumber });
     if (r.handled) {
       log.info('consumed as prompt reply', {
         userId, promptId: r.promptId, sideEffect: r.sideEffectStatus,
