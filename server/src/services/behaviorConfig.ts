@@ -99,6 +99,13 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'prompt_reply.max_candidates', unit: 'count', def: 5, min: 1, max: 20, scope: 'tenant',
     description: 'DEF-095. Maximum recent unanswered questions considered as correlation candidates for one incoming reply, newest first.',
   },
+  // Step 5 — when the daily digest goes out, in the user's local hour (PKT).
+  // Config rather than a literal so a tenant in another timezone, or an owner
+  // who would rather read it at night, changes it without a deploy.
+  'notify.digest_hour_local': {
+    key: 'notify.digest_hour_local', unit: 'hours', def: 8, min: 0, max: 23, scope: 'tenant',
+    description: 'Local hour (PKT) at which Brain sends its daily self-report digest. Quiet hours still apply on top.',
+  },
   'delegation.capture_enabled': {
     key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',

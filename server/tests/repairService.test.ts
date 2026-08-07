@@ -147,9 +147,18 @@ describe('runRepairRule — safety semantics', () => {
 });
 
 describe('the allowlist itself', () => {
-  it('contains only the three known reversible repairs, each capped and scoped', () => {
+  it('contains only the known reversible repairs, each capped and scoped', () => {
+    // This allowlist is deliberately exact. Self-healing is the one subsystem
+    // that acts on production without a human, so a new repair must be added
+    // here CONSCIOUSLY — a test that merely counted them would let one slip in.
+    //
+    // DEF-099/100 added the two that repair the LOOP rather than the
+    // infrastructure: an ask answered but never passed on, and a question
+    // queued but never asked. Both were real failures the owner had to report
+    // himself.
     expect(REPAIR_RULES.map((r) => r.id).sort()).toEqual([
-      'feed_dlq_replay', 'stale_connector_error_metadata', 'stuck_scribe_markers',
+      'feed_dlq_replay', 'stale_connector_error_metadata', 'stuck_queued_prompt',
+      'stuck_scribe_markers', 'unnotified_answered_ask',
     ]);
     for (const r of REPAIR_RULES) {
       expect(['global', 'tenant']).toContain(r.scope);

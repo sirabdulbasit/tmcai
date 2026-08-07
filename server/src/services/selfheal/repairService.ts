@@ -304,10 +304,164 @@ const feedDlqReplay: RepairRule = {
   },
 };
 
+
+/**
+ * DEF-099 — an ask that got an answer the owner was never told about.
+ *
+ * This is the failure that started everything. On 2026-08-06 Hamna answered,
+ * the thread consumed her reply, every component reported healthy, and the
+ * owner heard nothing. It took ten rounds of manual log reading to find, and it
+ * was only findable because he reported it.
+ *
+ * `delegation_threads.owner_notified_at` (DEF-081) made it a QUERY: a thread
+ * with an inbound reply and a null notified timestamp is, by definition, an
+ * answer nobody passed on. This rule closes the loop — it does not just detect
+ * the gap, it tells him, and stamps the column only after a CONFIRMED send.
+ *
+ * Bounded hard. One batch, oldest first, and the stamp is applied per-thread
+ * only when that thread's own send returned sent. A partial batch leaves the
+ * rest for the next pass rather than marking them told.
+ */
+const unnotifiedAnsweredAsk: RepairRule = {
+  id: 'unnotified_answered_ask',
+  description: 'Tell the owner about delegation threads that received a counterpart reply but were never notified (owner_notified_at IS NULL). Stamps only after a confirmed send.',
+  scope: 'tenant',
+  maxAttemptsPerDay: 24,
+  // 30 is the framework's floor, asserted by the allowlist test. A repair that
+  // can retry every few minutes is a repair loop waiting to happen, and this
+  // one sends real WhatsApps to a real person.
+  cooldownMin: 30,
+  async detect(ctx) {
+    if (!ctx.clientNumber) return null;
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: string; owner_user_id: number; title: string | null }>>(
+      `SELECT t.id, t.owner_user_id, oi.title
+         FROM delegation_threads t
+         LEFT JOIN open_items oi ON oi.id = t.open_item_id
+        WHERE t.client_number = $1
+          AND t.owner_notified_at IS NULL
+          AND EXISTS (SELECT 1 FROM delegation_thread_events e
+                       WHERE e.thread_id = t.id AND e.event_type = 'inbound_received')
+        ORDER BY t.updated_at ASC
+        LIMIT 5`,
+      ctx.clientNumber,
+    );
+    if (rows.length === 0) return null;
+    return {
+      summary: `${rows.length} ask(s) answered by a counterpart with the owner never told`,
+      before: { threadIds: rows.map((r) => r.id), rows },
+    };
+  },
+  async apply(ctx, pre) {
+    const rows = (pre.before.rows as Array<{ id: string; owner_user_id: number; title: string | null }>) ?? [];
+    const { brainContactsUser } = await import('../notifications/brainOutboundService');
+    const notified: string[] = [];
+
+    for (const r of rows) {
+      // Per-thread, not per-batch: a send that fails must not stamp anything.
+      const result = await brainContactsUser({
+        userId: r.owner_user_id,
+        kind: 'unnotified_answered_ask',
+        summary: 'A reply came in that you were never told about',
+        body: `Someone replied about ${r.title ? `"${r.title}"` : 'an item you delegated'} and I never passed it on. I've picked it up now — tell me if you want anything done about it.`,
+        urgency: 'normal',
+        channel: 'text',
+        dedupKey: `unnotified_ask:${r.id}`,
+      }).catch(() => ({ sent: false } as any));
+
+      if (result?.sent) {
+        // Written is not delivered — the stamp goes on only after the send
+        // confirmed. Conflating those two is the entire DEF-081 class, and
+        // stamping optimistically here would recreate it inside its own fix.
+        await prisma.$executeRawUnsafe(
+          `UPDATE delegation_threads SET owner_notified_at = NOW()
+            WHERE id = $1 AND client_number = $2 AND owner_notified_at IS NULL`,
+          r.id, ctx.clientNumber,
+        );
+        notified.push(r.id);
+      }
+    }
+    return { notifiedThreadIds: notified };
+  },
+  async verify(ctx, _pre, after) {
+    const ids = (after.notifiedThreadIds as string[]) ?? [];
+    if (ids.length === 0) return false; // told nobody → healed nothing
+    const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT COUNT(*)::int AS n FROM delegation_threads
+        WHERE client_number = $1 AND id = ANY($2::text[]) AND owner_notified_at IS NULL`,
+      ctx.clientNumber, ids,
+    );
+    return (rows[0]?.n ?? 0) === 0;
+  },
+};
+
+/**
+ * DEF-100 — a question that was queued and never asked.
+ *
+ * Observed 2026-08-07: prompts 283 (queued 15:48) and 290 (queued 18:28) sat in
+ * `queued` and were never sent. A question the owner never sees cannot be
+ * answered, so the item behind it stalls silently — and from inside the system
+ * everything looks fine, because the row exists.
+ *
+ * The repair is deliberately the ordinary dispatcher, not a bespoke send: if
+ * `sendNextPrompt` is broken, this rule failing is the correct outcome and the
+ * verify step will say so. A second send path would be one more implementation
+ * of a rule that already has one.
+ */
+const stuckQueuedPrompt: RepairRule = {
+  id: 'stuck_queued_prompt',
+  description: 'Dispatch brain_prompt_queue rows stuck in queued past the stall threshold, via the normal dispatcher. Verifies the exact rows left queued.',
+  scope: 'tenant',
+  maxAttemptsPerDay: 24,
+  cooldownMin: 30,
+  async detect(ctx) {
+    if (!ctx.clientNumber) return null;
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: string; user_id: number }>>(
+      `SELECT id::text, user_id FROM brain_prompt_queue
+        WHERE client_number = $1 AND state = 'queued'
+          AND queued_at < NOW() - INTERVAL '30 minutes'
+        ORDER BY queued_at ASC LIMIT 10`,
+      ctx.clientNumber,
+    );
+    if (rows.length === 0) return null;
+    return {
+      summary: `${rows.length} question(s) queued over 30 min and never asked`,
+      before: { promptIds: rows.map((r) => r.id), userIds: [...new Set(rows.map((r) => r.user_id))] },
+    };
+  },
+  async apply(_ctx, pre) {
+    const userIds = (pre.before.userIds as number[]) ?? [];
+    const { sendNextPrompt } = await import('../brainPrompts/brainPromptQueueService');
+    const dispatched: number[] = [];
+    for (const userId of userIds) {
+      // Per-user: the dispatcher advances one user's queue at a time, and a
+      // failure for one user must not abandon the others.
+      await sendNextPrompt(userId).then(() => dispatched.push(userId)).catch(() => {});
+    }
+    return { promptIds: pre.before.promptIds, dispatchedForUsers: dispatched };
+  },
+  async verify(ctx, _pre, after) {
+    const ids = (after.promptIds as string[]) ?? [];
+    if (ids.length === 0) return false;
+    // Verify the EXACT rows moved. Anything other than 'queued' counts — sent,
+    // answered, even expired means the queue advanced rather than stalling.
+    const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT COUNT(*)::int AS n FROM brain_prompt_queue
+        WHERE client_number = $1 AND id = ANY($2::bigint[]) AND state = 'queued'`,
+      ctx.clientNumber, ids.map((i) => BigInt(i)),
+    );
+    return (rows[0]?.n ?? 0) < ids.length; // at least one moved
+  },
+};
+
 export const REPAIR_RULES: readonly RepairRule[] = [
   staleConnectorMetadata,
   stuckScribeMarkers,
   feedDlqReplay,
+  // DEF-099/100 — the two gaps that actually reached the owner. Everything
+  // above repairs infrastructure; these two repair the LOOP, which is where
+  // every failure on 2026-08-06/07 actually lived.
+  unnotifiedAnsweredAsk,
+  stuckQueuedPrompt,
 ];
 
 /** One pass over all rules: global rules once, tenant rules per active

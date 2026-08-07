@@ -293,6 +293,31 @@ const server = app.listen(env.port, async () => {
     setInterval(heal, 60 * 60 * 1000);
   }, 15 * 60 * 1000);
 
+  // Step 5 (owner ruling 2026-08-07) — Brain reports its own findings instead
+  // of waiting to be asked. "i don't want to send screenshots of my whatsapp
+  // again and again."
+  //
+  // Hourly, because that is the resolution the digest needs to fire in the
+  // right local hour; severe alerts are deduped to at most one per user per
+  // hour inside the notifier, so this cadence does not become a firehose.
+  //
+  // Deliberately NOT folded into the self-heal pass: healing and telling are
+  // different concerns with different failure modes, and a repair rule that
+  // could not send must still repair.
+  setTimeout(() => {
+    const notifyPass = () => protectedJob('finding_notify_pass', 'important', async () => {
+      const { runFindingNotifyPass } = await import('./services/selfheal/findingNotifier');
+      const { getBehaviorValue } = await import('./services/behaviorConfig');
+      const hour = await getBehaviorValue('notify.digest_hour_local', {}).catch(() => 8);
+      const r = await runFindingNotifyPass(hour);
+      if (r.alerts || r.digests) {
+        console.log(`[findingNotify] alerts=${r.alerts} digests=${r.digests}`);
+      }
+    });
+    notifyPass();
+    setInterval(notifyPass, 60 * 60 * 1000);
+  }, 20 * 60 * 1000);
+
   // MyOS — attachment_doc backfill worker (Batch 2):
   //   drains historical Gmail events whose attachments pre-date the
   //   attachment-wiki hook. Per-user cursor in system_config, resumable,
