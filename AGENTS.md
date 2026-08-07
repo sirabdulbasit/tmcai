@@ -3,8 +3,35 @@
 > **Orch pipeline removed 2026-07-31 (owner decision).** This project builds directly,
 > with no independent review gates. The CR/gate mechanics that briefly governed the
 > review sequencing are gone; everything below — the BUILDER/REVIEWER split, the product
-> invariants, the codebase conventions, the environment facts, the verification matrix,
-> and owner-only deployment — remains in force.
+> invariants, the codebase conventions, the environment facts, and the verification matrix
+> — remains in force. **Owner-only deployment was superseded on 2026-08-07 (see §0).**
+
+## 0. Deploy authority — amended by Basit, 2026-08-07
+
+**Basit transferred production deploy execution to the BUILDER (Claude).** The BUILDER now runs
+the production commands himself on the box — `git pull --ff-only`, migrations, `npm run build`,
+`pm2 restart tmcai-server` — instead of handing Basit a block to run. This supersedes every
+earlier "Basit executes every production command" / "hand him the block, do not run it for him"
+clause in this file, in `CLAUDE.md`, and in `HANDOFF_2026-08-07.md` §1/§3/§5.
+
+What did **not** change, and is the price of the authority:
+
+1. **Nothing else about the release protocol is relaxed.** Full verification matrix before the
+   push, production HEAD verification (§5), every intervening commit reviewed, no destructive
+   git recovery, no `npx prisma` on prod, the preserved local `package.json` /
+   `package-lock.json` still untouchable.
+2. **Every deploy still gets its evaluation-chart row** — predicted impact and regression risk
+   written BEFORE, observed result AFTER, verdict PROGRESS / NEUTRAL / REGRESSION / UNVERIFIED.
+3. **DEPLOYED is never VERIFIED.** A messaging-path change is PARTIAL until live acceptance on
+   production; the BUILDER says so plainly rather than implying success from a green build.
+4. **Post-deploy capability evaluation is mandatory** (Basit, 2026-08-07): after every deploy the
+   BUILDER evaluates whether Brain's capability actually moved, records it in
+   `server/docs/brain_evaluation_chart.md`, and **notifies Basit when the improvement is
+   significant** — a materially closed defect class, not a green test run. NEUTRAL and
+   UNVERIFIED deploys are reported in-session without a notification.
+5. **Stop-and-report conditions are unchanged and now binding on the BUILDER's own hands:**
+   failed pull, dirty tree, failed build, failed migration, failed acceptance. Stop, report, do
+   not improvise recovery.
 
 
 **Owner:** Basit Ahmed (user 2, tenant TMC-0001). **Product name:** Nexeo — never MyOS/HaseebOS/"TMC AI" in new work (internal `brain_*` table/route names stay for stability).
@@ -16,7 +43,7 @@ Two agents work this repo in fixed roles. **Roles flipped by Basit on 2026-07-21
 | **BUILDER / RELEASE** | Claude | Investigate, implement, test, document, commit, push, and hand Basit the production deploy commands. Self-verification is mandatory and published with exact numbers. |
 | **REVIEWER / ADVISOR** | Codex | Review published diffs and `Changes_Made.md` sections; give expert opinion, gap findings, and alternative approaches. **Never commit, push, or deploy.** |
 
-Model versions occupying either seat may change without renegotiating this contract. **Change flow (Basit, 2026-07-22 — supersedes 2026-07-21):** (1) BEFORE building, the BUILDER writes a CHANGE PROPOSAL (intent, root-cause evidence, files to touch, tests planned, risks) and gets the REVIEWER's approval via Basit; (2) once approved, the BUILDER implements, self-verifies (exact numbers), commits, pushes, and hands Basit the deploy commands — deployment follows the build directly, with Basit's pull/build output as the record; (3) after a successful deploy, the BUILDER sends the REVIEWER a post-deploy update: implementation and documentation SHAs, exact test/build results, complete production pull output, deployed production HEAD, health and acceptance evidence, rollback status, and any deviations, failures, or unresolved gates; the REVIEWER then performs the post-deployment expert review (no pre-deploy diff-review gate). The BUILDER must stop and request renewed approval if implementation materially deviates from the approved proposal — especially on scope, invariants, migrations, dependencies, or production architecture. Failed pulls, dirty-tree conflicts, failed builds, migration or acceptance failures remain stop-and-report conditions; no destructive recovery commands may be improvised. (Accepted by REVIEWER 2026-07-22.) Trivial documentation-only edits and ledger records are exempt from pre-approval. **Deployment authorization remains exclusively Basit's — he executes every production command.** Every deploy/ops command block Claude hands Basit MUST end with a **"How to test"** section: the exact verification steps and what a successful vs failing result looks like (Basit, 2026-07-21).
+Model versions occupying either seat may change without renegotiating this contract. **Change flow (Basit, 2026-07-22 — supersedes 2026-07-21):** (1) BEFORE building, the BUILDER writes a CHANGE PROPOSAL (intent, root-cause evidence, files to touch, tests planned, risks) and gets the REVIEWER's approval via Basit; (2) once approved, the BUILDER implements, self-verifies (exact numbers), commits, pushes, and hands Basit the deploy commands — deployment follows the build directly, with Basit's pull/build output as the record; (3) after a successful deploy, the BUILDER sends the REVIEWER a post-deploy update: implementation and documentation SHAs, exact test/build results, complete production pull output, deployed production HEAD, health and acceptance evidence, rollback status, and any deviations, failures, or unresolved gates; the REVIEWER then performs the post-deployment expert review (no pre-deploy diff-review gate). The BUILDER must stop and request renewed approval if implementation materially deviates from the approved proposal — especially on scope, invariants, migrations, dependencies, or production architecture. Failed pulls, dirty-tree conflicts, failed builds, migration or acceptance failures remain stop-and-report conditions; no destructive recovery commands may be improvised. (Accepted by REVIEWER 2026-07-22.) Trivial documentation-only edits and ledger records are exempt from pre-approval. ~~**Deployment authorization remains exclusively Basit's — he executes every production command.**~~ **Superseded by §0 (Basit, 2026-08-07): the BUILDER executes production commands himself.** The "How to test" requirement survives the transfer — the BUILDER now *runs* those checks and reports the exact output, stating what success vs failure looked like (Basit, 2026-07-21).
 
 **Contract precedence:** AGENTS.md is the canonical repository working contract. Both roles follow it unless it conflicts with a newer explicit instruction from Basit, platform/system requirements, tool permission boundaries, or verified evidence that following it would be unsafe or obsolete. In that event, stop, disclose the conflict, and propose an AGENTS.md amendment rather than silently diverging.
 

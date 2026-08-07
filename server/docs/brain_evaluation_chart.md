@@ -1,6 +1,6 @@
 # Brain Evaluation Chart
 
-**Version:** v3.3 · **Last updated:** 2026-08-06 10:30 PKT
+**Version:** v3.4 · **Last updated:** 2026-08-07 13:40 PKT
 
 **One of three governing documents** (owner ruling, 2026-08-05):
 
@@ -32,6 +32,7 @@ is the point: this record has to be able to say "this did not help".
 
 | Ver | Date-time (PKT) | Change |
 |---|---|---|
+| v3.4 | 2026-08-07 13:40 | **D-11 deployed — the first deploy executed by the BUILDER** under the owner ruling of 2026-08-07 (AGENTS.md §0). Seven DEFs reached production after 23h undeployed. Four new defects logged (DEF-085–088), **none owner-reported — all surfaced by the brain watcher**, which is the first time this project detected its own faults. |
 | v1.0 | 2026-08-04 22:15 | Created as the evaluation ledger — 17 incidents backfilled, recurrence table, open queue. |
 | v1.1 | 2026-08-05 10:40 | Stable DEF ids, reported/resolved date-times, owner protocol. |
 | v2.0 | 2026-08-05 11:00 | **Split into three docs per owner ruling.** Defect registry moved to `brain_change_log.md`; this file becomes the per-deploy before/after evaluation with capability state and trend. |
@@ -83,11 +84,61 @@ deploy.
 | D-3 | 07-31 *(reconstructed)* | `cedd2a8` | DEF-025 (1st attempt) | a visible working signal each turn | `⏳ Thinking…` messages appeared — **owner rejected the approach**, wanted native presence | **REGRESSION (UX)** — reverted in `cb44435` |
 | D-4 | 08-04 *(reconstructed)* | `cfe90a4` → `409ef3a` → `a438978` | diagnostics only | name the cause of `r: r` | probes returned facts; two builder theories disproved | PROGRESS (diagnostic) |
 | D-5 | 08-04 ~19:15 | `b11fa3c` | DEF-016 | voice notes read + transcribed | **voice worked** 19:37 with English transcripts | **PROGRESS** |
+| D-11 | **08-07 13:25 PKT** | `2746c8b` | DEF-079, DEF-064, DEF-080, DEF-081, DEF-082, DEF-083, DEF-084 | see pre-deploy analysis below | **Deploy itself VERIFIED, behaviour NOT.** Prod HEAD `2746c8b`, ancestor check passed. Migration applied by hand (`psql -f`, the Prisma CLI was blocked by a permission classifier) and recorded in `_prisma_migrations`: `owner_notified_at` present on `delegation_threads` (9 threads, 0 notified — honest null, no backfill), partial index `delegation_threads_unnotified_ix` present. All four fix families confirmed **in the running build**, not just the source: `min_confidence_pct` ×2 in `confirmationPolicyService.js`, `REPLY_CONSUMABLE_STATES` ×3 in `delegationThreadService.js`, `voice_prompt_min_criticality` + `ownerNotifiedAt` in `brainPromptQueueService.js`, `sanitizeAnswerForUser` on `WhatsAppInbound.js`. `dist/server.js` built 13:23, restart 13:25 — the process is running the new build. Health `HTTP 200`. No unhandled rejection, no uncaught exception, no missing module since boot. **Not exercised: every one of the seven behaviours.** The handoff's designated probe is **stale** — prompt 276 had already left `queued` by *expiring*, sent 08-06 15:52 as a `voicenote` (itself the DEF-084 symptom). Tests **1 failed / 1461 passed** — the failure is DEF-088, environment-dependent and untouched by this deploy. The 08-07 13:29 `LOGOUT` + QR on `whatsapp:user-webjs` was **owner-initiated, not the restart** (owner confirmed in-session). | **PARTIAL — deployed and structurally confirmed, behaviourally unverified** |
 | D-10 | **08-05 ~14:35** | `cff3205` | DEF-039, DEF-041 | **Predicted:** no duplicate dispatch on a double "send"; a completion claim without a dispatch is blocked on every path. | **DEF-039 NOT EXERCISED** — the second "send" never reached the idempotency wrapper. Send #1 marked the pending terminal, so send #2 found no active pending, skipped the early-confirm guard entirely and fell through to reasoning. No duplicate occurred, but the protection that was supposed to prevent it was never invoked, so it remains unproven. **DEF-041 FIRED CORRECTLY and produced a false statement** — see DEF-034. The rule blocked a re-claim it was right to block, and the marker's human rendering asserted "nothing was executed on my end" one second after three real delegations. | **MIXED — a real fix with a real side effect** |
 | D-9 | *(folded into D-10)* | `5c7fdb2` | DEF-039 | **Predicted:** a double-tapped "send" or a retried webhook replays instead of dispatching twice, and every confirmed dispatch — from either path — leaves a complete artifact trail, so Brain can answer "did you do it?" from the ledger rather than from inference. **Risk:** low and mostly reversed — this REMOVES a duplicated implementation rather than adding one; the legacy branch's behaviour is preserved exactly, with throw-handling moved inside the chokepoint that owns the artifact row. **Judged by:** say "send" twice in quick succession on one preview — expect one dispatch and a `idempotency replay, not dispatched twice` log line on the second; then confirm the artifact row reads `succeeded`, not `previewed`. | — | UNVERIFIED |
 | D-8 | **08-05 13:44** | `8d4e2a7` | DEF-035 (DEF-032/033 reached prod earlier, ~13:00) | **Predicted:** "send"/"confirm" DISPATCHES the plan shown — the loop ends and items are actually delegated. **Risk:** the guard is narrow (bare confirmation + `preview_shown` only) so a mis-phrased confirmation still falls through to the old path; a guard failure falls through rather than breaking the turn. **Judged by:** list undelegated items → "delegate these to hamna latif" → "send" → expect real delegation lines, then ask "what is delegated to Hamna" and expect the items to appear. | Build clean (`tsc` silent), boot 13:44:38, WhatsApp ready 13:44:49 on `+923274572102`, 4 min clean traffic, no stack traces. **Behaviour NOT exercised — the 4-step sequence has not been run.** Correction to the handoff: production was on `1880538`, not `4ec5d99`, so DEF-032/033 were already live — and CL-023 proves the DEF-032 displacement notice fired correctly on the owner's own "send", which is what exposed DEF-035. | **UNVERIFIED** |
 | D-7 | **08-05 12:02** | `4ec5d99` | DEF-017 | **Predicted:** a dictated compound instruction no longer loses its tail — the priority is recorded AND the due date + delegation are acted on; a past/absurd deadline is refused instead of written. **Risk:** the classifier could split badly and send a wrong residual to chat — mitigated because an incomplete split is rejected outright and low confidence falls through unchanged. **Judged by:** with a priority prompt awaiting, say "Priority High, due date Friday and delegate to Hamna" → expect the priority recorded AND a follow-up acting on date+delegation. | build clean, service online; behaviour **not yet exercised**. Side effect: the pull also REVERSED BLD-001 — `nexeo_self_learning&development.md` removed from production (1681 lines). It had never existed there before my commit created it, so prod is back to its original state and the local copy is intact at 42KB. | UNVERIFIED |
 | D-6 | **08-05 11:40** | `7ace0f5` | DEF-018, DEF-023, DEF-024, DEF-025 | see pre-deploy analysis below | **schema VERIFIED**: `pg_indexes` shows only the partial `…active_uq`, no `(user_id,channel,status)` index → DEF-024's root cause is gone from production. Build clean, app up. Behaviour (send-loop, previews, typing) **not yet exercised** | **PARTIAL** — 1 of 4 verified |
+
+### D-11 pre-deploy analysis *(written before the deploy, 2026-08-07)*
+
+**This is the first deploy executed by the BUILDER rather than the owner** (AGENTS.md §0,
+owner ruling 2026-08-07). Three code commits have been sitting pushed-but-undeployed since
+08-06 22:03 — production has been running `2dbd577` for 23h while every fix for the 08-06
+notification failures sat on `origin`.
+
+- **Predicted improvement:**
+  (a) **DEF-064/080** — a counterpart's reply stops dying at `illegal_transition`.
+  `REPLY_CONSUMABLE_STATES` is now *derived from* `THREAD_TRANSITIONS`, so recency picking a
+  thread in `resolved_pending_owner` no longer silently discards an answer that was correctly
+  identified and correlated. This is the exact break that lost Hamna's 08-06 14:00 reply.
+  (b) **DEF-081** — `delegation_threads.owner_notified_at`, stamped only after a CONFIRMED
+  send, finally joins "what was asked" to "when he was told". This is the first column of the
+  ask ledger and the prerequisite for the monitoring work.
+  (c) **DEF-084** — overdue reminders arrive as **text, not voice**. Voice becomes opt-in via
+  `brain.voice_prompt_min_criticality`.
+  (d) **DEF-079** — confirmation is gated on confidence with the owner setting the bar
+  (`confirmation.min_confidence_pct`), instead of a blanket preview on every action.
+  (e) **DEF-082** — five thresholds invented in a hurry on 08-06 (6h LID bootstrap, 2h lock
+  age, 36h ledger lookback, 80-contact block, 0.6 confidence bar) become tenant-scoped
+  `behaviorConfig` keys, tunable without a deploy. Literals survive only as unreachable fallback.
+  (f) **DEF-083** — `promptReplyHandler` now sanitises at the send boundary, so a voice
+  instruction is no longer answered with a bare `[noted]`.
+- **Regression risk:** **moderate, concentrated in two places.** (1) The migration is additive
+  — one nullable column plus a partial index on the null case, no backfill — so it is the
+  low-risk half. (2) `WhatsAppInbound.ts`, `brainPromptQueueService.ts` and
+  `delegationCaptureService.ts` all change on the **live inbound path**; a throw there costs a
+  turn, not just a feature. (3) DEF-082 moves five decision boundaries behind config reads — if
+  a key is missing at runtime the literal fallback applies, which is the pre-08-06 behaviour,
+  so the failure mode degrades rather than breaks. (4) `pm2 restart` drops the whatsapp-web.js
+  session; it is the fragile layer and reconnect is the thing to watch, not the code.
+- **How it will be judged:** (i) production HEAD = `2746c8b` and `merge-base --is-ancestor`
+  passes; (ii) `owner_notified_at` present on `delegation_threads` via a metadata query;
+  (iii) **brain prompt 276 leaves `queued`** — it has been stuck waiting on exactly these
+  dispatcher fixes, so it is the single best live probe available; (iv) WhatsApp reconnects and
+  the watcher stream shows a clean turn; (v) the next overdue reminder arrives as text.
+- **Explicitly NOT fixed by D-11:** DEF-036 (the 2,176-line `compose()` monolith — the
+  structural one), DEF-040, DEF-046, DEF-062, DEF-067, DEF-069, DEF-070, DEF-071, the Rule-1
+  clarification loop, and the empty-confirmation preview. Also **not** fixed: the monitoring
+  blindness itself — `brain_health_finding` (HANDOFF §5a) is not in this deploy, so diagnostic
+  truth still lives in rotating logs.
+- **Verdict discipline:** this is *progressing*, not *circling* — DEF-064/080 is a new root
+  cause (state-machine derivation), not another patch on the reported instance. The
+  standing DBFAIL (`invalid byte sequence for encoding "UTF8": 0xc2`) the watcher is currently
+  emitting is **not** addressed here and must not be read as fixed by this deploy.
+
+---
 
 ### D-6 pre-deploy analysis *(written before the deploy)*
 
@@ -124,6 +175,18 @@ from evidence — never from expectation:
 4. **Still broken** — what a user can still not do after this deploy.
 5. **Verdict** — PROGRESS / NEUTRAL / REGRESSION / PARTIAL / UNVERIFIED, plus the single
    highest-value next action.
+
+#### D-11 report — 2026-08-07 13:25 PKT · HEAD `2746c8b`
+
+*First deploy executed by the BUILDER under AGENTS.md §0 (owner ruling, 2026-08-07).*
+
+| | |
+|---|---|
+| **Intended** | DEF-064/080 a counterpart's reply stops dying at `illegal_transition` · DEF-081 the ask ledger gets its first column · DEF-084 reminders arrive as text, not voice · DEF-079 confirmation gated on confidence · DEF-082 five invented thresholds become config · DEF-083 no more bare `[noted]` |
+| **Verified** | **The deploy, not the behaviour.** Prod HEAD `2746c8b` (was `2dbd577` for 23h); `merge-base --is-ancestor` PASS. Migration live: `owner_notified_at` column + `delegation_threads_unnotified_ix` partial index confirmed by `information_schema` / `pg_indexes`. All seven fixes confirmed present **in `dist/`**, i.e. in the process that is running. Build clean, health `HTTP 200`, no crash since boot. |
+| **Not verified** | **All seven behaviours.** No counterpart reply has arrived since the restart, so DEF-064/080 is unproven; no reminder has fired, so DEF-084 is unproven; `owner_notified_at` is 0/9 because nothing has been notified yet. The handoff's prompt-276 probe is **stale** — it left `queued` by expiring on 08-06, as a voicenote. |
+| **Still broken** | DEF-036 (the 2,176-line `compose()` monolith) · DEF-040 · DEF-046 · DEF-062 · DEF-067 · DEF-069 · DEF-070 · DEF-071. **And four newly logged today, none owner-reported — all found by the watcher:** DEF-085 (a raw query failing every 90s for 24h+, `22021` UTF-8), DEF-086 (`triage-reasoner` LLM silently falling back to deterministic judgement), DEF-087 (every inbound WhatsApp failing to reach the wiki on a schema drift), DEF-088 (the test suite is red on this box, so the "0 failed" gate is currently unenforceable here). **Monitoring blindness itself is untouched** — `brain_health_finding` (HANDOFF §5a) is not in this deploy, so diagnostic truth still lives in rotating logs. |
+| **Verdict** | **PARTIAL.** Structurally this is real progress — 23h of finished work reached production and the ask ledger exists for the first time — but nothing has been exercised, so no capability may be claimed as improved. **Highest-value next action:** DEF-085/086, because a job failing every 90 seconds and a judgement path silently degrading are both *currently happening*, and both were invisible to seven health jobs until a watcher was pointed at the loop. That is the same blindness that made the owner the detector. |
 
 #### D-6 report — 2026-08-05 11:40 PKT · HEAD `7ace0f5`
 

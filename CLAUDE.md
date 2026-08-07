@@ -23,9 +23,13 @@ architecture map. This file holds the short-form stack notes only.
   never `npx prisma` on prod, never `CREATE TABLE` from runtime code.
 - **Branch:** work lands on `feat/nexeo-one-brain`. Stage only intended paths — never
   `git add -A`.
-- **Deploy: owner-executed by design.** Basit runs every production command himself. Every
-  deploy block handed to him MUST end with a **"How to test"** section stating the exact
-  checks and what success vs failure looks like.
+- **Deploy: Claude-executed since 2026-08-07 (owner ruling, AGENTS.md §0).** Claude runs the
+  production commands on the box himself — `git pull --ff-only`, migration, `npm run build`,
+  `pm2 restart tmcai-server`. The **"How to test"** requirement survives: Claude runs those
+  checks and reports the exact output, saying plainly what succeeded and what did not. Every
+  deploy carries its evaluation-chart row, and Claude **notifies the owner when Brain's
+  capability improved significantly** — never on a green build alone. Failed pull, dirty tree,
+  failed build or migration = stop and report, never improvised recovery.
 - **Never touch/commit:** `.env`, tokens, `whatsapp-sessions/`,
   `server/docs/nexeo_self_learning&development.md`, `tenant-scope-audit-2026-05-22.md`.
 - **Product name is "Nexeo"** — never MyOS / HaseebOS / "TMC AI" in new work (internal
