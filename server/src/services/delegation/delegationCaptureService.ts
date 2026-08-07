@@ -23,6 +23,7 @@
  * never echoed back, never answered (33a sends nothing to
  * counterparts).
  */
+import { recordFinding } from '../selfheal/healthFindingService';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import {
@@ -223,6 +224,21 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
   if (!consumed.ok) {
     if (consumed.reason === 'duplicate_event') return { matched: true, outcome: 'duplicate', threadId: thread.id };
     log.warn('inbound consume failed', { threadId: thread.id, reason: consumed.reason });
+    // DEF-064 is exactly this line. On 2026-08-06 it fired for Hamna's reply —
+    // identified, correlated, then discarded because recency picked a thread in
+    // a state that cannot accept an answer. It was a log line and nothing else,
+    // so it rotated away and the break had to be reconstructed by hand.
+    // Recording it makes "a real person answered and it went nowhere" a query.
+    void recordFinding({
+      clientNumber: input.clientNumber,
+      kind: 'reply_consume_failed',
+      severity: 'error',
+      source: 'delegation-capture',
+      subjectType: 'delegation_thread',
+      subjectId: thread.id,
+      summary: `a counterpart replied and the thread could not consume it: ${consumed.reason}`,
+      evidence: { reason: consumed.reason, threadState: thread.state, attemptedTo: 'evaluating' },
+    });
     return { matched: false, outcome: 'no_thread' };
   }
 

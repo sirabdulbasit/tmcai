@@ -5,6 +5,7 @@
 //       chat pipeline → send reply via WhatsApp
 // ═════════════════════════════════════════════════════════════════════════════
 
+import { recordFinding } from '../selfheal/healthFindingService';
 import prisma from '../../db/prisma';
 import { sendWhatsAppMessage } from './WhatsAppManager';
 import { askBrainWithRetry } from './brainRetry';
@@ -386,6 +387,21 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     }
   } catch (e: any) {
     log.error('Agent detection failed', { error: e.message });
+    // DEF-089: this fires on EVERY inbound turn (undefined column, 42703) and
+    // was invisible until a watcher was pointed at the loop. A failure on the
+    // normal path is not an exception, it is the current behaviour — which is
+    // precisely the kind of thing a log line lets you stop noticing.
+    void recordFinding({
+      clientNumber: params.clientNumber,
+      kind: 'agent_detection_failed',
+      severity: 'error',
+      source: 'whatsapp:inbound',
+      subjectType: 'user',
+      subjectId: String(userId),
+      userId,
+      summary: `agent detection threw on an inbound turn: ${e.message}`,
+      evidence: { error: e.message },
+    });
   }
 
   // ── Step 3: Load or create session (24-hour window) ──────────────────────

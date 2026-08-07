@@ -2742,3 +2742,50 @@ model CorrelationIncidentCandidate {
   @@unique([incidentId, threadId], map: "cic_candidate_uq")
   @@map("correlation_incident_candidates")
 }
+
+/// Layer 1 of self-healing: diagnostic truth that can be QUERIED.
+///
+/// Every defect on 2026-08-06/07 reached us because the owner reported it —
+/// seven health jobs were running and none raised a thing. The two most
+/// important pieces of evidence that day lived only in pm2 logs: unqueryable,
+/// rotated, gone. A system cannot heal what it cannot query.
+///
+/// A finding here is what the self-heal pass reads, what the perturbation
+/// generator learns from, and what the notify stage summarises.
+model BrainHealthFinding {
+  id           String    @id @default(cuid())
+  clientNumber String    @map("client_number") @db.VarChar(20)
+  /// Stable class key ('reply_consume_failed', 'ask_never_notified', …).
+  /// Grouping on this answers "is this class recurring?", which is what
+  /// forbids another patch on the reported instance.
+  kind         String    @db.VarChar(64)
+  severity     String    @default("warn") @db.VarChar(16)
+  source       String    @db.VarChar(64)
+  /// The join back to the ask this failure belongs to. Its absence is what
+  /// made "she answered and he never heard about it" unanswerable.
+  subjectType  String?   @map("subject_type") @db.VarChar(32)
+  subjectId    String?   @map("subject_id")
+  userId       Int?      @map("user_id")
+  summary      String
+  evidence     Json?
+  status       String    @default("open") @db.VarChar(16)
+  healAttempts Int       @default(0) @map("heal_attempts")
+  healedAt     DateTime? @map("healed_at")
+  healAction   String?   @map("heal_action") @db.VarChar(64)
+  /// Stamped only after a CONFIRMED send, never at enqueue — same discipline
+  /// as delegation_threads.owner_notified_at (DEF-081). Written ≠ delivered.
+  notifiedAt   DateTime? @map("notified_at")
+  /// Set once a DEF row exists, so a finding cannot be dropped without
+  /// becoming a tracked defect.
+  defId        String?   @map("def_id") @db.VarChar(16)
+  firstSeenAt  DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt   DateTime  @default(now()) @map("last_seen_at")
+  /// A failure firing every 90s for 24h (DEF-085) is ONE finding seen 960
+  /// times, not 960 findings.
+  occurrences  Int       @default(1)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientNumber, kind, firstSeenAt(sort: Desc)], map: "brain_health_findings_kind_ix")
+  @@map("brain_health_findings")
+}
