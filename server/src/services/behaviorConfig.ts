@@ -106,6 +106,16 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'notify.digest_hour_local', unit: 'hours', def: 8, min: 0, max: 23, scope: 'tenant',
     description: 'Local hour (PKT) at which Brain sends its daily self-report digest. Quiet hours still apply on top.',
   },
+  // DEF-104 — the slice of a user's daily message budget that Brain's own
+  // health reporting may consume. The rest is reserved for messages about the
+  // user's actual work.
+  //
+  // 25% of a 20/day cap is 5 diagnostics: enough for a digest, a deploy report
+  // and a couple of alerts, and never enough to displace a day's reminders.
+  'notify.diagnostic_budget_pct': {
+    key: 'notify.diagnostic_budget_pct', unit: 'count', def: 25, min: 1, max: 100, scope: 'tenant',
+    description: 'DEF-104. Percentage of the daily message cap that Brain self-reporting (health alerts, digest, deploy reports) may use. Protects user-facing reminders from being crowded out.',
+  },
   'delegation.capture_enabled': {
     key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',

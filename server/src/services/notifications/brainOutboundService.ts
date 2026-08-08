@@ -217,6 +217,46 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       status: { in: ['sent', 'partial'] },
     },
   }).catch(() => 0);
+  // ── DEF-104: diagnostics must never crowd out the user's own messages ──
+  //
+  // Measured 2026-08-08: exactly 20 of 20 sent, and 3 of them were mine —
+  // deploy reports and an ask-recovery notice — while 104 of the owner's real
+  // overdue-task reminders were suppressed. The machinery built to stop him
+  // missing notifications had started causing him to miss notifications.
+  //
+  // These kinds report on Brain's own health. They are useful; they are never
+  // more useful than the reminder they would displace. So they get a small
+  // reserved slice of the budget and are refused well before the cap, leaving
+  // the remainder for messages that are actually about the user's work.
+  const DIAGNOSTIC_KINDS = new Set([
+    'brain_health_alert', 'brain_daily_digest', 'deploy_report',
+    'self_upgrade', 'unnotified_answered_ask', 'connector_stale',
+  ]);
+  if (DIAGNOSTIC_KINDS.has(req.kind)) {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const pct = await getBehaviorValue('notify.diagnostic_budget_pct', {
+      userId: user.id, clientNumber: user.clientNumber,
+    }).catch(() => 25);
+    const diagnosticCap = Math.max(1, Math.floor((dailyCap * pct) / 100));
+    const diagnosticsToday = await prisma.brainUserMessage.count({
+      where: {
+        userId: user.id,
+        createdAt: { gte: since24h },
+        status: { in: ['sent', 'partial'] },
+        kind: { in: [...DIAGNOSTIC_KINDS] },
+      },
+    }).catch(() => 0);
+    if (diagnosticsToday >= diagnosticCap) {
+      log.warn('diagnostic_budget_exceeded', {
+        userId: user.id, kind: req.kind, diagnosticsToday, diagnosticCap, dailyCap,
+      });
+      return await record({
+        ...req, user, channel: 'text', urgency,
+        status: 'suppressed', summary: req.summary,
+      }, `diagnostic_budget_exceeded (${diagnosticsToday}/${diagnosticCap} of ${dailyCap})`);
+    }
+  }
+
   if (sentToday >= dailyCap) {
     log.warn('daily_cap_exceeded', { userId: user.id, sentToday, dailyCap });
     return await record({
