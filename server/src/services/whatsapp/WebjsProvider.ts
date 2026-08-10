@@ -779,7 +779,10 @@ export class WebjsProvider implements IWhatsAppProvider {
 
       // Skip empty messages — BUT allow voice/audio messages (they have no body)
       const isVoice = message.type === 'ptt' || message.type === 'audio';
-      if (!isVoice && (!message.body || !message.body.trim())) return;
+      // DEF-110 — an image has no body either, and a caption is optional. Same
+      // exemption as voice, for the same reason.
+      const isImage = message.type === 'image';
+      if (!isVoice && !isImage && (!message.body || !message.body.trim())) return;
 
       // Type whitelist — mirror UserWebjsProvider. Non-message events
       // (e2e_notification, ciphertext, call_log, gp2, etc.) carry the
@@ -924,6 +927,57 @@ export class WebjsProvider implements IWhatsAppProvider {
         let messageBody = message.body || '';
         let messageType: 'text' | 'voice' | 'image' = 'text';
         let inputWasVoice = false;
+
+        // DEF-110 — read the image, then treat it as text from here on.
+        //
+        // The owner asked four times across two days ("can you read the image
+        // if I send you any kind of image here?", "so improve your capability
+        // so you can also read image if I send", "can you read the image?",
+        // "can i send image now for you read?"). The honest "no" was correct
+        // and is now obsolete: media download is the path voice notes already
+        // use, and the same Gemini call accepts an image as inlineData.
+        //
+        // The description is fed into messageBody so everything downstream —
+        // reasoning, tools, the dispatch ledger, the item gate — sees observed
+        // input, exactly as it sees a voice transcript. A caption, when the
+        // user sends one, is kept and leads: it is what he actually asked.
+        if (isImage && message.hasMedia) {
+          messageType = 'image';
+          const caption = String(message.body ?? '').trim();
+          try {
+            const { downloadInboundMedia } = await import('./inboundMedia');
+            const media = await downloadInboundMedia(message, { clientNumber, messageId: msgId });
+            if (media?.data) {
+              const imageBuffer = Buffer.from(media.data, 'base64');
+              const { describeInboundImage } = await import('../imageService');
+              const read = await describeInboundImage(imageBuffer, media.mimetype);
+              if (read.text) {
+                messageBody = caption
+                  ? `${caption}\n\n[image received — contents:]\n${read.text}`
+                  : `[image received — contents:]\n${read.text}`;
+              } else {
+                const { imageReadFailureMarker } = await import('../imageService');
+                if (resolvedIdentity) await sendInboundTextReply(message, imageReadFailureMarker(read.failureReason));
+                await activity?.stop();
+                return;
+              }
+            } else {
+              const { imageReadFailureMarker } = await import('../imageService');
+              if (resolvedIdentity) await sendInboundTextReply(message, imageReadFailureMarker('invalid_media'));
+              await activity?.stop();
+              return;
+            }
+          } catch (e: any) {
+            log.error('Image pipeline failed', {
+              stage: 'media_or_vision',
+              error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+            });
+            const { imageReadFailureMarker } = await import('../imageService');
+            if (resolvedIdentity) await sendInboundTextReply(message, imageReadFailureMarker('invalid_media'));
+            await activity?.stop();
+            return;
+          }
+        }
 
         if (isVoice && message.hasMedia) {
           messageType = 'voice';
