@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/api';
 import ConfigEditor from '../../components/ConfigEditor';
+import AiProviderPanel from '../../components/AiProviderPanel';
 import { SYSTEM_SECTIONS, CLIENT_SECTIONS } from './adminConstants';
 
 // ═══════════════════════════════════════════════════════════════
@@ -23,6 +24,10 @@ export default function ConfigTab({ user }) {
         <>
           {user?.isSuperAdmin && <LogoUploader />}
           {user?.isSuperAdmin && <DisplayDefaultsSection />}
+          {/* Provider selection sits ABOVE the key list: which backend Brain
+              runs on is the decision; the keys are what that decision needs.
+              SuperAdmin only — it is application-level, one Brain one backend. */}
+          {user?.isSuperAdmin && <AiProviderPanel />}
           <ConfigEditor sections={user?.isSuperAdmin ? SYSTEM_SECTIONS : CLIENT_SECTIONS} apiPath="/config" />
         </>
       )}

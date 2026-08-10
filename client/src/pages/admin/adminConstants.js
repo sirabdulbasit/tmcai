@@ -19,7 +19,12 @@
 export const SYSTEM_SECTIONS = [
   { title: 'Application', icon: '⚙️', keys: ['app_name', 'session_hours'] },
   { title: 'Password & Security', icon: '🔐', keys: ['password_min_length', 'password_require_uppercase', 'password_require_number', 'password_require_special', 'max_login_attempts', 'lockout_minutes'] },
-  { title: 'Google Cloud Platform', icon: '☁️', keys: ['data_source', 'ai_provider', 'gcp_project_id', 'gcp_location', 'bq_dataset'] },
+  // `ai_provider` deliberately removed 2026-08-10: the AI Provider panel above
+  // owns it now, alongside the model, region and service account it needs to
+  // make sense. Leaving a raw text box here would give one key two editors —
+  // and a free-text "vertex" with no region or credential is a broken config
+  // that looks saved.
+  { title: 'Google Cloud Platform', icon: '☁️', keys: ['data_source', 'gcp_project_id', 'gcp_location', 'bq_dataset'] },
   { title: 'AI API Keys', icon: '🔑', keys: ['gemini_api_key', 'anthropic_api_key', 'openai_api_key', 'groq_api_key', 'openrouter_api_key'] },
 ];
 
