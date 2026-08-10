@@ -92,7 +92,11 @@ export async function notifySevereFindings(clientNumber: string): Promise<Notify
 }
 
 /**
- * The daily digest — the answer to "no more screenshots".
+ * The daily digest — SUPERSEDED 2026-08-10 by `brainMaturityReport`.
+ *
+ * Kept because it is a working fallback if the maturity report cannot build a
+ * snapshot, and deleting a path that still has a caller is how silent gaps
+ * appear. Not scheduled.
  *
  * Deliberately includes the good news. A report that only ever arrives when
  * something is wrong trains the reader to dread it; one that says "12 asks
@@ -191,7 +195,13 @@ export async function runFindingNotifyPass(digestHourPkt: number): Promise<{ ale
         select: { id: true },
       }).catch(() => [] as Array<{ id: number }>);
       for (const u of users) {
-        if (await sendDailyDigest(t.clientNumber, u.id).catch(() => false)) digests += 1;
+        // The maturity report supersedes the plain digest (owner ruling
+        // 2026-08-10). It compares yesterday with the day before — never a
+        // partial today — and is NEVER silent: "nothing changed" is itself the
+        // message, because a heartbeat that only beats on change is not a
+        // heartbeat.
+        const { sendMaturityReport } = await import('./brainMaturityReport');
+        if (await sendMaturityReport(t.clientNumber, u.id).catch(() => false)) digests += 1;
       }
     }
   }

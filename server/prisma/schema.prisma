@@ -2852,3 +2852,45 @@ model CriticalityFusionCache {
   @@index([clientNumber, createdAt], map: "criticality_fusion_cache_age_ix")
   @@map("criticality_fusion_cache")
 }
+
+/// Brain Maturity — the daily record behind the morning WhatsApp report.
+///
+/// Owner ruling 2026-08-10: a maturity report every morning comparing with
+/// yesterday, and never silent — "nothing has changed" is itself the message
+/// when nothing has.
+///
+/// A table rather than an on-the-fly computation because several of these are
+/// point-in-time STATES: database size, pages reachable and open findings
+/// cannot be recovered for a past day. Without a snapshot the report could only
+/// compare what happens to live in an append-only log.
+model BrainMaturitySnapshot {
+  id             String   @id @default(cuid())
+  clientNumber   String   @map("client_number") @db.VarChar(20)
+  snapshotDate   DateTime @map("snapshot_date") @db.Date
+
+  turnsScored    Int      @default(0) @map("turns_scored")
+  avgScore       Decimal? @map("avg_score") @db.Decimal(5, 1)
+  criteriaAvg    Json?    @map("criteria_avg")
+
+  llmCalls       Int      @default(0) @map("llm_calls")
+  llmUsd         Decimal? @map("llm_usd") @db.Decimal(10, 2)
+
+  msgsSent       Int      @default(0) @map("msgs_sent")
+  msgsSuppressed Int      @default(0) @map("msgs_suppressed")
+
+  pagesTotal     Int      @default(0) @map("pages_total")
+  pagesReachable Int      @default(0) @map("pages_reachable")
+
+  dbBytes        BigInt?  @map("db_bytes")
+  entities       Int?
+
+  healed         Int      @default(0)
+  merged         Int      @default(0)
+  openFindings   Int      @default(0) @map("open_findings")
+
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([clientNumber, snapshotDate], map: "brain_maturity_snapshots_day_uq")
+  @@index([clientNumber, snapshotDate(sort: Desc)], map: "brain_maturity_snapshots_recent_ix")
+  @@map("brain_maturity_snapshots")
+}
