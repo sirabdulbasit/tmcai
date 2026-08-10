@@ -223,6 +223,63 @@ async function lockMaxAgeMs(userId: number): Promise<number> {
   } catch { return 2 * 60 * 60 * 1000; }
 }
 
+
+/**
+ * When may a suppressed prompt be tried again?
+ *
+ * Chosen by REASON rather than a single constant, because the horizons differ
+ * by orders of magnitude. Retrying a daily cap every few minutes is what
+ * produced 98 attempts for 3 prompts; retrying quiet hours a day later would
+ * mean the owner never hears about anything raised overnight.
+ */
+function backoffUntil(reason: string | undefined): Date {
+  const now = Date.now();
+  const MIN = 60_000;
+  switch (reason) {
+    // The cap is a rolling 24h window, but it frees as older sends age out, so
+    // an hour is the right granularity — not a full day.
+    case 'daily_cap_exceeded':
+    case 'diagnostic_budget_exceeded':
+      return new Date(now + 60 * MIN);
+    // Ends at a known hour; checking every 30 min catches the boundary without
+    // burning attempts.
+    case 'quiet_hours':
+      return new Date(now + 30 * MIN);
+    case 'rate_limited':
+      return new Date(now + 15 * MIN);
+    // A suspended user or missing phone is not a transient condition. Back off
+    // hard rather than hammering something only a human can change.
+    case 'user_suspended':
+    case 'no_phone':
+      return new Date(now + 12 * 60 * MIN);
+    default:
+      return new Date(now + 15 * MIN);
+  }
+}
+
+
+/**
+ * Ids of this user's prompts that are queued but not yet due for another try.
+ *
+ * Returns [] on any failure: a broken backoff lookup must never stop the queue
+ * from delivering. Worst case we retry a little early, which is the behaviour
+ * we had before DEF-105 and is strictly better than silence.
+ */
+async function promptsInBackoff(userId: number): Promise<bigint[]> {
+  try {
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: bigint }>>(
+      `SELECT id FROM brain_prompt_queue
+        WHERE user_id = $1 AND state = 'queued'
+          AND metadata->>'retryAfter' IS NOT NULL
+          AND (metadata->>'retryAfter')::timestamptz > NOW()`,
+      userId,
+    );
+    return rows.map((r) => BigInt(r.id));
+  } catch {
+    return [];
+  }
+}
+
 export async function sendNextPrompt(userId: number): Promise<SendNextResult | null> {
   // ── DEF-077 / DEF-063 second half — the lock is not absolute ────────
   //
@@ -262,8 +319,20 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // 'top' > 'routine' > 'high' — wrong. Fetch the small candidate set
   // and sort by explicit weight in Node.
   const CRIT_WEIGHT: Record<string, number> = { top: 3, high: 2, routine: 1 };
+  const backoffIds = await promptsInBackoff(userId);
   const candidates = await prisma.brainPromptQueue.findMany({
-    where: { userId, state: 'queued' },
+    // DEF-105: a prompt in backoff is still 'queued' — it simply is not due
+    // yet. Filtering here rather than at send time means the sweep moves on to
+    // a prompt that CAN go out, instead of stalling the whole queue behind one
+    // that cannot.
+    //
+    // `retryAfter` lives in metadata JSON, which Prisma cannot compare against
+    // now() in a typed filter, so the not-due ids are resolved first and
+    // excluded. Cheap: only suppressed prompts ever carry the field.
+    // Only emit the exclusion when there is something to exclude: an empty
+    // `notIn` is a predicate that can filter everything out rather than
+    // nothing, and a backoff list is empty in the overwhelmingly common case.
+    where: { userId, state: 'queued', ...(backoffIds.length ? { id: { notIn: backoffIds } } : {}) },
     orderBy: [{ queuedAt: 'asc' }],
     select: { id: true, criticality: true, question: true, clientNumber: true, openItemId: true, dedupKey: true, queuedAt: true, metadata: true },
     take: 50,  // bounded — full queue depth shouldn't ever realistically exceed this per-user
@@ -367,10 +436,28 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     data: {
       channelUsed: r.channelsUsed[0] ?? channel,
       ackMessageId: r.waMessageIds[0] ?? null,
-      // If the outbound layer suppressed (quiet hours / no phone), roll
-      // the prompt back to queued so the next sweep re-tries when
-      // conditions change.
-      ...(r.sent ? {} : { state: 'queued', sentAt: null }),
+      // DEF-105: roll back to queued so a later sweep can retry — but NOT
+      // immediately, and not for every reason.
+      //
+      // Measured 2026-08-10: THREE queue rows produced NINETY-EIGHT send
+      // attempts in 24h. The rollback was unconditional, so a prompt suppressed
+      // by the DAILY cap was retried on every sweep against a cap that will not
+      // clear for up to a day. Same two messages, ~33 attempts each, none of
+      // which could ever succeed. That flood is what made the owner's real
+      // reminders look like a volume problem when it was a retry loop.
+      //
+      // The backoff is chosen from the reason, because the reasons have
+      // genuinely different horizons: quiet hours end in hours, a daily cap in
+      // up to a day, a rate limit in minutes.
+      ...(r.sent ? {} : {
+        state: 'queued',
+        sentAt: null,
+        metadata: {
+          ...((promoted.metadata as any) ?? {}),
+          retryAfter: backoffUntil(r.reason).toISOString(),
+          lastSuppressedReason: r.reason ?? 'unknown',
+        } as any,
+      }),
     },
   });
 
