@@ -189,6 +189,63 @@ const fetchEmails: BrainToolDefinition = {
   },
 };
 
+// ─── Tool: fetch_sent_messages ───────────────────────────────────
+//
+// DEF-108b — "what did you send?" had no tool that could answer it.
+//
+// Production, 2026-08-10 16:21. The owner asked "can you read last 24hr
+// messages you sent to anyone" for the third time. Brain reasoned well — its
+// rationale was "I need to check my actual sent items to answer accurately and
+// resolve the discrepancy they've pointed out" — and then reached for
+// `fetch_sent_emails`, because it is the ONLY sent-items tool that exists. It
+// searched Gmail for WhatsApp messages, got 221 bytes of nothing, and told him
+// it had sent nothing. He had watched those messages arrive.
+//
+// DEF-108 fixed the recording side: sends now write an artifact. That is
+// necessary and not sufficient — without a tool that READS the ledger,
+// `fetch_sent_emails` stays the only answer to "what did you send", whatever
+// the ledger contains.
+//
+// Reads dispatchLedgerService, which is the DEF-037 record of what actually
+// happened, and reports WhatsApp delivery ticks where they exist. Facts with
+// timestamps only: nothing here is inferred, so nothing here can be fabricated.
+const fetchSentMessages: BrainToolDefinition = {
+  name: 'fetch_sent_messages',
+  description: 'Look up what YOU (Brain) actually sent — WhatsApp messages, delegation follow-ups and notifications — from the dispatch ledger. Use for "did you message <X>", "what did you send today", "have you sent anything in the last 24 hours", "did you tell <X> about it". This is the record of your OWN actions; use fetch_sent_emails instead for the user\'s Gmail sent folder.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      max: { type: 'integer', description: 'max items to return (default 25, max 50)' },
+    },
+    required: [],
+  },
+  handler: async ({ max }, { userId, clientNumber }) => {
+    const cap = Math.max(1, Math.min(50, Number(max ?? 25)));
+    try {
+      const { getRecentDispatches } = await import('./dispatchLedgerService');
+      const rows = await getRecentDispatches(userId, clientNumber, cap);
+      if (!rows.length) {
+        // Deliberately distinguishes "nothing recorded" from "nothing sent".
+        // Reporting an empty ledger as "I sent nothing" is what produced the
+        // flat denial on 2026-08-10; the ledger only began recording every
+        // send at DEF-108, so an empty result before then is unknown, not no.
+        return '# Messages you sent\n(no dispatches recorded in the lookback window — note this is the ledger\'s record, so it means "nothing recorded", which is not the same as "nothing sent")';
+      }
+      const lines = rows.map((r) => {
+        const when = new Date(r.at).toISOString().replace('T', ' ').slice(0, 16);
+        const delivery = r.delivery ? ` · delivery: ${r.delivery}` : '';
+        const ref = r.externalId ? ` · id ${r.externalId}` : '';
+        return `- ${when} — ${r.actionType} — ${r.status}${r.summary ? ` — ${r.summary}` : ''}${delivery}${ref}`;
+      });
+      return `# Messages you sent (${rows.length}, newest first)\n${lines.join('\n')}`;
+    } catch (e: any) {
+      // Never answer "nothing" on a failed lookup — that is the DEF-085
+      // laundering that turns a broken query into a false statement.
+      return `# Messages you sent\n(ledger lookup FAILED: ${e?.message ?? 'unknown error'} — do not report this as "nothing sent"; say the record could not be read)`;
+    }
+  },
+};
+
 // ─── Tool: fetch_sent_emails ─────────────────────────────────────
 
 const fetchSentEmails: BrainToolDefinition = {
@@ -542,6 +599,7 @@ const fetchTenantUsers: BrainToolDefinition = {
 export const BRAIN_TOOLS: BrainToolDefinition[] = [
   fetchCalendar,
   fetchEmails,
+  fetchSentMessages,
   fetchSentEmails,
   fetchWhatsAppThread,
   fetchOpenItems,
