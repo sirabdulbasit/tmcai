@@ -55,6 +55,21 @@ const CAPABILITIES: Capability[] = [
   { label: 'Reschedule a meeting', handle: 'reschedule_meeting', what: 'Updates an existing Calendar event\'s time or duration.' },
   { label: 'Cancel a meeting', handle: 'cancel_meeting', what: 'Cancels a Calendar event and notifies attendees.' },
   { label: 'Send an email', handle: 'send_email', what: 'Sends via user\'s Gmail (or SMTP fallback). Post-send fetches the message from Gmail to verify it landed in Sent and to report which From address was used — surface that "from" line to the user when you claim "sent".' },
+  // DEF-113 — input modalities were never declared, so Brain denied having them.
+  //
+  // On 2026-08-10 image reading shipped (DEF-110) and half an hour later the
+  // owner asked "have u got capability to read images?" and was told no, then
+  // replied "why? i asked you around 2h before to get this capability". The
+  // capability was live; it was simply absent from this table, and this table
+  // is what the truth-table prompt is built from.
+  //
+  // Voice is listed alongside it because it had the same gap — it has worked
+  // since 2026-08-04 and was never declared either. A capability that exists
+  // and is undeclared produces a fabricated NEGATIVE, which is the same class
+  // of false statement as a fabricated positive and reads worse: the owner can
+  // see the feature working.
+  { label: 'Read an image the user sends (screenshots, documents, photos)', handle: 'imageService.describeInboundImage', what: 'Inbound WhatsApp images are read automatically and their contents — including any text, transcribed verbatim — arrive in the message you receive, marked "[image received — contents:]". You CAN read images. Never tell the user you cannot; if an image failed you will see a bracketed failure marker instead of contents.' },
+  { label: 'Hear a voice note the user sends', handle: 'voiceService.transcribeVoiceNote', what: 'Inbound WhatsApp voice notes are transcribed automatically and arrive as text. You CAN hear voice notes. Never tell the user you cannot.' },
   { label: 'Check what emails were actually sent', handle: 'gmailService.getRecentSentSummary(userId)', what: 'Reads the user\'s Gmail Sent folder — use this whenever the user asks "did it go?", "check sent items", "which account did that go from?", or when you need proof a message actually left. Do NOT claim knowledge of sent items from memory; fetch and cite messageId + timestamp.' },
   { label: 'Notify a contact via WhatsApp', handle: 'notify_via_whatsapp', what: 'Sends a message from the Nexeo tenant WhatsApp number, with an "AI assistant on behalf of {user}" prefix.' },
   { label: 'Add a new contact', handle: 'POST /entities', what: 'Creates a person/entity row with name/email/phone; Brain can trigger this itself when the user provides a name and identifier.' },
