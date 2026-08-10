@@ -67,9 +67,32 @@ export function clearAiProviderCache(): void {
 async function readKeys(): Promise<Record<string, string>> {
   const rows = await prisma.systemConfig.findMany({
     where: { key: { in: ['ai_provider', 'ai_model', 'ai_service_account_json', 'ai_region'] } },
-    select: { key: true, value: true },
-  }).catch(() => [] as Array<{ key: string; value: string }>);
-  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    select: { key: true, value: true, isSensitive: true },
+  }).catch(() => [] as Array<{ key: string; value: string; isSensitive: boolean }>);
+
+  // The service account is stored ENCRYPTED — it is in SENSITIVE_KEYS, so
+  // setConfig ciphers it on write. Reading `value` straight off the row hands
+  // back ciphertext, which is why the first save produced "the service account
+  // JSON stored in settings is not valid JSON": it was valid JSON, encrypted.
+  //
+  // Decrypt per row rather than assuming: a value written before the key was
+  // marked sensitive would still be plaintext, and failing on those would break
+  // an upgrade path for no reason.
+  const { decrypt } = await import('./configService');
+  const out: Record<string, string> = {};
+  for (const r of rows) {
+    if (!r.isSensitive) { out[r.key] = r.value; continue; }
+    try {
+      out[r.key] = await decrypt(r.value);
+    } catch {
+      // Undecryptable is not the same as absent, and silently treating it as
+      // absent would make Vertex fall back to ambient credentials while the
+      // operator believes their pasted key is in use.
+      log.warn('could not decrypt config value', { key: r.key });
+      out[r.key] = '';
+    }
+  }
+  return out;
 }
 
 /**
