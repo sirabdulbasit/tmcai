@@ -5664,7 +5664,58 @@ async function renderActionPreview(
   if (act.type === 'delete_wiki_page') {
     return `⚠️ PERMANENT DELETE — please confirm:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nThis is IRREVERSIBLE. Brain will forget this page entirely. If you just want Brain to ignore it temporarily, say "archive instead". Reply "send" to confirm permanent deletion.`;
   }
-  return `Before I proceed, please confirm the details and reply "send".`;
+  // DEF-116 — say WHICH details, and WHY you are asking.
+  //
+  // Owner, 2026-08-10 23:41: "create a item of 'Stock Report' and delegate to
+  // Ali Haider with high priority and target today". He received, in full:
+  //
+  //     Before I proceed, please confirm the details and reply "send".
+  //
+  // Confirm WHAT? The reason existed — the gate logged
+  // `why: "I could not match that person to a contact"` — and never left the
+  // process. Same at 16:36, where the computed reason was "The email I have is
+  // ali.haidar@tmcltd.ai, not .com. Shall I proceed with .com?" and he again
+  // got the bare template.
+  //
+  // His words: "if not then it can simply say that i don't have this person in
+  // my contact can you provide me his email and contact". Exactly right — and
+  // every OTHER action type in this function already does that. `notify_via_
+  // whatsapp` names the recipient, their number and the message body. Only the
+  // fallback says nothing, and `add_open_item` — the most common action there
+  // is — had no case and fell through to it.
+  if (act.type === 'add_open_item' || act.type === 'update_open_item') {
+    const title = (act as any).title ?? (act as any).titleRef ?? '(untitled)';
+    const bits: string[] = [];
+    if ((act as any).priority) bits.push(`priority ${(act as any).priority}`);
+    if ((act as any).dueDateRaw) bits.push(`due ${(act as any).dueDateRaw}`);
+
+    const adHocEmail = (act as any).delegateeAdHocEmail as string | undefined;
+    const candId = String((act as any).delegateeCandidateId ?? '');
+    if (adHocEmail) {
+      bits.push(`delegate to ${adHocEmail}`);
+    } else if (candId) {
+      const r = await resolveCandidate(candId, userId, clientNumber);
+      if (r) {
+        bits.push(`delegate to ${r.name}${r.email ? ` <${r.email}>` : ''}`);
+      } else {
+        // The case that produced the bare message. Name the person he asked
+        // for, say plainly that they are not on file, and ask for exactly what
+        // is needed — rather than demanding confirmation of nothing.
+        const hint = (act as any).delegateeNameHint ?? 'that person';
+        return `I don't have ${hint} in your contacts, so I can't delegate "${title}" yet. `
+          + `Send me their email and phone and I'll add them, then create the item — `
+          + `or reply "send" to create it unassigned.`;
+      }
+    }
+    const verb = act.type === 'add_open_item' ? 'create' : 'update';
+    return `Before I proceed, please confirm — ${verb} "${title}"`
+      + `${bits.length ? ` (${bits.join(', ')})` : ''}. Reply "send" to confirm, or tell me what to change.`;
+  }
+
+  // Last resort. Still names the action rather than saying nothing, so a type
+  // with no renderer degrades to "confirm this thing" instead of "confirm".
+  return `Before I proceed, please confirm — ${String(act.type).replace(/_/g, ' ')}. `
+    + `Reply "send" to confirm, or tell me what to change.`;
 }
 
 /** Constrained action-decider. Replaces A's free-form retry with a
