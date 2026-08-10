@@ -349,6 +349,71 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   });
   if (dueCandidates.length === 0) return null;
 
+  // ── DEF-115 — a queued prompt must still be TRUE when it finally goes ──
+  //
+  // Every producer checks the item's status when it QUEUES. Nothing checked it
+  // again at SEND. So a prompt outlives its subject, and the longer it waits —
+  // quiet hours, backoff, the conversational lock — the more likely the world
+  // moved underneath it.
+  //
+  // Observed on 2026-08-10, twice, with the timeline nailed down:
+  //   11:48:35  prompt #318 queued for "Notify me when image recognition
+  //             is available"
+  //   13:23:10  that item marked DONE and assigned to Nexeo
+  //   17:15:49  "The deadline for ... has arrived. Is it completed?"
+  //   17:50:48  and again
+  //
+  // Four hours after it was finished. The same mechanism produced the reminder
+  // for "Watcher to study Brain conversations" at 16:03 after it was closed at
+  // 07:17 — which I first misdiagnosed as the reminder job ignoring CLOSED. It
+  // does not; ACTIVE excludes closed items in both letter cases. The producer
+  // was right and the dispatcher was stale.
+  //
+  // This can only ever SUPPRESS a prompt whose subject demonstrably no longer
+  // needs it, so it cannot invent or misroute anything. A prompt with no
+  // openItemId is untouched — most prompts have no item, and dropping those
+  // would silence real notifications.
+  const withItems = dueCandidates.filter((c) => !!c.openItemId);
+  let stalePromptIds: bigint[] = [];
+  if (withItems.length > 0) {
+    try {
+      const items = await prisma.openItem.findMany({
+        where: { id: { in: withItems.map((c) => c.openItemId!) } },
+        select: { id: true, status: true, delegateeName: true, delegateeEmail: true },
+      });
+      const { isBrainOwned } = await import('../openItems/brainOwnership');
+      const byId = new Map(items.map((i) => [i.id, i]));
+      stalePromptIds = withItems.filter((c) => {
+        const item = byId.get(c.openItemId!);
+        // Deleted item → nothing to ask about.
+        if (!item) return true;
+        const terminal = ['DONE', 'CLOSED', 'CANCELLED'].includes(String(item.status).toUpperCase());
+        // DEF-109: an item reassigned to Brain since queueing must stop
+        // chasing the owner, exactly as a freshly-queued one would.
+        return terminal || isBrainOwned(item);
+      }).map((c) => c.id);
+    } catch (err: any) {
+      // Fail OPEN: if the lookup breaks, send the prompt. A missed
+      // notification is worse than a stale one, and silently dropping prompts
+      // on a failed query is the DEF-085 laundering this project keeps paying
+      // for.
+      log.warn('stale-subject check failed — dispatching without it', { userId, err: err?.message });
+      stalePromptIds = [];
+    }
+  }
+
+  if (stalePromptIds.length > 0) {
+    await prisma.brainPromptQueue.updateMany({
+      where: { id: { in: stalePromptIds } },
+      data: { state: 'expired' },
+    }).catch(() => undefined);
+    log.info('dropped prompts whose subject is finished', {
+      userId, count: stalePromptIds.length, promptIds: stalePromptIds.map(String),
+    });
+  }
+  const freshCandidates = dueCandidates.filter((c) => !stalePromptIds.includes(c.id));
+  if (freshCandidates.length === 0) return null;
+
   // A live lock only blocks another QUESTION. Notices go regardless — they are
   // not part of the conversation, so waiting for it makes no sense. This is the
   // half of DEF-063 I missed: I stopped a notice TAKING the lock and left it
@@ -358,9 +423,9 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // silently vanished. Caught by def054 immediately, which is what those tests
   // are for.
   const sendable = (inFlight
-    ? dueCandidates.filter((c) =>
+    ? freshCandidates.filter((c) =>
       ((c.metadata as Record<string, unknown> | null) ?? {}).expectsReply === false)
-    : [...dueCandidates]);
+    : [...freshCandidates]);
   if (sendable.length === 0) return null;
 
   sendable.sort((a, b) => {
