@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import ConfigEditor from '../components/ConfigEditor';
+import AiProviderPanel from '../components/AiProviderPanel';
 
 const SYSTEM_SECTIONS = [
   { title: 'Application', icon: '⚙️', keys: ['app_name', 'session_hours', 'max_tokens', 'request_timeout_ms', 'max_context_chars'] },
@@ -37,7 +38,15 @@ export default function SystemConfigPage() {
           <button className={`config-tab ${activeTab === 'data' ? 'active' : ''}`} onClick={() => setActiveTab('data')}>Data Management</button>
         </div>
 
-        {activeTab === 'config' && <ConfigEditor sections={SYSTEM_SECTIONS} apiPath="/config" />}
+        {activeTab === 'config' && (
+          <>
+            {/* Provider selection sits ABOVE the key list: which backend Brain
+                runs on is the decision, and the keys are what that decision
+                needs. Owner request 2026-08-10. */}
+            <AiProviderPanel />
+            <ConfigEditor sections={SYSTEM_SECTIONS} apiPath="/config" />
+          </>
+        )}
         {activeTab === 'data' && <DataManagement />}
       </div>
     </div>

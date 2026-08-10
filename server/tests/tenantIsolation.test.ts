@@ -153,6 +153,16 @@ const ALLOWED_EXCEPTIONS: Record<string, { method: string; file: string; reason:
   systemConfig: [
     // healthRoutes: findFirst for public app_name / logo — intentionally cross-tenant
     { method: 'findFirst', file: 'healthRoutes.ts', reason: 'Public app_name/logo endpoint — intentionally cross-tenant' },
+    // AI provider selection is APPLICATION-LEVEL by design (owner, 2026-08-10),
+    // the same choice ShireMe made: one Brain, one inference backend. If each
+    // tenant could pick its own model, "why did Brain answer differently"
+    // becomes unanswerable, and a per-tenant service account would multiply the
+    // number of private keys in this table by the number of customers.
+    //
+    // Both call sites are SuperAdmin-gated and read only the four ai_* keys.
+    // They expose no tenant DATA — only which model the platform runs on.
+    { method: 'findMany', file: 'aiProviderConfig.ts', reason: 'App-level AI provider keys (ai_provider/model/region/SA) — one backend for the whole platform, SuperAdmin-gated' },
+    { method: 'findFirst', file: 'configRoutes.ts', reason: 'App-level: reports whether an AI service-account is stored (presence only, never the value); SuperAdmin-gated' },
   ],
   tenant: [
     // tenantService, tenantRoutes, dataManagementService: tenant management (SA only)

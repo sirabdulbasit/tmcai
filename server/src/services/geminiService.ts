@@ -1,4 +1,21 @@
-import { getGenAI } from './genaiClient';
+import { getGenAI, getConfiguredGenAI } from './genaiClient';
+
+/**
+ * The model ids the SAVED provider config asks for, falling back to the
+ * compiled-in constants when nothing is configured.
+ *
+ * Read per call rather than captured at import: the settings panel must take
+ * effect on the next turn, not the next deploy.
+ */
+async function activeModels(): Promise<{ pro: string; flash: string }> {
+  try {
+    const { getAiProviderConfig } = await import('./aiProviderConfig');
+    const cfg = await getAiProviderConfig();
+    return { pro: cfg.model || MODEL_GEMINI, flash: cfg.flashModel || MODEL_GEMINI_FLASH };
+  } catch {
+    return { pro: MODEL_GEMINI, flash: MODEL_GEMINI_FLASH };
+  }
+}
 import { env } from '../config/env';
 import { MODEL_GEMINI, MODEL_GEMINI_FLASH } from '../config/models';
 
@@ -21,8 +38,8 @@ export async function streamGemini(
     throw new Error('GEMINI_API_KEY not configured');
   }
 
-  const modelId = useFlash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
-  const ai = getGenAI();
+  const modelId = useFlash ? (await activeModels()).flash : (await activeModels()).pro;
+  const ai = await getConfiguredGenAI();
 
   // Build multi-turn contents array
   const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
@@ -78,8 +95,8 @@ export async function countGeminiTokens(
 ): Promise<number> {
   if (!env.geminiApiKey) return Math.ceil((systemPrompt.length + userMessage.length) / 4);
   try {
-    const ai = getGenAI();
-    const modelId = flash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
+    const ai = await getConfiguredGenAI();
+    const modelId = flash ? (await activeModels()).flash : (await activeModels()).pro;
     const r = await ai.models.countTokens({
       model: modelId,
       contents: [
@@ -99,8 +116,8 @@ export async function callGemini(
   opts?: { maxTokens?: number; flash?: boolean; responseMimeType?: string },
 ): Promise<string> {
   if (!env.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
-  const modelId = opts?.flash ? MODEL_GEMINI_FLASH : MODEL_GEMINI;
-  const ai = getGenAI();
+  const modelId = opts?.flash ? (await activeModels()).flash : (await activeModels()).pro;
+  const ai = await getConfiguredGenAI();
 
   // Guard against silent-truncation. countTokens is a network roundtrip
   // (~200-500ms), so only spend it when the prompt could plausibly blow

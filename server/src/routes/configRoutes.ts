@@ -23,6 +23,9 @@ const SENSITIVE_KEYS = [
   'gemini_api_key', 'anthropic_api_key', 'openai_api_key',
   'groq_api_key', 'openrouter_api_key', 'google_client_secret',
   'smtp_pass', 'encryption_key',
+  // A service-account JSON is a private key. Masked on read like any other
+  // secret, and never returned to the browser once stored.
+  'ai_service_account_json',
 ];
 
 // System-level keys — only SuperAdmin can read/write these
@@ -30,6 +33,10 @@ const SYSTEM_KEYS = [
   'app_name', 'session_hours', 'max_tokens', 'request_timeout_ms', 'max_context_chars',
   'rag_enabled', 'pii_enabled', 'rag_top_k', 'rag_min_score',
   'gemini_api_key', 'anthropic_api_key', 'openai_api_key', 'groq_api_key', 'openrouter_api_key',
+  // AI provider selection. Application-level, never per-tenant: one Brain, one
+  // inference backend. A tenant choosing its own model would make "why did
+  // Brain answer differently" unanswerable.
+  'ai_provider', 'ai_model', 'ai_service_account_json', 'ai_region',
 ];
 
 const MASKED = '********';
@@ -40,6 +47,47 @@ function getTargetClient(req: Request): string {
   if (override && req.user!.isSuperAdmin) return override;
   return req.user!.clientNumber;
 }
+
+
+/**
+ * POST /config/ai/verify — the "Verify integration" button.
+ *
+ * Makes a REAL generate call against the saved configuration rather than
+ * checking that credentials parse. A valid key with no quota, a retired model,
+ * and a region that does not host the model all pass a credential check and
+ * fail in production — two of those three have happened to this project inside
+ * one week.
+ *
+ * SuperAdmin only: it exercises an application-level secret and costs a token.
+ */
+router.post('/ai/verify', requireSuperAdmin, async (_req: Request, res: Response) => {
+  const { verifyAiProvider, clearAiProviderCache } = await import('../services/aiProviderConfig');
+  // Read fresh: the operator has almost certainly just pressed Save.
+  clearAiProviderCache();
+  const result = await verifyAiProvider();
+  res.json(result);
+});
+
+/** GET /config/ai — the provider panel's state, with the secret never leaving. */
+router.get('/ai', requireSuperAdmin, async (_req: Request, res: Response) => {
+  const { getAiProviderConfig } = await import('../services/aiProviderConfig');
+  const cfg = await getAiProviderConfig();
+  const stored = await prisma.systemConfig.findFirst({
+    where: { key: 'ai_service_account_json' }, select: { value: true },
+  }).catch(() => null);
+  res.json({
+    provider: cfg.provider,
+    model: cfg.model,
+    flashModel: cfg.flashModel,
+    region: cfg.region,
+    // Presence, never content. The panel shows a masked box and the operator
+    // leaves it alone to keep the stored value.
+    hasServiceAccount: !!(stored?.value?.trim()),
+    usesAmbientCredentials: !stored?.value?.trim() && !!process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    ready: cfg.ready,
+    reason: cfg.reason ?? null,
+  });
+});
 
 // Get all config (filtered by access level)
 router.get('/', async (req: Request, res: Response) => {
@@ -79,6 +127,7 @@ router.put('/', async (req: Request, res: Response) => {
 
     // Block non-SuperAdmin from writing system keys
     if (SYSTEM_KEYS.includes(entry.key) && !req.user!.isSuperAdmin) continue;
+    await invalidateIfProviderKey(entry.key);
 
     const isSensitive = SENSITIVE_KEYS.includes(entry.key) || entry.isSensitive === true;
     await setConfig(getTargetClient(req), entry.key, entry.value, isSensitive, entry.description);
@@ -89,6 +138,13 @@ router.put('/', async (req: Request, res: Response) => {
 });
 
 // Set single config entry
+/** Any ai_* write invalidates the provider cache so Save takes effect at once. */
+async function invalidateIfProviderKey(key: string): Promise<void> {
+  if (!key.startsWith('ai_')) return;
+  const { clearAiProviderCache } = await import('../services/aiProviderConfig');
+  clearAiProviderCache();
+}
+
 router.put('/:key', async (req: Request, res: Response) => {
   const { value, description } = req.body;
   const key = req.params.key as string;
@@ -102,6 +158,7 @@ router.put('/:key', async (req: Request, res: Response) => {
 
   const isSensitive = SENSITIVE_KEYS.includes(key) || req.body.isSensitive === true;
   await setConfig(getTargetClient(req), key, value, isSensitive, description);
+  await invalidateIfProviderKey(key);
   res.json({ success: true });
 });
 
