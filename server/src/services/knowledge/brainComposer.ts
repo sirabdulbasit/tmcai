@@ -860,6 +860,89 @@ export function claimsCompletion(text: string): boolean {
   return EMPTY_PROMISE_RE.test(text ?? '');
 }
 
+/**
+ * DEF-107 — a RULE described is not a claim made.
+ *
+ * Production, 2026-08-10, twice inside nine minutes, both times answerLen=107
+ * (the exact length of the canned denial in answerSanitizer):
+ *
+ *   14:30  "if anyone is irresponsive over your email or whatsapp, are you
+ *           counting on it?"
+ *          composed: "Sir, I track when you delegate an item to someone, like
+ *                     the tasks with Hamna Latif. If a deadline is approaching
+ *                     … I'll remind you"
+ *          → validateBeforeRender block, rules: ['empty_promise']
+ *
+ *   14:39  "why don't you update me if someone responds"
+ *          composed: "Sir, when I send a query on your behalf, I automatically
+ *                     track if a reply comes in. If I get one, I will inform you"
+ *          → blocked, decision=answer, confidence=1, historyTurns=10
+ *
+ * Both were correct answers to capability questions. Alternative (1) of
+ * EMPTY_PROMISE_RE matched `I'll remind` / `I will inform` — first-person
+ * future plus a completion verb — which is indistinguishable, to a word list,
+ * from "I'll send it now".
+ *
+ * The distinction that IS available is CONDITIONALITY. "If a deadline is
+ * approaching, I'll remind you" states a standing rule. "I'll send it now"
+ * promises this turn. The first cannot be a fabricated completion claim
+ * because it does not assert that anything happened.
+ *
+ * Deliberately narrow, because the guard it qualifies exists to stop a real
+ * incident — DEF-041, where Brain said "I will delegate all four unassigned
+ * items to Hamna Latif Bhutta now", delegated nothing, and emailed her from the
+ * owner's own address saying it had. That phrase has no conditional and stays
+ * blocked. So the exemption requires BOTH:
+ *
+ *   1. the match is first-person FUTURE (`I'll` / `I will` / `I am going to`).
+ *      Past tense and passive voice are never exempt — "I've sent it" and "the
+ *      email has been sent" assert completed work whatever surrounds them.
+ *   2. the sentence carries a conditional marker (if / when / whenever / once /
+ *      as soon as / should / unless / in case / any time).
+ *
+ * NOT the approach the earlier draft of this fix took. Gating on
+ * `actionEmitted === false` would have re-created the path-shaped exemption
+ * DEF-041 removed, whose own comment warns: "judge the STATE of the turn, never
+ * the code path". This judges the SENTENCE, which is neither.
+ *
+ * The real answer remains the one the DEF-037 comment above points at — verify
+ * the claim against the dispatch ledger instead of a word list. Until that
+ * exists, this narrows the net without cutting a hole in it.
+ */
+const CONDITIONAL_MARKER_RE =
+  /\b(?:if|when|whenever|once|as\s+soon\s+as|should\s+(?:you|they|he|she|it|there)|unless|in\s+case|any\s+time)\b/i;
+
+/** First-person future only. `i'm` is excluded: "I'm sending it" is present
+ *  progressive and asserts work already under way. */
+const FIRST_PERSON_FUTURE_RE =
+  /\bi(?:'ll|\s+will|\s+am\s+going\s+to|'m\s+going\s+to)\s+\w+/i;
+
+export function isConditionalFutureBehaviour(text: string): boolean {
+  const answer = text ?? '';
+  if (!EMPTY_PROMISE_RE.test(answer)) return false;
+
+  // Sentence-level, because conditionality is scoped to its clause: a standing
+  // rule in one sentence must not excuse a fabricated claim in the next.
+  const sentences = answer.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
+  let sawExemptSentence = false;
+
+  for (const sentence of sentences) {
+    if (!EMPTY_PROMISE_RE.test(sentence)) continue;
+    const conditional = CONDITIONAL_MARKER_RE.test(sentence);
+    const futureOnly =
+      FIRST_PERSON_FUTURE_RE.test(sentence) &&
+      // Any past-tense or passive match in the same sentence disqualifies it:
+      // "If you asked, I already sent it" is still a completion claim.
+      !/\bi(?:'ve|\s+have|\s+just|\s+already)\s+\w+/i.test(sentence) &&
+      !/\b(?:has|have|had|was|were)\s+been\b/i.test(sentence);
+
+    if (conditional && futureOnly) { sawExemptSentence = true; continue; }
+    // A single unexempt claiming sentence blocks the whole answer.
+    return false;
+  }
+  return sawExemptSentence;
+}
+
 // ── Completion-claim GATE (2026-07-14, chat 9) ──────────────────────
 //
 // The regex above cannot tell a fabricated current-turn claim

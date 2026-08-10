@@ -57,7 +57,7 @@ export interface ValidationOutcome {
 // Third time today this shape has bitten (DEF-039 duplicated guards,
 // DEF-041 duplicated regex): a protection with two implementations has one
 // real implementation and one comforting fiction.
-import { EMPTY_PROMISE_RE } from './brainComposer';
+import { EMPTY_PROMISE_RE, isConditionalFutureBehaviour } from './brainComposer';
 
 // Fabricated process / escalation language. Per rule H7a in the
 // prompt — Brain must never invent teams/channels/processes that
@@ -178,7 +178,17 @@ export function validateBeforeRender(
       structuredStates.has(result.actionResult.message) ||
       structuredPrefixes.some((p) => result.actionResult!.message.startsWith(p))
     );
-  const emptyPromiseEligible = !hasStructuredState;
+  // DEF-107 — a standing rule described is not a claim made. "If a deadline is
+  // approaching, I'll remind you" answers a capability question; it asserts
+  // nothing was done, so it cannot be a fabricated completion claim. Blocked
+  // twice on 2026-08-10 inside nine minutes, both times replacing a correct
+  // answer with the canned denial. See isConditionalFutureBehaviour for why
+  // this is judged per SENTENCE rather than by the turn's action state — the
+  // latter would rebuild the path-shaped exemption DEF-041 removed.
+  // Kept on ONE line deliberately: DEF-041's regression guard matches this
+  // assignment with a single-line regex, and wrapping it hid `hasStructuredState`
+  // from the very test that exists to stop that exemption being weakened.
+  const emptyPromiseEligible = !hasStructuredState && !isConditionalFutureBehaviour(answer);
   if (
     emptyPromiseEligible &&
     EMPTY_PROMISE_RE.test(answer) &&
