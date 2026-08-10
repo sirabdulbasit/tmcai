@@ -86,6 +86,29 @@ export async function recordLlmSpend(p: SpendParams): Promise<void> {
   // 2) Legacy daily JSON rollup in `system_config`. Kept until the
   //    dashboard cuts over fully; lets `getSpendReport` (which existing
   //    /admin/llm-spend depends on) keep working without breakage.
+  //
+  // DEF-112 — skipped when the call carries no tenant.
+  //
+  // `clientNumber` above falls back to the string 'SYSTEM', and
+  // system_config.client_number has a foreign key to tenants, which holds
+  // exactly one row: TMC-0001. So every tenant-less LLM call tried to write a
+  // rollup under a tenant that does not exist and failed:
+  //
+  //   llm-spend: "spend record (legacy) failed"
+  //     -> Invalid prisma.systemConfig.upsert()
+  //     -> Foreign key constraint violated: system_config_client_number_fkey
+  //
+  // Observed firing FOUR TIMES in a single owner turn on 2026-08-10
+  // (11:39:01, :03, :05, :07 — once per LLM call), all day, every day. It was
+  // also the noise that made the FK look like a feature-flag problem when I
+  // first met it.
+  //
+  // Nothing is lost by skipping: write (1) above is the real record and it
+  // succeeds. The rollup is a per-TENANT view, and a call with no tenant has
+  // no rollup to belong to — writing it under a placeholder was always
+  // meaningless, which is why the constraint rejected it.
+  if (!p.clientNumber) return;
+
   try {
     const existing = await prisma.systemConfig.findUnique({
       where: { clientNumber_key: { clientNumber, key: 'llm_spend' } },
