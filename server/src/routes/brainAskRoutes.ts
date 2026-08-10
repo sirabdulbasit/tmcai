@@ -161,8 +161,15 @@ export async function answerAsBrain(
     // Look up active pending status so preview_vs_done_confusion can fire.
     const { getActivePending } = await import('../services/knowledge/pendingActionService');
     const pendingForValidator = await getActivePending(userId, (opts.channel ?? 'web') as 'web' | 'whatsapp').catch(() => null);
+    // DEF-114 — tell the validator what the user actually asked for.
+    // Without it, it judged the answer alone and blocked apologies and
+    // explanations as if they were fabricated completion claims. Same
+    // classifier the composer uses, so the two cannot disagree.
+    const { classifyTurnIntent } = await import('../services/knowledge/brainComposer');
+    const turnIntent = classifyTurnIntent(question ?? '');
     const validation = validateBeforeRender(result, {
       pendingStatus: pendingForValidator?.status ?? null,
+      turnIntent,
     });
     if (!validation.ok && validation.replacement) {
       console.warn('[brain-chat] validateBeforeRender block', {

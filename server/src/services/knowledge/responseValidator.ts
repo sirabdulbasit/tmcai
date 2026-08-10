@@ -122,7 +122,25 @@ const HEDGE_WORDS_RE =
  *  pending is still preview_shown). */
 export function validateBeforeRender(
   result: ComposeResult,
-  context?: { pendingStatus?: string | null },
+  context?: {
+    pendingStatus?: string | null;
+    /**
+     * DEF-114 — what the USER asked for this turn.
+     *
+     * The composer already gates the empty-promise guard on this and gets it
+     * right; the log line reads "empty-promise regex matched on non-action
+     * turn, leaving prose unchanged". This validator never saw the question,
+     * so it judged the answer alone — and an apology is textually identical to
+     * a fabricated claim. On 2026-08-10 that cost the owner four blocked
+     * replies in ninety minutes, including "My apologies, Sir. That was my
+     * mistake. You provided all the necessary details."
+     *
+     * Passing the intent here is judging the STATE of the turn, which is what
+     * DEF-041 requires; it is NOT the path-shaped exemption DEF-041 removed.
+     * Undefined means "unknown", and unknown still blocks — fail closed.
+     */
+    turnIntent?: 'read_only' | 'mutation' | 'ambiguous';
+  },
 ): ValidationOutcome {
   const violations: ResponseViolation[] = [];
   const answer = result.answer ?? '';
@@ -188,7 +206,17 @@ export function validateBeforeRender(
   // Kept on ONE line deliberately: DEF-041's regression guard matches this
   // assignment with a single-line regex, and wrapping it hid `hasStructuredState`
   // from the very test that exists to stop that exemption being weakened.
-  const emptyPromiseEligible = !hasStructuredState && !isConditionalFutureBehaviour(answer);
+  // DEF-114 — a read-only turn had nothing to dispatch, so a completion-shaped
+  // sentence on it cannot be a fabricated CURRENT-TURN claim. The composer
+  // already applies exactly this gate ("leaving prose unchanged"); this
+  // validator was blind to it and overruled the composer three seconds later.
+  //
+  // 'mutation' and 'ambiguous' still block. DEF-041's incident — "I will
+  // delegate all four unassigned items to Hamna Latif Bhutta now" — was a
+  // mutation turn, so it stays caught. Undefined blocks too: a caller that
+  // cannot say what the user asked for gets the strict behaviour.
+  const readOnlyTurn = context?.turnIntent === 'read_only';
+  const emptyPromiseEligible = !hasStructuredState && !isConditionalFutureBehaviour(answer) && !readOnlyTurn;
   if (
     emptyPromiseEligible &&
     EMPTY_PROMISE_RE.test(answer) &&
