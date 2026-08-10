@@ -3,6 +3,19 @@ import { GoogleGenAI } from '@google/genai';
 let client: GoogleGenAI | null = null;
 let clientKey = '';
 
+/**
+ * The shared client.
+ *
+ * Synchronous, because 17 call sites depend on it being so — intent, voice,
+ * memory, images, agents. It cannot read the provider config itself (that read
+ * is async), so `primeConfiguredGenAI()` is called once at boot to build the
+ * configured client BEFORE any of them run. After that, every one of those call
+ * sites gets the configured backend without changing a line.
+ *
+ * Relying on the main reasoning path happening to run first would have worked
+ * by accident and broken the moment call order changed. Priming makes it a
+ * property of startup instead of a coincidence.
+ */
 export function getGenAI(): GoogleGenAI {
   if (!client) {
     const useVertex = process.env.USE_VERTEX_AI === 'true';
@@ -59,6 +72,27 @@ export async function getConfiguredGenAI(): Promise<GoogleGenAI> {
     return client;
   } catch {
     return getGenAI();
+  }
+}
+
+/**
+ * Build the configured client at boot, so the synchronous `getGenAI()` hands
+ * out the right backend from the first call.
+ *
+ * Never throws: a provider that cannot be built must not stop the server from
+ * starting. The fallback is the old env-var client, which is exactly the
+ * behaviour that existed before any of this.
+ */
+export async function primeConfiguredGenAI(): Promise<string> {
+  try {
+    await getConfiguredGenAI();
+    const { getAiProviderConfig } = await import('./aiProviderConfig');
+    const cfg = await getAiProviderConfig();
+    return cfg.provider === 'vertex'
+      ? `vertex · ${cfg.model} · ${cfg.region}`
+      : `${cfg.provider} · ${cfg.model}`;
+  } catch (err) {
+    return `fallback (${err instanceof Error ? err.message : 'unknown'})`;
   }
 }
 

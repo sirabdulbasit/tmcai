@@ -110,6 +110,17 @@ const server = app.listen(env.port, async () => {
   // Tier 1 #7 — install/update canonical system gate rules. Idempotent,
   // safe on every boot. Runs before the scheduler so any cron that hits
   // the gate engine sees the seeded rules.
+  // Build the configured AI client BEFORE anything reasons. getGenAI() is
+  // synchronous and used by 17 services (intent, voice, memory, images,
+  // agents); priming here means they all get the configured backend rather than
+  // whichever one the first caller happened to create.
+  try {
+    const { primeConfiguredGenAI } = await import('./services/genaiClient');
+    console.log(`[ai] provider ready: ${await primeConfiguredGenAI()}`);
+  } catch (err: any) {
+    console.warn('[ai] provider priming failed — using environment defaults', { error: err?.message });
+  }
+
   await import('./services/triage/systemRuleSeeder')
     .then(({ seedSystemRules }) => seedSystemRules())
     .catch(err => console.error('System rule seed failed:', err.message));
