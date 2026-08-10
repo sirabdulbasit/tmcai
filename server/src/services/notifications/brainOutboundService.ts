@@ -604,6 +604,59 @@ async function record(
     return null;
   });
 
+  // DEF-108 — the dispatch ledger must see this send.
+  //
+  // Production, 2026-08-10 14:57–15:00. The owner asked "can you read the last
+  // 24hr messages you sent to anyone?" and Brain answered "Sir, I haven't sent
+  // any messages in the last 24 hours." At that moment the database held 14
+  // sends to him and 8 outbound WhatsApp messages to counterparts. He replied
+  // "you are wrong, you sent messages to Hamna and Yousaf yesterday, i have
+  // seen it" — and he was right.
+  //
+  // Brain was not lying. DEF-037 made "did I do X?" a LEDGER query rather than
+  // a transcript read, which was the correct fix, and dispatchLedgerService
+  // reads brain_action_artifacts. But nothing on this path ever wrote an
+  // artifact: the table held 20 rows in its entire life, newest 2026-08-08, and
+  // the only recent entries were `previewed` — which the ledger rightly
+  // excludes, since TERMINAL_OK is ['succeeded','completed','sent'].
+  //
+  // So there were three records of "what Brain did" and they disagreed:
+  // brain_user_messages (14), delegation_thread_events (8), and the one Brain
+  // actually reads (0). The DEF-037 header predicted this exact shape — "it
+  // genuinely could not see its own past" — and the answer is to FEED the
+  // ledger, not to change what Brain trusts.
+  //
+  // Only real outcomes are recorded. A suppressed or rate-limited message is
+  // not a send, and writing one as `succeeded` would be the fabrication the
+  // ledger exists to make impossible.
+  if (o.status === 'sent' || o.status === 'partial' || o.status === 'failed') {
+    try {
+      const { recordArtifact } = await import('../knowledge/brainActionArtifactService');
+      await recordArtifact({
+        clientNumber: o.user.clientNumber,
+        userId: o.user.id,
+        channel: 'whatsapp',
+        actionType: 'notify_via_whatsapp',
+        status: o.status === 'failed' ? 'failed' : 'succeeded',
+        payload: {
+          kind: o.kind,
+          urgency: o.urgency,
+          recipientPhone: o.toPhone ?? null,
+          titleHint: o.summary.slice(0, 120),
+        },
+        result: { waMessageIds: o.waMessageIds ?? [], channel: o.channel },
+        errorMessage: o.error ?? null,
+        artifactExtId: o.waMessageIds?.[0] ?? null,
+      });
+    } catch (err: any) {
+      // Never break a delivered send over its own bookkeeping — but say so,
+      // because a silent miss here is precisely how the ledger went empty.
+      log.error('dispatch ledger write failed — Brain will not remember this send', {
+        kind: o.kind, err: err?.message,
+      });
+    }
+  }
+
   return {
     sent: o.status === 'sent' || o.status === 'partial',
     reason,

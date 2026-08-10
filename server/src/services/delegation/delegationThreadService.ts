@@ -293,7 +293,11 @@ export async function registerOutboundReceipt(input: {
 }): Promise<TransitionResult & { transitioned?: boolean }> {
   const thread = await prisma.delegationThread.findFirst({
     where: { id: input.threadId, clientNumber: input.clientNumber },
-    select: { state: true, activeIntentEventId: true, priorState: true, origin: true },
+    select: {
+      state: true, activeIntentEventId: true, priorState: true, origin: true,
+      // DEF-108 — needed for the dispatch-ledger artifact below.
+      ownerUserId: true, counterpartKey: true, openItemId: true,
+    },
   });
   if (!thread) return { ok: false, reason: 'thread_missing' };
 
@@ -303,6 +307,42 @@ export async function registerOutboundReceipt(input: {
     providerMessageId: input.providerMessageId ?? null,
     sourceEventId: input.intentEventId, provenance: 'assistant_outbound',
   };
+
+  // DEF-108 — a message to a counterpart must reach the dispatch ledger too.
+  //
+  // On 2026-08-10 the owner said "you sent messages to Hamna and Yousaf
+  // yesterday, i have seen it" and Brain denied it. Eight outbound rows existed
+  // here in delegation_thread_events; brain_action_artifacts — the table
+  // dispatchLedgerService reads — had none. Both records are needed, because
+  // "did you message Hamna?" is answered from the ledger, not from this table.
+  //
+  // Recorded on an ACCEPTED receipt only, and deliberately outside the
+  // dispatch-window check below: a late receipt still means the message was
+  // delivered, and the ledger is a record of what happened, not of what
+  // transitioned. A `failed` receipt is not written as a send.
+  if (input.status === 'accepted') {
+    try {
+      const { recordArtifact } = await import('../knowledge/brainActionArtifactService');
+      await recordArtifact({
+        clientNumber: input.clientNumber,
+        userId: thread.ownerUserId,
+        channel: input.channel === 'email' ? 'web' : 'whatsapp',
+        actionType: input.channel === 'email' ? 'send_email' : 'notify_via_whatsapp',
+        status: 'succeeded',
+        payload: {
+          recipientName: thread.counterpartKey,
+          titleHint: `delegation follow-up · ${thread.counterpartKey}`,
+          openItemId: thread.openItemId,
+        },
+        result: { threadId: input.threadId, providerMessageId: input.providerMessageId ?? null },
+        artifactExtId: input.providerMessageId ?? null,
+      });
+    } catch (err: any) {
+      log.error('dispatch ledger write failed — Brain will not remember this send', {
+        threadId: input.threadId, err: err?.message,
+      });
+    }
+  }
 
   const belongsToCurrentDispatch = thread.activeIntentEventId === input.intentEventId;
   const inDispatchWindow = thread.state === 'dispatch_pending' || thread.state === 'receipt_unknown';
