@@ -22,7 +22,17 @@ import createLogger from '../../utils/logger';
 
 const log = createLogger('wiki-embed');
 
-const MODEL_GEMINI = 'text-embedding-004';
+// MEM-001, 2026-08-10: `text-embedding-004` was RETIRED by Google. The endpoint
+// answers HTTP 404 — "not found for API version v1beta" — so embedding stopped
+// dead on 2026-07-14 and nothing was indexed for 25 days. The code behaved
+// correctly (it refuses to write a vector it could not compute), which is
+// exactly why the failure was silent: memory kept being written, and none of it
+// was reachable.
+//
+// `gemini-embedding-001` is the current model. It returns 3072 dimensions by
+// default; we request 768 via outputDimensionality so the existing
+// `vector(768)` column and its index are unchanged.
+const MODEL_GEMINI = 'gemini-embedding-001';
 const MODEL_STUB = 'stub-768';
 const DIM = 768;
 
@@ -37,6 +47,18 @@ function composeEmbedText(title: string, body: string | null): string {
   if (!t && !b) return '';
   const combined = t ? `${t}\n\n${b}` : b;
   return combined.slice(0, MAX_EMBED_CHARS);
+}
+
+/**
+ * Scale a vector to unit length so cosine, dot product and magnitude all agree.
+ * A zero vector is returned unchanged rather than producing NaNs.
+ */
+function unitNormalise(v: number[]): number[] {
+  let sum = 0;
+  for (const x of v) sum += x * x;
+  const norm = Math.sqrt(sum);
+  if (!Number.isFinite(norm) || norm === 0) return v;
+  return v.map((x) => x / norm);
 }
 
 function hashText(text: string): string {
@@ -178,11 +200,13 @@ async function embed(text: string): Promise<{ embedding: number[]; model: string
   if (key) {
     try {
       const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${key}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_GEMINI}:embedContent?key=${key}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: { parts: [{ text }] } }),
+          // outputDimensionality keeps us at 768 so the pgvector column and its
+          // index survive the model change untouched.
+          body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: DIM }),
         },
       );
       if (r.ok) {
@@ -190,7 +214,13 @@ async function embed(text: string): Promise<{ embedding: number[]; model: string
         const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
         if (vec.length === DIM) {
           recordEmbeddingRecovery('wiki');
-          return { embedding: vec, model: MODEL_GEMINI };
+          // Truncated gemini-embedding-001 vectors are NOT unit length —
+          // measured L2 0.5888 at 768 dims, where text-embedding-004 returned
+          // unit vectors. pgvector's `<=>` normalises internally, but anything
+          // reading these as inner products, or comparing magnitudes, would be
+          // quietly wrong. Normalising here keeps every consumer honest and
+          // matches what the old model produced.
+          return { embedding: unitNormalise(vec), model: MODEL_GEMINI };
         }
         lastError = `unexpected embedding shape (len=${vec.length})`;
       } else {
@@ -225,4 +255,85 @@ function stubEmbed(text: string): number[] {
 /** Format a number array as a pgvector text literal: `[0.1,0.2,...]` */
 function vectorLiteral(vec: number[]): string {
   return '[' + vec.map((v) => (Number.isFinite(v) ? v.toFixed(6) : '0')).join(',') + ']';
+}
+
+/**
+ * MEM-001 — make "memory is reachable" a guaranteed property, not a side effect.
+ *
+ * Embedding used to happen only where somebody remembered to call
+ * `embedWikiPage` — a handful of write sites. Pages created by any other path
+ * were never indexed, and when the model was retired on 2026-07-14 the whole
+ * pipeline stopped with nothing to notice it. Twenty-five days later 3,167
+ * pages were WHOLLY unreachable: no embedding to find them by meaning, no links
+ * to find them by association. Brain was not forgetting; it was holding memory
+ * it had no path back to.
+ *
+ * A sweep makes it a property of the system rather than of any writer's
+ * diligence. Two priorities, in order:
+ *   1. pages with no embedding at all — invisible to semantic search;
+ *   2. pages embedded by a SUPERSEDED model — worse than useless, because
+ *      distances between two different embedding spaces are not comparable, so
+ *      a stale vector returns confident nonsense rather than nothing.
+ *
+ * Bounded per run. The point is to converge steadily without hammering the
+ * provider or starving live traffic of rate limit.
+ */
+export async function sweepWikiEmbeddings(limit = 200): Promise<{ attempted: number; embedded: number; degraded: boolean }> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ id: string; client_number: string }>>(
+    `SELECT id, client_number FROM wiki_pages
+      WHERE body_markdown IS NOT NULL AND length(body_markdown) > 20
+        AND (embedded_at IS NULL OR embedding_model IS DISTINCT FROM $1)
+      ORDER BY (embedded_at IS NULL) DESC, last_updated_at DESC
+      LIMIT $2`,
+    MODEL_GEMINI, limit,
+  ).catch(() => []);
+
+  if (rows.length === 0) return { attempted: 0, embedded: 0, degraded: false };
+
+  let embedded = 0;
+  for (const row of rows) {
+    await embedWikiPage(row.id);
+    // Re-read rather than trust the call: embedWikiPage swallows provider
+    // failures by design, so "it returned" is not evidence it wrote anything.
+    const [check] = await prisma.$queryRawUnsafe<Array<{ ok: boolean }>>(
+      `SELECT (embedding_model = $1) AS ok FROM wiki_pages WHERE id = $2`,
+      MODEL_GEMINI, row.id,
+    ).catch(() => [{ ok: false }]);
+    if (check?.ok) embedded += 1;
+    else break; // provider is down — stop the batch rather than burn 200 failures
+  }
+
+  // A dead embedder is invisible from the outside: writes keep succeeding and
+  // only retrieval quietly gets worse. That is exactly how this went unnoticed
+  // for 25 days, so it becomes a finding the watcher and the notifier can see.
+  const degraded = embedded < rows.length;
+  if (degraded) {
+    const { recordFinding } = await import('../selfheal/healthFindingService');
+    void recordFinding({
+      clientNumber: rows[0].client_number,
+      kind: 'embedding_provider_degraded',
+      severity: 'error',
+      source: 'wiki-embedding',
+      summary: `wiki embedding is not writing vectors — ${rows.length - embedded} of ${rows.length} pages in this batch stayed unindexed`,
+      evidence: { model: MODEL_GEMINI, attempted: rows.length, embedded },
+    });
+  }
+  return { attempted: rows.length, embedded, degraded };
+}
+
+/** How reachable is memory right now? Feeds the daily digest. */
+export async function memoryReachability(clientNumber?: string): Promise<{
+  pages: number; embedded: number; orphaned: number; unreachable: number;
+}> {
+  const [r] = await prisma.$queryRawUnsafe<Array<any>>(
+    `SELECT count(*)::int AS pages,
+            count(*) FILTER (WHERE embedding_model = $1)::int AS embedded,
+            count(*) FILTER (WHERE inbound_links = 0 AND outbound_links = 0)::int AS orphaned,
+            count(*) FILTER (WHERE embedding_model IS DISTINCT FROM $1
+                               AND inbound_links = 0 AND outbound_links = 0)::int AS unreachable
+       FROM wiki_pages
+      WHERE ($2::text IS NULL OR client_number = $2)`,
+    MODEL_GEMINI, clientNumber ?? null,
+  ).catch(() => [{ pages: 0, embedded: 0, orphaned: 0, unreachable: 0 }]);
+  return r;
 }

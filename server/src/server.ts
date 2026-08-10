@@ -288,6 +288,13 @@ const server = app.listen(env.port, async () => {
       // OPT-003: evict expired fusion-cache entries on the same pass. A cache
       // that never evicts is a second copy of the data growing forever, which
       // is exactly how llm_spend reached 80% of the database (OPT-001).
+      // MEM-001: keep memory reachable. Embedding used to depend on whichever
+      // writer remembered to call it, so when the model was retired the whole
+      // pipeline stopped and 3,167 pages became unreachable without a sound.
+      const { sweepWikiEmbeddings } = await import('./services/knowledge/wikiEmbeddingService');
+      const emb = await sweepWikiEmbeddings(200);
+      if (emb.attempted > 0) console.log(`[wikiEmbed] ${emb.embedded}/${emb.attempted} embedded${emb.degraded ? ' — PROVIDER DEGRADED' : ''}`);
+
       const { sweepFusionCache } = await import('./services/triage/criticalityEngineService');
       const swept = await sweepFusionCache();
       if (swept.deleted > 0) console.log(`[fusionCache] evicted ${swept.deleted} stale entries`);
