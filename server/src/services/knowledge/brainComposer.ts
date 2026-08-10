@@ -786,12 +786,41 @@ export interface ComposeOptions {
 // so it is kept honest.
 const _COMPLETION_VERBS_ANY = 'created|creating|create|saved|saving|noted|noting|registered|registering|recorded|recording|delegated|delegating|delegate|assigned|assigning|assign|added|adding|add|scheduled|scheduling|schedule|sent|sending|send|reminded|reminding|remind|drafted|drafting|draft|dispatched|dispatching|dispatch|emailed|emailing|email|forwarded|forwarding|forward|replied|replying|reply|cancelled|canceled|cancelling|canceling|cancel|rescheduled|rescheduling|reschedule|corrected|correcting|correct|updated|updating|update|fixed|fixing|fix|removed|removing|remove|deleted|deleting|delete|moved|moving|move|changed|changing|change|delivered|delivering|deliver|notified|notifying|notify|informed|informing|inform|set|setting|archived|archiving|archive|marked|marking|mark|saved|saving|save|remembered|remembering|remember|renamed|renaming|rename|completed|completing|complete|closed|closing|close';
 const _COMPLETION_VERBS_PAST = 'created|saved|noted|registered|recorded|delegated|assigned|added|scheduled|sent|reminded|drafted|dispatched|emailed|forwarded|replied|cancelled|canceled|rescheduled|corrected|updated|fixed|removed|deleted|moved|changed|delivered|notified|informed|set|archived|marked|saved|remembered|renamed|completed|closed';
+/**
+ * DEF-111 — the first-person-auxiliary claim, defined ONCE.
+ *
+ * This alternative existed verbatim in both EMPTY_PROMISE_RE and
+ * CURRENT_TURN_CLAIM_RE. Two copies of one rule is the shape that produced
+ * DEF-041 (an empty-promise regex duplicated, the live copy the weaker one,
+ * under a comment asserting the two were in sync — both false for months).
+ * Fixing a hole in one and not the other would have recreated it exactly.
+ *
+ * The hole, probed against the live regex on 2026-08-10:
+ *     "I have delegated all four items"          -> caught
+ *     "I have already delegated all four items"  -> NOT caught
+ *     "I've just sent it"                        -> NOT caught
+ *     "I have now sent the email"                -> NOT caught
+ *
+ * An adverb between the auxiliary and the verb defeated it. All three misses
+ * are the DEF-041 fabrication shape — that incident's sentence was "I will
+ * delegate all four unassigned items to Hamna Latif Bhutta now", and "I have
+ * already delegated all four items" is its past tense.
+ *
+ * The adverb set is CLOSED, not a `\w+ly` wildcard. A wildcard would catch
+ * hedged futures like "I'll probably send it", and DEF-107 has just shown what
+ * over-blocking costs — a correct answer replaced by a canned denial.
+ */
+const _FIRST_PERSON_AUX_CLAIM =
+  `\\bi(?:'ve|\\s+have|'ll|\\s+will|'m|\\s+am|\\s+just|\\s+already)`
+  + `(?:\\s+(?:already|just|now|finally|then|also|actually|since))?`
+  + `\\s+(?:${_COMPLETION_VERBS_ANY})\\b`;
+
 export const EMPTY_PROMISE_RE = new RegExp(
   [
     // (1) First-person WITH auxiliary — safe to match any verb form.
     //     Matches: "I've sent", "I have scheduled", "I'll delegate",
     //     "I'm sending", "I just added", "I already emailed".
-    `\\bi(?:'ve|\\s+have|'ll|\\s+will|'m|\\s+am|\\s+just|\\s+already)\\s+(?:${_COMPLETION_VERBS_ANY})\\b`,
+    _FIRST_PERSON_AUX_CLAIM,
 
     // (2) First-person BARE — restricted to past-tense verbs only, to
     //     avoid habitual-present false positives ("I schedule my day
@@ -966,7 +995,7 @@ export function isConditionalFutureBehaviour(text: string): boolean {
  *  which are the EXPECTED vocabulary of a status answer. */
 export const CURRENT_TURN_CLAIM_RE = new RegExp(
   [
-    `\\bi(?:'ve|\\s+have|'ll|\\s+will|'m|\\s+am|\\s+just|\\s+already)\\s+(?:${_COMPLETION_VERBS_ANY})\\b`,
+    _FIRST_PERSON_AUX_CLAIM,
     `\\bi\\s+(?:${_COMPLETION_VERBS_PAST})\\b`,
     // Clause-INITIAL "Done —/Done." only: "Done — delegated to X" is a
     // claim; "The task is marked done." is a state description.
