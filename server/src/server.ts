@@ -285,6 +285,12 @@ const server = app.listen(env.port, async () => {
   setTimeout(() => {
     const heal = () => protectedJob('self_heal_pass', 'important', async () => {
       const { runSelfHealPass } = await import('./services/selfheal/repairService');
+      // OPT-003: evict expired fusion-cache entries on the same pass. A cache
+      // that never evicts is a second copy of the data growing forever, which
+      // is exactly how llm_spend reached 80% of the database (OPT-001).
+      const { sweepFusionCache } = await import('./services/triage/criticalityEngineService');
+      const swept = await sweepFusionCache();
+      if (swept.deleted > 0) console.log(`[fusionCache] evicted ${swept.deleted} stale entries`);
       const r = await runSelfHealPass();
       const healed = Object.entries(r).flatMap(([id, os]) => os.filter((o) => o === 'healed').map(() => id));
       if (healed.length > 0) console.log(`[selfHeal] healed: ${healed.join(', ')}`);

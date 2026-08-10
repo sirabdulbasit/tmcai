@@ -2825,3 +2825,30 @@ model BrainResponseEvaluation {
   @@index([clientNumber, userId, evaluatedAt(sort: Desc)], map: "brain_response_evaluations_recent_ix")
   @@map("brain_response_evaluations")
 }
+
+/// OPT-003 — content-addressed cache for criticality fusion.
+///
+/// `criticality_fuse` was making 17k LLM calls a day re-deriving scores it had
+/// already computed, at a steady ~700/hour with only 302 of 7,413 feed events
+/// newer than a week.
+///
+/// Keyed on the PROMPT rather than the event: criticality legitimately moves as
+/// signals move, so caching per event would freeze a score that ought to
+/// change. Identical prompt bytes mean identical model inputs, so a changed
+/// signal misses the cache by construction.
+model CriticalityFusionCache {
+  /// sha256(promptVersion || clientNumber || userPrompt). Tenant inside the
+  /// hash so a collision cannot cross a tenant boundary.
+  cacheKey      String   @id @map("cache_key") @db.Char(64)
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  /// Bumped when the fusion prompt or dimensions change, so a prompt
+  /// improvement is never silently undone by stale cached answers.
+  promptVersion String   @map("prompt_version") @db.VarChar(16)
+  result        Json
+  hits          Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at")
+  lastHitAt     DateTime @default(now()) @map("last_hit_at")
+
+  @@index([clientNumber, createdAt], map: "criticality_fusion_cache_age_ix")
+  @@map("criticality_fusion_cache")
+}

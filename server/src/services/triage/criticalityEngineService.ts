@@ -29,6 +29,7 @@
  *   ✗ ERP, ProjectFlow — when those connectors land, add their gatherers
  *     and the LLM prompt will pick them up without changes here.
  */
+import crypto from 'crypto';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
@@ -484,11 +485,118 @@ Rules for scoring:
 
 Critical lives in the RELATIONSHIP between signals, not in any single signal. Known sender alone is not enough. The user is drowning in false-positive criticals — be conservative but not cowardly. If five signals line up, say so.`;
 
+
+/**
+ * OPT-003 — the fusion cache.
+ *
+ * `criticality_fuse` was making 17,087 LLM calls in 24 hours (21.1M tokens,
+ * ~700/hour, steady around the clock) while only 302 of 7,413 feed events were
+ * newer than a week. Brain was re-scoring months-old email every hour and
+ * getting the same answer every time.
+ *
+ * The key is the PROMPT, deliberately, not the feed event. Criticality SHOULD
+ * move as its signals move — a deadline approaching, an open item closing, a
+ * sender going quiet all change the score legitimately, and caching per event
+ * would freeze it. `buildUserPrompt` returns the exact string the model sees,
+ * so identical bytes mean identical inputs and a changed signal misses the
+ * cache by construction rather than by anyone remembering to invalidate it.
+ *
+ * PROMPT_VERSION must be bumped whenever FUSION_PROMPT or the dimension set
+ * changes. Without it a prompt improvement would be silently undone by stale
+ * answers cached from before the change.
+ */
+const FUSION_PROMPT_VERSION = 'v1';
+/** Cached fusions older than this are ignored and swept. Model behaviour and
+ *  the world both drift; a score derived a fortnight ago is not evidence. */
+const FUSION_CACHE_TTL_DAYS = 14;
+
+/**
+ * Bucket an hour count so the key stops drifting with the clock.
+ *
+ * Measured after the first deploy: 92 cache entries for 15 hits. The prompt
+ * embeds live durations — "in 42h", "Current silence on this sender: 37h" —
+ * so every hourly pass produced a NEW prompt and missed by construction. The
+ * cache could never work while its key ticked with the clock.
+ *
+ * Non-linear on purpose. Criticality genuinely swings when a deadline goes from
+ * 3h to 1h, and genuinely does not when it goes from 42h to 41h. So the buckets
+ * are fine close in and coarse far out: the score stays responsive exactly
+ * where responsiveness matters, and stops being recomputed where it does not.
+ */
+function bucketHours(h: number): string {
+  const n = Math.max(0, Math.round(h));
+  if (n <= 6) return `${n}h`;            // hour-exact — this is where it matters
+  if (n <= 24) return `${Math.floor(n / 3) * 3}h~`;   // 3h buckets
+  if (n <= 72) return `${Math.floor(n / 12) * 12}h~`; // 12h buckets
+  return `${Math.floor(n / 24)}d~`;                   // daily beyond 3 days
+}
+
+/**
+ * Normalise the volatile parts of the prompt FOR THE KEY ONLY.
+ *
+ * The model still receives the exact, unmodified prompt — only the cache key is
+ * computed from the normalised form. A hit therefore returns a score derived
+ * from slightly different hour figures, which is the deliberate trade: within a
+ * bucket those figures do not change the judgement.
+ */
+function normalisePromptForKey(prompt: string): string {
+  return prompt
+    // "- contract review · in 42h (2026-08-10)"
+    .replace(/· in (\d+(?:\.\d+)?)h/g, (_m, h) => `· in ${bucketHours(Number(h))}`)
+    // "Current silence on this sender: 37h."
+    .replace(/silence on this sender: (\d+(?:\.\d+)?)h/gi, (_m, h) => `silence on this sender: ${bucketHours(Number(h))}`)
+    // "age=6d" — an item ageing by a day rarely flips criticality; beyond a
+    // fortnight the exact age stops carrying information at all.
+    .replace(/age=(\d+)d/g, (_m, d) => {
+      const n = Number(d);
+      return `age=${n <= 14 ? n : `${Math.floor(n / 7) * 7}+`}d`;
+    })
+    // Median/typical reply windows drift for the same reason.
+    .replace(/(median|typical)[^:]*: (\d+(?:\.\d+)?)h/gi, (m, w, h) => m.replace(`${h}h`, bucketHours(Number(h))));
+}
+
+function fusionCacheKey(clientNumber: string, userPrompt: string): string {
+  // clientNumber is INSIDE the hash, not merely a column: a shared cache would
+  // let one tenant's email content decide another tenant's score, which is the
+  // worst shape a cross-tenant read can take.
+  return crypto.createHash('sha256')
+    .update(`${FUSION_PROMPT_VERSION}\u0000${clientNumber}\u0000${normalisePromptForKey(userPrompt)}`)
+    .digest('hex');
+}
+
+/** Exported for the cache tests — the normalisation IS the cache's behaviour. */
+export const __fusionCacheInternals = { bucketHours, normalisePromptForKey };
+
 async function fuseAndScore(
   input: ScoreInput,
   signals: GatheredSignals,
 ): Promise<{ dimensions: CriticalityDimensions; reasons: string[]; story: string; confidence: number; substantive: boolean; substantiveWhy: string }> {
   const userMsg = buildUserPrompt(input, signals);
+  const cacheKey = fusionCacheKey(input.clientNumber, userMsg);
+
+  // Cache read. Never allowed to break scoring: any failure here falls through
+  // to the live call, which is the behaviour we had before the cache existed.
+  try {
+    const cached = await prisma.criticalityFusionCache.findUnique({
+      where: { cacheKey },
+      select: { result: true, createdAt: true, promptVersion: true },
+    });
+    if (
+      cached &&
+      cached.promptVersion === FUSION_PROMPT_VERSION &&
+      Date.now() - cached.createdAt.getTime() < FUSION_CACHE_TTL_DAYS * 86_400_000
+    ) {
+      // Fire-and-forget: hit accounting must not add latency to the hit it is
+      // accounting for.
+      void prisma.criticalityFusionCache.update({
+        where: { cacheKey },
+        data: { hits: { increment: 1 }, lastHitAt: new Date() },
+      }).catch(() => {});
+      return cached.result as unknown as Awaited<ReturnType<typeof fuseAndScore>>;
+    }
+  } catch (err: any) {
+    log.warn('fusion cache read failed — scoring live', { error: err?.message });
+  }
 
   try {
     const r = await callLLM(FUSION_PROMPT, userMsg, {
@@ -508,7 +616,7 @@ async function fuseAndScore(
       cascade:          clamp01(Number(d.cascade)),
       patternAnomaly:   clamp01(Number(d.patternAnomaly)),
     };
-    return {
+    const result = {
       dimensions: dims,
       reasons: Array.isArray(obj.reasons) ? obj.reasons.slice(0, 6).map(String) : [],
       story: String(obj.story ?? '').slice(0, 400),
@@ -516,6 +624,27 @@ async function fuseAndScore(
       substantive: obj.substantive === true,
       substantiveWhy: String(obj.substantiveWhy ?? '').slice(0, 240),
     };
+
+    // Only a real LLM verdict is cached. The deterministic fallback below is
+    // explicitly NOT — caching it would freeze "LLM unavailable" into a score
+    // for a fortnight, turning a transient provider outage into a lasting
+    // misjudgement of how critical something is.
+    void prisma.criticalityFusionCache.upsert({
+      where: { cacheKey },
+      create: {
+        cacheKey,
+        clientNumber: input.clientNumber,
+        promptVersion: FUSION_PROMPT_VERSION,
+        result: result as any,
+      },
+      update: {
+        result: result as any,
+        promptVersion: FUSION_PROMPT_VERSION,
+        createdAt: new Date(),
+      },
+    }).catch((err: any) => log.warn('fusion cache write failed', { error: err?.message }));
+
+    return result;
   } catch (err: any) {
     log.warn('fuseAndScore LLM failed — falling back', { error: err.message });
     // Fallback path: LLM unavailable. Don't push to WhatsApp on a
@@ -830,4 +959,42 @@ export async function scoreCriticality(input: ScoreInput): Promise<CriticalityRe
 function strongerBand(a: CriticalityBand, b: CriticalityBand): CriticalityBand {
   const order: CriticalityBand[] = ['low', 'medium', 'high', 'critical'];
   return order[Math.max(order.indexOf(a), order.indexOf(b))];
+}
+
+/**
+ * Evict cache entries past their TTL or from a superseded prompt version.
+ *
+ * A cache with no eviction is just a second copy of the data that grows
+ * forever — which is precisely how llm_spend became 80% of this database
+ * (OPT-001). Registered on the hourly self-heal pass rather than its own job.
+ */
+export async function sweepFusionCache(): Promise<{ deleted: number }> {
+  try {
+    const cutoff = new Date(Date.now() - FUSION_CACHE_TTL_DAYS * 86_400_000);
+    const r = await prisma.criticalityFusionCache.deleteMany({
+      where: {
+        OR: [
+          { createdAt: { lt: cutoff } },
+          { promptVersion: { not: FUSION_PROMPT_VERSION } },
+        ],
+      },
+    });
+    return { deleted: r.count };
+  } catch {
+    return { deleted: 0 };
+  }
+}
+
+/** Hit rate, for the daily digest and for answering "is the cache working?". */
+export async function fusionCacheStats(clientNumber?: string): Promise<{ entries: number; hits: number }> {
+  try {
+    const agg = await prisma.criticalityFusionCache.aggregate({
+      where: clientNumber ? { clientNumber } : undefined,
+      _count: { cacheKey: true },
+      _sum: { hits: true },
+    });
+    return { entries: agg._count.cacheKey ?? 0, hits: agg._sum.hits ?? 0 };
+  } catch {
+    return { entries: 0, hits: 0 };
+  }
 }
