@@ -9,23 +9,30 @@ import api from '../services/api';
  * Nexeo's provider was a constant in llmRouter.ts, so changing backend meant an
  * edit and a deploy.
  *
- * Two rules the UI has to hold to:
+ * STYLING NOTE: this deliberately reuses `settings-section`, `config-row`,
+ * `config-key`, `config-value` and `config-badge` — the same classes
+ * ConfigEditor renders the "AI API Keys" block with, directly below. The first
+ * version hardcoded light-theme colours and looked foreign on the dark UI. A
+ * settings panel that does not match the panel beneath it reads as bolted on,
+ * so the only inline styles left here are layout, never colour: colour comes
+ * from the theme's CSS variables so it follows light and dark automatically.
  *
+ * Two rules the UI has to hold to:
  *  - The service account is a PRIVATE KEY. It is never sent back to the
  *    browser. The box shows whether one is stored, and an empty box on save
  *    means "keep what you have" — never "erase it".
  *  - Verify makes a REAL call. A credential check would pass on a key with no
- *    quota, a retired model, or a region that does not host the model — and
- *    two of those three have bitten this project inside a week.
+ *    quota, a retired model, or a region that does not host the model — and two
+ *    of those three have bitten this project inside a week.
  */
 
 const PROVIDERS = [
-  { id: 'claude', label: 'Claude', dot: '#8b5cf6' },
+  { id: 'claude', label: 'Claude', dot: '#a855f7' },
   { id: 'openai', label: 'OpenAI', dot: '#10b981' },
   { id: 'gemini', label: 'Gemini', dot: '#3b82f6' },
   { id: 'vertex', label: 'Vertex AI', dot: '#60a5fa' },
   { id: 'openrouter', label: 'OpenRouter', dot: '#f97316' },
-  { id: 'custom', label: 'Custom', dot: '#64748b' },
+  { id: 'custom', label: 'Custom', dot: '#94a3b8' },
 ];
 
 export default function AiProviderPanel() {
@@ -58,10 +65,11 @@ export default function AiProviderPanel() {
       ];
       // Only write the service account when the operator actually typed one.
       // An empty box means "leave the stored key alone", exactly as the hint
-      // under it says — sending '' here would silently delete their credential.
+      // under it promises — sending '' would silently delete their credential.
       if (sa.trim()) writes.push(api.put('/config/ai_service_account_json', { value: sa.trim() }));
       await Promise.all(writes);
       await load();
+      setResult({ ok: true, message: 'Saved. Press Verify to test it for real.' });
     } catch (e) {
       setError(e?.response?.data?.error || 'Save failed.');
     } finally {
@@ -81,116 +89,150 @@ export default function AiProviderPanel() {
     }
   }
 
-  if (!cfg) return <div className="config-section"><p>Loading provider configuration…</p></div>;
+  if (!cfg) {
+    return (
+      <section className="settings-section">
+        <h2>🤖 AI Provider</h2>
+        <p className="config-desc">Loading…</p>
+      </section>
+    );
+  }
 
   const isVertex = cfg.provider === 'vertex';
 
   return (
-    <div className="config-section">
-      <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>🤖 AI Provider</h2>
+    <section className="settings-section">
+      <h2>🤖 AI Provider</h2>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, margin: '14px 0 20px' }}>
-        {PROVIDERS.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => setCfg({ ...cfg, provider: p.id })}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '10px 16px', borderRadius: 10, cursor: 'pointer',
-              border: cfg.provider === p.id ? '2px solid #4f46e5' : '1px solid #d4d4d8',
-              background: cfg.provider === p.id ? '#eef2ff' : '#fafafa',
-              color: cfg.provider === p.id ? '#4338ca' : '#3f3f46',
-              fontWeight: cfg.provider === p.id ? 600 : 500,
-            }}
-          >
-            <span style={{ width: 10, height: 10, borderRadius: '50%', background: p.dot }} />
-            {p.label}
-          </button>
-        ))}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, margin: '4px 0 18px' }}>
+        {PROVIDERS.map((p) => {
+          const on = cfg.provider === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setCfg({ ...cfg, provider: p.id })}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '9px 15px', borderRadius: 10, cursor: 'pointer',
+                fontSize: 14, fontWeight: on ? 600 : 500,
+                // Colour from the theme, never literals — so this follows the
+                // dark UI it sits in, and any future theme change.
+                background: on ? 'var(--bg-active, var(--bg-hover))' : 'var(--bg-input)',
+                border: `1px solid ${on ? 'var(--accent, #6366f1)' : 'var(--border-input)'}`,
+                color: on ? 'var(--text-primary, var(--text))' : 'var(--text-secondary, var(--text-muted))',
+              }}
+            >
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: p.dot, flexShrink: 0 }} />
+              {p.label}
+            </button>
+          );
+        })}
       </div>
 
-      <label className="config-label">MODEL</label>
-      <input
-        className="config-input"
-        value={cfg.model || ''}
-        onChange={(e) => setCfg({ ...cfg, model: e.target.value })}
-        placeholder="gemini-2.5-pro"
-      />
-      <p className="config-hint">
-        {isVertex
-          ? 'Enter the Vertex model ID enabled in your GCP project (e.g. gemini-2.5-pro).'
-          : 'The model ID for the selected provider.'}
-        {cfg.flashModel && cfg.flashModel !== cfg.model && (
-          <> High-volume work uses <code>{cfg.flashModel}</code>, derived from this.</>
-        )}
-      </p>
+      <div className="config-row">
+        <div className="config-key">
+          <code>ai_model</code>
+          <span className="config-desc">
+            {isVertex
+              ? 'Vertex model ID enabled in your GCP project (e.g. gemini-2.5-pro).'
+              : 'Model ID for the selected provider.'}
+          </span>
+        </div>
+        <div className="config-value">
+          <input
+            type="text"
+            value={cfg.model || ''}
+            onChange={(e) => setCfg({ ...cfg, model: e.target.value })}
+            placeholder="gemini-2.5-pro"
+          />
+        </div>
+      </div>
 
       {isVertex && (
         <>
-          <label className="config-label">SERVICE ACCOUNT JSON</label>
-          <textarea
-            className="config-input"
-            rows={6}
-            value={sa}
-            onChange={(e) => setSa(e.target.value)}
-            placeholder={
-              cfg.hasServiceAccount ? '•••••••• (stored — leave blank to keep it)'
-                : cfg.usesAmbientCredentials
-                  ? 'Not stored. Using the server\'s GOOGLE_APPLICATION_CREDENTIALS.'
-                  : 'Paste the service account JSON'
-            }
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-          />
-          <p className="config-hint">
-            Stored application-wide (used by all tenants); masked on read. If a key is ever
-            exposed, rotate it in GCP.
-            {cfg.usesAmbientCredentials && !cfg.hasServiceAccount && (
-              <> <strong>Optional here</strong> — this server already authenticates with its own
-              credentials file.</>
-            )}
-          </p>
+          <div className="config-row">
+            <div className="config-key">
+              <code>ai_service_account_json</code>
+              <span className="config-badge sensitive">encrypted</span>
+              <span className="config-desc">
+                Stored application-wide; masked on read. Leave blank to keep the stored value.
+                {cfg.usesAmbientCredentials && !cfg.hasServiceAccount
+                  && ' Optional — this server already authenticates with its own credentials file.'}
+              </span>
+            </div>
+            <div className="config-value">
+              <textarea
+                rows={5}
+                value={sa}
+                onChange={(e) => setSa(e.target.value)}
+                placeholder={
+                  cfg.hasServiceAccount
+                    ? '•••••••• (stored)'
+                    : cfg.usesAmbientCredentials
+                      ? 'Not stored — using the server credentials file'
+                      : 'Paste the service account JSON'
+                }
+                style={{
+                  width: '100%', fontFamily: 'monospace', fontSize: 12, padding: 10,
+                  borderRadius: 8, resize: 'vertical',
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border-input)',
+                  color: 'var(--text)',
+                }}
+              />
+            </div>
+          </div>
 
-          <label className="config-label">REGION (LOCATION)</label>
-          <input
-            className="config-input"
-            value={cfg.region || ''}
-            onChange={(e) => setCfg({ ...cfg, region: e.target.value })}
-            placeholder="us-central1"
-          />
-          <p className="config-hint">Vertex AI region, e.g. us-central1, europe-west1.</p>
+          <div className="config-row">
+            <div className="config-key">
+              <code>ai_region</code>
+              <span className="config-desc">Vertex AI region, e.g. us-central1, europe-west1.</span>
+            </div>
+            <div className="config-value">
+              <input
+                type="text"
+                value={cfg.region || ''}
+                onChange={(e) => setCfg({ ...cfg, region: e.target.value })}
+                placeholder="us-central1"
+              />
+            </div>
+          </div>
         </>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
-        <button className="btn-primary" onClick={save} disabled={saving}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
+        <button className="settings-btn" onClick={save} disabled={saving} style={{ padding: '10px 18px' }}>
           {saving ? 'Saving…' : 'Save'}
         </button>
-        <button className="btn-secondary" onClick={verify} disabled={verifying}>
+        <button className="settings-btn" onClick={verify} disabled={verifying} style={{ padding: '10px 18px' }}>
           {verifying ? 'Checking…' : '🔌 Verify integration'}
         </button>
 
         {result && (
-          <span style={{ color: result.ok ? '#15803d' : '#b91c1c', fontWeight: 600 }}>
+          <span style={{ color: result.ok ? '#22c55e' : '#f87171', fontWeight: 600, fontSize: 14 }}>
             {result.ok ? '✓ ' : '✗ '}{result.message}
           </span>
         )}
         {!result && !cfg.ready && cfg.reason && (
-          <span style={{ color: '#b45309', fontWeight: 600 }}>⚠ {cfg.reason}</span>
+          <span style={{ color: '#fbbf24', fontWeight: 600, fontSize: 14 }}>⚠ {cfg.reason}</span>
         )}
       </div>
 
-      {/* The provider's own error text names the real cause — wrong region, model
-          not enabled, missing IAM role. Paraphrasing it would waste the reader's
-          time, so it is shown verbatim. */}
+      {/* The provider's own error text names the real cause — wrong region,
+          model not enabled, missing IAM role. Paraphrasing it would waste the
+          reader's time, so it is shown verbatim. */}
       {result?.detail && (
         <pre style={{
-          marginTop: 10, padding: 10, background: '#fef2f2', border: '1px solid #fecaca',
-          borderRadius: 8, fontSize: 11, whiteSpace: 'pre-wrap', color: '#7f1d1d',
+          marginTop: 10, padding: 10, borderRadius: 8, fontSize: 11,
+          whiteSpace: 'pre-wrap', overflowX: 'auto',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border-input)',
+          color: 'var(--text-muted)',
         }}>{result.detail}</pre>
       )}
 
-      {error && <p style={{ color: '#b91c1c', marginTop: 10 }}>{error}</p>}
-    </div>
+      {error && <p style={{ color: '#f87171', marginTop: 10, fontSize: 14 }}>{error}</p>}
+    </section>
   );
 }
