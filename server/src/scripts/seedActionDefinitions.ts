@@ -102,6 +102,25 @@ export const ACTIONS: Seed[] = [
     isHumanFacing: false,
   },
   {
+    type: 'remove_open_item',
+    displayName: 'Remove open item',
+    description: "Remove an item from the user's list when they say remove, delete, drop, or 'I don't want this any more'. Sets the item to CANCELLED — NOT done. Marking it DONE would claim work was completed that never happened, which the user reads as a lie about what occurred. CANCELLED is honest and reversible. Reference by openItemId, or by titleRef when the id may be stale. When the user asks to remove several items, emit one action per item.",
+    schema: {
+      type: 'object',
+      required: [],
+      properties: {
+        openItemId: { type: 'string', description: 'Preferred when a fresh id is available' },
+        titleRef: { type: 'string', description: 'The item title as the user referred to it. Never renames anything — only identifies which item.' },
+        reason: { type: 'string', description: "Short note on why it was removed, e.g. 'owner said it was meaningless'" },
+      },
+    },
+    handlerModule: 'openItemsService',
+    handlerFunction: 'removeItem',
+    operationalMetadata: { external: false },
+    requiresCapability: 'manage_open_items',
+    isHumanFacing: false,
+  },
+  {
     type: 'delegate_open_item',
     displayName: 'Delegate open item',
     description: "Transition an existing open item to DELEGATED with a delegatee. Emit `delegateeCandidateId` = the EXACT candidateId from the contacts block. NEVER emit raw emails or names — the server resolves candidateId → email + name. If you can't find a matching contact, emit decision='ask' with a clarifying question listing the real candidates. If multiple candidates match the user's named recipient, emit ask too.",

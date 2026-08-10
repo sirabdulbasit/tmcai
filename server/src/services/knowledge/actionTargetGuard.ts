@@ -45,6 +45,7 @@ export const TARGETING_ACTION_KINDS = [
   'reschedule_meeting',
   'update_open_item',
   'mark_open_item_done',
+  'remove_open_item',
   'set_contact_scope',
   'mark_contact_inactive',
   'update_contact',
@@ -149,6 +150,20 @@ export async function verifyActionTargets(
     case 'mark_open_item_done': {
       if (await openItemExists(s.openItemId, userId, clientNumber)) return { ok: true };
       return ask('which open item — the reference is stale, name it again');
+    }
+    case 'remove_open_item': {
+      // DEF-106: removal is destructive from the owner's point of view, so it
+      // is guarded like the rest — but a live ID is not the only acceptable
+      // target. DEF-103 established that a stale id plus the title the user
+      // actually said is enough to identify an item, and refusing on a stale id
+      // is what made Brain ask him to repeat himself.
+      //
+      // So: a resolvable id OR a non-empty titleRef passes. Neither fails
+      // closed. Whether the title is UNIQUE is settled at dispatch, where a
+      // multi-match becomes a question rather than a guess.
+      if (await openItemExists(s.openItemId, userId, clientNumber)) return { ok: true };
+      if (typeof s.titleRef === 'string' && s.titleRef.trim().length >= 2) return { ok: true };
+      return ask('which item to remove — name it and I will take it off the list');
     }
     case 'cancel_meeting':
     case 'reschedule_meeting': {

@@ -85,6 +85,15 @@ export type ComposedAction =
   // to fall back on when the openItemId went stale.
   | { type: 'update_open_item'; openItemId: string; title?: string; titleRef?: string; priority?: string; dueDateRaw?: string; note?: string }
   | { type: 'mark_open_item_done'; openItemId: string; completionNote?: string }
+  // DEF-106: Brain could delete a wiki page, cancel a meeting and deactivate a
+  // contact, but had NO way to remove an open item — only mark it DONE, which
+  // would falsely record work as completed. So "remove this item" had no
+  // matching capability and Brain abdicated; the judge scored those turns C5=20
+  // and called it "an abdication of action". The owner had asked "many times".
+  //
+  // `titleRef` mirrors update_open_item (DEF-103): it says WHICH item, never
+  // renames anything, and rescues the case where the id has gone stale.
+  | { type: 'remove_open_item'; openItemId?: string; titleRef?: string; reason?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; attendeeAdHocEmails?: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
@@ -178,6 +187,7 @@ export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']
   'create_contact',
   'update_open_item',
   'mark_open_item_done',
+  'remove_open_item',
   'update_contact',
   'set_brain_name',
   'record_preference',
@@ -190,7 +200,7 @@ export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']
  *  allow-list OR its type is listed here. Locked against the seeded
  *  registry by tests/capabilityDiscovery.test.ts (registry-parity). */
 export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
-  'add_open_item', 'update_open_item', 'mark_open_item_done', 'delegate_open_item',
+  'add_open_item', 'update_open_item', 'mark_open_item_done', 'remove_open_item', 'delegate_open_item',
   'schedule_meeting', 'cancel_meeting', 'reschedule_meeting',
   'send_email', 'notify_via_whatsapp',
   'set_brain_name', 'archive_wiki_page', 'delete_wiki_page',
@@ -3318,6 +3328,75 @@ ${calLines.join('\n')}`;
         } catch (e: any) {
           console.warn('[brain-chat] update_open_item failed', { error: e?.message, openItemId: act.openItemId, userId });
           actionResult = { ok: false, message: `[update_open_item failed: ${e?.message ?? 'unknown'}]` };
+          answer = actionResult.message;
+        }
+      } else if (act.type === 'remove_open_item') {
+        // DEF-106 — the capability that was missing entirely.
+        //
+        // CANCELLED, not deleted, and not DONE. DONE would be a lie: the work
+        // did not happen, the owner decided it should not exist. CANCELLED is
+        // the honest status and it is reversible, which matters because the
+        // instruction that reaches here ("remove the meaningless ones") is a
+        // judgement the owner may want to revisit.
+        try {
+          let target = act.openItemId
+            ? await prisma.openItem.findFirst({
+                where: { id: act.openItemId, clientNumber, userId },
+                select: { id: true, title: true, status: true },
+              })
+            : null;
+
+          // Same stale-id rescue as update_open_item: he named it, so use the
+          // name rather than asking him to repeat himself.
+          const lookup = act.titleRef;
+          if (!target && lookup) {
+            const matches = await prisma.openItem.findMany({
+              where: {
+                clientNumber, userId,
+                status: { notIn: ['DONE', 'CANCELLED'] },
+                title: { contains: lookup.trim(), mode: 'insensitive' },
+              },
+              select: { id: true, title: true, status: true },
+              take: 5,
+            }).catch(() => []);
+            const exact = matches.filter(
+              (m: any) => m.title.trim().toLowerCase() === lookup.trim().toLowerCase(),
+            );
+            if (exact.length === 1) target = exact[0];
+            else if (matches.length === 1) target = matches[0];
+            else if (matches.length > 1) {
+              // Ambiguity is a question, never a guess — removing the wrong
+              // item is not something the owner can easily notice.
+              actionResult = {
+                ok: false,
+                message: `[remove_open_item: "${lookup}" matches ${matches.length} items — ${matches.map((m: any) => `"${m.title}"`).join(', ')}]`,
+              };
+              answer = actionResult.message;
+            }
+          }
+
+          if (!actionResult && !target) {
+            actionResult = {
+              ok: false,
+              message: `[remove_open_item: could not find an open item matching ${lookup ? `"${lookup}"` : 'that reference'}]`,
+            };
+            answer = actionResult.message;
+          } else if (!actionResult && target) {
+            await prisma.openItem.update({
+              where: { id: target.id },
+              data: {
+                status: 'CANCELLED',
+                description: act.reason
+                  ? `${act.reason}`.slice(0, 500)
+                  : undefined,
+              },
+            });
+            actionResult = { ok: true, message: `[removed: "${target.title}"]` };
+            answer = actionResult.message;
+          }
+        } catch (e: any) {
+          console.warn('[brain-chat] remove_open_item failed', { error: e?.message, userId });
+          actionResult = { ok: false, message: `[remove_open_item failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
       } else if (act.type === 'mark_open_item_done') {
@@ -6735,6 +6814,17 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     const note = typeof r.note === 'string' && r.note.trim() ? r.note.trim() : undefined;
     const titleRef = typeof r.titleRef === 'string' && r.titleRef.trim() ? r.titleRef.trim() : undefined;
     return { type: 'update_open_item', openItemId, title, titleRef, priority, dueDateRaw, note };
+  }
+  if (type === 'remove_open_item') {
+    // DEF-106: either an id or a title is enough. Requiring the id would
+    // recreate the dead end that made Brain ask the owner to repeat a title he
+    // had just used.
+    const openItemId = typeof r.openItemId === 'string' && r.openItemId.trim() ? r.openItemId.trim() : undefined;
+    const titleRef = typeof r.titleRef === 'string' && r.titleRef.trim() ? r.titleRef.trim()
+      : (typeof r.title === 'string' && r.title.trim() ? r.title.trim() : undefined);
+    if (!openItemId && !titleRef) return null;
+    const reason = typeof r.reason === 'string' && r.reason.trim() ? r.reason.trim() : undefined;
+    return { type: 'remove_open_item', openItemId, titleRef, reason };
   }
   if (type === 'mark_open_item_done') {
     const openItemId = typeof r.openItemId === 'string' ? r.openItemId.trim() : '';

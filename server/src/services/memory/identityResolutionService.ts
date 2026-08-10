@@ -411,3 +411,69 @@ export async function mergeEntities(
     return null;
   }
 }
+
+
+/**
+ * MEM-003 — self-pruning, unattended.
+ *
+ * The owner asked for pruning he does not have to intervene in. The first pass
+ * merged 73 rows correctly, but *I* ran it: the logic was proven and nothing
+ * repeated it, which is not self-pruning, it is a chore I happened to do once.
+ *
+ * Only `high` and `certain` proposals are merged automatically. `ambiguous` is
+ * never touched by the scheduler — it exists precisely for cases where the
+ * evidence does not settle it, and a scheduler that quietly resolved those
+ * would defeat the reason the category exists. They surface as a finding
+ * instead, so a human sees them without being interrupted.
+ *
+ * Bounded per run. A pruning pass that merges hundreds of records unattended is
+ * exactly the kind of thing that should be discovered slowly.
+ */
+export async function runIdentityPruningPass(maxMergesPerRun = 25): Promise<{
+  merged: number; groups: number; ambiguous: number;
+}> {
+  const tenants = await prisma.$queryRawUnsafe<Array<{ client_number: string }>>(
+    `SELECT client_number FROM tenants WHERE is_active = true`,
+  ).catch(() => [] as Array<{ client_number: string }>);
+
+  let merged = 0;
+  let groups = 0;
+  let ambiguous = 0;
+
+  for (const t of tenants) {
+    const proposals = await proposeEntityMerges(t.client_number).catch(() => [] as MergeProposal[]);
+    ambiguous += proposals.filter((p) => p.confidence === 'ambiguous').length;
+
+    const actionable = proposals.filter((p) => p.confidence !== 'ambiguous');
+    for (const p of actionable) {
+      if (merged >= maxMergesPerRun) break;
+      const out = await mergeEntities(t.client_number, p.survivorId, p.duplicateIds, p.reason);
+      if (!out) continue;
+      merged += out.mergedIds.length;
+      groups += 1;
+      // Every automatic merge is recorded where the owner can see it, with the
+      // evidence that justified it. An unattended change nobody can audit is
+      // indistinguishable from data loss.
+      log.info('identity merged automatically', {
+        clientNumber: t.client_number, survivorId: out.survivorId,
+        mergedIds: out.mergedIds, reason: p.reason,
+      });
+    }
+
+    // Ambiguity is reported, never resolved by the scheduler. This is the
+    // owner's "email, name, contact" judgement call, and it needs context a
+    // rule does not have.
+    if (ambiguous > 0) {
+      const { recordFinding } = await import('../selfheal/healthFindingService');
+      void recordFinding({
+        clientNumber: t.client_number,
+        kind: 'identity_ambiguous_duplicates',
+        severity: 'info',
+        source: 'identity-resolution',
+        summary: `${ambiguous} possible duplicate identities share a name but no address, number or domain — merging them automatically would risk fusing two people`,
+        evidence: { ambiguous, examples: proposals.filter((p) => p.confidence === 'ambiguous').slice(0, 5).map((p) => p.displayName) },
+      });
+    }
+  }
+  return { merged, groups, ambiguous };
+}

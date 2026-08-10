@@ -291,6 +291,16 @@ const server = app.listen(env.port, async () => {
       // MEM-001: keep memory reachable. Embedding used to depend on whichever
       // writer remembered to call it, so when the model was retired the whole
       // pipeline stopped and 3,167 pages became unreachable without a sound.
+      // MEM-003: self-pruning. Duplicate identities are merged on EVIDENCE
+      // (shared address, number, or name plus domain) — never on resemblance.
+      // Ambiguous cases are reported, not merged: ten surviving duplicates cost
+      // less than one false identity.
+      const { runIdentityPruningPass } = await import('./services/memory/identityResolutionService');
+      const pruned = await runIdentityPruningPass(25);
+      if (pruned.merged > 0 || pruned.ambiguous > 0) {
+        console.log(`[identityPrune] merged ${pruned.merged} rows across ${pruned.groups} groups · ${pruned.ambiguous} left ambiguous`);
+      }
+
       const { sweepWikiEmbeddings } = await import('./services/knowledge/wikiEmbeddingService');
       const emb = await sweepWikiEmbeddings(200);
       if (emb.attempted > 0) console.log(`[wikiEmbed] ${emb.embedded}/${emb.attempted} embedded${emb.degraded ? ' — PROVIDER DEGRADED' : ''}`);

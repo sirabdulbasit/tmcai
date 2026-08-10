@@ -49,6 +49,7 @@ export interface Limitation {
 const CAPABILITIES: Capability[] = [
   { label: 'Add or update an open item (task/todo)', handle: 'add_open_item / update_open_item', what: 'Creates or edits a row in the user\'s open items list.' },
   { label: 'Mark an open item done', handle: 'mark_open_item_done', what: 'Closes an open item with an optional completion note.' },
+  { label: 'Remove an open item', handle: 'remove_open_item', what: "Removes an item from the list when the user no longer wants it. Sets CANCELLED, never DONE — DONE would claim work happened that did not. Reversible." },
   { label: 'Delegate an open item', handle: 'delegate_open_item', what: 'Assigns an open item to a contact (or ad-hoc email) and sends them a delegation email.' },
   { label: 'Schedule a meeting', handle: 'schedule_meeting', what: 'Creates a Google Calendar event with attendees (contact or ad-hoc email) and sends invites.' },
   { label: 'Reschedule a meeting', handle: 'reschedule_meeting', what: 'Updates an existing Calendar event\'s time or duration.' },
