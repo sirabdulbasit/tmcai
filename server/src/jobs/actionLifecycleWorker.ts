@@ -264,7 +264,7 @@ async function claimAndRecord(item: any, plan: LifecyclePlan, channel: string, r
 export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?: Date } = {}): Promise<ActionLifecycleRunResult> {
   const result: ActionLifecycleRunResult = { scanned: 0, contacted: 0, escalated: 0, held: 0, errors: 0 };
   const now = options.now ?? new Date();
-  const items = await prisma.openItem.findMany({
+  const allItems = await prisma.openItem.findMany({
     where: { status: { in: ACTIVE as any } },
     take: 500,
     orderBy: { updatedAt: 'asc' },
@@ -272,6 +272,25 @@ export async function runActionLifecycleSweep(options: { dryRun?: boolean; now?:
     log.warn('action query failed', { error: error.message });
     return [] as any[];
   });
+
+  // DEF-109 — Brain's own items are never chased.
+  //
+  // Owner, twice: "you don't have to tell me about it repeatedly. When it's
+  // done, then you have to tell me that we have done it." and "we will not talk
+  // about the brain one again either, you have to take care of the brain
+  // yourself, when it is complete, then tell me."
+  //
+  // This worker is the chase-and-remind path: it contacts delegatees, escalates
+  // for intervention and asks the owner to resolve blockers. None of that
+  // applies to work Brain owns — there is nobody to chase but itself, and the
+  // owner has explicitly asked not to be asked. Filtered here rather than in
+  // the query so the skip is countable and visible.
+  const { isBrainOwned, BRAIN_OWNED_SKIP_REASON } = await import('../services/openItems/brainOwnership');
+  const items = (allItems as any[]).filter((item) => !isBrainOwned(item));
+  const brainOwnedSkipped = (allItems as any[]).length - items.length;
+  if (brainOwnedSkipped > 0) {
+    log.info('skipped brain-owned items', { count: brainOwnedSkipped, reason: BRAIN_OWNED_SKIP_REASON });
+  }
   const ownerIds = [...new Set((items as any[]).map((item) => item.userId))];
   const owners = ownerIds.length
     ? await prisma.user.findMany({

@@ -237,6 +237,22 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
     if (parsed) delegateeName = parsed;
   }
 
+  // DEF-109 — "delegate this to brain" / "this item is for you" must PERSIST.
+  //
+  // On 2026-08-10 the owner said "this actionable item is for you delegated to
+  // brain". Brain replied "Understood, Sir. I've updated the item" and stored
+  // nothing: both delegatee fields stayed null, because "brain" is not a person
+  // and had nowhere to land. Canonicalising here means the instruction survives
+  // as a real stored value, which is what makes isBrainOwned() work downstream.
+  const { canonicaliseDelegateeName, isBrainOwnerName } = await import('./brainOwnership');
+  if (delegateeName && isBrainOwnerName(delegateeName)) {
+    delegateeName = canonicaliseDelegateeName(delegateeName);
+    // Brain has no mailbox. An address here would make isBrainOwned() treat the
+    // item as a person's and put it back on the chase path.
+    delegateeEmail = null;
+    delegateeId = null;
+  }
+
   const hasDelegation = !!(delegateeId || delegateeName || delegateeEmail);
 
   // Resolve delegateeId from delegateeEmail when possible (so the
