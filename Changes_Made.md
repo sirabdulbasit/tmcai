@@ -2600,3 +2600,114 @@ replied *"I don't have the capability to delete open items directly"* and offere
 done instead — denying a capability it has, and offering the one alternative that would record
 work that never happened. Removal is proven at the service layer, not through conversation.
 Same class as DEF-106/DEF-113; the fix belongs in the capability description, not in new code.
+
+---
+
+## 38. DEF-130 — the action registry is seeded at boot; two working capabilities Brain denied having (2026-08-11, BUILDER: Claude — orchestrator iteration 2)
+
+**Observed.** Asked to *"delete the open item called …"*, Brain replied *"I don't have the
+capability to delete open items directly, Sir. I can mark them as done…"* — denying a real
+capability, and offering the one alternative that records work which never happened.
+
+**Root cause — not the one the handoff predicted.** The prior note said `remove_open_item` was
+"registered, seeded, dispatchable" and that only Brain's *description* of it was wrong. Seeded
+in the **file**; never in the **database**. `brainCapabilityLive.renderCapabilityBlockLive()`
+builds the CAN side of the capability truth-table from `action_definitions` rows via
+`listActiveActions`. Production held **16 of the 18 types** declared in
+`seedActionDefinitions.ts`:
+
+```
+seed file:   18 types        production: 16 rows
+missing:     remove_open_item   (added to the seed by DEF-106, ed3f8ee)
+             create_contact     (added to the seed by DEF-058, b284ecf)
+```
+
+The seeder was a hand-run CLI (`npx ts-node src/scripts/seedActionDefinitions.ts`) that
+**nothing in the application ever invoked** — the only other occurrence of its name anywhere in
+`src/` is a log string suggesting an operator re-run it. So both DEF-058 and DEF-106 shipped a
+complete capability — parser, dispatch branch, confirmation policy, and for removal a live
+`→ CANCELLED` transition — that never appeared in a single prompt.
+
+Brain's denial was therefore **honest**. The block it was handed is headed "never fabricate
+capabilities" and genuinely did not list removal; `mark_open_item_done` *was* on it, which is
+exactly why that was the alternative it offered. No amount of prompt rewording would have
+fixed this, and the fix the handoff proposed would have been aimed at the wrong layer.
+
+**Why the guard could not catch it.** `tests/capabilityDiscovery.test.ts` compares the seed
+file against `COMPOSER_DISPATCHED_TYPES` — file against file. Nothing compared the file against
+the database. The suite was green the entire time both capabilities were invisible.
+
+**Commit `19eab06`.** Fix — structural, and it closes the class rather than the two instances.** The registry is
+reconciled on every boot, the same idempotent pattern `seedSystemRules`, `bootstrapAllTenants`
+and `seedSystemRiskRules` already use in `server.ts`. The seed file becomes the source of truth
+and applies itself, so a future action is live the moment it deploys instead of waiting on
+someone remembering a script. No new mechanism, no wrapper, and the deploy that ships this also
+performs the data repair — there is no manual row insert to forget.
+
+**Files changed (complete):**
+
+| File | Change |
+|---|---|
+| `server/src/scripts/seedActionDefinitions.ts` | Loop extracted to exported `seedActionDefinitions()` returning the count; `main()` calls it; CLI entry point unchanged |
+| `server/src/server.ts` | Boot call added beside the existing idempotent seeders, non-fatal `.catch` like its neighbours |
+| `server/src/services/knowledge/brainCapabilityRegistry.ts` | Contact-add re-pointed from the stale `POST /entities` handle onto the real `create_contact` action type |
+| `server/tests/capabilityDiscovery.test.ts` | The `POST /entities` guard relocated, not dropped — see below |
+| `server/tests/def130ActionRegistrySeededAtBoot.test.ts` | **New**, 9 tests |
+
+**Why `create_contact` had to be handled in the same change.** Seeding the file seeds it too —
+that is not optional once the boot hook exists. It had no `CAPABILITY_HINTS` entry, because its
+capability row still carried the pre-DEF-058 handle `POST /entities`. Left alone it would have
+rendered **twice**: once from the registry as a bare undescribed `create contact`, and once as
+the curated REST line. Re-pointing the handle onto the action type collapses both into one
+described entry generated from the thing that actually dispatches.
+
+**Guard updated with reasoning, not weakened.** `capabilityDiscovery.test.ts` asserted
+`NON_ACTION_CAPABILITIES` contains `POST /entities`. Contact creation is no longer a REST-only
+path, so that assertion's *purpose* — an undeclared capability is precisely what DEF-058 and
+DEF-113 were — was moved onto the registry mechanism: `create_contact` must have a hint, with a
+label naming contacts and a description long enough not to render as a bare label.
+
+**Mutation results — run, not asserted. 5 of 5 mutants killed:**
+
+| Mutant | Outcome |
+|---|---|
+| `preApproved: true` → `false` | **killed** (3 tests) — an unapproved row is `approval_required`, still invisible |
+| Seeder skips the last action | **killed** — count reconciliation |
+| Boot wiring removed from `server.ts` | **killed** — by the source-text supplement only |
+| Contact handle reverted to `POST /entities` | **killed** |
+| Contact description stubbed to "Adds a contact." | **killed** |
+
+**The honest weakness.** Every behaviour test passes whether or not anything calls the seeder —
+which is the exact shape of the original defect: a correct function nobody invoked. `server.ts`
+calls `app.listen`, so boot cannot be exercised in a unit test. The wiring is covered by a
+source-text assertion, which per the working rules is a supplement and not proof. It is the
+only evidence the wiring exists, and it is labelled as weak in the test itself.
+
+**Verification, re-run from `server/` after the last edit:**
+
+```
+npx tsc --noEmit    exit 0, no output
+npx vitest run      Test Files  163 passed | 1 skipped (164)
+                    Tests  1888 passed | 7 expected fail | 21 skipped | 1 todo (1917)
+npm run build       exit 0
+git diff --check    exit 0
+```
+
+Baseline immediately before this change was 162 files / 1878 passed / 1907 total. Delta is
+**+1 file, +10 passed, +10 total**, reconciled exactly: 9 in the new file, plus 1 net in
+`capabilityDiscovery.test.ts` (an assertion removed from one test, one new `it` added). No
+pre-existing test changed state.
+
+**NOT DEPLOYED, and therefore NOT VERIFIED.** This is blocked, not skipped. A restart would
+also activate `32ba427` (DEF-132/133), which directive D-2 holds for Codex review and the
+owner's word, and whose migration `20260811b_normalise_remaining_legacy_statuses` is confirmed
+**unapplied** on production (`_prisma_migrations` queried directly). Live acceptance for
+DEF-130 is: ask Brain to delete a **dedicated test item** and read the row back as `CANCELLED`.
+
+**Standing hazard, reported not fixed.** `dist/` on the production box now contains `32ba427`
+plus this change, because the orchestrator's prep step and this verification both run
+`npm run build` in the production repo. The live process (started 14:46 UTC, 78 restarts) still
+runs older `dist/`, but any pm2 restart would load the newer code against the unapplied
+migration. That is tolerable — the DEF-132 writer fixes only *stop* new out-of-vocabulary
+statuses; existing bad rows stay unmovable either way — but it is not a state anyone chose, and
+it should be closed by applying the migration and deploying deliberately.

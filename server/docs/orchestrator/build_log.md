@@ -190,3 +190,121 @@ together.
   specifically built not to do, and the greeting assertion is wrong.
 - Any drop in overall while C4 rises → I moved the minimum by damaging the mean,
   which is not a win under a "95 on every criterion" gate.
+
+---
+
+## Iteration 2 — mode: incremental
+
+**No Codex review to read.** `review_log.md` still contains only its header — iteration 1 has
+not been reviewed. So there was no ranked directive, and precedence fell to
+`operator_directives.md` and the owner's direct handoff, which names DEF-130 first.
+
+**No benchmark fixQueue entry drove this turn either.** The loop is stopped (`STOP` present)
+and the last measurement, `iter-01-post-build`, was started but never recorded a result line.
+The gating criterion is therefore still the iter-00 figure — **C4 @ 84.8, overall 92.7** — and
+I did not target it. I am stating that plainly rather than implying this turn moved the gate.
+
+### What I built, and why this one
+
+The owner's handoff put **DEF-130** first: Brain denying it can delete an open item. It was
+described as needing no new code, with the fix belonging in the capability *description*.
+
+**That diagnosis was wrong, and the method the handoff mandated is what found it.** Instructed
+to read the capability block actually sent on a removal turn, I traced it to
+`brainCapabilityLive.renderCapabilityBlockLive()`, which generates the CAN list from
+`action_definitions` ROWS — then queried production:
+
+```
+seed file declares 18 types  ·  production has 16 rows
+missing: remove_open_item (DEF-106, ed3f8ee) and create_contact (DEF-058, b284ecf)
+```
+
+`remove_open_item` was seeded in the **file**, never in the **database**. The seeder is a
+hand-run CLI that nothing invokes — the only other mention of its name in `src/` is a log
+string telling an operator to run it. Brain's denial was **honest**: the block genuinely did
+not list removal, and `mark_open_item_done` was on it, which is why that was the alternative
+offered.
+
+Two DEF fixes therefore shipped complete, working capabilities that never reached a prompt.
+That is working rule 1 — a fix that cannot travel is not a fix — with the failure sitting
+between the repo and the database rather than between two copies of the code.
+
+**Fix: seed the registry at boot**, the same idempotent pattern `seedSystemRules`,
+`bootstrapAllTenants` and `seedSystemRiskRules` already use in `server.ts`. The seed file
+becomes the source of truth and reconciles itself. The deploy that ships this also performs the
+data repair, so there is no manual insert to forget — and the next action added is live on
+deploy rather than whenever someone remembers the script.
+
+`create_contact` came with it unavoidably, so its stale `POST /entities` capability handle was
+re-pointed onto the real action type; otherwise it would have rendered twice, once undescribed.
+
+### Why the existing guard could not have caught this
+
+`capabilityDiscovery.test.ts` compares the seed file with `COMPOSER_DISPATCHED_TYPES` — **file
+against file. Nothing compared the file with the database.** The suite was green for the entire
+period both capabilities were invisible. Worth Codex's attention: it is a whole category of
+defect this repo's tests are structurally blind to.
+
+### Verification — re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output
+npx vitest run      Test Files  163 passed | 1 skipped (164)
+                    Tests  1888 passed | 7 expected fail | 21 skipped | 1 todo (1917)
+npm run build       exit 0
+git diff --check    exit 0
+```
+
+**Delta reconciliation (D-3).** Baseline before my edits, measured this session: 162 files /
+1878 passed / 1907 total. Now 163 / 1888 / 1917 — **+1 file, +10 passed, +10 total**. That is
+9 tests in the new file plus 1 net in `capabilityDiscovery.test.ts` (one assertion removed from
+an existing test, one new `it` added). Every number accounted for; no pre-existing test changed
+state.
+
+**Mutation: 5 of 5 killed** — drop `preApproved`, skip an action in the loop, remove the boot
+wiring, revert the contact handle, stub the contact description.
+
+### What I did NOT do
+
+- **D-1 (benchmark teardown) — not built, and I owe the reason.** One coherent change per turn,
+  and the owner's direct handoff ranked DEF-130 first. It is not currently causing harm: the
+  loop is stopped, so nothing is minting rows right now. I confirmed the orchestrator's partial
+  teardown attempt is **no longer in the tree** — it reverted its own edit, correctly, under the
+  ruling that it does not implement. So D-1 is unbuilt and mine. **It is my next build**, and I
+  accept the shape argued in the directive, including that a write to a pre-existing row is
+  reported as unrevertable rather than cancelled.
+- **`cmsotakwf0006rts1bdsrjjkj` — not touched.** The directive asks for a deliberate call on the
+  row iter-00 created and iter-01 edited. I did not make it this turn because it needs the same
+  read-back discipline as any live change and belongs with the teardown build.
+- **Did not deploy.** D-2 holds `32ba427` for Codex review and the owner's word, and its
+  migration `20260811b` is confirmed unapplied (`_prisma_migrations` queried). A restart would
+  activate that code. DEF-130 is therefore **PARTIAL, not verified**.
+- **Did not touch the benchmark or the judge.** No edit to `nexeoCapabilityBenchmark.ts` or
+  `brainResponseEvaluator.ts`.
+- **Did not add an evaluation-chart row** — no deploy this turn.
+
+### What I am unsure about
+
+- **Whether the boot hook is proven.** It is not, by behaviour. Every behaviour test here passes
+  whether or not anything calls the seeder — the exact shape of the defect itself. `server.ts`
+  calls `app.listen` and cannot be imported in a unit test, so the wiring rests on a source-text
+  assertion, labelled weak in the test. If Codex sees a way to prove it properly, I want it.
+- **Boot-time writes.** 18 upserts on every restart is small and matches three existing seeders,
+  but it does mean a hand-edited `action_definitions` row is reverted to the file on restart.
+  I consider that correct — the file is the source of truth — but it is a behaviour change for
+  anyone who edited a row through the database, and it deserves a second opinion.
+
+### Prediction, and what would falsify it
+
+**C5 (authorized action) should rise once this is DEPLOYED; nothing should move before then.**
+The mechanism is that two capabilities enter the truth-table, so any benchmark case asking for
+a removal or a contact save should stop being refused.
+
+**What would prove me wrong:**
+- Deployed, and a removal request is still refused → the truth-table was not what suppressed it,
+  and the next place to look is `reasoningCompose`'s action list versus the block for precedence.
+- C5 rises but C2 (grounding) or C6 falls → advertising two more actions made Brain act where it
+  should have asked. The removal path is destructive-ish, so over-eager removal is the
+  regression I would most expect.
+- The registry still shows 16 rows after a restart → the boot hook does not run in production,
+  and the source-text supplement was worth exactly what the working rules say it is worth.
