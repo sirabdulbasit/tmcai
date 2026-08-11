@@ -245,6 +245,12 @@ function backoffUntil(reason: string | undefined): Date {
     // burning attempts.
     case 'quiet_hours':
       return new Date(now + 30 * MIN);
+    // DEF-119: the working day may be hours away, or a whole weekend. Retrying
+    // every 15 minutes until Monday is the DEF-105 flood with a new label, so
+    // this waits the longest of the transient reasons — and 30 minutes of
+    // granularity is still fine at 09:00, because the window opens on the hour.
+    case 'outside_office_hours':
+      return new Date(now + 45 * MIN);
     case 'rate_limited':
       return new Date(now + 15 * MIN);
     // A suspended user or missing phone is not a transient condition. Back off
@@ -278,6 +284,30 @@ async function promptsInBackoff(userId: number): Promise<bigint[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * DEF-119 — which open item is this prompt about?
+ *
+ * Producers record the subject in two different places. `open_item_id` is the
+ * column; `metadata.openItemId` is what `preactive_due_nudge` writes, and it
+ * writes nothing to the column. Any guard that consults one of them protects
+ * some producers and silently ignores others, which is exactly what DEF-115 did
+ * for its first day of life.
+ *
+ * One accessor, both places, used everywhere the subject is needed. The column
+ * wins when both are present — it is the typed, indexed one, and no row has
+ * been seen where the two disagree.
+ */
+export function promptSubjectItemId(
+  row: { openItemId?: string | null; metadata?: unknown },
+): string | null {
+  const col = typeof row.openItemId === 'string' ? row.openItemId.trim() : '';
+  if (col) return col;
+  const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+  const fromMeta = meta?.openItemId;
+  const m = typeof fromMeta === 'string' ? fromMeta.trim() : '';
+  return m || null;
 }
 
 export async function sendNextPrompt(userId: number): Promise<SendNextResult | null> {
@@ -373,25 +403,47 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // needs it, so it cannot invent or misroute anything. A prompt with no
   // openItemId is untouched — most prompts have no item, and dropping those
   // would silence real notifications.
-  const withItems = dueCandidates.filter((c) => !!c.openItemId);
+  //
+  // DEF-119 — and it must find the subject wherever the producer put it.
+  // The check above read `openItemId` only. Measured over 7 days of the live
+  // queue:
+  //
+  //   action_lifecycle_governor   18 prompts   column set 18   metadata  0
+  //   preactive_due_nudge         14 prompts   column set  0   metadata 14
+  //   delegation_capture          10 prompts   column set  8   metadata  8
+  //
+  // So the guard protected the path it was found on and did nothing at all for
+  // `preactive_due_nudge` — the source that sends "the deadline has arrived"
+  // and "is now overdue", and the one MOST exposed to staleness, because these
+  // prompts sit through quiet hours (#321 carries
+  // `lastSuppressedReason: quiet_hours`). DEF-115 verified live on #318, from
+  // the governor, which is why the hole did not show.
+  //
+  // Two records of the same fact with the reader consulting one of them: the
+  // `protection-with-two-implementations` shape yet again. Resolved by a single
+  // accessor rather than by teaching six producers to agree, so there is one
+  // definition of "which item is this prompt about".
+  const withItems = dueCandidates
+    .map((c) => ({ candidate: c, itemId: promptSubjectItemId(c) }))
+    .filter((x): x is { candidate: typeof x.candidate; itemId: string } => !!x.itemId);
   let stalePromptIds: bigint[] = [];
   if (withItems.length > 0) {
     try {
       const items = await prisma.openItem.findMany({
-        where: { id: { in: withItems.map((c) => c.openItemId!) } },
+        where: { id: { in: withItems.map((x) => x.itemId) } },
         select: { id: true, status: true, delegateeName: true, delegateeEmail: true },
       });
       const { isBrainOwned } = await import('../openItems/brainOwnership');
       const byId = new Map(items.map((i) => [i.id, i]));
-      stalePromptIds = withItems.filter((c) => {
-        const item = byId.get(c.openItemId!);
+      stalePromptIds = withItems.filter((x) => {
+        const item = byId.get(x.itemId);
         // Deleted item → nothing to ask about.
         if (!item) return true;
         const terminal = ['DONE', 'CLOSED', 'CANCELLED'].includes(String(item.status).toUpperCase());
         // DEF-109: an item reassigned to Brain since queueing must stop
         // chasing the owner, exactly as a freshly-queued one would.
         return terminal || isBrainOwned(item);
-      }).map((c) => c.id);
+      }).map((x) => x.candidate.id);
     } catch (err: any) {
       // Fail OPEN: if the lookup breaks, send the prompt. A missed
       // notification is worse than a stale one, and silently dropping prompts

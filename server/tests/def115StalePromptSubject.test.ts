@@ -27,8 +27,13 @@ import path from 'path';
 const SRC = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'services', 'brainPrompts', 'brainPromptQueueService.ts'), 'utf8');
 const BLOCK = (() => {
-  const at = SRC.indexOf('DEF-115');
-  expect(at, 'DEF-115 block not found').toBeGreaterThan(-1);
+  // Anchored on the CODE, not on the string "DEF-115". Anchoring on the tag
+  // broke the moment DEF-119 added a docblock that cites it: indexOf found the
+  // prose above the function and sliced 3,200 characters of comment. Four
+  // earlier guard tests in this repo failed the same way. Code shapes move only
+  // when the code moves, which is what these assertions are for.
+  const at = SRC.indexOf('const withItems');
+  expect(at, 'stale-subject filter not found').toBeGreaterThan(-1);
   return SRC.slice(at, at + 3200);
 })();
 
@@ -55,9 +60,17 @@ describe('the subject is revalidated at send time', () => {
 });
 
 describe('it cannot silence a real notification', () => {
-  it('leaves prompts with no openItemId completely alone', () => {
+  it('leaves prompts with no subject completely alone', () => {
     // Most prompts have no item. Dropping those would silence real news.
-    expect(BLOCK).toMatch(/filter\(\(c\) => !!c\.openItemId\)/);
+    //
+    // DEF-119 replaced the literal `!!c.openItemId` this used to pin, because
+    // reading the column alone ignored `preactive_due_nudge` entirely — 14 of 14
+    // of its prompts carry the id in metadata and none in the column. The
+    // property being asserted is unchanged: only candidates WITH a resolved
+    // subject enter the lookup. The seven "returns null" cases in
+    // def119PromptSubjectFromEitherPlace cover the resolver itself.
+    expect(BLOCK).toMatch(/\.filter\([\s\S]{0,120}?!!x\.itemId\)/);
+    expect(BLOCK).toContain('promptSubjectItemId');
   });
 
   it('FAILS OPEN — a broken lookup dispatches rather than drops', () => {
