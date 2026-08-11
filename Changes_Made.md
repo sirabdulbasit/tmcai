@@ -2637,7 +2637,7 @@ fixed this, and the fix the handoff proposed would have been aimed at the wrong 
 file against `COMPOSER_DISPATCHED_TYPES` — file against file. Nothing compared the file against
 the database. The suite was green the entire time both capabilities were invisible.
 
-**Commit `19eab06`.** Fix — structural, and it closes the class rather than the two instances.** The registry is
+**Commit `19eab06`. Fix — structural, and it closes the class rather than the two instances.** The registry is
 reconciled on every boot, the same idempotent pattern `seedSystemRules`, `bootstrapAllTenants`
 and `seedSystemRiskRules` already use in `server.ts`. The seed file becomes the source of truth
 and applies itself, so a future action is live the moment it deploys instead of waiting on
