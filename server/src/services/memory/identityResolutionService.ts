@@ -80,10 +80,59 @@ interface EntityRow {
   created_at: Date;
 }
 
+
+/**
+ * MEM-004 — a LID is not a phone number, and never identifies a person.
+ *
+ * Owner ruling, 2026-08-11: *"LID number should not be primary key to identify
+ * person. What should be analyzed for duplication: Name, Email, Contact. 2
+ * different person cannot have same contact. 2 different person cannot have
+ * same email. 2 different person can have same name."*
+ *
+ * The first sentence is the new one, and it matters because the transport has
+ * been quietly manufacturing people. When WhatsApp withholds a real number it
+ * gives a `@lid`, and the code turns that into a phone by prefixing "+". Those
+ * fake numbers then got saved as CONTACTS. Sixteen of them exist:
+ *
+ *   Hamna ABAP TMC  +255043747987458   <- a LID
+ *   Hamna Latif Bhutta  +923134199294  waLid 255043747987458@lid  <- the person
+ *
+ * So Hamna is two people in her own employer's contact list, and one of them
+ * has a phone that cannot be dialled. "Nexeo" is in there too.
+ *
+ * DETECTION. WhatsApp LIDs are 15 digits. E.164 permits 15 as its absolute
+ * maximum, but real numbers in this book are 12-13 (+92 plus ten). Every one of
+ * the sixteen is exactly 15 and none has a plausible country-code-plus-length
+ * shape. A 15-digit "phone" here is a LID.
+ *
+ * Deliberately conservative in what it does with that: the field is IGNORED for
+ * identity, not deleted. Erasing data on a heuristic is how a real long number
+ * would be lost, and ignoring it costs nothing — a LID was never going to
+ * identify anyone correctly anyway.
+ */
+export function isLidNotPhone(phone: string | null): boolean {
+  const d = (phone ?? '').replace(/[^0-9]/g, '');
+  return d.length === 15;
+}
+
+/**
+ * The phone we may reason about — null when the stored value is a LID.
+ *
+ * Owner rule: two different people cannot share a contact number. That is only
+ * true of REAL numbers. Two records sharing a LID-derived pseudo-number tell us
+ * nothing about whether they are the same person, and treating one as evidence
+ * would merge strangers.
+ */
+function realPhone(phone: string | null): string {
+  const p = (phone ?? '').trim();
+  return isLidNotPhone(p) ? '' : p;
+}
+
 // ── Normalisation ───────────────────────────────────────────────────────────
 
 const normEmail = (e: string | null): string => (e ?? '').trim().toLowerCase();
-const normPhone = (p: string | null): string => (p ?? '').replace(/[^\d]/g, '');
+// MEM-004: a LID-derived pseudo-number is never identity evidence.
+const normPhone = (p: string | null): string => realPhone(p).replace(/[^\d]/g, '');
 const normName = (n: string | null): string => (n ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /**
@@ -149,7 +198,7 @@ function isRealPersonName(name: string | null): boolean {
 export async function proposeEntityMerges(clientNumber: string): Promise<MergeProposal[]> {
   const rows = await prisma.$queryRawUnsafe<EntityRow[]>(
     `SELECT id, name, email, phone, company, entity_type, linked_person_id,
-            relationship_strength, last_interaction, created_at
+            relationship_strength, last_interaction, created_at, metadata
        FROM entities WHERE client_number = $1`,
     clientNumber,
   ).catch(() => [] as EntityRow[]);
@@ -198,6 +247,41 @@ export async function proposeEntityMerges(clientNumber: string): Promise<MergePr
   }
   for (const [phone, members] of byPhone) {
     group(members, 'certain', `identical phone number ending ${phone.slice(-4)}`);
+  }
+
+  // ── 2b. A LID-phantom and the real person who owns that LID.
+  //
+  // MEM-004. "Hamna ABAP TMC" (+255043747987458) and "Hamna Latif Bhutta"
+  // (+923134199294, waLid 255043747987458@lid) are one person. The names differ
+  // and the numbers differ, so no name rule and no phone rule can see it — only
+  // the alias can, and the alias is exactly the thing the owner said must not
+  // be an identifier.
+  //
+  // It is not an identifier. It is a JOIN: the LID says "these two records are
+  // the same WhatsApp account", and the real contact supplies who that is. The
+  // phantom brings nothing but its rows, which is the whole point of merging it.
+  //
+  // Certain rather than high: a WhatsApp account belongs to one person, so a
+  // record whose only phone IS that account's LID is that person by
+  // construction. There is no coincidence available here the way there is with
+  // a shared name.
+  const byLid = new Map<string, EntityRow[]>();
+  for (const r of rows) {
+    const lidDigits = isLidNotPhone(r.phone) ? (r.phone ?? '').replace(/[^0-9]/g, '') : '';
+    if (lidDigits) {
+      const k = `lid:${lidDigits}`;
+      (byLid.get(k) ?? byLid.set(k, []).get(k)!).push(r);
+    }
+    // The real contact carrying that LID as an alias joins the same group.
+    const alias = ((r as any).metadata?.waLid ?? '').toString().replace(/[^0-9]/g, '');
+    if (alias) {
+      const k = `lid:${alias}`;
+      (byLid.get(k) ?? byLid.set(k, []).get(k)!).push(r);
+    }
+  }
+  for (const [key, members] of byLid) {
+    const lid = key.slice(4);
+    group(members, 'certain', `one WhatsApp account (LID ${lid.slice(-6)}) held by both records — the placeholder number is not a phone`);
   }
 
   // ── 3. Machine addresses at one organisation. The 49-Anthropic case: every
@@ -288,6 +372,10 @@ export async function proposeEntityMerges(clientNumber: string): Promise<MergePr
  */
 function pickSurvivor(members: EntityRow[]): EntityRow {
   const score = (r: EntityRow) =>
+    // MEM-004: a record whose "phone" is a LID must never win. It has a name
+    // the transport invented and a number nobody can dial; surviving on it
+    // would replace the real person with the placeholder.
+    (isLidNotPhone(r.phone) ? -20 : 0) +
     (r.linked_person_id ? 8 : 0) +
     (normEmail(r.email).includes('@') && !isMachineAddress(normEmail(r.email)) ? 4 : 0) +
     (normPhone(r.phone).length >= 9 ? 3 : 0) +
