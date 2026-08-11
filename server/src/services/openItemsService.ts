@@ -182,13 +182,18 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
       clientNumber,
     },
   });
-  // L2+ — embed title+description+archetype into open_item_embeddings for
-  // similar-items lookup. Best-effort and async-friendly.
-  try {
-    const { embedAndStore } = await import('./triage/openItemEmbeddingService');
-    const text = [item.title, item.description ?? '', (item as any).archetype ?? ''].filter(Boolean).join('\n');
-    embedAndStore(item.id, clientNumber, text).catch(() => {});
-  } catch { /* embedding is optional */ }
+  // MEM-005, 2026-08-11 — open-item embedding call REMOVED.
+  //
+  // It wrote to `open_item_embeddings`, a table dropped on 2026-05-18. The
+  // Prisma model does not exist, so the call threw a TypeError that the
+  // service's own try/catch turned into a `console.warn` — every item creation
+  // since May did this work, failed, and said nothing. `.catch(() => {})` here
+  // could not have caught it either: the throw happens while resolving the
+  // undefined model property, before any promise exists.
+  //
+  // Nothing replaced it because nothing consumed it: the only reader was
+  // `GET /open-items/:id/similar`, also removed. Open-item retrieval is served
+  // by the wiki vector path, which is live and on the current model.
 
   // L2.7 — publish creation event on tmcai-open-item-events so Brain,
   // Reflection, and the Steering Wheel see new items live (not just on status

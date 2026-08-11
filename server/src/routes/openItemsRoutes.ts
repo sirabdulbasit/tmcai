@@ -171,29 +171,17 @@ router.post('/:id/note', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// ─── L2+ Similar items (vector memory) ──────────────────────
-router.get('/:id/similar', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const user = req.user!;
-    const limit = Math.min(parseInt(String(req.query.limit ?? '5'), 10) || 5, 25);
-    const { findSimilar } = await import('../services/triage/openItemEmbeddingService');
-    const matches = await findSimilar(user.clientNumber, String(req.params.id), limit);
-    const ids = matches.map((m) => m.openItemId);
-    const items = ids.length
-      ? await prisma.openItem.findMany({
-          where: { clientNumber: user.clientNumber, id: { in: ids } },
-          select: { id: true, title: true, status: true, archetype: true, priority: true },
-        })
-      : [];
-    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
-    res.json({
-      openItemId: req.params.id,
-      matches: matches.map((m) => ({ ...m, item: byId[m.openItemId] ?? null })),
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// MEM-005, 2026-08-11 — `GET /:id/similar` REMOVED.
+//
+// It served open-item vector similarity from `open_item_embeddings`, a table
+// DROPPED on 2026-05-18 ("orphan, never referenced" — schema.prisma). The model
+// is absent from the generated Prisma client, so `(prisma as any)
+// .openItemEmbedding.findUnique` threw a TypeError on every call; the route
+// answered 500 for its whole lifetime. No client code called it.
+//
+// Retired rather than rebuilt: recreating a table needs product evidence that
+// the feature is wanted, and there is none. The owner's rule is one coherent
+// implementation per responsibility, not a spare one kept alive on hope.
 
 // ─── L2+ Status history (audit trail) ────────────────────────
 router.get('/:id/history', requireAuth, async (req: Request, res: Response) => {

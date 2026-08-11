@@ -93,9 +93,14 @@ describe('degradation tracking', () => {
   });
 
   it('recovery clears the degraded state', async () => {
-    await recordEmbeddingDegradation('open_items', 'x');
-    recordEmbeddingRecovery('open_items');
-    expect((await getEmbeddingHealth()).find((h) => h.service === 'open_items')!.status).toBe('ok');
+    // MEM-005: sample service changed 'open_items' → 'chunks'. The open-item
+    // embedding path was retired (its table was dropped on 2026-05-18), so it
+    // is no longer in the default health set and nothing can ever report it.
+    // The assertion itself is unchanged — this test is about the
+    // degrade → recover transition, not about which services exist.
+    await recordEmbeddingDegradation('chunks', 'x');
+    recordEmbeddingRecovery('chunks');
+    expect((await getEmbeddingHealth()).find((h) => h.service === 'chunks')!.status).toBe('ok');
   });
 
   it('recovery without prior degradation is a no-op', () => {

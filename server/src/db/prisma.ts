@@ -17,9 +17,18 @@ const base = new PrismaClient({
  * connector_types, _prisma_migrations) or that don't carry a
  * clientNumber column.
  */
-const TENANT_SCOPED_MODELS = new Set<string>([
+/** Exported for the tenant-guard registry test: every name here must be a real
+ *  model on the generated client, or the entry silently guards nothing. */
+export const TENANT_SCOPED_MODELS = new Set<string>([
   'User', 'WikiPage', 'WikiPageLink', 'FeedEvent',
-  'OpenItem', 'OpenItemEmbedding', 'ItemStatusHistory',
+  // MEM-005, 2026-08-11: `OpenItemEmbedding` and `ItemStatusHistory` removed
+  // from this list — both tables were dropped on 2026-05-18 and neither model
+  // exists on the generated client, so their entries guarded nothing. A
+  // registry naming absent models reads as coverage it does not have.
+  // NOTE: `ItemStatusHistory` is still WRITTEN by lifecycleService and READ by
+  // two openItemsRoutes handlers. That is a separate confirmed defect with its
+  // own proposal — deleting this dead entry neither fixes nor hides it.
+  'OpenItem',
   'AgentAction', 'DecisionLog', 'DelegationLog',
   'WhatsAppConnection', 'WhatsAppMessage', 'WhatsAppSession',
   'ShadowRule', 'PatternHidden', 'Entity',
@@ -27,7 +36,10 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   // column. Sessions are already tenant-isolated transitively via
   // userId → user.clientNumber. Including it broke session.create().
   'Conversation', 'Message',
-  'BrainPersona', 'NotificationQueue', 'TenantWhatsappNotifier',
+  // MEM-005: `BrainPersona` removed — no such Prisma model, and no runtime
+  // code calls `prisma.brainPersona` at all. Found by the registry test rather
+  // than by reading, which is the point of having the test.
+  'NotificationQueue', 'TenantWhatsappNotifier',
   'BrainUserMessage',
 ]);
 
@@ -48,8 +60,9 @@ const WHERE_OPS = new Set(['update', 'updateMany', 'delete', 'deleteMany', 'upse
  *
  * WikiPage is also mixed-scope and excluded for the same reason.
  */
-const USER_SCOPED_MODELS = new Set<string>([
-  'FeedEvent', 'OpenItem', 'OpenItemEmbedding',
+export const USER_SCOPED_MODELS = new Set<string>([
+  // MEM-005: `OpenItemEmbedding` removed — dropped table, no Prisma model.
+  'FeedEvent', 'OpenItem',
   'WhatsAppSession', 'WhatsAppMessage',
   'BrainPendingAction', 'BrainActionArtifact',
   'BrainUserMessage', 'BrainPromptQueue',

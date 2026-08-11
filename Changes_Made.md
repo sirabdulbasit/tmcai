@@ -2327,3 +2327,103 @@ expired-flight accounting, probe-bypass, gate integrity).
 Full suite 1131 passed / 21 skipped / 0 failed (101 files + 1 skipped);
 focused 25/25; tsc clean; build clean; git diff --check clean. No
 migration (status column verified unconstrained).
+
+## 35. MEM-005 — one pgvector embedding provider; the open-item embedding path retired (2026-08-11, BUILDER: Claude — REVIEWER-approved Option 3 with amendments)
+
+**Observed behaviour.** Two of three embedding implementations were still POSTing to
+`text-embedding-004`, an endpoint Google retired on 2026-07-14. MEM-001 (2026-08-10)
+migrated the wiki path to `gemini-embedding-001` and could not reach the other two, because
+each owned a private copy of the provider call, the model constant, the normalisation and
+the stub. Twenty-eight further days passed with the copies broken.
+
+**Confirmed root cause (from code and the live database, not hypothesis).**
+
+1. *Duplication.* Three private provider implementations. A fix to one is structurally
+   incapable of reaching the others. This is the fifth recorded recurrence of
+   `protection-with-two-implementations`.
+
+2. *The open-item path had no storage at all.* `open_item_embeddings` was DROPPED on
+   2026-05-18 (`schema.prisma:1211`, "orphan, never referenced"). Verified against
+   production: `SELECT to_regclass('public.open_item_embeddings') IS NOT NULL` → `f`, and
+   `typeof prisma.openItemEmbedding` → `undefined`. Every call therefore threw a TypeError
+   on the undefined model property — which `.catch(() => null)` could never intercept,
+   because the throw happens before a promise exists. The outer `try/catch` turned it into
+   a `console.warn`. Every open-item creation since May did this work, failed, and said
+   nothing. Its only reader, `GET /open-items/:id/similar`, returned 500 for its entire
+   lifetime; no client code called it.
+
+3. *The chunk repair sweep could not see what it existed to repair.* It selected
+   `embedding_model IS NULL OR embedding_model = 'legacy-unknown'` — the two stale models
+   known when it was written. `text-embedding-004` rows were excluded from the sweep AND
+   from search (which filters on the current model). Stranded in both directions.
+
+**What changed.**
+
+- **New** `server/src/services/knowledge/pgVectorEmbeddingProvider.ts` — sole owner of the
+  model, the 768-dim contract, `outputDimensionality`, bounded input, unit normalisation,
+  key selection, stub policy, response-shape validation, and embeddingGuard
+  degradation/recovery. Reuses `MODEL_EMBEDDING` from `config/models.ts`; no second model
+  constant was introduced. It declares its own `PGVECTOR_EMBEDDING_DIM = 768` and does NOT
+  reuse `EMBEDDING_DIMS` (3072), because `pipeline/embedder.ts` is a separate live pipeline
+  at the model's native width — the dimension is a property of the destination column, not
+  of the model. That pipeline is untouched.
+- `wikiEmbeddingService.ts`, `chunkVectorService.ts` — migrated; private provider,
+  normalisation, stub and vector-literal helpers deleted. Storage and retrieval semantics
+  unchanged.
+- `chunkVectorService.ts` — stale selection is now `embedding_model IS DISTINCT FROM
+  <current>`, covering NULL, `legacy-unknown`, `stub-768`, `text-embedding-004` and
+  whatever supersedes the current model next. The sweep now **stops** on provider failure
+  instead of continuing: the old loop would file one degradation per row (up to 100
+  identical findings) against a provider already known to be down.
+- `schedulerService.ts` — tenant discovery uses the same predicate. Previously a tenant
+  whose chunks were *all* on a retired model was never selected, so its sweep never ran.
+- **Deleted** `server/src/services/triage/openItemEmbeddingService.ts`; removed its call in
+  `openItemsService.ts` and the `GET /:id/similar` route in `openItemsRoutes.ts`.
+- `db/prisma.ts` — removed three phantom entries from the tenant-guard registries:
+  `OpenItemEmbedding`, `ItemStatusHistory` and `BrainPersona`. None is a real Prisma model,
+  so each guarded nothing while reading as coverage. `BrainPersona` was found by the new
+  test, not by reading; it has no runtime usage anywhere.
+- `embeddingGuard.ts` — comments corrected; `open_items` dropped from the default health
+  set, since nothing can report it now.
+
+**Files changed (complete).** `server/src/services/knowledge/pgVectorEmbeddingProvider.ts`
+(new) · `server/src/services/knowledge/wikiEmbeddingService.ts` ·
+`server/src/services/knowledge/chunkVectorService.ts` ·
+`server/src/services/knowledge/embeddingGuard.ts` · `server/src/services/schedulerService.ts` ·
+`server/src/services/openItemsService.ts` · `server/src/routes/openItemsRoutes.ts` ·
+`server/src/db/prisma.ts` · `server/src/services/triage/openItemEmbeddingService.ts` (deleted) ·
+`server/tests/mem005EmbeddingProvider.test.ts` (new) · `server/tests/embeddingGuard.test.ts`.
+
+**Test changed, and why it is not a weakening.** `embeddingGuard.test.ts`'s recovery test
+used `open_items` as its sample service. That service no longer exists, so the sample was
+changed to `chunks`. The assertion — degrade, recover, expect `ok` — is unchanged.
+
+**Verification (exact, re-run after the last edit).**
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **159 passed | 1 skipped (160 files)**; **1788 passed | 7 expected fail
+  | 21 skipped | 1 todo (1817)**; 0 failed.
+- Focused embedding suites (`def118StaleModelReembedded`, `embeddingGuard`,
+  `mem005EmbeddingProvider`) — **3 files, 40 tests, all passed**. MEM-005 alone: 21.
+- `npm run build` — passes. `git diff --check` — clean.
+
+**Migration status: NONE.** No schema change, no dependency change, no new timer, no
+`prisma migrate` of any kind. `chunks.embedding_model` is `VarChar(50)`; the current model
+id is 20 characters.
+
+**Local verification does not prove production memory recovery.** The suite proves the
+provider requests the right model at the right width and that the sweep selects every stale
+model. It cannot prove that production rows are being rewritten. That requires the
+post-deploy counts below.
+
+**Pre-deploy production baseline (2026-08-11 13:08 UTC).**
+`wiki_pages`: `gemini-embedding-001` 10,476 · `stub-768` 2,039.
+`chunks`: 0 rows total, 0 with vectors — so the chunk fix is correct but **has no data to
+act on and cannot be evidenced in production**. Stated plainly rather than claimed.
+`open_item_embeddings`: absent.
+
+**Known issues deliberately NOT fixed here.**
+- `ItemStatusHistory` — same removal drift, but with LIVE writes inside the accepted-
+  transition transaction (`lifecycleService.ts:104,154`) and two reads in
+  `openItemsRoutes.ts`. Logged as its own defect with its own proposal; removing the dead
+  registry entry neither fixes nor conceals it.
+- `memoryDecayJob.ts` unscoped hard delete — separate proposal, explicitly out of scope.

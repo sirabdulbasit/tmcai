@@ -17,18 +17,26 @@
  *      nearest chunks. Falls back to an empty array if the corpus
  *      isn't backfilled yet.
  *
- * Embedding model is shared with wikiEmbeddingService (text-embedding-004,
- * 768 dim) so the same vector index strategy applies.
+ * Embedding provider is `pgVectorEmbeddingProvider`, shared with
+ * wikiEmbeddingService — one model, one 768-dim contract, one normalisation,
+ * one stub policy. This file owns storage and retrieval only.
+ *
+ * MEM-005, 2026-08-11: this file used to POST to `text-embedding-004`, retired
+ * by Google on 2026-07-14. MEM-001 fixed the wiki copy and could not reach this
+ * one, because the provider logic was duplicated rather than shared.
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import {
+  PGVECTOR_EMBEDDING_MODEL as MODEL_GEMINI,
+  PGVECTOR_EMBEDDING_DIM as DIM,
+  embedTextForPgVector,
+  toVectorLiteral as vectorLiteral,
+} from './pgVectorEmbeddingProvider';
 
 const log = createLogger('chunk-vector');
 
-const DIM = 768;
 const MAX_EMBED_CHARS = 6000;
-const MODEL_GEMINI = 'text-embedding-004';
-const MODEL_STUB = 'stub-768';
 
 export interface ChunkVectorHit {
   id: number;
@@ -139,32 +147,61 @@ export async function searchChunksByVector(
 }
 
 /**
- * #9 — bounded re-embedding of unknown-model vectors. Replaces
- * 'legacy-unknown'/NULL-model vectors from chunk CONTENT using the
- * REAL provider only (a stub result is never written here, even in
- * dev — re-embedding exists to raise fidelity, not to churn rows).
+ * SQL predicate for "this chunk's vector was not produced by the model we
+ * currently search with". Exported so the scheduler's tenant-discovery query
+ * and this sweep cannot disagree about what "stale" means.
+ *
+ * MEM-005 — the predicate used to be an explicit list:
+ *   `embedding_model IS NULL OR embedding_model = 'legacy-unknown'`
+ *
+ * That named the two stale models known when it was written and silently
+ * excluded every model retired afterwards. `text-embedding-004` rows were
+ * therefore STRANDED: `searchChunksByVector` filters `embedding_model = $current`
+ * so they could never be returned, and the sweep meant to repair them never
+ * selected them. Invisible and unrepairable at the same time.
+ *
+ * `IS DISTINCT FROM` is the honest form — anything that is not the current model
+ * is stale, including NULL, 'legacy-unknown', 'stub-768', 'text-embedding-004'
+ * and whatever supersedes the current model next. Rows already on the current
+ * model are untouched, which is what keeps the sweep idempotent and convergent.
+ */
+export const STALE_CHUNK_MODEL_SQL = 'embedding_model IS DISTINCT FROM $MODEL$';
+
+/**
+ * #9 — bounded re-embedding of stale-model vectors. Replaces them from chunk
+ * CONTENT using the REAL provider only (a stub result is never written here,
+ * even in dev — re-embedding exists to raise fidelity, not to churn rows).
  * Idempotent: keyed per chunk id; a re-run finds fewer candidates.
- * Wired into the nightly cron:chunk_vector_backfill after the copy
- * pass.
+ * Wired into the nightly cron:chunk_vector_backfill after the copy pass.
  */
 export async function reembedUnknownChunkVectors(
   clientNumber: string,
   limit = 100,
-): Promise<{ scanned: number; reembedded: number; skipped: number }> {
+): Promise<{ scanned: number; reembedded: number; skipped: number; degraded: boolean }> {
   let scanned = 0, reembedded = 0, skipped = 0;
+  const cap = Math.min(Math.max(limit, 1), 500);
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, content FROM chunks
       WHERE client_number = $1
         AND vector_embedding IS NOT NULL
-        AND (embedding_model IS NULL OR embedding_model = 'legacy-unknown')
+        AND embedding_model IS DISTINCT FROM $2
       ORDER BY id ASC
-      LIMIT $2`,
-    clientNumber, Math.min(Math.max(limit, 1), 500),
+      LIMIT $3`,
+    clientNumber, MODEL_GEMINI, cap,
   ).catch(() => [] as any[]);
+
+  let degraded = false;
   for (const r of rows) {
     scanned += 1;
     const res = await embed(String(r.content ?? '').slice(0, MAX_EMBED_CHARS));
-    if (!res || res.model !== MODEL_GEMINI || res.embedding.length !== DIM) { skipped += 1; continue; }
+    // A null result means the PROVIDER failed, and it has already filed one
+    // degradation through embeddingGuard. Continuing would file one per row —
+    // up to `cap` identical findings and `cap` wasted provider calls for a
+    // provider we already know is down. Stop the batch; the next nightly run
+    // picks up exactly where this left off.
+    if (!res) { degraded = true; break; }
+    // A stub is not an upgrade. Skip without counting it against the provider.
+    if (res.model !== MODEL_GEMINI || res.embedding.length !== DIM) { skipped += 1; continue; }
     try {
       await prisma.$executeRawUnsafe(
         `UPDATE chunks SET vector_embedding = $1::vector, embedding_model = $2 WHERE id = $3`,
@@ -176,64 +213,15 @@ export async function reembedUnknownChunkVectors(
       log.warn('re-embed row failed', { id: r.id, error: err.message });
     }
   }
-  if (reembedded > 0) log.info('unknown-model chunk vectors re-embedded', { clientNumber, scanned, reembedded, skipped });
-  return { scanned, reembedded, skipped };
+  if (reembedded > 0) log.info('stale-model chunk vectors re-embedded', { clientNumber, scanned, reembedded, skipped });
+  return { scanned, reembedded, skipped, degraded };
 }
 
-// ─── internals (mirrors wikiEmbeddingService.embed) ─────────────────
+// ─── internals ───────────────────────────────────────────────────
 
-/** null = provider unavailable in production. The chunks table has NO
- *  per-vector model column, so a stub query vector compared against
- *  real stored vectors returns silently garbage-ranked results — the
- *  exact failure #7 forbids. Outside production stubs remain fine
- *  because stored dev vectors are stubs too. */
+/** Storage-local wrapper around the shared provider. null = provider
+ *  unavailable in production; retrieval degrades and the re-embed sweep stops
+ *  rather than burning its whole batch on a dead provider. */
 async function embed(text: string): Promise<{ embedding: number[]; model: string } | null> {
-  const { stubsAllowed, recordEmbeddingDegradation, recordEmbeddingRecovery } = await import('./embeddingGuard');
-  const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-  let lastError = 'no GEMINI_API_KEY/GOOGLE_API_KEY configured';
-  if (key) {
-    try {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${key}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: { parts: [{ text }] } }),
-        },
-      );
-      if (r.ok) {
-        const j: any = await r.json();
-        const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
-        if (vec.length === DIM) {
-          recordEmbeddingRecovery('chunks');
-          return { embedding: vec, model: MODEL_GEMINI };
-        }
-        lastError = `unexpected embedding shape (len=${vec.length})`;
-      } else {
-        lastError = `HTTP ${r.status}`;
-      }
-    } catch (e: any) { lastError = e?.message ?? 'fetch failed'; }
-  }
-  if (stubsAllowed()) return { embedding: stubEmbed(text), model: MODEL_STUB };
-  await recordEmbeddingDegradation('chunks', lastError);
-  return null;
-}
-
-function stubEmbed(text: string): number[] {
-  const vec = new Array(DIM).fill(0);
-  const tokens = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  for (const tok of tokens) {
-    let h = 2166136261;
-    for (let i = 0; i < tok.length; i++) h = (h ^ tok.charCodeAt(i)) * 16777619 >>> 0;
-    vec[h % DIM] += 1;
-  }
-  let norm = 0;
-  for (const v of vec) norm += v * v;
-  norm = Math.sqrt(norm) || 1;
-  for (let i = 0; i < vec.length; i++) vec[i] /= norm;
-  return vec;
-}
-
-function vectorLiteral(vec: number[]): string {
-  return '[' + vec.map((v) => (Number.isFinite(v) ? v.toFixed(6) : '0')).join(',') + ']';
+  return embedTextForPgVector(text, 'chunks', { maxChars: MAX_EMBED_CHARS });
 }

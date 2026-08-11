@@ -2,13 +2,18 @@
  * embeddingGuard — shared policy for embedding-provider fallback
  * (hardening audit 2026-07-14, item #7).
  *
- * All three embedding services (wiki pages, chunks, open items) had a
- * copy-pasted silent fallback: Gemini unavailable → deterministic
- * hash-based stub vectors written to the SAME columns as real ones.
- * Two services tag vectors with a model and filter at retrieval; the
- * chunks table has NO model column, so stub and real vectors could be
+ * The embedding services had a copy-pasted silent fallback: Gemini
+ * unavailable → deterministic hash-based stub vectors written to the
+ * SAME columns as real ones, so stub and real vectors could be
  * cosine-compared silently, returning garbage-ranked results with no
  * signal anywhere.
+ *
+ * MEM-005 (2026-08-11): the two surviving pgvector consumers (wiki pages,
+ * chunks) now share `pgVectorEmbeddingProvider`, which is the only caller of
+ * the degradation/recovery functions below. The third service, open items,
+ * was retired — its storage table had been dropped since 2026-05-18. Both
+ * `chunks` and `wiki_pages` DO carry an `embedding_model` column today and
+ * retrieval filters on it.
  *
  * Policy:
  *   - Stubs are allowed ONLY outside production (NODE_ENV) or when the
@@ -145,7 +150,7 @@ export interface EmbeddingHealth {
 /** Snapshot for /admin/system-health. Hydrates persisted state first —
  *  a restart shows 'degraded' from the durable row, never a false
  *  'healthy' from an empty in-memory map. */
-export async function getEmbeddingHealth(services: string[] = ['wiki', 'chunks', 'open_items']): Promise<EmbeddingHealth[]> {
+export async function getEmbeddingHealth(services: string[] = ['wiki', 'chunks']): Promise<EmbeddingHealth[]> {
   await hydrateFromDb();
   return services.map((svc) => {
     const s = state.get(svc);

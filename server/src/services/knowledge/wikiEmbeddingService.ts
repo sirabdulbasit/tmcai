@@ -1,13 +1,12 @@
 /**
  * Wiki embeddings — semantic retrieval for wiki_pages.
  *
- * Pattern: reuse the openItemEmbeddingService approach but write the
- * vector straight into `wiki_pages.embedding` (pgvector column) so we can
- * do `ORDER BY embedding <=> $query` at retrieval time via the HNSW index.
+ * The vector is written straight into `wiki_pages.embedding` (pgvector column)
+ * so retrieval can `ORDER BY embedding <=> $query` via the HNSW index.
  *
- * Embedding model: Gemini `text-embedding-004` (768 dims). Dev fallback:
- * deterministic hash-based 768-dim stub so local runs work without an API
- * key, though quality will be poor.
+ * Embedding provider: `pgVectorEmbeddingProvider` — the single owner of the
+ * model, the 768-dim contract, normalisation, the dev stub, and embeddingGuard
+ * degradation/recovery reporting. This file owns STORAGE and RETRIEVAL only.
  *
  * Idempotency: hash (title + body_markdown) with SHA-256 and skip write
  * if the hash hasn't changed. Keeps backfill + rerun cheap.
@@ -29,12 +28,15 @@ const log = createLogger('wiki-embed');
 // exactly why the failure was silent: memory kept being written, and none of it
 // was reachable.
 //
-// `gemini-embedding-001` is the current model. It returns 3072 dimensions by
-// default; we request 768 via outputDimensionality so the existing
-// `vector(768)` column and its index are unchanged.
-const MODEL_GEMINI = 'gemini-embedding-001';
-const MODEL_STUB = 'stub-768';
-const DIM = 768;
+// MEM-005, 2026-08-11: that fix reached only this file. The model, the request
+// shape, the normalisation and the stub now live in ONE provider, so the next
+// provider change cannot leave a copy behind.
+import {
+  PGVECTOR_EMBEDDING_MODEL as MODEL_GEMINI,
+  PGVECTOR_EMBEDDING_DIM as DIM,
+  embedTextForPgVector,
+  toVectorLiteral as vectorLiteral,
+} from './pgVectorEmbeddingProvider';
 
 // Embeddable text is capped — Gemini embed model has a token limit of
 // ~2048, and we want the most salient content anyway. Title + first
@@ -47,18 +49,6 @@ function composeEmbedText(title: string, body: string | null): string {
   if (!t && !b) return '';
   const combined = t ? `${t}\n\n${b}` : b;
   return combined.slice(0, MAX_EMBED_CHARS);
-}
-
-/**
- * Scale a vector to unit length so cosine, dot product and magnitude all agree.
- * A zero vector is returned unchanged rather than producing NaNs.
- */
-function unitNormalise(v: number[]): number[] {
-  let sum = 0;
-  for (const x of v) sum += x * x;
-  const norm = Math.sqrt(sum);
-  if (!Number.isFinite(norm) || norm === 0) return v;
-  return v.map((x) => x / norm);
 }
 
 function hashText(text: string): string {
@@ -217,70 +207,11 @@ export async function searchWikiByVector(
 
 // ─── internals ───────────────────────────────────────────────────
 
-/** null = provider unavailable in production (stubs forbidden there —
- *  audit 2026-07-14 #7). Callers skip the write / degrade retrieval. */
+/** Storage-local wrapper around the shared provider. null = provider
+ *  unavailable in production (stubs forbidden there — audit 2026-07-14 #7);
+ *  callers skip the write / degrade retrieval. */
 async function embed(text: string): Promise<{ embedding: number[]; model: string } | null> {
-  const { stubsAllowed, recordEmbeddingDegradation, recordEmbeddingRecovery } = await import('./embeddingGuard');
-  const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-  let lastError = 'no GEMINI_API_KEY/GOOGLE_API_KEY configured';
-  if (key) {
-    try {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_GEMINI}:embedContent?key=${key}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          // outputDimensionality keeps us at 768 so the pgvector column and its
-          // index survive the model change untouched.
-          body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: DIM }),
-        },
-      );
-      if (r.ok) {
-        const j: any = await r.json();
-        const vec: number[] = j.embedding?.values ?? j.embedding ?? [];
-        if (vec.length === DIM) {
-          recordEmbeddingRecovery('wiki');
-          // Truncated gemini-embedding-001 vectors are NOT unit length —
-          // measured L2 0.5888 at 768 dims, where text-embedding-004 returned
-          // unit vectors. pgvector's `<=>` normalises internally, but anything
-          // reading these as inner products, or comparing magnitudes, would be
-          // quietly wrong. Normalising here keeps every consumer honest and
-          // matches what the old model produced.
-          return { embedding: unitNormalise(vec), model: MODEL_GEMINI };
-        }
-        lastError = `unexpected embedding shape (len=${vec.length})`;
-      } else {
-        lastError = `HTTP ${r.status}`;
-      }
-    } catch (e: any) {
-      lastError = e?.message ?? 'fetch failed';
-    }
-  }
-  if (stubsAllowed()) return { embedding: stubEmbed(text), model: MODEL_STUB };
-  await recordEmbeddingDegradation('wiki', lastError);
-  return null;
-}
-
-/** Deterministic 768-dim stub used only when Gemini key is missing. */
-function stubEmbed(text: string): number[] {
-  const vec = new Array(DIM).fill(0);
-  const tokens = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  for (const tok of tokens) {
-    let h = 2166136261;
-    for (let i = 0; i < tok.length; i++) h = (h ^ tok.charCodeAt(i)) * 16777619 >>> 0;
-    vec[h % DIM] += 1;
-  }
-  // L2 normalize so cosine distance behaves
-  let norm = 0;
-  for (const v of vec) norm += v * v;
-  norm = Math.sqrt(norm) || 1;
-  for (let i = 0; i < vec.length; i++) vec[i] /= norm;
-  return vec;
-}
-
-/** Format a number array as a pgvector text literal: `[0.1,0.2,...]` */
-function vectorLiteral(vec: number[]): string {
-  return '[' + vec.map((v) => (Number.isFinite(v) ? v.toFixed(6) : '0')).join(',') + ']';
+  return embedTextForPgVector(text, 'wiki', { maxChars: MAX_EMBED_CHARS });
 }
 
 /**
