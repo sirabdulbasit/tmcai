@@ -2558,3 +2558,45 @@ status-write sites bypass `transitionStatus`:
 
 Family C should NOT use the same semantics: cleanup closes items in bulk on policy, not on a
 user's intent, and needs a governed audit-writing path with its own actor and reason.
+
+## 37. DEF-129 — Family A: CANCELLED as a real reversible outcome, atomic transitions, legacy DONE normalised (2026-08-11, BUILDER: Claude — REVIEWER-approved with amendments)
+
+**Why the bypasses existed.** `remove_open_item` wrote `status: 'CANCELLED'` directly and
+mark-wrong wrote the legacy lowercase `'closed'`. Neither was carelessness: the matrix had no
+CANCELLED, so there was no legal transition to request, and CLOSED was the only terminal
+state. Closing an item the owner asked to REMOVE records work as completed that never
+happened.
+
+**All amendments applied.** CANCELLED added as canonical and reversible (7 ways in, plus
+`CANCELLED → TRIAGED`); `DONE` normalised by migration rather than added as a status;
+delegatee fields, status and ledger made one atomic transaction via `TransitionContext.itemData`;
+policy-based triage-cleanup writes left in Family C; CANCELLED used for removal, mark-wrong and
+undo-created-item; `/metrics` moved above `/:id`; behavioural tests added.
+
+**Two consequences found while building, both closed here.** Adding a second terminal state
+would have left cancelled work in the active list and still being chased — fixed with one
+shared `INACTIVE_STATUS_VALUES` plus explicit CANCELLED in the raw-SQL chasing paths. And the
+"user marked wrong 3×" learning gate queried `status: 'closed'`, so it would have silently
+stopped matching the day mark-wrong began writing CANCELLED.
+
+**The 21-transition boot guard fired on the first test run** and was raised to 29 with the
+arithmetic stated (7 in, 1 out) — updated with reasoning, not loosened.
+
+**Verification.** `tsc` clean · `vitest` **1837 passed | 7 expected fail | 21 skipped | 1 todo
+(1866 across 162 files), 0 failed** — 19 new · build clean · `git diff --check` clean.
+
+**Live acceptance, dedicated test items only, every result read back from the database:**
+
+| Test | Result |
+|---|---|
+| Brain delegation | TRIAGED→DELEGATED accepted, delegatee set, 1 ledger row |
+| **Refused delegation** | NEW→DELEGATED rejected — `delegatee_name`, `delegatee_email`, `delegatee_id` **all NULL** |
+| Cancellation | TRIAGED→CANCELLED accepted |
+| Restoration | CANCELLED→TRIAGED accepted — the item came back |
+| DONE normalisation | 6 rows moved, 6 audit rows, re-run changed nothing |
+
+**NOT verified, and logged rather than glossed: DEF-130.** Asked to delete an item, Brain
+replied *"I don't have the capability to delete open items directly"* and offered to mark it
+done instead — denying a capability it has, and offering the one alternative that would record
+work that never happened. Removal is proven at the service layer, not through conversation.
+Same class as DEF-106/DEF-113; the fix belongs in the capability description, not in new code.
