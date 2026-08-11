@@ -101,6 +101,51 @@ Model versions occupying either seat may change without renegotiating this contr
 
 ## 5. Release protocol (BUILDER) and review protocol (REVIEWER)
 
+### Capability scorecard before every audit — owner ruling, 2026-08-11
+
+Every architecture audit, post-build audit, and post-deployment capability review MUST begin
+with the canonical Nexeo capability scorecard before any findings or narrative. The scorecard
+compares Nexeo with a professional living assistant across the owner's vision, in this order:
+
+1. Simple & Smart
+2. Thinking
+3. Memory
+4. Accurate Communication
+5. Authorized Action
+6. Self Follow-Up
+7. Learn
+8. Self-Healing
+9. Self-Pruning
+
+For every capability, show: **Nexeo score, professional-assistant score, gap, change since the
+previous verified build, and paired 20-character bar charts**. Then show the overall Nexeo
+score, professional benchmark, overall gap, movement since the last build, and verdict:
+**PROGRESSIVE / CIRCULAR / NEUTRAL / REGRESSION / UNVERIFIED**.
+
+Scores are evidence-based capability judgments, not test-pass percentages. Every score change
+must name the build and evidence that moved it; green tests alone do not justify a capability
+increase. Unexercised or production-unfalsifiable behavior is marked UNVERIFIED and does not
+raise the score. The locked baseline after the MEM-005 follow-up is **Nexeo 45.3/100 vs
+professional living assistant 92/100**, with latest movement **+0.3 PROGRESSIVE**. Future
+reports compare against the most recent verified scorecard rather than rescoring history from
+scratch.
+
+### Required audit sequence — owner ruling, 2026-08-11
+
+Every audit follows this order:
+
+1. Read `BRAIN_VISION.md` and preserve its exact capability order.
+2. Identify the current build SHA and previous verified scorecard.
+3. Show the Nexeo-versus-professional-assistant scorecard first.
+4. Audit the existing build from code and runtime evidence.
+5. State what improved, did not improve, regressed, or remains unverified.
+6. Give a PROGRESSIVE / CIRCULAR / NEUTRAL / REGRESSION / UNVERIFIED verdict.
+7. Recommend the smallest, smartest changes that close the largest verified gaps toward a
+   professional living assistant.
+
+Added code, green tests, or deployment alone do not earn capability points. Scores move only
+when a build creates verified behavior or removes a verified structural blocker.
+
 **REVIEWER (Codex) duties:** read the published diff **and** the `Changes_Made.md` section; check archive↔scenario pairing, tenant scoping, invariant touches, migration idempotency + deploy ordering, and whether the fix covers the **class**, not just the reported instance; return findings as expert opinion via Basit. The BUILDER answers every finding with evidence or a fix — findings are never silently dropped. Claims either agent can't back with command output don't count.
 
 **Verification matrix (agreed 2026-07-17):**
