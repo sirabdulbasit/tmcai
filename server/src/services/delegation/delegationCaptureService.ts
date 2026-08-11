@@ -655,12 +655,35 @@ async function resolveNotifyContext(
   clientNumber: string,
   thread: { id: string; openItemId: string },
 ): Promise<{ who?: string; item?: string; said?: string }> {
+  // Resolve the name TWO ways, because the first one is usually empty.
+  //
+  // Every delegation thread on this tenant has counterpart_entity_id = NULL,
+  // so a join on that link alone yields nothing and the notice falls back to a
+  // bare phone number. Meanwhile `entities` knows the person perfectly well:
+  // +923134199294 is Hamna Latif Bhutta, +923028000553 is Muhammad Yousaf.
+  //
+  // So: the entity link when present, otherwise a lookup by the phone inside
+  // counterpart_key ("wa:+92..."). Telling the owner "+923134199294 replied"
+  // about someone he speaks to daily is barely better than telling him nothing.
   const [row] = await prisma.$queryRawUnsafe<Array<any>>(
-    `SELECT COALESCE(NULLIF(e.name, ''), t.counterpart_key) AS who,
-            oi.title                                        AS item
+    `SELECT COALESCE(
+              NULLIF(e.name, ''),
+              NULLIF(byphone.name, ''),
+              t.counterpart_key
+            )                    AS who,
+            oi.title             AS item
        FROM delegation_threads t
        LEFT JOIN entities   e  ON e.id = t.counterpart_entity_id
        LEFT JOIN open_items oi ON oi.id = t.open_item_id
+       LEFT JOIN LATERAL (
+         SELECT c.name
+           FROM entities c
+          WHERE c.client_number = t.client_number
+            AND c.phone IS NOT NULL
+            AND c.phone = regexp_replace(t.counterpart_key, '^[a-z]+:', '')
+          ORDER BY c.name NULLS LAST
+          LIMIT 1
+       ) byphone ON TRUE
       WHERE t.id = $1 AND t.client_number = $2`,
     thread.id, clientNumber,
   ).catch(() => []);
