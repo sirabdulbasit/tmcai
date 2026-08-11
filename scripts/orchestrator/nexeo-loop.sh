@@ -93,6 +93,11 @@ CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
 
 BUILD_DOC="$ORCH/build_log.md"
 REVIEW_DOC="$ORCH/review_log.md"
+# The owner's / orchestrator's channel INTO the loop. Written outside the loop,
+# read by every build turn. The orchestrator never writes to build_log.md or
+# review_log.md — a bridge that speaks in either agent's name destroys the record
+# of who actually claimed what.
+DIRECTIVES_DOC="$ORCH/operator_directives.md"
 LEDGER_MD="$ORCH/orchestrator_ledger.md"
 LEDGER_JSONL="$ORCH/ledger.jsonl"
 STOP_FILE="$ORCH/STOP"
@@ -190,42 +195,98 @@ render() {
 }
 
 # ── the two agents ──────────────────────────────────────────────────────────
-CLAUDE_SESSION_FILE="$STATE/claude-session-id"
 CODEX_SESSION_FILE="$STATE/codex-session-id"
+
+# ── the Builder seat ────────────────────────────────────────────────────────
+# Owner, 2026-08-11: *"u create new claude session name it 'Brain Builder'"* and
+# *"always use that session"*, after *"i am unable to see it running in session"*.
+#
+# The loop used to mint a random uuid, so the build session appeared in the
+# session list under an auto-derived name (`tmcai-dd`). The owner looked for a
+# named session, found none, and reasonably concluded nothing was running — while
+# a build turn was twelve minutes in. Two fixes, both here:
+#
+#   1. `--name "$BUILDER_NAME"` on every invocation, so the seat is findable by
+#      the name a human chose rather than a hash.
+#   2. The id is PERSISTED and resumed. A name is only visible while a session is
+#      LIVE (`claude agents --json` lists running sessions only), so name lookup
+#      alone would fail the moment the session idled — and the loop would quietly
+#      open a fresh session each iteration, destroying the in-session property
+#      that is the whole point. The name is the handle for humans; the persisted
+#      id is the handle for the loop.
+BUILDER_NAME="${NEXEO_BUILDER_NAME:-Brain Builder}"
+BUILDER_SESSION_FILE="$STATE/builder-session-id"
+RESOLVER="$ROOT/scripts/orchestrator/resolve-session.sh"
+FORMATTER="$ROOT/scripts/orchestrator/format-stream.py"
+
+builder_session_id() {
+  # 1. already persisted — the normal path
+  if [ -s "$BUILDER_SESSION_FILE" ]; then
+    cat "$BUILDER_SESSION_FILE"; return 0
+  fi
+  # 2. a live session already wears the name (e.g. the owner made it by hand)
+  local found=""
+  [ -x "$RESOLVER" ] && found="$("$RESOLVER" "$BUILDER_NAME" --cwd "$ROOT" 2>/dev/null || true)"
+  if [ -n "$found" ]; then
+    printf '%s' "$found" > "$BUILDER_SESSION_FILE"
+    say "BUILD  adopted existing \"$BUILDER_NAME\" session $found"
+    printf '%s' "$found"; return 0
+  fi
+  # 3. none exists — create one and record it, so it is the same seat forever
+  local sid; sid="$(cat /proc/sys/kernel/random/uuid)"
+  printf '%s' "$sid" > "$BUILDER_SESSION_FILE"
+  say "BUILD  no \"$BUILDER_NAME\" session found — creating $sid"
+  printf '%s' "$sid"
+}
 
 run_claude() {
   local iter="$1" prompt="$2"
-  local log="$LOGS/iter-$(printf '%02d' "$iter")-build.log"
+  local n; n="$(printf '%02d' "$iter")"
+  local log="$LOGS/iter-$n-build.log"       # readable, live
+  local raw="$LOGS/iter-$n-build.jsonl"     # raw events, the evidence
+  local sid; sid="$(builder_session_id)"
   local -a session_args
 
-  if [ -s "$CLAUDE_SESSION_FILE" ]; then
-    session_args=(--resume "$(cat "$CLAUDE_SESSION_FILE")")
-    say "BUILD  iter=$iter claude resuming session $(cat "$CLAUDE_SESSION_FILE")"
+  # `--resume` on a session with no transcript yet fails, so the FIRST turn
+  # opens it with --session-id and every later turn resumes it.
+  if [ -f "/root/.claude/projects/-var-www-tmcai/$sid.jsonl" ]; then
+    session_args=(--resume "$sid")
+    say "BUILD  iter=$iter resuming \"$BUILDER_NAME\" ($sid)"
   else
-    local sid; sid="$(cat /proc/sys/kernel/random/uuid)"
-    printf '%s' "$sid" > "$CLAUDE_SESSION_FILE"
     session_args=(--session-id "$sid")
-    say "BUILD  iter=$iter claude opening session $sid"
+    say "BUILD  iter=$iter opening \"$BUILDER_NAME\" ($sid)"
   fi
 
+  # `--output-format stream-json --verbose` is what makes the turn WATCHABLE.
+  # Without it `claude -p` buffers the whole turn and flushes at the end: the log
+  # sat at 0 bytes for twelve minutes, so a working loop was indistinguishable
+  # from a hung one. Raw events are tee'd for evidence; the formatter renders a
+  # live line per event. `tail -f` either file to watch the Builder work.
+  #
   # IS_SANDBOX=1 is required: this box runs as root, and Claude Code refuses
   # --dangerously-skip-permissions under root without it. Verified 2026-08-11.
-  # Without the flag a headless turn cannot answer a permission prompt, so every
-  # tool call would be denied and the build turn would silently do nothing.
+  # Without it a headless turn cannot answer a permission prompt, so every tool
+  # call would be denied and the build turn would silently do nothing.
   printf '%s' "$prompt" | IS_SANDBOX=1 "$CLAUDE_BIN" -p \
     "${session_args[@]}" \
+    --name "$BUILDER_NAME" \
+    --output-format stream-json --verbose \
     --dangerously-skip-permissions \
-    --add-dir "$ROOT" \
-    > "$log" 2>&1
-  local rc=$?
-  say "BUILD  iter=$iter claude exit=$rc ($(wc -l < "$log") lines → $(basename "$log"))"
+    --add-dir "$ROOT" 2>&1 \
+    | tee "$raw" \
+    | python3 "$FORMATTER" --prefix > "$log" 2>&1
+  # claude's status, NOT tee's or python's — a formatter exiting 0 must never
+  # launder a failed build turn into a success.
+  local rc=${PIPESTATUS[1]}
+
+  say "BUILD  iter=$iter claude exit=$rc ($(wc -l < "$log" 2>/dev/null || echo 0) lines → $(basename "$log"))"
   # A dead session must not silently start a fresh one every iteration; that
   # would quietly destroy the "in-session" property the owner asked for.
-  if [ $rc -ne 0 ] && grep -qiE 'no conversation found|session .* not found' "$log"; then
-    say "BUILD  iter=$iter claude session lost — opening a NEW session next iteration"
-    rm -f "$CLAUDE_SESSION_FILE"
+  if [ "$rc" -ne 0 ] && grep -qiE 'no conversation found|session .* not found' "$raw" 2>/dev/null; then
+    say "BUILD  iter=$iter session $sid is GONE — clearing so a new seat is opened next iteration"
+    rm -f "$BUILDER_SESSION_FILE"
   fi
-  return $rc
+  return "$rc"
 }
 
 # `codex exec` accepts -C/--cd; `codex exec resume` does NOT (verified against
@@ -399,7 +460,7 @@ while :; do
     TSC "$TSC_BEFORE" TESTS "${TESTS_AFTER:-not yet run this session}" \
     MODE "$MODE" STRUCTURAL "$STRUCTURAL_NOTE" \
     FORBIDDEN "$FORBIDDEN_ALERT" \
-    BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" \
+    BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
 

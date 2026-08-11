@@ -36,6 +36,13 @@ this turn.
 
 ## Your turn, in order
 
+0. **Read `@@DIRECTIVES@@`** — the operator directives. The owner ruled that the
+   orchestrator does not implement anything (*"you are orchestrator engineer or
+   bridger"*, *"this Brain Builder's task to build and Codex to review"*), so
+   whatever the owner or the harness needs built is written there instead of
+   being done for you. Items persist until closed. Codex's ranked directive
+   outranks them for THIS turn, but a directive you skip must be named in your
+   build entry with the reason — silently dropping one is how work gets lost.
 1. **Read `@@REVIEWDOC@@`** — the review log. Start at the newest
    `## Iteration` section. Codex's ranked directive from last iteration is the
    highest-priority input you have; if you are not going to follow it, say why
