@@ -122,20 +122,35 @@ export async function embedTextForPgVector(
       if (r.ok) {
         const j: any = await r.json();
         const raw = j?.embedding?.values ?? j?.embedding ?? [];
-        // Shape is validated before anything is trusted: a 200 carrying the
-        // wrong width is a provider change, not a vector.
-        const vec: number[] = Array.isArray(raw) && raw.every((n: unknown) => typeof n === 'number') ? raw : [];
+        // Shape is validated before anything is trusted. `typeof n === 'number'`
+        // is NOT sufficient: NaN and Infinity are numbers, and pgvector accepts
+        // them — after which every distance against that row is NaN and the row
+        // is silently unmatchable forever. Require finiteness explicitly.
+        const finite = Array.isArray(raw) && raw.every((n: unknown) => typeof n === 'number' && Number.isFinite(n));
+        const vec: number[] = finite ? (raw as number[]) : [];
         if (vec.length === PGVECTOR_EMBEDDING_DIM) {
-          // Recovery is stamped only here — after a REAL provider success of the
-          // expected shape. The stub path below never reaches it.
-          recordEmbeddingRecovery(service);
-          return {
-            embedding: unitNormalise(vec),
-            model: PGVECTOR_EMBEDDING_MODEL,
-            dim: PGVECTOR_EMBEDDING_DIM,
-          };
+          // A zero-magnitude vector cannot be normalised and has no direction, so
+          // cosine against it is undefined. Storing one would look like a
+          // successful embedding while matching nothing — the same silent-failure
+          // shape this whole defect class is made of.
+          const norm = Math.sqrt(vec.reduce((s, x) => s + x * x, 0));
+          if (norm > 0) {
+            // Recovery is stamped only here — after a REAL provider success whose
+            // vector is the right width, finite, and usable. The stub path below
+            // never reaches it.
+            recordEmbeddingRecovery(service);
+            return {
+              embedding: unitNormalise(vec),
+              model: PGVECTOR_EMBEDDING_MODEL,
+              dim: PGVECTOR_EMBEDDING_DIM,
+            };
+          }
+          lastError = 'provider returned a zero-magnitude vector';
+        } else {
+          lastError = Array.isArray(raw) && !finite
+            ? 'provider returned non-finite components'
+            : `unexpected embedding shape (len=${Array.isArray(raw) ? raw.length : 'n/a'})`;
         }
-        lastError = `unexpected embedding shape (len=${Array.isArray(raw) ? raw.length : 'n/a'})`;
       } else {
         lastError = `HTTP ${r.status}`;
       }

@@ -2428,10 +2428,19 @@ act on and cannot be evidenced in production**. Stated plainly rather than claim
   registry entry neither fixes nor conceals it.
 - `memoryDecayJob.ts` unscoped hard delete — separate proposal, explicitly out of scope.
 
-**Post-deploy record (2026-08-11 18:16 PKT, production HEAD `ccbdfda`).**
-Application release SHA `ccbdfda` · reviewed remote HEAD `ccbdfda` · production deployed SHA
-`ccbdfda` (this repo IS the production checkout; no pull was required, the build was made in
-place and `pm2 restart tmcai-server` performed without `--update-env`, which poisons `DISPLAY`).
+## Deployment Record — 2026-08-11 — `ccbdfda`
+
+Four SHAs, named explicitly per AGENTS.md §5:
+
+1. **application release SHA** — `ccbdfda` (the reviewed code commit)
+2. **reviewed remote HEAD** — `ccbdfda` (what `origin/feat/nexeo-one-brain` pointed to at review time)
+3. **production deployed SHA** — `ccbdfda` (`git rev-parse HEAD` on the box after build + restart)
+4. **documentation/report SHA** — `662ae57` (docs-only; it records the outcome and was
+   **never live-tested** — production was not pulled to it, and the two commits differ only in
+   `Changes_Made.md` and `brain_evaluation_chart.md`)
+
+This repo IS the production checkout, so no pull was required; the build was made in place and
+`pm2 restart tmcai-server` was run without `--update-env`, which poisons `DISPLAY` for Chromium.
 
 **Wiki path VERIFIED LIVE.** `sweepWikiEmbeddings(25)` through the new shared provider returned
 `attempted 25, embedded 25, degraded false`. Persisted rows inspected in the database:
@@ -2445,3 +2454,39 @@ than counted as a success.
 **Convergence estimate (evidence-based, not a promise):** the scheduled sweep is 200 rows per
 hourly run, so ~11 cycles for the remaining 2,014 if the provider stays healthy and no new stale
 rows appear. One measured data point (25/25) so far.
+
+### MEM-005 follow-up — REVIEWER post-deploy findings closed (2026-08-11)
+
+Three findings from the post-deploy review, all accepted.
+
+**MEDIUM — chunk staleness had two implementations again.** `STALE_CHUNK_MODEL_SQL` was
+exported and used by nothing, while the predicate was written out a second time in the sweep
+and a third time in `schedulerService`. That is the exact disagreement class MEM-005 exists to
+remove, rebuilt inside the fix for it. Replaced with `staleChunkModelPredicate(paramIndex)`,
+now called by BOTH sites. A supplementary test asserts the literal appears exactly once in
+non-comment source, so a fourth copy cannot be added quietly.
+
+**LOW — the non-finite-vector test was tautological.** `!finite || finite` is always true; it
+asserted nothing. Worse, the finding was correct about the provider too: `typeof n === 'number'`
+accepts `NaN` and `Infinity`, and pgvector accepts them as well — after which every distance
+against that row is `NaN` and the row is unmatchable forever while reading as embedded.
+
+The provider now requires every component to be `Number.isFinite`, and additionally rejects a
+zero-magnitude vector: right width, all finite, and still meaningless, because it has no
+direction and cosine against it is undefined. Both cases return null, record degradation, and
+**stamp no recovery** — recovery must mean the provider is usable, not merely reachable. Six
+real assertions replace the tautology, including that a rejected vector cannot clear an existing
+degradation.
+
+**LOW — deployment documentation did not follow the four-SHA protocol.** Retitled to
+`## Deployment Record — 2026-08-11 — ccbdfda` and all four SHAs named, including the
+documentation/report SHA `662ae57`, which is stated as never live-tested.
+
+**Files changed.** `server/src/services/knowledge/pgVectorEmbeddingProvider.ts` ·
+`server/src/services/knowledge/chunkVectorService.ts` · `server/src/services/schedulerService.ts` ·
+`server/tests/mem005EmbeddingProvider.test.ts` · `Changes_Made.md`.
+
+**Verification (re-run after the last edit).** `npx tsc --noEmit` clean · `npx vitest run`
+**1795 passed | 7 expected fail | 21 skipped | 1 todo (1824 across 160 files), 0 failed** ·
+focused embedding suites **3 files / 47 tests / all passed** (MEM-005 alone 28, up from 21) ·
+`npm run build` passes · `git diff --check` clean. No migration, no dependency change.

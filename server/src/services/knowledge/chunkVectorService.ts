@@ -165,7 +165,9 @@ export async function searchChunksByVector(
  * and whatever supersedes the current model next. Rows already on the current
  * model are untouched, which is what keeps the sweep idempotent and convergent.
  */
-export const STALE_CHUNK_MODEL_SQL = 'embedding_model IS DISTINCT FROM $MODEL$';
+export function staleChunkModelPredicate(paramIndex: number): string {
+  return `embedding_model IS DISTINCT FROM $${paramIndex}`;
+}
 
 /**
  * #9 — bounded re-embedding of stale-model vectors. Replaces them from chunk
@@ -184,7 +186,7 @@ export async function reembedUnknownChunkVectors(
     `SELECT id, content FROM chunks
       WHERE client_number = $1
         AND vector_embedding IS NOT NULL
-        AND embedding_model IS DISTINCT FROM $2
+        AND ${staleChunkModelPredicate(2)}
       ORDER BY id ASC
       LIMIT $3`,
     clientNumber, MODEL_GEMINI, cap,

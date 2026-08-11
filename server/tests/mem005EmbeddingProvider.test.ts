@@ -90,7 +90,7 @@ import {
 } from '../src/services/knowledge/pgVectorEmbeddingProvider';
 import { MODEL_EMBEDDING } from '../src/config/models';
 import { resetEmbeddingGuard, getEmbeddingHealth } from '../src/services/knowledge/embeddingGuard';
-import { reembedUnknownChunkVectors } from '../src/services/knowledge/chunkVectorService';
+import { reembedUnknownChunkVectors, staleChunkModelPredicate } from '../src/services/knowledge/chunkVectorService';
 
 const origEnv = { NODE_ENV: process.env.NODE_ENV, ALLOW: process.env.EMBEDDINGS_ALLOW_STUB, KEY: process.env.GEMINI_API_KEY };
 
@@ -159,12 +159,64 @@ describe('MEM-005 — the shared pgvector embedding provider', () => {
     expect(l2).toBeCloseTo(1, 6);
   });
 
-  it('never produces NaN from a zero or non-finite vector', () => {
-    // Dividing by a zero norm would poison the stored vector unrecoverably —
-    // pgvector accepts NaN and every distance against it becomes NaN.
+  it('normalising a zero vector returns zeros rather than NaNs', () => {
+    // Dividing by a zero norm would poison the stored vector unrecoverably:
+    // pgvector accepts NaN and every distance against that row becomes NaN.
     expect(unitNormalise([0, 0, 0])).toEqual([0, 0, 0]);
-    expect(unitNormalise([Number.NaN, 1]).every((n) => !Number.isFinite(n) || Number.isFinite(n))).toBe(true);
-    expect(toVectorLiteral([Number.NaN, Infinity, 0.5])).toBe('[0,0,0.500000]');
+  });
+
+  it('the pgvector literal never emits a non-finite component', () => {
+    // `[NaN,...]` is invalid SQL for a vector; 0 is the safe, matchable floor.
+    expect(toVectorLiteral([Number.NaN, Infinity, -Infinity, 0.5])).toBe('[0,0,0,0.500000]');
+  });
+
+  it('REJECTS a 200 whose vector contains NaN, and stamps no recovery', async () => {
+    // typeof NaN === 'number', so a plain type check would have let this
+    // through. The row would then be unmatchable forever while looking embedded.
+    const values = new Array(768).fill(1);
+    values[7] = Number.NaN;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ embedding: { values } }) })));
+
+    const res = await embedTextForPgVector('hello', 'wiki');
+
+    expect(res).toBeNull();
+    const health = await getEmbeddingHealth(['wiki']);
+    expect(health[0].status).toBe('degraded');
+    expect(health[0].lastError).toContain('non-finite');
+  });
+
+  it('REJECTS a 200 whose vector contains Infinity', async () => {
+    const values = new Array(768).fill(1);
+    values[0] = Infinity;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ embedding: { values } }) })));
+
+    expect(await embedTextForPgVector('hello', 'wiki')).toBeNull();
+  });
+
+  it('REJECTS a zero-magnitude vector as unusable', async () => {
+    // Right width, all finite, and still meaningless: no direction, so cosine
+    // against it is undefined and it matches nothing. Storing it would read as
+    // a successful embedding — the silent-failure shape MEM-005 exists to stop.
+    vi.stubGlobal('fetch', vi.fn(async () => vecResponse(768, 0)));
+
+    const res = await embedTextForPgVector('hello', 'chunks');
+
+    expect(res).toBeNull();
+    const health = await getEmbeddingHealth(['chunks']);
+    expect(health[0].status).toBe('degraded');
+    expect(health[0].lastError).toContain('zero-magnitude');
+  });
+
+  it('a rejected vector never clears an existing degradation', async () => {
+    // Recovery must mean the provider is usable again, not merely reachable.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })));
+    await embedTextForPgVector('hello', 'wiki');
+    expect((await getEmbeddingHealth(['wiki']))[0].status).toBe('degraded');
+
+    vi.stubGlobal('fetch', vi.fn(async () => vecResponse(768, 0)));
+    await embedTextForPgVector('hello', 'wiki');
+
+    expect((await getEmbeddingHealth(['wiki']))[0].status).toBe('degraded');
   });
 
   it('HTTP 404 records degradation and writes nothing', async () => {
@@ -269,6 +321,31 @@ describe('MEM-005 — every superseded chunk model is eligible for repair', () =
     const r = await reembedUnknownChunkVectors('TMC-0001', 2);
     expect(r.scanned).toBeLessThanOrEqual(2);
     expect(r.reembedded).toBeLessThanOrEqual(2);
+  });
+
+  it('the sweep emits the predicate from the shared helper', async () => {
+    await reembedUnknownChunkVectors('TMC-0001', 100);
+    const selectSql = String(queryRawUnsafe.mock.calls[0][0]);
+    expect(selectSql).toContain(staleChunkModelPredicate(2));
+  });
+
+  it('ONE definition of staleness exists in the source', async () => {
+    // Supplements the behaviour tests above. MEM-005 removed a rule that had
+    // been written out twice and drifted; restating the replacement in the
+    // sweep and again in the scheduler would rebuild exactly that. Both must
+    // call the helper, so the literal appears only where it is defined.
+    const fs = await import('node:fs');
+    const files = [
+      '../src/services/knowledge/chunkVectorService.ts',
+      '../src/services/schedulerService.ts',
+    ].map((f) => fs.readFileSync(new URL(f, import.meta.url), 'utf-8'));
+
+    const literalUses = files.join('\n')
+      .split('\n')
+      .filter((l) => l.includes('embedding_model IS DISTINCT FROM') && !l.trimStart().startsWith('*') && !l.trimStart().startsWith('//'));
+
+    expect(literalUses).toHaveLength(1);
+    expect(literalUses[0]).toContain('return `embedding_model IS DISTINCT FROM');
   });
 
   it('is idempotent — a second pass finds nothing left', async () => {

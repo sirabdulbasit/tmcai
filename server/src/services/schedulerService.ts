@@ -233,18 +233,21 @@ export async function initScheduler(): Promise<void> {
   // backfilled.
   cron.schedule('0 4 * * *', () => leaderOnly('cron:chunk_vector_backfill', async () => {
     try {
-      const { backfillChunkVectors, reembedUnknownChunkVectors } = await import('./knowledge/chunkVectorService');
+      const { backfillChunkVectors, reembedUnknownChunkVectors, staleChunkModelPredicate } =
+        await import('./knowledge/chunkVectorService');
       const { PGVECTOR_EMBEDDING_MODEL } = await import('./knowledge/pgVectorEmbeddingProvider');
-      // MEM-005 — the same staleness definition the sweep uses. This query used
-      // to name 'legacy-unknown' and NULL explicitly, so a tenant whose chunks
-      // were all on a RETIRED model (text-embedding-004) was never selected and
-      // its sweep never ran: the repair pass could not see the rows it existed
-      // to repair. `IS DISTINCT FROM` covers every superseded model, now and
-      // after the next model change.
+      // MEM-005 — the staleness definition comes from `staleChunkModelPredicate`,
+      // the SAME function the sweep uses, rather than being restated here.
+      //
+      // This query used to name 'legacy-unknown' and NULL explicitly, so a tenant
+      // whose chunks were all on a RETIRED model was never selected and its sweep
+      // never ran. Fixing that by writing the new predicate out twice would have
+      // rebuilt the very thing MEM-005 exists to remove: two copies of one rule,
+      // free to drift apart at the next model change.
       const tenants = await prisma.$queryRawUnsafe<any[]>(
         `SELECT DISTINCT client_number FROM chunks
           WHERE vector_embedding IS NULL
-             OR embedding_model IS DISTINCT FROM $1`,
+             OR ${staleChunkModelPredicate(1)}`,
         PGVECTOR_EMBEDDING_MODEL,
       );
       for (const t of tenants) {
