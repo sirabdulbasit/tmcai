@@ -355,6 +355,20 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }, 'quiet_hours');
   }
 
+  // ── Office hours (DEF-120) ──────────────────────────────────────────
+  // Stricter than quiet hours and for a different reason: quiet hours protect
+  // sleep, office hours protect the working day. 06:11 passed the first and
+  // still should not have been sent.
+  //
+  // Emergencies are exempt — bypassQuiet is already true for them — because a
+  // channel that waits for Monday is not an emergency channel.
+  if (!bypassQuiet && await isOutsideOfficeHours(user.id, user.clientNumber, bc)) {
+    return await record({
+      ...req, user, channel: 'text', urgency,
+      status: 'suppressed', summary: req.summary,
+    }, 'outside_office_hours');
+  }
+
   // ── Resolve target phone ────────────────────────────────────────────
   const targetPhone = bc.whatsappNumber || user.contactNumber || null;
   if (!targetPhone) {
@@ -539,6 +553,55 @@ function channelsForUrgency(u: Urgency): Array<'text' | 'voicenote' | 'call_cta'
  * User.timezone chain (DST-aware via Intl). A range that crosses
  * midnight (e.g. 22:00 → 07:00) is supported.
  */
+
+/**
+ * DEF-120 — is it working hours for THIS user, right now?
+ *
+ * Owner, 2026-08-11: *"brain should send message only in office hour as per
+ * region"*. He had just received an intervention notice at 06:11 and another at
+ * 08:16. Quiet hours ended at 06:00 so both were legal, and both were wrong:
+ * "not asleep" is not "at work", and an assistant that leads with a blocker
+ * before the working day starts is one you learn to mute.
+ *
+ * Evaluated in the USER's timezone, so a tenant in Karachi and one in London
+ * each get their own working day with no coordination between them.
+ *
+ * EMERGENCY IS EXEMPT, deliberately. The point of an emergency channel is that
+ * it ignores the calendar; making it wait would quietly turn the one urgent
+ * path into the same delayed path as everything else.
+ */
+async function isOutsideOfficeHours(userId: number, clientNumber: string, bc: any): Promise<boolean> {
+  try {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const ctx = { userId, clientNumber };
+    const [startH, endH, daysMask] = await Promise.all([
+      getBehaviorValue('notify.office_start_hour', ctx).catch(() => 9),
+      getBehaviorValue('notify.office_end_hour', ctx).catch(() => 18),
+      getBehaviorValue('notify.office_days_mask', ctx).catch(() => 62),
+    ]);
+
+    const { resolveUserTimezone, isValidTimezone } = await import('../userTimezoneService');
+    const tz = isValidTimezone(bc?.timezone) ? bc.timezone : await resolveUserTimezone(userId);
+
+    // Hour AND weekday from the same formatter call, so a message sent across a
+    // midnight boundary cannot be judged on one day's date and another's hour.
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', hour12: false, weekday: 'short',
+    }).formatToParts(new Date());
+    const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '12');
+    const wd = parts.find((p) => p.type === 'weekday')?.value ?? 'Mon';
+    const dayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(wd);
+
+    if (dayIndex >= 0 && !((daysMask >> dayIndex) & 1)) return true;   // not a working day
+    return hour < startH || hour >= endH;
+  } catch {
+    // Unknown means SEND. A broken clock lookup must not silence Brain
+    // altogether — a message an hour early is a smaller failure than one that
+    // never arrives.
+    return false;
+  }
+}
+
 async function isWithinQuietHours(bc: any, userId: number): Promise<boolean> {
   if (!bc?.quietStart || !bc?.quietEnd) return false;
   const { resolveUserTimezone, isValidTimezone } = await import('../userTimezoneService');

@@ -245,7 +245,7 @@ function backoffUntil(reason: string | undefined): Date {
     // burning attempts.
     case 'quiet_hours':
       return new Date(now + 30 * MIN);
-    // DEF-119: the working day may be hours away, or a whole weekend. Retrying
+    // DEF-120: the working day may be hours away, or a whole weekend. Retrying
     // every 15 minutes until Monday is the DEF-105 flood with a new label, so
     // this waits the longest of the transient reasons — and 30 minutes of
     // granularity is still fine at 09:00, because the window opens on the hour.
@@ -287,7 +287,7 @@ async function promptsInBackoff(userId: number): Promise<bigint[]> {
 }
 
 /**
- * DEF-119 — which open item is this prompt about?
+ * DEF-120 — which open item is this prompt about?
  *
  * Producers record the subject in two different places. `open_item_id` is the
  * column; `metadata.openItemId` is what `preactive_due_nudge` writes, and it
@@ -404,7 +404,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // openItemId is untouched — most prompts have no item, and dropping those
   // would silence real notifications.
   //
-  // DEF-119 — and it must find the subject wherever the producer put it.
+  // DEF-120 — and it must find the subject wherever the producer put it.
   // The check above read `openItemId` only. Measured over 7 days of the live
   // queue:
   //

@@ -116,6 +116,30 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'notify.diagnostic_budget_pct', unit: 'count', def: 25, min: 1, max: 100, scope: 'tenant',
     description: 'DEF-104. Percentage of the daily message cap that Brain self-reporting (health alerts, digest, deploy reports) may use. Protects user-facing reminders from being crowded out.',
   },
+  // DEF-120 — Brain speaks during working hours, in the user's own timezone.
+  //
+  // Owner, 2026-08-11: *"brain should send message only in office hour as per
+  // region"*. That morning he received an intervention notice at 06:11 and
+  // another at 08:16. Quiet hours ended at 06:00, so 06:11 was legal — and
+  // still wrong. "Not asleep" is not the same as "at work", and an assistant
+  // that opens with a blocker before the working day is one you learn to mute.
+  //
+  // Hours, not a boolean, because the answer differs by region and by person.
+  // The window is read in the USER's timezone, so a tenant in Karachi and one
+  // in London each get their own 9-to-6 without any coordination.
+  'notify.office_start_hour': {
+    key: 'notify.office_start_hour', unit: 'hours', def: 9, min: 0, max: 23, scope: 'tenant',
+    description: 'DEF-120. Earliest local hour Brain may send a non-urgent proactive message. Below this it waits rather than suppressing.',
+  },
+  'notify.office_end_hour': {
+    key: 'notify.office_end_hour', unit: 'hours', def: 18, min: 1, max: 24, scope: 'tenant',
+    description: 'DEF-120. Latest local hour (exclusive) for non-urgent proactive messages. 18 means the last send is at 17:59.',
+  },
+  // 0 = Sunday. Default Mon-Fri; a tenant working Sat is one config change away.
+  'notify.office_days_mask': {
+    key: 'notify.office_days_mask', unit: 'count', def: 62, min: 1, max: 127, scope: 'tenant',
+    description: 'DEF-120. Bitmask of working days, bit 0 = Sunday. Default 62 = Mon-Fri. Brain holds non-urgent messages outside these days.',
+  },
   'delegation.capture_enabled': {
     key: 'delegation.capture_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: '33a inbound delegation-reply capture. DEFAULT OFF; enabled per tenant after migration + health verification. Env kill switch DELEGATION_CAPTURE_ENABLED=0 overrides everything.',

@@ -31,6 +31,7 @@ function backoffMinutes(reason: string): number {
     case 'daily_cap_exceeded':
     case 'diagnostic_budget_exceeded': return 60;
     case 'quiet_hours': return 30;
+    case 'outside_office_hours': return 45;
     case 'rate_limited': return 15;
     case 'user_suspended':
     case 'no_phone': return 12 * 60;
@@ -60,6 +61,12 @@ describe('DEF-105 — backoff horizons match the reason', () => {
     // The window is ROLLING, so capacity frees as older sends age out. Waiting
     // a full day would delay a reminder that could have gone out at noon.
     expect(backoffMinutes('daily_cap_exceeded')).toBe(60);
+  });
+
+  it('DEF-120: waits longer outside office hours than for quiet hours', () => {
+    // The working day can be a whole weekend away. Retrying on the quiet-hours
+    // cadence until Monday would be the DEF-105 flood wearing a new label.
+    expect(backoffMinutes('outside_office_hours')).toBeGreaterThan(backoffMinutes('quiet_hours'));
   });
 
   it('treats an unknown reason conservatively rather than optimistically', () => {
