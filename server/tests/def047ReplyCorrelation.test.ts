@@ -127,8 +127,14 @@ describe('DEF-047 — two open threads with one counterpart no longer swallow th
       .find((a: any) => a?.metadata?.kind === 'delegation_reply_correlation_inferred');
 
     expect(inferred, 'an inferred correlation must never be silent').toBeTruthy();
-    expect(inferred.question).toMatch(/2 open threads/);
-    expect(inferred.question).toMatch(/different item/i);
+    // DEF-122 reworded this notice to name the person and the item. The
+    // GUARANTEE is unchanged and is what is asserted: the owner is told how
+    // many candidates matched, and given a way to correct it. Pinning the exact
+    // noun ("threads" vs "items") would fail on wording while the property
+    // holds — and the property is the thing DEF-047 exists to protect.
+    expect(inferred.question, 'must state HOW MANY candidates matched').toMatch(/\b2\b/);
+    expect(inferred.question, 'must disclose that the attachment was a guess').toMatch(/matched|attached/i);
+    expect(inferred.question, 'must offer a correction path').toMatch(/different (item|one)/i);
   });
 
   it('a single thread is still an exact match, with no guess notice', async () => {

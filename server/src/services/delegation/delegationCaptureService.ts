@@ -611,10 +611,22 @@ async function notifyOwner(
   try {
     const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
     const day = new Date().toISOString().slice(0, 10);
+    // DEF-122 — name the person and the item.
+    //
+    // Owner, 2026-08-11, on receiving "A delegatee replied on a tracked item but
+    // the reply could not be confidently classified": *"what is meant for?"*.
+    //
+    // Fair question — the message named nobody and nothing. Brain KNEW both:
+    // the metadata already carried threadId and openItemId, and the thread row
+    // carries the counterpart. Four of the seven notices below were written
+    // without them, so the owner was asked to "review the item" without being
+    // told which item, who replied, or what they said. That is not a notice, it
+    // is a puzzle.
+    const context = await resolveNotifyContext(clientNumber, thread).catch(() => ({}));
     await enqueueBrainPrompt({
       userId: thread.ownerUserId,
       clientNumber,
-      question: buildOwnerQuestion(metadata),
+      question: buildOwnerQuestion(metadata, context),
       openItemId: thread.openItemId || undefined,
       sideEffect: { kind: 'action_status_update', ...(thread.openItemId ? { openItemId: thread.openItemId } : {}) },
       criticality: metadata.kind === 'delegation_completion_reported' ? 'high' : 'routine',
@@ -627,25 +639,78 @@ async function notifyOwner(
   }
 }
 
+
+/**
+ * Who replied, and about what — the two facts every notice needs.
+ *
+ * Read at notify time rather than carried in metadata: a thread's item can be
+ * renamed and a contact's name filled in between the reply arriving and the
+ * owner reading about it, and the fresher answer is the useful one.
+ *
+ * Both are optional. A notice missing a name is worse than one with it, but a
+ * notice that never sends because a lookup failed is worse than either — so
+ * every failure degrades to "unknown" rather than throwing.
+ */
+async function resolveNotifyContext(
+  clientNumber: string,
+  thread: { id: string; openItemId: string },
+): Promise<{ who?: string; item?: string; said?: string }> {
+  const [row] = await prisma.$queryRawUnsafe<Array<any>>(
+    `SELECT COALESCE(NULLIF(e.name, ''), t.counterpart_key) AS who,
+            oi.title                                        AS item
+       FROM delegation_threads t
+       LEFT JOIN entities   e  ON e.id = t.counterpart_entity_id
+       LEFT JOIN open_items oi ON oi.id = t.open_item_id
+      WHERE t.id = $1 AND t.client_number = $2`,
+    thread.id, clientNumber,
+  ).catch(() => []);
+
+  // The reply itself. Stored as evidence when it arrived — quoting it back is
+  // what lets the owner judge in one read instead of opening the item.
+  const [ev] = await prisma.$queryRawUnsafe<Array<any>>(
+    `SELECT body FROM delegation_thread_events
+      WHERE thread_id = $1 AND event_type = 'inbound_received'
+      ORDER BY created_at DESC LIMIT 1`,
+    thread.id,
+  ).catch(() => []);
+
+  return {
+    // counterpart_key looks like "wa:+923134199294" — the prefix is machinery.
+    who: row?.who ? String(row.who).replace(/^wa:/, '') : undefined,
+    item: row?.item ? String(row.item) : undefined,
+    said: ev?.body ? String(ev.body).replace(/\s+/g, ' ').trim().slice(0, 200) : undefined,
+  };
+}
+
 /** Owner-facing prompt text. These are structured system notices about
  *  machine state (delegation thread events), rendered factually — the
  *  invariant's bracketed-marker class; no fabricated Brain prose, no
  *  counterpart content beyond the bounded classifier summary. */
-function buildOwnerQuestion(metadata: Record<string, unknown>): string {
+function buildOwnerQuestion(
+  metadata: Record<string, unknown>,
+  ctx: { who?: string; item?: string; said?: string } = {},
+): string {
+  // DEF-122: every notice names the person and the item when they are known.
+  // "someone" and "an item you delegated" are the honest fallbacks — vague, but
+  // never a fabricated name.
+  const who = ctx.who || 'Someone';
+  const about = ctx.item ? `"${ctx.item}"` : 'an item you delegated';
+  const said = ctx.said ? `\n\nThey said: "${ctx.said}"` : '';
+
   switch (metadata.kind) {
     case 'delegation_completion_reported':
-      return `The responsible person reports completion: ${String(metadata.summary ?? '').slice(0, 300)} — confirm to close the item, or tell me what is still missing.`;
+      return `${who} says ${about} is done: ${String(metadata.summary ?? '').slice(0, 300)} — confirm to close it, or tell me what is still missing.`;
     case 'delegation_reply_unclear':
-      return 'A delegatee replied on a tracked item but the reply could not be confidently classified. Please review the item and tell me how to proceed.';
+      return `${who} replied about ${about}, but I could not tell whether it means done, delayed, or something else.${said}\n\nHow should I take it?`;
     case 'delegation_reply_unclassified':
-      return 'A delegatee reply was received but classification failed. The reply is stored as evidence; please review the item.';
+      return `${who} replied about ${about}. I could not read it well enough to judge, so I have kept it as-is.${said}\n\nWhat would you like me to do?`;
     case 'delegation_reply_ambiguous':
-      return 'A reply arrived from a contact with more than one open delegation. Please tell me which item it belongs to.';
+      return `${who} replied, but they have more than one open item with you, so I could not tell which one they meant.${said}\n\nWhich item is it?`;
     case 'delegation_reply_received':
-      return `They replied: ${String(metadata.summary ?? '').slice(0, 300)} — tell me if you want anything done about it.`;
+      return `${who} replied about ${about}: ${String(metadata.summary ?? '').slice(0, 300)} — tell me if you want anything done about it.`;
     case 'delegation_reply_correlation_inferred':
-      return `That reply matched ${Number(metadata.alternatives ?? 0) + 1} open threads with the same contact; I attached it to the most recent one. Tell me if it belongs to a different item.`;
+      return `${who} replied and it matched ${Number(metadata.alternatives ?? 0) + 1} of their open items; I attached it to ${about}, the most recent.${said}\n\nTell me if it belongs to a different one.`;
     default:
-      return 'A delegation thread needs your attention.';
+      return `${who} — something needs your attention on ${about}.`;
   }
 }

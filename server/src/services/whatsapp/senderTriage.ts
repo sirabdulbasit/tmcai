@@ -155,6 +155,69 @@ export function describeSender(phone: string, name: string | null): string {
 }
 
 /**
+ * DEF-121 — say who it really was, and never invent a phone number.
+ *
+ * Owner, 2026-08-11, on receiving `+239487846228094 — owner_allowed — says:
+ * "Kon"`: *"the information is incompleted, why don't you mention its number
+ * from where brain received message"*.
+ *
+ * It DID print a number. It made it up. WhatsApp supplied an `@lid`, not a
+ * phone, and the transport fabricated one by prefixing `+`:
+ *
+ *   rawFrom:        239487846228094@lid
+ *   resolvedNumber: +239487846228094
+ *   synthLidPhone:  +239487846228094      <- the field is named "synth"
+ *
+ * So the one identifying fact in the message was false. `+239` is São Tomé and
+ * no 15-digit number lives there; it cannot be called back, recognised, or told
+ * apart from a real number. Four senders carry the same artifact.
+ *
+ * A fabricated number is worse than no number: it looks actionable. This
+ * resolves the LID against the contact aliases DEF-075 already maintains, and
+ * when that fails it says plainly that WhatsApp withheld the number rather than
+ * inventing a substitute.
+ */
+export async function identifySender(
+  clientNumber: string,
+  phone: string,
+  rawSenderId: string | null | undefined,
+  pushName?: string | null,
+): Promise<string> {
+  const lid = (rawSenderId ?? '').trim();
+  const digits = phone.replace(/[^0-9]/g, '');
+  const isSynthetic = lid.endsWith('@lid') && digits === lid.replace('@lid', '');
+
+  if (!isSynthetic) {
+    // A real number. Name it if we know them.
+    const contact = await prisma.entity.findFirst({
+      where: { clientNumber, entityType: 'contact', phone },
+      select: { name: true },
+    }).catch(() => null);
+    return contact?.name ? `${contact.name} (${phone})` : phone;
+  }
+
+  // Synthetic. The alias table is the ONE path that resolves these without the
+  // WhatsApp mapping API, which has failed every time it has been relied on.
+  const known = await prisma.entity.findFirst({
+    where: {
+      clientNumber, entityType: 'contact',
+      metadata: { path: ['waLid'], equals: lid } as any,
+    },
+    select: { name: true, phone: true },
+  }).catch(() => null);
+
+  if (known?.name && known.phone) return `${known.name} (${known.phone})`;
+  if (known?.name) return `${known.name} (number not shared by WhatsApp)`;
+
+  // Unresolved. Give the owner what is TRUE and useful — their WhatsApp display
+  // name if the transport supplied one — and be explicit that the number is
+  // hidden, rather than handing him a fake one to act on.
+  return pushName
+    ? `${pushName} — WhatsApp did not share their number`
+    : 'an unknown sender whose number WhatsApp did not share';
+}
+
+/**
  * Interpret the owner's answer to the triage ask. Strict unambiguous
  * forms are accepted directly (fast prefilter); anything else goes to the
  * LLM classifier — the regex is never the final boundary for an unclear
@@ -216,6 +279,14 @@ export async function triageUnregisteredInbound(params: {
   clientNumber: string;
   fromNumber: string;
   body: string;
+  /**
+   * DEF-121 — the untouched provider id, e.g. `239487846228094@lid`.
+   *
+   * Without it `fromNumber` is indistinguishable from a real phone: the
+   * transport fabricates one from the LID, and the owner is shown a number
+   * that cannot be called. This is the only way to tell the two apart.
+   */
+  rawSenderId?: string | null;
 }): Promise<TriageOutcome> {
   // Hoisted out of the try so the DEF-060 fallback below can still reach the
   // owner when the main path throws. Scoping them inside the try is what made
@@ -351,14 +422,23 @@ async function relayToOwner(
   senderName: string | null,
 ): Promise<void> {
   const { brainContactsUser } = await import('../notifications/brainOutboundService');
-  const who = describeSender(params.fromNumber, senderName);
+  // DEF-121: resolve the identity instead of printing whatever string the
+  // transport handed us — which for an @lid sender was a fabricated phone.
+  const who = await identifySender(
+    params.clientNumber, params.fromNumber, (params as any).rawSenderId, senderName,
+  ).catch(() => describeSender(params.fromNumber, senderName));
+
   await brainContactsUser({
     userId: ownerUserId,
     kind: 'wa_counterpart_message',
     summary: `WhatsApp from ${who}`,
+    // `evidence` is an internal policy vocabulary — 'owner_allowed',
+    // 'concern_evidence'. It reached his phone verbatim and meant nothing to
+    // him. What he needs is who, what they said, and that Brain did not reply.
     body:
-      `${who} — ${evidence.join(', ') || 'allowed'} — says:\n` +
-      `"${params.body.slice(0, 500)}"`,
+      `${who} messaged you on WhatsApp:\n\n` +
+      `"${params.body.slice(0, 500)}"\n\n` +
+      `I have not replied to them.`,
     urgency: 'normal',
     dedupKey: `wa_counterpart:${params.fromNumber}:${params.body.slice(0, 40)}`,
   } as any).catch((error: any) => {

@@ -158,6 +158,9 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       clientNumber: params.clientNumber,
       fromNumber: params.fromNumber,
       body: params.messageBody,
+      // DEF-121: the raw @lid is what distinguishes a real number from one the
+      // transport invented. Without it the relay shows the owner a fake phone.
+      rawSenderId: params.rawSenderId ?? null,
     });
     log.info('Unregistered number — triaged', {
       from: params.fromNumber,
