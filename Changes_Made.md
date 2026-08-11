@@ -2490,3 +2490,71 @@ documentation/report SHA `662ae57`, which is stated as never live-tested.
 **1795 passed | 7 expected fail | 21 skipped | 1 todo (1824 across 160 files), 0 failed** ·
 focused embedding suites **3 files / 47 tests / all passed** (MEM-005 alone 28, up from 21) ·
 `npm run build` passes · `git diff --check` clean. No migration, no dependency change.
+
+## 36. DEF-127 + DEF-128 — status ledger restored; refused transitions no longer reported as done (2026-08-11, BUILDER: Claude — REVIEWER-approved with amendments)
+
+**DEF-127 root cause.** `item_status_history` was dropped 2026-05-18 as an "orphan".
+`transitionStatus` writes it inside the SAME transaction as the status update, so with the
+table and model gone, `(tx as any).itemStatusHistory.create` threw and the transaction
+REVERTED the status change. Proven on production by a read-only aborted probe:
+`typeof tx.itemStatusHistory === 'undefined'`. Two live paths were broken: the Open Items
+page status control and Brain's `mark_open_item_done` / `delegate_open_item`.
+
+The drop note claimed `open_items.notes` replaced it. Measured: 24 note entries across 7 of
+277 items, **none** recording a status change.
+
+**Amendments applied as directed.** `user_id` NOT NULL with grounded recovery (joined on
+tenant AND item, `RAISE EXCEPTION` if any row cannot be grounded); `userId` passed explicitly
+into **every** `recordHistory` call including all four rejected branches; global `created_at`
+index dropped; new migration folder; no historical backfill.
+
+**DEF-128, found BY the restored ledger during this build's acceptance.** A real Brain turn
+answered `Marked "…" done.` while the audit row written in the same second said
+`NEW->CLOSED rejected — approval required, none provided` and the item was still NEW.
+`transitionStatus` returns `{ok:false}` for a refusal rather than throwing; both Brain call
+sites discarded the result. `delegate_open_item` also queued a delegatee email for a
+delegation that never happened. Both now read the result and emit a bracketed marker.
+
+**Files changed.** `server/prisma/migrations/20260811_item_status_history_restore/migration.sql`
+(new) · `server/prisma/schema.prisma` · `server/src/services/itemLifecycle/lifecycleService.ts` ·
+`server/src/routes/openItemsRoutes.ts` · `server/src/services/knowledge/brainComposer.ts` ·
+`server/src/db/prisma.ts` · `server/tests/def127StatusLedger.test.ts` (new).
+
+**Verification.** `tsc` clean · `vitest` **1818 passed | 7 expected fail | 21 skipped | 1 todo
+(1847 across 161 files), 0 failed** — 23 new · `npm run build` passes · `git diff --check` clean.
+
+**Migration verified on production** (applied by `psql` before restart; never `npx prisma` on
+prod): `user_id` NOT NULL, three indexes present, `count(*) = 0`, and a **second run of the
+same file produced 0 errors** — idempotency demonstrated on production, not merely asserted.
+Recorded in `_prisma_migrations`.
+
+**Live acceptance — dedicated test items only, never a real business item.**
+
+| # | Path | Transition | Ledger row |
+|---|---|---|---|
+| 1 | UI `POST /open-items/:id/status` (real HTTP, real auth) | NEW→TRIAGED | accepted, user 2, `user:2` |
+| 2 | Brain `mark_open_item_done` (real LLM turn) | NEW→CLOSED | **rejected** — exposed DEF-128 |
+| 3 | Brain, after the DEF-128 fix | NEW→CLOSED | rejected, and Brain said so honestly |
+| 4 | Brain `mark_open_item_done` | TRIAGED→CLOSED | accepted, user 2, `user:2` |
+
+Exactly one accepted row per verified path, correct tenant, user and actor. Both test items
+were closed afterwards so nothing fake remains in the Action Center.
+
+**Bypass classification (next proposal, investigated — not implemented).** 24 direct
+status-write sites bypass `transitionStatus`:
+
+| Family | Sites | Where |
+|---|---|---|
+| **A — active user/Brain** | 12 | `openItemsRoutes` ×4, `promptReplyHandler` ×4, `briefRoutes` ×2, `brainComposer` ×1, `openItemsService` ×1 |
+| **B — delegation lifecycle** | 3 | `delegationTrackerService` ×2, `handlers/lifecycle/archive` ×1 |
+| **C — background/cleanup** | 8 | `openItemsBacklogCleanupJob` ×6, `openItemDraftAskJob` ×2 |
+| **D — dead** | 1 | `actionExecutionService` (test-only module) |
+
+**Two vocabulary gaps block a naive migration of Family A**, and are why some bypasses exist:
+- `brainComposer:3497` writes `CANCELLED`, which is **not in `ALL_STATUSES`** — `remove_open_item`
+  has no legal transition to express itself.
+- **6 production items sit in `DONE`**, also outside the v15 set. `transitionStatus` refuses them
+  (*"current status DONE is not in the v15 lifecycle"*), so those items are currently unmovable.
+
+Family C should NOT use the same semantics: cleanup closes items in bulk on policy, not on a
+user's intent, and needs a governed audit-writing path with its own actor and reason.
