@@ -517,11 +517,30 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // feedEventId) so brainOutboundService's smoke-isolation guard catches
   // test-flagged rows even when they fire from the deferred dispatcher.
   const queueMeta = (next.metadata as Record<string, unknown> | null) ?? {};
+
+  // ── DEF-126 — say it in today's words, not the words it was queued in ──
+  //
+  // A question composed at 07:02 and delivered at 11:28 had already missed two
+  // wording fixes that went live in between. Rebuild from the stored facts so
+  // the newest phrasing reaches even the rows that were waiting.
+  //
+  // Failing to rebuild sends the stored text unchanged. A notice worded badly
+  // is a complaint; a notice that never arrives is a missed delegation.
+  let questionText = next.question;
+  try {
+    const { rerenderOwnerQuestion } = await import('../delegation/delegationCaptureService');
+    const fresh = rerenderOwnerQuestion(queueMeta);
+    if (fresh && fresh !== questionText) {
+      log.info('prompt re-rendered with current wording', { promptId: String(promoted.id) });
+      questionText = fresh;
+    }
+  } catch { /* stored text stands */ }
+
   const r = await brainContactsUser({
     userId,
     kind: 'brain_prompt',
-    summary: clip(next.question, 120),
-    body: next.question,
+    summary: clip(questionText, 120),
+    body: questionText,
     urgency,
     channel,
     // We bypass brainOutboundService dedup here — the queue itself is the

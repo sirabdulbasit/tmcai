@@ -726,6 +726,47 @@ async function ownerLocalDate(clientNumber: string, ownerUserId: number): Promis
 
 // ── owner notification (deduped; structured; invariant-compliant) ────
 
+/**
+ * DEF-126 — rebuild a queued delegation notice from the CURRENT wording.
+ *
+ * Owner, 2026-08-11, receiving *"A reply arrived from a contact with more than
+ * one open delegation. Please tell me which item it belongs to."* for the second
+ * time: *"this is again meaningless for me"*.
+ *
+ * He was right, and the reason is worse than the wording. That sentence no
+ * longer exists anywhere in this codebase — DEF-122 and DEF-123 replaced it
+ * hours earlier. What reached him was a sentence FROZEN IN THE QUEUE:
+ *
+ *   prompt 324   queued 07:02   sent 11:28
+ *   DEF-122b deployed 07:29 · DEF-123 deployed 08:35
+ *
+ * Composed at 07:02, delivered four and a half hours later, having missed two
+ * fixes that were live before it left. Every wording fix shipped so far has had
+ * this hole under it: the improvement applies to future questions and the
+ * backlog keeps delivering the old one. That is why a fix can be real and the
+ * owner still sees no progress — and it is the honest explanation for "nothing
+ * found progressive in brain".
+ *
+ * So the queue stores the FACTS and the sentence is built when it is sent.
+ * Returns null when the row is not a delegation notice or carries no context,
+ * and the stored text stands — a missing re-render must never blank a message.
+ */
+export function rerenderOwnerQuestion(metadata: unknown): string | null {
+  const m = (metadata ?? {}) as Record<string, unknown>;
+  if (m.source !== 'delegation_capture' || typeof m.kind !== 'string') return null;
+  const ctx = (m.question_ctx ?? null) as Record<string, unknown> | null;
+  // Rows queued before DEF-126 have no stored context. Rebuilding those from
+  // nothing would strip the name and the quote back out — strictly worse than
+  // the stale sentence they already carry.
+  if (!ctx || typeof ctx !== 'object') return null;
+  try {
+    const text = buildOwnerQuestion(m, ctx as any);
+    return text && text.trim() ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 async function notifyOwner(
   clientNumber: string,
   thread: { id: string; ownerUserId: number; openItemId: string },
@@ -756,7 +797,11 @@ async function notifyOwner(
       sideEffect: { kind: 'action_status_update', ...(thread.openItemId ? { openItemId: thread.openItemId } : {}) },
       criticality: metadata.kind === 'delegation_completion_reported' ? 'high' : 'routine',
       dedupKey: `delegation:${thread.id}:${dedupClass}:${day}`,
-      metadata: { source: 'delegation_capture', ...metadata },
+      // DEF-126 — carry the ingredients, not just the cooked sentence. A queued
+      // question can wait hours before it is sent, and the wording it was built
+      // with may be obsolete by then. Storing the context lets the send path
+      // rebuild the sentence from the CURRENT template.
+      metadata: { source: 'delegation_capture', ...metadata, question_ctx: context },
       expectsReply: opts.expectsReply,
     });
   } catch (error: any) {
