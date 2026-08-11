@@ -19,6 +19,19 @@ export interface TransitionContext {
   metadata?: Record<string, unknown>;
   /** skip external publish (used by bulk backfills) */
   skipPublish?: boolean;
+  /**
+   * DEF-129 — item fields to write in the SAME transaction as the status change
+   * and the ledger row.
+   *
+   * Delegation used to write `delegateeName`/`delegateeEmail`/`delegateeId` in a
+   * separate `openItem.update` BEFORE asking for the transition. When the
+   * transition was then refused, those fields stayed behind: the item was not
+   * DELEGATED but carried a delegatee, which reads as an assignment nobody made.
+   *
+   * Passing them here makes status, related fields and audit one atomic unit —
+   * a refusal leaves the item exactly as it was.
+   */
+  itemData?: Record<string, unknown>;
 }
 
 export interface TransitionResult {
@@ -104,7 +117,10 @@ export async function transitionStatus(
   const historyRow = await prisma.$transaction(async (tx) => {
     await tx.openItem.update({
       where: { id: openItemId },
-      data: { status: target, updatedAt: new Date() },
+      // ctx.itemData cannot override `status`: it is spread FIRST, so the
+      // transition target always wins. A caller cannot smuggle a different
+      // status past the matrix through this field.
+      data: { ...(ctx.itemData ?? {}), status: target, updatedAt: new Date() } as any,
     });
     const h = await tx.itemStatusHistory.create({
       data: {
@@ -134,7 +150,12 @@ export async function transitionStatus(
 function checkGuard(g: Guard, item: any, ctx: TransitionContext): boolean {
   switch (g) {
     case 'delegatee_set':
-      return !!(item.delegateeId ?? item.delegateeEmail);
+      // DEF-129 — the guard asks whether the item WILL have a delegatee once
+      // this transition is applied, so a delegatee arriving with the transition
+      // itself satisfies it. Before `itemData` existed the caller had to write
+      // the fields first, which is exactly what left them behind on a refusal.
+      return !!(item.delegateeId ?? item.delegateeEmail
+        ?? (ctx.itemData?.delegateeId as unknown) ?? (ctx.itemData?.delegateeEmail as unknown));
     case 'approval_id':
       return !!ctx.approvalId;
     case 'resolution_reason':

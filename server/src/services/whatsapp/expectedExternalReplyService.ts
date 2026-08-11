@@ -107,7 +107,7 @@ export async function captureExpectedExternalReply(
         `SELECT id, title
            FROM open_items
           WHERE client_number = $1 AND user_id = $2
-            AND status NOT IN ('CLOSED', 'DONE')
+            AND status NOT IN ('CLOSED', 'CANCELLED', 'DONE')
             AND LOWER(delegatee_name) = LOWER($3)
           ORDER BY updated_at DESC
           LIMIT 10`,

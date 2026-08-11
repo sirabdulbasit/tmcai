@@ -341,7 +341,7 @@ async function executeOpenItemRules(clientNumber: string, userId: number, rules:
                  ELSE EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400.0 END AS days_overdue
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','INFORMED')
+        AND status NOT IN ('CLOSED','CANCELLED','INFORMED')
       ORDER BY priority_score DESC NULLS LAST, created_at ASC
       LIMIT 500`,
     clientNumber, userId,

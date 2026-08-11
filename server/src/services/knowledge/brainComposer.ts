@@ -3494,16 +3494,28 @@ ${calLines.join('\n')}`;
             };
             answer = actionResult.message;
           } else if (!actionResult && target) {
-            await prisma.openItem.update({
-              where: { id: target.id },
-              data: {
-                status: 'CANCELLED',
-                description: act.reason
-                  ? `${act.reason}`.slice(0, 500)
-                  : undefined,
-              },
+            // DEF-129 — removal now goes THROUGH the lifecycle matrix.
+            //
+            // This wrote `status: 'CANCELLED'` straight to the row, bypassing
+            // guards, the ledger and the event publish — not out of carelessness
+            // but because `CANCELLED` did not exist in the matrix, so there was
+            // no legal transition to ask for. The status has been added (with a
+            // restore path), which removes the reason to bypass.
+            //
+            // CANCELLED rather than CLOSED on purpose: the owner asked for this
+            // item to go away, and recording that as "completed" would log work
+            // that never happened.
+            const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+            const removeResult = await transitionStatus(target.id, 'CANCELLED', {
+              clientNumber,
+              actor: `user:${userId}`,
+              reason: act.reason ? `${act.reason}`.slice(0, 500) : 'Removed via Brain Chat',
             });
-            actionResult = { ok: true, message: `[removed: "${target.title}"]` };
+            if (!removeResult.ok) {
+              actionResult = { ok: false, message: `[remove_open_item: not removed — ${removeResult.error ?? 'transition refused'}]` };
+            } else {
+              actionResult = { ok: true, message: `[removed: "${target.title}"]` };
+            }
             answer = actionResult.message;
           }
         } catch (e: any) {
@@ -3628,27 +3640,31 @@ ${calLines.join('\n')}`;
             answer = actionResult.message;
           } else {
             const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
-            await prisma.openItem.update({
-              where: { id: existing.id },
-              data: {
-                delegateeName: matched.name,
-                delegateeEmail: matched.email,
-                // delegateeId is set only when the email resolves to an
-                // internal User row.
-                delegateeId: (await prisma.user.findFirst({
-                  where: { clientNumber, email: matched.email, isActive: true },
-                  select: { id: true },
-                }).catch(() => null))?.id ?? null,
-              } as any,
-            });
-            // DEF-128 — same defect, same file: the result was discarded, so a
-            // refused delegation (TRIAGED->DELEGATED needs `delegatee_set`, and
-            // NEW->DELEGATED is not in the matrix at all) still produced a
-            // "delegated" answer and still queued the delegatee email below.
+            // delegateeId is set only when the email resolves to an internal
+            // User row. Resolved BEFORE the transition because it is a read;
+            // nothing is written until the transition is granted.
+            const internalDelegateeId = (await prisma.user.findFirst({
+              where: { clientNumber, email: matched.email, isActive: true },
+              select: { id: true },
+            }).catch(() => null))?.id ?? null;
+
+            // DEF-128 — the transition result was discarded, so a refusal still
+            // produced a "delegated" answer and still queued the delegatee email.
+            //
+            // DEF-129 — the delegatee fields used to be written in a SEPARATE
+            // update BEFORE this call, so a refusal left the item carrying a
+            // delegatee it was never assigned to. They now travel WITH the
+            // transition and land in the same transaction as the status and the
+            // ledger row: granted writes all three, refused writes none.
             const delegateResult = await transitionStatus(existing.id, 'DELEGATED', {
               clientNumber,
               actor: `user:${userId}`,
               reason: act.note || `Delegated via Brain Chat to ${matched.name}`,
+              itemData: {
+                delegateeName: matched.name,
+                delegateeEmail: matched.email,
+                delegateeId: internalDelegateeId,
+              },
             });
             if (!delegateResult.ok) {
               actionResult = { ok: false, message: `[delegate_open_item: not delegated — ${delegateResult.error ?? 'transition refused'}]` };

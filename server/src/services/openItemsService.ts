@@ -7,6 +7,7 @@
  */
 
 import prisma from '../db/prisma';
+import { INACTIVE_STATUS_VALUES } from './itemLifecycle/transitionMatrix';
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -87,7 +88,10 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
       const wrongCount = await prisma.openItem.count({
         where: {
           clientNumber, userId,
-          status: 'closed' as any,
+          // DEF-129: mark-wrong now records CANCELLED (through the matrix).
+          // Legacy rows carry 'closed'/'CLOSED', so all three must match or this
+          // learned block silently stops firing on the day the writer changed.
+          status: { in: ['CANCELLED', 'closed', 'CLOSED'] } as any,
           createdAt: { gte: since },
           metadata: {
             path: ['archivedReason'],
@@ -105,7 +109,7 @@ export async function createItem(userId: number, clientNumber: string, input: Cr
         const recentWrongs = await prisma.openItem.findMany({
           where: {
             clientNumber, userId,
-            status: 'closed' as any,
+            status: { in: ['CANCELLED', 'closed', 'CLOSED'] } as any,
             createdAt: { gte: since },
             metadata: {
               path: ['archivedReason'],
@@ -308,7 +312,7 @@ export async function listItems(
     // already disposed of (Done / Wrong / archived) defeats the purpose
     // and is what produced the "I marked them Wrong but they're still
     // there" complaint.
-    where.status = { notIn: ['closed', 'CLOSED', 'done', 'DONE', 'archived', 'ARCHIVED'] };
+    where.status = { notIn: [...INACTIVE_STATUS_VALUES] as any }; // DEF-129: one shared definition
   }
   if (filters?.priority) {
     where.priority = Array.isArray(filters.priority) ? { in: filters.priority } : filters.priority;
@@ -384,7 +388,7 @@ export async function changeStatus(
   const v15 = (LEGACY_TO_V15[status as string] ?? status) as any;
   const result = await transitionStatus(id, v15, {
     clientNumber,
-    actor: actor ?? 'system',
+    actor: 'system',
     reason: note,
   });
   if (!result.ok) {
@@ -432,16 +436,25 @@ export async function delegateItem(
     note: note || null,
   });
 
-  return prisma.openItem.update({
-    where: { id },
-    data: {
-      status: 'delegated',
-      delegateeId,
-      delegateeName,
-      delegateeEmail,
-      delegationTrail: trail as any,
-    },
+  // DEF-129 — through the matrix, atomically.
+  //
+  // This wrote the LEGACY LOWERCASE 'delegated' (not in `ALL_STATUSES`) and set
+  // the delegatee fields in the same ungoverned update: no guard, no ledger row,
+  // no event publish. The delegatee now travels WITH the transition, so a
+  // refusal leaves the item untouched instead of carrying an assignment that
+  // never took effect.
+  const { transitionStatus } = await import('./itemLifecycle/lifecycleService');
+  const r = await transitionStatus(id, 'DELEGATED', {
+    clientNumber,
+    actor: 'system',
+    reason: note || `Delegated to ${delegateeName}`,
+    itemData: { delegateeId, delegateeName, delegateeEmail, delegationTrail: trail as any },
   });
+  if (!r.ok) throw new Error(r.error ?? 'delegation refused by the lifecycle matrix');
+
+  const updated = await prisma.openItem.findFirst({ where: { id, clientNumber } });
+  if (!updated) throw new Error('Item not found after delegation');
+  return updated;
 }
 
 // ─── Add note ────────────────────────────────────────────────────
@@ -465,7 +478,7 @@ export async function getStats(userId: number, clientNumber: string) {
   // v15 lifecycle uses uppercase CLOSED; legacy callers may still send 'done'.
   // Exclude both so "Total Open" is the live workload, not all-time history.
   const items = await prisma.openItem.findMany({
-    where: { userId, clientNumber, status: { notIn: ['CLOSED', 'closed', 'DONE', 'done', 'ARCHIVED', 'archived'] as any } },
+    where: { userId, clientNumber, status: { notIn: [...INACTIVE_STATUS_VALUES] as any } },
     select: { status: true, priority: true },
   });
 

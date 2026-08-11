@@ -304,14 +304,30 @@ async function applySideEffect(
       //   "Asad"                         → name only
       const owner = parseOwner(answer);
       if (!owner.name && !owner.email) return { status: 'failed', detail: 'no_owner_in_answer' };
-      await prisma.openItem.update({
-        where: { id: openItemId },
-        data: {
-          status: 'DELEGATED' as any,
-          delegateeName: owner.name ?? null,
-          delegateeEmail: owner.email ?? null,
-        },
-      }).catch((err) => log.warn('assign_owner update failed', { err: err.message }));
+      // DEF-129 — through the matrix, atomically.
+      //
+      // This is the owner answering "who should own this?" on WhatsApp, and it
+      // set status + delegatee in one ungoverned write: no guard, no ledger row,
+      // no event publish. Now the delegatee travels WITH the transition, so a
+      // refusal leaves no half-assignment behind.
+      const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+      const item = await prisma.openItem.findFirst({ where: { id: openItemId }, select: { clientNumber: true } });
+      if (!item) return { status: 'failed', detail: 'item_not_found' };
+      const r = await transitionStatus(openItemId, 'DELEGATED', {
+        clientNumber: item.clientNumber,
+        actor: 'system',
+        reason: `Owner assigned ${owner.name ?? owner.email} by prompt reply`,
+        itemData: { delegateeName: owner.name ?? null, delegateeEmail: owner.email ?? null },
+      }).catch((err: any) => {
+        log.warn('assign_owner transition threw', { err: err?.message });
+        return { ok: false, error: err?.message ?? 'transition threw' } as any;
+      });
+      if (!r.ok) {
+        // Honest failure: the owner is told the assignment did not take rather
+        // than being left to assume it did.
+        log.warn('assign_owner refused by lifecycle', { openItemId, error: r.error });
+        return { status: 'failed', detail: `transition_refused: ${r.error ?? 'unknown'}` };
+      }
       return { status: 'applied', detail: owner.name ?? owner.email ?? '' };
     }
 

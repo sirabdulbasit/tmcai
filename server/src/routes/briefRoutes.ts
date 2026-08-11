@@ -1241,11 +1241,23 @@ router.post('/brain-actions/:id/override', async (req: Request, res: Response) =
       break;
     case 'add_open_item':
       if (output.openItemId) {
-        await prisma.openItem.updateMany({
+        // DEF-129 — undoing a creation is CANCELLED, not CLOSED. The item was
+        // withdrawn; it was never completed, and closing it would log work that
+        // never happened. Routed through the matrix so the reversal leaves a
+        // ledger row like every other transition.
+        const undoOwned = await prisma.openItem.findFirst({
           where: { id: String(output.openItemId), clientNumber: user.clientNumber, userId: user.id },
-          data: { status: 'CLOSED' } as any,
-        }).catch(() => {});
-        reversals.push('open_item closed');
+          select: { id: true },
+        }).catch(() => null);
+        if (undoOwned) {
+          const { transitionStatus } = await import('../services/itemLifecycle/lifecycleService');
+          const r = await transitionStatus(undoOwned.id, 'CANCELLED', {
+            clientNumber: user.clientNumber,
+            actor: `user:${user.id}`,
+            reason: 'Reversed a Brain-created item (override)',
+          }).catch(() => ({ ok: false } as any));
+          reversals.push(r.ok ? 'open_item cancelled' : 'open_item reversal refused');
+        }
       }
       break;
     case 'delegate_forward':
@@ -1424,10 +1436,19 @@ router.post('/brain-actions/:id/override', async (req: Request, res: Response) =
       // Technical reversal per action type
       const sOut: any = s.output ?? {};
       if (s.actionType === 'add_open_item' && sOut.openItemId) {
-        await prisma.openItem.updateMany({
+        // DEF-129 — same reversal, same reasoning as the override path above.
+        const owned = await prisma.openItem.findFirst({
           where: { id: String(sOut.openItemId), clientNumber: user.clientNumber, userId: user.id },
-          data: { status: 'CLOSED' } as any,
-        }).catch(() => {});
+          select: { id: true },
+        }).catch(() => null);
+        if (owned) {
+          const { transitionStatus } = await import('../services/itemLifecycle/lifecycleService');
+          await transitionStatus(owned.id, 'CANCELLED', {
+            clientNumber: user.clientNumber,
+            actor: `user:${user.id}`,
+            reason: 'Reversed a Brain-created item (undo)',
+          }).catch(() => undefined);
+        }
       }
       if ((s.actionType === 'ignore_email' || s.actionType === 'acknowledge') && sFeedId) {
         await prisma.feedEvent.updateMany({

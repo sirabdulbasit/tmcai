@@ -31,6 +31,7 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
+import { INACTIVE_STATUS_VALUES } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('semantic-dedup');
 
@@ -84,7 +85,7 @@ export async function findExactDuplicate(args: {
         sourceRef: args.sourceRef,
         // Only count rows that are still open — a closed identical
         // item from months ago shouldn't block a fresh create.
-        status: { notIn: ['CLOSED', 'closed'] as any },
+        status: { notIn: [...INACTIVE_STATUS_VALUES] as any },
       } as any,
       select: { id: true, title: true },
       orderBy: { createdAt: 'desc' },
@@ -161,7 +162,7 @@ export async function findSemanticDuplicate(args: {
   const recent = (await prisma.openItem.findMany({
     where: {
       userId: args.userId,
-      status: { notIn: ['CLOSED', 'closed'] as any },
+      status: { notIn: [...INACTIVE_STATUS_VALUES] as any },
     } as any,
     select: {
       id: true, title: true, description: true,

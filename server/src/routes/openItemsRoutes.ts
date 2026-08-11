@@ -68,6 +68,50 @@ router.post('/by-ids', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// DEF-129 — `/metrics` MUST be declared before `/:id`.
+// Express matches in declaration order, so with `/:id` first this route was
+// unreachable: a GET for /metrics was served by the item handler with
+// id='metrics', which returns 404 rather than metrics. Every literal path
+// segment has to precede the parameterised one.
+// ─── L2+ Item metrics (by status/archetype/priority, 24h + 7d) ──
+router.get('/metrics', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const now = Date.now();
+    const day = new Date(now - 24 * 60 * 60 * 1000);
+    const week = new Date(now - 7 * 24 * 60 * 60 * 1000);
+    const [byStatus, byPriority, byArchetype, createdDay, createdWeek, rejectedTransitions] = await Promise.all([
+      prisma.openItem.groupBy({ by: ['status'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
+      prisma.openItem.groupBy({ by: ['priority'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
+      prisma.openItem.groupBy({ by: ['archetype'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
+      prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: day } } }),
+      prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: week } } }),
+      // DEF-127 — typed, and user-scoped like the history read above. This is a
+      // per-user metric on a per-user ledger; counting the whole tenant would
+      // report a colleague's rejected transitions as the caller's own.
+      prisma.itemStatusHistory.count({
+        where: {
+          clientNumber: user.clientNumber,
+          userId: user.id,
+          outcome: 'rejected',
+          createdAt: { gte: week },
+        },
+      }).catch(() => 0),
+    ]);
+    res.json({
+      tenantId: user.clientNumber,
+      byStatus: (byStatus as any[]).map((r) => ({ key: r.status, count: r._count._all })),
+      byPriority: (byPriority as any[]).map((r) => ({ key: r.priority, count: r._count._all })),
+      byArchetype: (byArchetype as any[]).map((r) => ({ key: r.archetype ?? 'unclassified', count: r._count._all })),
+      createdLast24h: createdDay,
+      createdLast7d: createdWeek,
+      rejectedTransitionsLast7d: rejectedTransitions,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── Get single item ──────────────────────────────────────────
 router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -231,44 +275,6 @@ router.get('/:id/transitions', requireAuth, async (req: Request, res: Response) 
   }
 });
 
-// ─── L2+ Item metrics (by status/archetype/priority, 24h + 7d) ──
-router.get('/metrics', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const user = req.user!;
-    const now = Date.now();
-    const day = new Date(now - 24 * 60 * 60 * 1000);
-    const week = new Date(now - 7 * 24 * 60 * 60 * 1000);
-    const [byStatus, byPriority, byArchetype, createdDay, createdWeek, rejectedTransitions] = await Promise.all([
-      prisma.openItem.groupBy({ by: ['status'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
-      prisma.openItem.groupBy({ by: ['priority'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
-      prisma.openItem.groupBy({ by: ['archetype'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
-      prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: day } } }),
-      prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: week } } }),
-      // DEF-127 — typed, and user-scoped like the history read above. This is a
-      // per-user metric on a per-user ledger; counting the whole tenant would
-      // report a colleague's rejected transitions as the caller's own.
-      prisma.itemStatusHistory.count({
-        where: {
-          clientNumber: user.clientNumber,
-          userId: user.id,
-          outcome: 'rejected',
-          createdAt: { gte: week },
-        },
-      }).catch(() => 0),
-    ]);
-    res.json({
-      tenantId: user.clientNumber,
-      byStatus: (byStatus as any[]).map((r) => ({ key: r.status, count: r._count._all })),
-      byPriority: (byPriority as any[]).map((r) => ({ key: r.priority, count: r._count._all })),
-      byArchetype: (byArchetype as any[]).map((r) => ({ key: r.archetype ?? 'unclassified', count: r._count._all })),
-      createdLast24h: createdDay,
-      createdLast7d: createdWeek,
-      rejectedTransitionsLast7d: rejectedTransitions,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // ─── L2+ Bulk transition (Brain / admin power tool) ──────────
 router.post('/bulk-transition', requireAuth, async (req: Request, res: Response) => {
@@ -322,18 +328,26 @@ router.post('/:id/mark-wrong', requireAuth, async (req: Request, res: Response) 
     if (!item) return res.status(404).json({ error: 'not found' });
 
     const meta = (item.metadata as Record<string, unknown> | null) ?? {};
-    await prisma.openItem.update({
-      where: { id },
-      data: {
-        status: 'closed' as any,
+    // DEF-129 — through the matrix, and CANCELLED rather than 'closed'.
+    //
+    // Two faults in one line. It wrote the LEGACY LOWERCASE 'closed', which is
+    // not in `ALL_STATUSES` — the same drift that left six items stranded in
+    // 'DONE', unmovable by any path. And "this item should never have existed"
+    // is not completion: recording it as CLOSED logs work that never happened.
+    const r = await transitionStatus(id, 'CANCELLED', {
+      clientNumber: user.clientNumber,
+      actor: `user:${user.id}`,
+      reason: `user_marked_wrong: ${reason}`,
+      itemData: {
         metadata: {
           ...(meta as any),
           archivedReason: 'user_marked_wrong',
           userWrongReason: reason,
           archivedAt: new Date().toISOString(),
-        } as any,
+        },
       },
     });
+    if (!r.ok) return res.status(409).json({ error: r.error ?? 'transition refused', from: r.from, to: r.to });
     res.json({ ok: true, id });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -356,23 +370,31 @@ router.post('/bulk-mark-wrong', requireAuth, async (req: Request, res: Response)
       where: { id: { in: ids }, clientNumber: user.clientNumber, userId: user.id },
       select: { id: true, metadata: true },
     });
+    // DEF-129 — same fix as the single-item route above. Bulk does not mean
+    // ungoverned: each item gets its own guarded transition and its own ledger
+    // row, so "I marked twelve of these wrong" is twelve auditable decisions.
     let updated = 0;
+    const refused: Array<{ id: string; error: string }> = [];
     for (const it of items) {
       const meta = (it.metadata as Record<string, unknown> | null) ?? {};
-      await prisma.openItem.update({
-        where: { id: it.id },
-        data: {
-          status: 'closed' as any,
+      const r = await transitionStatus(it.id, 'CANCELLED', {
+        clientNumber: user.clientNumber,
+        actor: `user:${user.id}`,
+        reason: `user_marked_wrong: ${reason}`,
+        itemData: {
           metadata: {
             ...(meta as any),
             archivedReason: 'user_marked_wrong',
             userWrongReason: reason,
             archivedAt: new Date().toISOString(),
-          } as any,
+          },
         },
-      }).then(() => { updated++; }).catch(() => {});
+      }).catch((e: any) => ({ ok: false, error: e?.message ?? 'transition threw' } as any));
+      if (r.ok) updated++;
+      else refused.push({ id: it.id, error: r.error ?? 'refused' });
     }
-    res.json({ attempted: ids.length, updated });
+    // Partial success is reported honestly rather than as a bare count.
+    res.json({ attempted: ids.length, updated, refused });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -244,7 +244,7 @@ export async function checkInboundForDelegationUpdate(params: {
         sourceFeedEventId: best.sourceFeedEventId,
         ownerId: best.delegateeId ?? undefined,
         // Don't accidentally re-close a row already CLOSED on a prior pass
-        status: { not: 'CLOSED' } as any,
+        status: { notIn: ['CLOSED', 'CANCELLED'] } as any, // DEF-129: withdrawn work is not chased
       } as any,
       select: { id: true, description: true, notes: true, ownerId: true },
     });
