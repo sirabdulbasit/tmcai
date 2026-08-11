@@ -252,13 +252,42 @@ describe('thread_capture classification fences', () => {
 
 // ── source-level scope proofs ────────────────────────────────────────
 describe('33a scope fences (source-level)', () => {
-  it('delegation services send NOTHING to counterparts', () => {
-    for (const rel of ['services/delegation/delegationThreadService.ts', 'services/delegation/delegationCaptureService.ts', 'jobs/delegationRecoveryJob.ts']) {
+  it('delegation services send NOTHING to counterparts, except the DEF-123 disambiguation ask', () => {
+    // AMENDED 2026-08-11 by owner ruling, not by convenience: "brain knows that
+    // against which that Hamna's message belongs to, if not then brain should
+    // get clarification from Hamna and then update me".
+    //
+    // The 33a fence exists to stop Brain CONVERSING with counterparts —
+    // answering them, reacting, being drawn into a thread it cannot govern.
+    // That still holds absolutely. What it never really meant was "no contact
+    // at all": smartChaseService has always been allowed to chase a delegatee,
+    // so the true boundary was unsolicited conversation, not outbound bytes.
+    //
+    // The single permitted exception is ONE question to a KNOWN delegatee,
+    // mid-thread, when their reply matched several of their own open items —
+    // asking the person who knows instead of waking the owner to guess.
+    // Everything else stays forbidden, and the OTHER two files stay absolute.
+    for (const rel of ['services/delegation/delegationThreadService.ts', 'jobs/delegationRecoveryJob.ts']) {
       const src = SRC(rel);
       for (const forbidden of ['sendTenantWhatsAppText', 'sendUserEmail', 'sendInboundTextReply', 'message.reply', '.react(']) {
         expect(src, `${rel} must not contain ${forbidden}`).not.toContain(forbidden);
       }
     }
+
+    const capture = SRC('services/delegation/delegationCaptureService.ts');
+    // Still never answers, reacts, or replies inline.
+    for (const forbidden of ['sendUserEmail', 'sendInboundTextReply', 'message.reply', '.react(']) {
+      expect(capture, `capture must not contain ${forbidden}`).not.toContain(forbidden);
+    }
+    // The one send it may do is the disambiguation ask, and nothing else.
+    const sends = capture.split('sendTenantWhatsAppText').length - 1;
+    expect(sends, 'exactly one counterpart send path is permitted').toBeLessThanOrEqual(2); // import + call
+    expect(capture, 'the only send must be the disambiguation ask')
+      .toContain('askCounterpartWhichItem');
+    // It must remain guarded: known counterpart, real number, once per day.
+    const fn = capture.slice(capture.indexOf('async function askCounterpartWhichItem'));
+    expect(fn.slice(0, 3000), 'must refuse an unresolved LID').toMatch(/\^\\\+\\d\{8,15\}\$/);
+    expect(fn.slice(0, 3000), 'must ask at most once a day').toContain('sent_at::date');
   });
   it('grants have ZERO consumers in src (schema-only in 33a)', () => {
     const hits: string[] = [];

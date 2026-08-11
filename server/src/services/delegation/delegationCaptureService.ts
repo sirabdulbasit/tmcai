@@ -582,8 +582,133 @@ async function recordAmbiguityIncidents(
       log.warn('ambiguity incident record failed', { ownerUserId, error: error?.message?.slice(0, 200) });
       continue;
     }
+    // DEF-123: ask HER which item, not him. She knows; he would be guessing.
+    //
+    // The whole block is wrapped because it is an ENHANCEMENT to correlation,
+    // never a precondition for it. A `.catch()` alone is not enough: if the
+    // Prisma method is missing the call throws SYNCHRONOUSLY, before any
+    // promise exists, so the catch never runs and the throw takes the entire
+    // capture path with it — an ambiguous reply would stop being recorded at
+    // all. Asking a nicer question is not worth that.
+    let candidateItems: Array<{ id: string; title: string }> = [];
+    let askedHer = false;
+    try {
+      candidateItems = await prisma.$queryRawUnsafe<Array<{ id: string; title: string }>>(
+        `SELECT oi.id, oi.title
+           FROM delegation_threads t
+           JOIN open_items oi ON oi.id = t.open_item_id
+          WHERE t.client_number = $1 AND t.counterpart_key = $2 AND t.channel = $3
+            AND oi.status NOT IN ('DONE','CANCELLED','CLOSED')
+          ORDER BY t.updated_at DESC LIMIT 4`,
+        input.clientNumber, counterpartKey, input.channel,
+      );
+      askedHer = await askCounterpartWhichItem(
+        input.clientNumber, counterpartKey, input.channel, ownerUserId, candidateItems,
+      );
+    } catch (error: any) {
+      log.warn('counterpart clarification skipped — owner will be asked instead', {
+        error: error?.message?.slice(0, 200),
+      });
+    }
+
+    // He is told either way. If Brain messaged her, he learns that from Brain —
+    // never from her.
     await notifyOwner(input.clientNumber, { id: 'n/a', ownerUserId, openItemId: '' }, `ambiguity:${counterpartKey}:${incidentDate.toISOString().slice(0, 10)}`,
-      { kind: 'delegation_reply_ambiguous', counterpartKey, channel: input.channel });
+      { kind: askedHer ? 'delegation_reply_ambiguous_asked' : 'delegation_reply_ambiguous',
+        counterpartKey, channel: input.channel,
+        candidates: candidateItems.map((c) => c.title).slice(0, 4) });
+  }
+}
+
+
+/**
+ * DEF-123 — when Brain cannot tell which item a reply is about, ASK THE PERSON
+ * WHO KNOWS.
+ *
+ * Owner, 2026-08-11: *"brain knows that against which that Hamna's message
+ * belongs to, if not then brain should get clarification from Hamna and then
+ * update me"*.
+ *
+ * Until now an ambiguous reply woke the OWNER: "they have more than one open
+ * item with you — which is it?". That asks the one person in the exchange who
+ * did not send the message. Hamna knows what she was answering; he has to guess
+ * from a list.
+ *
+ * This is a deliberate change to the 33a policy that Brain "never replies to
+ * the sender". That rule exists to stop Brain conversing with strangers, and it
+ * still holds for strangers. A tracked delegatee, mid-thread, on an item the
+ * owner assigned them, is not a stranger — and `smartChaseService` has always
+ * been allowed to chase them, so the capability boundary was never really
+ * "no contact", it was "no unsolicited conversation".
+ *
+ * Guarded hard:
+ *   - ONLY a known counterpart with real open items. Never an unresolved LID,
+ *     never a stranger.
+ *   - ONE question per counterpart per day, whatever else happens. Being asked
+ *     twice to disambiguate is worse than not being asked.
+ *   - The owner is told immediately that Brain asked, and what it asked. He
+ *     must never learn from Hamna that his assistant messaged her.
+ *   - Failure to reach her falls back to asking him — the previous behaviour,
+ *     so nothing is lost when this cannot run.
+ */
+async function askCounterpartWhichItem(
+  clientNumber: string,
+  counterpartKey: string,
+  channel: DelegationChannel,
+  ownerUserId: number,
+  candidates: Array<{ id: string; title: string }>,
+): Promise<boolean> {
+  if (channel !== 'whatsapp' || candidates.length < 2) return false;
+
+  const phone = counterpartKey.replace(/^[a-z]+:/, '');
+  if (!/^\+\d{8,15}$/.test(phone)) return false;      // never an unresolved LID
+
+  // One ask per counterpart per day. `dedup_key` on the thread events is the
+  // wrong home for this (it is not a thread event), so the guard is a direct
+  // look at what we already sent her today.
+  const day = new Date().toISOString().slice(0, 10);
+  // Same synchronous-throw hazard as above: guard the call, not just the promise.
+  let asked: Array<{ n: number }> = [{ n: 0 }];
+  try {
+    asked = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT COUNT(*)::int AS n FROM whatsapp_outbound_messages
+        WHERE client_number = $1 AND chat_id LIKE $2
+          AND body_text LIKE '%which one%'
+          AND sent_at::date = $3::date`,
+      clientNumber, `%${phone.replace('+', '')}%`, day,
+    );
+  } catch { return false; }   // cannot prove we have not already asked -> do not ask
+  if ((asked[0]?.n ?? 0) > 0) return false;
+
+  try {
+    const { renderOutboundMessage } = await import('../notifications/outboundMessageTemplate');
+    const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+
+    const [owner] = await prisma.$queryRawUnsafe<Array<any>>(
+      `SELECT name FROM users WHERE id = $1 AND client_number = $2`, ownerUserId, clientNumber,
+    ).catch(() => []);
+    const [cfg] = await prisma.$queryRawUnsafe<Array<any>>(
+      `SELECT value FROM system_config WHERE client_number = $1 AND key = 'brain_name'`, clientNumber,
+    ).catch(() => []);
+
+    const list = candidates.slice(0, 4).map((c, i) => `${i + 1}. ${c.title}`).join('\n');
+    const body = renderOutboundMessage(
+      `Thanks for the update. You have more than one item open with ${owner?.name ?? 'us'}, ` +
+      `so I want to record it against the right one — which one were you replying about?\n\n${list}\n\n` +
+      `Just the number is fine.`,
+      { brainName: cfg?.value ?? 'Nexeo', userName: owner?.name ?? '' },
+    );
+
+    const out = await sendTenantWhatsAppText(clientNumber, phone, body, ownerUserId);
+    if (!out?.ok) return false;
+
+    log.info('asked counterpart to disambiguate', { phone, candidates: candidates.length });
+    return true;
+  } catch (error: any) {
+    log.warn('counterpart clarification failed — falling back to asking the owner', {
+      error: error?.message?.slice(0, 200),
+    });
+    return false;
   }
 }
 
@@ -654,7 +779,7 @@ async function notifyOwner(
 async function resolveNotifyContext(
   clientNumber: string,
   thread: { id: string; openItemId: string },
-): Promise<{ who?: string; item?: string; said?: string }> {
+): Promise<{ who?: string; item?: string; said?: string; guess?: string; confidence?: number }> {
   // Resolve the name TWO ways, because the first one is usually empty.
   //
   // Every delegation thread on this tenant has counterpart_entity_id = NULL,
@@ -688,20 +813,42 @@ async function resolveNotifyContext(
     thread.id, clientNumber,
   ).catch(() => []);
 
-  // The reply itself. Stored as evidence when it arrived — quoting it back is
-  // what lets the owner judge in one read instead of opening the item.
+  // What she actually said.
+  //
+  // NOT from the inbound event — that row records only that a reply arrived.
+  // There is no `body` column, and evidence_source_id is null on every one of
+  // them, so the counterpart's verbatim words are genuinely not retained
+  // (unregistered senders' bodies are deliberately never written to
+  // whatsapp_messages). My first attempt queried `body` and the catch swallowed
+  // the error, which would have made the quote silently never appear — the same
+  // failure this whole fix exists to remove.
+  //
+  // The classifier's summary is what IS kept, and it is the useful thing:
+  //   {"outcome":"low_confidence","confidence":0.5,"rawOutcome":"in_progress",
+  //    "summary":"The Vision Metric's service sales package video is not yet complete."}
+  //
+  // Brain had all of that and told the owner none of it. Passing the summary and
+  // the best-guess outcome through is the difference between "I could not
+  // classify it" and "she says it is not finished; my read is in-progress, but I
+  // am only half sure".
   const [ev] = await prisma.$queryRawUnsafe<Array<any>>(
-    `SELECT body FROM delegation_thread_events
-      WHERE thread_id = $1 AND event_type = 'inbound_received'
+    `SELECT classification FROM delegation_thread_events
+      WHERE thread_id = $1 AND event_type = 'classification_recorded'
+        AND classification IS NOT NULL
       ORDER BY created_at DESC LIMIT 1`,
     thread.id,
   ).catch(() => []);
+  const cls = (ev?.classification ?? {}) as Record<string, unknown>;
 
   return {
     // counterpart_key looks like "wa:+923134199294" — the prefix is machinery.
     who: row?.who ? String(row.who).replace(/^wa:/, '') : undefined,
     item: row?.item ? String(row.item) : undefined,
-    said: ev?.body ? String(ev.body).replace(/\s+/g, ' ').trim().slice(0, 200) : undefined,
+    said: cls.summary ? String(cls.summary).replace(/\s+/g, ' ').trim().slice(0, 220) : undefined,
+    // The classifier's own best guess and how sure it was. Withholding these
+    // makes Brain look blank when it actually had a view.
+    guess: cls.rawOutcome ? String(cls.rawOutcome).replace(/_/g, ' ') : undefined,
+    confidence: typeof cls.confidence === 'number' ? cls.confidence : undefined,
   };
 }
 
@@ -711,22 +858,35 @@ async function resolveNotifyContext(
  *  counterpart content beyond the bounded classifier summary. */
 function buildOwnerQuestion(
   metadata: Record<string, unknown>,
-  ctx: { who?: string; item?: string; said?: string } = {},
+  ctx: { who?: string; item?: string; said?: string; guess?: string; confidence?: number } = {},
 ): string {
   // DEF-122: every notice names the person and the item when they are known.
   // "someone" and "an item you delegated" are the honest fallbacks — vague, but
   // never a fabricated name.
   const who = ctx.who || 'Someone';
   const about = ctx.item ? `"${ctx.item}"` : 'an item you delegated';
-  const said = ctx.said ? `\n\nThey said: "${ctx.said}"` : '';
+  const said = ctx.said ? `\n\nWhat they said: ${ctx.said}` : '';
+  // Say the best guess out loud. "I could not classify it" reads as blank;
+  // "my read is in-progress, but I am only half sure" is a judgement the owner
+  // can accept or correct in one word.
+  const guess = ctx.guess
+    ? `\n\nMy read: ${ctx.guess}${typeof ctx.confidence === 'number' ? ` (about ${Math.round(ctx.confidence * 100)}% sure)` : ''}.`
+    : '';
 
   switch (metadata.kind) {
     case 'delegation_completion_reported':
       return `${who} says ${about} is done: ${String(metadata.summary ?? '').slice(0, 300)} — confirm to close it, or tell me what is still missing.`;
     case 'delegation_reply_unclear':
-      return `${who} replied about ${about}, but I could not tell whether it means done, delayed, or something else.${said}\n\nHow should I take it?`;
+      return `${who} replied about ${about}.${said}${guess}\n\nI am not confident enough to act on it — should I mark it done, chase her, or leave it?`;
     case 'delegation_reply_unclassified':
-      return `${who} replied about ${about}. I could not read it well enough to judge, so I have kept it as-is.${said}\n\nWhat would you like me to do?`;
+      return `${who} replied about ${about}, and I could not read it well enough to judge.${said}${guess}\n\nWhat would you like me to do?`;
+    case 'delegation_reply_ambiguous_asked': {
+      const list = Array.isArray(metadata.candidates) && metadata.candidates.length
+        ? `\n\n${(metadata.candidates as string[]).map((t, i) => `${i + 1}. ${t}`).join('\n')}`
+        : '';
+      return `${who} replied, but it matched more than one of their open items so I could not tell which.${said}\n\n` +
+             `I have asked them which one they meant.${list}\n\nI will update you as soon as they answer.`;
+    }
     case 'delegation_reply_ambiguous':
       return `${who} replied, but they have more than one open item with you, so I could not tell which one they meant.${said}\n\nWhich item is it?`;
     case 'delegation_reply_received':

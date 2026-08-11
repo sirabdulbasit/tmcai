@@ -89,10 +89,20 @@ describe('S4 · a bare "ok" is not an answer', () => {
     expect(CAPTURE).toMatch(/low_confidence[\s\S]{0,200}notifyOwner/);
   });
 
-  it.fails('Rule 1 — Brain clarifies before reporting an empty answer', () => {
+  it('Rule 1 — Brain clarifies before reporting an empty answer', () => {
     // Owner ruling 2026-08-06: "AI should not carry or forward any incomplete
     // or info with ambiguity." A bare "ok" is incomplete; Brain should ask once.
+    //
+    // CLOSED 2026-08-11 by DEF-123. This sat as an expected-failure for five
+    // days: Brain could only report ambiguity to the owner, never resolve it.
+    // It now asks the counterpart — the person who actually knows — once per
+    // day, and tells the owner it has done so.
+    //
+    // Asserted on the mechanism, not the word: a source file can contain
+    // "clarif" without clarifying anything.
     expect(CAPTURE).toMatch(/clarif/i);
+    expect(CAPTURE, 'must actually ask the counterpart').toContain('askCounterpartWhichItem');
+    expect(CAPTURE, 'and tell the owner it asked').toContain('delegation_reply_ambiguous_asked');
   });
 });
 
