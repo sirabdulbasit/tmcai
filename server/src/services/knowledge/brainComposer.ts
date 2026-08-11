@@ -2002,6 +2002,43 @@ export async function buildOpenItemsBlockForReasoning(
   }
 }
 
+/**
+ * Bare-vocative guard (2026-08-11, DEF-134).
+ *
+ * The address guard in `compose` pins WHICH form of address Brain uses
+ * ("Sir" / "Boss" / a first name, from Settings → Profile). Nothing ever
+ * pinned how OFTEN. The persona block used to instruct "when you greet,
+ * refer, or answer, use '<addressAs>' … every time", and the model read
+ * that as a mandatory prefix: 11 of the 12 capability-benchmark replies
+ * opened with "Sir, …". The Living Assistant judge marked the human-voice
+ * criterion (C4) down on 11 of those 12 for exactly that — "canned",
+ * "template-like", "robotic if overused", "a common opening that makes it
+ * feel a bit less natural". The user's preference is real and stays; the
+ * reflexive stamping of it on every reply is the defect.
+ *
+ * Deliberately narrow. Strips ONLY a BARE vocative opener — the address
+ * token standing alone as the very first thing in the reply — because
+ * that is the one form no person actually writes habitually. Left alone:
+ *   - greetings ("Good morning, Sir." — natural, and scored well),
+ *   - the address used anywhere later in the reply,
+ *   - the address as a topic reference ("Sir Basit is asking…", which has
+ *     no separator after the token and so never matches).
+ * The comma / dash / colon immediately after the token is what makes it
+ * unambiguously vocative rather than a sentence subject.
+ */
+export function stripBareVocativeOpener(answer: string, addressAs: string): string {
+  if (!answer || !addressAs) return answer;
+  const escaped = addressAs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bareVocativeRe = new RegExp(`^\\s*${escaped}\\s*[,:—-]\\s+(?=\\S)`, 'i');
+  if (!bareVocativeRe.test(answer)) return answer;
+  const rest = answer.replace(bareVocativeRe, '');
+  // Only strip when real substance survives — never leave a stub.
+  if (rest.trim().length < 3) return answer;
+  // Re-capitalise the first letter, skipping any leading markdown marker
+  // ("*High Priority*"). Case-less scripts (Urdu) are unaffected.
+  return rest.replace(/^([^A-Za-z]*)([a-z])/, (_m, pre, ch) => `${pre}${ch.toUpperCase()}`);
+}
+
 export async function compose(
   clientNumber: string,
   userId: number,
@@ -4256,6 +4293,27 @@ ${calLines.join('\n')}`;
       answer = answer.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${targetAddress}`);
     }
   }
+
+  // Bare-vocative guard (2026-08-11, DEF-134). The address guard above
+  // pins WHICH form of address Brain uses; nothing pinned how OFTEN. The
+  // persona used to say "when you greet, refer, or answer, use
+  // '<addressAs>' … every time", and the LLM read that as a mandatory
+  // prefix: 11 of 12 capability-benchmark replies opened with "Sir, …".
+  // The Living Assistant judge scored the human-voice criterion (C4)
+  // down on 11 of those 12 for exactly that — "canned", "template-like",
+  // "robotic if overused". The preference itself is real and stays; the
+  // reflexive stamping is the defect.
+  //
+  // Deliberately narrow: this strips ONLY a BARE vocative opener — the
+  // address token standing alone as the first thing in the reply — which
+  // is never how a person writes. It does NOT touch:
+  //   - greetings ("Good morning, Sir." — natural, and scored well),
+  //   - the address anywhere else in the reply,
+  //   - the address as a topic reference.
+  // A comma/dash/colon immediately after the token is what makes it
+  // unambiguously vocative rather than a sentence subject ("Sir Basit is
+  // asking…" in outbound templates has no separator and is untouched).
+  answer = stripBareVocativeOpener(answer, targetAddress);
 
   // Empty-promise guard. Per MD 2026-05-12: Brain replied
   // "Revisit pricing for Phoenix System ka open item Asad Ahmed Taj
