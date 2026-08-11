@@ -657,6 +657,29 @@ async function record(
     }
   }
 
+  // DEF-117 — the thread must contain what the owner was actually sent.
+  //
+  // The ledger above answers "did I send it?". It does not put the message in
+  // the conversation, and the conversation is what resolves "did u ask this
+  // from Hamna?" 34 minutes after a reminder went out. See
+  // sessionHistoryService for the production trace.
+  //
+  // `sent` and `partial` only: on a partial the owner received it on at least
+  // one channel. A failed or suppressed send never reached him, and recording
+  // it as something Brain said would be a fabrication in the thread.
+  if (o.status === 'sent' || o.status === 'partial') {
+    try {
+      const { appendBrainTurnToSession } = await import('../whatsapp/sessionHistoryService');
+      await appendBrainTurnToSession(o.user.clientNumber, o.user.id, o.body);
+    } catch (err: any) {
+      // Same rule as the ledger: never break a delivered send over bookkeeping,
+      // never let the miss be silent.
+      log.error('thread history append failed — Brain will not see this message next turn', {
+        kind: o.kind, err: err?.message,
+      });
+    }
+  }
+
   return {
     sent: o.status === 'sent' || o.status === 'partial',
     reason,

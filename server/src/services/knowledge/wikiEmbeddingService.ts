@@ -68,6 +68,28 @@ function hashText(text: string): string {
 /**
  * Embed a single wiki page if its text has changed since last time.
  * Safe to call concurrently from multiple writers; last-write-wins.
+ *
+ * DEF-118 — the freshness check must include the MODEL, not just the text.
+ *
+ * It used to be `hash matches && embedding is not null → return`. A page
+ * embedded by a superseded model or by the local stub satisfies both: its text
+ * has not changed and it holds a vector. So it was skipped forever, and no
+ * amount of sweeping could repair it.
+ *
+ * That is the exact shape this file's sweep exists to fix. `sweepWikiEmbeddings`
+ * selects on `embedding_model IS DISTINCT FROM MODEL_GEMINI` and its own comment
+ * names priority 2 as "pages embedded by a SUPERSEDED model" — but it delegates
+ * the write to this function, which could not act on that predicate. Two
+ * definitions of "this page needs embedding", disagreeing: the fifth recurrence
+ * of `protection-with-two-implementations`.
+ *
+ * Measured on production 2026-08-11: 7,893 of 12,483 pages (63%) carried
+ * `stub-768` — deterministic hash noise, not meaning. The sweep had been
+ * selecting 200 of them every ~50 minutes for 21 hours, embedding none, and
+ * filing `embedding_provider_degraded` each time while the provider was healthy
+ * (verified HTTP 200 against gemini-embedding-001). A row-count check reported
+ * this memory as fully indexed, because `embedding IS NOT NULL` is true of a
+ * stub vector.
  */
 export async function embedWikiPage(pageId: string): Promise<void> {
   try {
@@ -75,6 +97,7 @@ export async function embedWikiPage(pageId: string): Promise<void> {
     const rows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT title, body_markdown AS "bodyMarkdown",
               embedding_text_hash AS "hash",
+              embedding_model AS "model",
               (embedding IS NULL) AS "embeddingNull"
          FROM wiki_pages WHERE id = $1`,
       pageId,
@@ -85,7 +108,10 @@ export async function embedWikiPage(pageId: string): Promise<void> {
     if (!text) return;
 
     const h = hashText(text);
-    if (page.hash === h && !page.embeddingNull) return;
+    // Unchanged text is only reason to skip if the vector was produced by the
+    // model we currently search with. Distances between two embedding spaces
+    // are not comparable, so a stale vector is worse than a missing one.
+    if (page.hash === h && !page.embeddingNull && page.model === MODEL_GEMINI) return;
 
     const res = await embed(text);
     if (!res || res.embedding.length !== DIM) return; // provider down in prod → no write, backfill re-embeds later
@@ -291,7 +317,9 @@ export async function sweepWikiEmbeddings(limit = 200): Promise<{ attempted: num
   if (rows.length === 0) return { attempted: 0, embedded: 0, degraded: false };
 
   let embedded = 0;
+  let tried = 0;
   for (const row of rows) {
+    tried += 1;
     await embedWikiPage(row.id);
     // Re-read rather than trust the call: embedWikiPage swallows provider
     // failures by design, so "it returned" is not evidence it wrote anything.
@@ -314,8 +342,13 @@ export async function sweepWikiEmbeddings(limit = 200): Promise<{ attempted: num
       kind: 'embedding_provider_degraded',
       severity: 'error',
       source: 'wiki-embedding',
-      summary: `wiki embedding is not writing vectors — ${rows.length - embedded} of ${rows.length} pages in this batch stayed unindexed`,
-      evidence: { model: MODEL_GEMINI, attempted: rows.length, embedded },
+      // DEF-118: `attempted` used to report the SELECTED count, but the loop
+      // breaks on the first failure — so a healthy provider skipping one page
+      // was filed as 200 failed attempts. A finding that overstates its own
+      // evidence sends every reader looking at the provider, which is where 21
+      // hours went on 2026-08-11.
+      summary: `wiki embedding is not writing vectors — ${tried - embedded} of ${tried} attempted pages stayed unindexed (${rows.length} selected)`,
+      evidence: { model: MODEL_GEMINI, selected: rows.length, attempted: tried, embedded },
     });
   }
   return { attempted: rows.length, embedded, degraded };

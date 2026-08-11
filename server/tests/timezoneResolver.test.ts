@@ -30,9 +30,15 @@ describe('isValidTimezone', () => {
     expect(isValidTimezone('America/New_York')).toBe(true);
     expect(isValidTimezone('UTC')).toBe(true);
     expect(isValidTimezone('Mars/Olympus_Mons')).toBe(false);
-    // ES2022 Intl accepts explicit-offset zones; they behave as valid
-    // fixed-offset zones in all boundary math, so they're tolerated.
-    expect(isValidTimezone('+05:00')).toBe(true);
+    // Was `true` when written on 2026-07-14: ES2022 Intl accepted explicit
+    // offset zones. Node 20.20.2's ICU rejects them —
+    // `new Intl.DateTimeFormat('en', { timeZone: '+05:00' })` throws "Invalid
+    // time zone specified". Rejecting is the correct answer now: the function's
+    // contract is "can Intl format with this zone?", and anything that says yes
+    // to a zone Intl will throw on hands a crash to every caller downstream.
+    // No stored timezone uses this shape (checked: both users are Asia/Karachi),
+    // so this is a runtime change recorded, not a behaviour change chosen.
+    expect(isValidTimezone('+05:00')).toBe(false);
     expect(isValidTimezone('')).toBe(false);
     expect(isValidTimezone(null)).toBe(false);
   });
