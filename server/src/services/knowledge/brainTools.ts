@@ -246,6 +246,112 @@ const fetchSentMessages: BrainToolDefinition = {
   },
 };
 
+
+// ─── Tool: fetch_delegation_replies ──────────────────────────────
+
+/**
+ * DEF-125 — Brain could not see the replies it had itself recorded.
+ *
+ * 2026-08-11 14:32 the owner asked: "did Hamna respond anything in last 24hrs
+ * upon any of your message sent to her?" Brain answered: "I haven't received
+ * any response from her."
+ *
+ * She had replied at 12:02 — two and a half hours earlier. Brain received it,
+ * correlated it to "Vision Metric's service sales package video", classified it
+ * ("not yet complete", in_progress, 50%) and sent him a notice about it.
+ *
+ * Then denied it. Measured:
+ *
+ *   delegation_thread_events (inbound, 24h):  1   <- her reply
+ *   whatsapp_messages (from her):             0
+ *   feed_events (from her, 24h):              0
+ *   retrieval paths reading the ledger:       NONE
+ *
+ * Unregistered senders' bodies are deliberately never written to
+ * whatsapp_messages, so a delegatee's reply exists ONLY in the delegation
+ * ledger — and not one of the ten tools read it. Brain searched WhatsApp and
+ * email, found nothing, and reported nothing. Truthful from where it looked,
+ * and false.
+ *
+ * Ten tools could answer "what did I send" and none could answer "what came
+ * back", which is the half of a delegation the owner actually cares about.
+ */
+const fetchDelegationReplies: BrainToolDefinition = {
+  name: 'fetch_delegation_replies',
+  description: 'Look up REPLIES RECEIVED from delegatees and counterparts on tracked items — what came BACK, not what you sent. Use for "did <X> respond", "has anyone replied", "did I get an answer from <X>", "any response on <item>". Counterpart replies live in the delegation ledger and do NOT appear in WhatsApp or email history, so this is the only tool that can answer those questions.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      hours: { type: 'integer', description: 'lookback window in hours (default 48, max 720)' },
+      person: { type: 'string', description: 'optional: filter to one counterpart by name or number' },
+      max: { type: 'integer', description: 'max items (default 20, max 50)' },
+    },
+    required: [],
+  },
+  handler: async ({ hours, person, max }, { userId, clientNumber }) => {
+    const window = Math.max(1, Math.min(720, Number(hours ?? 48)));
+    const cap = Math.max(1, Math.min(50, Number(max ?? 20)));
+    try {
+      const prisma = (await import('../../db/prisma')).default;
+      const rows = await prisma.$queryRawUnsafe<Array<any>>(
+        `SELECT ev.created_at AS at,
+                COALESCE(NULLIF(e.name, ''), NULLIF(byphone.name, ''), t.counterpart_key) AS who,
+                oi.title AS item,
+                t.state  AS thread_state,
+                cls.classification AS cls
+           FROM delegation_thread_events ev
+           JOIN delegation_threads t ON t.id = ev.thread_id
+           LEFT JOIN open_items oi ON oi.id = t.open_item_id
+           LEFT JOIN entities   e  ON e.id = t.counterpart_entity_id
+           LEFT JOIN LATERAL (
+             SELECT c.name FROM entities c
+              WHERE c.client_number = t.client_number AND c.phone IS NOT NULL
+                AND c.phone = regexp_replace(t.counterpart_key, '^[a-z]+:', '')
+              LIMIT 1
+           ) byphone ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT c2.classification FROM delegation_thread_events c2
+              WHERE c2.thread_id = ev.thread_id AND c2.event_type = 'classification_recorded'
+                AND c2.created_at >= ev.created_at
+              ORDER BY c2.created_at ASC LIMIT 1
+           ) cls ON TRUE
+          WHERE t.client_number = $1 AND t.owner_user_id = $2
+            AND ev.event_type = 'inbound_received'
+            AND ev.created_at > NOW() - ($3 || ' hours')::interval
+          ORDER BY ev.created_at DESC
+          LIMIT $4`,
+        clientNumber, userId, String(window), cap,
+      );
+
+      const filtered = person
+        ? rows.filter((r) => String(r.who ?? '').toLowerCase().includes(String(person).toLowerCase()))
+        : rows;
+
+      if (!filtered.length) {
+        // Same discipline as fetch_sent_messages: an empty ledger is "nothing
+        // recorded", never "nobody replied". Stating the second from the first
+        // is exactly the false denial this tool exists to prevent.
+        return `# Replies received (last ${window}h)\n(none recorded${person ? ` from anyone matching "${person}"` : ''} — this is the ledger's record, which is not proof nobody replied)`;
+      }
+
+      const lines = filtered.map((r) => {
+        const when = new Date(r.at).toISOString().replace('T', ' ').slice(0, 16);
+        const c = (r.cls ?? {}) as Record<string, unknown>;
+        // The summary IS the reply as far as Brain is concerned — counterpart
+        // bodies are never stored, so this paraphrase is the only content there
+        // is. Saying so keeps Brain from quoting it as their exact words.
+        const said = c.summary ? ` — they said (summarised): ${String(c.summary).slice(0, 200)}` : '';
+        const read = c.rawOutcome ? ` — my read: ${String(c.rawOutcome).replace(/_/g, ' ')}` : '';
+        const conf = typeof c.confidence === 'number' ? ` (${Math.round(c.confidence * 100)}% sure)` : '';
+        return `- ${when} — ${r.who ?? 'unknown'} replied about "${r.item ?? 'an item'}" [thread: ${r.thread_state}]${said}${read}${conf}`;
+      });
+      return `# Replies received (${filtered.length}, newest first, last ${window}h)\n${lines.join('\n')}`;
+    } catch (e: any) {
+      return `# Replies received\n(delegation ledger lookup FAILED: ${e?.message ?? 'unknown error'} — do not report this as "no replies"; say the record could not be read)`;
+    }
+  },
+};
+
 // ─── Tool: fetch_sent_emails ─────────────────────────────────────
 
 const fetchSentEmails: BrainToolDefinition = {
@@ -600,6 +706,10 @@ export const BRAIN_TOOLS: BrainToolDefinition[] = [
   fetchCalendar,
   fetchEmails,
   fetchSentMessages,
+  // DEF-125: the other half of a delegation. Ten tools could answer "what did I
+  // send" and none could answer "what came back" — which is why Brain denied a
+  // reply it had itself recorded two hours earlier.
+  fetchDelegationReplies,
   fetchSentEmails,
   fetchWhatsAppThread,
   fetchOpenItems,
