@@ -21,14 +21,11 @@ const base = new PrismaClient({
  *  model on the generated client, or the entry silently guards nothing. */
 export const TENANT_SCOPED_MODELS = new Set<string>([
   'User', 'WikiPage', 'WikiPageLink', 'FeedEvent',
-  // MEM-005, 2026-08-11: `OpenItemEmbedding` and `ItemStatusHistory` removed
-  // from this list — both tables were dropped on 2026-05-18 and neither model
-  // exists on the generated client, so their entries guarded nothing. A
-  // registry naming absent models reads as coverage it does not have.
-  // NOTE: `ItemStatusHistory` is still WRITTEN by lifecycleService and READ by
-  // two openItemsRoutes handlers. That is a separate confirmed defect with its
-  // own proposal — deleting this dead entry neither fixes nor hides it.
-  'OpenItem',
+  // MEM-005, 2026-08-11: `OpenItemEmbedding` removed — dropped table, no model.
+  // DEF-127, 2026-08-11: `ItemStatusHistory` RESTORED here, now that the table
+  // and the model exist again. It is a user-owned audit ledger, so it is listed
+  // in BOTH registries: tenant-scoped below, user-scoped above.
+  'OpenItem', 'ItemStatusHistory',
   'AgentAction', 'DecisionLog', 'DelegationLog',
   'WhatsAppConnection', 'WhatsAppMessage', 'WhatsAppSession',
   'ShadowRule', 'PatternHidden', 'Entity',
@@ -62,7 +59,9 @@ const WHERE_OPS = new Set(['update', 'updateMany', 'delete', 'deleteMany', 'upse
  */
 export const USER_SCOPED_MODELS = new Set<string>([
   // MEM-005: `OpenItemEmbedding` removed — dropped table, no Prisma model.
-  'FeedEvent', 'OpenItem',
+  // DEF-127: `ItemStatusHistory` is user-owned audit — one user must never read
+  // another's transition history, even inside the same tenant.
+  'FeedEvent', 'OpenItem', 'ItemStatusHistory',
   'WhatsAppSession', 'WhatsAppMessage',
   'BrainPendingAction', 'BrainActionArtifact',
   'BrainUserMessage', 'BrainPromptQueue',

@@ -1208,11 +1208,47 @@ model OpenItem {
 }
 
 // Models removed 2026-05-18:
-//   - OpenItemEmbedding → table dropped (orphan, never referenced)
-//   - ItemStatusHistory → table dropped (replaced by open_items.notes JSON)
-// Both tables were created by past migrations but no service ever queried
-// them. Drop verified via grep; backup of empty data in
-// /tmp/tmcai-drop-backup-2026-05-18 on prod.
+//   - OpenItemEmbedding → table dropped (orphan, never referenced). CONFIRMED
+//     correct on 2026-08-11 (MEM-005) and the last references were retired: the
+//     service, its route, and its call site are gone.
+//   - ItemStatusHistory → RESTORED 2026-08-11 (DEF-127, migration
+//     20260811_item_status_history_restore). The 2026-05-18 note below was wrong
+//     on both counts. It was not an orphan: `lifecycleService.transitionStatus`
+//     wrote it inside the same transaction as the status update, so dropping it
+//     made every accepted transition throw and ROLL BACK the status change. And
+//     `open_items.notes` never replaced it — measured on production, 24 note
+//     entries exist across 7 of 277 items and NONE records a status change.
+//     The "backup of empty data in /tmp/tmcai-drop-backup-2026-05-18" no longer
+//     exists on the box, so the emptiness claim can no longer be verified.
+
+/// DEF-127 — the durable audit ledger for open-item status transitions.
+///
+/// Written by `services/itemLifecycle/lifecycleService.ts` for BOTH outcomes:
+/// `accepted` rows are written atomically with the status update, `rejected` rows
+/// record a refused transition (guard failure, missing approval, no-op) so churn
+/// is visible rather than silent.
+///
+/// User-owned: `userId` is required, because a row that cannot say whose item
+/// changed is not audit. Recovered from the open item, never defaulted.
+model ItemStatusHistory {
+  id           Int      @id @default(autoincrement())
+  clientNumber String   @map("client_number") @db.VarChar(20)
+  userId       Int      @map("user_id")
+  openItemId   String   @map("open_item_id")
+  fromStatus   String   @map("from_status") @db.VarChar(20)
+  toStatus     String   @map("to_status") @db.VarChar(20)
+  outcome      String   @default("accepted") @db.VarChar(20) // accepted | rejected
+  reason       String?  @db.VarChar(500)
+  actor        String?  @db.VarChar(50)
+  traceId      String?  @map("trace_id") @db.VarChar(64)
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([clientNumber, openItemId, createdAt])
+  @@index([clientNumber, userId, createdAt])
+  @@index([clientNumber, outcome, createdAt])
+  @@map("item_status_history")
+}
 
 // ─── MyOS Wiki (Memex layer) ──────────────────────────────────────
 // Per-user, multi-tenant wiki pages. Backing storage can be Notion (when the

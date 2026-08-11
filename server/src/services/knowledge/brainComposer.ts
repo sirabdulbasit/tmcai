@@ -3532,11 +3532,25 @@ ${calLines.join('\n')}`;
             answer = actionResult.message;
           } else {
             const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
-            await transitionStatus((existing as any).id, 'CLOSED', {
+            // DEF-128 — READ THE RESULT. `transitionStatus` RETURNS
+            // `{ ok: false, error }` for a refused transition (guard failed,
+            // approval required, not in the matrix); it does not throw. This
+            // call ignored it and went straight on to compose "Marked … done",
+            // so a refusal was reported to the owner as a completion.
+            //
+            // Found on 2026-08-11 by the ledger restored in DEF-127: the audit
+            // row said `NEW->CLOSED rejected — approval required, none
+            // provided` in the same second that Brain said the item was done.
+            // Exactly the fabricated-completion class §2.5 forbids.
+            const closeResult = await transitionStatus((existing as any).id, 'CLOSED', {
               clientNumber,
               actor: `user:${userId}`,
               reason: act.completionNote || 'Marked done via Brain Chat',
             });
+            if (!closeResult.ok) {
+              actionResult = { ok: false, message: `[mark_open_item_done: not closed — ${closeResult.error ?? 'transition refused'}]` };
+              answer = actionResult.message;
+            } else {
             // Build closure summary
             const wasDelegated = !!(existing as any).delegateeName;
             const trail = Array.isArray((existing as any).delegationFollowupTrail) ? (existing as any).delegationFollowupTrail as any[] : [];
@@ -3556,6 +3570,7 @@ ${calLines.join('\n')}`;
             }
             actionResult = { ok: true, artifactId: (existing as any).id, message: summary };
             answer = summary;
+            }
           }
         } catch (e: any) {
           console.warn('[brain-chat] mark_open_item_done failed', { error: e?.message, openItemId: act.openItemId, userId });
@@ -3626,11 +3641,20 @@ ${calLines.join('\n')}`;
                 }).catch(() => null))?.id ?? null,
               } as any,
             });
-            await transitionStatus(existing.id, 'DELEGATED', {
+            // DEF-128 — same defect, same file: the result was discarded, so a
+            // refused delegation (TRIAGED->DELEGATED needs `delegatee_set`, and
+            // NEW->DELEGATED is not in the matrix at all) still produced a
+            // "delegated" answer and still queued the delegatee email below.
+            const delegateResult = await transitionStatus(existing.id, 'DELEGATED', {
               clientNumber,
               actor: `user:${userId}`,
               reason: act.note || `Delegated via Brain Chat to ${matched.name}`,
             });
+            if (!delegateResult.ok) {
+              actionResult = { ok: false, message: `[delegate_open_item: not delegated — ${delegateResult.error ?? 'transition refused'}]` };
+              answer = actionResult.message;
+              return { answer, citedPageIds: [], gaps: [], sources: [], action: act, actionResult };
+            }
 
             // Delegation-lifecycle step 1 (per Basit 2026-05-23 spec):
             // queue an email preview to the delegatee. Per default Q2

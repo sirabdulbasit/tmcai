@@ -58,6 +58,11 @@ export async function transitionStatus(
       entityId: true,
       priority: true,
       title: true,
+      // DEF-127 — the audit ledger is user-owned. `userId` is read here and
+      // passed to every history write, accepted and rejected alike. It comes
+      // from the ITEM rather than from `ctx`, so it cannot be spoofed by a
+      // caller and cannot be defaulted when a caller omits it.
+      userId: true,
     },
   });
   if (!item) {
@@ -70,13 +75,13 @@ export async function transitionStatus(
   }
   if (from === target) {
     // No-op transition — record as rejected so we see churn in the audit trail.
-    await recordHistory(ctx, openItemId, from, target, 'rejected', 'no-op self-transition');
+    await recordHistory(ctx, item.userId, openItemId, from, target, 'rejected', 'no-op self-transition');
     return { ok: false, from, to: target, error: 'cannot transition to the same status' };
   }
 
   const spec = findTransition(from, target);
   if (!spec) {
-    await recordHistory(ctx, openItemId, from, target, 'rejected', 'transition not in matrix');
+    await recordHistory(ctx, item.userId, openItemId, from, target, 'rejected', 'transition not in matrix');
     return { ok: false, from, to: target, error: `no valid transition from ${from} to ${target}` };
   }
 
@@ -86,12 +91,12 @@ export async function transitionStatus(
     if (!checkGuard(g, item, ctx)) failed.push(g);
   }
   if (failed.length > 0) {
-    await recordHistory(ctx, openItemId, from, target, 'rejected', `guards failed: ${failed.join(',')}`);
+    await recordHistory(ctx, item.userId, openItemId, from, target, 'rejected', `guards failed: ${failed.join(',')}`);
     return { ok: false, from, to: target, error: `guards failed: ${failed.join(', ')}`, guardsFailed: failed };
   }
 
   if (spec.requiresApproval && !ctx.approvalId) {
-    await recordHistory(ctx, openItemId, from, target, 'rejected', 'approval required, none provided');
+    await recordHistory(ctx, item.userId, openItemId, from, target, 'rejected', 'approval required, none provided');
     return { ok: false, from, to: target, error: 'approval required', approvalRequired: true };
   }
 
@@ -101,9 +106,10 @@ export async function transitionStatus(
       where: { id: openItemId },
       data: { status: target, updatedAt: new Date() },
     });
-    const h = await (tx as any).itemStatusHistory.create({
+    const h = await tx.itemStatusHistory.create({
       data: {
         clientNumber: ctx.clientNumber,
+        userId: item.userId,
         openItemId,
         fromStatus: from,
         toStatus: target,
@@ -144,6 +150,7 @@ function checkGuard(g: Guard, item: any, ctx: TransitionContext): boolean {
 
 async function recordHistory(
   ctx: TransitionContext,
+  userId: number,
   openItemId: string,
   from: ItemStatus,
   to: ItemStatus,
@@ -151,9 +158,10 @@ async function recordHistory(
   reason: string,
 ): Promise<void> {
   try {
-    await (prisma as any).itemStatusHistory.create({
+    await prisma.itemStatusHistory.create({
       data: {
         clientNumber: ctx.clientNumber,
+        userId,
         openItemId,
         fromStatus: from,
         toStatus: to,

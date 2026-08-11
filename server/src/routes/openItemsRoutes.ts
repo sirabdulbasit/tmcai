@@ -187,8 +187,17 @@ router.post('/:id/note', requireAuth, async (req: Request, res: Response) => {
 router.get('/:id/history', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
-    const rows = await (prisma as any).itemStatusHistory.findMany({
-      where: { clientNumber: user.clientNumber, openItemId: String(req.params.id) },
+    // DEF-127 — scoped by USER as well as tenant. Transition history is
+    // user-owned data: two colleagues in one tenant must not read each other's
+    // audit trail, and tenant scope alone would have let them. The `$extends`
+    // guard injects userId for this model too; naming it here is explicit
+    // rather than dependent on that.
+    const rows = await prisma.itemStatusHistory.findMany({
+      where: {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        openItemId: String(req.params.id),
+      },
       orderBy: { createdAt: 'asc' },
       take: 200,
     });
@@ -235,8 +244,16 @@ router.get('/metrics', requireAuth, async (req: Request, res: Response) => {
       prisma.openItem.groupBy({ by: ['archetype'] as any, where: { clientNumber: user.clientNumber } as any, _count: { _all: true } as any }),
       prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: day } } }),
       prisma.openItem.count({ where: { clientNumber: user.clientNumber, createdAt: { gte: week } } }),
-      (prisma as any).itemStatusHistory.count({
-        where: { clientNumber: user.clientNumber, outcome: 'rejected', createdAt: { gte: week } },
+      // DEF-127 — typed, and user-scoped like the history read above. This is a
+      // per-user metric on a per-user ledger; counting the whole tenant would
+      // report a colleague's rejected transitions as the caller's own.
+      prisma.itemStatusHistory.count({
+        where: {
+          clientNumber: user.clientNumber,
+          userId: user.id,
+          outcome: 'rejected',
+          createdAt: { gte: week },
+        },
       }).catch(() => 0),
     ]);
     res.json({
