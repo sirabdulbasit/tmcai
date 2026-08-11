@@ -2427,3 +2427,21 @@ act on and cannot be evidenced in production**. Stated plainly rather than claim
   `openItemsRoutes.ts`. Logged as its own defect with its own proposal; removing the dead
   registry entry neither fixes nor conceals it.
 - `memoryDecayJob.ts` unscoped hard delete — separate proposal, explicitly out of scope.
+
+**Post-deploy record (2026-08-11 18:16 PKT, production HEAD `ccbdfda`).**
+Application release SHA `ccbdfda` · reviewed remote HEAD `ccbdfda` · production deployed SHA
+`ccbdfda` (this repo IS the production checkout; no pull was required, the build was made in
+place and `pm2 restart tmcai-server` performed without `--update-env`, which poisons `DISPLAY`).
+
+**Wiki path VERIFIED LIVE.** `sweepWikiEmbeddings(25)` through the new shared provider returned
+`attempted 25, embedded 25, degraded false`. Persisted rows inspected in the database:
+`embedding_model = gemini-embedding-001`, `vector_dims = 768`, `L2 norm = 1.0000`. Stale
+`stub-768` fell 2,039 → 2,014; current rows rose 10,476 → 10,501. Health endpoint `healthy`,
+database up, clean boot.
+
+**Chunk path NOT VERIFIED and cannot be**: `chunks` has 0 rows. Reported as unfalsifiable rather
+than counted as a success.
+
+**Convergence estimate (evidence-based, not a promise):** the scheduled sweep is 200 rows per
+hourly run, so ~11 cycles for the remaining 2,014 if the provider stays healthy and no new stale
+rows appear. One measured data point (25/25) so far.
