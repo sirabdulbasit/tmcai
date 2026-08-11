@@ -110,7 +110,20 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         await prisma.openItem.update({
           where: { id: it.id },
           data: {
-            status: 'CLOSED' as any,
+            // DEF-129 — every prune in this job now records CANCELLED.
+            //
+            // Five of these writes used the LEGACY LOWERCASE 'closed', which is
+            // not in the v15 vocabulary — and `transitionStatus` refuses any item
+            // whose CURRENT status is outside it, so this job had been quietly
+            // minting rows that no path in the system could ever move again.
+            //
+            // CANCELLED rather than CLOSED is also the honest value: a zombie, a
+            // smoke leftover, a gate rejection and a collapsed duplicate were
+            // never work that got completed. Recording them as CLOSED inflates
+            // "done" with things nobody did. Both values are in
+            // INACTIVE_STATUS_VALUES, so every "still on my plate" query treats
+            // them identically — what changes is only what the ledger CLAIMS.
+            status: 'CANCELLED' as any,
             metadata: {
               ...meta,
               selfPrune: prunePlan.selfPrune,
@@ -136,7 +149,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         await prisma.openItem.update({
           where: { id: it.id },
           data: {
-            status: 'closed' as any,
+            status: 'CANCELLED' as any,
             metadata: { ...(meta as any), archivedReason: 'smoke_leftover', archivedAt: new Date().toISOString() } as any,
           },
         }).catch(() => {});
@@ -169,7 +182,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         await prisma.openItem.update({
           where: { id: it.id },
           data: {
-            status: 'closed' as any,
+            status: 'CANCELLED' as any,
             metadata: { ...(meta as any), archivedReason: `gate:${verdict.code}`, archivedAt: new Date().toISOString() } as any,
           },
         }).catch(() => {});
@@ -199,7 +212,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
         await prisma.openItem.update({
           where: { id: it.id },
           data: {
-            status: 'closed' as any,
+            status: 'CANCELLED' as any,
             metadata: { ...(meta as any), archivedReason: 'stale_no_engagement', archivedAt: new Date().toISOString() } as any,
           },
         }).catch(() => {});
@@ -215,7 +228,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
           await prisma.openItem.update({
             where: { id: it.id },
             data: {
-              status: 'closed' as any,
+              status: 'CANCELLED' as any,
               metadata: { ...(meta as any), archivedReason: 'duplicate_collapsed', duplicateOf: keeper, archivedAt: new Date().toISOString() } as any,
             },
           }).catch(() => {});
@@ -237,7 +250,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
           await prisma.openItem.update({
             where: { id: it.id },
             data: {
-              status: 'closed' as any,
+              status: 'CANCELLED' as any,
               metadata: { ...(meta as any), archivedReason: 'duplicate_title', duplicateOf: keeper, archivedAt: new Date().toISOString() } as any,
             },
           }).catch(() => {});

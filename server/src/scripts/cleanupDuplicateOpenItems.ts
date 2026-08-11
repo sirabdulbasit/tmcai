@@ -169,7 +169,14 @@ async function main(): Promise<void> {
       await prisma.openItem.update({
         where: { id: p.archiveId },
         data: {
-          status: 'DONE',
+          // DEF-129 — THIS SCRIPT IS THE WRITER THAT MINTED THE SIX STRANDED
+          // ROWS. `DONE` is not in the v15 vocabulary, and `transitionStatus`
+          // refuses any item whose CURRENT status is outside it, so every row
+          // this script touched became unmovable by every path in the system —
+          // no UI action, no Brain action, no job could ever change it again.
+          // Normalising the six rows by migration without fixing this line
+          // would mint six more on the next run.
+          status: 'CANCELLED',
           // Stamp the dedup reason in description so the audit trail survives.
           description: { set: `[dedup-cleanup 2026-05-14] Merged into "${p.keepTitle}" (id ${p.keepId}). Original title: "${p.archiveTitle}"` } as any,
         } as any,
@@ -185,7 +192,10 @@ async function main(): Promise<void> {
       await prisma.openItem.update({
         where: { id: m.id },
         data: {
-          status: 'DONE',
+          // DEF-129 — same fault, same script. And CANCELLED is the honest
+          // value here on its own merits: the script's own message says these
+          // were "not a real task", which is a withdrawal, not completed work.
+          status: 'CANCELLED',
           description: { set: `[meta-wrapper-cleanup 2026-05-15] "${m.title}" was a commitment-extractor artefact, not a real task. Archived.` } as any,
         } as any,
       });

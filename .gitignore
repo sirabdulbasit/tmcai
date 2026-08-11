@@ -3,6 +3,16 @@ dist/
 .env
 *.env.local
 *.env.production
+# Hand-made .env backups (server/.env.bak-YYYYMMDD…). They hold live secrets, so
+# they are ignored rather than merely uncommitted — and the orchestrator's
+# forbidden-path rail reads `git status --porcelain`, where an untracked
+# `.env.bak-*` matched its `\.env` pattern and raised a CRITICAL alert on every
+# iteration. Ignoring keeps the secret protected AND the rail meaningful.
+.env.bak*
+*/.env.bak*
+# Production backups of the manifests, kept on the box for rollback only.
+package.json.prod-backup-*
+package-lock.json.prod-backup-*
 
 # GCP service account key (NEVER commit)
 tmcai-key.json

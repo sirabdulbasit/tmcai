@@ -195,6 +195,7 @@ router.post('/:id/delegate', requireAuth, async (req: Request, res: Response) =>
     const item = await openItemsService.delegateItem(
       req.params.id as string, user.clientNumber,
       delegateeId || null, delegateeName, delegateeEmail, note,
+      `user:${user.id}`,
     );
     res.json({ item });
   } catch (error: any) {

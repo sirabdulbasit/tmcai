@@ -27,6 +27,7 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { matches, type Predicate } from '../triage/ruleEngineService';
 import { getStarsForSender } from '../knowledge/entitySweepService';
+import { INACTIVE_STATUS_SQL } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('risk-rules');
 
@@ -341,7 +342,7 @@ async function executeOpenItemRules(clientNumber: string, userId: number, rules:
                  ELSE EXTRACT(EPOCH FROM (NOW() - due_date)) / 86400.0 END AS days_overdue
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','CANCELLED','INFORMED')
+        AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED')
       ORDER BY priority_score DESC NULLS LAST, created_at ASC
       LIMIT 500`,
     clientNumber, userId,

@@ -12,11 +12,15 @@ import { INACTIVE_STATUS_VALUES } from './itemLifecycle/transitionMatrix';
 // ─── Types ────────────────────────────────────────────────────────
 
 export type OpenItemType = 'task' | 'email' | 'delegation' | 'alert' | 'erp' | 'okr' | 'risk';
-// v15 L2 — 8-value lifecycle + legacy aliases for backwards compatibility with
+// v15 L2 — 9-value lifecycle + legacy aliases for backwards compatibility with
 // callers still passing the old vocabulary (they get translated in changeStatus).
+// DEF-129 added CANCELLED here as well as in the matrix: without it, a caller
+// asking this service to cancel an item needs an `as any` cast, and a cast is
+// how 'closed' and 'DONE' got written in the first place.
 export type OpenItemStatus =
   | 'NEW' | 'TRIAGED' | 'IN_PROGRESS' | 'DELEGATED' | 'WAITING_INFO' | 'SNOOZED' | 'INFORMED' | 'CLOSED'
-  | 'open' | 'in_progress' | 'delegated' | 'blocked' | 'done' | 'overdue';
+  | 'CANCELLED'
+  | 'open' | 'in_progress' | 'delegated' | 'blocked' | 'done' | 'overdue' | 'cancelled';
 export type OpenItemPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export interface CreateOpenItemInput {
@@ -362,7 +366,7 @@ export async function listItems(
 // L2.4 — DEPRECATED direct path. All status changes must flow through
 // services/itemLifecycle/lifecycleService.transitionStatus() so guards +
 // history + open-item-events publish are enforced. This legacy helper
-// translates its inputs into the v15 8-status set and delegates.
+// translates its inputs into the v15 9-status set and delegates.
 
 const LEGACY_TO_V15: Record<string, string> = {
   open: 'NEW',
@@ -375,6 +379,10 @@ const LEGACY_TO_V15: Record<string, string> = {
   triaged: 'TRIAGED',
   informed: 'INFORMED',
   closed: 'CLOSED',
+  // DEF-129 — deliberately NOT mapped to CLOSED. Cancellation and completion
+  // are different outcomes, and folding one into the other is the fabricated-
+  // completion class in the data.
+  cancelled: 'CANCELLED',
 };
 
 export async function changeStatus(
@@ -388,7 +396,13 @@ export async function changeStatus(
   const v15 = (LEGACY_TO_V15[status as string] ?? status) as any;
   const result = await transitionStatus(id, v15, {
     clientNumber,
-    actor: 'system',
+    // The caller's identity is PASSED THROUGH, never overwritten. Every call
+    // site supplies a real one (`user:<id>` from the route, `agent:<name>` from
+    // the action handlers); collapsing them to 'system' would both falsify the
+    // ledger DEF-127 exists to keep and neuter the `is_owner_or_agent` guard,
+    // which treats 'system' as always authorised. `?? 'system'` covers the
+    // optional-argument case only.
+    actor: actor ?? 'system',
     reason: note,
   });
   if (!result.ok) {
@@ -405,7 +419,12 @@ export async function changeStatus(
   // user has acknowledged it (closed, in-progress, delegated, snoozed,
   // informed). Cancel any pending sender-stars-driven WhatsApp pings
   // so the user isn't pestered about something they've already handled.
-  const PAUSE_STATES = ['CLOSED', 'IN_PROGRESS', 'DELEGATED', 'SNOOZED', 'INFORMED', 'WAITING_INFO', 'closed', 'in_progress', 'delegated', 'snoozed', 'informed', 'waiting_info', 'done'];
+  // DEF-129: CANCELLED belongs here. A withdrawn item that keeps its star
+  // cadence goes on pinging the owner about work he explicitly called off —
+  // the same "withdrawn work that keeps nagging" that INACTIVE_STATUS_VALUES
+  // closes for the queries. This list is about acknowledgement, not just
+  // inactivity, so it stays its own list rather than reusing that constant.
+  const PAUSE_STATES = ['CLOSED', 'CANCELLED', 'IN_PROGRESS', 'DELEGATED', 'SNOOZED', 'INFORMED', 'WAITING_INFO', 'closed', 'cancelled', 'in_progress', 'delegated', 'snoozed', 'informed', 'waiting_info', 'done'];
   if (PAUSE_STATES.includes(String(v15))) {
     try {
       const { pauseCadenceForItem } = await import('./triage/starCadenceService');
@@ -424,6 +443,12 @@ export async function delegateItem(
   delegateeName: string,
   delegateeEmail?: string,
   note?: string,
+  /**
+   * Who is delegating. Routed onto the ledger row, so a delegation is
+   * attributable to the person or agent that made it. Optional for
+   * compatibility with older call sites; every current caller supplies it.
+   */
+  actor?: string,
 ) {
   const item = await prisma.openItem.findFirst({ where: { id, clientNumber } });
   if (!item) throw new Error('Item not found');
@@ -446,7 +471,7 @@ export async function delegateItem(
   const { transitionStatus } = await import('./itemLifecycle/lifecycleService');
   const r = await transitionStatus(id, 'DELEGATED', {
     clientNumber,
-    actor: 'system',
+    actor: actor ?? 'system',
     reason: note || `Delegated to ${delegateeName}`,
     itemData: { delegateeId, delegateeName, delegateeEmail, delegationTrail: trail as any },
   });

@@ -33,6 +33,7 @@ import crypto from 'crypto';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
+import { INACTIVE_STATUS_SQL } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('criticality');
 
@@ -200,7 +201,7 @@ async function gatherOpenItems(input: ScoreInput) {
             EXTRACT(EPOCH FROM (NOW() - created_at))/86400 AS age_days
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','CANCELLED','INFORMED')
+        AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED')
         AND (entity_id = $3 OR metadata->>'senderEmail' = $4)
       ORDER BY priority_score DESC NULLS LAST, created_at ASC
       LIMIT 5`,
@@ -227,7 +228,7 @@ async function gatherUpcomingCalendar(input: ScoreInput) {
             EXTRACT(EPOCH FROM (due_date - NOW()))/3600 AS hours_until
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','CANCELLED','INFORMED')
+        AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED')
         AND due_date IS NOT NULL
         AND due_date BETWEEN NOW() AND $3
       ORDER BY due_date ASC

@@ -6777,6 +6777,7 @@ async function assignItemToCounterpart(
   try {
     const r = await delegateItem(
       input.openItemId, clientNumber, null, matched.name, matched.email, input.note,
+      `user:${userId}`,
     );
     return {
       ok: !!r,

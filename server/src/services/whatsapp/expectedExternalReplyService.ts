@@ -1,5 +1,6 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import { INACTIVE_STATUS_SQL } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('whatsapp:expected-external-reply');
 const EXPECTED_REPLY_WINDOW_DAYS = 14;
@@ -107,7 +108,7 @@ export async function captureExpectedExternalReply(
         `SELECT id, title
            FROM open_items
           WHERE client_number = $1 AND user_id = $2
-            AND status NOT IN ('CLOSED', 'CANCELLED', 'DONE')
+            AND status NOT IN (${INACTIVE_STATUS_SQL})
             AND LOWER(delegatee_name) = LOWER($3)
           ORDER BY updated_at DESC
           LIMIT 10`,

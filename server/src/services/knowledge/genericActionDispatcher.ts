@@ -222,6 +222,7 @@ const HANDLER_REGISTRY: Record<string, Record<string, (userId: number, payload: 
           String(payload.delegateeName),
           payload.delegateeEmail ? String(payload.delegateeEmail) : undefined,
           payload.note ? String(payload.note) : undefined,
+          `user:${userId}`,
         );
         return {
           ok: true,

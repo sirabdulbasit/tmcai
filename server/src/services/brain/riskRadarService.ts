@@ -29,6 +29,7 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
 import { writeDoc as writeBrainDoc } from './brainDocsService';
+import { INACTIVE_STATUS_SQL } from '../itemLifecycle/transitionMatrix';
 
 const log = createLogger('risk-radar');
 
@@ -476,7 +477,7 @@ async function gatherStagnantCriticality(
             (metadata->'criticality'->>'composite')::float AS "compositeFromMetadata"
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','CANCELLED','INFORMED','SNOOZED')
+        AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED','SNOOZED')
         AND created_at >= NOW() - (INTERVAL '1 day' * $3)
         AND (
           priority_score >= $4
@@ -541,7 +542,7 @@ async function gatherDecay(
     `SELECT id, item_number AS "itemNumber", title, priority, status, created_at AS "createdAt"
        FROM open_items
       WHERE client_number = $1 AND user_id = $2
-        AND status NOT IN ('CLOSED','CANCELLED','INFORMED','SNOOZED','DELEGATED')
+        AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED','SNOOZED','DELEGATED')
         AND created_at < NOW() - (INTERVAL '1 day' * $3)
       ORDER BY created_at ASC
       LIMIT 50`,
@@ -680,7 +681,7 @@ async function gatherImminence(
       `SELECT id, item_number AS "itemNumber", title, priority, due_date AS "dueDate"
          FROM open_items
         WHERE client_number = $1 AND user_id = $2
-          AND status NOT IN ('CLOSED','CANCELLED','INFORMED')
+          AND status NOT IN (${INACTIVE_STATUS_SQL},'INFORMED')
           AND due_date IS NOT NULL
           AND due_date BETWEEN NOW() AND NOW() + (INTERVAL '1 hour' * $3)
         ORDER BY due_date ASC LIMIT 30`,
