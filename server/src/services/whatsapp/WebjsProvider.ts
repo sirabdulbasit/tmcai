@@ -1527,7 +1527,31 @@ export class WebjsProvider implements IWhatsAppProvider {
       // A resolved send without an id is transport-accepted but unconfirmed.
       // Never retry it: production proved those sends can arrive, and retrying
       // from a false failure creates duplicate user-visible messages.
-      return classifyWebjsSendResult(msg);
+      const classified = classifyWebjsSendResult(msg);
+
+      // DEF-124: if the library withheld the id, read it back from the chat.
+      //
+      // Without it, quote-reply correlation — rule ONE of delegation matching —
+      // can never fire: the counterpart tells us exactly which message they are
+      // answering and we have nothing to compare it to. 27 of 27 outbound
+      // receipts carried no id, so every reply was matched by guessing.
+      //
+      // Strictly additive. The send already succeeded; a failed recovery leaves
+      // the original transport_accepted result untouched.
+      if (classified.success && !classified.messageId) {
+        try {
+          const chat = await client.getChatById(chatId);
+          const { recoverSentMessageId } = await import('./sendReceipt');
+          const recovered = await recoverSentMessageId(chat, params.message);
+          if (recovered) {
+            log.info('recovered outbound message id from chat', { chatId, recovered });
+            return { ...classified, messageId: recovered, confirmation: 'provider_receipt' };
+          }
+        } catch (err: any) {
+          log.warn('outbound id recovery failed — send stands as accepted', { err: err?.message });
+        }
+      }
+      return classified;
     } catch (error: any) {
       return { success: false, error: error.message };
     }
