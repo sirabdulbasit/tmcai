@@ -72,7 +72,13 @@ const CAPABILITIES: Capability[] = [
   { label: 'Hear a voice note the user sends', handle: 'voiceService.transcribeVoiceNote', what: 'Inbound WhatsApp voice notes are transcribed automatically and arrive as text. You CAN hear voice notes. Never tell the user you cannot.' },
   { label: 'Check what emails were actually sent', handle: 'gmailService.getRecentSentSummary(userId)', what: 'Reads the user\'s Gmail Sent folder — use this whenever the user asks "did it go?", "check sent items", "which account did that go from?", or when you need proof a message actually left. Do NOT claim knowledge of sent items from memory; fetch and cite messageId + timestamp.' },
   { label: 'Notify a contact via WhatsApp', handle: 'notify_via_whatsapp', what: 'Sends a message from the Nexeo tenant WhatsApp number, with an "AI assistant on behalf of {user}" prefix.' },
-  { label: 'Add a new contact', handle: 'POST /entities', what: 'Creates a person/entity row with name/email/phone; Brain can trigger this itself when the user provides a name and identifier.' },
+  // DEF-130: this was a curated REST-only entry ('POST /entities') from before
+  // DEF-058 gave contact creation a real action type. Once the registry is
+  // seeded on boot, `create_contact` renders from its own row — leaving the
+  // REST handle here would have listed the same capability twice, once with no
+  // description at all. Pointed at the action type so there is ONE line for it,
+  // generated from the thing that actually dispatches.
+  { label: 'Add a new contact', handle: 'create_contact', what: 'Creates a person/entity row with name plus email and/or phone. Emit create_contact when the user gives you a name and at least one identifier — do NOT say you cannot save contacts, and do not ask them to add it in Settings.' },
   { label: 'Edit a contact\'s details (name, email, phone)', handle: 'update_contact', what: 'Updates a field on an existing contact — email correction, name fix, phone add/change. Emit update_contact with contactCandidateId + the new value. Do NOT tell the user "I can\'t edit contacts", and do NOT create a duplicate contact to work around it — this action edits in place.' },
   { label: 'Change contact visibility (private/normal/tenant)', handle: 'set_contact_scope', what: 'Adjusts whether a contact is user-scoped, shared, or tenant-wide.' },
   { label: 'Mark a contact inactive', handle: 'mark_contact_inactive', what: 'Hides a contact so Brain skips them in future flows.' },

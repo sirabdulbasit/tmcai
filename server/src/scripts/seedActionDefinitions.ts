@@ -411,9 +411,26 @@ export const ACTIONS: Seed[] = [
   },
 ];
 
-async function main() {
-  console.log('[seedActionDefinitions] starting');
-  let createdCount = 0;
+/**
+ * Reconcile the action registry with ACTIONS above. Idempotent (upsert by
+ * `type`), so it is safe on every boot — which is where it now runs.
+ *
+ * DEF-130: this used to be reachable ONLY by hand
+ * (`npx ts-node src/scripts/seedActionDefinitions.ts`), and nothing in the
+ * application invoked it. Because `brainCapabilityLive` generates the CAN
+ * side of the capability truth-table from these ROWS, an action added to
+ * this file shipped fully working — parser, dispatch branch, transition —
+ * and was still absent from every prompt, so Brain truthfully denied having
+ * it. Production had 16 of the 18 types declared here: `remove_open_item`
+ * (added by DEF-106) and `create_contact` (added by DEF-058) were missing,
+ * which is why "I don't have the capability to delete open items directly"
+ * survived the fix that was supposed to end it.
+ *
+ * The registry-parity test could not catch this: it compares this file with
+ * COMPOSER_DISPATCHED_TYPES — file against file. Nothing compared the file
+ * with the database. Seeding at boot removes the gap rather than policing it.
+ */
+export async function seedActionDefinitions(): Promise<number> {
   for (const a of ACTIONS) {
     await registerAction({
       type: a.type,
@@ -430,10 +447,14 @@ async function main() {
       source: 'seeded',
       preApproved: true,
     });
-    console.log(`  upserted: ${a.type}`);
-    createdCount++;
   }
-  console.log(`[seedActionDefinitions] done. upserted=${createdCount}`);
+  return ACTIONS.length;
+}
+
+async function main() {
+  console.log('[seedActionDefinitions] starting');
+  const upserted = await seedActionDefinitions();
+  console.log(`[seedActionDefinitions] done. upserted=${upserted}`);
   process.exit(0);
 }
 

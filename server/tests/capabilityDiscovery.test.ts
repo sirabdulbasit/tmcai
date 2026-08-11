@@ -134,9 +134,24 @@ describe('deterministic safety limitations stay hand-written', () => {
 
   it('non-action capabilities are the curated tool/REST paths only', () => {
     const handles = NON_ACTION_CAPABILITIES.map((c) => c.handle);
-    expect(handles).toContain('POST /entities');
     expect(handles.some((h) => h.includes('getRecentSentSummary'))).toBe(true);
     // Everything snake_case-only must have gone through the registry.
     expect(handles.every((h) => !/^[a-z_]+$/.test(h.split(' / ')[0]))).toBe(true);
+  });
+
+  // Contact creation used to be asserted here as 'POST /entities'. It is no
+  // longer a REST-only path: DEF-058 gave it the `create_contact` action type,
+  // and DEF-130 seeds that row on boot, so it is now GENERATED from the
+  // registry like every other action. The guard's purpose — contact creation
+  // must be declared somewhere, because an undeclared capability is what
+  // DEF-058 and DEF-113 both were — moves with it rather than being dropped.
+  it('adding a contact is declared through the registry, with a real description', () => {
+    const hint = CAPABILITY_HINTS['create_contact'];
+    expect(hint).toBeDefined();
+    expect(hint.label.toLowerCase()).toContain('contact');
+    // A hint that is present but empty renders as a bare label in the CAN
+    // list, which is what an undescribed capability looked like before.
+    expect(hint.what.length).toBeGreaterThan(40);
+    expect(NON_ACTION_CAPABILITIES.map((c) => c.handle)).not.toContain('POST /entities');
   });
 });

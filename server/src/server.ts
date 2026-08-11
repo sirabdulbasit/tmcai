@@ -124,6 +124,16 @@ const server = app.listen(env.port, async () => {
   await import('./services/triage/systemRuleSeeder')
     .then(({ seedSystemRules }) => seedSystemRules())
     .catch(err => console.error('System rule seed failed:', err.message));
+
+  // DEF-130 — reconcile the action registry on every boot. Same idempotent
+  // pattern as the gate and risk rules above. These rows ARE the CAN side of
+  // Brain's capability truth-table (brainCapabilityLive reads them), so a row
+  // that never got seeded is a working capability Brain denies having. It was
+  // a hand-run script before, and two actions went unseeded for months.
+  await import('./scripts/seedActionDefinitions')
+    .then(({ seedActionDefinitions }) => seedActionDefinitions())
+    .then(n => console.log(`[actions] registry reconciled: ${n} definitions`))
+    .catch(err => console.error('Action definition seed failed:', err.message));
   // Clear any scribe rows stuck in scribeStatus='running' from a previous
   // crash/restart. Without this, the connector card shows a permanent
   // "SCRIBING…" badge and the Scribe button stays hidden, blocking recovery.
