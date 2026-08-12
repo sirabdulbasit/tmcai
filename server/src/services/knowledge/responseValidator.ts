@@ -80,8 +80,66 @@ import { EMPTY_PROMISE_RE, isConditionalFutureBehaviour } from './brainComposer'
 // Exported so DEF-135's tests can drive the REAL rule. A copy in the test file
 // would be an eighth instance of `protection-with-two-implementations` (chart
 // §3) — the test would keep passing against a regex the egress no longer uses.
-export const FABRICATED_PROCESS_RE =
-  /\b(support\s+team|engineering\s+team|the\s+team\s+will|our\s+team\s+will|i'?ll\s+escalate|escalating\s+(this\s+)?to|i'?ll\s+(loop|notify|inform|reach\s+out\s+to)\s+(the\s+)?(team|engineers?|support|admin)|i'?ll\s+follow\s+up\s+with\s+(engineering|support|the\s+team))/i;
+// ── DEF-143 (2026-08-12): the detector was a list of sentences ──────────
+//
+// The alternatives above are the shapes DEF-135 had in front of it. The
+// iteration-05 benchmark then shipped this to the owner, and none of them
+// matched it:
+//
+//     "I've logged this as a high-priority issue for my developers to
+//      investigate."
+//
+// Brain has no developers, no queue, and logged nothing. The guard did not
+// fire because the claim was worded differently from the one it was built
+// for — "engineering team" was enumerated, "for my developers" was not.
+// Four more spellings miss it too: "the dev team", "my developers",
+// "opened a ticket", "flagged this to the engineers".
+//
+// Chart §3 says the structural exit for this class is to verify a claim
+// against the DISPATCH LEDGER rather than a word list, and that it is
+// deliberately deferred until the ledger is dense enough to be an oracle.
+// That is still true, so this is NOT that fix. What it is: a move from
+// enumerating SENTENCES to composing the CLASS — first-person remediation
+// verb, then a remediation CHANNEL inside the same clause. That covers the
+// combinations nobody has written down yet, which is the part a word list
+// structurally cannot do.
+//
+// Purely ADDITIVE. Every alternative above still matches what it matched,
+// so nothing previously caught becomes uncaught — including the bare
+// team-noun behaviour that `def135GuardSalvagesAnswer.test.ts:105`
+// deliberately pins.
+//
+// Requiring BOTH a first-person verb AND a channel noun is what keeps it
+// off legitimate business prose. "I've flagged the item for your
+// attention", "I've logged your preference", "I've forwarded it to Hamna"
+// all name a business object, not a remediation channel, and none of them
+// matches. Verified by a false-positive battery in the DEF-143 tests.
+//
+// KNOWN PRE-EXISTING FALSE POSITIVE, not introduced here and not fixed
+// here: the bare `support team` / `engineering team` alternatives fire on a
+// business FACT about a real team ("Hamna asked whether our support team
+// covers weekends"). The composed pattern below does not. Narrowing the
+// bare alternatives would change behaviour an existing test pins, so it is
+// a separate decision rather than a quiet edit.
+const FABRICATED_REMEDIATION_CLAIM =
+  "\\bi(?:['’]?(?:ve|ll|m)|\\s+(?:have|will|am))?\\s+(?:\\w+[\\s,]+){0,4}?"
+  + '(?:logged|log|raised|raise|filed|file|opened|open|reported|report|flagged|flag'
+  + '|escalated|escalate|submitted|submit|forwarded|forward)\\b'
+  + '[^.!?\\n]{0,60}?\\b'
+  + '(?:developers?|dev\\s+team|engineers?|engineering|support\\s+team|maintainers?'
+  + '|my\\s+team|tech\\s+team|a\\s+ticket|the\\s+ticket|a\\s+bug\\s+(?:report|ticket))\\b';
+
+export const FABRICATED_PROCESS_RE = new RegExp(
+  '\\b(support\\s+team|engineering\\s+team|the\\s+team\\s+will|our\\s+team\\s+will'
+  + "|i'?ll\\s+escalate|escalating\\s+(this\\s+)?to"
+  + "|i'?ll\\s+(loop|notify|inform|reach\\s+out\\s+to)\\s+(the\\s+)?(team|engineers?|support|admin)"
+  + "|i'?ll\\s+follow\\s+up\\s+with\\s+(engineering|support|the\\s+team))"
+  + `|(?:${FABRICATED_REMEDIATION_CLAIM})`,
+  // NON-global on purpose: `exciseSentencesMatching` (DEF-135) documents that
+  // a /g regex carries `lastIndex` between `.test` calls and would skip
+  // sentences. Changing this flag silently breaks the salvage.
+  'i',
+);
 
 /** The minimum salvage worth shipping. Below this the remainder is a
  *  fragment ("I can see that, Sir.") that reads as a non-answer, and the

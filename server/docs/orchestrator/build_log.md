@@ -1142,3 +1142,207 @@ this diff touches, and that is worth more than the movement.
 - **C8 or C2 move at all.** They should not. If they do, the boundary is reaching
   compose traffic somehow, which would mean the two surfaces are less separate
   than the inventory says.
+
+---
+
+## Iteration 6 — mode: incremental
+
+**Gating criterion: C4 @ 87.9.** Overall 94.8. Every other criterion is at or
+above 93.3, and C1/C2/C5 sit exactly on 95, so C4 is the whole gate.
+
+**The shape of C4 changed this iteration and that is the most useful fact in the
+report: no case scores below 85, and the two Codex ranked for me are done.**
+B04 is now 90 — *"concise and professional … not overly formal or templated"*,
+the `priority=high` complaint gone — and B11 is 90, *"clear and human-like,
+directly stating its capabilities"*. Directive #5's first two items have cleared
+without a turn spent on them.
+
+### The fixQueue entries I targeted
+
+Five cases sit at 85. Quoting all five, because the point is that they are one
+mechanism:
+
+> **B10-what-did-you-send, C4 = 85** — "the phrase **'her reply wasn't a valid
+> status'** is slightly robotic and **sounds more like system output** than a
+> human explanation."
+
+> **B12-reminder-referent, C4 = 85** — "**'My apologies, Sir'** followed by
+> **'The system is designed...'** and **'I've logged this as a high-priority
+> issue for my developers to investigate'** feels slightly formal and canned …
+> which is a common AI trope."
+
+> **B08-bad-news, C4 = 85** — "**'I can see three things that qualify as 'gone
+> wrong''** is slightly stilted … The repetition of 'I notified you' is also a
+> little robotic."
+
+> **B05-warmth, C4 = 85** — "**'Good morning, Sir.'** feels slightly
+> formal/template-like." (Its answer also renders **`1 DRAFT` / `4 DELEGATED`**.)
+
+> **B09-identity, C4 = 85** — "the use of 'Sir' feels a bit overly formal and
+> slightly subservient."
+
+**One mechanism: Brain narrates its own machinery to the owner in the vocabulary
+of that machinery.** `valid status` is the transition matrix. `surfaced for your
+attention` (B03) is the notification pipeline. `DRAFT` / `DELEGATED` are raw enum
+values. `I notified you at 09:26` is an event log. `The system is designed to
+send one reminder per day` is architecture. And when it needed to describe its own
+machinery having failed, **it invented machinery it does not have.**
+
+**Expected to move: C4.** C1 and C7 may also move, because the B12 clause is a
+false claim and not only a stiff one.
+
+### Governing-docs verdict, before coding: CIRCLING on the guard, new on the register
+
+- `brain_change_log.md` — no row covers self-description register. **DEF-135
+  (this morning) owns the nearest one**, and it is the reason this is circling
+  rather than new: it built `fabricated_process` for
+  *"logged this with the engineering team"*, and iteration 05 shipped
+  *"logged this as a high-priority issue for my developers"* straight past it.
+- `brain_evaluation_chart.md` §3 — `guard-destroys-the-answer` (5, incl. DEF-135)
+  is the adjacent tag but not this failure: that is a guard firing where it should
+  not, and here the guard **did not fire at all**. Logged a new tag,
+  **`detector-is-a-list-of-sentences`**, because the distinction is the whole
+  lesson: a detector whose alternatives are example sentences will always pass its
+  own tests, since its tests are the same sentences.
+- `brain_chat_log.md` — latest is CL-033 (mine, yesterday's thread). Nothing new;
+  no CL row added, because this came from the fixQueue and inventing an owner
+  observation would be a fabricated record.
+
+**I verified the hole before changing anything**, rather than assuming the judge's
+complaint implied it. Against the live regex:
+
+```
+false  "I've logged this as a high-priority issue for my developers…"  ← iter-05 LIVE
+true   "I've logged this with the engineering team."                   ← DEF-135's shape
+false  "I've logged it with the dev team."
+false  "I've raised this with my developers."
+false  "I've opened a ticket for this."
+false  "I've flagged this to the engineers."
+```
+
+### What I changed, by file:line
+
+**1. `responseValidator.ts:124-142` — compose the class, stop listing sentences.**
+A first-person remediation VERB (past and base forms of logged / raised / filed /
+opened / reported / flagged / escalated / submitted / forwarded) followed by a
+remediation CHANNEL (developers / dev team / engineers / engineering / support
+team / maintainers / my team / a ticket / a bug report) inside the same clause.
+
+Requiring **both** is what keeps it off honest prose, and that is the half worth
+defending: *"I've flagged the item for your attention"*, *"I've logged your
+preference"*, *"I've forwarded it to Hamna"* all name a business object rather
+than a channel, and none matches. **Purely additive** — every original
+alternative still matches what it matched, so nothing previously caught becomes
+uncaught. Non-global flag preserved deliberately; `exciseSentencesMatching`
+documents that `/g` carries `lastIndex` and would skip sentences.
+
+**2. `brainPersonaService.ts:180-181` — the generation half, two rules.** Speak in
+the owner's terms, with the four leaked phrasings named and their repairs shown,
+and never print a raw status name. And when Brain is the thing that went wrong:
+own it in one line, promise only what is within its own reach, **and say the cause
+is unknown when it is** — since inventing a process to fill that silence is
+exactly what happened. Both halves, because DEF-134 proved a prompt rule alone is
+weak and DEF-136 proved a guard alone can be unreachable; DEF-138 is the shape
+that worked.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  168 passed | 1 skipped (169)
+                    Tests  1990 passed | 7 expected fail | 21 skipped | 1 todo (2019)
+                    Duration 18.73s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 5's 167 files / 1966 passed (1995): **+1 file, +24
+tests**, all in `def143FabricatedRemediation.test.ts`. No pre-existing test
+changed state. The three guards this change could plausibly break were re-run
+separately: `def135` + `def041` + `completionClaimGate` = **58 passed**.
+
+### Mutation — 2 mutants, both die
+
+- **Revert the detector to the enumerated list → 10 fail.** The hole is
+  reproduced on demand, including the exact B12 sentence.
+- **Remove both persona rules → 2 fail.**
+
+### What I did NOT do
+
+- **Did not touch the benchmark, the judge, or the gate.** Nor
+  `scripts/orchestrator/**`.
+- **Did not take Codex's directives #1–#4** (finish the boundary inventory
+  including `notificationService`; make provenance exhaustive; extract the
+  finaliser into a policy module; replace source-substring containment with
+  end-to-end producer tests). All four are correct and I am not disputing any of
+  them. The reason: **they are all on the proactive surface, and no instrument in
+  this loop can see that surface yet** — Codex's own #5 says the proactive
+  evaluation slice must exist before DEF-140 can be scored, and the orchestrator
+  owns that slice. Iterations 4 and 5 both spent there; C4 has now gated six
+  consecutive measurements. Doing #1–#4 this turn would add unmeasurable work to
+  an unmeasured surface while the measurable gate sat still. **#2 and #3 are the
+  two I would take first once the slice exists**, and #3 (extract the finaliser)
+  is the one I would argue for even without it, because a background notifier
+  silently skipping address policy on a composer import failure is a real hole I
+  opened.
+- **Did not fix the pre-existing false positive I found.** The bare
+  `support team` / `engineering team` alternatives fire on a business fact about
+  a real team — *"Hamna asked whether our support team covers weekends"* would be
+  blocked. My composed pattern does not do this. I left it because
+  `def135GuardSalvagesAnswer.test.ts:105` deliberately pins that behaviour, so
+  narrowing it is a decision for review rather than a quiet edit. **It is a live
+  answer-destroying risk and it is now written down.**
+- **Did not take the ledger-verification structural exit.** Chart §3 has named it
+  since 2026-07-08 and records it as deferred until the dispatch ledger is dense
+  enough to be an oracle. A composed pattern is a better word list, not the end
+  of word lists, and the row says so.
+- **Did not touch `Sir` frequency again.** B05 and B09 still lose points on the
+  honorific, and Codex's iteration-4 instruction not to spend another turn solely
+  on honorifics stands. If C4 stalls with only those two below 95, the remaining
+  question is whether the judge will ever accept the owner's configured honorific
+  — which would be a case-fairness question for Codex, not a code change.
+- **Operator directives:** D-1 (benchmark writes to the live backlog), D-2 (DEF-132/133
+  need review before deploy), D-4 (measurement cannot separate gain from noise)
+  all remain open and untouched this turn; D-3 (report the ledger honestly) is
+  standing and is why the delta above is measured rather than asserted. D-4 is
+  the one I would still rank first: **C4 has read 84.8, 85.8, 85.4, 86.3, 89.6,
+  90.0 and now 87.9 — the last two moves are a fall of 2.1 on unchanged compose
+  code**, which is the clearest evidence yet that single-sample scoring cannot
+  resolve the moves this loop is trying to steer by.
+
+### What I am unsure about
+
+- **Whether the register rule is specific enough to change behaviour.** Naming
+  four phrasings and their repairs is more concrete than "sound human", but it is
+  still an instruction competing with the model's defaults, and DEF-138's lesson
+  was that examples outvote instructions. **I did not add examples this time**,
+  because the existing eight already avoid system vocabulary — so there is no
+  contradiction to remove, only a rule to add, which is the weaker of the two
+  levers.
+- **Whether B12's honest half survives in practice.** The salvage is asserted in
+  CI, but on a live turn the guard now fires where it previously did not, and a
+  `block` remedy is the mechanism behind five recorded occurrences of
+  `guard-destroys-the-answer`. If the salvage under-performs on real phrasing,
+  this change trades a false sentence for a damaged answer.
+
+### Prediction, and what would falsify it
+
+**C4 should rise, and B12 should be the clearest single move** — its C4 = 85 was
+attributed to a phrase that can no longer ship. B10 and B08 depend entirely on the
+prompt half and are the weaker bet. **C1 and C7 may rise too**, since the removed
+clause was untrue.
+
+**What would prove me wrong:**
+- **C4 flat or down while B12's C4 stays 85.** Then the register complaint is
+  about cadence rather than vocabulary, and naming phrasings does not reach it —
+  the next lever would be examples, per DEF-138, not more rules.
+- **B12's overall FALLS.** The guard fired and the salvage took the answer's
+  substance with it. That is the `guard-destroys-the-answer` recurrence I am most
+  exposed to, and it would mean reverting the detector widening rather than tuning
+  the salvage.
+- **Any case loses points for a sentence that reads truncated or fragmentary.**
+  Same cause, wider blast radius — the composed pattern matching honest prose I
+  did not think to put in the battery.
+- **C4 rises but C6 (93.3, the second-lowest) falls.** Telling Brain to compress
+  its self-description could cost the completeness criterion, and C6 is the one
+  that would gate next.
