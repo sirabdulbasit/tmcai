@@ -200,7 +200,25 @@ def verdicts():
     return v
 
 
-def snapshot():
+def gauge(nexeo, pro, width=30):
+    """One bar per capability: filled to Nexeo's score, with `|` marking the
+    professional benchmark.
+
+    The block characters (█ / ░) were unreadable on the owner's terminal — his
+    screenshot shows filled and empty rendering as the same grey rectangle, so a
+    33 and a 92 looked identical. A chart that cannot be read is not a chart, so
+    this uses plain ASCII, which cannot be defeated by a font.
+    """
+    cells = ["."] * width
+    filled = max(0, min(width, int(round(nexeo / 100 * width))))
+    for i in range(filled):
+        cells[i] = "="
+    mark = max(0, min(width - 1, int(round(pro / 100 * width))))
+    cells[mark] = "|"
+    return "".join(cells)
+
+
+def snapshot(full=False):
     stage, elapsed, basis, detail = detect_stage()
     sc = scores()
     vd = verdicts()
@@ -221,69 +239,65 @@ def snapshot():
     col = {"BUILDING": C["cyn"], "REVIEWING": C["mag"], "MEASURING": C["yel"],
            "STALLED": C["red"], "IDLE": C["dim"]}.get(stage, C["dim"])
 
+    who = {"BUILDING": "Claude building", "REVIEWING": "Codex reviewing",
+           "MEASURING": "benchmark scoring", "STALLED": "STALLED",
+           "IDLE": "nobody working"}.get(stage, stage)
+    timer = fmt_dur(elapsed) if stage != "IDLE" else fmt_dur(
+        time.time() - os.path.getmtime(f"{ORCH}/build_log.md")
+        if os.path.exists(f"{ORCH}/build_log.md") else 0)
+
     lines = []
-    lines.append(f"{C['dim']}{'─' * 72}{C['r']}")
-    lines.append(f"{C['b']}NEXEO PULSE{C['r']}  {time.strftime('%H:%M:%S')}   "
-                 f"{col}{C['b']}{stage}{C['r']}"
-                 + (f"  {C['b']}{fmt_dur(elapsed)}{C['r']}" if stage != "IDLE" else "")
-                 + f"   {C['dim']}({basis}){C['r']}")
-    lines.append(f"  {C['dim']}{detail}{C['r']}")
+    lines.append(f"{C['dim']}{'─' * 58}{C['r']}")
+    lines.append(f"{C['b']}NEXEO{C['r']} {time.strftime('%H:%M:%S')}   "
+                 f"iteration {C['b']}{in_flight}{C['r']}   "
+                 f"{col}{C['b']}{who}{C['r']} {C['b']}{timer}{C['r']}")
 
-    who = {"BUILDING": "Claude (Brain Builder) is building",
-           "REVIEWING": "Codex is reviewing",
-           "MEASURING": "benchmark is scoring 12 cases",
-           "STALLED": "a build turn is alive but producing nothing — check its window",
-           "IDLE": "nobody is working — waiting for the orchestrator to hand out a turn",
-           }.get(stage, stage)
-    lines.append(f"  {who}")
-
-    # ── iteration + capability ────────────────────────────────────────────────
     scp = os.path.join(STATE, "capability_scorecard.json")
-    cap = ""
     if os.path.exists(scp):
         d = json.load(open(scp))
         caps = d["capabilities"]
         n = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
         pro = round(sum(c["professional"] for c in caps) / len(caps), 1)
         mv = round(sum(c.get("delta", 0) for c in caps) / len(caps), 1)
-        cap = (f"{C['b']}{n}{C['r']} vs {pro} pro  "
-               f"{C['dim']}gap {round(pro - n, 1)}{C['r']}  "
-               f"movement {'+' if mv > 0 else ''}{mv} "
-               f"{C['dim']}(as of iter {d.get('as_of_iteration')}){C['r']}")
-    lines.append("")
-    lines.append(f"  Iteration      : {C['b']}{in_flight}{C['r']}"
-                 + (f"  {C['dim']}(in flight; {built} completed){C['r']}"
-                    if stage == "BUILDING" else
-                    f"  {C['dim']}({built} completed){C['r']}"))
-    lines.append(f"  Brain capability: {cap or 'no scorecard yet'}")
+        lines.append("")
+        for c in caps:
+            dd = c.get("delta", 0)
+            dtxt = f"{C['grn']}+{dd}{C['r']}" if dd > 0 else (
+                f"{C['red']}{dd}{C['r']}" if dd < 0 else f"{C['dim']}0{C['r']}")
+            lines.append(f"  {c['name']:<23}{c['nexeo']:>3} "
+                         f"{gauge(c['nexeo'], c['professional'])} "
+                         f"{C['dim']}{c['professional']:>3}{C['r']} {dtxt}")
+        lines.append(f"  {C['b']}{'BRAIN':<23}{n:>5}{C['r']}   vs {pro} pro   "
+                     f"gap {C['b']}{round(pro - n, 1)}{C['r']}   "
+                     f"move {'+' if mv > 0 else ''}{mv}")
 
-    # ── benchmark ─────────────────────────────────────────────────────────────
     if latest:
-        w = latest.get("weakestCriterion")
         ws = latest.get("weakestCriterionScore")
         tgt = latest.get("target", 95)
         gap = None if ws is None else round(tgt - ws, 1)
-        lines.append(f"  Benchmark      : overall {C['b']}{latest.get('overall')}{C['r']}"
-                     f"  gating {w} @ {ws}  "
-                     f"{C['red'] if gap and gap > 0 else C['grn']}"
-                     f"{'' if gap is None else f'{gap} from the gate'}{C['r']}"
-                     f"  {C['dim']}(iter {latest_iter}){C['r']}")
+        v = vd.get(latest_iter, "—")
+        vc = {"SOUND": C["grn"], "WEAK": C["yel"], "WRONG": C["red"]}.get(v, C["dim"])
+        lines.append(f"  {C['dim']}{'gate':<23}{C['r']}"
+                     f"{latest.get('weakestCriterion')} {ws} → {tgt}"
+                     f"   {C['red'] if gap and gap > 0 else C['grn']}{gap} to go{C['r']}"
+                     f"   codex {vc}{v}{C['r']}")
+        # Kept even in the minimal view: an incomplete measurement must never be
+        # mistaken for a low score, and a run that wrote to live data must not be
+        # silent. One short line each, only when true.
         if latest.get("casesFailed"):
-            lines.append(f"  {C['red']}⚠ {latest['casesFailed']} case(s) failed to "
-                         f"score — that number is incomplete, not low{C['r']}")
+            lines.append(f"  {C['red']}{latest['casesFailed']} case(s) failed to score "
+                         f"— incomplete, not low{C['r']}")
         if latest.get("mutated"):
-            lines.append(f"  {C['yel']}⚠ last run wrote to live data{C['r']}")
+            lines.append(f"  {C['yel']}last run wrote to live data{C['r']}")
 
-    # ── history: score beside the reviewer's verdict ──────────────────────────
-    if sc:
+    if full and sc:
         lines.append("")
-        lines.append(f"  {C['dim']}iter  measurement   overall   min          codex{C['r']}")
-        for it, label, d in sc[-5:]:
+        for it, label, d in sc[-6:]:
             v = vd.get(it, "—")
             vc = {"SOUND": C["grn"], "WEAK": C["yel"], "WRONG": C["red"]}.get(v, C["dim"])
-            lines.append(f"  {it:>4}  {label:<12} {str(d.get('overall')):>7}   "
-                         f"{str(d.get('weakestCriterionScore')):>5} "
-                         f"{str(d.get('weakestCriterion')):<4}  {vc}{v}{C['r']}")
+            lines.append(f"  {C['dim']}iter {it} {label:<12}{C['r']} "
+                         f"{str(d.get('overall')):>5}  min {str(d.get('weakestCriterionScore')):>5} "
+                         f"{str(d.get('weakestCriterion')):<3} {vc}{v}{C['r']}")
     return "\n".join(lines)
 
 
@@ -291,6 +305,7 @@ def main():
     args = sys.argv[1:]
     if "--plain" in args:
         plain()
+    full = "--full" in args
     if "--loop" in args:
         i = args.index("--loop")
         every = 60
@@ -298,12 +313,12 @@ def main():
             every = int(args[i + 1])
         try:
             while True:
-                print(snapshot(), flush=True)
+                print(snapshot(full), flush=True)
                 time.sleep(every)
         except KeyboardInterrupt:
             print("\npulse stopped (nothing else is affected)")
         return 0
-    print(snapshot())
+    print(snapshot(full))
     return 0
 
 
