@@ -364,10 +364,17 @@ def main():
                 if scroll:
                     print(out, flush=True)
                 else:
-                    # Home the cursor and clear to end of screen, rather than a
-                    # full clear: a full clear flickers, and clearing AFTER the
-                    # write leaves no gap where the screen is blank.
-                    sys.stdout.write("\033[H" + out + "\033[J")
+                    # Home the cursor, then erase to end of EVERY line as it is
+                    # written, then clear whatever is left below.
+                    #
+                    # `\033[J` alone only clears BELOW the cursor, so when a new
+                    # frame's line was shorter than the old one the tail of the old
+                    # line survived: the owner's screenshot showed "92 03 ======="
+                    # and "6m48ss" — a real number with a dead number welded to it,
+                    # which is worse than a misaligned column because it cannot be
+                    # told apart from data. `\033[K` per line is the fix.
+                    frame = "".join(f"{ln}\033[K\n" for ln in out.split("\n"))
+                    sys.stdout.write("\033[H" + frame + "\033[J")
                     sys.stdout.flush()
                 time.sleep(every)
         except KeyboardInterrupt:
