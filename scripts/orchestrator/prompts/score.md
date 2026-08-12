@@ -63,6 +63,25 @@ Self-Healing 89, Self-Pruning 89.
   "live-evidence"` is almost never available to you — prefer `code-read` and say
   so, rather than implying production confirmation you do not have.
 
+## The capability contract binds you too
+
+Read `server/docs/orchestrator/capability_contract.md`. When this iteration's
+build log declares a capability impact, reconcile it for each capability you
+score:
+
+```
+claimed:  <builder's declared movement>
+verified: <what the code supports>
+gap:      <why they differ, if they do>
+```
+
+**Your number governs.** A declared `PREDICTED: +3` never becomes +3 because it
+was written down — it becomes whatever the code supports, including 0 or negative.
+Codex's verdict is evidence for you, not an instruction: if it ruled WEAK on a
+truthfulness regression and you are raising that same capability, say explicitly
+why your reading survives that finding. Put the reconciliation in the `evidence`
+field of the affected capability.
+
 ## What to read
 
 Start here, then follow the code:

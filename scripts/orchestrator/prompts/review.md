@@ -90,7 +90,20 @@ Required content, in this order:
    failure scenario (inputs → wrong behaviour). Ranked by severity.
 4. **Attribution judgement:** did this change target the criterion that is
    actually gating (@@WEAKEST@@)? If not, say what it targeted instead.
-5. **Directive for the next build turn** — one ranked list, most valuable first,
+5. **CAPABILITY ATTRIBUTION** — per the standing contract in
+   `server/docs/orchestrator/capability_contract.md` (read it). The build log
+   declares a capability impact; judge it as you judge any other claim:
+   ```
+   claimed:   <what the build log declared>
+   verdict:   SUPPORTED | OVERSTATED | MISATTRIBUTED | RELIABILITY-ONLY (correct)
+   reasoning: <file:line evidence>
+   ```
+   `MISATTRIBUTED` (it moves a different capability) is a valuable finding, not
+   pedantry — it is how the loop learns which surfaces map to which capability.
+   `OVERSTATED` covers the common case of a reliability fix dressed as capability
+   growth. If `RELIABILITY-ONLY` was declared and is correct, say so
+   affirmatively; silence reads as an unexamined claim.
+6. **Directive for the next build turn** — one ranked list, most valuable first,
    specific enough to act on: which file, which mechanism, what outcome. This is
    the input Claude opens next iteration, so vagueness here costs a whole cycle.
 

@@ -186,7 +186,11 @@ export function renderForChannel(
   // `compose` has already applied the same policy to `result.answer`, so this
   // is a second, independent chance to fall back rather than a second opinion
   // about which text is better.
-  const sourceText = receiptWins(result.actionResult, stripped)
+  // DEF-154 — the token is bound to the RAW answer the composer verified, so the
+  // binding check must be given that, not the markdown-stripped body. Passing
+  // `stripped` here would fail the comparison on any answer containing markdown
+  // and silently revert it to the receipt — safe, but wrong for the wrong reason.
+  const sourceText = receiptWins(result.actionResult, result.answer)
     ? (result.actionResult!.message as string)
     : stripped;
   const body = trimToLimit(sourceText, WA_MAX_CHARS);

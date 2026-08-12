@@ -91,10 +91,25 @@ vi.mock('../src/services/notifications/tenantWhatsappSender', () => ({
 import { addressUser, phraseDraftAsk, phraseOwnerChase } from '../src/services/notifications/brainHumanComm';
 import { brainContactsUser } from '../src/services/notifications/brainOutboundService';
 
-/** Drive the real boundary and return the text the transport received. */
+/**
+ * Drive the real boundary and return the text the transport received.
+ *
+ * HERMETIC, and it was not before (DEF-153). `brainContactsUser` gates delivery
+ * on OFFICE HOURS (`brainOutboundService.ts:450`, DEF-120), so these eight
+ * assertions passed when the suite ran inside the working day and failed
+ * deterministically outside it. The published iteration-10 numbers were true at
+ * 12:46 and worthless as a release claim, because they were a function of the
+ * clock. Codex reproduced 8 failures and attributed them to Redis idempotency;
+ * the real gate is `outside_office_hours`, confirmed by printing the refusal.
+ *
+ * `bypassQuietHours` is the flag that clears both quiet and office hours. The
+ * subject here is the address/provenance boundary, not delivery scheduling, so
+ * suppressing an unrelated gate is the correct isolation — and doing it
+ * explicitly beats mocking the clock.
+ */
 async function deliver(body: string, provenance?: any): Promise<string | undefined> {
   sent.length = 0;
-  await brainContactsUser({
+  const result = await brainContactsUser({
     userId: 2,
     kind: `test_${Math.abs(body.length)}_${provenance ?? 'none'}`,
     summary: 'test',
@@ -103,7 +118,20 @@ async function deliver(body: string, provenance?: any): Promise<string | undefin
     channel: 'text',
     dedupKey: null,
     bypassRateLimit: true,
+    // Without this the whole file is a clock-dependent coin flip.
+    bypassQuietHours: true,
   });
+  // Assert the send HAPPENED before asserting what it contained. Not having
+  // this is why the original failure read as "expected undefined to be …"
+  // instead of naming the gate that refused — eight misleading messages that
+  // cost a review cycle to diagnose.
+  if (sent.length !== 1) {
+    throw new Error(
+      `boundary test could not deliver: brainContactsUser returned `
+      + `${JSON.stringify(result)} — a delivery gate refused, so nothing about `
+      + `address policy was actually exercised`,
+    );
+  }
   return sent[0];
 }
 

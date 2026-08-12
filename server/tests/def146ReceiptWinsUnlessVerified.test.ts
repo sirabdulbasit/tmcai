@@ -41,9 +41,21 @@ import { receiptWins, verifyUpdateProse } from '../src/services/knowledge/answer
 /** DEF-147: a token can no longer be hand-written. Tests must mint one through
  *  the real verifier, which is the point — `proseGrounded: true` used to be
  *  assertable by anybody, including a test that proved nothing. */
-function tokenFor(prose: string, artifactTitle: string, appliedPriority: string | null = 'high') {
+function tokenFor(
+  prose: string,
+  artifactTitle: string,
+  appliedPriority: string | null = 'high',
+  receipt = '',
+  artifactId: string | null = null,
+) {
+  // DEF-154: the token is BOUND to the prose, the receipt and the artifact, so a
+  // caller has to say what it is for. Minting without the receipt yields a token
+  // that `receiptWins` correctly refuses — which is how these tests found the
+  // binding was live.
   return verifyUpdateProse(prose, {
     artifactTitle,
+    artifactId,
+    receipt,
     appliedPriority,
     appliedDueDate: false,
     appliedStatus: null,
@@ -108,7 +120,7 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
     it('update_open_item with a genuine token sends the prose', () => {
       const body = wa(B04_PROSE, {
         ok: true, message: B04_RECEIPT,
-        verifiedProse: tokenFor(B04_PROSE, B04_TITLE),
+        verifiedProse: tokenFor(B04_PROSE, B04_TITLE, 'high', B04_RECEIPT),
       });
       expect(body).toBe(B04_PROSE);
       expect(body).toContain('due date');
@@ -171,7 +183,7 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
 
     it('yields to genuinely verified prose', () => {
       const prose = 'A perfectly ordinary sentence about your items.';
-      expect(receiptWins({ ok: true, message: 'R', verifiedProse: tokenFor(prose, 'Some item', null) },
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: tokenFor(prose, 'Some item', null, 'R') },
         prose)).toBe(false);
     });
 
@@ -183,7 +195,7 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
       expect(receiptWins({ ok: true, message: 'R', verifiedProse: { verified: true } as any }, prose)).toBe(true);
       // And one that has been through JSON, which is how a token would arrive
       // from a queue or a cache.
-      const real = tokenFor(prose, 'Some item', null);
+      const real = tokenFor(prose, 'Some item', null, 'R');
       const roundTripped = JSON.parse(JSON.stringify(real));
       expect(receiptWins({ ok: true, message: 'R', verifiedProse: roundTripped }, prose)).toBe(true);
     });

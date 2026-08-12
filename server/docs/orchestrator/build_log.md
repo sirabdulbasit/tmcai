@@ -2176,3 +2176,192 @@ read it either way.
 - **A future branch appears with a `verifiedProse` it did not earn.** Impossible
   by construction now, and if it happens the WeakSet is being bypassed somewhere I
   have not looked.
+
+---
+
+## Iteration 11 — mode: incremental
+
+**D-6 first this time.** `owner_reports.md` checked before anything else — R-1 is
+`PROCESSED`, no `UNPROCESSED` entries, so Codex's directive governs. Last
+iteration I read the directives file and not the file it points at; that is fixed
+by doing it in this order, not by intending to.
+
+### The headline is that my last handoff was false
+
+Codex reported that iteration 10's published verification could not be
+reproduced. **I reproduced its finding rather than accepting it, and it is
+right:**
+
+| Claim I published | Reality |
+|---|---|
+| `172 passed / 2053 passed` | **171 passed / 1 failed; 2045 passed / 8 failed** |
+| `git diff --check` exit 0 | **exit 2** — `owner_reports.md:129` trailing whitespace, `:130` blank line at EOF |
+
+All eight failures were in **my own** `def140OwnerAddressBoundary.test.ts` from
+iteration 5. The numbers I published were true when I measured them and worthless
+as a release claim.
+
+**Codex's diagnosis was wrong, and finding that out mattered.** It attributed the
+failures to Redis idempotency state. I printed the refusal instead of accepting
+it:
+
+```
+>>> NOT SENT reason= {"sent":false,"reason":"outside_office_hours", ...}
+```
+
+`brainContactsUser` gates delivery on **office hours** (`brainOutboundService.ts:450`,
+DEF-120). My test never bypassed it, so it passed inside the working day and
+failed outside it. My run at 12:46 was inside; Codex's was not. That is working
+rule 3 — *read the result* — applied to a review rather than to code.
+
+**Second cause, mine and worse:** the helper asserted on `sent[0]` without ever
+asserting a send *happened*. So eight tests failed with *"expected undefined to
+be …"* and named nothing. A misleading failure is worse than a loud one; it cost
+a review cycle.
+
+### The fixQueue entry I targeted
+
+**None.** Codex's directive #1 is *"restore a truthful green handoff before feature
+work"*, and a red suite makes every other number this loop publishes
+unverifiable. **Expected to move: nothing.**
+
+### Governing-docs verdict: CIRCLING, on a class I created
+
+Two new chart §3 tags:
+
+- **`green-that-cannot-be-reproduced`** (DEF-153, 1st). *A green suite is a claim
+  about an environment, and mine did not say which one.*
+- **`capability-asserted-not-proven`** (DEF-147, **DEF-154**, 2nd) — and **both
+  members are mine, from consecutive iterations.** DEF-147: a boolean documented
+  as entailment. DEF-154: a token documented as *"an opaque proof that prose was
+  checked against a real outcome"* which was a **bearer credential**. The
+  generalisation I want on the record: **I reasoned about who can MINT a
+  capability and never about what a minted capability ATTESTS.** Forgery and
+  transfer are different holes, and closing the first reads like closing both.
+  **Read as CIRCLING until a third iteration passes without a new member.**
+
+### What I changed, by file:line
+
+**1. `def140OwnerAddressBoundary.test.ts:92-140` — hermetic, and loud.**
+`bypassQuietHours: true` clears both quiet and office hours; the subject is the
+address boundary, not delivery scheduling, so suppressing an unrelated gate is
+the right isolation and doing it explicitly beats mocking the clock. The helper
+now **throws with the refusal reason** when nothing was delivered.
+
+**2. `owner_reports.md`** — trailing whitespace and the EOF blank line removed,
+without touching a word of the owner's verbatim report.
+
+**3. `answerReceiptPolicy.ts:150-175, 262-286` — the token attests something.**
+A `WeakMap` record `{ prose, artifactId, receipt }` replaces the bare `WeakSet`.
+`receiptWins` refuses unless all three match what it is about to render. Each is a
+distinct way the verified thing could differ from the shown thing: **prose**
+catches the replay, **receipt** catches a post-mint change to any applied value
+(they are rendered into that string), **artifactId** catches a token carried to a
+different row.
+
+**4. `brainComposer.ts:3624-3632`** binds them at the write site.
+**5. `channelRenderer.ts:186-190`** now passes `result.answer`, not the
+markdown-stripped body — the token is bound to what was verified, and comparing
+stripped text would have reverted every markdown answer to the receipt. Safe, but
+wrong for the wrong reason, and there is a test for it.
+
+**6. Corrected an overclaim in place rather than defending it.** The
+`UpdateOutcome` docblock said *"Every field is what the DATABASE received"*. Codex
+is right that these are values **submitted** to `prisma.openItem.update` after it
+returned — attempted-write input, not a re-read. Stronger than DEF-146 (which
+compared the model's request), weaker than observed state. The source now says
+that.
+
+### Verification — re-run AFTER the last edit, from `server/`, TWICE
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+
+npx vitest run  (run 1)  Test Files  172 passed | 1 skipped (173)
+                         Tests  2058 passed | 7 expected fail | 21 skipped | 1 todo (2087)
+                         Duration 19.07s
+npx vitest run  (run 2)  Test Files  172 passed | 1 skipped (173)
+                         Tests  2058 passed | 7 expected fail | 21 skipped | 1 todo (2087)
+                         Duration 18.90s
+
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+**Run twice on purpose**, because reproducibility is the property iteration 10's
+handoff lacked. Against iteration 10's **real** state (171 files/1 failed; 2045
+passed/8 failed, 2082 collected): **8 failures fixed, +5 tests** (`def147`
+14 → 19), 2082 → 2087 collected.
+
+### Mutation — 5 mutants, all die
+
+- **Remove `bypassQuietHours` → all 8 `def140` failures return**, live, because
+  the wall clock right now is outside office hours. The gate is proven to be the
+  cause, not argued.
+- **Drop the prose binding → 2 fail.** The replay hole reopens.
+- **Drop the receipt binding → 1 fail.** **Drop the artifact binding → 1 fail.**
+- **Reduce to membership-only (pre-DEF-154) → 1 fail in `def146`**, by TypeError.
+  It survives `def147`, whose forgery assertions call the helper rather than the
+  decision function — the same placement I recorded last iteration, unchanged and
+  restated rather than quietly moved.
+
+`def145` and `def146` had to be updated to **bind** their tokens: a token cannot
+be obtained without saying what it is for. That is the containment demonstrating
+itself on its own tests for the second iteration running.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**` —
+  `pulse.py` is modified in the tree by the orchestrator and is not staged.
+- **Codex #3 (finish value entailment honestly).** Partial. The **receipt** is now
+  bound, which catches post-mint value changes, but I did **not** re-read the
+  persisted row, and exact due-date comparison (Monday persisted / Friday claimed)
+  is still not done. Codex is right that my "WRONG DATE" test covers *no date
+  written*, not a wrong date against a written one. **The test name is misleading
+  and I left it**, because renaming it without implementing the case it names
+  would be worse; it is called out here instead.
+- **Codex #4 (unify inline and pending `update_open_item`).** Not done, **fourth**
+  iteration. `applyOpenItemUpdate` still owns a second normalisation and cannot
+  mint a token, so the pending route shows the bare receipt — fail-closed, still
+  divergent.
+- **D-5's proactive slice.** Not done, **fourth** deferral. The reason is real —
+  a red suite blocks any honest measurement, and adding a scored surface on top
+  of an unreproducible green would compound the exact defect this turn fixes —
+  and it is still the fourth in a row.
+- **DEF-148…152 (owner report R-1).** All five still OPEN. **DEF-150** remains the
+  one I would take next: the canned *"Hold on…"* five times on already-instructed
+  turns.
+- **DEF-143's bare-team false positive.** Still open.
+- **Operator directives:** D-1 (the benchmark wrote to
+  `cmsotakwf0006rts1bdsrjjkj` again), D-2, D-4 open and untouched. D-7 expired
+  with iteration 10's acknowledgement. D-3 is standing and is the whole first half
+  of this entry.
+
+### What I am unsure about
+
+- **Whether any other test is clock- or environment-dependent.** I fixed the one
+  that failed. I did not audit the other 171 files for gates they do not
+  neutralise, and the same shape would be invisible until it bit at the wrong hour.
+  Two consecutive identical runs is evidence, not proof — they were 30 seconds
+  apart, in the same environment, at the same time of day.
+- **Whether exact-string prose binding is too brittle for production.** Any layer
+  that trims or normalises the answer between compose and render would fail the
+  binding and revert to the receipt. That is the safe direction, and it is also
+  how DEF-145 hid for two iterations — a silent revert looks like nothing
+  happening.
+
+### Prediction, and what would falsify it
+
+**No criterion should move.** Bar, stated properly: **B04 must still be prose,
+and no action-dispatching case may lose C1 or C7.** Movement on the eleven
+read-only cases is variance.
+
+**What would prove me wrong:**
+- **B04 returns to the receipt.** The binding is failing on the real path —
+  most likely a normalisation between compose and render that I have not found,
+  which is precisely the brittleness above.
+- **Codex cannot reproduce 2058 passed.** Then the environment dependence is
+  wider than the one gate I fixed, and the next turn is an audit of every test
+  that drives a dispatch path, not a feature.
+- **B04's C1 or C7 falls.** The token is being minted for prose the outcome does
+  not support, meaning the value checks are still too weak.

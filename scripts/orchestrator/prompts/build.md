@@ -36,6 +36,15 @@ this turn.
 
 ## Your turn, in order
 
+0a. **Read `server/docs/orchestrator/capability_contract.md` — THE CAPABILITY CONTRACT.** Standing instruction, all seats,
+   owner ruling 2026-08-12: every change declares its capability impact. Your
+   build entry AND your `DEF-NNN` row must each carry the four-line block:
+   `CAPABILITY:` (one of the nine by exact name, or `RELIABILITY-ONLY`) ·
+   `PREDICTED:` · `MECHANISM:` · `FALSIFIER:` (observable). `RELIABILITY-ONLY`
+   and `PREDICTED: +0` are respectable, correct answers for most defect fixes —
+   claiming capability movement to look productive is not. One capability per
+   change; green tests never justify a claim. Codex will judge the attribution
+   and the Scorer will reconcile it against the code.
 0. **Read `@@DIRECTIVES@@`** — the operator directives. The owner ruled that the
    orchestrator does not implement anything (*"you are orchestrator engineer or
    bridger"*, *"this Brain Builder's task to build and Codex to review"*), so

@@ -87,7 +87,7 @@ vi.mock('../src/services/llmRouter', () => ({
 
 import { compose } from '../src/services/knowledge/brainComposer';
 import { renderForChannel } from '../src/services/knowledge/channelRenderer';
-import { verifyUpdateProse, __isIssuedToken } from '../src/services/knowledge/answerReceiptPolicy';
+import { verifyUpdateProse, receiptWins, __isIssuedToken } from '../src/services/knowledge/answerReceiptPolicy';
 
 /** Drive the real composer, then the real renderer — the chain Codex asked the
  *  assertions to run through, rather than a hand-built result. */
@@ -174,6 +174,71 @@ describe('DEF-147 — only the verifier can mint the token, and it checks values
       const b = verifyUpdateProse('Another sentence that is long enough.', OUTCOME);
       expect(a).not.toBe(b);
       expect(__isIssuedToken(a) && __isIssuedToken(b)).toBe(true);
+    });
+  });
+
+  // ── DEF-154: the token is a proof about ONE sentence, not a bearer pass. ──
+  describe('DEF-154 — a genuine token cannot be replayed', () => {
+    const HONEST = 'Priority is high. What deadline would you like?';
+    const FABRICATED = 'Project Alpha is critical and due Friday.';
+    const RECEIPT = 'Updated "the item": priority=high.';
+
+    function mint(prose: string, receipt = RECEIPT, artifactId: string | null = 'item-b04') {
+      return verifyUpdateProse(prose, { ...OUTCOME, artifactId, receipt });
+    }
+
+    it('THE REPLAY: a token minted for honest prose, attached to fabricated prose, loses', () => {
+      // Codex's iteration-10 HIGH, as an executable. Before DEF-154 the WeakSet
+      // answered "was this object issued?" and never "issued for WHAT?", so this
+      // exact swap shipped the fabrication.
+      const token = mint(HONEST);
+      expect(__isIssuedToken(token), 'the token is genuine — that is the point').toBe(true);
+      expect(
+        receiptWins({ ok: true, message: RECEIPT, artifactId: 'item-b04', verifiedProse: token }, FABRICATED),
+        'a genuine token must not launder a different sentence',
+      ).toBe(true);
+      // …and still works for the sentence it was actually minted for.
+      expect(receiptWins(
+        { ok: true, message: RECEIPT, artifactId: 'item-b04', verifiedProse: token }, HONEST,
+      )).toBe(false);
+    });
+
+    it('mutating the RECEIPT after minting fails closed', () => {
+      // The applied values are rendered into the receipt string, so a changed
+      // receipt is a changed outcome.
+      const token = mint(HONEST);
+      expect(receiptWins(
+        { ok: true, message: 'Updated "the item": priority=critical.', artifactId: 'item-b04', verifiedProse: token },
+        HONEST,
+      )).toBe(true);
+    });
+
+    it('mutating the ARTIFACT after minting fails closed', () => {
+      const token = mint(HONEST);
+      expect(receiptWins(
+        { ok: true, message: RECEIPT, artifactId: 'a-different-item', verifiedProse: token },
+        HONEST,
+      )).toBe(true);
+    });
+
+    it('a whitespace-level change to the prose fails closed', () => {
+      // Exact-string binding, deliberately. Anything looser invites the replay
+      // back in through paraphrase.
+      const token = mint(HONEST);
+      expect(receiptWins(
+        { ok: true, message: RECEIPT, artifactId: 'item-b04', verifiedProse: token }, HONEST + ' ',
+      )).toBe(true);
+    });
+
+    it('the binding survives the real compose → renderer path', () => {
+      // Guards against the binding being technically correct and practically
+      // unusable: if the renderer compared the stripped body against a token
+      // minted on the raw answer, every markdown answer would silently revert
+      // to the receipt.
+      const prose = "Got it. I've set the priority to high. **Any deadline?**";
+      return composeThenRender(prose, { priority: 'high' }).then((body) => {
+        expect(body).toBe('Got it. I\'ve set the priority to high. *Any deadline?*');
+      });
     });
   });
 

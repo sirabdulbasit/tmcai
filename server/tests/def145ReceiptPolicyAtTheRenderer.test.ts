@@ -72,8 +72,11 @@ describe('DEF-145 — the renderer stops overriding the answer with the receipt'
       // real shape of a verified `update_open_item` result.
       const body = wa(THE_PROSE, {
         ok: true, message: RECEIPT, artifactId: 'item-b04',
+        // DEF-154 binds the token to the prose, receipt and artifact, so all
+        // three have to match what the renderer is handed.
         verifiedProse: verifyUpdateProse(THE_PROSE, {
           artifactTitle: "Define rules for Brain's responsiveness to new vs. existing contacts",
+          artifactId: 'item-b04', receipt: RECEIPT,
           appliedPriority: 'high', appliedDueDate: false, appliedStatus: null,
           requestedButNotApplied: [],
         }),

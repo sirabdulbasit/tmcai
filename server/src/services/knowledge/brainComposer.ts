@@ -3631,6 +3631,10 @@ ${calLines.join('\n')}`;
               // written to `high`. These are the persisted values.
               const verified = verifyUpdateProse(answer, {
                 artifactTitle: existing.title,
+                // DEF-154 — bound into the token so it cannot be replayed onto
+                // a different sentence, artifact or set of applied values.
+                artifactId: existing.id,
+                receipt: actionResult.message,
                 appliedPriority: (data.priority as string | undefined) ?? null,
                 appliedDueDate: Boolean(data.dueDate),
                 appliedStatus: (data.status as string | undefined) ?? null,

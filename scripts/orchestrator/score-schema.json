@@ -1,7 +1,14 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["capabilities", "overall_verdict", "what_moved", "what_did_not", "unverifiable"],
+  "required": [
+    "capabilities",
+    "overall_verdict",
+    "what_moved",
+    "what_did_not",
+    "unverifiable",
+    "capability_claim_seen"
+  ],
   "properties": {
     "capabilities": {
       "type": "array",
@@ -11,44 +18,84 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "score", "evidence", "basis", "confidence"],
+        "required": [
+          "name",
+          "score",
+          "evidence",
+          "basis",
+          "confidence"
+        ],
         "properties": {
           "name": {
             "type": "string",
-            "enum": ["Simple & Smart", "Thinking", "Memory", "Accurate Communication",
-                     "Authorized Action", "Self Follow-Up", "Learn", "Self-Healing",
-                     "Self-Pruning"]
+            "enum": [
+              "Simple & Smart",
+              "Thinking",
+              "Memory",
+              "Accurate Communication",
+              "Authorized Action",
+              "Self Follow-Up",
+              "Learn",
+              "Self-Healing",
+              "Self-Pruning"
+            ]
           },
           "score": {
-            "type": "integer", "minimum": 0, "maximum": 100,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
             "description": "Nexeo's capability today, 0-100, against a professional living assistant at the stated benchmark. An evidence judgement, NOT a test-pass percentage."
           },
           "evidence": {
-            "type": "string", "minLength": 60,
+            "type": "string",
+            "minLength": 60,
             "description": "WHY that number, citing what you actually read: file:line, a commit sha, a DEF id, a governing-doc row. A score with no citable basis is the thing this schema exists to prevent."
           },
           "basis": {
             "type": "string",
-            "enum": ["code-read", "test-read", "doc-read", "live-evidence", "absent"],
-            "description": "'absent' means the capability is not implemented at all — that is a legitimate and important finding, not a gap in your work. 'live-evidence' requires a production observation, not a passing test."
+            "enum": [
+              "code-read",
+              "test-read",
+              "doc-read",
+              "live-evidence",
+              "absent"
+            ],
+            "description": "'absent' means the capability is not implemented at all \u2014 that is a legitimate and important finding, not a gap in your work. 'live-evidence' requires a production observation, not a passing test."
           },
           "confidence": {
-            "type": "string", "enum": ["high", "medium", "low"],
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
             "description": "low is acceptable and preferred over a confident guess."
+          },
+          "claim_reconciliation": {
+            "type": "string",
+            "description": "When the build log declared a capability impact for this iteration: 'claimed: X | verified: Y | gap: why'. Empty string when no claim was made for this capability. Your verified number governs \u2014 a declared prediction never becomes true by having been written down."
           }
         }
       }
     },
     "overall_verdict": {
       "type": "string",
-      "enum": ["PROGRESSIVE", "NEUTRAL", "REGRESSION", "CIRCULAR", "UNVERIFIED"]
+      "enum": [
+        "PROGRESSIVE",
+        "NEUTRAL",
+        "REGRESSION",
+        "CIRCULAR",
+        "UNVERIFIED"
+      ]
     },
     "what_moved": {
-      "type": "string", "minLength": 30,
-      "description": "What changed since your previous scoring, and the commit or DEF that moved it. 'nothing moved' is a valid and often correct answer — say it plainly."
+      "type": "string",
+      "minLength": 30,
+      "description": "What changed since your previous scoring, and the commit or DEF that moved it. 'nothing moved' is a valid and often correct answer \u2014 say it plainly."
     },
     "what_did_not": {
-      "type": "string", "minLength": 30,
+      "type": "string",
+      "minLength": 30,
       "description": "What was claimed or attempted but did NOT move a capability, and why not."
     },
     "unverifiable": {
@@ -58,6 +105,10 @@
     "notes_for_builder": {
       "type": "string",
       "description": "Optional. The single highest-value capability gap you would close next, from a capability standpoint rather than a defect standpoint."
+    },
+    "capability_claim_seen": {
+      "type": "string",
+      "description": "The capability block you found in this iteration's build log, quoted, or 'none declared'. Recording its ABSENCE matters: the contract requires one, and a missing block is an incomplete turn the orchestrator must report."
     }
   }
 }

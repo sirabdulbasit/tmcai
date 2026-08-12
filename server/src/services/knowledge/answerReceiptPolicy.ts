@@ -145,16 +145,46 @@ export const __DUE_DATE_CLAIM_RE = DUE_DATE_CLAIM_RE;
 declare const VERIFIED_PROSE: unique symbol;
 export type VerifiedProse = { readonly [VERIFIED_PROSE]: 'update_open_item' };
 
-/** Runtime half of the guarantee. A brand stops a *type* error; this stops a
- *  cast, a hand-built object, and anything deserialised. */
-const issuedTokens = new WeakSet<object>();
+/**
+ * Runtime half of the guarantee. A brand stops a *type* error; this stops a
+ * cast, a hand-built object, and anything deserialised.
+ *
+ * A WeakMap rather than a WeakSet (DEF-154) because membership alone attests
+ * nothing. Codex's iteration-10 HIGH: a genuine token minted for harmless prose
+ * could be attached to DIFFERENT fabricated prose and `receiptWins` would accept
+ * it, because it only asked "was this object issued?" and never "issued for
+ * WHAT?". The record below is what makes the token a proof about one sentence,
+ * artifact and receipt rather than a bearer credential.
+ */
+interface TokenRecord {
+  /** The exact prose that was checked. */
+  prose: string;
+  /** The artifact the check was about. */
+  artifactId: string | null;
+  /** The receipt the check accompanied — applied values are rendered into this
+   *  string, so comparing it catches a post-mint change to any of them. */
+  receipt: string;
+}
+const tokenRecords = new WeakMap<object, TokenRecord>();
 
-/** The persisted result of an `update_open_item`, as the branch that wrote it
- *  knows it. Every field is what the DATABASE received, never what the model
- *  asked for. */
+/** The result of an `update_open_item` as the writing branch knows it.
+ *
+ *  ACCURACY NOTE, because the previous wording overstated this and Codex was
+ *  right to say so: these are the values SUBMITTED to `prisma.openItem.update`
+ *  after it returned successfully — structured attempted-write input, not a
+ *  re-read of the row. Strictly better than the model's request (what DEF-146
+ *  compared against) and strictly weaker than observed state: a hook, a
+ *  coercion or a trigger could still leave the row different. */
 export interface UpdateOutcome {
   /** Title of the row actually updated. */
   artifactTitle: string;
+  /** Id of the row actually updated. Bound into the token (DEF-154) so a token
+   *  cannot be carried to a result about a different artifact. */
+  artifactId?: string | null;
+  /** The deterministic receipt this verification accompanies. Bound into the
+   *  token so mutating the applied values — which are rendered INTO the receipt
+   *  string — after minting fails closed. */
+  receipt?: string;
   /** Priority actually written, or null when none was. */
   appliedPriority: string | null;
   /** Whether a due date was actually written. */
@@ -257,7 +287,11 @@ export function verifyUpdateProse(prose: string, outcome: UpdateOutcome): Verifi
   if (DONE_CLAIM_RE.test(prose)) return null;
 
   const token = Object.freeze({}) as unknown as VerifiedProse;
-  issuedTokens.add(token as unknown as object);
+  tokenRecords.set(token as unknown as object, {
+    prose,
+    artifactId: outcome.artifactId ?? null,
+    receipt: outcome.receipt ?? '',
+  });
   return token;
 }
 
@@ -273,17 +307,31 @@ export function verifyUpdateProse(prose: string, outcome: UpdateOutcome): Verifi
  *   - A genuine token → prose, provided it is still usable prose.
  */
 export function receiptWins(
-  actionResult: { ok?: boolean; message?: string; verifiedProse?: unknown } | null | undefined,
+  actionResult:
+    | { ok?: boolean; message?: string; artifactId?: string; verifiedProse?: unknown }
+    | null
+    | undefined,
   prose: string,
 ): boolean {
   const receipt = actionResult?.ok === true && actionResult.message?.trim() ? actionResult.message : null;
   if (!receipt) return false;
+
   const token = actionResult?.verifiedProse;
-  if (!token || typeof token !== 'object' || !issuedTokens.has(token as object)) return true;
+  const record = token && typeof token === 'object' ? tokenRecords.get(token as object) : undefined;
+
+  // No token, a forged one, or one that did not survive deserialisation.
+  if (!record) return true;
+  // DEF-154 — the token proves something about a specific sentence, it is not a
+  // pass. Each check below is a way the verified thing could differ from the
+  // thing about to be shown, and each fails closed to the receipt.
+  if (record.prose !== prose) return true;                                   // replayed onto other prose
+  if (record.receipt !== receipt) return true;                               // applied values changed
+  if (record.artifactId !== (actionResult?.artifactId ?? null)) return true; // different artifact
+
   return !isUsableBrainProse(prose);
 }
 
 /** Test-only: proves a hand-built or cast token is rejected at runtime. */
 export function __isIssuedToken(token: unknown): boolean {
-  return !!token && typeof token === 'object' && issuedTokens.has(token as object);
+  return !!token && typeof token === 'object' && tokenRecords.has(token as object);
 }
