@@ -177,8 +177,16 @@ def detect_stage():
     for et, arg in ps:
         if "nexeoCapabilityBenchmark" in arg:
             return "MEASURING", et, "process", "benchmark: 12 cases, compose + judge"
+    # The SAME editor-process trap as the claude matcher below. The owner's Codex
+    # VSCode extension runs `.../openai.chatgpt-*/bin/linux-x86_64/codex … app-server`
+    # permanently, and matching it reported "Codex reviewing" while the loop was
+    # actually running tsc. I guarded the claude matcher against this and left its
+    # twin unguarded — protection-with-two-implementations, in the tool built to
+    # watch for it. `exec` must be the SUBCOMMAND, and the editor's own binary is
+    # never a review turn.
     for et, arg in ps:
-        if "codex" in arg and " exec" in arg:
+        if ("codex" in arg and re.search(r"codex(\.\w+)?\s+exec\b", arg)
+                and "vscode-server" not in arg and "vscode/cli" not in arg):
             return "REVIEWING", et, "process", "codex exec (reviewing the diff)"
 
     age = transcript_age(sid)
@@ -200,6 +208,16 @@ def detect_stage():
     if age is not None and age < FRESH_S:
         return ("BUILDING", age, "transcript",
                 f"session {sid[:8]} in your IDE tab, written {int(age)}s ago")
+
+    # The loop's own verification between the two agents: ~90s of tsc, build and
+    # vitest. It had no stage, so every iteration showed "nobody working" for a
+    # minute and a half of genuine work — which the owner twice read as stuck. Work
+    # with no agent attached is still work and must be visible as such.
+    for et, arg in ps:
+        if ("/var/www/tmcai" in arg or "tmcai/server" in arg) and (
+                "tsc" in arg or "vitest" in arg):
+            what = "tsc --noEmit" if "tsc" in arg else "vitest run"
+            return "CHECKS", et, "process", f"orchestrator rails: {what}"
 
     rev, rev_age = newest(f"{LOGS}/iter-*-review.jsonl")
     if rev and rev_age < FRESH_S:
@@ -283,7 +301,8 @@ def snapshot(full=False):
            "STALLED": C["red"], "IDLE": C["dim"]}.get(stage, C["dim"])
 
     who = {"BUILDING": "Claude building", "REVIEWING": "Codex reviewing",
-           "MEASURING": "benchmark scoring", "STALLED": "STALLED",
+           "MEASURING": "benchmark scoring", "CHECKS": "checks running",
+           "STALLED": "STALLED",
            "IDLE": "nobody working"}.get(stage, stage)
     timer = fmt_dur(elapsed)
 
