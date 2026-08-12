@@ -87,6 +87,23 @@ function DeltaChip({ value, className = '' }) {
   );
 }
 
+/* One aspect of the loop, framed. The hint doubles as the card's only control
+   when it's given a handler — a card with two buttons in a deck this dense starts
+   competing with the data for attention. */
+function PulseCard({ title, hint, onHintClick, className = '', children }) {
+  return (
+    <section className={`orch-card ${className}`}>
+      <header className="orch-card-head">
+        <h3 className="orch-card-title">{title}</h3>
+        {hint && (onHintClick
+          ? <button type="button" className="orch-card-hint is-button" onClick={onHintClick}>{hint}</button>
+          : <span className="orch-card-hint">{hint}</span>)}
+      </header>
+      <div className="orch-card-body">{children}</div>
+    </section>
+  );
+}
+
 /* ── phase timeline ──────────────────────────────────────────────────────────
    Bars encode DURATION — one quantity, so one hue and one axis. Widths are
    proportional to the longest phase in this iteration, which is what makes "the
@@ -167,7 +184,10 @@ function CapabilityBars({ data }) {
   if (!caps.length || !brain) return null;
 
   return (
-    <div>
+    // A flex column, so the pinned BRAIN summary reaches the BOTTOM of the card
+    // rather than the bottom of the bar list — on a 1080p screen the first version
+    // left it floating in the middle of the card with dead space beneath it.
+    <div className="orch-caps-wrap">
       {caps.map((c) => (
         <div className="orch-cap" key={c.name} title={`${c.name}: Nexeo ${c.nexeo} · professional ${c.professional} · gap ${Math.round((c.professional - c.nexeo) * 10) / 10}`}>
           <div className="orch-cap-name">{c.name}</div>
@@ -253,7 +273,12 @@ function TrendLine({ iterations, series, height = 132 }) {
       <svg
         viewBox={`0 0 ${W} ${height}`}
         preserveAspectRatio="none"
-        style={{ height }}
+        /* Height comes from the card's spare room, not from a constant: in a deck
+           that must fit one screen, the chart is the element that can shrink
+           without losing its meaning — its endpoints are labeled in the card head
+           — so it yields space to the sparklines and the never-moved line rather
+           than pushing them out of sight. */
+        style={{ height: '100%', minHeight: 64, display: 'block' }}
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
         role="img"
@@ -482,7 +507,7 @@ export default function OrchestratorPulsePanel() {
       )}
 
       <div className="orch-pulse-body">
-        {/* ── stage hero ── */}
+        {/* ── stage hero — the one thing worth seeing from across the room ── */}
         <div className="orch-stage" style={{ '--stage-color': stageColor }}>
           <div className="orch-stage-word">
             <span className="orch-dot" />
@@ -516,85 +541,78 @@ export default function OrchestratorPulsePanel() {
           </div>
         )}
 
-        {/* ── phases ── */}
-        <div className="orch-section">
-          <div className="orch-section-head">
-            <span className="orch-section-title">Iteration #{data.iteration} phases</span>
-            <span className="orch-section-note">bar length = time spent · {data.iterations_built} iterations recorded</span>
-          </div>
-          <PhaseTimeline data={data} liveNow={liveNow} />
-          {data.current_phase && data.progress && (
+        {/* ── the deck: one aspect per card, all of them on one screen ──
+             Owner, 2026-08-12: "i want complete deck of pulse with different
+             aspects" and "it should be fit to page without scroll". So the
+             sections became cards laid out in a fixed-height grid: every aspect
+             the terminal window carries is here, and none of it is below the
+             fold. Where a card cannot fit its own content on a short screen, that
+             CARD scrolls — the page never does. */}
+        <div className="orch-deck">
+          {/* aspect 1 — what is happening right now, and for how long */}
+          <PulseCard
+            className="orch-deck-phases"
+            title={`Iteration #${data.iteration} · phases`}
+            hint={`bar = time spent · ${data.iterations_built} recorded`}
+          >
+            <PhaseTimeline data={data} liveNow={liveNow} />
             <div className="orch-progress">
-              <b>Progress {data.current_phase}:</b> {data.progress}
+              {data.current_phase && data.progress
+                ? <><b>Progress {data.current_phase}:</b> {data.progress}</>
+                : <><b>Progress:</b> nobody working</>}
             </div>
+          </PulseCard>
+
+          {/* aspect 2 — how far Brain is from a professional assistant */}
+          {data.capabilities.length > 0 && (
+            <PulseCard
+              className="orch-deck-caps"
+              title="Capability vs a professional"
+              hint={showTable ? 'show charts' : 'show table'}
+              onHintClick={() => setShowTable((s) => !s)}
+            >
+              {showTable ? <PulseTable data={data} /> : <CapabilityBars data={data} />}
+            </PulseCard>
           )}
-          {!data.current_phase && (
-            <div className="orch-progress">
-              <b>Progress:</b> nobody working
-            </div>
+
+          {/* aspect 3 — whether any of it is moving, iteration by iteration */}
+          {overall && (
+            <PulseCard
+              className="orch-deck-trend"
+              title={`BRAIN overall · iteration ${trend.iterations[0]}→${trend.iterations[trend.iterations.length - 1]}`}
+              hint={`${overall.first} → ${overall.last} across ${trend.iterations.length} scored`}
+            >
+              <TrendLine iterations={trend.iterations} series={overall.series} height={104} />
+              {moved.length > 0 && (
+                <div className="orch-deck-sparks">
+                  {moved.map((r) => (
+                    <div className="orch-spark" key={r.name} title={r.series.map((v, i) => `#${trend.iterations[i]} ${v ?? '—'}`).join(' · ')}>
+                      <div className="orch-cap-name">{r.name}</div>
+                      <div className="orch-cap-pro" style={{ textAlign: 'right' }}>{r.first}</div>
+                      <div className="orch-spark-svg"><Sparkline series={r.series} /></div>
+                      <div className="orch-cap-val">{r.last}</div>
+                      <DeltaChip value={r.delta} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {trend.unmoved.length > 0 && (
+                // Named, not hidden — that most capabilities have never moved is the
+                // most important fact about this loop's progress.
+                <div className="orch-section-note orch-unmoved">
+                  never moved: {trend.unmoved.join(', ')}
+                </div>
+              )}
+            </PulseCard>
           )}
-        </div>
 
-        {/* ── capability ── */}
-        {data.capabilities.length > 0 && (
-          <div className="orch-section">
-            <div className="orch-section-head">
-              <span className="orch-section-title">Capability vs a professional assistant</span>
-              <button
-                type="button"
-                className="orch-section-note"
-                onClick={() => setShowTable((s) => !s)}
-                style={{ background: 'none', border: 0, cursor: 'pointer', color: 'var(--info)' }}
-              >
-                {showTable ? 'show charts' : 'show table'}
-              </button>
-            </div>
-            {showTable ? <PulseTable data={data} /> : <CapabilityBars data={data} />}
-          </div>
-        )}
-
-        {/* ── trend ── */}
-        {!showTable && overall && (
-          <div className="orch-section">
-            <div className="orch-section-head">
-              <span className="orch-section-title">
-                BRAIN overall by iteration {trend.iterations[0]}→{trend.iterations[trend.iterations.length - 1]}
-              </span>
-              <span className="orch-section-note">
-                {overall.first} → {overall.last} <DeltaChip value={overall.delta} /> across {trend.iterations.length} scored
-              </span>
-            </div>
-            <TrendLine iterations={trend.iterations} series={overall.series} />
-            {moved.length > 0 && (
-              <div style={{ marginTop: 'var(--s-3)' }}>
-                {moved.map((r) => (
-                  <div className="orch-spark" key={r.name} title={r.series.map((v, i) => `#${trend.iterations[i]} ${v ?? '—'}`).join(' · ')}>
-                    <div className="orch-cap-name">{r.name}</div>
-                    <div className="orch-cap-pro" style={{ textAlign: 'right' }}>{r.first}</div>
-                    <div className="orch-spark-svg"><Sparkline series={r.series} /></div>
-                    <div className="orch-cap-val">{r.last}</div>
-                    <DeltaChip value={r.delta} />
-                  </div>
-                ))}
-              </div>
-            )}
-            {trend.unmoved.length > 0 && (
-              // Named, not hidden — that most capabilities have never moved is the
-              // most important fact about this loop's progress.
-              <div className="orch-section-note" style={{ marginTop: 'var(--s-2)' }}>
-                unmoved since scoring began: {trend.unmoved.join(', ')}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── benchmark ── */}
-        {bench && (
-          <div className="orch-section">
-            <div className="orch-section-head">
-              <span className="orch-section-title">Benchmark, iteration {bench.iteration}</span>
-              <span className="orch-section-note">weakest criterion against its target</span>
-            </div>
+          {/* aspect 4 — the measurement itself, and what the reviewer made of it */}
+          {bench && (
+            <PulseCard
+              className="orch-deck-bench"
+              title={`Benchmark · iteration ${bench.iteration}`}
+              hint="weakest criterion vs target"
+            >
             <div className="orch-bench">
               <span>
                 {bench.criterion} <span className="orch-bench-num">{bench.score}</span> →{' '}
@@ -622,15 +640,15 @@ export default function OrchestratorPulsePanel() {
               )}
             </div>
             {data.history.length > 0 && (
-              <div className="orch-scroll" style={{ marginTop: 'var(--s-3)' }}>
+              <div className="orch-scroll orch-hist">
                 <table className="orch-table">
                   <thead>
                     <tr>
-                      <th>Iteration</th>
+                      <th>Iter</th>
                       <th>Run</th>
                       <th style={{ textAlign: 'right' }}>Overall</th>
                       <th style={{ textAlign: 'right' }}>Weakest</th>
-                      <th>Criterion</th>
+                      <th>Crit</th>
                       <th>Codex</th>
                     </tr>
                   </thead>
@@ -649,8 +667,9 @@ export default function OrchestratorPulsePanel() {
                 </table>
               </div>
             )}
-          </div>
-        )}
+            </PulseCard>
+          )}
+        </div>
       </div>
     </Card>
   );

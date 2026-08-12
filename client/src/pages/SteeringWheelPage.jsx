@@ -4,6 +4,7 @@ import DayBriefPage from './DayBriefPage';
 import OpenItemsPage from './OpenItemsPage';
 import WikiPage from './WikiPage';
 import HealthCheckTab from '../components/steering/HealthCheckTab';
+import OrchestratorPulsePanel from '../components/steering/OrchestratorPulsePanel';
 // CustomActionTab removed from rail — its JSON-rule-builder UI was a
 // developer surface and the API behind it had drifted (POST /shadow/rules
 // now writes to a different table). Standing Instructions on My Rules
@@ -43,11 +44,28 @@ const TABS = [
   { key: 'rules',     label: 'My Rules',        icon: 'zap',      group: 'work',      render: () => <MyRulesPage /> },
   { key: 'wiki',      label: 'Wiki',            icon: 'book',     group: 'knowledge', render: () => <WikiPage /> },
   { key: 'connectors',label: 'Connectors',      icon: 'external', group: 'knowledge', render: () => <ConnectorsPage /> },
-  { key: 'health',    label: 'Health Check',    icon: 'pulse',    group: 'ops',       render: () => <HealthCheckTab /> },
+  { key: 'diagnostics', label: 'Health Check',  icon: 'check',    group: 'ops',       render: () => <HealthCheckTab /> },
   { key: 'how',       label: 'How Nexeo Works', icon: 'help',     group: 'ops',       render: () => <HowBrainWorksPage /> },
   { key: 'settings',  label: 'Settings',        icon: 'user',     group: 'ops',       render: () => <SettingsPage /> },
 ];
 const ADMIN_TAB = { key: 'admin', label: 'Admin / Client Config', icon: 'settings', group: 'ops', render: () => <AdminPage /> };
+
+// `?tab=health` is the BUILD PULSE — owner's decision, 2026-08-12: he asked for the
+// orch pulse window at that URL and then for everything else to come off it. The app
+// diagnostics that used to live there did not get deleted; they moved to
+// `?tab=diagnostics`, because they are the only place the MD sees "reconnect this
+// connector" and that surface is not the owner's to lose.
+//
+// Admin-only, like the endpoint behind it: the frame carries builder session ids,
+// model names and raw agent output.
+const PULSE_TAB = {
+  key: 'health', label: 'Brain Pulse', icon: 'pulse', group: 'ops',
+  render: () => (
+    <div style={{ padding: 'var(--s-6)' }}>
+      <OrchestratorPulsePanel />
+    </div>
+  ),
+};
 
 export default function SteeringWheelPage() {
   const { user, appName, tenantName } = useAuth();
@@ -68,8 +86,11 @@ export default function SteeringWheelPage() {
   // Admin users get Client Config + WhatsApp Notifier + licences surfaced
   // as a rail tab. Everyone else never sees it — same access check AdminPage
   // enforces internally.
-  const visibleTabs = user?.isAdmin ? [...TABS, ADMIN_TAB] : TABS;
-  const tab = visibleTabs.find((t) => t.key === active) ?? visibleTabs[0];
+  const visibleTabs = user?.isAdmin ? [...TABS, PULSE_TAB, ADMIN_TAB] : TABS;
+  // A non-admin arriving at `?tab=health` — a bookmark from when that key meant the
+  // health check — lands on the diagnostics that moved, not silently on Day Brief.
+  const requested = !user?.isAdmin && active === 'health' ? 'diagnostics' : active;
+  const tab = visibleTabs.find((t) => t.key === requested) ?? visibleTabs[0];
   const groups = ['work', 'knowledge', 'ops'];
   const byGroup = Object.fromEntries(groups.map((g) => [g, visibleTabs.filter((t) => t.group === g)]));
 

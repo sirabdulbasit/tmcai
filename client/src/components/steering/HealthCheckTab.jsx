@@ -27,7 +27,6 @@ import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 import { Button, Card, Pill, Dot } from '../ui';
 import { Icon } from '../ui/Icon';
-import OrchestratorPulsePanel from './OrchestratorPulsePanel';
 
 // ─── Component translator ────────────────────────────────────────────
 // Maps each component name + detail string into:
@@ -271,16 +270,8 @@ function heroStatus(deep, userIssues, userWarnings, showFull) {
   return { label: 'Brain is working smoothly for you', tone: 'success', summary: 'Nothing for you to do right now.' };
 }
 
-// Whether the build-pulse panel is expanded, remembered across visits. Defaults
-// to OPEN: the owner asked for ?tab=health to show him the loop's exact picture,
-// so it is there on arrival, not one click away.
-const PULSE_PREF = 'nexeo.health.buildPulse';
-
 export default function HealthCheckTab() {
   const { user } = useAuth();
-  const [showPulse, setShowPulse] = useState(() => {
-    try { return localStorage.getItem(PULSE_PREF) !== '0'; } catch { return true; }
-  });
   const [deep, setDeep] = useState(null);
   const [dashboard, setDashboard] = useState([]);
   const [killSwitch, setKillSwitch] = useState(null);
@@ -346,33 +337,6 @@ export default function HealthCheckTab() {
           <Icon name="refresh" size={14} /> Refresh
         </Button>
       </div>
-
-      {/* Owner, 2026-08-12: the orch pulse window, live in the browser, pinned at
-          the top of ?tab=health where he asked for it. Admin-only — it carries
-          build-loop internals (session ids, model names, agent output) that no
-          tenant user should read, and the endpoint refuses non-admins too. It
-          collapses because this tab's own job — is the app healthy — still has to
-          be reachable in one glance below it. */}
-      {user?.isAdmin && (
-        <div style={{ marginBottom: 'var(--s-5)' }}>
-          <button
-            type="button"
-            onClick={() => setShowPulse((s) => {
-              try { localStorage.setItem(PULSE_PREF, s ? '0' : '1'); } catch { /* private mode */ }
-              return !s;
-            })}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, marginBottom: 'var(--s-2)',
-              background: 'none', border: 0, padding: 0, cursor: 'pointer',
-              color: 'var(--text-muted)', fontSize: 'var(--fs-xs)',
-            }}
-          >
-            <Icon name="chevronDown" size={14} style={{ transform: showPulse ? 'none' : 'rotate(-90deg)' }} />
-            {showPulse ? 'hide' : 'show'} Brain build pulse
-          </button>
-          {showPulse && <OrchestratorPulsePanel />}
-        </div>
-      )}
 
       {/* hero — plain-English status */}
       <Card style={{ marginBottom: 'var(--s-5)' }}>

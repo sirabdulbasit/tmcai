@@ -27,6 +27,90 @@
   --op-grid:     rgba(255, 255, 255, 0.07);
 }
 
+/* ── one viewport, no page scroll ─────────────────────────────────────────────
+   Owner, 2026-08-12: "it should be fit to page without scroll". The card owns the
+   full height of the canvas and hands it to the deck as fixed grid tracks, so the
+   whole loop is legible without moving anything. Where a track is shorter than its
+   contents on a small screen, THAT CARD scrolls inside itself — the page still
+   doesn't. Everything below is sized for that budget: 12px bars, 4px row padding,
+   xs type. */
+.orch-pulse {
+  display: flex; flex-direction: column; gap: var(--s-3);
+}
+.orch-pulse-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: var(--s-3);
+}
+.orch-deck {
+  display: grid; gap: var(--s-3);
+  grid-template-columns: 1fr;
+  grid-auto-rows: minmax(0, auto);
+}
+
+/* FIT-TO-PAGE APPLIES ONLY WHERE IT CAN ACTUALLY FIT. Pinning the height on a
+   phone or a short window would not make the deck fit — it would CLIP it, and
+   silently losing rows is worse than scrolling to them. So the fixed-height,
+   no-scroll layout is scoped to viewports big enough to hold the deck, and every
+   smaller one falls back to a normal scrolling page.
+   Height is derived from the shell's own tokens, never a guessed constant: canvas
+   100vh, minus the top bar (--topbar-height), minus the tab's --s-6 padding top
+   and bottom. */
+@media (min-width: 1100px) and (min-height: 620px) {
+  .orch-pulse {
+    height: calc(100vh - var(--topbar-height) - (2 * var(--s-6)) - 2px);
+    overflow: hidden;
+  }
+  .orch-deck { flex: 1; min-height: 0; }
+  /* Inside the fit-to-page deck only: the chart takes the leftover room, within
+     bounds, so it can neither collapse nor distort its own marks. */
+  .orch-deck .orch-trend-chart {
+    flex: 1 1 auto; height: auto; min-height: 64px; max-height: 150px;
+  }
+}
+/* Wide: four aspects across two rows, each aspect given the room its own shape
+   needs — the capability bars want width for the benchmark marker, the phase rows
+   want width for "claude-opus-5" not to truncate. */
+@media (min-width: 1100px) and (min-height: 620px) {
+  .orch-deck {
+    grid-template-columns: 1.15fr 1fr;
+    grid-template-rows: minmax(0, 1.12fr) minmax(0, 0.88fr);
+    grid-template-areas: "phases caps" "trend bench";
+  }
+  .orch-deck-phases { grid-area: phases; }
+  .orch-deck-caps   { grid-area: caps; }
+  .orch-deck-trend  { grid-area: trend; }
+  .orch-deck-bench  { grid-area: bench; }
+}
+.orch-card {
+  min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px 12px;
+}
+.orch-card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--s-3); padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.orch-card-title {
+  margin: 0; font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.orch-card-hint {
+  font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.orch-card-hint.is-button {
+  background: none; border: 0; padding: 0; cursor: pointer; color: var(--info);
+}
+.orch-card-hint.is-button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* The last resort inside a fixed track: the CARD scrolls, never the page. */
+.orch-card-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+
 /* Stale/unreadable: the frame stays on screen but is visibly not live. A status
    display that keeps looking live while its source is unreachable is the exact
    failure the pulse exists to prevent. */
@@ -34,7 +118,7 @@
 
 .orch-pulse-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-4);
+  gap: var(--s-3); flex-wrap: wrap;
 }
 .orch-pulse-title {
   display: flex; align-items: baseline; gap: var(--s-3);
@@ -58,8 +142,8 @@
 
 /* ── stage hero ─────────────────────────────────────────────────────────── */
 .orch-stage {
-  display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap;
-  padding: var(--s-4); border-radius: 10px;
+  display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 10px; flex: 0 0 auto;
   background: var(--bg-2); border: 1px solid var(--border);
   border-left: 3px solid var(--stage-color, var(--op-idle));
 }
@@ -74,7 +158,7 @@
 /* The hero number: how long this stage has been running. Tabular figures so a
    ticking timer doesn't jitter its own width. */
 .orch-stage-timer {
-  font-size: var(--fs-2xl); font-weight: var(--fw-bold); line-height: 1;
+  font-size: var(--fs-xl); font-weight: var(--fw-bold); line-height: 1;
   font-variant-numeric: tabular-nums; font-family: var(--font-mono);
 }
 .orch-stage-side { display: flex; flex-direction: column; gap: 2px; margin-left: auto; text-align: right; }
@@ -109,10 +193,10 @@
    Current" wrapped "Current" onto its own line and "claude-opus-5" broke in half.
    A timer that reflows as it counts is a timer that can't be read at a glance. */
 .orch-phase {
-  display: grid; grid-template-columns: 74px 1fr 168px 172px; align-items: center;
-  gap: var(--s-3); padding: 5px 0;
+  display: grid; grid-template-columns: 64px 1fr 150px 150px; align-items: center;
+  gap: var(--s-2); padding: 3px 0;
 }
-.orch-phase-name { font-size: var(--fs-sm); color: var(--text); }
+.orch-phase-name { font-size: var(--fs-xs); color: var(--text); }
 .orch-phase-track {
   position: relative; height: 12px; border-radius: 6px;
   background: var(--op-bar-soft);
@@ -145,7 +229,9 @@
 .orch-phase-empty { font-size: var(--fs-xs); color: var(--text-dim); }
 
 .orch-progress {
-  margin-top: var(--s-3); padding: 10px 12px; border-radius: 8px;
+  margin-top: auto; padding: 7px 10px; border-radius: 8px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
   background: var(--bg-2); border: 1px solid var(--border);
   font-size: var(--fs-xs); font-family: var(--font-mono); color: var(--text-muted);
   overflow-wrap: anywhere;
@@ -154,12 +240,16 @@
 
 /* ── capability bars ────────────────────────────────────────────────────── */
 .orch-cap {
-  display: grid; grid-template-columns: 168px 34px 1fr 34px 46px;
-  align-items: center; gap: var(--s-3); padding: 4px 0;
+  display: grid; grid-template-columns: minmax(96px, 168px) 30px 1fr 30px 40px;
+  align-items: center; gap: var(--s-2); padding: 0;
+  min-height: 20px;
 }
-.orch-cap-name { font-size: var(--fs-sm); color: var(--text); }
+.orch-cap-name {
+  font-size: var(--fs-xs); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .orch-cap-val {
-  font-size: var(--fs-sm); font-family: var(--font-mono); text-align: right;
+  font-size: var(--fs-xs); font-family: var(--font-mono); text-align: right;
   font-variant-numeric: tabular-nums; color: var(--text);
 }
 .orch-cap-pro {
@@ -167,7 +257,7 @@
   color: var(--text-dim); font-variant-numeric: tabular-nums;
 }
 .orch-cap-track {
-  position: relative; height: 12px; border-radius: 6px;
+  position: relative; height: 9px; border-radius: 5px;
   /* Recessive, unlike the phase tracks: with the same soft blue behind it, the
      stretch between the score and the benchmark read as a second bar — as if the
      professional figure were also a filled quantity. */
@@ -193,24 +283,38 @@
 .orch-delta.up   { color: var(--op-score); }
 .orch-delta.down { color: var(--op-stalled); }
 
+/* Pinned to the bottom of its card, not laid out after the bars. The first deck
+   put it below nine capability rows inside a scrolling body, so on a 850px screen
+   the single most important figure in the whole display — BRAIN 47.3 against 91.9 —
+   was the one thing off screen. A summary that can be clipped is not a summary. */
 .orch-brain {
-  display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap;
-  margin-top: var(--s-3); padding-top: var(--s-3);
+  display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap;
+  position: sticky; bottom: 0; z-index: 1;
+  margin-top: auto; padding: 8px 0 0;
   border-top: 1px solid var(--border);
+  background: var(--bg-2);
 }
 .orch-brain-num {
-  font-size: var(--fs-2xl); font-weight: var(--fw-bold); line-height: 1;
+  font-size: var(--fs-xl); font-weight: var(--fw-bold); line-height: 1;
   font-family: var(--font-mono); font-variant-numeric: tabular-nums;
 }
 .orch-brain-lab { font-size: var(--fs-xs); color: var(--text-muted); }
 .orch-brain-lab b { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ── trend ──────────────────────────────────────────────────────────────── */
-.orch-trend-chart { position: relative; }
-.orch-trend-chart svg { display: block; width: 100%; height: auto; }
+.orch-trend-chart {
+  position: relative;
+  /* A definite height by default. The svg inside is `height: 100%` so that the
+     fit-to-page deck can hand it whatever room is left over — but with no cap and
+     no fixed fallback, the single-column layout let it grow to 700px, pushing the
+     sparklines and the never-moved line off the page and stretching the end marker
+     into a blob (preserveAspectRatio="none" scales the mark with the box). */
+  height: 104px; flex: 0 0 auto;
+}
+.orch-trend-chart svg { display: block; width: 100%; height: 100%; }
 .orch-spark {
-  display: grid; grid-template-columns: 168px 46px 1fr 46px 46px;
-  align-items: center; gap: var(--s-3); padding: 3px 0;
+  display: grid; grid-template-columns: minmax(96px, 168px) 40px 1fr 40px 40px;
+  align-items: center; gap: var(--s-2); padding: 2px 0;
 }
 /* Capped, not full-width: stretched across 700px the slope of a five-point series
    flattens into what looks like a rule under the row. A sparkline has to be narrow
@@ -228,8 +332,8 @@
 
 /* ── benchmark + history ────────────────────────────────────────────────── */
 .orch-bench {
-  display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap;
-  padding: var(--s-3) var(--s-4); border-radius: 8px;
+  display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 8px; flex: 0 0 auto;
   background: var(--bg-2); border: 1px solid var(--border);
   font-size: var(--fs-sm);
 }
@@ -237,10 +341,10 @@
 .orch-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
 .orch-table th {
   text-align: left; font-weight: var(--fw-medium); color: var(--text-muted);
-  padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
 .orch-table td {
-  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  padding: 3px 8px; border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums; color: var(--text);
 }
 .orch-table td.num { font-family: var(--font-mono); text-align: right; }
@@ -286,4 +390,33 @@
   .orch-spark .orch-cap-val  { grid-area: last; }
   .orch-spark .orch-delta    { grid-area: delta; }
   .orch-spark .orch-spark-svg { grid-area: spark; max-width: none; }
+}
+
+/* Deck-only spacing. The trend card holds three things — chart, sparklines, the
+   never-moved line — and on a short screen the chart is the one that can give up
+   room without losing its meaning, since the endpoints are labeled in the header. */
+.orch-deck-sparks { margin-top: 8px; }
+.orch-unmoved {
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.orch-hist { margin-top: 8px; min-height: 0; }
+.orch-deck-sparks { flex: 0 0 auto; }
+.orch-caps-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.orch-unmoved { flex: 0 0 auto; }
+
+/* Short viewports (a laptop with a dock and a browser bar): the deck stops being
+   two fixed rows and lets each card size to its content, with the page still
+   pinned — the cards that overflow scroll inside themselves. */
+@media (max-height: 760px) and (min-width: 1100px) {
+  .orch-deck { grid-template-rows: minmax(0, 1.05fr) minmax(0, 0.95fr); }
+  .orch-stage-timer { font-size: var(--fs-lg); }
+  .orch-stage { padding: 8px 12px; }
+}
+
+/* Wide but short (a window docked to half a tall screen, a projector): keep the
+   two-column reading order, let the page scroll. */
+@media (min-width: 1100px) and (max-height: 619px) {
+  .orch-deck { grid-template-columns: 1.15fr 1fr; }
 }
