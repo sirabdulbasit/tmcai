@@ -151,6 +151,8 @@ def main():
     ap.add_argument("--verdict")
     ap.add_argument("--commit", action="store_true",
                     help="persist the --set changes; without it nothing is written")
+    ap.add_argument("--append", action="store_true",
+                    help="also append the rendered card to capability_history.md")
     a = ap.parse_args()
 
     d = load()
@@ -160,7 +162,32 @@ def main():
             save(d)
         else:
             sys.stderr.write("(dry run — pass --commit to persist)\n")
-    print(render(d, a.iteration or d.get("as_of_iteration"), a.label))
+    card = render(d, a.iteration or d.get("as_of_iteration"), a.label)
+    print(card)
+
+    if a.append:
+        # One card per iteration, kept in order. The owner asked to WATCH progress
+        # across iterations, and a single overwritten "current" card cannot show a
+        # trend — it can only ever agree with itself.
+        hist = os.path.join(os.path.dirname(STATE), "..", "capability_history.md")
+        hist = os.path.normpath(hist)
+        new = not os.path.exists(hist)
+        with open(hist, "a") as f:
+            if new:
+                f.write(
+                    "# Capability history — one scorecard per iteration\n\n"
+                    "Appended by `scripts/orchestrator/scorecard.py --append` at the end of\n"
+                    "each iteration, after Codex's review. Never rewritten: an earlier card\n"
+                    "that turned out to be optimistic is evidence, not an error to tidy away.\n"
+                )
+            evidence = (d.get("history") or [{}])[-1].get("evidence")
+            f.write(f"\n## Iteration {a.iteration or d.get('as_of_iteration')}\n\n")
+            f.write("```\n" + card + "\n```\n")
+            if evidence:
+                f.write("\n**What moved, and on what evidence:**\n\n")
+                for e in (evidence if isinstance(evidence, list) else [evidence]):
+                    f.write(f"- {e}\n")
+        sys.stderr.write(f"(appended to {hist})\n")
 
 
 if __name__ == "__main__":
