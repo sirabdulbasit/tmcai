@@ -27,6 +27,10 @@ guess, and it names the case id so you can read the exact reply that scored low.
 
 @@STRUCTURAL@@
 
+## The campaign you are on
+
+@@CAMPAIGN@@
+
 ## Forbidden-path alert
 
 @@FORBIDDEN@@
@@ -98,7 +102,13 @@ this turn.
   wrong or unfair, say so in the build log and leave it alone — Codex will
   arbitrate. Legitimate benchmark changes exist (a case that crashes, a broken
   assertion); score-motivated ones do not.
-- **Do not deploy.** The orchestrator owns `pm2 restart`. You build and verify.
+- **Do not deploy.** The orchestrator owns `pm2 restart` and the deploy phase. You
+  build and verify.
+- **Never touch `scripts/orchestrator/**`.** That is the orchestrator's — the loop,
+  the prompts, the pulse, the scorer's harness. This rule existed only in
+  hand-written briefs until now, and Codex's checklist does not guard it, so a
+  Builder turn "helpfully improving" the loop would be reviewed by nobody. If the
+  harness is wrong, say so in your build entry; the orchestrator fixes it.
 - The score is one sample of a stochastic model. A 1–2 point move is noise;
   do not claim a win from it.
 - If you find that the *previous* iteration's change was wrong, reverting it is
