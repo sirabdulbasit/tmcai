@@ -106,3 +106,45 @@ export function brainAnswerSurvivesReceipt(answer: string, outcome: ActionOutcom
 /** Exported for tests so they drive the REAL pattern rather than a copy — a
  *  second copy is how `protection-with-two-implementations` reaches nine. */
 export const __DUE_DATE_CLAIM_RE = DUE_DATE_CLAIM_RE;
+
+/**
+ * The ONE decision: for a completed action, does the owner see the receipt or
+ * Brain's prose? (DEF-146, 2026-08-12)
+ *
+ * DEF-145 inverted the renderer's preference and got B04 right — its reply
+ * changed from `Updated "…": priority=high.` to *"Got it. I've set the priority
+ * to high. It's still missing a due date if you have one in mind."*, moving
+ * C6 75 → 90 and C7 80 → 100. But it inverted the preference for **every**
+ * action, and only `update_open_item` had its prose checked against what was
+ * written. Codex called that CRITICAL and it is: a successful Gmail send whose
+ * receipt holds the real recipient and message id, described by a model as
+ * *"I've emailed A and B and copied the finance team"*, would have shipped the
+ * invented recipients and hidden the truth. That is invariant #5 (no fabricated
+ * completion) weakened across every action class at once.
+ *
+ * Worth recording WHY no score caught it: **B04 is the only one of the twelve
+ * benchmark cases that dispatches an action.** The other eleven never produce an
+ * `actionResult`, so the global preference was exercised exactly once — on the
+ * single case where it happened to be verified. The regression was real,
+ * shipped, and structurally invisible to this loop's instrument. Benchmark-clean
+ * is not the same as safe.
+ *
+ * So the receipt is the default and prose is the exception, granted per-branch:
+ *
+ *   - No receipt to show (failed action, empty message) → prose, unchanged.
+ *     The `ok === true` gate that stopped the 2026-05-20 sentinel leak lives at
+ *     the call site and is untouched.
+ *   - `proseGrounded !== true` → **receipt**. Not "unchecked so probably fine";
+ *     unchecked means the owner gets the text that is true by construction.
+ *   - `proseGrounded === true` → prose, provided it is still usable prose.
+ *     A branch can only set that flag by having compared claims to outcome.
+ */
+export function receiptWins(
+  actionResult: { ok?: boolean; message?: string; proseGrounded?: boolean } | null | undefined,
+  prose: string,
+): boolean {
+  const receipt = actionResult?.ok === true && actionResult.message?.trim() ? actionResult.message : null;
+  if (!receipt) return false;                       // nothing grounded to show
+  if (actionResult?.proseGrounded !== true) return true;  // fail closed
+  return !isUsableBrainProse(prose);                // verified, but is it prose?
+}

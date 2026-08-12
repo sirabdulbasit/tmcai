@@ -1796,3 +1796,197 @@ found.
 - **Overall falls again while C4 rises.** Under a "95 on every criterion" gate
   that is not a win, and after this iteration's identical-input control I would
   want two runs before believing either direction.
+
+---
+
+## Iteration 9 — mode: incremental
+
+**Gating criterion: C4 @ 87.3.** Overall 95.3. **I did not target C4 this turn**, and
+the reason is in the next section.
+
+### First: last iteration's prediction, tested
+
+I committed to a falsifiable claim: *"B04's answer in the next report must no
+longer be the 94-character receipt."*
+
+**It is not.** B04 now reads:
+
+> "Got it. I've set the priority to high. It's still missing a due date if you
+> have one in mind."
+
+93 characters, not byte-identical, and B04 moved **C6 75 → 90, C7 80 → 100,
+C4 90 → 95, C3 85 → 90**. DEF-144's mechanism was right for three iterations; it
+needed DEF-145's renderer fix to reach the owner.
+
+### But DEF-145 shipped a regression, and that is this turn
+
+Codex rated iteration 8 **WEAK** with a **CRITICAL**, and it is correct. DEF-145
+inverted the renderer's preference for **every** action while only
+`update_open_item` compared its prose against what was written:
+
+> Gmail sends to `a@example.com`. The receipt holds the real recipient and
+> message id. The model says *"I've emailed A and B and copied the finance
+> team."* → the receipt is discarded → WhatsApp ships the invented recipients.
+
+Contact saves, meetings, delegations and WhatsApp sends had the same hole. That
+is **invariant #5 weakened across every action class**, on the surface the owner
+reads. I chose to contain that rather than chase C4, because a product invariant
+is a release blocker and C4 is a score.
+
+**The part I want on the record: no measurement could have caught it.**
+
+| | |
+|---|---|
+| Cases in the benchmark | 12 |
+| Cases that dispatch an action | **1** (B04) |
+| Times the global preference was exercised | once — on the only verified case |
+| Overall score in the run that shipped it | **94.4 → 95.3, up** |
+
+So a green, *improving* score sat on top of a live invariant breach. **A rising
+score over a suite that exercises a code path once is not evidence about that code
+path.** I checked whether the benchmark saw anything: B02 lost C1 100→95 and C7
+100→95, B09 lost C1 95→85 — but neither dispatches an action, so `actionResult`
+is null and the receipt branch never runs for them. Those are variance, not my
+change. Which is the point: the instrument was silent about the one thing that
+mattered.
+
+### Governing-docs verdict, before coding: CIRCLING on a new tag
+
+New chart §3 tag, **`fix-generalised-past-its-evidence`**. DEF-145 verified one
+thing about one case and applied the conclusion to a whole class, because the
+narrow fix and the broad fix were the same edit — one ternary. Containment
+recorded: **when a fix's evidence is one instance of a class, gate it to what was
+verified and fail closed for the rest, and make the gate opt-in from the site that
+holds the evidence rather than an allow-list at the consuming end.**
+
+### The fixQueue entry I targeted
+
+None — deliberately. The driver is Codex's ranked directive #1 and the scorer's
+S-1, which landed mid-turn and asks for the same thing in its own words:
+
+> **S-1 (Grok, verbatim):** "Contain the global renderer inversion: prefer prose
+> over receipt only when a typed ActionOutcome is present (start with
+> update_open_item); fail closed otherwise."
+
+**Expected to move: nothing.** This removes a fabrication risk the benchmark
+cannot see and preserves B04's measured gain. If any criterion moves it is noise,
+and I will not claim it.
+
+### What I changed, by file:line
+
+**1. `answerReceiptPolicy.ts:142-150` — `receiptWins()`, the one decision.**
+Receipt is the default; prose is the exception. Three outcomes: no successful
+receipt → prose (the `ok === true` gate from the 2026-05-20 sentinel leak,
+untouched); `proseGrounded !== true` → **receipt**; verified → prose, if it is
+still usable prose.
+
+**2. `brainComposer.ts:54-72` — `actionResult.proseGrounded?: boolean`,** set at
+`:3627` by the `update_open_item` branch only, because it is the only branch that
+compares claims against `appliedFields`.
+
+**Opt-in per branch, not an action-type allow-list in the renderer** — and this is
+the design decision I would most like reviewed. Only the branch that performed the
+write knows what was applied; a branch that has not been taught to verify never
+sets the flag and keeps its receipt. The renderer ends up with **no policy logic
+at all** (`channelRenderer.ts:186-188` is now a single call), which also means it
+cannot be the site of the next divergence.
+
+**Where this differs from what Codex and S-1 asked for, stated plainly:** they
+asked for a *typed `ActionOutcome` threaded through `ComposeResult`* so the policy
+is not an empty-outcome length check. I threaded the **verdict**, not the outcome.
+At the renderer `receiptWins` is now a flag check plus a usability check — not a
+length check — and the entailment happens where the data lives. I think that is the
+better architecture, but it does mean the renderer cannot independently verify,
+which is what they specified. If Codex disagrees, threading the full outcome is a
+mechanical follow-up on top of this shape.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  171 passed | 1 skipped (172)
+                    Tests  2038 passed | 7 expected fail | 21 skipped | 1 todo (2067)
+                    Duration 18.35s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 8's 170 files / 2018 passed (2047): **+1 file, +20 tests**
+(18 new in `def146`, 2 added to `def144`). One `def145` test updated for the
+inverted default — it had asserted prose wins *without* the flag, which is exactly
+the default this iteration reverses.
+
+### Mutation — 3 mutants, and the third one caught me
+
+- **Remove the fail-closed gate → 10 fail.** The regression reproduced on demand.
+- **Remove the marker/stub guard → 1 fail.**
+- **Stop setting the flag in the composer → 2 fail.** **This mutant SURVIVED my
+  first pass.** Nothing proved the composer sets `proseGrounded`, so B04 could have
+  regressed to the receipt on WhatsApp with the whole suite green — the
+  containment was one un-asserted line from being decorative. I added the two
+  assertions and re-ran it. That is the second time in three iterations that
+  mutation caught a hole reading could not.
+
+The suites Codex named by name are all there: `send_email`,
+`notify_via_whatsapp`, `schedule_meeting`, `create_contact`,
+`delegate_open_item`, `add_open_item`, `set_brain_name` — each handed exaggerated
+model prose and asserted to keep its receipt, including that `a@example.com`
+survives while `finance team` never reaches WhatsApp.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**`.
+- **Did not touch C4 at all.** It is the gate and it is 87.3, and I spent the turn
+  on a regression instead. The C4 residuals are case-local and Codex has named
+  them: B11 capability register (80), B12 *"Race condition on my end"* + the
+  honorific (80), B07/B08/B10 phrasing (85), B06 (88). **B11 and B12 at 80 are the
+  two to take next**, and neither is a global style rule.
+- **Codex directive #2 (thread the full typed outcome).** Partially — verdict yes,
+  outcome no. Argued above rather than skipped silently.
+- **Codex directive #3 (unify the two `update_open_item` execution paths).** Not
+  done. `applyOpenItemUpdate` still returns the bare receipt and
+  `dispatchPendingDirect` still propagates it, so the same update through pending
+  confirmation still shows the owner `Updated … priority=high` with no deadline
+  question. It never sets `proseGrounded`, so it is fail-closed — correct but not
+  yet good.
+- **Identity and value entailment (Codex's iteration-7 risk #2)** remains
+  unimplemented: prose is not compared against `existing.id`/`title` or the value
+  of an applied field. Still open, now three iterations old.
+- **D-5's proactive slice.** Still the largest thing outstanding, still ranked
+  first by the operator. Skipped for the second turn running, this time to contain
+  a CRITICAL of my own making. I have no further excuse after this.
+- **The DEF-143 bare-team false positive.** Still open, still able to destroy an
+  honest answer.
+- **Operator directives:** D-1 (the benchmark wrote to `cmsotakwf0006rts1bdsrjjkj`
+  again this run), D-2, D-4 all open and untouched. D-3 standing — and the
+  identical-answer control in iteration 8 plus the surviving mutant here are both
+  reported because of it.
+
+### What I am unsure about
+
+- **Whether `update_open_item` deserves the flag even now.** Its verification is
+  one field (`priority` requested-but-not-applied) plus one lexical deadline
+  pattern. Codex's risk #2 — prose about the wrong item — is not covered. It is
+  the *best-verified* branch, which is not the same as verified.
+- **Whether B04 keeps its gain in the next run.** It should: the flag is set on
+  exactly the path B04 takes, and `def144` now asserts that. But B04's C7 moved
+  100 → 80 → 100 across three runs on barely-changed text, so I would not read a
+  single run either way as settled.
+
+### Prediction, and what would falsify it
+
+**No criterion should move.** The change removes a fabrication path that eleven of
+twelve cases never touch and preserves the twelfth's behaviour exactly.
+
+**What would prove me wrong:**
+- **B04 regresses to `Updated "…": priority=high.`** Then `proseGrounded` is not
+  reaching the renderer on the real path — most likely the reasoning-act route
+  building `actionResult` somewhere I did not trace — and the `def144` assertion
+  is testing a different construction than production uses.
+- **Any criterion moves more than a point.** Nothing here should reach the eleven
+  read-only cases at all; movement means the renderer change has a reach I have
+  not mapped.
+- **A future action branch sets `proseGrounded` without verifying anything.** The
+  flag is only as good as the honesty of the branch setting it, and nothing
+  structurally stops a careless `proseGrounded: true`. That is the weakness of
+  opt-in and the strongest argument for Codex's threaded-outcome design.

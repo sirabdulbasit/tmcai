@@ -31,7 +31,7 @@
 import type { ComposeResult, ComposedAction } from './brainComposer';
 // DEF-145: the ONE definition of receipt-versus-prose, in a dependency-free
 // module so this renderer does not pull the composer in at runtime.
-import { brainAnswerSurvivesReceipt } from './answerReceiptPolicy';
+import { receiptWins } from './answerReceiptPolicy';
 
 export type Channel = 'web' | 'whatsapp';
 
@@ -186,11 +186,8 @@ export function renderForChannel(
   // `compose` has already applied the same policy to `result.answer`, so this
   // is a second, independent chance to fall back rather than a second opinion
   // about which text is better.
-  const receipt = result.actionResult?.ok === true && result.actionResult.message?.trim()
-    ? result.actionResult.message
-    : null;
-  const sourceText = receipt && !brainAnswerSurvivesReceipt(stripped)
-    ? receipt
+  const sourceText = receiptWins(result.actionResult, stripped)
+    ? (result.actionResult!.message as string)
     : stripped;
   const body = trimToLimit(sourceText, WA_MAX_CHARS);
   return {

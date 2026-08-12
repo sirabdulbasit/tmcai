@@ -52,8 +52,24 @@ export interface ComposeResult {
    *  the resulting confirmation/error replaces or supplements `answer`. */
   action?: ComposedAction | null;
   /** Set when an action was attempted. The dispatch outcome is folded
-   *  into the answer text; this is here for callers/logs. */
-  actionResult?: { ok: boolean; artifactId?: string; message: string } | null;
+   *  into the answer text; this is here for callers/logs.
+   *
+   *  `proseGrounded` (DEF-146) is an explicit, opt-in statement by the
+   *  dispatch branch that it COMPARED the visible prose against the
+   *  structured outcome and found the prose entailed by it. Absent or false
+   *  means "not checked", and the renderer must then show the receipt.
+   *
+   *  It is opt-in rather than an action-type allow-list in the renderer
+   *  because only the branch that performed the write knows what was
+   *  actually applied. A branch that has not been taught to verify simply
+   *  never sets it and keeps its grounded receipt — which is the fail-closed
+   *  direction. */
+  actionResult?: {
+    ok: boolean;
+    artifactId?: string;
+    message: string;
+    proseGrounded?: boolean;
+  } | null;
   /** Which composer path produced this result. Used by
    *  validateBeforeRender to skip empty-promise regex checks on
    *  reasoning-decided turns — those have structured output
@@ -3313,7 +3329,7 @@ ${calLines.join('\n')}`;
   // text so the user sees the actual outcome (success / artifact id /
   // error) rather than the LLM's pre-action announcement.
   let answer = parsed.answer;
-  let actionResult: { ok: boolean; artifactId?: string; message: string } | null = null;
+  let actionResult: { ok: boolean; artifactId?: string; message: string; proseGrounded?: boolean } | null = null;
 
   // ── Option B: Preview-by-default gate for human-facing actions ───
   // Every action that touches another human (send_email,
@@ -3600,10 +3616,16 @@ ${calLines.join('\n')}`;
               // never had.
               const requestedButNotApplied: string[] = [];
               if (act.priority && !data.priority) requestedButNotApplied.push('priority');
-              if (!answerSurvivesReceipt(answer, {
+              // DEF-146 — this branch is the only one that currently VERIFIES
+              // its prose against what was written, so it is the only one that
+              // may set `proseGrounded`. The flag is what lets the WhatsApp
+              // renderer prefer prose here without preferring it everywhere.
+              const proseGrounded = answerSurvivesReceipt(answer, {
                 requestedButNotApplied,
                 appliedFields: Object.keys(data),
-              })) {
+              });
+              actionResult.proseGrounded = proseGrounded;
+              if (!proseGrounded) {
                 answer = actionResult.message;
               }
             } else if (!actionResult) {
