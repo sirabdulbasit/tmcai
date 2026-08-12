@@ -1,8 +1,8 @@
 {
   "_provenance": "Per-capability scores as supplied by the owner on 2026-08-12 (the format and the current state, given together). AGENTS.md's locked baseline after MEM-005 was Nexeo 45.3 vs professional 92; these numbers are the later state and supersede it. Capability ORDER is BRAIN_VISION.md's and must not be reordered (AGENTS.md, required audit sequence step 1).",
   "_rules": "Evidence-based capability judgements, NOT test-pass percentages. Every score change must name the iteration and the evidence that moved it. Green tests alone never raise a score. Anything unexercised or unfalsifiable in production is UNVERIFIED and does not raise it either.",
-  "as_of_iteration": 4,
-  "as_of_head": "fb3f36b",
+  "as_of_iteration": 6,
+  "as_of_head": "72e7a02",
   "capabilities": [
     {
       "name": "Simple & Smart",
@@ -26,7 +26,7 @@
       "name": "Accurate Communication",
       "nexeo": 70,
       "professional": 94,
-      "delta": 1
+      "delta": 0
     },
     {
       "name": "Authorized Action",
@@ -290,6 +290,138 @@
           "nexeo": 70,
           "professional": 94,
           "delta": 1
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 52,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 43,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 53,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 33,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "head": "52729be",
+      "overall": 46.9,
+      "movement": 0.0,
+      "verdict": "NEUTRAL (Codex WEAK \u2014 right mechanism, incomplete coverage, live-unverified)",
+      "evidence": [
+        "Accurate Communication +0: DEF-140 (ede14fa) removed a genuine SECOND address resolver \u2014 brainHumanComm.addressUser read user.name's first token while brainPersonaService honoured the configured 'Sir', which is why a live draft ask said 'Basit,'. Codex confirmed the diagnosis and called the composition-first deviation CORRECT. No credit yet, for two stated reasons: (1) Codex raised two HIGH findings \u2014 provenance is OPTIONAL and only 7 of ~66 inventoried producers are classified, and notificationService.ts:122-141 sends owner WhatsApp content without entering the boundary at all, so an unclassified producer can still ship 'Basit,' with nothing failing; (2) it is live-unverified \u2014 Codex: 'remains locally verified and live-unverified until an actual proactive draft/chase message uses Sir rather than Basit.' The compose benchmark bought no evidence either way, which Codex judged as scope discipline rather than uselessness."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 36,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 70,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 52,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 43,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 53,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 33,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 6,
+      "head": "72e7a02",
+      "overall": 46.9,
+      "movement": 0.0,
+      "verdict": "NEUTRAL (Codex WEAK)",
+      "evidence": [
+        "Accurate Communication +0: DEF-143 (aef1540) caught a fabricated developer-remediation clause the previous iteration's detector missed, and Codex granted that plus 'useful register guidance'. But verdict WEAK on two counts that block credit: its salvage test DECLARES the adjacent unverified reminder-cause claim TRUE, preserving the baseline's most serious C1/C2 defect, and it widened a block-and-excise regex with known answer-destroying false positives \u2014 the guard-destroys-the-answer class with four prior occurrences. C4 moved 87.9 -> 88.3, inside the instrument's own run-to-run spread (C4 read 90.0 and 87.9 on identical code 20 minutes apart), so the movement is not evidence either."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 36,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 70,
+          "professional": 94,
+          "delta": 0
         },
         {
           "name": "Authorized Action",
