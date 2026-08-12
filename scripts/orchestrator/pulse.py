@@ -33,9 +33,11 @@ SAYS which it used — a timer whose basis is unclear is a timer nobody can act 
 
 Usage:
     pulse.py                 # one snapshot
-    pulse.py --loop          # refresh every 60s, keeping history (recommended)
-    pulse.py --loop 30       # every 30s
-    pulse.py --once --plain  # no colour, for piping
+    pulse.py --loop          # refresh IN PLACE every 60s (recommended)
+    pulse.py --loop 15       # every 15s
+    pulse.py --loop --scroll # append a block each tick instead of redrawing
+    pulse.py --full          # also show the measurement history
+    pulse.py --plain         # no colour, for piping
 """
 import glob
 import json
@@ -107,6 +109,40 @@ def newest(pattern):
         return None, 0
     f = max(fs, key=os.path.getmtime)
     return f, time.time() - os.path.getmtime(f)
+
+
+STAGE_FILE = os.path.join(STATE, "pulse-stage")
+
+
+def stage_elapsed(stage, fallback):
+    """How long the CURRENT stage has been running.
+
+    The first version printed the transcript's age for a visible IDE turn, which
+    is a different quantity entirely: it showed 5s, then 8s, then 57s during one
+    continuous build turn, because it was measuring how STALE the file was, not
+    how long the work had been going. The owner's question was "since how long" —
+    staleness cannot answer it.
+
+    So the moment a stage changes, the time is recorded and the timer counts from
+    there. Falls back to the caller's figure only when there is no recorded start
+    (first run, or the state file was cleared).
+    """
+    now = time.time()
+    prev_stage, prev_since = "", 0.0
+    try:
+        raw = open(STAGE_FILE).read().split()
+        prev_stage, prev_since = raw[0], float(raw[1])
+    except Exception:
+        pass
+    if stage != prev_stage:
+        try:
+            os.makedirs(STATE, exist_ok=True)
+            with open(STAGE_FILE, "w") as f:
+                f.write(f"{stage} {now}")
+        except Exception:
+            pass
+        return fallback
+    return now - prev_since if prev_since else fallback
 
 
 def transcript_age(sid):
@@ -220,6 +256,13 @@ def gauge(nexeo, pro, width=30):
 
 def snapshot(full=False):
     stage, elapsed, basis, detail = detect_stage()
+    # A process-derived elapsed time is the kernel's own and needs no help; a
+    # file-derived one is staleness, not duration, so it is replaced by the
+    # recorded stage start.
+    if basis in ("transcript", "logfile", "none"):
+        elapsed = stage_elapsed(stage, elapsed)
+    else:
+        stage_elapsed(stage, elapsed)  # keep the record current
     sc = scores()
     vd = verdicts()
     latest = sc[-1][2] if sc else {}
@@ -242,9 +285,7 @@ def snapshot(full=False):
     who = {"BUILDING": "Claude building", "REVIEWING": "Codex reviewing",
            "MEASURING": "benchmark scoring", "STALLED": "STALLED",
            "IDLE": "nobody working"}.get(stage, stage)
-    timer = fmt_dur(elapsed) if stage != "IDLE" else fmt_dur(
-        time.time() - os.path.getmtime(f"{ORCH}/build_log.md")
-        if os.path.exists(f"{ORCH}/build_log.md") else 0)
+    timer = fmt_dur(elapsed)
 
     lines = []
     lines.append(f"{C['dim']}{'─' * 58}{C['r']}")
@@ -311,12 +352,27 @@ def main():
         every = 60
         if i + 1 < len(args) and args[i + 1].isdigit():
             every = int(args[i + 1])
+        # Redraws IN PLACE by default — owner, 2026-08-12: "can't it keep updating
+        # same window??". Appending a fresh block each tick pushed the live line
+        # off the top of the screen, so the one number he is watching kept moving
+        # away from him. `--scroll` keeps the old append-forever behaviour for
+        # anyone who wants a log.
+        scroll = "--scroll" in args
         try:
             while True:
-                print(snapshot(full), flush=True)
+                out = snapshot(full)
+                if scroll:
+                    print(out, flush=True)
+                else:
+                    # Home the cursor and clear to end of screen, rather than a
+                    # full clear: a full clear flickers, and clearing AFTER the
+                    # write leaves no gap where the screen is blank.
+                    sys.stdout.write("\033[H" + out + "\033[J")
+                    sys.stdout.flush()
                 time.sleep(every)
         except KeyboardInterrupt:
-            print("\npulse stopped (nothing else is affected)")
+            sys.stdout.write("\n")
+            print("pulse stopped (the loop itself is unaffected)")
         return 0
     print(snapshot(full))
     return 0
