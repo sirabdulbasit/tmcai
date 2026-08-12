@@ -414,8 +414,18 @@ if ! measure "$ITER" "baseline"; then
   die "baseline measurement failed — the loop has no metric; see logs/"
 fi
 BASELINE_OVERALL="$BENCH_OVERALL"
+# The note must say WHICH baseline this is. On a restart the counter is already
+# past 0, and a row reading "baseline before any loop iteration" next to
+# iteration 3 is simply false — the kind of small untrue record that makes a
+# whole ledger untrustworthy. It also states the HEAD it measured, because after
+# a restart the tree has usually moved since the last row.
+if [ "$ITER" -eq 0 ]; then
+  BASELINE_NOTE="baseline before any loop iteration"
+else
+  BASELINE_NOTE="RESTART baseline re-measured at HEAD $(git rev-parse --short HEAD) — iterations 1..$ITER already done; next build turn is $((ITER + 1))"
+fi
 append_ledger "$ITER" "$(git rev-parse --short HEAD)" "$BENCH_OVERALL" "$BENCH_MIN" \
-  "$BENCH_WEAKEST" "$BENCH_GATE" "$(tsc_status)" "skipped" "baseline" "baseline before any loop iteration"
+  "$BENCH_WEAKEST" "$BENCH_GATE" "$(tsc_status)" "skipped" "baseline" "$BASELINE_NOTE"
 
 BEST_MIN="${BENCH_MIN%%.*}"; [ -n "$BEST_MIN" ] || BEST_MIN=0
 STALL=0
