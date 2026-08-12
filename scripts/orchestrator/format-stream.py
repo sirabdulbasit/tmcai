@@ -52,6 +52,62 @@ def tool_summary(name, inp):
     return name
 
 
+def codex_event(ev, emit):
+    """Codex speaks a different dialect from Claude, and the owner asked to watch
+    BOTH seats. Handled here rather than in a second script so the two live views
+    read identically — a reviewer's tool call should look like a builder's tool
+    call when you are watching the loop work.
+
+    Shapes (codex-cli 0.147.0): thread.started · turn.started ·
+    item.started/item.completed carrying item.type in
+    {agent_message, reasoning, command_execution, file_change, …} · turn.completed.
+    Returns True if the event was recognised as Codex's.
+    """
+    kind = ev.get("type", "")
+    if not (kind.startswith("thread.") or kind.startswith("turn.")
+            or kind.startswith("item.")):
+        return False
+
+    if kind == "thread.started":
+        emit(f"── codex thread {ev.get('thread_id', '?')}")
+    elif kind == "turn.started":
+        emit("── turn started")
+    elif kind == "turn.completed":
+        u = ev.get("usage", {}) or {}
+        emit(f"── turn completed  in={u.get('input_tokens', '?')} "
+             f"cached={u.get('cached_input_tokens', '?')} "
+             f"out={u.get('output_tokens', '?')} "
+             f"reasoning={u.get('reasoning_output_tokens', '?')}")
+    elif kind == "turn.failed":
+        # Must be visible: a failed review turn means the loop got no directive.
+        emit(f"── TURN FAILED {clip(ev.get('error', ev), 300)}")
+    elif kind in ("item.started", "item.completed"):
+        item = ev.get("item", {}) or {}
+        itype = item.get("type", "?")
+        done = kind == "item.completed"
+        if itype == "agent_message":
+            if done and item.get("text", "").strip():
+                emit(f"  {clip(item['text'])}")
+        elif itype == "reasoning":
+            if done and (item.get("text") or item.get("summary")):
+                emit(f"  ~ {clip(item.get('text') or item.get('summary'))}")
+        elif itype == "command_execution":
+            if done:
+                # Exit status included: a review that ran a failing command and
+                # carried on regardless is something the log must show.
+                emit(f"  ← exit={item.get('exit_code', '?')} "
+                     f"{clip(item.get('aggregated_output') or '', 140)}")
+            else:
+                emit(f"  → $ {clip(item.get('command', '?'), 140)}")
+        elif itype == "file_change":
+            # Codex is write-restricted to the review log; anything else it edits
+            # is a boundary violation and needs to be loud, not buried.
+            emit(f"  {'←' if done else '→'} FILE CHANGE {clip(item.get('changes') or item, 160)}")
+        elif done:
+            emit(f"  · {itype} {clip(item.get('text') or '', 120)}")
+    return True
+
+
 def main():
     prefix = "--prefix" in sys.argv
     t0 = time.time()
@@ -74,6 +130,11 @@ def main():
             continue
 
         kind = ev.get("type")
+
+        # Codex's dialect first — its `item.*` / `turn.*` names do not collide
+        # with Claude's, so the two are distinguishable without a mode flag.
+        if codex_event(ev, emit):
+            continue
 
         if kind == "system" and ev.get("subtype") == "init":
             emit(f"── session {ev.get('session_id', '?')}  model={ev.get('model', '?')}  "

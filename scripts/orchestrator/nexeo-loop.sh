@@ -295,31 +295,42 @@ run_claude() {
 # wrapped in a subshell that cd's to $ROOT rather than relying on the caller.
 run_codex() {
   local iter="$1" prompt="$2"
-  local log="$LOGS/iter-$(printf '%02d' "$iter")-review.log"
-  local last="$LOGS/iter-$(printf '%02d' "$iter")-review-last.txt"
+  local n; n="$(printf '%02d' "$iter")"
+  local log="$LOGS/iter-$n-review.log"       # readable, live
+  local raw="$LOGS/iter-$n-review.jsonl"     # raw events, the evidence
+  local last="$LOGS/iter-$n-review-last.txt"
   local stored="" rc=0
+  local -a cmd
 
   [ -s "$CODEX_SESSION_FILE" ] && stored="$(cat "$CODEX_SESSION_FILE")"
 
+  # Built once, run once. The three branches used to duplicate the invocation,
+  # which is how a flag gets fixed on two paths and forgotten on the third.
   if [ -z "$stored" ]; then
     say "REVIEW iter=$iter codex opening a new thread"
-    ( cd "$ROOT" && "$CODEX_BIN" exec --json \
-        --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-        -C "$ROOT" -o "$last" "$prompt" ) > "$log" 2>&1
-    rc=$?
+    cmd=("$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox
+         --skip-git-repo-check -C "$ROOT" -o "$last" "$prompt")
   elif [ "$stored" = "--last" ]; then
     say "REVIEW iter=$iter codex resuming --last (thread id was never captured)"
-    ( cd "$ROOT" && "$CODEX_BIN" exec resume --last --json \
-        --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-        -o "$last" "$prompt" ) > "$log" 2>&1
-    rc=$?
+    cmd=("$CODEX_BIN" exec resume --last --json
+         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
+         -o "$last" "$prompt")
   else
     say "REVIEW iter=$iter codex resuming thread $stored"
-    ( cd "$ROOT" && "$CODEX_BIN" exec resume "$stored" --json \
-        --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-        -o "$last" "$prompt" ) > "$log" 2>&1
-    rc=$?
+    cmd=("$CODEX_BIN" exec resume "$stored" --json
+         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
+         -o "$last" "$prompt")
   fi
+
+  # Owner, 2026-08-11: *"i want to see both's activities in-session"*. The
+  # reviewer streams exactly like the builder — raw events tee'd as evidence, one
+  # readable line per event rendered live. The formatter speaks both dialects, so
+  # watching Codex reads the same as watching the Builder.
+  ( cd "$ROOT" && "${cmd[@]}" 2>&1 ) \
+    | tee "$raw" \
+    | python3 "$FORMATTER" --prefix > "$log" 2>&1
+  # codex's status, NOT tee's or the formatter's.
+  rc=${PIPESTATUS[0]}
 
   # Capture the thread id from the first run so later iterations resume THIS
   # thread, not whatever else ran last in this directory. codex-cli 0.147.0
@@ -327,7 +338,14 @@ run_codex() {
   # future version renames it.
   if [ -z "$stored" ]; then
     local sid
-    sid="$(grep -oE '"(session_id|thread_id|conversation_id)":"[0-9a-f-]{36}"' "$log" \
+    # Read the RAW event stream, not the formatted log. Once the output started
+    # going through the formatter, `"thread_id":"…"` no longer appears in $log —
+    # the id would never be captured, the loop would fall back to `resume --last`,
+    # and the in-session property would decay silently with a WARNING nobody
+    # reads. The formatted line is accepted as a second source.
+    sid="$(grep -oE '"(session_id|thread_id|conversation_id)":"[0-9a-f-]{36}"' "$raw" 2>/dev/null \
+           | head -1 | grep -oE '[0-9a-f-]{36}' || true)"
+    [ -z "$sid" ] && sid="$(grep -oE 'codex thread [0-9a-f-]{36}' "$log" 2>/dev/null \
            | head -1 | grep -oE '[0-9a-f-]{36}' || true)"
     if [ -n "$sid" ]; then
       printf '%s' "$sid" > "$CODEX_SESSION_FILE"
