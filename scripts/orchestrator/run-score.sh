@@ -13,6 +13,10 @@
 # recalibrate. Scoring now sits with an agent that builds nothing and reviews
 # nothing.
 #
+# `NotebookEdit` is deliberately absent from the deny list: grok rejects it as an
+# "unsupported tool prefix" and refuses to start, which is how the first scoring
+# pass failed. Verified individually — Write, Edit, MultiEdit are accepted.
+#
 # READ-ONLY, ENFORCED BY THE HARNESS. `--deny` removes every write tool rather
 # than asking the scorer to behave. Three agents in one tree is one more than the
 # two that already produced an attribution mess (my own tooling reviewed as the
@@ -113,15 +117,96 @@ fi
 
 # --deny is the read-only enforcement. --permission-mode dontAsk keeps it headless
 # without granting writes.
-( cd "$ROOT" && "$GROK_BIN" -p "$PROMPT" \
-    "${session_args[@]}" \
+# TWO PHASES, AND THE REASON IS A HARD CLI CONSTRAINT.
+#
+# `--json-schema` constrains the model to emit JSON immediately, so it cannot use
+# tools first. The first attempt proved it: grok returned in 13 seconds with
+# `"evidence": "placeholder"` on all nine capabilities and `stopReason:
+# "cancelled"`. It had read nothing, because with a schema attached there is no
+# turn in which to read. Structured output and agentic reading cannot happen in
+# one call.
+#
+# So: phase 1 READS, with tools, no schema, and produces prose. Phase 2 RESUMES
+# that session and formats the analysis into the schema. The scorer's judgement is
+# formed in phase 1; phase 2 is only transcription of its own findings.
+run_grok_read() {
+  ( cd "$ROOT" && "$GROK_BIN" -p "$1" \
+    "${@:2}" \
+    --cwd "$ROOT" \
+    --output-format plain \
+    --permission-mode dontAsk \
+    --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
+    --disallowed-tools 'Write,Edit,MultiEdit' \
+    --max-turns 80 ) > "$READ_LOG" 2>&1
+}
+
+run_grok_format() {
+  ( cd "$ROOT" && "$GROK_BIN" -p "$FORMAT_PROMPT" \
+    --resume "$1" \
     --cwd "$ROOT" \
     --json-schema "$(cat "$SCHEMA")" \
     --output-format json \
     --permission-mode dontAsk \
-    --deny 'Write' --deny 'Edit' --deny 'MultiEdit' --deny 'NotebookEdit' \
-    --disallowed-tools 'Write,Edit,MultiEdit,NotebookEdit' \
-    --max-turns 60 ) > "$LOG" 2>&1
+    --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
+    --disallowed-tools 'Write,Edit,MultiEdit' \
+    --max-turns 4 ) > "$LOG" 2>&1
+}
+
+READ_LOG="$LOGS/iter-$n-score-read.log"
+READ_PROMPT="$PROMPT
+
+## THIS TURN IS FOR READING ONLY
+
+Do NOT output JSON yet. Read the files named above, follow the code for each
+capability, and end your turn with your findings in prose: for every one of the
+nine capabilities, the score you will give it and the file:line, commit or DEF id
+that justifies it. You will be asked for the JSON next, from this same session, so
+what you establish now is what you will report."
+
+FORMAT_PROMPT="Now output ONLY the JSON for the scorecard, matching the schema
+exactly, using the nine scores and the evidence you just established.
+
+Requirements the schema enforces and I will re-check on ingest:
+- all nine capabilities, in BRAIN_VISION.md order
+- \`evidence\` at least 60 characters, citing what you actually read (file:line,
+  commit, DEF id, or doc row) — NOT the word placeholder, and not a restatement
+  of the capability name
+- \`basis\` one of code-read / test-read / doc-read / live-evidence / absent
+- \`what_moved\` and \`what_did_not\` at least 30 characters each
+
+An unevidenced entry is rejected and the whole scoring pass is retried, so write
+the real citation."
+
+# Phase 1 — read.
+if [ -s "$SESSION_FILE" ]; then
+  run_grok_read "$READ_PROMPT" --resume "$(cat "$SESSION_FILE")"
+else
+  sid="$(cat /proc/sys/kernel/random/uuid)"
+  printf '%s' "$sid" > "$SESSION_FILE"
+  run_grok_read "$READ_PROMPT" --session-id "$sid"
+fi
+rc=$?
+
+# A recorded session id that was never actually created makes every resume 404.
+# That is different from a session that existed and was lost: here a fresh start
+# is the correct repair, not a silent downgrade. Retried once, loudly.
+if [ "$rc" -ne 0 ] && grep -qiE "not found locally|404 Not Found|Failed to restore session" "$READ_LOG"; then
+  echo "run-score: recorded session does not exist — opening a NEW one and retrying once" >&2
+  sid="$(cat /proc/sys/kernel/random/uuid)"
+  printf '%s' "$sid" > "$SESSION_FILE"
+  run_grok_read "$READ_PROMPT" --session-id "$sid"
+  rc=$?
+fi
+
+# The session id grok actually used, read back from its own output rather than
+# assumed — if it forked or renamed, resuming the wrong id would format a session
+# that never did the reading.
+ACTUAL_SID="$(grep -oE '"sessionId":"[0-9a-f-]{36}"' "$READ_LOG" | head -1 | grep -oE '[0-9a-f-]{36}' || true)"
+[ -z "$ACTUAL_SID" ] && ACTUAL_SID="$(cat "$SESSION_FILE")"
+printf '%s' "$ACTUAL_SID" > "$SESSION_FILE"
+
+# Phase 2 — format what it just found.
+run_grok_format "$ACTUAL_SID"
 rc=$?
 
 # The JSON may be wrapped by the CLI's own envelope; take the first object that

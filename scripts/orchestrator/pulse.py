@@ -174,6 +174,12 @@ def detect_stage():
     ps = procs()
     sid = builder_session()
 
+    # The third seat. Same editor-process guard as the other two matchers — grok
+    # also has a TUI that could be sitting open.
+    for et, arg in ps:
+        if ("grok" in arg and " -p" in arg
+                and "vscode-server" not in arg and "vscode/cli" not in arg):
+            return "SCORING", et, "process", "grok reading the codebase (capability score)"
     for et, arg in ps:
         if "nexeoCapabilityBenchmark" in arg:
             return "MEASURING", et, "process", "benchmark: 12 cases, compose + judge"
@@ -302,6 +308,7 @@ def snapshot(full=False):
 
     who = {"BUILDING": "Claude building", "REVIEWING": "Codex reviewing",
            "MEASURING": "benchmark scoring", "CHECKS": "checks running",
+           "SCORING": "Grok scoring",
            "STALLED": "STALLED",
            "IDLE": "nobody working"}.get(stage, stage)
     timer = fmt_dur(elapsed)
