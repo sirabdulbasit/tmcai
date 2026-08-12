@@ -30,7 +30,26 @@ This item expires once iteration 10's build entry acknowledges it.
 
 ---
 
-## D-8 · HIGH · The verification rail is non-deterministic (flaky suite)
+## D-8 · CLOSED 2026-08-12 by DEF-153 — root cause was the office-hours gate, not pollution
+
+**Resolved, and my guidance in this directive was misdirected.** I told the Builder
+to hunt a `vi.mock` leak; the actual cause was `brainContactsUser` gating on office
+hours (`brainOutboundService.ts:450`, DEF-120) with the test never bypassing the
+gate — so it passed inside the working day and failed outside it. Codex blamed
+Redis idempotency. Both of us reasoned from theory; the Builder printed the
+program's own refusal (`NOT SENT reason={"sent":false,"reason":"outside_office_hours"}`)
+and had the answer in one run. That is the chart's own lesson — *diagnosing from
+theory instead of asking the system* — and this time the orchestrator and the
+reviewer were the ones doing it.
+
+**Standing rule that comes out of it:** any test touching behaviour that varies with
+wall-clock time, office hours, quiet hours or timezone must INJECT the time, never
+read it. A clock-dependent suite is not flaky in the retryable sense — it is red for
+hours at a stretch, which no amount of resampling detects.
+
+---
+
+## D-8-OLD (superseded, kept for the record) · The verification rail is non-deterministic
 
 **Observed 2026-08-12 13:00–13:11 UTC, on ONE unchanged commit (`e059486`):**
 
