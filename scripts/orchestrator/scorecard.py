@@ -135,6 +135,14 @@ def apply_sets(d, sets, iteration, head, verdict):
         "verdict": verdict or ("PROGRESSIVE" if movement > 0
                                else "REGRESSION" if movement < 0 else "NEUTRAL"),
         "evidence": notes or ["no capability moved this iteration"],
+        # A FULL SNAPSHOT, not just the movement. Without it an earlier
+        # iteration's card can only be reconstructed by replaying deltas
+        # backwards from the current state — and a card rebuilt by arithmetic is
+        # not a record of what was reported at the time, it is a guess that will
+        # quietly disagree with what the owner was shown.
+        "snapshot": [{"name": c["name"], "nexeo": c["nexeo"],
+                      "professional": c["professional"], "delta": c.get("delta", 0)}
+                     for c in d["capabilities"]],
     })
     return d
 
@@ -152,9 +160,33 @@ def main():
                     help="persist the --set changes; without it nothing is written")
     ap.add_argument("--append", action="store_true",
                     help="also append the rendered card to capability_history.md")
+    ap.add_argument("--history", action="store_true",
+                    help="render EVERY iteration's card, oldest first, from its snapshot")
     a = ap.parse_args()
 
     d = load()
+
+    if a.history:
+        # Rendered from each iteration's stored snapshot, never by replaying
+        # deltas backwards from today — a card rebuilt by arithmetic is a guess,
+        # and it would quietly disagree with what was reported at the time.
+        for h in d.get("history", []):
+            snap = h.get("snapshot")
+            if not snap:
+                print(f"Iteration {h['iteration']}: no snapshot stored "
+                      f"(recorded before snapshots existed)\n")
+                continue
+            print(render({"capabilities": snap}, h["iteration"], "Post-Build"))
+            v = h.get("verdict")
+            if v:
+                print(f"Verdict: {v}")
+            # Evidence is a list now, but the first entry was written as a bare
+            # string — iterating that yields one character per line.
+            ev = h.get("evidence") or []
+            for e in ([ev] if isinstance(ev, str) else ev):
+                print(f"  · {e}")
+            print()
+        return
     if a.sets:
         d = apply_sets(d, a.sets, a.iteration or d.get("as_of_iteration"), a.head, a.verdict)
         if a.commit:
