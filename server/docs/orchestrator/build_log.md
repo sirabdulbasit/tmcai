@@ -1582,3 +1582,26 @@ clear the gate and I am not claiming it is.
   predicate.
 - **C4 rises but overall falls.** I would have traded the mean for the minimum,
   which under a "95 on every criterion" gate is not a win.
+
+### Addendum — D-5 arrived mid-turn
+
+`operator_directives.md` gained **D-5 · RANKED FIRST from iteration 8** while this
+turn was in flight; I had read the file at step 0 when it held four directives, so
+the accounting above predates it. Recording it so nothing looks silently dropped:
+
+- **It does not govern iteration 7** — it says "from iteration 8" — so this turn's
+  choice stands unaffected.
+- **It lifts a restriction that was blocking me**, and I want to acknowledge that
+  plainly because I had been treating the ban as absolute: ADDING new cases and
+  new scored surfaces is now the Builder's job, while changing the twelve existing
+  cases, `brainResponseEvaluator.ts`, or the gate arithmetic stays forbidden. I
+  touched none of the latter this turn.
+- **Its diagnosis matches what this entry argues from the other end.** D-5 says
+  every iteration's movement has landed on Accurate Communication because that is
+  the only capability twelve conversational replies can exercise. My section above
+  reaches the same wall from inside C4: the remaining complaints contradict each
+  other and the modal award is 90. Both are the same finding — the instrument, not
+  the code, is now the limit.
+- **Next turn is the proactive slice**, per D-5's ordered list and Codex's
+  Iteration-4 directive 3. That also unblocks the DEF-140 work I have deferred
+  twice for exactly the stated reason: it could not be scored.
