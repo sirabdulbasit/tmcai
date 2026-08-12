@@ -278,6 +278,9 @@ async function notifyOwnerOfUnattachedReply(
     await enqueueBrainPrompt({
       userId: ownerUserId,
       clientNumber: input.clientNumber,
+      // Embeds the counterpart's message verbatim — the boundary must not
+      // rewrite a word of it (DEF-140).
+      provenance: 'quoted_third_party',
       question: `${who} replied: "${input.body.slice(0, 300)}"\n\n`
         + '(Not attached to an open request — everything I had with them is already closed or waiting on you.)',
       criticality: 'routine',

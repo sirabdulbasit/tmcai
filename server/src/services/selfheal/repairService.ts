@@ -361,6 +361,7 @@ const unnotifiedAnsweredAsk: RepairRule = {
       const result = await brainContactsUser({
         userId: r.owner_user_id,
         kind: 'unnotified_answered_ask',
+        provenance: 'brain_prose',
         summary: 'A reply came in that you were never told about',
         body: `Someone replied about ${r.title ? `"${r.title}"` : 'an item you delegated'} and I never passed it on. I've picked it up now — tell me if you want anything done about it.`,
         urgency: 'normal',

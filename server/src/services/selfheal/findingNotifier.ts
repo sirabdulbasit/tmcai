@@ -66,6 +66,7 @@ export async function notifySevereFindings(clientNumber: string): Promise<Notify
     const result = await brainContactsUser({
       userId,
       kind: 'brain_health_alert',
+      provenance: 'brain_prose',
       summary: `${items.length} problem(s) I found on my own`,
       body: `I found ${items.length === 1 ? 'a problem' : `${items.length} problems`} with my own behaviour:\n\n${lines}${more}\n\nI'm not asking you to do anything — I'm telling you because you shouldn't have to find these yourself.`,
       urgency: 'normal',

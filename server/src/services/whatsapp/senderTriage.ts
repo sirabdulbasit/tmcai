@@ -396,6 +396,8 @@ export async function triageUnregisteredInbound(params: {
       await brainContactsUser({
         userId: ownerUserId,
         kind: 'wa_counterpart_message',
+        // Embeds a counterpart's message verbatim — never rewrite (DEF-140).
+        provenance: 'quoted_third_party',
         summary: `WhatsApp from ${who}`,
         body: `${who} messaged me:\n"${params.body.slice(0, 300)}"\n\n`
           + 'I could not queue this for a proper decision, so I am passing it straight on. '
@@ -431,6 +433,8 @@ async function relayToOwner(
   await brainContactsUser({
     userId: ownerUserId,
     kind: 'wa_counterpart_message',
+    // Forwards a counterpart's words verbatim — never rewrite (DEF-140).
+    provenance: 'quoted_third_party',
     summary: `WhatsApp from ${who}`,
     // `evidence` is an internal policy vocabulary — 'owner_allowed',
     // 'concern_evidence'. It reached his phone verbatim and meant nothing to

@@ -72,17 +72,43 @@ function pickVariant(kind: string, itemKey: string, dayOffset = 0, n = 3): numbe
   return Math.abs(h) % n;
 }
 
-/** First-name addressee when available; otherwise empty. Brain's
- *  persona service stores userFirstName on the persona record. */
+/**
+ * How Brain addresses the OWNER in proactive messages (DEF-140).
+ *
+ * This function used to read `user.name` from the database and return its
+ * first token — a **second, disagreeing implementation of "how do we
+ * address this person"**, sitting beside the real one in
+ * `brainPersonaService` (which honours Settings → Profile →
+ * preferredTitle). The owner had that set to "Sir" and received
+ * *"Basit, haven't pinned this down yet"* from the daily draft ask,
+ * because this resolver had never heard of the setting.
+ *
+ * That is `protection-with-two-implementations` (chart §3, 7 occurrences)
+ * in its purest form: the canonical-looking helper is what review reads,
+ * and the copy is what the owner's phone renders. The 2026-05-20 fix for
+ * exactly this complaint landed in the persona and never reached here,
+ * because nothing tied the two together.
+ *
+ * So this now DELEGATES rather than deriving. `persona.addressAs` is the
+ * one answer, and it already falls back to the first name when no title is
+ * set — which is the old behaviour, preserved for users who set nothing.
+ *
+ * Note this is the composition-time fix, and it is the one that matters:
+ * supplying the right token when the message is BUILT cannot corrupt
+ * anything, whereas rewriting finished text has already cost us one
+ * misquoted-evidence defect (DEF-137). The rendering boundary in
+ * `brainOutboundService` is defence in depth behind this, not instead of it.
+ */
 export async function addressUser(userId: number): Promise<string> {
   try {
     const u = await prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true },
+      select: { clientNumber: true },
     });
-    if (!u?.name) return '';
-    const first = u.name.split(/\s+/)[0];
-    return first || '';
+    if (!u?.clientNumber) return '';
+    const { getBrainPersona } = await import('../knowledge/brainPersonaService');
+    const persona = await getBrainPersona(userId, u.clientNumber);
+    return persona.addressAs || '';
   } catch {
     return '';
   }

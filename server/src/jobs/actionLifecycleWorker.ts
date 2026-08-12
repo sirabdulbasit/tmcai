@@ -125,6 +125,11 @@ async function contactOwner(item: any, plan: LifecyclePlan, body?: string): Prom
     userId: item.userId,
     clientNumber: item.clientNumber,
     question: body ?? ownerQuestion(item, plan),
+    // The intervention notice is a rendered form ("Follow-up attempts
+    // without a usable response: 3. Commitments recorded: 0."). Its shape
+    // IS its meaning, so the address boundary leaves it alone (DEF-140).
+    // Making that form read like a person is a separate defect.
+    provenance: 'deterministic',
     openItemId: item.id,
     sideEffect: { kind: 'action_status_update', openItemId: item.id },
     criticality: plan.action === 'escalate_user' ? 'high' : 'routine',

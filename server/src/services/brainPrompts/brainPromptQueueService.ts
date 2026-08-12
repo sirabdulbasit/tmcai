@@ -25,7 +25,7 @@
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
-import { brainContactsUser, type Urgency } from '../notifications/brainOutboundService';
+import { brainContactsUser, type Urgency, type OwnerMessageProvenance } from '../notifications/brainOutboundService';
 
 const log = createLogger('brain-prompt-queue');
 
@@ -57,6 +57,18 @@ export interface EnqueueInput {
   ttlMs?: number;
   /** Free-form audit metadata. */
   metadata?: Record<string, unknown>;
+  /**
+   * What KIND of text `question` is (DEF-140). Passed straight through to
+   * `brainContactsUser`, which applies owner address policy to
+   * `brain_prose` and nothing else. Fail-closed when absent.
+   *
+   * This hop matters: the queue is how `delegationCaptureService` and
+   * `actionLifecycleWorker` reach the owner, and the first of those embeds
+   * a third party's message verbatim. Without pass-through, provenance
+   * would be lost between the producer that knows the answer and the
+   * boundary that needs it.
+   */
+  provenance?: OwnerMessageProvenance;
   /**
    * DEF-063 — does this prompt WAIT for the owner to answer?
    *
@@ -125,6 +137,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
     const r = await brainContactsUser({
       userId: input.userId,
       kind: 'brain_prompt_top',
+      provenance: input.provenance,
       summary: clip(input.question, 120),
       body: input.question,
       urgency: channel === 'call_business' ? 'emergency' : 'high',
@@ -153,7 +166,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
         sentAt: r.sent ? new Date() : null,
         answeredAt: r.sent ? new Date() : null,
         expiresAt,
-        metadata: { ...(input.metadata ?? {}), brainOutboundReason: r.reason } as any,
+        metadata: { ...(input.metadata ?? {}), brainOutboundReason: r.reason, provenance: input.provenance } as any,
       },
       select: { id: true },
     });
@@ -177,7 +190,10 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       state: 'queued',
       dedupKey: input.dedupKey ?? null,
       expiresAt,
-      metadata: { ...(input.metadata ?? {}), expectsReply } as any,
+      // `provenance` rides the row so sendNextPrompt can hand it to the
+      // outbound boundary a tick later — the producer knows what kind of
+      // text this is; the sender would otherwise have to guess (DEF-140).
+      metadata: { ...(input.metadata ?? {}), expectsReply, provenance: input.provenance } as any,
     },
     select: { id: true },
   });
@@ -539,6 +555,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   const r = await brainContactsUser({
     userId,
     kind: 'brain_prompt',
+    provenance: (queueMeta.provenance as OwnerMessageProvenance | undefined),
     summary: clip(questionText, 120),
     body: questionText,
     urgency,

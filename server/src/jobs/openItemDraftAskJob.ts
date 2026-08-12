@@ -189,6 +189,8 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
       const dispatchRes = await brainContactsUser({
         userId: item.userId,
         kind: 'open_item_draft_ask',
+        // Brain's own words, addressed to the owner (DEF-140 inventory).
+        provenance: 'brain_prose',
         summary: `Draft ask day ${day}: "${item.title.slice(0, 60)}"`,
         body,
         dedupKey: `draft_ask:${item.id}:${todayUtcDateStr}`,

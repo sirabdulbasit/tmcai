@@ -47,8 +47,49 @@ const log = createLogger('brain-outbound');
 
 export type Urgency = 'low' | 'normal' | 'high' | 'emergency';
 
+/**
+ * What KIND of text a producer is handing to the owner (DEF-140).
+ *
+ * The inventory behind this type is the point of it. Owner-visible text
+ * comes from 66 producer call sites, and they are not the same kind of
+ * thing:
+ *
+ *   - `brain_prose` — Brain's own words, in its own voice. The persona's
+ *     address rules apply here and ONLY here. Examples: the daily draft
+ *     ask, the owner-chase prompt, the self-heal "I found a problem with
+ *     my own behaviour" notice.
+ *   - `quoted_third_party` — contains another person's words verbatim.
+ *     `delegationCaptureService`'s unattached-reply notice and
+ *     `senderTriage`'s counterpart forward both embed
+ *     `"${body.slice(0, 300)}"`. **Rewriting these misquotes a real
+ *     human**, which is DEF-137 one layer out, and DEF-137 was found in
+ *     review rather than production only by luck.
+ *   - `deterministic` — a rendered artifact: the day brief, the lifecycle
+ *     intervention form, connector alerts. Its shape is its meaning.
+ *   - `system_marker` — a bracketed marker rendered downstream by
+ *     `answerSanitizer`. Never persona prose.
+ *
+ * Omitting this field is safe by construction: an unclassified payload is
+ * treated as "not Brain prose" and is never touched. That is invariant #6
+ * (fail closed) and it is deliberate — the 60-odd pre-existing producers
+ * that have not been classified yet cannot be silently corrupted by this
+ * boundary, and a NEW producer of Brain prose that forgets to declare
+ * simply misses a cosmetic rule rather than mangling someone's quote.
+ */
+export type OwnerMessageProvenance =
+  | 'brain_prose'
+  | 'quoted_third_party'
+  | 'deterministic'
+  | 'system_marker';
+
 export interface BrainContactRequest {
   userId: number;
+  /**
+   * What kind of text `body` is — see OwnerMessageProvenance. Address
+   * policy is applied to `brain_prose` and nothing else. Optional and
+   * fail-closed: absent means "do not touch".
+   */
+  provenance?: OwnerMessageProvenance;
   /**
    * Why Brain is reaching out. Free-form key so callers can register new
    * kinds without a schema change. Used for audit grouping + per-kind caps.
@@ -162,6 +203,50 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
 
   const prefs = (user.notificationPreferences as any) ?? {};
   const bc = prefs.brain_channel ?? {};
+
+  // ── Owner-message rendering boundary (DEF-140) ───────────────────────
+  //
+  // The ONE place proactive owner-visible prose has the persona's address
+  // rules applied. It sits here, not at `sendTenantWhatsAppText`, because
+  // the transport is shared with messages to OTHER PEOPLE (delegatee
+  // nudges via actionLifecycleWorker, counterpart sends) and a rule about
+  // how to address the owner has no business running over those.
+  //
+  // Provenance-gated, and that gate is the whole design: `senderTriage`
+  // and `delegationCaptureService` forward a third party's words verbatim
+  // inside `"${body.slice(0, 300)}"`. A universal finaliser here would
+  // rewrite a counterpart whose message happens to open "Hi Basit Ahmed"
+  // or "Sir, ..." — misquoting a real human to fix a cosmetic rule. That
+  // is DEF-137 with a wider blast radius, and DEF-137 reached review
+  // rather than production by luck.
+  //
+  // Reuses `finaliseUserVisibleProse` deliberately rather than writing a
+  // second address policy — the whole defect being closed here is that
+  // address handling had two implementations that disagreed.
+  //
+  // It runs BEFORE the content-fingerprint dedup below, so the hash is
+  // taken over the text actually delivered.
+  if (req.provenance === 'brain_prose' && req.body) {
+    try {
+      const [{ getBrainPersona }, { finaliseUserVisibleProse }] = await Promise.all([
+        import('../knowledge/brainPersonaService'),
+        import('../knowledge/brainComposer'),
+      ]);
+      const persona = await getBrainPersona(user.id, user.clientNumber);
+      const rendered = finaliseUserVisibleProse(req.body, persona);
+      if (rendered !== req.body) {
+        log.info('owner address policy applied', {
+          userId: user.id, kind: req.kind,
+          // Bounded — never the full body.
+          before: req.body.slice(0, 40), after: rendered.slice(0, 40),
+        });
+        req = { ...req, body: rendered };
+      }
+    } catch (e: any) {
+      // Never block an owner message on a cosmetic rule.
+      log.warn('owner address policy skipped', { userId: user.id, kind: req.kind, error: e?.message });
+    }
+  }
 
   // ── Smoke isolation ─────────────────────────────────────────────────
   // Suppress any test-flagged outbound unless explicitly opted in. This

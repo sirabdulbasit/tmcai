@@ -283,6 +283,7 @@ async function dispatch(item: any, verdict: Verdict): Promise<{ ok: boolean; det
       const r = await brainContactsUser({
         userId: item.userId,
         kind: 'open_item_owner_chase_prompt',
+        provenance: 'brain_prose',
         summary: `Chase prompt: "${item.title.slice(0, 60)}" delegated to ${who}`,
         body,
         dedupKey: `followup_chase:${item.id}:${new Date().toISOString().slice(0, 10)}`,

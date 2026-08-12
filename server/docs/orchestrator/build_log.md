@@ -956,3 +956,189 @@ the text the owner actually reads most of. One of those notifications addresses 
 as *"Basit,"* — ignoring the preferred form this loop has spent four iterations
 refining — which is direct evidence that `finaliseUserVisibleProse` is a chokepoint
 for `compose`'s prose only, not for user-visible prose.
+
+---
+
+## Iteration 5 — mode: incremental
+
+**Target: DEF-140**, Codex's ranked directive #1 — the live proactive surface,
+not the compose gate. C4 stands at 89.6 from iteration 4 and I did not touch the
+compose path this turn, so **I predict the twelve-case benchmark barely moves.**
+That is the intended outcome, not a miss; see the prediction section.
+
+### The directive, and the one place I deviated from it
+
+> Start DEF-140 with an inventory, not a patch … Then introduce one
+> provenance-aware owner-message rendering boundary that receives the resolved
+> preferred address once and applies address policy only to Brain-authored
+> prose. Do not add `finaliseUserVisibleProse` independently to each producer or
+> blindly to `sendTenantWhatsAppText`.
+
+I did the inventory first, and **the inventory changed the diagnosis**, so I built
+the boundary *plus* something Codex did not ask for and put it first. Stating the
+deviation plainly so it can be judged:
+
+**The root cause is not "the rules live in `compose`". It is that there were TWO
+resolvers for how to address this person.** `brainPersonaService` honours
+Settings → Profile → preferredTitle. `brainHumanComm.addressUser` read
+`user.name` and took the first token. The owner has "Sir" set; his draft ask said
+"Basit,". That is `protection-with-two-implementations`, **8th occurrence**, and
+the 2026-05-20 fix for this precise complaint landed in the resolver his phone
+does not use.
+
+So the first change is at **composition** time: `addressUser` delegates to
+`persona.addressAs`. Supplying the right token when the message is BUILT cannot
+corrupt anything. Rewriting finished text can, and we have the receipt — DEF-137
+was a cosmetic rewrite that misquoted evidence, found in review by luck. A
+rendering boundary is the right second layer and the wrong only layer.
+
+### The inventory
+
+Owner-visible text comes from **66 producer call sites** (21 × `brainContactsUser`,
+45 × `enqueueBrainPrompt`) across 33 files, over **two** dispatch routes.
+
+| Producer | Content class | Reaches the owner via |
+|---|---|---|
+| `compose` replies | Brain prose | `brainAskRoutes` → `finaliseUserVisibleProse` (already) |
+| `phraseDraftAsk` — `openItemDraftAskJob:189` | Brain prose | `brainContactsUser` — **the observed `"Basit,"`** |
+| `phraseOwnerChase` — `openItemFollowUpJob:283` | Brain prose | `brainContactsUser` — same resolver, same bug |
+| `repairService:361` | Brain prose | `brainContactsUser` |
+| `findingNotifier:66` health alert, `:151` digest | Brain prose | `brainContactsUser` |
+| `brainPromptQueueService:125` / `:552` | pass-through | `brainContactsUser` |
+| `delegationCaptureService:281` unattached reply | **quoted third party** | `enqueueBrainPrompt` → queue → `brainContactsUser` |
+| `senderTriage:396`, `:433` counterpart forward | **quoted third party** | `brainContactsUser` |
+| `actionLifecycleWorker:124` intervention form | deterministic artifact | `enqueueBrainPrompt` |
+| `dayBriefDispatchJob:174/:255`, `brainMaturityReport:359` | deterministic artifact | `brainContactsUser` |
+| `connectorHealthService:397`, `integrationService:213` | deterministic artifact | `brainContactsUser` |
+| `profileRoutes:309` test ping, `whatsappNotifierRoutes:272/:322` | operator/fixed text | `brainContactsUser` |
+| `smokeBrainOutbound:66/:100` | test fixture, never delivered | `brainContactsUser` |
+| `actionLifecycleWorker:165` | **third-party recipient — not the owner** | direct `sendTenantWhatsAppText` |
+
+**Two findings the inventory produced that the directive did not anticipate:**
+
+1. `actionLifecycleWorker:165` bypasses `brainContactsUser` entirely — but
+   `resolveConcernedPhone` means its recipient is the **delegatee**, not the
+   owner. So it is correctly outside an owner-address boundary, and
+   `brainContactsUser` *is* the complete owner boundary. This is also precisely
+   why the policy must not live at `sendTenantWhatsAppText`: that transport
+   carries this send too.
+2. The queue is a **provenance-losing hop**. `delegationCaptureService` reaches
+   the owner through `enqueueBrainPrompt`, and the actual send happens a tick
+   later in `sendNextPrompt` from a persisted row. Without pass-through, the one
+   producer whose payload must never be rewritten arrives at the boundary
+   anonymous.
+
+### What I changed, by file:line
+
+**1. `brainHumanComm.ts:75-113` — `addressUser` delegates to the persona.** The
+second resolver is deleted, not adjusted. Preserves the old behaviour for users
+who set no title, because `persona.addressAs` already falls back to the first
+name.
+
+**2. `brainOutboundService.ts:50-92` — `OwnerMessageProvenance`.** Four values:
+`brain_prose`, `quoted_third_party`, `deterministic`, `system_marker`.
+**Optional and fail-closed**, and that is a deliberate decision I want on the
+record: making it required would compile-enforce classification across all 66
+sites, but it would also force 66 hurried guesses in one turn, and a wrong guess
+on a `quoted_third_party` payload misquotes a real person. Absent means "not
+Brain prose, do not touch" (invariant #6). The ~60 unclassified producers are
+inert here rather than guessed at.
+
+**3. `brainOutboundService.ts:180-224` — the boundary.** Runs after user
+resolution (so the persona is resolved once, from data already fetched) and
+BEFORE the content-fingerprint dedup, so the hash covers the delivered text. It
+calls `finaliseUserVisibleProse` — **reusing** the compose policy rather than
+writing a second one, since two disagreeing policies is the defect being closed.
+Wrapped so a cosmetic rule can never block an owner message.
+
+**4. Seven producers classified** from the inventory:
+`openItemDraftAskJob:191`, `openItemFollowUpJob:285`, `repairService:363`,
+`findingNotifier:68` → `brain_prose`; `senderTriage:398/:435`,
+`delegationCaptureService:278` → `quoted_third_party`;
+`actionLifecycleWorker:127` → `deterministic`.
+
+**5. `brainPromptQueueService.ts:60-72, 169, 193, 558` — provenance survives the
+tick.** Added to `EnqueueInput`, persisted on the queue row's metadata, replayed
+by `sendNextPrompt`.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  167 passed | 1 skipped (168)
+                    Tests  1966 passed | 7 expected fail | 21 skipped | 1 todo (1995)
+                    Duration 19.91s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 4's 166 files / 1947 passed (1976): **+1 file, +19 tests**,
+all in `def140OwnerAddressBoundary.test.ts`. No pre-existing test changed state.
+
+### Mutation — 3 mutants, all 3 die, and one honest gap
+
+- **Revert `addressUser` to the DB first name → 3 fail.** This reproduces the
+  owner's exact `"Basit,"` on demand, through the real `phraseDraftAsk`.
+- **Remove the provenance gate → 2 fail** (fail-closed unclassified; the
+  same-input disagreement).
+- **Disable the boundary → 3 fail.** It is genuinely firing.
+
+**The gap, because the assertion reads stronger than it is:** the two
+`quoted_third_party` tests **survive** the gate-removal mutant. Both production
+shapes lead with `${who} replied:`, so the third party's words sit mid-string,
+and DEF-137's position-0 anchor already protects them. **Today the anchor does
+that work and provenance is defence behind it.** I kept both tests (they pin the
+real shapes verbatim, and the anchor is one careless edit from being relaxed) but
+corrected their comments to say so. The test that actually earns the gate is
+*"the two provenances disagree on the SAME input"*, and that one dies.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**`.
+- **Did not classify all 66 producers.** Reasons above; the honest state is that
+  7 are classified and ~59 are fail-closed unclassified. **This is the single
+  biggest hole in this iteration** and I would rather name it than imply the
+  surface is now governed.
+- **Did not make provenance required.** Argued above. If Codex judges
+  compile-enforcement worth 66 classifications, I will do it as its own turn with
+  the classifications reviewed individually — that is a review task, not a typing
+  task.
+- **Did not touch DEF-139 (batching)**, DEF-141 (the incoherent `mark it done`
+  option), or DEF-142 (`Kon` escalated instead of answered). Directive #4 and my
+  own CL-033 rows; DEF-141 is the one I would take next, because offering to
+  record work that never happened is a truthfulness defect and the other two are
+  volume and routing.
+- **Did not touch the intervention form's wording.** Classified `deterministic`
+  and left alone. Making that form read like a person is a real defect and a
+  separate one.
+- **Did not deploy**, and nothing here is verified live. The owner's phone is the
+  only place `"Basit,"` can be confirmed gone.
+
+### On the proactive evaluation slice (orchestrator's item, not mine)
+
+Codex's shape is right and I would add one case: **a message whose body embeds a
+third party's words that themselves open with the owner's configured address**
+("Sir, I'll send it tomorrow"). It is the one shape where a plausible future
+producer change silently converts a cosmetic rule into a misquote, and no
+existing case covers it. Otherwise the six named cases match the defects in
+CL-033 one for one.
+
+### Prediction, and what would falsify it
+
+**The twelve-case compose benchmark should be flat.** I changed no compose prompt
+and no compose path; `finaliseUserVisibleProse` is unmodified. If C4 moves more
+than a point or two in either direction, something I believe is wrong about what
+this diff touches, and that is worth more than the movement.
+
+**What would prove me wrong, or prove the fix hollow:**
+- **The owner still sees `"Basit,"`.** Then `addressUser` is not the resolver that
+  message uses, and my inventory missed a third one.
+- **A notification arrives with a counterpart's words altered.** The provenance
+  gate or the anchor failed, and this change is net negative — revert rather than
+  tune.
+- **A proactive message loses text it needed.** `finaliseUserVisibleProse` strips
+  a leading vocative; if a `brain_prose` notification depended on its opener for
+  sense, the classification was wrong for that producer.
+- **C8 or C2 move at all.** They should not. If they do, the boundary is reaching
+  compose traffic somehow, which would mean the two surfaces are less separate
+  than the inventory says.
