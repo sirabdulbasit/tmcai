@@ -274,7 +274,24 @@ wrong zone reads as a lie, labeled it is merely a preference.
 ### G24 · The verification rail is non-deterministic — a green rail can be a red tree
 On one unchanged commit: loop rails GREEN (2053 passed) → Codex RED (8 failed) →
 orchestrator RED (8 failed) → the failing file GREEN in isolation (19/19). Cross-file
-pollution in `tests/def140OwnerAddressBoundary.test.ts`. Consequences for the
+~~pollution~~ in `tests/def140OwnerAddressBoundary.test.ts`.
+
+**CORRECTED 2026-08-12 13:35 — that diagnosis was wrong, and so was Codex's.** The
+Builder reproduced the failure and printed the program's own refusal:
+`NOT SENT reason={"sent":false,"reason":"outside_office_hours"}`. `brainContactsUser`
+gates delivery on OFFICE HOURS (`brainOutboundService.ts:450`, DEF-120) and the test
+never bypassed the gate — so it passed inside the working day and failed outside it.
+The rails' green at 12:59 and Codex's red minutes later were different sides of that
+boundary; my "passes in isolation" run was simply inside the window, not evidence of
+isolation. Codex had blamed Redis idempotency. Three agents, three diagnoses, and
+only the one that asked the system was right — the chart's own recorded lesson, with
+the orchestrator and reviewer as this instance's offenders. Fixed in DEF-153, and the
+standing rule is now in D-8: time-dependent behaviour must be INJECTED in tests,
+never read from the wall clock. The double-sampling rail still ships, but for a
+better reason than I gave — two samples seconds apart would both have been green,
+because a clock-dependent suite is red for hours at a stretch.
+
+Consequences for the
 orchestrator, beyond the Brain-side fix (filed as directive D-8): (a) `test_status()`
 takes one sample and trusts it; (b) the new deploy phase gates on that same single
 sample; (c) the Builder's published verification numbers are unfalsifiable when the
