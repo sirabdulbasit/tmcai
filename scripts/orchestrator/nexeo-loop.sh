@@ -211,10 +211,27 @@ tsc_status() {
     && echo "clean" || echo "RED"
 }
 
+# G24 — the rail is non-deterministic. On ONE unchanged commit it read GREEN
+# (2053 passed) while Codex and the orchestrator both read RED (8 failed), and the
+# failing file passed 19/19 alone: cross-file pollution. So a single green sample
+# proves nothing. Two samples are taken and BOTH must be green; a disagreement is
+# reported as DISAGREE, never smoothed into green. This is not retry-until-green —
+# that would convert a real red into a reported green, which is the failure this
+# project has a whole chart section about.
 test_status() {
   [ "$SKIP_TESTS" = "1" ] && { echo "skipped"; return; }
   ( cd "$SRV" && npx vitest run --reporter=dot ) > "$LOGS/vitest.log" 2>&1
   local rc=$?
+  local rc2=0
+  if [ $rc -eq 0 ]; then
+    ( cd "$SRV" && npx vitest run --reporter=dot ) > "$LOGS/vitest-2.log" 2>&1
+    rc2=$?
+    if [ $rc2 -ne 0 ]; then
+      local n2; n2="$(grep -Eo '[0-9]+ failed' "$LOGS/vitest-2.log" | head -1)"
+      echo "DISAGREE (run1 green, run2 ${n2:-red}) — flaky suite, see D-8"
+      return
+    fi
+  fi
   local nums
   nums="$(grep -Eo '[0-9]+ (passed|failed)' "$LOGS/vitest.log" | tr '\n' ' ' | sed 's/ $//')"
   if [ $rc -eq 0 ]; then echo "green (${nums:-unknown})"; else echo "RED (${nums:-see vitest.log})"; fi
@@ -522,8 +539,14 @@ fi
 append_ledger "$ITER" "$(git rev-parse --short HEAD)" "$BENCH_OVERALL" "$BENCH_MIN" \
   "$BENCH_WEAKEST" "$BENCH_GATE" "$(tsc_status)" "skipped" "baseline" "$BASELINE_NOTE"
 
+# G5 — the circling detector's memory must survive a restart. It reached 3/3 at
+# iteration 9's close and a restart silently reset it to 0, defeating the one rail
+# that forces structural change. Persisted now, and the restore is announced.
 BEST_MIN="${BENCH_MIN%%.*}"; [ -n "$BEST_MIN" ] || BEST_MIN=0
 STALL=0
+[ -s "$STATE/stall" ] && STALL="$(cat "$STATE/stall")"
+[ -s "$STATE/best-min" ] && BEST_MIN="$(cat "$STATE/best-min")"
+say "STALL restored: $STALL/$STALL_LIMIT (best min criterion $BEST_MIN)"
 
 while :; do
   if [ -f "$STOP_FILE" ]; then
@@ -554,6 +577,38 @@ while :; do
     say "STALL  $STALL iterations without improvement → structural mode"
   fi
 
+  # The active campaign, rendered into the build prompt. Campaigns set WHAT the
+  # loop is aiming at across several iterations; Codex's directive still governs
+  # HOW. Without this the loop re-aims at whatever gates the benchmark every turn,
+  # which is how eight iterations all landed on the smallest remaining gap.
+  CAMPAIGN_TXT="$(python3 - "$STATE/campaign.json" "$ITER" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1])); it = int(sys.argv[2])
+except Exception:
+    print("No campaign file — treat this as a normal incremental iteration."); raise SystemExit
+a = d.get("active") or {}
+if not a:
+    print("No active campaign."); raise SystemExit
+start, budget = a.get("from_iteration", it), a.get("budget_iterations", 1)
+spent = max(0, it - start) + 1
+print(f"""### ACTIVE CAMPAIGN {a['id']} — {a['name']}  (iteration {spent} of {budget})
+
+**Capability:** {a.get('capability')}
+**Goal:** {a.get('goal')}
+**Exit condition:** {a.get('exit_condition')}
+**Why this first:** {a.get('why_first', 'see the campaign file')}
+
+This is WHAT you are aiming at for this campaign. Codex's ranked directive governs
+HOW — follow it where it serves the campaign, and say so in your build entry if it
+pulls you off the campaign, rather than silently switching targets. A campaign turn
+that produces nothing toward the goal must say that plainly; a turn that quietly
+retargets the benchmark's gating criterion is the drift this structure exists to
+stop. Budget is {budget} iterations; if you need more, argue for it in the build
+entry and the orchestrator will extend it on the record rather than by default.""")
+PYEOF
+)"
+
   FORBIDDEN_ALERT="none"
   [ -s "$STATE/forbidden-alert" ] && FORBIDDEN_ALERT="$(cat "$STATE/forbidden-alert")"
 
@@ -564,7 +619,7 @@ while :; do
     SCOREJSON "${BENCH_JSON:-none}" \
     TSC "$TSC_BEFORE" TESTS "${TESTS_AFTER:-not yet run this session}" \
     MODE "$MODE" STRUCTURAL "$STRUCTURAL_NOTE" \
-    FORBIDDEN "$FORBIDDEN_ALERT" \
+    FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
@@ -587,7 +642,10 @@ while :; do
       || say "RAILS  iter=$ITER npm run build FAILED"
     TESTS_AFTER="$(test_status)"
     say "RAILS  iter=$ITER tests=$TESTS_AFTER"
-    measure_start "$ITER" "post-build"
+    # G4 — MEASURE is blocking again, and runs BEFORE the review. The owner ruled
+    # the phases are a sequence; the overlap also cost Codex this iteration's score,
+    # which is what produced its strongest early finding.
+    measure "$ITER" "post-build" || say "MEASURE iter=$ITER failed — the reviewer is told the score is missing"
     MEASURE_STARTED=1
   else
     TESTS_AFTER="not run (tsc red)"
@@ -595,7 +653,11 @@ while :; do
   fi
 
   # ── REVIEW — starts NOW, while the score is still being computed ──────────
-  DIFF_STAT="$(git diff --stat "$BASE_HEAD" HEAD 2>/dev/null | tail -25)"
+  # G1 — scoped to BRAIN paths. Unscoped, the orchestrator's own commits landed in
+  # the Builder's review range and Codex reviewed my tooling as its undisclosed
+  # scope (its iteration-2 WEAK verdict said so). Fixed in the manual prompts at
+  # iteration 3 and never in the loop; iterations 6-11 all had polluted ranges.
+  DIFF_STAT="$(git diff --stat "$BASE_HEAD" HEAD -- server/src server/tests server/prisma server/docs 2>/dev/null | tail -25)"
   [ -z "$DIFF_STAT" ] && DIFF_STAT="$(git status --porcelain | head -25)"
   [ -z "$DIFF_STAT" ] && DIFF_STAT="(no changes detected this iteration — say so plainly in the review)"
 
@@ -604,13 +666,13 @@ while :; do
   # iteration's would be the `fabricated-status` shape aimed at the reviewer —
   # the one participant whose whole job is catching claims that outrun evidence.
   if [ "$MEASURE_STARTED" = "1" ]; then
-    SCORE_STATE="**This iteration's score is still being measured as you read this** — it is computed concurrently with your review so that you start the moment the Builder stops. The numbers below are the PREVIOUS iteration's. Judge the diff against the build log's claims, which is your job and needs no score; where a claim can only be settled by the new measurement, say so explicitly and it will be in front of you next iteration."
+    SCORE_STATE="**This iteration's score is MEASURED and current** — the benchmark ran after the build turn and before this review, so `@@SCOREJSON@@` is this iteration's own post-build report. Use its `fixQueue` and case text as evidence; that is how you proved the DEF-134 bypass in iteration 1.  OLD NOTE, no longer applicable: — it is computed concurrently with your review so that you start the moment the Builder stops. The numbers below are the PREVIOUS iteration's. Judge the diff against the build log's claims, which is your job and needs no score; where a claim can only be settled by the new measurement, say so explicitly and it will be in front of you next iteration."
   else
     SCORE_STATE="No measurement ran this iteration (tsc was RED, so build/tests/measure were skipped). The numbers below are the last successful measurement's."
   fi
   REVIEW_PROMPT="$(render "$PROMPTS/review.md" \
     ITER "$ITER" TARGET "$TARGET" \
-    OVERALL "$PREV_OVERALL" MINSCORE "$PREV_MIN" WEAKEST "$PREV_WEAKEST" \
+    OVERALL "$BENCH_OVERALL" MINSCORE "$BENCH_MIN" WEAKEST "$BENCH_WEAKEST" \
     SCOREJSON "${BENCH_JSON:-none}" SCORESTATE "$SCORE_STATE" \
     TSC "$TSC_AFTER" TESTS "$TESTS_AFTER" \
     BASEHEAD "$(git rev-parse --short "$BASE_HEAD")" HEAD "$(git rev-parse --short HEAD)" \
@@ -620,10 +682,29 @@ while :; do
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
 
-  # ── collect the score that ran during the review ─────────────────────────
-  if [ "$MEASURE_STARTED" = "1" ]; then
-    say "MEASURE iter=$ITER collecting (review finished; waiting on the benchmark if it is still going)"
-    measure_collect "$ITER" || say "MEASURE iter=$ITER failed — the ledger row records the failure, not a stale score"
+  # ── SCORE (Grok) — G3: in the sequence, not a parallel daemon ─────────────
+  if [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
+    say "SCORE  iter=$ITER asking Grok (reads the codebase; nobody edits its numbers)"
+    if "$ROOT/scripts/orchestrator/run-score.sh" "$ITER" >/dev/null 2>&1; then
+      CAPJSON="$SCORES/iter-$(printf '%02d' "$ITER")-capability.json"
+      if python3 "$ROOT/scripts/orchestrator/scorecard.py" --ingest "$CAPJSON" \
+           --iteration "$ITER" --head "$(git rev-parse --short HEAD)" \
+           --commit --append --label "Post-Build" >> "$ORCH/score.log" 2>&1; then
+        say "SCORE  iter=$ITER card appended"
+      else
+        # Rejected means unevidenced or malformed — the file is removed so the
+        # iteration is retried rather than silently skipped.
+        say "SCORE  iter=$ITER INGEST REJECTED (see score.log) — capability file removed for retry"
+        rm -f "$CAPJSON"
+      fi
+    else
+      say "SCORE  iter=$ITER grok FAILED — see logs/iter-$(printf '%02d' "$ITER")-score.log"
+    fi
+  fi
+
+  # ── DEPLOY — last phase, gated on a SOUND review ──────────────────────────
+  if [ "$DEPLOY" = "1" ]; then
+    "$ROOT/scripts/orchestrator/deploy.sh" "$ITER" || say "DEPLOY iter=$ITER did not ship (see the deploy log)"
   fi
 
   # ── stall accounting on the MINIMUM, which is what the gate reads ─────────
@@ -631,6 +712,7 @@ while :; do
   if [ "$CUR_MIN" -gt "$BEST_MIN" ] 2>/dev/null; then
     say "PROGRESS min criterion $BEST_MIN → $CUR_MIN"
     BEST_MIN="$CUR_MIN"; STALL=0
+    printf '%s' "$STALL" > "$STATE/stall"; printf '%s' "$BEST_MIN" > "$STATE/best-min"
     if [ "$DEPLOY" = "1" ] && [ "$TSC_AFTER" = "clean" ]; then
       say "DEPLOY iter=$ITER restarting tmcai-server (NEXEO_DEPLOY=1)"
       pm2 restart tmcai-server >> "$ORCH/loop.log" 2>&1 \
@@ -638,6 +720,7 @@ while :; do
     fi
   else
     STALL=$((STALL + 1))
+    printf '%s' "$STALL" > "$STATE/stall"
     say "NO IMPROVEMENT in the minimum criterion (still $BEST_MIN) — stall=$STALL/$STALL_LIMIT"
   fi
 
