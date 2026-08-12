@@ -176,6 +176,11 @@ export async function answerAsBrain(
         userId, clientNumber,
         rules: validation.violations.filter((v) => v.severity === 'block').map((v) => v.rule),
         originalHead: result.answer.slice(0, 120),
+        // DEF-135 — say which remedy ran. `salvaged` means the offending
+        // sentence was cut and the rest of the answer survived; false means the
+        // whole answer became a marker, which is what destroyed four correct
+        // replies on 2026-08-10 before anyone could see it happening.
+        salvaged: validation.replacement !== undefined && !/^\s*\[/.test(validation.replacement),
       });
       result.answer = validation.replacement;
     } else if (validation.violations.length > 0) {

@@ -27,6 +27,20 @@ export interface ResponseViolation {
   severity: Severity;
   description: string;
   suggestedReplacement?: string;
+  /**
+   * DEF-135 — the offending text removed, the rest of the answer KEPT.
+   *
+   * `suggestedReplacement` throws the whole answer away. That is correct when
+   * the answer IS the defect (a raw JSON envelope, a provider error string) and
+   * wrong when one bad clause sits in an otherwise correct reply: the user then
+   * loses three true sentences to remove one false one, and the canned marker
+   * that replaces them answers a question nobody asked.
+   *
+   * When present, this is preferred over `suggestedReplacement`. It must never
+   * contain the text that triggered the rule — the guard's protective effect is
+   * identical either way; only the collateral damage differs.
+   */
+  salvagedAnswer?: string;
 }
 
 export interface ValidationOutcome {
@@ -63,8 +77,61 @@ import { EMPTY_PROMISE_RE, isConditionalFutureBehaviour } from './brainComposer'
 // prompt — Brain must never invent teams/channels/processes that
 // don't exist. Observed 2026-05-21 02:39: Brain wrote
 // "I am escalating this to the support team..." Pure fabrication.
-const FABRICATED_PROCESS_RE =
+// Exported so DEF-135's tests can drive the REAL rule. A copy in the test file
+// would be an eighth instance of `protection-with-two-implementations` (chart
+// §3) — the test would keep passing against a regex the egress no longer uses.
+export const FABRICATED_PROCESS_RE =
   /\b(support\s+team|engineering\s+team|the\s+team\s+will|our\s+team\s+will|i'?ll\s+escalate|escalating\s+(this\s+)?to|i'?ll\s+(loop|notify|inform|reach\s+out\s+to)\s+(the\s+)?(team|engineers?|support|admin)|i'?ll\s+follow\s+up\s+with\s+(engineering|support|the\s+team))/i;
+
+/** The minimum salvage worth shipping. Below this the remainder is a
+ *  fragment ("I can see that, Sir.") that reads as a non-answer, and the
+ *  curated marker — which at least states what went wrong — is better. */
+const MIN_SALVAGE_CHARS = 40;
+
+/**
+ * DEF-135 — remove only the sentences that trip `re`, keep the rest.
+ *
+ * Line structure is preserved so a bullet list survives having one bullet
+ * removed; a line whose every sentence was fabricated disappears entirely.
+ *
+ * Returns undefined — meaning "fall back to the whole-answer marker" — when
+ * nothing matched, when too little survives to be an answer, or when the
+ * remainder still trips the rule. That last check is the fail-closed one: the
+ * guard's whole purpose is that this text never reaches the user, so a salvage
+ * is only ever offered once it demonstrably no longer matches.
+ *
+ * `re` must be non-global; a /g regex carries `lastIndex` between `.test`
+ * calls and would skip sentences at random.
+ */
+export function exciseSentencesMatching(answer: string, re: RegExp): string | undefined {
+  if (!answer || re.global) return undefined;
+  let removed = 0;
+  const keptLines: string[] = [];
+
+  for (const line of answer.split('\n')) {
+    if (!line.trim()) {
+      keptLines.push(line);
+      continue;
+    }
+    // Sentence-ish units, each keeping its own terminator so rejoining is
+    // lossless. A line with no terminator is one unit.
+    const units = line.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [line];
+    const kept = units.filter((u) => {
+      if (re.test(u)) {
+        removed++;
+        return false;
+      }
+      return true;
+    });
+    if (kept.length > 0) keptLines.push(kept.join('').replace(/\s+$/, ''));
+  }
+
+  if (removed === 0) return undefined;
+  const salvaged = keptLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (salvaged.length < MIN_SALVAGE_CHARS) return undefined;
+  if (re.test(salvaged)) return undefined;
+  return salvaged;
+}
 
 // Raw JSON envelope leaks — when the LLM's output escaped parseCompose
 // truncation fallback and reached the user as e.g.
@@ -236,13 +303,34 @@ export function validateBeforeRender(
 
   // 2. FABRICATED PROCESS — references teams/channels/escalation
   //    paths that don't exist in the system.
+  //
+  // DEF-135 (2026-08-12) — detection here is CORRECT and unchanged; the remedy
+  // was the defect. Benchmark B12 asked "Why did you remind me about that one
+  // twice?" and Brain answered "I can see that, Sir. My apologies. It looks
+  // like a bug caused the same overdue reminder job to run twice. I've logged
+  // th[is with the ...]" — three true sentences plus one fabricated escalation.
+  // The whole answer was replaced by the marker below, whose curated meaning
+  // talks about routing to a team; the user had asked about a duplicate
+  // reminder. The judge scored that turn C6=0, C3=0, C7=10, and named the
+  // mechanism exactly: "a pre-programmed error message triggered by a keyword
+  // that wasn't even present".
+  //
+  // This is occurrence 5 of `guard-destroys-the-answer` (chart §3, four on
+  // 2026-08-10). The four before it were all met by narrowing WHEN the guard
+  // fires — DEF-107, DEF-113, DEF-114 — which needs the intent classifier to be
+  // right every time and has now failed five times. Here the guard firing is
+  // right, so eligibility was never the lever: excise the fabricated sentence
+  // and keep the answer. Protection is identical (the fabricated clause reaches
+  // the user in neither design); only the three true sentences differ.
   if (FABRICATED_PROCESS_RE.test(answer)) {
     violations.push({
       rule: 'fabricated_process',
       severity: 'block',
       description: 'Answer references a "support team" / "engineering team" / escalation channel that does not exist.',
-      // Bracketed marker (no-hardcoded-fake-Brain-replies rule).
+      // Bracketed marker (no-hardcoded-fake-Brain-replies rule). Still the
+      // remedy when the fabrication IS the whole answer.
       suggestedReplacement: `[fabricated escalation path — that team/channel doesn't exist in the system; name the concrete task]`,
+      salvagedAnswer: exciseSentencesMatching(answer, FABRICATED_PROCESS_RE),
     });
   }
 
@@ -380,11 +468,17 @@ export function validateBeforeRender(
 
   // Sort blocks first, warns second.
   violations.sort((a, b) => (a.severity === 'block' && b.severity !== 'block' ? -1 : 1));
-  const firstBlock = violations.find((v) => v.severity === 'block');
+  const blocks = violations.filter((v) => v.severity === 'block');
+  const firstBlock = blocks[0];
+  // DEF-135 — a salvage keeps the surviving prose, so it is only safe when the
+  // rule that produced it is the ONLY thing wrong with the answer. Two blocking
+  // defects means the remainder still carries the second one (a false completion
+  // claim, a leaked provider error), and the whole-answer marker is correct.
+  const salvage = blocks.length === 1 ? firstBlock?.salvagedAnswer : undefined;
   return {
     ok: !firstBlock,
     violations,
-    replacement: firstBlock?.suggestedReplacement,
+    replacement: salvage ?? firstBlock?.suggestedReplacement,
   };
 }
 

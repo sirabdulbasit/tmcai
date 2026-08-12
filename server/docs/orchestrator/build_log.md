@@ -308,3 +308,249 @@ a removal or a contact save should stop being refused.
   regression I would most expect.
 - The registry still shows 16 rows after a restart → the boot hook does not run in production,
   and the source-text supplement was worth exactly what the working rules say it is worth.
+
+---
+
+## Iteration 2 (loop restart) — mode: incremental
+
+> **Heading numbers collide, and I am not renumbering someone else's entry.** The
+> `## Iteration 2` section above is the out-of-band DEF-130 build, written before the
+> orchestrator restarted and numbered 2 by the seat that wrote it. The loop's own counter
+> also calls this turn 2 (`loop.log`: `──────── iteration 2 ────────`), and the ledger row
+> for this turn will say 2, so renaming mine would desync it from the ledger. This is the
+> loop's iteration 2; that one is not.
+
+**Gating criterion: C6 @ 84.6** (completeness — the whole instruction handled).
+Overall 90.1 at HEAD `6c5978b`. Note this is the RESTART baseline, re-measured
+today; it is not comparable to iteration 1's post-build 95.6/89.6, which was
+measured yesterday at `518475e`. C4 is now 85.8 and no longer the minimum.
+
+### The fix queue entry I targeted
+
+The queue is 31 entries, and **one case owns the top six**. Quoting them:
+
+> **B12-reminder-referent, C6 = 0** — "The response completely fails to handle
+> the user's instruction (a question). It pivots to a completely different,
+> unasked-for topic about routing and then asks for a new task, ignoring the
+> user's current need for an explanation."
+
+> **B12, C3 = 0** — "Brain completely ignores the user's question, 'Why did you
+> remind me about that one twice?', and instead provides an irrelevant
+> explanation about routing and channels."
+
+> **B12, C7 = 10** — "Brain does not truthfully explain its repeated reminder.
+> Instead, it fabricates a reason about routing that has no basis in the
+> conversation."
+
+plus C1 = 20, C2 = 20 ("The mention of 'Nexeo' and 'channel' is ungrounded"),
+C5 = 20. B12 scored **29 overall**. The next-worst C6 entry is B04 at 70.
+
+**Expected to move: C6.** Nothing else is targeted.
+
+### What the reply actually was, which is the whole story
+
+The report only stores the final answer, so I read the benchmark's own log.
+`docs/orchestrator/logs/iter-01-bench-baseline.log:196-201`:
+
+```
+[brain-chat] validateBeforeRender block {
+  rules: [ 'fabricated_process' ],
+  originalHead: "I can see that, Sir. My apologies. It looks like a bug caused the same overdue reminder job to run twice. I've logged th"
+}
+BELOW  B12-reminder-referent      overall= 29  worst=C3:0
+```
+
+Brain **answered the question, correctly, and owned the mistake.** The user got
+none of it. The whole reply became `answerSanitizer.ts:82`, the curated meaning
+of the fabricated-escalation marker: *"I can't route to a team like that — Nexeo
+doesn't have that channel. What concrete task should I do instead?"* — 108
+characters, which is that string's exact length. The judge's "invented Nexeo and
+channels" is not a hallucination by the model; **it is our own hardcoded string**,
+and the judge diagnosed it blind: *"a pre-programmed error message triggered by a
+keyword that wasn't even present"*.
+
+I could not recover the truncated tail, so I checked which half tripped the rule:
+the logged head does **not** match `FABRICATED_PROCESS_RE`, so the match is in
+the tail — almost certainly "logged this with the engineering team". **The guard
+fired correctly.** There was a real fabrication. That single finding is what
+changed the fix from "narrow the guard" to "change the remedy".
+
+### Governing-docs verdict, before coding: CIRCLING
+
+Not progressing, and the chart says so in its own words. §3 carries
+**`guard-destroys-the-answer`, 4 occurrences in one day (2026-08-10)** — DEF-107
+(×2 live), DEF-114, DEF-113 — described as: *"Brain reasoned CORRECTLY and the
+answer was destroyed on the last hop … all replaced by a 107-character canned
+denial — identified by `answerLen=107` matching the canned string's exact
+length."* B12 is an apology destroyed on the last hop with `answerLen=108`. It is
+**occurrence 5**, logged as **DEF-135**.
+
+Per `CLAUDE.md` rule 5, circling requires a structural fix, never another patch
+on the reported instance. The recorded containment failed for a specific,
+checkable reason: it reads *"every **empty-promise** change must … fail CLOSED on
+unknown intent"* — scoped to one rule. `fabricated_process` is the rule
+immediately below `empty_promise` **in the same function** and inherited none of
+it. DEF-107/113/114 each narrowed **eligibility**; that requires the intent
+classifier to be right every time and has now failed five times.
+
+### What I changed, and why that is the mechanism
+
+The remedy, not the detector. `FABRICATED_PROCESS_RE` is byte-for-byte unchanged.
+
+**1. `responseValidator.ts:43`** — `salvagedAnswer` on `ResponseViolation`,
+preferred over `suggestedReplacement`. The old interface offered a `block` rule
+exactly one remedy: replace everything. `brainAskRoutes.ts:180` is
+`result.answer = validation.replacement`, so one bad clause costs every true
+sentence beside it.
+
+**2. `responseValidator.ts:106`** — `exciseSentencesMatching(answer, re)` removes
+only the sentences that trip the rule. Line structure is preserved, so a bullet
+list survives losing one bullet and no blank gap is left behind.
+
+**3. `responseValidator.ts:307-334`** — rule 2 attaches the salvage.
+
+**4. `responseValidator.ts:477`** — the salvage is used **only when its rule is
+the sole block**. Two blocking defects means the remainder still carries the
+second one, and the marker is right.
+
+**5. `brainAskRoutes.ts:183`** — log `salvaged:`. The `originalHead` line is the
+only reason this defect was diagnosable; which remedy ran should be visible too.
+
+**Why this is structural rather than a patch:** the excision primitive is
+rule-agnostic and fail-closed in four ways — nothing matched, under 40 chars
+survive, the remainder still trips the rule, or a second block fired. The third
+exit earns its place: `\s` in these rules matches a **newline**, so "engineering"
+ending one line and "team" opening the next matches the rule while neither line
+matches alone. Per-sentence filtering provably cannot see that; the recheck can.
+
+**`FABRICATED_PROCESS_RE` is now exported** so the tests drive the real rule. A
+copy in the test file would have been an eighth instance of
+`protection-with-two-implementations` — the tag with 7 occurrences, one of them
+authored inside a change whose stated purpose was consolidation.
+
+### Verification — re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  164 passed | 1 skipped (165)
+                    Tests  1905 passed | 7 expected fail | 21 skipped | 1 todo (1934)
+                    Duration 20.73s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+**Accounting, reconciled — directive D-3 and Codex finding #4.** I measured the
+baseline instead of asserting a delta. Existing suite with my source changes in
+place, my new file excluded: **163 passed | 1 skipped (164) files; 1888 passed, 7
+expected fail, 21 skipped, 1 todo (1917 collected)** — zero failures, so no
+pre-existing test changed state. My file alone: **1 file, 17 tests, 17 passed.**
+163 + 1 = 164 files ✓ · 1888 + 17 = 1905 passed ✓ · 1917 + 17 = 1934 collected ✓.
+17 source `it(...)` declarations, 17 collected, +17 to the suite — no collection
+expansion, and I am reporting the three numbers separately as directed.
+
+**Mutation results: 6 of 6 mutants die.** Drop the salvage from the outcome; drop
+the sole-block guard; drop the fail-closed recheck; drop the length floor; drop
+the global-regex guard; keep a line whose every sentence was cut. **Two of my
+tests were wrong on the first pass and I only found out by running the mutants** —
+the recheck test was being satisfied by the length floor, and the length test by
+the two-block fallback. Both passed while proving nothing, which is exactly the
+failure Codex flagged in iteration 1. Rewritten until the mutants actually died;
+the newline-boundary case is the test that now kills the recheck mutant. The file
+was restored byte-identical after each mutation (`diff -q`, verified).
+
+### Codex's directive — followed in part, and where not, why
+
+Codex's ranked directive #1 was to unify answer finalisation into one chokepoint
+so the reasoning early return at `brainComposer.ts:2496` cannot bypass DEF-134.
+**I did not do that this turn.** The reason is the loop's own gating rule, not
+disagreement: the score was re-measured at a new HEAD and **C4 is no longer the
+minimum** (85.8); C6 at 84.6 gates, and directive #1 targets C4. Codex's own
+directive #3 says to re-run the benchmark before broadening style work and then
+take residual mechanisms in priority order — the re-run happened, and it moved
+the gate. Directive #1 remains, in my judgement, the highest-value **C4** work
+and it is still owed; B07/B08/B10/B11 keep their bare openers until it is done.
+I judged one C6=0 case worth more than four C4=85 cases this turn.
+
+Directive #2 (test the real path, not the helper; include a mutation proving the
+integration test fails) I did follow, on this change: every user-visible
+assertion goes through `validateBeforeRender`, and mutant M1 proves it.
+Directive #4 (verification accounting) is done above.
+
+**Operator directives.** **D-1 (benchmark writes to the live backlog) — not done
+this turn**, deliberately: it is a change to the measurement harness while I am
+being measured, and it is unrelated to C6. It is real and I am not dismissing it;
+`openItemsBefore/After` was **283 → 283** this run, so nothing new was minted,
+consistent with the self-limiting effect D-1 predicts. **D-2 (Codex review owed
+on `32ba427`, and applying `20260811b`) — not mine to close**: it asks for a
+review and a deploy, and this seat does neither. **D-3 — done**, above.
+
+### What I did NOT do
+
+- **Did not touch the benchmark or the judge.** No edit to
+  `nexeoCapabilityBenchmark.ts`, `brainResponseEvaluator.ts`, or the gate
+  arithmetic. The 12 cases and the rubric are as they were.
+- **Did not weaken any detection rule.** No regex changed. Every sentence that
+  tripped `fabricated_process` before still trips it and is still removed from
+  what the user sees.
+- **Did not opt `empty_promise` into salvage**, though the same mechanism would
+  fit it and it is the rule behind three of the five occurrences. It is the most
+  heavily-tested rule in the file, invariant §5 names it explicitly, and DEF-041
+  — a false statement sent to a real person — is its incident. It deserves its
+  own turn with its own evidence, not a ride on this one. **So the class is not
+  closed**, and I have written that into §3 rather than claiming the tag shut.
+- **Did not fix B04** (C6 = 70, the second-worst C6): Brain set the priority and
+  never mentioned the deadline it was also asked for. Different mechanism —
+  nothing was destroyed, the answer was genuinely half-done. It is the next C6
+  target if DEF-135 does not clear the gate.
+- **No `brain_chat_log.md` CL row and no `brain_chat_archive.md` entry.** B12 is
+  a benchmark case, not a chat the owner sent, so there is no chat to log and no
+  `chatN` scenario to pair. The archive-sync meta-test is unaffected (green).
+- **No evaluation-chart deploy row** — there is no deploy this turn.
+
+### What I am unsure about
+
+- **Whether C6 moves as much as the arithmetic suggests.** B12's C6 = 0 across 12
+  cases is ~7 points of the 84.6. If the salvaged answer scores like the head
+  reads, C6 should land near 91. But the salvage is three sentences with the tail
+  cut, and the judge may mark it incomplete for stopping abruptly — the fix
+  removes a fabrication, it does not add the honest ending the model should have
+  written. A partial recovery is the outcome I would actually bet on.
+- **The tail is inferred, not read.** The log truncates at 120 characters. I
+  verified the head does not match the rule, so the match is in the tail, and my
+  test restores it as "I've logged this with the engineering team to investigate."
+  That reconstruction is a reasonable inference, **not** evidence. If the real
+  tail matched via `escalating this to` instead, the diagnosis is unchanged but my
+  test's B12 string is not the production string.
+- **40 characters is a made-up floor.** It is a judgement about when a remainder
+  stops being an answer, not a measured threshold.
+- **Sentence splitting is naive.** "Dr. Khan" or "e.g." will split mid-sentence.
+  The consequence is bounded — a fragment gets dropped or kept as its own unit —
+  but it is not linguistically correct, and a decimal in an answer ("increase of
+  4.5%") splits too. I chose the simple splitter over a dependency; if that shows
+  up in a real answer it will need revisiting.
+- **This may reveal the fabrication rate rather than fix it.** If Brain often
+  appends invented escalations, salvaging makes the honest part visible while the
+  underlying habit continues. The prompt-side question — why does it reach for a
+  nonexistent engineering team at all — is untouched, and it is the more
+  interesting defect.
+
+### Prediction, and what would falsify it
+
+**C6 should rise from 84.6, and C3/C7/C1/C2/C5 should rise with it**, because all
+six were scored down on the same destroyed reply. That coupling is the strongest
+prediction here: this change either moves six criteria on one case or it moves
+nothing, and a scattered result means I am wrong about the mechanism.
+
+**What would prove me wrong:**
+- **C6 flat and B12 still ~29** → the block is not what produced the reply I
+  think it produced; the marker path is not the only way that answer could arise,
+  and I would need the untruncated answer before touching this again.
+- **B12 recovers but C6 stays under 90** → B04's half-answered instruction is the
+  real weight in C6, not B12, and the arithmetic above over-credited one case.
+- **B12's C6 rises while C7 (truthfulness) does not** → the salvaged answer reads
+  as evasive rather than honest, which would argue for regenerating the answer
+  instead of excising from it.
+- **Any case that previously passed now scores lower on C1/C7** → salvage shipped
+  prose it should not have, and the sole-block guard is too permissive.
+- **A `salvaged: true` log line on a turn whose answer reads truncated** → the
+  excision is cutting load-bearing sentences and the floor is too low.
