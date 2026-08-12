@@ -64,15 +64,19 @@ def render(d, iteration, label):
     p_overall = mean([c["professional"] for c in caps])
     movement = round(sum(c.get("delta", 0) for c in caps) / len(caps), 1)
 
-    name_w = max(len(c["name"]) for c in caps)
+    # The owner supplied this layout twice, verbatim. It is reproduced to the
+    # column — including the exact `Overall:` sentence — because a report he has
+    # to re-read differently each time is a report he stops reading. The gap and
+    # the verdict AGENTS.md requires go on their own line BELOW his line, rather
+    # than being wedged into it.
     out = []
     head = f"Brain Capability: {label}"
     if iteration is not None:
         head = f"Iteration {iteration} — {head}"
     out.append(head)
     out.append(
-        f"{'Capability'.ljust(name_w)}   {'Nexeo Today'.ljust(WIDTH + 5)}"
-        f"  {'Professional Assistant'.ljust(WIDTH + 5)}  Δ"
+        "Capability               Nexeo Today                    "
+        "Professional Assistant       Δ"
     )
     for c in caps:
         d_ = c.get("delta", 0)
@@ -80,21 +84,16 @@ def render(d, iteration, label):
         # reads as "not measured", which is a different claim from "did not move".
         dtxt = f"+{d_}" if d_ > 0 else (str(d_) if d_ < 0 else "0")
         out.append(
-            f"{c['name'].ljust(name_w)}  {c['nexeo']:>3}  {bar(c['nexeo'])}"
-            f"  {c['professional']:>3}  {bar(c['professional'])}  {dtxt:>4}"
+            f"{c['name']:<26}{c['nexeo']:>2}  {bar(c['nexeo'])}"
+            f"      {c['professional']:>2}  {bar(c['professional'])}{dtxt:>6}"
         )
-    verdict = ""
-    if movement > 0:
-        verdict = "PROGRESSIVE"
-    elif movement < 0:
-        verdict = "REGRESSION"
-    else:
-        verdict = "NEUTRAL"
+    verdict = ("PROGRESSIVE" if movement > 0
+               else "REGRESSION" if movement < 0 else "NEUTRAL")
     out.append(
         f"Overall: Nexeo {n_overall} vs professional assistant {p_overall}"
-        f" · gap {round(p_overall - n_overall, 1)} · movement "
-        f"{'+' if movement > 0 else ''}{movement} {verdict}"
+        f" · movement {'+' if movement > 0 else ''}{movement}"
     )
+    out.append(f"Gap to professional: {round(p_overall - n_overall, 1)} · {verdict}")
     return "\n".join(out)
 
 
