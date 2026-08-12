@@ -85,3 +85,30 @@ export function renderUnattachedReply(args: {
     + '(Not attached to an open request — everything I had with them is already'
     + ' closed or waiting on you.)';
 }
+
+/**
+ * ONE notice covering several messages from the same sender (DEF-156).
+ *
+ * CL-033: ten separate pushes from one unknown number between 09:05 and 12:26,
+ * each carrying the same parenthetical. The words were not the defect — the
+ * decision to send each one was. `renderUnattachedReply` above is correct for a
+ * single message and wrong six times in a row, which the proactive slice scored
+ * C4 = 70 for: *"A human would likely summarize or state this once … not repeat
+ * it verbatim six times."*
+ *
+ * This is the shape a person would use instead: name them once, quote what they
+ * said, and say plainly that none of it is attached to open work. The quotes stay
+ * verbatim — DEF-140 classified this producer `quoted_third_party` and the
+ * owner-address boundary must not rewrite a word of someone else's message.
+ */
+export function renderUnattachedDigest(args: {
+  who: string;
+  bodies: readonly string[];
+}): string {
+  const { who, bodies } = args;
+  if (bodies.length === 1) return renderUnattachedReply({ who, body: bodies[0] });
+  const quoted = bodies.map((b) => `• "${b.slice(0, 300)}"`).join('\n');
+  return `${who} sent ${bodies.length} messages:\n${quoted}\n\n`
+    + '(None of it is attached to an open request — everything I had with them is'
+    + ' already closed or waiting on you.)';
+}

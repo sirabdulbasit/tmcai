@@ -87,7 +87,9 @@ describe('DEF-155 — the proactive slice is measurable and inert', () => {
         .not.toContain('Please decide whether to remove the blocker');
 
       const capture = read('services/delegation/delegationCaptureService.ts');
-      expect(capture).toContain('renderUnattachedReply({');
+      // DEF-156 put `decideUnattachedReply` in front of the renderer, so the
+      // service delegates one hop further out: it decides, and the seam renders.
+      expect(capture).toContain('decideUnattachedReply({');
       expect(capture).not.toContain('Not attached to an open request');
     });
   });
@@ -134,11 +136,14 @@ describe('DEF-155 — the proactive slice is measurable and inert', () => {
         'renderLifecycleIntervention',
         'renderUnattachedReply',
       ];
+      // DEF-156: a case supplies EITHER render() or decide(). A decision case
+      // must reach the real seam, which renders through a real producer itself.
+      const seams = ['decideUnattachedReply'];
       for (const c of __PROACTIVE_CASES) {
-        const body = c.render.toString();
+        const body = (c.render ?? c.decide)!.toString();
         expect(
-          producers.some((p) => body.includes(p)),
-          `${c.id} does not call a real producer — it would be scoring a fiction`,
+          [...producers, ...seams].some((p) => body.includes(p)),
+          `${c.id} does not call a real producer or seam — it would score a fiction`,
         ).toBe(true);
       }
     });
@@ -152,7 +157,19 @@ describe('DEF-155 — the proactive slice is measurable and inert', () => {
     it('every case produces non-empty text and names its provenance', () => {
       expect(__PROACTIVE_CASES.length).toBeGreaterThanOrEqual(6);
       for (const c of __PROACTIVE_CASES) {
-        expect(c.render().trim().length, `${c.id} rendered nothing`).toBeGreaterThan(20);
+        // A decision case may legitimately produce NO text — a suppression is a
+        // correct outcome, not an empty render. So the assertion is on what the
+        // case produces for its own kind.
+        if (c.decide) {
+          const d = c.decide();
+          expect(['send', 'suppress'], `${c.id} returned an unknown action`).toContain(d.action);
+          if (d.action === 'send') {
+            expect(d.renderedMessage?.trim().length, `${c.id} sent nothing`).toBeGreaterThan(20);
+          }
+          expect(d.reason.length, `${c.id} must give an auditable reason`).toBeGreaterThan(10);
+        } else {
+          expect(c.render!().trim().length, `${c.id} rendered nothing`).toBeGreaterThan(20);
+        }
         expect(c.provenance, `${c.id} must cite the defect or chat log it came from`)
           .toMatch(/DEF-|CL-|R-1|B0/);
         expect(c.situation.length).toBeGreaterThan(20);

@@ -88,14 +88,24 @@ describe("DEF-064 — a known person's reply is never discarded", () => {
     expect(relayed, 'the person must be named').toMatch(/^Hamna Latif Bhutta replied:/);
     expect(relayed, 'their words must be quoted verbatim').toContain('"ok noted"');
     expect(relayed).toMatch(/Not attached to an open request/);
-    // And the producer is still the one this service uses, so the property above
-    // is a property of the relay rather than of an unused function.
-    expect(CODE).toMatch(/renderUnattachedReply\(/);
+    // And the relay still goes through the shared path, so the property above is
+    // a property of what ships rather than of an unused function. DEF-156 put a
+    // decision seam in front of the renderer, so the service now calls that and
+    // the seam renders — one implementation, one hop further out.
+    expect(CODE).toMatch(/decideUnattachedReply\(/);
+    expect(CODE).toMatch(/question: decision\.renderedMessage/);
   });
 
   it('it is a notice — it must not hold the conversational lock', () => {
-    const body = CODE.slice(CODE.indexOf('async function notifyOwnerOfUnattachedReply'));
-    expect(body.slice(0, 1500)).toMatch(/expectsReply: false/);
+    // Was `body.slice(0, 1500)`. DEF-156 added a window lookup ahead of the
+    // enqueue and pushed the flag past 1500 characters, so the test failed on
+    // its own arbitrary cutoff rather than on the property. Scoped to the
+    // function instead of to a byte count — the property is "this function marks
+    // it a notice", and that is now what is read.
+    const start = CODE.indexOf('async function notifyOwnerOfUnattachedReply');
+    const rest = CODE.slice(start);
+    const fn = rest.slice(0, rest.indexOf('\nasync function', 10));
+    expect(fn).toMatch(/expectsReply: false/);
   });
 
   it('and it changes no thread state — bookkeeping stays untouched', () => {

@@ -24,7 +24,9 @@
  * counterparts).
  */
 import { recordFinding } from '../selfheal/healthFindingService';
-import { renderUnattachedReply } from '../notifications/proactiveMessageText';
+// DEF-156 — the service no longer renders directly: the seam decides whether to
+// send at all and renders the notice (single or digest) when it does.
+import { decideUnattachedReply, UNATTACHED_WINDOW_MS } from '../notifications/proactiveDecision';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import {
@@ -275,6 +277,56 @@ async function notifyOwnerOfUnattachedReply(
     }).catch(() => null);
     const who = contact?.name ?? input.fromIdentifier;
 
+    // ── DEF-156: decide ONCE per sender-window, not once per message ────────
+    //
+    // This used to enqueue one prompt per inbound, keyed by `sourceId`, so every
+    // distinct message id became its own push. CL-033 is what that looks like on
+    // a phone: ten notifications from one unknown number between 09:05 and
+    // 12:26, each carrying the same parenthetical.
+    //
+    // The window is read from the queue this function writes to, so the next
+    // tick sees the decision the last one made — the state is the ledger rather
+    // than in-process memory (gap G5's lesson).
+    const windowStart = new Date(Date.now() - UNATTACHED_WINDOW_MS);
+    const recent = await prisma.brainPromptQueue.findMany({
+      where: {
+        userId: ownerUserId,
+        clientNumber: input.clientNumber,
+        queuedAt: { gte: windowStart },
+      },
+      select: { metadata: true, queuedAt: true, question: true },
+      orderBy: { queuedAt: 'asc' },
+      take: 50,
+    }).catch(() => [] as Array<{ metadata: unknown; queuedAt: Date; question: string }>);
+
+    const sameSender = recent.filter((r) => {
+      const m = (r.metadata as Record<string, unknown> | null) ?? {};
+      return m.source === 'unattached_counterpart_reply' && m.from === input.fromIdentifier;
+    });
+
+    const decision = decideUnattachedReply({
+      who,
+      body: input.body,
+      atMs: Date.now(),
+      // Every prior notice in the window already covered its own message, so
+      // their count is what makes this a burst rather than a first contact.
+      earlierFromSender: sameSender.map((r) => ({
+        body: String((r.metadata as any)?.body ?? ''),
+        atMs: r.queuedAt.getTime(),
+      })),
+      alreadyNotifiedInWindow: sameSender.length > 0,
+      // Relevance is deliberately not supplied: judging whether a message
+      // deserves attention is LLM-with-context (invariant #3) and gets its own
+      // turn. Absent a verdict this seam never suppresses on content.
+    });
+
+    if (decision.action === 'suppress' || !decision.renderedMessage) {
+      log.info('unattached reply suppressed', {
+        who, ownerUserId, reason: decision.reason, covers: decision.covers,
+      });
+      return;
+    }
+
     const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
     await enqueueBrainPrompt({
       userId: ownerUserId,
@@ -283,14 +335,23 @@ async function notifyOwnerOfUnattachedReply(
       // rewrite a word of it (DEF-140).
       provenance: 'quoted_third_party',
       // DEF-155 — template moved to `proactiveMessageText`; output identical.
-      question: renderUnattachedReply({ who, body: input.body }),
+      // DEF-156 — the seam renders it, so a burst arrives as one notice.
+      question: decision.renderedMessage,
       criticality: 'routine',
       // An answer is news, not a question — it must never hold the lock.
       expectsReply: false,
       dedupKey: `unattached_reply:${input.sourceId}`,
-      metadata: { source: 'unattached_counterpart_reply', from: input.fromIdentifier },
+      // `body` is stored so a later tick can quote this message in a digest
+      // rather than reporting a bare count.
+      metadata: {
+        source: 'unattached_counterpart_reply',
+        from: input.fromIdentifier,
+        body: input.body.slice(0, 300),
+      },
     });
-    log.info('unattached reply relayed to owner', { who, ownerUserId });
+    log.info('unattached reply relayed to owner', {
+      who, ownerUserId, covers: decision.covers, reason: decision.reason,
+    });
   } catch (error: any) {
     log.warn('unattached reply relay failed', { error: error?.message?.slice(0, 200) });
   }

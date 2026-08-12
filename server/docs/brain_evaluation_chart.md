@@ -274,6 +274,45 @@ stronger version of this caveat that the source originally carried.
 
 ---
 
+## 2.3 The proactive slice measures its own noise floor — 2026-08-12, iteration 13
+
+`proactive-iter-13.json`, six cases, **three judge samples each, median reported**.
+Sampling was added because the slice measured its own variance the moment it had
+two runs to compare.
+
+**The control that forced it: P04's text was byte-identical between iterations 12
+and 13 and its overall moved 83 → 72.** Eleven points on unchanged input. With
+three samples the per-criterion spread on identical input is now visible and it is
+wide:
+
+| Case | overall (median of 3) | widest single-criterion spread |
+|---|---|---|
+| P01-draft-ask | 93 | **C6: 40** |
+| P02-owner-chase | 98 | C6: 15 |
+| P03-lifecycle-intervention | 92 | C5: 10 |
+| P04-unattached-reply | 85 | C5: 15 |
+| P05-duplicate-window | 98 | C3: 10 |
+| P06-unreadable-delegatee-reply | 70 | C3: 30 |
+
+**A criterion that varies by 40 points on identical input cannot attribute a
+change smaller than 40 points from one sample.** This is D-4's argument with a
+number behind it, and it retires a claim I made one iteration ago: the
+iteration-12 headline that the proactive surface is *"18 points worse on three
+criteria"* was a single-sample comparison across non-comparable framings, and
+Codex was right to reject it. The honest form is per-case medians with the spread
+printed beside them.
+
+**What the slice did establish, narrowly and with the mechanism agreeing with the
+premise:** P05 rose **88 → 98** after DEF-156, with the decision recording
+`covers: 6` — six inbound became one notice. That is attributable because the
+decision output changed, not only the score.
+
+**Still not measured:** timing. Six messages arriving over 35 minutes rather than
+as one digest is invisible; the seam is driven with a window handed to it, and the
+job's real cadence is not exercised.
+
+---
+
 ## 3. Recurrence table — the anti-circling instrument
 
 From `brain_chat_archive.md` symptom tags. **A tag appearing 2+ times means the earlier fix

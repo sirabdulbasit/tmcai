@@ -2575,3 +2575,199 @@ turn built the instrument, it did not aim it.
 - **The Scorer rules this a capability gain.** It is not one. If the card credits
   Brain for becoming measurable, the contract is being applied backwards and I
   would rather it read `RELIABILITY-ONLY, +0`.
+
+---
+
+## Iteration 13 — mode: incremental · campaign C-1 (iteration 2 of 3)
+
+```
+CAPABILITY: Simple & Smart
+PREDICTED:  +1
+MECHANISM:  The product's first promise is "surface only what genuinely needs
+            you", and this producer inverted it: ten pushes for one social
+            conversation (CL-033). A burst from one sender inside 20 minutes now
+            yields ONE notice covering all of it, decided once and persisted
+            where the next tick reads it. One producer of one surface, so +1.
+FALSIFIER:  Observable — two or more messages from one sender inside 20 minutes
+            produce more than one owner notification, or the digest omits a
+            message that arrived inside the window. Both are asserted by
+            replaying CL-033's ten fragments through the seam the job calls.
+            The Scorer's number governs; 0 is a fair reading if one producer is
+            too narrow to move a capability.
+```
+
+**D-6 first**: no `UNPROCESSED` owner reports, so Codex's directive governs.
+
+### Codex was right about DEF-155, and I am not going to soften it
+
+Three of its findings land, and two of them are the same error I have now made
+twice:
+
+1. **"It runs end-to-end" / "real producers" was overstated.** The slice called
+   four pure text functions. No job, no relevance decision, no queue, no
+   batching, no office-hours gate, no dispatch. **It was a renderer slice and I
+   called it the proactive surface.**
+2. **The "18 points worse" headline was not like-for-like.** My own report says
+   the framing is non-comparable and warns against averaging; my build log then
+   converted it into a precise surface gap.
+3. **My falsifier fired and was invalid.** C4 moved 88.3 → 86.7 with no compose
+   path touched. A stochastic score cannot establish causal text movement — third
+   badly-worded bar in five iterations. Codex's remedy is the right one:
+   deterministic artifacts, not scores.
+
+### The fixQueue entry I targeted
+
+**None from the compose fixQueue.** The campaign is the instrument. Codex's
+directive #1 is the turn:
+
+> *"Make campaign iteration 2 measure production decisions, not richer prompts
+> around static strings. Add injectable pure decision seams … return
+> `{send|suppress|batch|escalate, reason, renderedMessage}`. Drive those same
+> seams from jobs and benchmark."*
+
+**Expected to move: no compose criterion.** The proactive slice should move on
+P05 specifically, and only there.
+
+### Governing-docs verdict: PROGRESSING on a defect, CIRCLING on my own method
+
+DEF-156 is a new root cause — no chart §3 tag covers "volume was never decided".
+But **I reproduced Codex's HIGH #1 one iteration after it was raised**: P05's first
+version spaced six fragments over 35 minutes against a 20-minute window, so the
+decision covered THREE while the case premise said six, and the judge scored a
+3-message digest against a 6-message expectation. Corrected to 3-minute spacing so
+premise and mechanism agree. That is the scenario/render mismatch, mine this time.
+
+### What I changed, by file:line
+
+**1. `proactiveDecision.ts` (new) — the seam.** `decideUnattachedReply` returns
+`{action, reason, renderedMessage, covers}`. Called by the job **and** the
+benchmark, so what ships and what is scored are one function.
+
+**Volume is decided; MEANING is not.** Counting messages and subtracting
+timestamps is structural. Whether *"Okby"* deserves attention is substance, and
+invariant #3 puts that in LLM-with-context. So relevance is an **input**, and with
+none supplied nothing is suppressed on content — **fail-open for judgement,
+fail-closed for volume.** Dropping the owner's messages on a guess is worse than
+one message too many, and DEF-139's complaint was volume. The hook is scored and
+honestly empty; wiring it to an LLM is a cost and latency change that deserves its
+own evidence.
+
+**2. `proactiveMessageText.renderUnattachedDigest` (new)** — names the sender
+once, quotes each message verbatim (DEF-140: `quoted_third_party`), carries the
+parenthetical **once**. Single-message wording is unchanged and asserted against
+the production string.
+
+**3. `delegationCaptureService.ts:294-345`** decides before it enqueues. **The
+window is read from the prompt queue this function writes to**, so the next tick
+sees the last one's decision — the ledger is the memory, not in-process state
+(gap G5's lesson). The inbound body is stored so a later digest quotes it rather
+than reporting a bare count.
+
+**4. `nexeoProactiveBenchmark.ts` — P04/P05 drive the seam**, and a suppression is
+reported as a decision rather than scored as prose. Scoring silence would either
+flatter or punish it arbitrarily.
+
+**5. Median sampling (`--samples`), added because the slice measured its own
+noise.** See below — this is the finding of the turn.
+
+### The instrument measured its own noise floor, and it is wide
+
+**The control: P04's text was byte-identical between iterations 12 and 13 and its
+overall moved 83 → 72.** Eleven points on unchanged input. With three samples the
+per-criterion spread on identical input is visible:
+
+| Case | overall (median of 3) | widest single-criterion spread |
+|---|---|---|
+| P01-draft-ask | 93 | **C6: 40** |
+| P06-unreadable-delegatee-reply | 70 | C3: 30 |
+| P02-owner-chase | 98 | C6: 15 |
+| P04-unattached-reply | 85 | C5: 15 |
+| P03 / P05 | 92 / 98 | C5: 10 / C3: 10 |
+
+**A criterion that varies by 40 points on identical input cannot attribute a
+change smaller than 40 points from one sample.** That retires my iteration-12
+headline outright, and it is D-4's argument with a number behind it.
+
+**What survives that standard:** P05 rose **88 → 98** with the decision recording
+`covers: 6`. Attributable because the **decision output** changed, not only the
+score.
+
+### Verification — re-run AFTER the last edit, from `server/`, twice
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+
+npx vitest run (1)  Test Files  175 passed | 1 skipped (176)
+                    Tests  2093 passed | 7 expected fail | 21 skipped | 1 todo (2122)
+npx vitest run (2)  Test Files  175 passed | 1 skipped (176)
+                    Tests  2093 passed | 7 expected fail | 21 skipped | 1 todo (2122)
+
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Against Codex's independently verified iteration-12 figure (174 files / 2079
+passed, 2108 collected): **+1 file, +14 tests.** Four pre-existing assertions of
+mine were updated and are itemised above.
+
+### Mutation — 4 mutants, all die
+
+- **Drop the already-notified suppression → 3 fail.** CL-033's ten pushes return.
+- **Ignore the window → 2 fail.** Stale messages join the digest forever.
+- **Let relevance override volume → 1 fail.** An enthusiastic classifier could
+  otherwise reopen the burst.
+- **Suppress with no verdict → 8 fail.** That is the invariant-#3 breach, and it
+  is the mutant I most wanted to die.
+
+### What I did NOT do
+
+- **Did not touch the twelve compose cases, `brainResponseEvaluator.ts`, or the
+  gate.** Nor anything under `scripts/orchestrator/**`. Scope, stated precisely
+  after Codex's iteration-12 note: **I staged nine files, all under `server/`.**
+  Concurrent orchestrator-owned commits in the range are not mine and I make no
+  claim about them.
+- **Did not wire relevance to an LLM.** Deliberate and argued above. It is why
+  P04 still scores C5 60 — *"completely failing the 'decide'"* — which is the
+  instrument correctly reporting a gap I chose not to close this turn.
+- **Did not make timing measurable.** The seam is handed a window; the job's real
+  cadence is still not exercised. Codex's directive #1 asked for batching state to
+  be driven from the job, and I did half of that: production reads the window from
+  the ledger, but the benchmark supplies its own.
+- **Did not replace the compose falsifier with hashes** (Codex #2). I stated a
+  deterministic falsifier for THIS change instead. The compose-snapshot work is
+  still owed.
+- **DEF-150** (the canned *"Hold on…"*, five times on already-instructed turns) —
+  still the highest live owner defect, still not done, third turn named.
+- **DEF-148/149/151/152 open. DEF-143 open. Inline/pending `update_open_item`
+  unification: sixth iteration deferred.**
+- **Operator directives:** D-1 open for the compose benchmark; satisfied for this
+  slice. D-2, D-4 open — and D-4 is strengthened by the spread table above. D-3
+  standing, and is why the reproduced HIGH #1 and the two brittle assertions are
+  in this entry.
+
+### What I am unsure about
+
+- **Whether 20 minutes is right.** It covers CL-033's observed bursts and is a
+  protocol constant, not business policy, so it is not in `behaviorConfig`. But it
+  is a number I chose from one owner thread, and a genuinely urgent second message
+  inside the window is now suppressed with a reason rather than delivered. That
+  trade is deliberate and it could be wrong.
+- **Whether three samples is enough given a 40-point spread.** It narrows the
+  median but does not make a 40-point criterion trustworthy. Five or seven would be
+  better and cost more judge calls; I have no evidence yet for where that curve
+  flattens.
+
+### Prediction, and what would falsify it
+
+**No compose criterion should move** — no compose path changed. On the slice,
+**P05 should stay at or near 98 and P04 should stay low** until relevance is
+wired.
+
+**What would prove me wrong:**
+- **A burst produces more than one notification in production.** The falsifier
+  above, and the replay test is what should make it impossible.
+- **P05 falls back toward 88** on a re-run at three samples. Then the digest is
+  not the improvement I think it is and the 88 → 98 was inside the noise after all.
+- **The Scorer credits more than +1.** One producer of one surface should not move
+  a capability much, and I would rather be marked down to 0 than credited for
+  reach I did not build.

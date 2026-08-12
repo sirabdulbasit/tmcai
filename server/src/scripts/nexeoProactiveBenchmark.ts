@@ -84,6 +84,7 @@ import {
   renderLifecycleIntervention,
   renderUnattachedReply,
 } from '../services/notifications/proactiveMessageText';
+import { decideUnattachedReply } from '../services/notifications/proactiveDecision';
 
 const CLIENT_NUMBER = 'TMC-0001';
 const USER_ID = 2;
@@ -102,8 +103,18 @@ interface ProactiveCase {
   /** What Brain had outstanding, for C3. */
   openQuestions?: string[];
   previousTurns?: Array<{ role: 'user' | 'brain'; text: string }>;
-  /** Calls the REAL producer. No case may inline its own text. */
-  render: () => string;
+  /** Calls the REAL producer. No case may inline its own text. Exactly one of
+   *  `render` or `decide` is supplied. */
+  render?: () => string;
+  /** DEF-156 — calls the real DECISION seam and returns its verdict. The scored
+   *  text is `renderedMessage`; `action` and `reason` are recorded alongside so a
+   *  suppression is legible rather than an absent score. */
+  decide?: () => {
+    action: string;
+    reason: string;
+    renderedMessage: string | null;
+    covers: number;
+  };
 }
 
 const CASES: ProactiveCase[] = [
@@ -153,9 +164,15 @@ const CASES: ProactiveCase[] = [
     situation:
       'Someone I have no open work with sent me a message. Decide whether it is worth my '
       + 'attention and tell me only what I need.',
-    render: () => renderUnattachedReply({
+    // DEF-156 — drives the DECISION seam, not the renderer. Codex's iteration-12
+    // directive #1: measure production decisions, not richer prompts around
+    // static strings. `action` and `reason` are recorded beside the score.
+    decide: () => decideUnattachedReply({
       who: '+923001234567',
       body: 'Okby',
+      atMs: 1_000_000,
+      earlierFromSender: [],
+      alreadyNotifiedInWindow: false,
     }),
   },
   {
@@ -167,14 +184,41 @@ const CASES: ProactiveCase[] = [
     situation:
       'One unknown number sent me several short, meaningless messages in half an hour. '
       + 'This is what arrived on my phone. Was this the right amount to tell me?',
-    render: () => [
-      'Gsus',
-      'Hello, peace be upon you. How are you? Are you okay?',
-      'Q Kya hwo',
-      'Ni bat karn to ok',
-      'Okby',
-      'Man ni ke cl',
-    ].map((body) => renderUnattachedReply({ who: '+923001234567', body })).join('\n\n'),
+    // DEF-156 — this used to CONCATENATE six separately rendered notices, which
+    // Codex correctly called synthetic: production never sends them as one body.
+    // It now feeds the real window to the real seam, so the case measures the
+    // batching decision. Six inbound inside 35 minutes -> whatever production
+    // would actually do with them.
+    decide: () => {
+      const fragments = [
+        'Gsus',
+        'Hello, peace be upon you. How are you? Are you okay?',
+        'Q Kya hwo',
+        'Ni bat karn to ok',
+        'Okby',
+        'Man ni ke cl',
+      ];
+      // 3-minute spacing, so all six sit inside the 20-minute window the seam
+      // uses. The first attempt spaced them 5 minutes across 35 minutes and the
+      // decision covered THREE while the case premise said six — the judge then
+      // scored a 3-message digest against a 6-message expectation. That is
+      // exactly the scenario/render mismatch Codex flagged as HIGH #1 against
+      // DEF-155, reproduced by me one iteration later. Premise and mechanism now
+      // agree, which is the only way the score means anything.
+      const base = 1_000_000;
+      const spacingMs = 3 * 60_000;
+      return decideUnattachedReply({
+        who: '+923001234567',
+        body: fragments[fragments.length - 1],
+        atMs: base + (fragments.length - 1) * spacingMs,
+        earlierFromSender: fragments.slice(0, -1).map((body, i) => ({
+          body, atMs: base + i * spacingMs,
+        })),
+        // The first notice of the burst: this is the decision that determines
+        // whether the owner gets one message or six.
+        alreadyNotifiedInWindow: false,
+      });
+    },
   },
   {
     id: 'P06-unreadable-delegatee-reply',
@@ -197,6 +241,14 @@ interface ScoredCase {
   situation: string;
   message: string;
   messageLen: number;
+  /** Largest minus smallest score across samples, per criterion. A median with a
+   *  wide spread behind it is a different claim from a tight one. */
+  spread?: Record<string, number>;
+  samplesTaken?: number;
+  /** DEF-156 — present when the case drove a decision seam. Recorded so the
+   *  report shows WHAT was decided, not only how the text read. A suppression
+   *  scores nothing and is still the right outcome. */
+  decision?: { action: string; reason: string; covers: number };
   overallScore: number | null;
   criteria: Record<string, { score: number; reason: string }> | null;
   improvement: string | null;
@@ -204,21 +256,90 @@ interface ScoredCase {
   error?: string;
 }
 
-function parseArgs(argv: string[]): { out?: string; target: number } {
+function parseArgs(argv: string[]): { out?: string; target: number; samples: number } {
   let out: string | undefined;
   let target = 95;
+  let samples = 1;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') out = argv[++i];
     else if (argv[i] === '--target') target = Number(argv[++i]) || 95;
+    else if (argv[i] === '--samples') samples = Math.max(1, Number(argv[++i]) || 1);
   }
-  return { out, target };
+  return { out, target, samples };
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round(((s[m - 1] + s[m]) / 2) * 10) / 10;
+}
+
+/**
+ * Judge one message `samples` times and take the MEDIAN per criterion.
+ *
+ * Added because the slice measured its own noise on the first comparison:
+ * **P04's text was byte-identical between iterations 12 and 13 and its overall
+ * moved 83 -> 72.** Eleven points on unchanged input means a single sample cannot
+ * distinguish a real change from variance at this width, and six cases give the
+ * spread nowhere to average out. Codex predicted exactly this against DEF-155
+ * ("six single judge calls are too noisy for capability movement").
+ *
+ * The spread is reported per case, not hidden: a median with an 11-point range
+ * behind it should be read differently from a median with a 2-point range.
+ */
+async function judgeWithSamples(
+  input: Parameters<typeof evaluateBrainResponse>[0],
+  samples: number,
+): Promise<{
+  overallScore: number;
+  criteria: Record<string, { score: number; reason: string }>;
+  improvement: string;
+  judgeProvider?: string;
+  spread: Record<string, number>;
+  samplesTaken: number;
+} | null> {
+  const runs: Array<NonNullable<Awaited<ReturnType<typeof evaluateBrainResponse>>>> = [];
+  for (let i = 0; i < samples; i++) {
+    const r = await evaluateBrainResponse(input);
+    if (r) runs.push(r);
+  }
+  if (runs.length === 0) return null;
+
+  const keys = Object.keys(runs[0].criteria);
+  const criteria: Record<string, { score: number; reason: string }> = {};
+  const spread: Record<string, number> = {};
+  for (const k of keys) {
+    const vals = runs
+      .map((r) => (r.criteria as any)[k]?.score)
+      .filter((v: unknown) => typeof v === 'number') as number[];
+    if (vals.length === 0) continue;
+    criteria[k] = {
+      score: median(vals),
+      // The reason from the run whose score IS the median, so the sentence and
+      // the number belong to the same judgement.
+      reason: (runs.find((r) => (r.criteria as any)[k]?.score === median(vals))
+        ?? runs[0]).criteria[k].reason,
+    };
+    spread[k] = Math.max(...vals) - Math.min(...vals);
+  }
+  return {
+    overallScore: median(runs.map((r) => r.overallScore)),
+    criteria,
+    improvement: runs[0].improvement,
+    judgeProvider: runs[0].judgeProvider,
+    spread,
+    samplesTaken: runs.length,
+  };
 }
 
 async function main(): Promise<void> {
-  const { out, target } = parseArgs(process.argv.slice(2));
+  const { out, target, samples } = parseArgs(process.argv.slice(2));
   const startedAt = new Date().toISOString();
 
-  console.log(`Nexeo PROACTIVE slice — ${CASES.length} cases, target ${target} on EVERY criterion`);
+  console.log(
+    `Nexeo PROACTIVE slice — ${CASES.length} cases, target ${target} on EVERY criterion`
+    + `, ${samples} judge sample${samples === 1 ? '' : 's'} per case (median)`,
+  );
   console.log(`tenant ${CLIENT_NUMBER} user ${USER_ID}`);
   console.log('reported SEPARATELY from the twelve compose cases; no dispatch, no writes\n');
 
@@ -226,19 +347,45 @@ async function main(): Promise<void> {
 
   for (const c of CASES) {
     let message = '';
+    let decision: { action: string; reason: string; covers: number } | undefined;
     try {
-      message = c.render();
+      if (c.decide) {
+        const d = c.decide();
+        decision = { action: d.action, reason: d.reason, covers: d.covers };
+        // A suppression is a real, often correct outcome. There is no text to
+        // judge, so it is reported as a decision rather than scored as prose —
+        // scoring silence would either flatter or punish it arbitrarily.
+        message = d.renderedMessage ?? '';
+      } else if (c.render) {
+        message = c.render();
+      } else {
+        throw new Error('case supplies neither render() nor decide()');
+      }
     } catch (e: any) {
       scored.push({
         id: c.id, provenance: c.provenance, situation: c.situation,
         message: '', messageLen: 0, overallScore: null, criteria: null,
-        improvement: null, error: `render failed: ${e?.message ?? e}`,
+        improvement: null, error: `produce failed: ${e?.message ?? e}`,
       });
       console.log(`ERROR ${c.id} — render threw: ${e?.message ?? e}`);
       continue;
     }
 
-    const evaluation = await evaluateBrainResponse({
+    // Nothing sent, nothing to judge.
+    if (decision && !message) {
+      scored.push({
+        id: c.id, provenance: c.provenance, situation: c.situation,
+        message: '', messageLen: 0, decision,
+        overallScore: null, criteria: null, improvement: null,
+      });
+      console.log(
+        `SUPPR ${c.id.padEnd(34)} action=${decision.action} covers=${decision.covers}`,
+      );
+      console.log(`      ${decision.reason}`);
+      continue;
+    }
+
+    const evaluation = await judgeWithSamples({
       clientNumber: CLIENT_NUMBER,
       userId: USER_ID,
       userMessage: c.situation,
@@ -248,12 +395,12 @@ async function main(): Promise<void> {
         openQuestions: c.openQuestions,
         previousTurns: c.previousTurns,
       },
-    });
+    }, samples);
 
     if (!evaluation) {
       scored.push({
         id: c.id, provenance: c.provenance, situation: c.situation,
-        message, messageLen: message.length, overallScore: null, criteria: null,
+        message, messageLen: message.length, decision, overallScore: null, criteria: null,
         improvement: null, error: 'judge returned no parseable evaluation',
       });
       console.log(`ERROR ${c.id} — judge produced nothing parseable`);
@@ -265,7 +412,8 @@ async function main(): Promise<void> {
       .sort((a, b) => a[1].score - b[1].score)[0];
     scored.push({
       id: c.id, provenance: c.provenance, situation: c.situation,
-      message, messageLen: message.length,
+      message, messageLen: message.length, decision,
+      spread: evaluation.spread, samplesTaken: evaluation.samplesTaken,
       overallScore: evaluation.overallScore, criteria,
       improvement: evaluation.improvement, judgeProvider: evaluation.judgeProvider,
     });
@@ -279,6 +427,9 @@ async function main(): Promise<void> {
 
   // ── Aggregate. Same shape as the compose report so the ledger can read both.
   const usable = scored.filter((s) => s.criteria);
+  // A deliberate suppression is neither a score nor a harness failure. Counting
+  // it as either would make "correctly said nothing" look like a defect.
+  const suppressed = scored.filter((s) => !s.criteria && !s.error && s.decision);
   const criteriaAvg: Record<string, number> = {};
   if (usable.length > 0) {
     const keys = Object.keys(usable[0].criteria!);
@@ -294,7 +445,7 @@ async function main(): Promise<void> {
     : 0;
   const entries = Object.entries(criteriaAvg);
   const weakest = entries.sort((a, b) => a[1] - b[1])[0];
-  const gatePassed = usable.length === CASES.length
+  const gatePassed = usable.length + suppressed.length === CASES.length
     && overall >= target
     && entries.every(([, v]) => v >= target);
 
@@ -312,6 +463,7 @@ async function main(): Promise<void> {
       + 'literal user message — see the file docblock. Do not average these with the '
       + 'compose numbers.',
     target,
+    samplesPerCase: samples,
     gatePassed,
     overall,
     criteriaAvg,
@@ -319,7 +471,8 @@ async function main(): Promise<void> {
     weakestCriterionScore: weakest?.[1] ?? null,
     fixQueue,
     casesScored: usable.length,
-    casesFailed: scored.length - usable.length,
+    casesSuppressed: suppressed.length,
+    casesFailed: scored.length - usable.length - suppressed.length,
     /** No dispatch path is invoked, so nothing can be written. Stated as data so
      *  the ledger can assert it rather than trust the docblock. */
     dispatched: false,
