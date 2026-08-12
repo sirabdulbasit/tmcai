@@ -192,11 +192,85 @@ def main():
                     help="persist the --set changes; without it nothing is written")
     ap.add_argument("--append", action="store_true",
                     help="also append the rendered card to capability_history.md")
+    ap.add_argument("--ingest", metavar="JSON",
+                    help="apply a scorer-produced capability JSON (Grok's output)")
     ap.add_argument("--history", action="store_true",
                     help="render EVERY iteration's card, oldest first, from its snapshot")
     a = ap.parse_args()
 
     d = load()
+
+    if a.ingest:
+        # GROK'S JUDGEMENT, APPLIED MECHANICALLY. The owner added a third agent so
+        # scoring would stop living with the orchestrator, which had been judge,
+        # contractor and press office at once. So this path must not "interpret"
+        # the scorer: it validates the shape, refuses anything unevidenced, and
+        # writes the numbers as given. If I could adjust them here, the third seat
+        # would be decoration.
+        try:
+            g = json.load(open(a.ingest))
+        except Exception as e:
+            sys.exit(f"--ingest: cannot read {a.ingest}: {e}")
+        caps_in = g.get("capabilities") or []
+        if len(caps_in) != 9:
+            sys.exit(f"--ingest: expected 9 capabilities, got {len(caps_in)}")
+        by_name = {c["name"]: c for c in d["capabilities"]}
+        order = [c["name"] for c in d["capabilities"]]
+        notes, applied = [], 0
+        for c in caps_in:
+            name = c.get("name")
+            if name not in by_name:
+                sys.exit(f"--ingest: unknown capability {name!r}")
+            ev = (c.get("evidence") or "").strip()
+            if len(ev) < 60:
+                # The schema requires this too; enforced again here because a
+                # schema can be bypassed by a hand-written file and a score with
+                # no citable basis is the one thing the card must never carry.
+                sys.exit(f"--ingest: {name} has no usable evidence ({len(ev)} chars)")
+            new_score = int(c["score"])
+            cap = by_name[name]
+            delta = new_score - cap["nexeo"]
+            cap["nexeo"] = max(0, min(100, new_score))
+            cap["delta"] = delta
+            if delta:
+                applied += 1
+            notes.append(f"{name} {delta:+d} [{c.get('basis','?')}/"
+                         f"{c.get('confidence','?')}]: {ev}")
+        # Order is reasserted from OUR list, not the scorer's array order, because
+        # BRAIN_VISION.md's order is the owner's and AGENTS.md forbids reordering.
+        d["capabilities"] = [by_name[n] for n in order]
+        d["as_of_iteration"] = a.iteration or d.get("as_of_iteration")
+        if a.head:
+            d["as_of_head"] = a.head
+        movement = round(sum(c["delta"] for c in d["capabilities"]) / 9, 1)
+        d.setdefault("history", []).append({
+            "iteration": a.iteration or d.get("as_of_iteration"),
+            "head": a.head or d.get("as_of_head"),
+            "overall": mean([c["nexeo"] for c in d["capabilities"]]),
+            "movement": movement,
+            "verdict": g.get("overall_verdict") or "UNVERIFIED",
+            "scored_by": "grok",
+            "what_moved": g.get("what_moved"),
+            "what_did_not": g.get("what_did_not"),
+            "unverifiable": g.get("unverifiable"),
+            "notes_for_builder": g.get("notes_for_builder"),
+            "evidence": notes,
+            "snapshot": [{"name": c["name"], "nexeo": c["nexeo"],
+                          "professional": c["professional"], "delta": c["delta"]}
+                         for c in d["capabilities"]],
+        })
+        if a.commit:
+            save(d)
+        else:
+            sys.stderr.write("(dry run — pass --commit to persist)\n")
+        card = render(d, a.iteration or d.get("as_of_iteration"), a.label)
+        print(card)
+        print(f"\nScored by GROK · verdict {g.get('overall_verdict')} · "
+              f"{applied} capability score(s) changed")
+        for k in ("what_moved", "what_did_not", "unverifiable", "notes_for_builder"):
+            if g.get(k):
+                print(f"  {k.replace('_', ' ')}: {g[k]}")
+        return
 
     if a.history:
         # Rendered from each iteration's stored snapshot, never by replaying
