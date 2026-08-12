@@ -457,11 +457,14 @@ def snapshot(full=False):
                 break
 
     lines = []
-    lines.append(f"{C['dim']}{'─' * 74}{C['r']}")
+    # The clock sits on the divider, not the header. With both on one line the
+    # header ran past ~74 columns and WRAPPED in the owner's terminal, breaking the
+    # timestamp across two lines ("11" / ":51:00"). A status line that wraps is a
+    # status line that misreads.
+    lines.append(f"{C['dim']}{'─' * 56} {time.strftime('%H:%M:%S')} ──────{C['r']}")
     st = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)) if started else "unknown"
-    lines.append(f"{C['b']}Iteration #{cur_it}{C['r']}      Iteration Started: {st}"
-                 + (f"   {C['dim']}({fmt_dur(now - started)} ago){C['r']}" if started else "")
-                 + f"      {C['dim']}{time.strftime('%H:%M:%S')}{C['r']}")
+    lines.append(f"{C['b']}Iteration #{cur_it}{C['r']}   Iteration Started: {st}"
+                 + (f"  {C['dim']}({fmt_dur(now - started)} ago){C['r']}" if started else ""))
     lines.append("")
 
     seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
@@ -516,9 +519,11 @@ def snapshot(full=False):
             lines.append(f"  {c['name']:<23}{c['nexeo']:>3} "
                          f"{gauge(c['nexeo'], c['professional'])} "
                          f"{C['dim']}{c['professional']:>3}{C['r']} {dtxt}")
-        lines.append(f"  {C['b']}{'BRAIN':<23}{nn:>5}{C['r']}   vs {pro} pro   "
-                     f"gap {C['b']}{round(pro - nn, 1)}{C['r']}   "
-                     f"move {'+' if mv > 0 else ''}{mv}   {C['dim']}scored by {by}{C['r']}")
+        # Trimmed to fit ~74 columns: at 83 chars this line wrapped in the owner's
+        # terminal, putting "grok" alone on the next row.
+        lines.append(f"  {C['b']}{'BRAIN':<23}{nn:>5}{C['r']}  vs {pro}  "
+                     f"gap {C['b']}{round(pro - nn, 1)}{C['r']}  "
+                     f"move {'+' if mv > 0 else ''}{mv}  {C['dim']}by {by}{C['r']}")
 
     if latest:
         ws = latest.get("weakestCriterionScore")
