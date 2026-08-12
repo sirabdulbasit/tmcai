@@ -39,6 +39,7 @@ Usage:
     pulse.py --full          # also show the measurement history
     pulse.py --plain         # no colour, for piping
 """
+import calendar
 import glob
 import json
 import os
@@ -56,6 +57,19 @@ FRESH_S = 90  # a file touched this recently counts as active work
 
 C = {"r": "\033[0m", "b": "\033[1m", "dim": "\033[2m", "grn": "\033[32m",
      "yel": "\033[33m", "cyn": "\033[36m", "red": "\033[31m", "mag": "\033[35m"}
+
+
+# ── owner-clock rendering (G23, fixed at the owner's second report) ─────────
+# All wall-clock strings render in the OWNER'S zone, labeled. The box runs UTC;
+# the owner is Asia/Karachi (UTC+5, no DST — a fixed offset is exact, and every
+# governing doc already stamps its rows in PKT). Durations are epoch-based and
+# were never wrong. An unlabeled clock in the wrong zone reads as a lie; a
+# labeled one is merely a choice.
+PKT_OFFSET = 5 * 3600
+
+
+def pkt(epoch, fmt="%H:%M:%S"):
+    return time.strftime(fmt, time.gmtime(epoch + PKT_OFFSET)) + " PKT"
 
 
 def plain():
@@ -316,8 +330,11 @@ def phase_timeline():
     out, newest = {}, None
 
     def ts(s):
+        # loop.log stamps are written with %Z and this box writes UTC. timegm
+        # pins the parse to UTC regardless of the server's TZ — mktime read them
+        # as server-local, which was only accidentally correct (G23).
         try:
-            return time.mktime(time.strptime(s.rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S"))
+            return calendar.timegm(time.strptime(s.rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S"))
         except Exception:
             return None
 
@@ -461,8 +478,8 @@ def snapshot(full=False):
     # header ran past ~74 columns and WRAPPED in the owner's terminal, breaking the
     # timestamp across two lines ("11" / ":51:00"). A status line that wraps is a
     # status line that misreads.
-    lines.append(f"{C['dim']}{'─' * 56} {time.strftime('%H:%M:%S')} ──────{C['r']}")
-    st = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)) if started else "unknown"
+    lines.append(f"{C['dim']}{'─' * 52} {pkt(now)} ──────{C['r']}")
+    st = pkt(started, "%Y-%m-%d %H:%M:%S") if started else "unknown"
     lines.append(f"{C['b']}Iteration #{cur_it}{C['r']}   Iteration Started: {st}"
                  + (f"  {C['dim']}({fmt_dur(now - started)} ago){C['r']}" if started else ""))
     lines.append("")

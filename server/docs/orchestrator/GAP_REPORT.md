@@ -259,7 +259,7 @@ Note also visible in the same paste, expected not defective: iteration 9 shows
 `Score: —` because the daemon was stopped pre-restructure — the sequential loop
 must score it on relaunch (already in the handover notes).
 
-### G23 · Pulse displays UTC clock times with no zone label; owner is PKT
+### G23 · ~~Pulse displays UTC clock times with no zone label~~ FIXED 2026-08-12 17:45 PKT (owner reported it twice — second report treated as a fix request)
 Owner report: pulse shows "Iteration Started: 11:51:36" while his clock reads
 5:31pm — the box runs UTC, the owner is UTC+5 (PKT, the zone every governing doc
 already uses for deploy rows). Elapsed timers are unaffected. A subtlety for the
@@ -274,7 +274,7 @@ wrong zone reads as a lie, labeled it is merely a preference.
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped
-   review, score phase in-loop) + G16 label fix + G22 alt-screen redraw + G23 PKT clock. The loop is already stopping
+   review, score phase in-loop) + G16 label fix + G22 alt-screen redraw. (G23 PKT clock: already fixed.) The loop is already stopping
    after iteration 9 for exactly this.
 2. **G5, G6, G7** — control-plane patches in the same edit (stall persistence,
    REVIEWSTATE, build.md prohibition).
