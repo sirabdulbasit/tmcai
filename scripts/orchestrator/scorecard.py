@@ -94,6 +94,38 @@ def render(d, iteration, label):
         f" · movement {'+' if movement > 0 else ''}{movement}"
     )
     out.append(f"Gap to professional: {round(p_overall - n_overall, 1)} · {verdict}")
+
+    # RELIABILITY, reported alongside capability because they are different things
+    # and the card could only ever see one of them.
+    #
+    # Owner, 2026-08-12: "bug fixing is also a progress and definitely cause the
+    # improvement in brain", then "so its mean brain scoring is not catering it".
+    # Both correct. The nine capabilities measure BREADTH against a professional
+    # assistant; what this loop actually produces is a fabrication removed, a guard
+    # that stops destroying answers, two competing resolvers collapsed into one.
+    # That is reliability of an existing capability, and on a 94-point breadth scale
+    # it can only ever show up as +1s — so the work looked like nothing.
+    #
+    # It is deliberately NOT folded into the nine scores. The capability order and
+    # meaning are the owner's (BRAIN_VISION.md / AGENTS.md); inventing a tenth
+    # capability or inflating the others to reflect defect work would make the
+    # comparison with a professional assistant meaningless. Two axes, both honest.
+    try:
+        import subprocess
+        g = subprocess.run(
+            ["git", "-C", "/var/www/tmcai", "log", "--oneline", "--grep=^DEF-1[3-9]",
+             "-E", "8806ce1..HEAD"],
+            capture_output=True, text=True, timeout=20).stdout
+        defs = sorted({ln.split(":")[0].split()[1] for ln in g.splitlines()
+                       if len(ln.split()) > 1 and ln.split()[1].startswith("DEF-")})
+        if defs:
+            out.append("")
+            out.append(f"Reliability (this loop): {len(defs)} defects shipped — "
+                       + ", ".join(defs))
+            out.append("  NOT DEPLOYED — every fix above is in the branch only, so "
+                       "live behaviour is unchanged")
+    except Exception:
+        pass
     return "\n".join(out)
 
 
