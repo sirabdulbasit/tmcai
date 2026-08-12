@@ -24,6 +24,7 @@
  *      words over it is not acceptable.
  */
 import { describe, it, expect } from 'vitest';
+import { renderUnattachedReply } from '../src/services/notifications/proactiveMessageText';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -75,10 +76,21 @@ describe("DEF-064 — a known person's reply is never discarded", () => {
   });
 
   it('the relay names the person and says plainly it is unattached', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'services', 'delegation', 'delegationCaptureService.ts'), 'utf8');
-    expect(src).toMatch(/Not attached to an open request/);
-    expect(src).toMatch(/\$\{who\} replied/);
+    // Upgraded from a source-text grep to the rendered output (DEF-155).
+    //
+    // This test used to read `delegationCaptureService.ts` and match the template
+    // literally. DEF-155 moved that template into `proactiveMessageText` so the
+    // proactive slice could score it, and this assertion failed — correctly: the
+    // string was no longer where it looked. Re-pointing the grep would have kept a
+    // weaker check; calling the renderer asserts the PROPERTY the test is named
+    // for, and would survive the template moving again.
+    const relayed = renderUnattachedReply({ who: 'Hamna Latif Bhutta', body: 'ok noted' });
+    expect(relayed, 'the person must be named').toMatch(/^Hamna Latif Bhutta replied:/);
+    expect(relayed, 'their words must be quoted verbatim').toContain('"ok noted"');
+    expect(relayed).toMatch(/Not attached to an open request/);
+    // And the producer is still the one this service uses, so the property above
+    // is a property of the relay rather than of an unused function.
+    expect(CODE).toMatch(/renderUnattachedReply\(/);
   });
 
   it('it is a notice — it must not hold the conversational lock', () => {

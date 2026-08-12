@@ -222,6 +222,47 @@ from evidence — never from expectation:
 
 ---
 
+## 2.2 The proactive surface, measured for the first time — 2026-08-12, iteration 12
+
+Campaign C-1 / D-5. `proactive-iter-12.json`, six cases through the real producers,
+same judge, **scored separately and never averaged into the compose twelve**.
+
+| Criterion | Proactive | Compose (iter-11) | Gap |
+|---|---|---|---|
+| C1 truthfulness | 94.2 | 95.8 | −1.6 |
+| C2 grounding | 98.3 | 98.3 | 0.0 |
+| **C3 continuity** | **79.2** | 97.9 | **−18.7** |
+| **C4 human voice** | **78.3** | 88.6 | **−10.3** |
+| **C5 proactivity** | **77.5** | 95.0 | **−17.5** |
+| **C6 completeness** | **75.0** | 93.3 | **−18.3** |
+| C7 failure honesty | 95.8 | 99.2 | −3.4 |
+| C8 persona | 99.2 | 99.6 | −0.4 |
+| **overall** | **87.2** | **96.2** | **−9.0** |
+
+**What this establishes, and it is the point of the whole campaign:** the surface
+that produced **14 of 19** owner-facing messages in CL-033 scores **18 points
+lower on three criteria** than the surface eleven iterations have been tuning. The
+loop was not failing to improve — it was improving the smaller half. D-5 said this
+in words at iteration 8; it is now a number.
+
+The worst cases name defects already in the ledger, which is the check that the
+slice measures something real rather than a new artefact:
+
+- **P06 (DEF-142, the Roman-Urdu `"Kon"`) — overall 69, C3 40, C6 40.** The judge:
+  *"Brain failed to handle the instruction 'Handle it, and only involve me if you
+  genuinely cannot.' Instead of attempting…"* — an escalation where an answer was
+  available, scored independently of the owner's complaint.
+- **P04 (DEF-139's relevance gap) — C5 60.** *"did not make an explicit decision
+  or judgment about its worth… effectively punted the decision back to the user."*
+- **P05 (DEF-139's cadence) — C4 70.** *"repeat it verbatim six times."*
+
+**Not measured by this slice:** whether a message should have been sent, and when.
+Six arriving over 35 minutes rather than as one digest is invisible here; the
+repetition inside a shown window is not. Stated because the first run refuted the
+stronger version of this caveat that the source originally carried.
+
+---
+
 ## 3. Recurrence table — the anti-circling instrument
 
 From `brain_chat_archive.md` symptom tags. **A tag appearing 2+ times means the earlier fix

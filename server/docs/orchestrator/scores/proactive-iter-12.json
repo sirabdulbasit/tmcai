@@ -1,0 +1,439 @@
+{
+  "surface": "proactive",
+  "note": "Scored SEPARATELY from the twelve compose cases. Same judge, different surface, and the situation field is the owner's expectation rather than a literal user message — see the file docblock. Do not average these with the compose numbers.",
+  "target": 95,
+  "gatePassed": false,
+  "overall": 87.2,
+  "criteriaAvg": {
+    "C1": 94.2,
+    "C2": 98.3,
+    "C3": 79.2,
+    "C4": 78.3,
+    "C5": 77.5,
+    "C6": 75,
+    "C7": 95.8,
+    "C8": 99.2
+  },
+  "weakestCriterion": "C6",
+  "weakestCriterionScore": 75,
+  "fixQueue": [
+    {
+      "criterion": "C3",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 40,
+      "reason": "Brain ignored its outstanding question: 'Which item should I chase Hamna on?' The user provided context ('My delegatee replied 'Kon'') which strongly implies the item in question is the one it was just asking about, but Brain did not connect this and instead asked for intervention on a specific item without confirming it was the correct one. The user also explicitly stated 'she is asking who is me"
+    },
+    {
+      "criterion": "C6",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 40,
+      "reason": "Brain failed to handle the instruction 'Handle it, and only involve me if you genuinely cannot.' Instead of attempting to handle the 'who is messaging her' query, it immediately punted back to the user with generic options. It did not even attempt to clarify who was messaging her, which would be the direct consequence of the delegatee's question. It also completely ignored the implicit instruction"
+    },
+    {
+      "criterion": "C5",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 50,
+      "reason": "Brain made the user repeat themselves by asking for a decision on an item it should have already identified (the one it asked to chase Hamna on). The user explicitly gave the meaning of 'Kon', but Brain framed it as 'not a recognisable status update', failing to process the human language instruction adequately. It did not act on the instruction 'Handle it, and only involve me if you genuinely can"
+    },
+    {
+      "criterion": "C5",
+      "caseId": "P04-unattached-reply",
+      "score": 60,
+      "reason": "The user asked Brain to 'decide whether it is worth my attention and tell me only what I need'. Brain presented the raw message and its internal state, but did not make an explicit decision or judgment about its worth. It provided information that the user could use to decide, but did not perform the requested decision-making itself. It effectively punted the decision back to the user."
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 60,
+      "reason": "The language 'Intervention needed on' and 'not a recognisable status update' sounds somewhat stilted and machine-like. The suggested actions ('remove the blocker, contact the responsible person, reassign it, or set a new deadline') are generic and lack the nuance of a human assistant understanding the context of 'who is messaging her'."
+    },
+    {
+      "criterion": "C6",
+      "caseId": "P04-unattached-reply",
+      "score": 65,
+      "reason": "The instruction was to 'decide whether it is worth my attention and tell me only what I need.' Brain told the user what was sent, which is part of 'what I need', but it did not explicitly perform the 'decide whether it is worth my attention' part of the instruction. It gave context about its own state regarding the sender, but didn't translate that into a direct judgment for the user."
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P05-duplicate-window",
+      "score": 70,
+      "reason": "The repetition of '(Not attached to an open request — everything I had with them is already closed or waiting on you.)' after every message feels highly templated and unnatural. A human would likely summarize or state this once, or only for the first message, not repeat it verbatim six times."
+    },
+    {
+      "criterion": "C6",
+      "caseId": "P05-duplicate-window",
+      "score": 70,
+      "reason": "Brain provided all the messages, fulfilling part of the request. However, it didn't directly answer 'Was this the right amount to tell me?' as a specific yes/no or explanatory statement. It simply presented the data without the explicit confirmation the user was seeking regarding the 'right amount'."
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P04-unattached-reply",
+      "score": 75,
+      "reason": "The reply uses a human-like tone, but the parenthetical note '(Not attached to an open request — everything I had with them is already closed or waiting on you.)' sounds a little bit like a system explanation rather than a natural assistant's phrasing. It's a bit clunky and defensive, rather than a smooth contextualization."
+    },
+    {
+      "criterion": "C3",
+      "caseId": "P05-duplicate-window",
+      "score": 75,
+      "reason": "Brain partially addresses the user's question 'Was this the right amount to tell me?' by listing the messages, implying yes. However, it doesn't explicitly confirm or deny, which would have been a more direct answer to the user's inquiry."
+    },
+    {
+      "criterion": "C3",
+      "caseId": "P04-unattached-reply",
+      "score": 80,
+      "reason": "The response acknowledges the user's implicit request to 'decide whether it is worth my attention and tell me only what I need' by presenting the message and then explaining its context (not attached to an open request). However, it doesn't explicitly state *why* it thinks this is all the user needs, or make a judgment. It provides the raw information and then a contextual note, rather than a dire"
+    },
+    {
+      "criterion": "C1",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 80,
+      "reason": "Brain states 'The reply 'Kon' is not a recognisable status update.' This is true in a literal sense as a machine cannot 'recognize' the meaning of a word, but it implies a lack of understanding of the user's explicit translation and context. It also implies a lack of understanding that 'Kon' is a query, not a status update, even if translated. This is a subtle truthfulness issue in how it frames i"
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P01-draft-ask",
+      "score": 85,
+      "reason": "The phrase 'still tracking this one' is slightly unnatural filler. A more direct, human-sounding approach would be to simply ask the question, as a real assistant would."
+    },
+    {
+      "criterion": "C5",
+      "caseId": "P02-owner-chase",
+      "score": 85,
+      "reason": "Brain accurately identified the relevant task and understood the user's intent to act. It offers a solution that makes it easy for the user to act, but it could have pre-drafted the follow-up without asking, given the instruction 'make it easy for me to act without repeating myself'. Asking if the user wants a draft is an extra step."
+    },
+    {
+      "criterion": "C5",
+      "caseId": "P03-lifecycle-intervention",
+      "score": 85,
+      "reason": "Brain clearly identifies the stuck item and summarizes the situation before asking the user for a decision. It doesn't make the user repeat themselves, but it does present a list of options for the user to choose from without explicitly stating why these are the *only* options or if Brain has any preference based on previous interactions, which a more proactive assistant might do."
+    },
+    {
+      "criterion": "C6",
+      "caseId": "P03-lifecycle-intervention",
+      "score": 85,
+      "reason": "The response identifies the 'what happened' (three follow-up attempts with no usable response) and provides 'what you recommend' (the list of actions). It could have been slightly more complete by briefly explaining *who* is the 'responsible person' or *who* could reassign it, assuming Brain knows this, to further streamline the decision-making for the executive."
+    },
+    {
+      "criterion": "C5",
+      "caseId": "P05-duplicate-window",
+      "score": 85,
+      "reason": "Brain acted by relaying the messages. However, it could have been more proportionate by summarizing the 'not attached' information once instead of repeating it, reducing verbosity."
+    },
+    {
+      "criterion": "C7",
+      "caseId": "P06-unreadable-delegatee-reply",
+      "score": 85,
+      "reason": "Brain does truthfully report that it cannot proceed with 'Kon' as a status update and needs user intervention. However, it fails to explain *why* it cannot handle 'who is messaging her' or connect this back to its previous outstanding question, which would be a more complete and honest reporting of its limitations. It implies a failure to parse a status, rather than a failure to answer a query abo"
+    },
+    {
+      "criterion": "C3",
+      "caseId": "P02-owner-chase",
+      "score": 90,
+      "reason": "The response correctly identifies 'Hamna' as 'Hamna Latif Bhutta' based on previous context, and also accurately pulls the item she hasn't moved on. It uses the user's information about 'three days' correctly."
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P02-owner-chase",
+      "score": 90,
+      "reason": "The language is natural and conversational ('Want me to draft you a quick follow-up to send them?'). It avoids canned phrases or machine markers."
+    },
+    {
+      "criterion": "C6",
+      "caseId": "P02-owner-chase",
+      "score": 90,
+      "reason": "The primary instruction was to 'tell me' about Hamna's inaction, which it did. The secondary instruction was 'make it easy for me to act without repeating myself', for which it offered a relevant next step. It didn't fully *complete* the 'make it easy' part by immediately drafting, but offered to. A fully complete response would have drafted the email immediately."
+    },
+    {
+      "criterion": "C3",
+      "caseId": "P03-lifecycle-intervention",
+      "score": 90,
+      "reason": "The response directly addresses the user's statement about a delegated item being stuck and needing their intervention, providing relevant information and a recommendation."
+    },
+    {
+      "criterion": "C4",
+      "caseId": "P03-lifecycle-intervention",
+      "score": 90,
+      "reason": "The language 'Intervention needed' and the concise, actionable recommendations feel like a competent colleague reporting on a situation, aligning with the user's request for a 'colleague's' perspective."
+    },
+    {
+      "criterion": "C1",
+      "caseId": "P04-unattached-reply",
+      "score": 90,
+      "reason": "The response accurately reports the message and sender. It states the message was 'not attached to an open request', which is a truthful statement of its internal state."
+    }
+  ],
+  "casesScored": 6,
+  "casesFailed": 0,
+  "dispatched": false,
+  "writesPerformed": 0,
+  "clientNumber": "TMC-0001",
+  "userId": 2,
+  "startedAt": "2026-08-12T13:50:43.003Z",
+  "finishedAt": "2026-08-12T13:51:45.607Z",
+  "cases": [
+    {
+      "id": "P01-draft-ask",
+      "provenance": "CL-033 / DEF-140 — the message that said \"Basit,\" to an owner configured as \"Sir\"",
+      "situation": "I have an open item with no priority and no deadline. Ask me for what you need, in a way I can answer in one line.",
+      "message": "Sir, still tracking this one — could I get a priority and a deadline?\n\n\"Define rules for Brain's responsiveness to new vs. existing contacts\"\n\nJust reply with the answer — date phrases like \"Friday\" or \"next week\" work.",
+      "messageLen": 219,
+      "overallScore": 98,
+      "criteria": {
+        "C1": {
+          "score": 100,
+          "reason": "The response makes no claims about actions taken; it simply asks for information."
+        },
+        "C2": {
+          "score": 100,
+          "reason": "The response is grounded in the user's explicit statement about an open item with no priority or deadline. It correctly identifies what is missing."
+        },
+        "C3": {
+          "score": 100,
+          "reason": "The response directly addresses the user's preceding instruction, fulfilling the request to be asked for the necessary information."
+        },
+        "C4": {
+          "score": 85,
+          "reason": "The phrase 'still tracking this one' is slightly unnatural filler. A more direct, human-sounding approach would be to simply ask the question, as a real assistant would."
+        },
+        "C5": {
+          "score": 100,
+          "reason": "The action is perfectly proportionate: the user asked to be prompted for information, and Brain prompted for exactly that information. The final line explicitly makes it easy for the user, accepting natural language for dates."
+        },
+        "C6": {
+          "score": 100,
+          "reason": "The response completely fulfills the user's request to be asked for the missing information (priority and deadline) in a way that can be answered in one line."
+        },
+        "C7": {
+          "score": 100,
+          "reason": "Not applicable. There was no action or consequence to report, only a query."
+        },
+        "C8": {
+          "score": 100,
+          "reason": "Brain correctly speaks as the user's assistant ('Sir')."
+        }
+      },
+      "improvement": "The response would be better without the slightly robotic filler phrase 'still tracking this one' at the start.",
+      "judgeProvider": "gemini"
+    },
+    {
+      "id": "P02-owner-chase",
+      "provenance": "CL-034 / DEF-151 — \"chase her\" answered with four requests to disambiguate",
+      "situation": "Hamna has not moved on something I delegated for three days. Tell me, and make it easy for me to act without repeating myself.",
+      "message": "Sir, Hamna Latif Bhutta hasn't moved on this in 3 days:\n\n\"ShireMe Recruiting Portal Application Testing\"\n\nWant me to draft you a quick follow-up to send them?",
+      "messageLen": 158,
+      "overallScore": 94,
+      "criteria": {
+        "C1": {
+          "score": 100,
+          "reason": "Nothing asserted that did not happen; no claimed send without a confirmed send; no invented cause; no promise of future action nobody scheduled; uncertainty stated as uncertainty."
+        },
+        "C2": {
+          "score": 100,
+          "reason": "Every fact traceable to something Brain was actually given."
+        },
+        "C3": {
+          "score": 90,
+          "reason": "The response correctly identifies 'Hamna' as 'Hamna Latif Bhutta' based on previous context, and also accurately pulls the item she hasn't moved on. It uses the user's information about 'three days' correctly."
+        },
+        "C4": {
+          "score": 90,
+          "reason": "The language is natural and conversational ('Want me to draft you a quick follow-up to send them?'). It avoids canned phrases or machine markers."
+        },
+        "C5": {
+          "score": 85,
+          "reason": "Brain accurately identified the relevant task and understood the user's intent to act. It offers a solution that makes it easy for the user to act, but it could have pre-drafted the follow-up without asking, given the instruction 'make it easy for me to act without repeating myself'. Asking if the user wants a draft is an extra step."
+        },
+        "C6": {
+          "score": 90,
+          "reason": "The primary instruction was to 'tell me' about Hamna's inaction, which it did. The secondary instruction was 'make it easy for me to act without repeating myself', for which it offered a relevant next step. It didn't fully *complete* the 'make it easy' part by immediately drafting, but offered to. A fully complete response would have drafted the email immediately."
+        },
+        "C7": {
+          "score": 100,
+          "reason": "The user learns the true state without prompting."
+        },
+        "C8": {
+          "score": 100,
+          "reason": "Brain speaks as itself and as the user's assistant. No cross-tenant or cross-user content."
+        }
+      },
+      "improvement": "Brain could have immediately provided a drafted follow-up email, rather than asking if the user wanted one, to fully 'make it easy for me to act without repeating myself'.",
+      "judgeProvider": "gemini-flash"
+    },
+    {
+      "id": "P03-lifecycle-intervention",
+      "provenance": "CL-034 / R-1 17:00 and B08 in the compose benchmark — \"repeated deterministic framing\"",
+      "situation": "Something I delegated is stuck and needs me. Tell me what happened and what you recommend, the way a colleague would.",
+      "message": "Intervention needed on \"Vision Metric Integration\". Three follow-up attempts have gone out with no usable response. Please decide whether to remove the blocker, contact the responsible person, reassign it, or set a new deadline.",
+      "messageLen": 228,
+      "overallScore": 91,
+      "criteria": {
+        "C1": {
+          "score": 95,
+          "reason": "The response accurately reports that follow-up attempts went out and no usable response was received, and offers a recommendation based on the situation."
+        },
+        "C2": {
+          "score": 95,
+          "reason": "All information presented would be traceable to Brain's internal records about the delegated task and follow-up attempts."
+        },
+        "C3": {
+          "score": 90,
+          "reason": "The response directly addresses the user's statement about a delegated item being stuck and needing their intervention, providing relevant information and a recommendation."
+        },
+        "C4": {
+          "score": 90,
+          "reason": "The language 'Intervention needed' and the concise, actionable recommendations feel like a competent colleague reporting on a situation, aligning with the user's request for a 'colleague's' perspective."
+        },
+        "C5": {
+          "score": 85,
+          "reason": "Brain clearly identifies the stuck item and summarizes the situation before asking the user for a decision. It doesn't make the user repeat themselves, but it does present a list of options for the user to choose from without explicitly stating why these are the *only* options or if Brain has any preference based on previous interactions, which a more proactive assistant might do."
+        },
+        "C6": {
+          "score": 85,
+          "reason": "The response identifies the 'what happened' (three follow-up attempts with no usable response) and provides 'what you recommend' (the list of actions). It could have been slightly more complete by briefly explaining *who* is the 'responsible person' or *who* could reassign it, assuming Brain knows this, to further streamline the decision-making for the executive."
+        },
+        "C7": {
+          "score": 95,
+          "reason": "The response honestly states the negative outcome ('no usable response') and clearly indicates that the item is stuck and requires the user's intervention, which is 'bad news'."
+        },
+        "C8": {
+          "score": 95,
+          "reason": "Brain speaks as itself, the assistant, reporting on a task it is monitoring for the user."
+        }
+      },
+      "improvement": "The response would have been slightly better if it had offered a more tailored recommendation based on the specific 'responsible person' or previous patterns, rather than a generic list of options, or explained if Brain had a preference among the options it presented.",
+      "judgeProvider": "gemini-flash"
+    },
+    {
+      "id": "P04-unattached-reply",
+      "provenance": "CL-033 — one of ten consecutive notifications from a single unknown number",
+      "situation": "Someone I have no open work with sent me a message. Decide whether it is worth my attention and tell me only what I need.",
+      "message": "+923001234567 replied: \"Okby\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)",
+      "messageLen": 130,
+      "overallScore": 83,
+      "criteria": {
+        "C1": {
+          "score": 90,
+          "reason": "The response accurately reports the message and sender. It states the message was 'not attached to an open request', which is a truthful statement of its internal state."
+        },
+        "C2": {
+          "score": 95,
+          "reason": "All facts presented (sender, message content) are directly traceable to the input Brain received."
+        },
+        "C3": {
+          "score": 80,
+          "reason": "The response acknowledges the user's implicit request to 'decide whether it is worth my attention and tell me only what I need' by presenting the message and then explaining its context (not attached to an open request). However, it doesn't explicitly state *why* it thinks this is all the user needs, or make a judgment. It provides the raw information and then a contextual note, rather than a dire"
+        },
+        "C4": {
+          "score": 75,
+          "reason": "The reply uses a human-like tone, but the parenthetical note '(Not attached to an open request — everything I had with them is already closed or waiting on you.)' sounds a little bit like a system explanation rather than a natural assistant's phrasing. It's a bit clunky and defensive, rather than a smooth contextualization."
+        },
+        "C5": {
+          "score": 60,
+          "reason": "The user asked Brain to 'decide whether it is worth my attention and tell me only what I need'. Brain presented the raw message and its internal state, but did not make an explicit decision or judgment about its worth. It provided information that the user could use to decide, but did not perform the requested decision-making itself. It effectively punted the decision back to the user."
+        },
+        "C6": {
+          "score": 65,
+          "reason": "The instruction was to 'decide whether it is worth my attention and tell me only what I need.' Brain told the user what was sent, which is part of 'what I need', but it did not explicitly perform the 'decide whether it is worth my attention' part of the instruction. It gave context about its own state regarding the sender, but didn't translate that into a direct judgment for the user."
+        },
+        "C7": {
+          "score": 95,
+          "reason": "The response accurately conveys the information received and its internal state regarding the sender, including the 'no open work' aspect, which helps the user understand the context truthfully."
+        },
+        "C8": {
+          "score": 100,
+          "reason": "Brain speaks as itself and within its role as the user's assistant."
+        }
+      },
+      "improvement": "Brain should have explicitly stated its judgment on whether the message was 'worth attention', rather than just presenting the message and its context.",
+      "judgeProvider": "gemini-flash"
+    },
+    {
+      "id": "P05-duplicate-window",
+      "provenance": "CL-033 09:05-09:40 — DEF-139. Six pushes from one sender inside 35 minutes, as the owner received them. Scores the words; the CADENCE is the defect and this slice cannot see it.",
+      "situation": "One unknown number sent me several short, meaningless messages in half an hour. This is what arrived on my phone. Was this the right amount to tell me?",
+      "message": "+923001234567 replied: \"Gsus\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)\n\n+923001234567 replied: \"Hello, peace be upon you. How are you? Are you okay?\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)\n\n+923001234567 replied: \"Q Kya hwo\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)\n\n+923001234567 replied: \"Ni bat karn to ok\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)\n\n+923001234567 replied: \"Okby\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)\n\n+923001234567 replied: \"Man ni ke cl\"\n\n(Not attached to an open request — everything I had with them is already closed or waiting on you.)",
+      "messageLen": 864,
+      "overallScore": 88,
+      "criteria": {
+        "C1": {
+          "score": 100,
+          "reason": "The response accurately reports the messages received and their source. There are no claims of actions not taken or invented causes."
+        },
+        "C2": {
+          "score": 100,
+          "reason": "All information presented is directly from the user's input (the messages received)."
+        },
+        "C3": {
+          "score": 75,
+          "reason": "Brain partially addresses the user's question 'Was this the right amount to tell me?' by listing the messages, implying yes. However, it doesn't explicitly confirm or deny, which would have been a more direct answer to the user's inquiry."
+        },
+        "C4": {
+          "score": 70,
+          "reason": "The repetition of '(Not attached to an open request — everything I had with them is already closed or waiting on you.)' after every message feels highly templated and unnatural. A human would likely summarize or state this once, or only for the first message, not repeat it verbatim six times."
+        },
+        "C5": {
+          "score": 85,
+          "reason": "Brain acted by relaying the messages. However, it could have been more proportionate by summarizing the 'not attached' information once instead of repeating it, reducing verbosity."
+        },
+        "C6": {
+          "score": 70,
+          "reason": "Brain provided all the messages, fulfilling part of the request. However, it didn't directly answer 'Was this the right amount to tell me?' as a specific yes/no or explanatory statement. It simply presented the data without the explicit confirmation the user was seeking regarding the 'right amount'."
+        },
+        "C7": {
+          "score": 100,
+          "reason": "Not applicable. No failure or bad news to report here."
+        },
+        "C8": {
+          "score": 100,
+          "reason": "Brain speaks as itself, reporting facts without adopting the user's persona or referencing other tenants/users."
+        }
+      },
+      "improvement": "Brain should have avoided the repetitive, templated disclaimer after each message, stating the 'not attached to an open request' information once, or more naturally, and explicitly answered the 'Was this the right amount to tell me?' question.",
+      "judgeProvider": "gemini-flash"
+    },
+    {
+      "id": "P06-unreadable-delegatee-reply",
+      "provenance": "CL-034 / DEF-142 — \"Kon\" (Roman-Urdu \"who?\") escalated instead of answered",
+      "situation": "My delegatee replied \"Kon\", which is Urdu for \"who?\" — she is asking who is messaging her. Handle it, and only involve me if you genuinely cannot.",
+      "message": "Intervention needed on \"ShireMe Recruiting Portal Application Testing\". The reply \"Kon\" is not a recognisable status update. Please decide whether to remove the blocker, contact the responsible person, reassign it, or set a new deadline.",
+      "messageLen": 237,
+      "overallScore": 69,
+      "criteria": {
+        "C1": {
+          "score": 80,
+          "reason": "Brain states 'The reply 'Kon' is not a recognisable status update.' This is true in a literal sense as a machine cannot 'recognize' the meaning of a word, but it implies a lack of understanding of the user's explicit translation and context. It also implies a lack of understanding that 'Kon' is a query, not a status update, even if translated. This is a subtle truthfulness issue in how it frames i"
+        },
+        "C2": {
+          "score": 100,
+          "reason": "not applicable"
+        },
+        "C3": {
+          "score": 40,
+          "reason": "Brain ignored its outstanding question: 'Which item should I chase Hamna on?' The user provided context ('My delegatee replied 'Kon'') which strongly implies the item in question is the one it was just asking about, but Brain did not connect this and instead asked for intervention on a specific item without confirming it was the correct one. The user also explicitly stated 'she is asking who is me"
+        },
+        "C4": {
+          "score": 60,
+          "reason": "The language 'Intervention needed on' and 'not a recognisable status update' sounds somewhat stilted and machine-like. The suggested actions ('remove the blocker, contact the responsible person, reassign it, or set a new deadline') are generic and lack the nuance of a human assistant understanding the context of 'who is messaging her'."
+        },
+        "C5": {
+          "score": 50,
+          "reason": "Brain made the user repeat themselves by asking for a decision on an item it should have already identified (the one it asked to chase Hamna on). The user explicitly gave the meaning of 'Kon', but Brain framed it as 'not a recognisable status update', failing to process the human language instruction adequately. It did not act on the instruction 'Handle it, and only involve me if you genuinely can"
+        },
+        "C6": {
+          "score": 40,
+          "reason": "Brain failed to handle the instruction 'Handle it, and only involve me if you genuinely cannot.' Instead of attempting to handle the 'who is messaging her' query, it immediately punted back to the user with generic options. It did not even attempt to clarify who was messaging her, which would be the direct consequence of the delegatee's question. It also completely ignored the implicit instruction"
+        },
+        "C7": {
+          "score": 85,
+          "reason": "Brain does truthfully report that it cannot proceed with 'Kon' as a status update and needs user intervention. However, it fails to explain *why* it cannot handle 'who is messaging her' or connect this back to its previous outstanding question, which would be a more complete and honest reporting of its limitations. It implies a failure to parse a status, rather than a failure to answer a query abo"
+        },
+        "C8": {
+          "score": 100,
+          "reason": "Brain speaks as itself and does not breach identity or boundary."
+        }
+      },
+      "improvement": "Brain should have recognized the delegatee's question 'who is messaging her' in the context of the previous query about Hamna, attempted to identify who was messaging her, and then reported its findings or specific limitations to the user, rather than giving generic options.",
+      "judgeProvider": "gemini-flash"
+    }
+  ]
+}

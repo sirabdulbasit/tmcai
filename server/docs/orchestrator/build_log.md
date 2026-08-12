@@ -2391,3 +2391,187 @@ stage. Recording the scope rather than the number is the point of the tag.
 Codex re-running this should expect `2058 passed`. If it sees anything else, the
 environment dependence is wider than the office-hours gate I fixed, and that is
 the next turn's work rather than a feature.
+
+---
+
+## Iteration 12 — mode: incremental · campaign C-1 (iteration 1 of 3)
+
+```
+CAPABILITY: RELIABILITY-ONLY
+PREDICTED:  +0 — no capability moves this turn
+MECHANISM:  Adds no behaviour. Two inline templates become pure exported
+            renderers with byte-identical output, plus a separate scoring
+            harness. Brain does nothing it could not do before; the LOOP can now
+            see a surface that produced 14 of 19 owner-facing messages in CL-033
+            and has never been scored. Per the contract, an instrument is not a
+            capability.
+FALSIFIER:  If any of the twelve compose criteria moves this iteration, the
+            extraction changed owner-facing text and this was not
+            measurement-only. Equally: if Codex or the Scorer finds any
+            owner-visible string differing from before, the claim is void.
+```
+
+**D-6 first**, before anything else: `owner_reports.md` has no `UNPROCESSED`
+entries, so Codex's directive governs. Last iteration I read the directives file
+and not the file it points at; doing it in this order is the fix.
+
+### Campaign C-1 exit condition: MET
+
+> **Exit condition:** At least the proactive slice runs end-to-end and reports its
+> own score separately, with D-1 teardown in place so it does not write the
+> owner's live backlog.
+
+It runs, it reported, and it wrote nothing. **`proactive-iter-12.json`: overall
+87.2, 6/6 cases scored, `dispatched=false writesPerformed=0`.** Codex ranked this
+first at iteration 11 — *"fifth deferral is no longer justified"* — and it was
+right that there was no justification left.
+
+### The fixQueue entry I targeted
+
+**None from the compose fixQueue, deliberately.** The campaign is the instrument,
+not C4. **Expected to move: nothing.** If C4 moves, my falsifier has fired.
+
+### What the first proactive measurement says
+
+| Criterion | Proactive | Compose (iter-11) | Gap |
+|---|---|---|---|
+| **C3 continuity** | **79.2** | 97.9 | **−18.7** |
+| **C6 completeness** | **75.0** | 93.3 | **−18.3** |
+| **C5 proactivity** | **77.5** | 95.0 | **−17.5** |
+| **C4 human voice** | **78.3** | 88.6 | **−10.3** |
+| overall | **87.2** | 96.2 | **−9.0** |
+
+**The surface producing 14 of 19 owner messages is 18 points worse on three
+criteria than the surface eleven iterations have been tuning.** The loop was not
+failing to improve; it was improving the smaller half. D-5 argued this in words at
+iteration 8 — it is now a number.
+
+The check that it measures something real rather than a new artefact: **the worst
+cases name defects already in the ledger, independently of the owner's
+complaint.**
+
+- **P06 (DEF-142, Roman-Urdu `"Kon"`) — 69 overall, C3 40, C6 40.** *"Brain
+  failed to handle the instruction 'Handle it, and only involve me if you
+  genuinely cannot.'"*
+- **P04 (DEF-139's relevance gap) — C5 60.** *"did not make an explicit decision
+  … effectively punted the decision back to the user."*
+- **P05 (DEF-139's cadence) — C4 70.** *"repeat it verbatim six times."*
+
+### What I changed, by file:line
+
+**1. `proactiveMessageText.ts` (new) — the renderers, extracted verbatim.**
+`renderLifecycleIntervention` from `actionLifecycleService.ts:340`,
+`renderUnattachedReply` from `delegationCaptureService.ts:285`. Both call sites
+delegate. **No owner-facing character changes**, asserted against the strings the
+owner actually received in R-1 and CL-033.
+
+**2. `nexeoProactiveBenchmark.ts` (new) — six cases, real producers, same judge.**
+Separate file so the twelve cases, `brainResponseEvaluator.ts` and the gate
+arithmetic are untouched; the report carries `surface: 'proactive'` and an explicit
+instruction not to average it in. It uses `evaluateBrainResponse` rather than a
+second rubric, because a second rubric would be a tenth
+`protection-with-two-implementations`.
+
+**Why this satisfies D-1 without a teardown.** D-1 forbade both writing the
+owner's backlog and fixing that with a non-dispatching "benchmark mode", because a
+second path measures something other than production. The proactive producers are
+**pure renderers**, so this harness calls exactly what production calls and
+creates nothing. **No teardown is required because nothing exists to tear down** —
+stronger than a teardown that ran (BLD-007). The isolation test asserts the
+harness imports no dispatch, queue or persistence surface.
+
+**3. `def064ConsumableStateAndFallback.test.ts:78-94` — an existing test upgraded,
+not re-pointed.** It grepped `delegationCaptureService.ts` for the template; my
+extraction moved the string and it failed, correctly. Re-pointing the grep would
+have preserved a weaker check, so it now calls the renderer and asserts the
+property it is named for, plus that the service still uses that producer.
+
+### Verification — re-run AFTER the last edit, from `server/`, twice
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+
+npx vitest run (1)  Test Files  174 passed | 1 skipped (175)
+                    Tests  2079 passed | 7 expected fail | 21 skipped | 1 todo (2108)
+npx vitest run (2)  Test Files  174 passed | 1 skipped (175)
+                    Tests  2079 passed | 7 expected fail | 21 skipped | 1 todo (2108)
+
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Twice as standing practice since DEF-153. Against Codex's independently verified
+iteration-11 figure (173 files / 2066 passed, 2095 collected): **+1 file, +13
+tests**, 2095 → 2108 collected. One pre-existing test changed state and is
+accounted for above.
+
+### What I did NOT do
+
+- **Did not touch the benchmark's twelve cases, `brainResponseEvaluator.ts`, or
+  the gate arithmetic.** The slice is a new file. Nor
+  `scripts/orchestrator/**` — and stating this precisely after Codex's iteration-11
+  correction: **I staged eleven files, all under `server/`, and no commit in this
+  turn's range touches `scripts/orchestrator/**`.** Other orchestrator-owned files
+  are modified in the working tree by the orchestrator and are not staged.
+- **Did not wire the two remaining shapes D-5 named as their own producers.**
+  "Delegatee no-progress options" and the duplicate-batch DECISION are represented
+  by `P04`/`P05`/`P06` through real renderers, but the option-menu text from R-1
+  (*"should I mark it done, chase her, or leave it?"*) is generated inside a
+  non-exported branch I did not extract. That is a gap in coverage, not a fake
+  case, and it is the first thing I would add in campaign iteration 2.
+- **Did not measure timing or the decision to send.** DEF-139's core — six
+  messages over 35 minutes rather than one digest — is invisible here. `P05` sees
+  the repetition, not the cadence.
+- **Codex #3 (DEF-150, the canned "Hold on…").** Not done. It is the highest live
+  owner defect and I chose the campaign, which the campaign brief instructs. It
+  remains the one I would take next.
+- **Codex #4 (unify inline and pending `update_open_item`).** Not done, **fifth**
+  iteration. Named again rather than dropped.
+- **DEF-148…152 all still OPEN.** DEF-143's bare-team false positive still open.
+- **Operator directives:** D-1 is satisfied *for this slice* and remains open for
+  the compose benchmark, which wrote to `cmsotakwf0006rts1bdsrjjkj` again. D-2,
+  D-4 open and untouched. D-3 standing — and it is why the two wrong test
+  assertions and the refuted docblock below are in this entry.
+
+### Three of my own claims were wrong this turn
+
+1. **The import check scanned raw source and failed on my own docblock**, which
+   names the forbidden surfaces in order to say it avoids them. Now reads import
+   statements only — the claim is about imports, so that is what it reads.
+2. **The producer check required `name(`** when the transpiled arrow reads
+   `(0,__vite_ssr_import_1__.phraseDraftAsk)`. It was testing the bundler and
+   passing nothing.
+3. **A docblock claim was refuted by the first run.** I wrote that no judgement of
+   a sentence could catch DEF-139; `P05` scored C4 = 70 for *"repeat it verbatim
+   six times"* on the first attempt. Corrected in both files to the narrower,
+   true claim: repetition inside a shown window is visible, timing is not.
+
+### What I am unsure about
+
+- **Whether the judge is sound on unprompted text.** `evaluateBrainResponse`
+  scores replies and wants a `userMessage`; a notification answers nothing, so each
+  case supplies the SITUATION in the owner's terms instead. That is off-label use
+  of an unmodified judge. The numbers are comparable to each other over time and
+  **not** to the compose twelve, which is why they are reported separately — but a
+  reader could still misread the −9.0 gap as like-for-like, and I cannot rule out
+  that some of it is the framing rather than the text.
+- **Whether six cases is enough to steer by.** Two of the six carry most of the
+  loss. A single judge sample per case at this width will be noisier than the
+  twelve-case harness, and D-4's argument applies here with more force, not less.
+
+### Prediction, and what would falsify it
+
+**No compose criterion should move**, because no compose path changed. The
+proactive baseline is 87.2 and I make no claim about where it goes next — this
+turn built the instrument, it did not aim it.
+
+**What would prove me wrong:**
+- **Any compose criterion moves materially.** The extraction changed owner-facing
+  text and this was not measurement-only. That is my falsifier, and the
+  byte-identical assertions are what should make it impossible.
+- **Codex cannot reproduce `overall 87.2 ± noise`** on a re-run. Then six cases
+  with one judge sample each is too thin to be an instrument, and campaign
+  iteration 2 should widen the slice before adding surfaces.
+- **The Scorer rules this a capability gain.** It is not one. If the card credits
+  Brain for becoming measurable, the contract is being applied backwards and I
+  would rather it read `RELIABILITY-ONLY, +0`.

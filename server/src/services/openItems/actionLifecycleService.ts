@@ -1,4 +1,5 @@
 import prisma from '../../db/prisma';
+import { renderLifecycleIntervention } from '../notifications/proactiveMessageText';
 import createLogger from '../../utils/logger';
 import { parseDuePhrase } from '../brainPrompts/promptReplyHandler';
 
@@ -337,7 +338,13 @@ export async function recordActionLifecycleReply(input: {
     await enqueueBrainPrompt({
       userId: item.userId,
       clientNumber: item.clientNumber,
-      question: `Intervention needed on "${item.title}". ${interpreted.summary}${interpreted.delayReason ? ` Delay reason: ${interpreted.delayReason}.` : ''} Please decide whether to remove the blocker, contact the responsible person, reassign it, or set a new deadline.`,
+      // DEF-155 — the template moved to `proactiveMessageText` so the proactive
+      // slice can score this text without running the job. Output identical.
+      question: renderLifecycleIntervention({
+        itemTitle: item.title,
+        summary: interpreted.summary,
+        delayReason: interpreted.delayReason,
+      }),
       openItemId: item.id,
       sideEffect: { kind: 'action_status_update', openItemId: item.id },
       criticality: 'high',

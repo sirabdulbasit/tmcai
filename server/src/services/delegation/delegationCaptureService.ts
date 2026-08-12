@@ -24,6 +24,7 @@
  * counterparts).
  */
 import { recordFinding } from '../selfheal/healthFindingService';
+import { renderUnattachedReply } from '../notifications/proactiveMessageText';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import {
@@ -281,8 +282,8 @@ async function notifyOwnerOfUnattachedReply(
       // Embeds the counterpart's message verbatim — the boundary must not
       // rewrite a word of it (DEF-140).
       provenance: 'quoted_third_party',
-      question: `${who} replied: "${input.body.slice(0, 300)}"\n\n`
-        + '(Not attached to an open request — everything I had with them is already closed or waiting on you.)',
+      // DEF-155 — template moved to `proactiveMessageText`; output identical.
+      question: renderUnattachedReply({ who, body: input.body }),
       criticality: 'routine',
       // An answer is news, not a question — it must never hold the lock.
       expectsReply: false,
