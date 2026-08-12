@@ -17,6 +17,52 @@ why in its build entry rather than ignore it silently.
 
 ---
 
+## D-7 · ITERATION 10 IS STRUCTURAL MODE (stall carry-over across restart)
+
+The stall counter reached **3/3 at iteration 9's close** — C4 has not improved for
+three consecutive iterations (88.3 → 87.3 → 87.3, iterations 7–9) — and the
+counter is in-memory (gap G5), so this restart silently reset it to 0. The rail's
+verdict carries over by this note instead: **iteration 10 runs under CLAUDE.md
+rule 5's circling verdict. Another patch on a C4 instance is FORBIDDEN.** Change
+the mechanism that keeps producing the class, or execute D-5 (the measurement
+surfaces), which is the standing structural direction and already ranks first.
+This item expires once iteration 10's build entry acknowledges it.
+
+---
+
+## D-8 · HIGH · The verification rail is non-deterministic (flaky suite)
+
+**Observed 2026-08-12 13:00–13:11 UTC, on ONE unchanged commit (`e059486`):**
+
+```
+12:59:30  loop rails      npx vitest run  → GREEN  (172 files, 2053 passed)
+~13:00    Codex re-ran    npx vitest run  → RED    (8 failed)
+13:05     orchestrator    npx vitest run  → RED    (8 failed, 171 files)
+13:11     isolation       npx vitest run tests/def140OwnerAddressBoundary.test.ts
+                                          → GREEN  (19/19)
+```
+
+No commit between them. All 8 failures are in
+`tests/def140OwnerAddressBoundary.test.ts`, which passes alone. Therefore
+**cross-file pollution or ordering/parallelism dependence**, not a code
+regression — and the loop's primary rail can report GREEN on a suite that is red.
+
+Why this outranks feature work: every iteration's "verification matrix" claim, the
+rails that decide whether a build turn's work is safe to stack on, and the new
+deploy phase's gate all rest on `vitest run` meaning something. Right now a green
+rail is a coin flip. Codex caught this only because it independently re-ran —
+which is also the second time Codex has caught a false-green verification claim
+(iteration 10's build log published green while the tree was red).
+
+**Find the leak, don't retry-loop it.** Likely candidates: a `vi.mock` of
+`../src/db/prisma` or `promptBlockService` in that file leaking into or being
+clobbered by another file's mock of the same module; module-level state in
+`brainOutboundService`; or a shared singleton captured at import time. Prove the
+fix by running the full suite 5× consecutively green, and name the polluting pair
+in the DEF row so the class is recorded, not just the instance.
+
+---
+
 ## D-6 · STANDING, RANKS FIRST · Owner reports override the queue
 
 **Check `server/docs/orchestrator/owner_reports.md` before anything else, every

@@ -271,6 +271,20 @@ would skew every elapsed figure by 5h, so there is NO safe env workaround).
 in Asia/Karachi, and LABEL the zone ("17:31 PKT") — an unlabeled clock in the
 wrong zone reads as a lie, labeled it is merely a preference.
 
+### G24 · The verification rail is non-deterministic — a green rail can be a red tree
+On one unchanged commit: loop rails GREEN (2053 passed) → Codex RED (8 failed) →
+orchestrator RED (8 failed) → the failing file GREEN in isolation (19/19). Cross-file
+pollution in `tests/def140OwnerAddressBoundary.test.ts`. Consequences for the
+orchestrator, beyond the Brain-side fix (filed as directive D-8): (a) `test_status()`
+takes one sample and trusts it; (b) the new deploy phase gates on that same single
+sample; (c) the Builder's published verification numbers are unfalsifiable when the
+suite is order-dependent — Codex has now caught two false-green claims.
+**Fix (Opus, orchestrator side):** on a green result the rail should re-run once and
+require both green before proceeding (cheap: ~20s), report DISAGREEMENT explicitly
+when the two differ, and record both samples in the ledger. Do not "fix" flakiness by
+retrying until green — that converts a real red into a reported green, which is the
+exact failure this project has a chart section about.
+
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped
