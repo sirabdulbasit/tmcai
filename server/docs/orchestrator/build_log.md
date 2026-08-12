@@ -1346,3 +1346,239 @@ clause was untrue.
 - **C4 rises but C6 (93.3, the second-lowest) falls.** Telling Brain to compress
   its self-description could cost the completeness criterion, and C6 is the one
   that would gate next.
+
+---
+
+## Iteration 7 — mode: incremental
+
+**Gating criterion: C4 @ 88.3.** Overall 95.1. But the target is 95 on EVERY
+criterion, and three are failing: **C4 88.3, C5 93.3, C6 93.8.** That matters for
+what I chose, because one case is the dominant cost in two of the three.
+
+### Iteration 6 measured, and it settles Codex's directive #4
+
+DEF-143 worked. **B12: C4 85 → 90, C1 80 → 85, C2 75 → ≥95** — the fabricated
+developer clause is gone and its replacement is grounded in a timing collision.
+B05 85 → 90, B09 85 → 90. C4 88.3 overall (+0.4).
+
+But the distribution is the useful part. **B01 and B02 FELL from 90 to 85**, and
+the four remaining 85s no longer share a mechanism — they contradict each other:
+
+> **B01, C4 = 85** — "'automated WhatsApp notifications' and the precise time
+> stamps feel **slightly robotic**, although they are factual."
+
+> **B02, C4 = 85** — "'Based on the records I have' is a **slightly stiff, canned
+> opening**."
+
+> **B08, C4 = 85** — "'here they are in one place' is **slightly more
+> conversational** than purely factual."
+
+> **B10, C4 = 85** — "the use of 'Sir' is a bit overly formal … and 'quite a few'
+> is slightly generic."
+
+B08 is now penalised for being *too conversational* while B01/B02 are penalised
+for being *too robotic*. Codex's directive #4 said: wait for this measurement,
+and if B08/B10 are still 85, add style examples demonstrating owner-language
+rewrites. **They are still 85, and I did not do that**, because the measurement
+that #4 asked me to wait for shows B08's complaint has inverted — an example
+teaching plainer register would push it further in the direction it is already
+being marked down for. Each remaining 85 is one phrase, and they point opposite
+ways. That is taste at 5-point granularity, not a mechanism.
+
+**Judge-granularity note, offered for arbitration and not acted on.** Across
+nine measurements C4 is awarded in 5-point steps, the mode is 90, and **≥95 has
+been given to at most 2 of 12 cases in any single run** (0 in six of the nine).
+A C4 *average* of 95 therefore requires nearly every case at 95. I am not
+claiming the gate is unreachable — 95 and 100 have both been awarded — but the
+loop should know that C4 ≥ 95 needs a near-sweep of a criterion whose modal award
+is 90. I did not touch the benchmark or the judge.
+
+### The fixQueue entry I targeted
+
+So I went to the worst case in the report instead, which fails FOUR criteria:
+
+> **B04-outstanding-question-ignored — C6 = 75** — "The response is incomplete
+> because Brain only handled the 'priority' part of its previous query and **did
+> not explicitly ask for the 'deadline'** or state why it wasn't handled."
+
+> **B04, C5 = 80** — "Brain only addressed half of its outstanding question. It
+> should have prompted for the deadline **without making the user repeat
+> themselves**."
+
+Its answer was `Updated "Define rules for Brain's responsiveness to new vs.
+existing contacts": priority=high.`
+
+**Brain did ask.** The iteration-01 composer log holds both strings on the same
+turn:
+
+```
+compose.parsed        answerHead: "Got it. I've set the priority to high.
+                                   Do you have a deadline for this?"
+validateBeforeRender  originalHead: 'Updated "Define rules …": priority=high.'
+```
+
+**Expected to move: C5 and C6 first, then C3, then C4.** B04 is the largest single
+contributor to C5 (93.3) and C6 (93.8), which the "every criterion" target
+requires anyway.
+
+### Governing-docs verdict, before coding: CIRCLING — 6th occurrence
+
+`guard-destroys-the-answer` sits in chart §3 with five occurrences and this is the
+sixth, so a structural fix is required rather than another patch. It also forces
+the tag past its own name: the five existing members are all a PROTECTION firing
+where it should not. **This one is a success renderer.** No violation, no guard,
+identical damage.
+
+The tag's recorded containment turns out to be exactly right and one word too
+narrow — *"no `block` remedy may discard prose it did not prove defective"*. The
+general form is **no deterministic replacement may discard prose it did not prove
+defective**, and a success path is a replacement too. The chart now says so.
+
+`brain_chat_log.md` — latest CL-033; nothing new, no row added.
+
+### What I changed, by file:line, and why that is the mechanism
+
+**`brainComposer.ts:3627`** was `answer = actionResult.message` on the SUCCESS
+path of `update_open_item`. One assignment cost four criteria: the deadline
+follow-up was *inside* the discarded sentence (C5, C6), the turn stopped
+continuing the previous one (C3), and `priority=high` is machine syntax (C4). It
+is also **a hardcoded English sentence presented as Brain's voice, which
+invariant #4 forbids** — the sanctioned deterministic form is a bracketed
+`[marker]` rendered by `answerSanitizer`, and this is not one. And it explains why
+DEF-143's register rule could not reach `priority=high`: **that text never came
+from the model.**
+
+**A predicate, not a deletion** (`brainComposer.ts:2140-2167`,
+`brainAnswerSurvivesReceipt`). The overwrite was defending something real: it
+guaranteed the owner saw what ACTUALLY changed, and this branch silently drops a
+priority word it cannot normalise, so *"I've set it to urgent"* could otherwise
+stand as a false completion claim (invariant #5). Prose survives only when **every
+field the model requested was applied** and the text is real prose (≥ 12 chars,
+not a bracketed marker). Otherwise the receipt wins. Wired at the single call
+site, `:3628-3639`.
+
+**The receipt is unchanged and still exists** — `actionResult.ok`, its
+`artifactId` and its message all still feed the artifact ledger and the
+completion gate. It stops being the ANSWER; it does not stop being the record.
+
+**It is a class, and I fixed one member.** Seven success paths do the same thing:
+`Delegated "…" to …`, `Sent email to … messageId=…`, `Saved <name> (<phone>)
+<email>`, `Got it — from now on you can call me …`, plus two more, and
+`applyOpenItemUpdate.ts:108` is a **second copy of this very receipt**. Two of the
+seven are PREVIEWS the user must read verbatim before confirming, so extending
+this is a per-action judgement rather than a sweep. The inventory is written into
+the chart row instead of being quietly widened.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  169 passed | 1 skipped (170)
+                    Tests  1998 passed | 7 expected fail | 21 skipped | 1 todo (2027)
+                    Duration 18.80s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 6's 168 files / 1990 passed (2019): **+1 file, +8 tests**,
+all in `def144ReceiptDoesNotReplaceAnswer.test.ts`. No pre-existing test changed
+state. One source file changed: `brainComposer.ts`.
+
+### Mutation — 2 mutants, both die on the LIVE path
+
+Four of the eight tests drive the real `compose()` through its dispatch branch
+(LLM seam and prisma mocked), so these are behaviour assertions on the path that
+returns to the route, not helper assertions.
+
+- **Restore the unconditional overwrite → the B04 test fails.** The defect
+  reproduced on demand.
+- **Remove the dropped-field check → the partial-application test fails.** The
+  anti-fabrication half.
+
+**Two of my own assumptions were wrong, and both are recorded rather than
+smoothed over:**
+
+1. **My first harness proved nothing and passed.** I gave the action a `titleRef`
+   only; `normaliseAction` requires `openItemId` for `update_open_item`, so no
+   action dispatched at all and the answer survived for entirely the wrong
+   reason. I found it because the `updates.length` assertion failed, not because
+   the answer assertion did — a green answer assertion would have shipped a
+   fiction. This is the third time this loop that a test passed for the wrong
+   reason; it is a cheap check to add and I keep nearly not adding it.
+2. **When NOTHING applies, the pre-existing branch is already correct** — it
+   emits `[update_open_item: no recognised fields to update]`, an honest marker,
+   not the receipt. I expected the receipt and asserted it; I corrected the test
+   to the observed behaviour rather than the other way round.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**`.
+- **Codex directive #1 (B12 at the evidence boundary — read the reminder/dispatch
+  ledgers, require `cause: unknown`).** Not done. Its premise moved under it:
+  B12's C1 is now 85, C2 recovered to ≥95, and the current C1 complaint is about
+  a **promise** (*"I'll make sure it doesn't happen again"*), not the cause. The
+  ledger-reading feature is still the right structural answer and is now a
+  smaller prize than when it was ranked.
+- **Codex directive #2 (narrow the bare `support team` / `engineering team`
+  alternatives).** Not done, and this is the skip I am least comfortable with —
+  it is a HIGH answer-destroying risk that I widened around last turn. I chose
+  B04 because B04's damage is **measured** (four criteria, live in the report)
+  while #2's is **hypothetical** (no benchmark case mentions a real support
+  team). Same defect class, and DEF-144's generalised containment now covers both.
+  **I would take #2 next**, and it is the one to hand me if the next measurement
+  is ambiguous.
+- **Codex directive #3 (route-level DEF-143 test through `answerAsBrain` and the
+  sanitizer).** Not done. My DEF-144 tests do go through `compose()`, which is
+  one layer deeper than DEF-143's, but neither reaches the sanitizer.
+- **Codex directive #5 / DEF-140 boundary work** (exhaustive producer inventory
+  including `notificationService`, required provenance, pure finaliser
+  extraction, producer-to-dispatch tests). Still open, still unmeasurable until
+  the proactive slice exists.
+- **Did not extend DEF-144 to the other six success paths.** Inventory recorded;
+  two of them are previews that must stay verbatim.
+- **Operator directives:** D-1 (benchmark writes to the owner's live backlog),
+  D-2 (DEF-132/133 need review before deploy) and D-4 (measurement cannot
+  separate gain from noise) all remain open and untouched. D-3 (report the ledger
+  honestly) is standing and is why the delta above is measured and why both my
+  wrong assumptions are in this entry. **D-4 keeps earning its rank:** C4 has now
+  read 84.8, 85.8, 85.4, 86.3, 89.6, 90.0, 87.9, 88.3, and B01/B02 fell 90 → 85
+  this iteration on code that did not target them.
+
+### What I am unsure about
+
+- **Whether the LLM reliably asks the outstanding question.** The whole gain
+  depends on Brain's own sentence being good, and I have exactly one observed
+  sample of it (the iteration-01 log). If the model often answers a slot-fill
+  turn with a bare *"Done."*, the ≥12-character floor sends it back to the
+  receipt and B04 does not move.
+- **Whether `priority` is really the only silently-dropped field.** I read the
+  branch and it is the only normalisation that can fail without setting
+  `actionResult`, but that is a reading, not a test sweep across every field.
+- **Whether losing `status=NEW (DRAFT completed)` from the visible text matters.**
+  When prose survives, the owner is no longer told the item left DRAFT. I judged
+  that internal, consistent with DEF-143's register rule; the receipt still
+  records it.
+
+### Prediction, and what would falsify it
+
+**C6 and C5 should move most** — B04's C6 = 75 and C5 = 80 are the two lowest
+scores in the entire report and both are attributed to a question that was asked
+and discarded. **C3 should follow** (85, same case, continuity). **C4 should gain
+about half a point** from `priority=high` disappearing, which is *not* enough to
+clear the gate and I am not claiming it is.
+
+**What would prove me wrong:**
+- **B04's C5/C6 stay at 80/75.** Then the model does not actually ask for the
+  deadline on that turn, the iteration-01 log was an unrepresentative sample, and
+  the fix is correct but aimed at a sentence that usually is not there. The next
+  move would be prompt-side: make a partial slot-fill always name what is still
+  missing.
+- **B04's C1 or C7 FALL.** Brain's prose overstated what changed and my
+  requested-vs-applied check is too narrow — the failure mode I built the
+  predicate to prevent, and evidence it needs more fields than `priority`.
+- **Any case gains a completion claim that the ledger does not support.** Same
+  cause, worse: it would mean the receipt was load-bearing for truthfulness in
+  ways I did not map, and the right response is to revert rather than widen the
+  predicate.
+- **C4 rises but overall falls.** I would have traded the mean for the minimum,
+  which under a "95 on every criterion" gate is not a win.
