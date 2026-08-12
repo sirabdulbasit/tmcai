@@ -2039,6 +2039,91 @@ export function stripBareVocativeOpener(answer: string, addressAs: string): stri
   return rest.replace(/^([^A-Za-z]*)([a-z])/, (_m, pre, ch) => `${pre}${ch.toUpperCase()}`);
 }
 
+/** The persona fields address finalisation actually reads. Kept structural
+ *  rather than importing BrainPersona so both of compose's persona values
+ *  (the cached `persona` and the reasoning path's `personaForReasoning`)
+ *  satisfy it without a cast. */
+export interface AddressPersona {
+  addressAs?: string | null;
+  userFirstName?: string | null;
+  userFullName?: string | null;
+}
+
+/**
+ * The ONE finalisation point for user-visible Brain prose (DEF-136,
+ * 2026-08-12).
+ *
+ * DEF-134 added the bare-vocative guard, but wrote it inline in
+ * `compose`'s legacy tail — ~1,820 lines BELOW the reasoning gate's early
+ * return. Reasoning is the DEFAULT path, so on almost every real turn the
+ * guard was never reached: benchmark answers B06/B07/B08 still shipped
+ * "Sir, …" openers, and C4 gated three consecutive measurements (84.8 →
+ * 85.8 → 85.4) with the same judge complaint each time.
+ *
+ * That is the DEF-041 lesson wearing different clothes: a remedy attached
+ * to ONE code path misses every other path, and the tests stay green
+ * because they call the helper the live path skips. So address handling
+ * lives here, in one function that both exits call, instead of at
+ * whichever exit happened to be under the cursor.
+ *
+ * The two rules are ORDER-INDEPENDENT, and that is worth stating because
+ * the obvious guess is that they are not. They anchor on disjoint shapes:
+ * the form rule needs a greeting word followed by the user's NAME, the
+ * frequency rule needs the PREFERRED TOKEN at position 0. Neither can
+ * create or destroy the other's match — the form rule always emits
+ * "<greeting> <sep> <address>", which is never a bare opener. Verified by
+ * mutation: swapping the two changes no test, so the sequence below is
+ * just the order the rules were added (DEF-134 then DEF-136), not a
+ * dependency. A test pins that they do not interfere.
+ *
+ * Scope is deliberately address-only. This is not a general "tidy the
+ * answer" hook: the completion-claim and empty-promise guards must run on
+ * the raw model text, and their placement encodes that.
+ */
+export function finaliseUserVisibleProse(
+  answer: string,
+  persona: AddressPersona | null | undefined,
+): string {
+  if (!answer || !persona) return answer;
+  const targetAddress = persona.addressAs || persona.userFirstName || '';
+  if (!targetAddress) return answer;
+
+  let out = answer;
+
+  // (1) FORM. Replaces greeting + full-name OR greeting + first-name
+  // openers with greeting + the user's preferred form of address
+  // (preferredTitle from Settings → Profile, e.g. "Sir", "Boss"; falls
+  // back to firstName when unset). Per Basit 2026-05-20: persona told
+  // Brain to use "Sir" but Brain kept saying "Hi Basit Ahmed!" anyway —
+  // a structural post-process is the only thing that stops it 100% of
+  // the time. Doesn't touch full names used as TOPIC references
+  // ("Abdul Haseeb's profile says…"), only direct ADDRESS in an opener.
+  const fullName = persona.userFullName || '';
+  const firstName = persona.userFirstName || '';
+  if (fullName && fullName !== targetAddress) {
+    const escapedFull = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedFirst = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match greeting + full name OR greeting + first name (when the
+    // preferred address differs from the first name, e.g. the user set
+    // "Sir" but the LLM defaulted to their first name).
+    const namesToReplace = firstName && firstName !== targetAddress
+      ? `(?:${escapedFull}|${escapedFirst})`
+      : escapedFull;
+    const addressRe = new RegExp(
+      `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${namesToReplace}\\b`,
+      'gi',
+    );
+    out = out.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${targetAddress}`);
+  }
+
+  // (2) FREQUENCY. The form guard above pins WHICH form Brain uses;
+  // nothing pinned how OFTEN, and the persona's old "use it every time"
+  // wording made it a reflexive prefix (DEF-134). Narrow by design — see
+  // stripBareVocativeOpener: greetings, later uses and topic references
+  // all survive.
+  return stripBareVocativeOpener(out, targetAddress);
+}
+
 export async function compose(
   clientNumber: string,
   userId: number,
@@ -2493,7 +2578,20 @@ export async function compose(
               };
             }
           }
-          return { ...envelope, source: 'reasoning' };
+          // Address finalisation — reasoning tail exit (DEF-136). This is
+          // the return that made DEF-134 a no-op in production: reasoning
+          // is the default path, so ask/answer/decline prose left compose
+          // here and never reached the legacy tail's guard ~1,820 lines
+          // below. Both exits now call the same function.
+          //
+          // The intercept return above is deliberately NOT routed through
+          // it: its answer is a bracketed marker by construction, not
+          // persona prose, and answerSanitizer renders it downstream.
+          return {
+            ...envelope,
+            answer: finaliseUserVisibleProse(envelope.answer, personaForReasoning),
+            source: 'reasoning',
+          };
         }
         // For act: short-circuit the legacy LLM round-trip. The
         // legacy LLM doesn't have the cross-turn clarification context
@@ -4267,53 +4365,13 @@ ${calLines.join('\n')}`;
     }
   }
 
-  // Address guard. Replaces greeting + full-name OR greeting + first-name
-  // openers with greeting + the user's preferred form of address
-  // (preferredTitle from Settings → Profile, e.g. "Sir", "Boss"; falls
-  // back to firstName when unset). Per Basit 2026-05-20: persona told
-  // Brain to use "Sir" but Brain kept saying "Hi Basit Ahmed!" anyway —
-  // structural post-process is the only thing that stops it 100% of the
-  // time. Doesn't touch full names as TOPIC references ("Abdul Haseeb's
-  // profile says..."), only when used as a direct ADDRESS in an opener.
-  const targetAddress = persona.addressAs || persona.userFirstName;
-  if (persona.userFullName && targetAddress) {
-    const escapedFull = persona.userFullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const escapedFirst = persona.userFirstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match greeting + full name OR greeting + first name (when the
-    // preferred address differs from the first name, e.g. user set
-    // "Sir" but the LLM defaulted to using their first name).
-    const namesToReplace = persona.userFirstName && persona.userFirstName !== targetAddress
-      ? `(?:${escapedFull}|${escapedFirst})`
-      : escapedFull;
-    if (persona.userFullName !== targetAddress) {
-      const addressRe = new RegExp(
-        `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${namesToReplace}\\b`,
-        'gi',
-      );
-      answer = answer.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${targetAddress}`);
-    }
-  }
-
-  // Bare-vocative guard (2026-08-11, DEF-134). The address guard above
-  // pins WHICH form of address Brain uses; nothing pinned how OFTEN. The
-  // persona used to say "when you greet, refer, or answer, use
-  // '<addressAs>' … every time", and the LLM read that as a mandatory
-  // prefix: 11 of 12 capability-benchmark replies opened with "Sir, …".
-  // The Living Assistant judge scored the human-voice criterion (C4)
-  // down on 11 of those 12 for exactly that — "canned", "template-like",
-  // "robotic if overused". The preference itself is real and stays; the
-  // reflexive stamping is the defect.
-  //
-  // Deliberately narrow: this strips ONLY a BARE vocative opener — the
-  // address token standing alone as the first thing in the reply — which
-  // is never how a person writes. It does NOT touch:
-  //   - greetings ("Good morning, Sir." — natural, and scored well),
-  //   - the address anywhere else in the reply,
-  //   - the address as a topic reference.
-  // A comma/dash/colon immediately after the token is what makes it
-  // unambiguously vocative rather than a sentence subject ("Sir Basit is
-  // asking…" in outbound templates has no separator and is untouched).
-  answer = stripBareVocativeOpener(answer, targetAddress);
+  // Address finalisation — legacy tail exit. DEF-136 moved the form and
+  // frequency rules that used to be written out inline here into
+  // finaliseUserVisibleProse, because the reasoning gate's early return
+  // (~1,820 lines above) never reached them and reasoning is the default
+  // path. Position is unchanged: still before the empty-promise guard,
+  // which must see the text Brain actually produced.
+  answer = finaliseUserVisibleProse(answer, persona);
 
   // Empty-promise guard. Per MD 2026-05-12: Brain replied
   // "Revisit pricing for Phoenix System ka open item Asad Ahmed Taj

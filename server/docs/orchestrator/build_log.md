@@ -554,3 +554,222 @@ nothing, and a scattered result means I am wrong about the mechanism.
   prose it should not have, and the sole-block guard is too permissive.
 - **A `salvaged: true` log line on a turn whose answer reads truncated** → the
   excision is cutting load-bearing sentences and the floor is too low.
+
+---
+
+## Iteration 3 — mode: incremental
+
+**Gating criterion: C4 @ 85.4** (human voice). Overall 94.8. C4 has now gated
+**three consecutive measurements — 84.8, 85.8, 85.4** — and Codex's chokepoint
+directive was owed for the second time. Another patch on one call site would be
+circling, and the recurrence table already says so in as many words.
+
+### The directive and fixQueue entries I targeted
+
+Codex, iteration 2, directive #1 — quoted in full because it is the whole brief:
+
+> Execute the still-owed Iteration 1 directive in
+> `server/src/services/knowledge/brainComposer.ts`: create one user-visible prose
+> finalisation chokepoint and route both the reasoning return near line 2496 and
+> the legacy tail return through it. Add compose-level tests for both
+> implementations. Required outcome: B06/B07/B08 and every other reasoning answer
+> can no longer bypass preferred-address frequency handling; do not solve this by
+> deleting the user's configured honorific globally.
+
+The matching fixQueue entries, verbatim:
+
+> **B07-compound-ask, C4 = 85** — "the opening **'Sir,'** feels a little formal and
+> template-like in an otherwise conversational interaction."
+
+> **B06-just-do-it, C4 = 90** — "'Sir' is a bit formal, but acceptable within a
+> professional assistant context."
+
+> **B08-bad-news, C4 = 90** — "The use of 'Sir' is a small detail that could be
+> more natural if omitted."
+
+Ten of the twelve C4 entries name the honorific. **But I read the answers rather
+than the summaries, and the fixQueue does not say what it looks like it says** —
+see the prediction section. Most of those ten are NOT bare openers.
+
+### On D-4, which argues it should have gone first
+
+D-4 says the measurement cannot yet distinguish a gain from noise, and it is
+right. I did not reorder it ahead of this turn, for three reasons stated so the
+choice is reviewable: the operator file itself ranks Codex's directive first;
+D-4's own text defers to the owner (*"Ranked FIRST once the owner confirms"*) and
+requires D-1 to land before it, so it is a two-turn job I cannot start and finish;
+and this iteration's change is one whose value does **not** depend on the score
+moving — it closes a bypass that is demonstrable from a test, not from a
+measurement. If the owner confirms D-4, it should take the next turn, and I would
+argue it should take it before directive #2.
+
+### Governing-docs verdict, before coding: CIRCLING
+
+Not a judgement call this time. `guard-below-early-return` is already in chart §3
+with two occurrences (DEF-035, DEF-039, plus DEF-041 in spirit), and its recorded
+containment reads *"no further patch in this class is acceptable — the
+decomposition is the fix."* DEF-134 then put a guard in the legacy tail, ~1,820
+lines below the reasoning gate's early return, and reasoning is the default path.
+So the guard was dead on arrival. I logged this as **DEF-136** and updated the
+tag to 3, with the row marked CIRCLING rather than progress.
+
+The part of the shape worth adding to the record: **the tests were written against
+the helper the live path skips.** `def134BareVocativeOpener.test.ts` had 19 green
+tests across three benchmark runs and zero coverage of the exit that actually
+returns. Codex made exactly this point about DEF-135 one iteration later — *"every
+test invokes `validateBeforeRender` directly; none calls `answerAsBrain`"* — while
+the same weakness had already shipped here one iteration earlier.
+
+### What I changed, and why that is the mechanism
+
+**1. `brainComposer.ts:2083` — `finaliseUserVisibleProse(answer, persona)`, new.**
+Holds both address rules in one place: WHICH form of address (the 2026-05-20
+greeting normaliser) and how OFTEN (`stripBareVocativeOpener`, DEF-134). Takes a
+structural `AddressPersona` (`:2046`) so both of compose's persona values satisfy
+it without a cast.
+
+**2. `brainComposer.ts:4374` — the legacy tail calls it.** The ~46 lines of inline
+guard are deleted, not duplicated. Position is unchanged: still above the
+empty-promise guard, which must see the text the model actually produced.
+
+**3. `brainComposer.ts:2592` — the reasoning exit calls it.** This is the bypass.
+
+**All four of compose's prose-carrying exits are accounted for**, because "how many
+exits are there?" is the question this class punishes you for not asking:
+
+| Exit | Carries | Finalised? |
+|---|---|---|
+| reasoning ask/answer/decline (`:2592`) | persona prose | **yes — new** |
+| legacy / final return (`:4374`) | persona prose | yes |
+| completion intercept (`:2573`) | bracketed marker by construction | no, deliberately — not prose; `answerSanitizer` renders it |
+| action preview (`:3421`, text built at `:3329`) | `renderActionPreview` output | no, deliberately — a deterministic rendered artifact. **This is where B04's `priority=high` comes from**, and it is Codex's directive #3, not this turn |
+
+**4. `tests/def136ProseFinalisationChokepoint.test.ts` — 19 tests, 8 of which drive
+the real `compose()`.** Reasoning is reached by mocking `reasoningCompose` +
+`reasoningCompose.applyDispatch`; legacy by mocking `callLLM`. The question is >60
+chars on purpose, so compose's early-confirm pending lookup (short replies only) is
+skipped and the test stays on the path under test.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  165 passed | 1 skipped (166)
+                    Tests  1924 passed | 7 expected fail | 21 skipped | 1 todo (1953)
+                    Duration 17.79s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+**Delta, measured rather than asserted** (D-3). I ran the suite three ways:
+
+| Tree | Files | Tests |
+|---|---|---|
+| HEAD `f4d9ec5`, clean | 164 passed / 165 | 1905 passed / 1934 |
+| my source edits, my test file removed | 164 passed / 165 | 1905 passed / 1934 |
+| everything | 165 passed / 166 | 1924 passed / 1953 |
+
+So: **+1 file, +19 tests, all mine, and no pre-existing test changed state** — the
+middle row is the evidence for that second claim, not an assumption. The baseline
+was measured by `git show HEAD:…` into place and restored afterwards.
+
+### Mutation — 4 mutants, 3 die, and the survivor changed the source
+
+- **Remove the reasoning-exit call → 5 tests fail.** The bypass is real and covered.
+- **Remove the legacy-exit call → 2 tests fail.** This mutant **survived my first
+  version**: with only the reasoning live-tests written, all 35 tests stayed green
+  with the legacy call deleted. That is the same helper-vs-live-path hole one layer
+  over, so I added the three legacy `compose()` tests and re-ran it. Recorded
+  because it was a real gap in my own work, found by mutation and not by reading.
+- **Remove the first-name fallback → 1 test fails.**
+- **Swap the two rules' order → NOTHING fails, and the mutant is correct.** I had
+  written that form-before-frequency was load-bearing. It is not: the form rule
+  anchors on a greeting followed by the user's NAME, the frequency rule on the
+  PREFERRED TOKEN at position 0, and the form rule always emits
+  `<greeting><sep><address>`, which is never a bare opener. Neither can create or
+  destroy the other's match. **I removed the false rationale from the docblock and
+  replaced the ordering test with an interference test**, rather than inventing an
+  assertion to defend a claim that was wrong.
+
+### What I did NOT do
+
+- **Did not touch the benchmark or the judge.** No edit to
+  `nexeoCapabilityBenchmark.ts`, `brainResponseEvaluator.ts`, or
+  `calibrateResponseJudge.ts`.
+- **Did not touch `scripts/orchestrator/**`.** Codex's directive #5 and the
+  orchestrator's own instruction. This commit is two files: one source, one test,
+  plus the two governing docs. `server/docs/orchestrator/state/capability_scorecard.json`
+  is modified in the tree by the orchestrator, not by me, and is **not staged**.
+- **Did not touch the persona examples** — `Anytime, ${addressAs}`,
+  `Morning, ${addressAs}` and the apology/identity shapes at
+  `brainPersonaService.ts:210-219` still teach frequent address, and they are
+  Codex's directive #2. That is deliberate sequencing, not an oversight: #2 is
+  where most of the remaining C4 address loss actually is (below), but mixing it
+  with #1 would make the score move unattributable, which is the one thing this
+  loop cannot afford.
+- **Did not touch B11's canned capability denial or B04's `priority=high`** —
+  directive #3, and the preview exit above is where the second one enters.
+- **Did not deploy.** The loop owns `pm2 restart`.
+- **Did not add an evaluation-chart §2 deploy row** — there is no deploy this turn.
+  §3 is updated because a recurrence is a recurrence whether or not it ships.
+- **Did not add a `brain_chat_log.md` row.** No owner chat arrived this session;
+  this defect came from the fixQueue. A CL row for a benchmark finding would be a
+  fabricated observation.
+- **Did not fix an unrelated defect I found while investigating** (below).
+
+### Prediction, and what would falsify it
+
+**I predict C4 moves very little — possibly not at all beyond noise — and I want
+that on the record BEFORE the measurement rather than after.**
+
+Here is why, and it is the thing the fixQueue hides behind a word count. DEF-134
+had two halves, and **only the guard half was dead. The prompt half was live all
+along** — reasoning builds its system prompt from
+`personaForReasoning.systemPreamble` (`:2420`), so the persona rewrite reached
+production on 08-11 and is most likely what moved C4 from 84.8 to 85.8. What this
+turn restores is the structural backstop for the cases the prompt does not
+suppress. Reading the twelve C4 answers rather than the ten summaries: **B07 is the
+only clear bare-vocative opener left.** The rest are non-opener honorifics —
+`"Sorry, Sir"` (B02), `"My apologies, Sir"` (B12), `"I'm Suzi, Sir."` (B09),
+`"…referring to, Sir?"` (B01) — and `stripBareVocativeOpener` is anchored at
+position 0 by design, so it does not touch a single one of them. Those are
+directive #2's, at the generation mechanism.
+
+So the honest claim for this turn is **structural, not numerical**: a protection
+that could not run now runs on both prose exits, and it is pinned by tests that
+fail when either call site is removed. If C4 moves 1–2 points I will not call that
+a win, per the standing rule.
+
+**What would prove me wrong, in either direction:**
+- **C4 jumps 5+.** Then bare openers were far more common in the live answers than
+  the twelve benchmark replies show, and the guard was carrying more weight than I
+  credit it with. Good news, wrongly predicted.
+- **C4 falls.** Most likely cause: the guard now fires on reasoning answers where
+  the leading vocative was doing real work — softening bad news (B08) or opening
+  the day (B05/B10) — and stripping it reads as curt. C8 (persona, 98.8) and C5
+  (proactivity, 93.3) are where that would surface first.
+- **C4 flat AND the residual reasons stop mentioning openers.** That is the
+  outcome I actually expect, and it is the one that hands directive #2 a clean
+  target: whatever `Sir` complaints remain would then be provably non-opener, so
+  the persona-example fix can be attributed on its own.
+- **Any case's answer comes back mangled** — a stub, a lost capital, a stripped
+  greeting. Then the chokepoint is over-reaching on real traffic in a way 19 tests
+  did not catch, and it should be reverted rather than tuned.
+
+### One unrelated finding, logged and NOT acted on
+
+While reading the capability block before this iteration (owner's DEF-130 method:
+read what is actually sent before changing anything) I found that
+**`remove_open_item` and `create_contact` have no rows in the production
+`action_definitions` table** — 16 rows against 18 seeded types. `classifyCapability`
+fails closed, so both are absent from the CAN list *and* the degraded list, which
+means Brain's *"I don't have the capability to delete open items directly"* is not
+a description defect at all: **it is Brain correctly reading a capability block
+that does not contain the capability.** DEF-106 edited the prompt text and the
+registry description, so it could never have worked. `create_contact` is the same
+row that was reported missing on 2026-07-07 as *"I can't add contacts"*, cited in
+`brainCapabilityLive.ts:6`, still absent 36 days later. The seed pre-approves
+(`registerAction(..., preApproved: true)`), so re-running it on production is
+plausibly the whole fix — but it is a production data change on a live registry,
+it is not C4, and it is not mine to ship inside a C4 attribution window. Flagged
+here and to the owner; it needs its own turn.
