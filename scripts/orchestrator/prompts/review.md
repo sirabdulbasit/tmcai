@@ -10,12 +10,16 @@ build entry and the next iteration being built on top of it.
 | | |
 |---|---|
 | Target | **@@TARGET@@ on EVERY criterion C1–C8** (the mean alone is not a pass) |
-| Overall after the build | @@OVERALL@@ |
+| Overall (see score status below) | @@OVERALL@@ |
 | **Minimum** criterion | **@@WEAKEST@@ @ @@MINSCORE@@** ← the gate reads this |
 | Full report | `@@SCOREJSON@@` |
 | tsc | @@TSC@@ |
 | tests | @@TESTS@@ |
 | Commit range | `@@BASEHEAD@@` → `@@HEAD@@` |
+
+### Score status
+
+@@SCORESTATE@@
 
 ```
 @@DIFFSTAT@@

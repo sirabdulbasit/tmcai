@@ -139,20 +139,47 @@ check_forbidden() {
 # ── the score ───────────────────────────────────────────────────────────────
 # Returns via globals: BENCH_OVERALL BENCH_MIN BENCH_WEAKEST BENCH_GATE
 # BENCH_JSON. Exit-code contract of the harness: 0 pass, 2 below bar, 1 broken.
-measure() {
+#
+# Owner, 2026-08-12: *"where every both agent (brain and codex) will [run]
+# immediately after each other"*.
+#
+# Measured timings: Builder ~12 min, Codex ~86 s, measurement ~5 min. So the gap
+# between the two seats WAS the measurement. It is now split in two — started
+# after the build turn, COLLECTED after the review — so the reviewer begins the
+# moment the builder stops and the score is computed alongside it instead of
+# in front of it.
+#
+# What this costs, stated plainly: Codex no longer has THIS iteration's score
+# while reviewing. Its strongest iteration-1 finding cited post-build case text
+# (B07/B08/B10/B11 still opening with "Sir,") to prove a bypass, and it cannot do
+# that against a score that does not exist yet. Running the two in parallel does
+# not recover it either — Codex finishes in 86 s, the score takes 300 s, so it
+# would never see it whatever the arrangement. The real fix is a FASTER
+# measurement (parallelise the 12 cases → ~1 min), which lives in the benchmark
+# and is therefore the Builder's, filed as a directive. Until then the reviewer
+# gets the PREVIOUS score, told plainly that it is the previous one.
+measure_start() {
   local iter="$1" label="$2"
-  local json="$SCORES/iter-$(printf '%02d' "$iter")-$label.json"
-  local log="$LOGS/iter-$(printf '%02d' "$iter")-bench-$label.log"
-
-  say "MEASURE iter=$iter ($label) → $(basename "$json")"
+  BENCH_JSON_PENDING="$SCORES/iter-$(printf '%02d' "$iter")-$label.json"
+  BENCH_LOG_PENDING="$LOGS/iter-$(printf '%02d' "$iter")-bench-$label.log"
+  say "MEASURE iter=$iter ($label) started in background → $(basename "$BENCH_JSON_PENDING")"
   ( cd "$SRV" && node -r dotenv/config dist/scripts/nexeoCapabilityBenchmark.js \
-      --target "$TARGET" --out "$json" ) > "$log" 2>&1
-  local rc=$?
+      --target "$TARGET" --out "$BENCH_JSON_PENDING" ) > "$BENCH_LOG_PENDING" 2>&1 &
+  BENCH_PID=$!
+}
+
+measure_collect() {
+  local iter="$1"
+  [ -z "${BENCH_PID:-}" ] && { say "MEASURE iter=$iter nothing pending to collect"; return 1; }
+  wait "$BENCH_PID"; local rc=$?
+  BENCH_PID=""
 
   local line
-  line="$(grep -m1 '^BENCH_RESULT' "$log" || true)"
+  line="$(grep -m1 '^BENCH_RESULT' "$BENCH_LOG_PENDING" || true)"
   if [ -z "$line" ]; then
-    say "MEASURE iter=$iter FAILED rc=$rc — no BENCH_RESULT line; see $(basename "$log")"
+    # A missing score is never silently inherited from the previous iteration:
+    # the loop would then steer on a stale number and call it current.
+    say "MEASURE iter=$iter FAILED rc=$rc — no BENCH_RESULT line; see $(basename "$BENCH_LOG_PENDING")"
     BENCH_OVERALL="null"; BENCH_MIN="null"; BENCH_WEAKEST="null"; BENCH_GATE="error"
     BENCH_JSON=""
     return 1
@@ -161,10 +188,21 @@ measure() {
   BENCH_MIN="$(sed -E     's/.*min=([^ ]+).*/\1/'      <<<"$line")"
   BENCH_WEAKEST="$(sed -E 's/.*weakest=([^ ]+).*/\1/'  <<<"$line")"
   BENCH_GATE="$(sed -E    's/.*gate=([^ ]+).*/\1/'     <<<"$line")"
-  BENCH_JSON="$json"
+  BENCH_JSON="$BENCH_JSON_PENDING"
   say "MEASURE iter=$iter overall=$BENCH_OVERALL min=$BENCH_MIN weakest=$BENCH_WEAKEST gate=$BENCH_GATE"
-  grep -q 'mutated=true' <<<"$line" && say "WARNING iter=$iter benchmark MUTATED live data — see $(basename "$json")"
+  grep -q 'mutated=true' <<<"$line" && say "WARNING iter=$iter benchmark MUTATED live data — see $(basename "$BENCH_JSON")"
+  # Remember WHAT was measured, so a restart can tell whether re-measuring would
+  # produce new information or just reprint the same number at cost.
+  printf 'head=%s overall=%s min=%s weakest=%s gate=%s json=%s\n' \
+    "$(git -C "$ROOT" rev-parse HEAD)" "$BENCH_OVERALL" "$BENCH_MIN" \
+    "$BENCH_WEAKEST" "$BENCH_GATE" "$BENCH_JSON" > "$STATE/last-measure"
   return 0
+}
+
+# Blocking form, for the startup baseline where there is nothing to overlap with.
+measure() {
+  measure_start "$1" "$2"
+  measure_collect "$1"
 }
 
 # ── health rails ────────────────────────────────────────────────────────────
@@ -274,7 +312,9 @@ run_claude() {
     --dangerously-skip-permissions \
     --add-dir "$ROOT" 2>&1 \
     | tee "$raw" \
-    | python3 "$FORMATTER" --prefix > "$log" 2>&1
+    | python3 "$FORMATTER" --prefix \
+    | tee -a "$log" \
+    | sed -u 's/^/BUILD  │ /'
   # claude's status, NOT tee's or python's — a formatter exiting 0 must never
   # launder a failed build turn into a success.
   local rc=${PIPESTATUS[1]}
@@ -328,7 +368,9 @@ run_codex() {
   # watching Codex reads the same as watching the Builder.
   ( cd "$ROOT" && "${cmd[@]}" 2>&1 ) \
     | tee "$raw" \
-    | python3 "$FORMATTER" --prefix > "$log" 2>&1
+    | python3 "$FORMATTER" --prefix \
+    | tee -a "$log" \
+    | sed -u 's/^/REVIEW │ /'
   # codex's status, NOT tee's or the formatter's.
   rc=${PIPESTATUS[0]}
 
@@ -428,8 +470,41 @@ say "PREP   building dist so the benchmark measures current source"
 ( cd "$SRV" && npm run build ) > "$LOGS/prep-build.log" 2>&1 \
   || die "initial npm run build failed — see logs/prep-build.log"
 
-if ! measure "$ITER" "baseline"; then
-  die "baseline measurement failed — the loop has no metric; see logs/"
+# Owner, 2026-08-12, on the 6-minute startup wait: *"why not immediately?"*
+#
+# Because the measurement is 12 real conversations — each a live compose plus a
+# live judge call — not a cached number. But re-measuring is only INFORMATIVE when
+# Brain could actually behave differently. The benchmark exercises `answerAsBrain`
+# and the judge; nothing under scripts/ or docs/ can change what it reads. So if
+# no file that Brain's behaviour depends on has changed since the last successful
+# measurement, the previous score is reused and the ledger SAYS it was reused
+# rather than measured. A ledger row that cannot be told apart from a fresh
+# measurement is worse than a slow loop.
+#
+# Deliberately conservative: any change under server/src or server/prisma counts,
+# even one that plainly cannot matter. Guessing which source changes are
+# behaviour-neutral is how a real regression gets skipped.
+REUSED_SCORE=0
+if [ -s "$STATE/last-measure" ]; then
+  # shellcheck disable=SC2046
+  LAST_HEAD="$(sed -E 's/.*head=([0-9a-f]+).*/\1/' "$STATE/last-measure")"
+  if [ -n "$LAST_HEAD" ] && git -C "$ROOT" cat-file -e "$LAST_HEAD^{commit}" 2>/dev/null; then
+    if [ -z "$(git -C "$ROOT" diff --name-only "$LAST_HEAD" HEAD -- server/src server/prisma)" ]; then
+      BENCH_OVERALL="$(sed -E 's/.*overall=([^ ]+).*/\1/' "$STATE/last-measure")"
+      BENCH_MIN="$(sed -E     's/.*min=([^ ]+).*/\1/'     "$STATE/last-measure")"
+      BENCH_WEAKEST="$(sed -E 's/.*weakest=([^ ]+).*/\1/' "$STATE/last-measure")"
+      BENCH_GATE="$(sed -E    's/.*gate=([^ ]+).*/\1/'    "$STATE/last-measure")"
+      BENCH_JSON="$(sed -E    's/.*json=([^ ]+).*/\1/'    "$STATE/last-measure")"
+      REUSED_SCORE=1
+      say "MEASURE skipped — no server/src or server/prisma change since $(git -C "$ROOT" rev-parse --short "$LAST_HEAD"); REUSING overall=$BENCH_OVERALL min=$BENCH_MIN weakest=$BENCH_WEAKEST"
+    fi
+  fi
+fi
+
+if [ "$REUSED_SCORE" -eq 0 ]; then
+  if ! measure "$ITER" "baseline"; then
+    die "baseline measurement failed — the loop has no metric; see logs/"
+  fi
 fi
 BASELINE_OVERALL="$BENCH_OVERALL"
 # The note must say WHICH baseline this is. On a restart the counter is already
@@ -439,6 +514,8 @@ BASELINE_OVERALL="$BENCH_OVERALL"
 # a restart the tree has usually moved since the last row.
 if [ "$ITER" -eq 0 ]; then
   BASELINE_NOTE="baseline before any loop iteration"
+elif [ "$REUSED_SCORE" -eq 1 ]; then
+  BASELINE_NOTE="RESTART at HEAD $(git rev-parse --short HEAD) — score REUSED, not measured (no server/src or server/prisma change since it was taken); iterations 1..$ITER done, next build turn is $((ITER + 1))"
 else
   BASELINE_NOTE="RESTART baseline re-measured at HEAD $(git rev-parse --short HEAD) — iterations 1..$ITER already done; next build turn is $((ITER + 1))"
 fi
@@ -494,30 +571,47 @@ while :; do
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
 
-  # ── rails, then re-measure ───────────────────────────────────────────────
+  # ── rails, then START the measurement (it runs DURING the review) ────────
+  # Owner, 2026-08-12: both seats must run immediately after each other. The
+  # 5-minute measurement used to sit between them; it now overlaps the review.
+  # The rails stay in front, ~90s of tsc + build + tests, because they are the
+  # safety gates: a review of a tree that does not compile, and a measurement of
+  # a stale dist, are both worthless.
+  PREV_OVERALL="$BENCH_OVERALL"; PREV_MIN="$BENCH_MIN"; PREV_WEAKEST="$BENCH_WEAKEST"
   TSC_AFTER="$(tsc_status)"
   say "RAILS  iter=$ITER tsc=$TSC_AFTER"
+  MEASURE_STARTED=0
   if [ "$TSC_AFTER" = "clean" ]; then
     ( cd "$SRV" && npm run build ) > "$LOGS/iter-$(printf '%02d' "$ITER")-npmbuild.log" 2>&1 \
       && say "RAILS  iter=$ITER npm run build ok" \
       || say "RAILS  iter=$ITER npm run build FAILED"
     TESTS_AFTER="$(test_status)"
     say "RAILS  iter=$ITER tests=$TESTS_AFTER"
-    measure "$ITER" "post-build" || say "MEASURE iter=$ITER failed — reviewer will be told the score is missing"
+    measure_start "$ITER" "post-build"
+    MEASURE_STARTED=1
   else
     TESTS_AFTER="not run (tsc red)"
     say "RAILS  iter=$ITER tsc RED — skipping build/tests/measure; the score stands from before"
   fi
 
-  # ── REVIEW ───────────────────────────────────────────────────────────────
+  # ── REVIEW — starts NOW, while the score is still being computed ──────────
   DIFF_STAT="$(git diff --stat "$BASE_HEAD" HEAD 2>/dev/null | tail -25)"
   [ -z "$DIFF_STAT" ] && DIFF_STAT="$(git status --porcelain | head -25)"
   [ -z "$DIFF_STAT" ] && DIFF_STAT="(no changes detected this iteration — say so plainly in the review)"
 
+  # The score handed to the reviewer is the PREVIOUS one, and it is labelled as
+  # such. Passing a pending measurement's stale numbers as if they were this
+  # iteration's would be the `fabricated-status` shape aimed at the reviewer —
+  # the one participant whose whole job is catching claims that outrun evidence.
+  if [ "$MEASURE_STARTED" = "1" ]; then
+    SCORE_STATE="**This iteration's score is still being measured as you read this** — it is computed concurrently with your review so that you start the moment the Builder stops. The numbers below are the PREVIOUS iteration's. Judge the diff against the build log's claims, which is your job and needs no score; where a claim can only be settled by the new measurement, say so explicitly and it will be in front of you next iteration."
+  else
+    SCORE_STATE="No measurement ran this iteration (tsc was RED, so build/tests/measure were skipped). The numbers below are the last successful measurement's."
+  fi
   REVIEW_PROMPT="$(render "$PROMPTS/review.md" \
     ITER "$ITER" TARGET "$TARGET" \
-    OVERALL "$BENCH_OVERALL" MINSCORE "$BENCH_MIN" WEAKEST "$BENCH_WEAKEST" \
-    SCOREJSON "${BENCH_JSON:-none}" \
+    OVERALL "$PREV_OVERALL" MINSCORE "$PREV_MIN" WEAKEST "$PREV_WEAKEST" \
+    SCOREJSON "${BENCH_JSON:-none}" SCORESTATE "$SCORE_STATE" \
     TSC "$TSC_AFTER" TESTS "$TESTS_AFTER" \
     BASEHEAD "$(git rev-parse --short "$BASE_HEAD")" HEAD "$(git rev-parse --short HEAD)" \
     DIFFSTAT "$DIFF_STAT" \
@@ -525,6 +619,12 @@ while :; do
   run_codex "$ITER" "$REVIEW_PROMPT" || say "REVIEW iter=$ITER codex returned non-zero — continuing"
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
+
+  # ── collect the score that ran during the review ─────────────────────────
+  if [ "$MEASURE_STARTED" = "1" ]; then
+    say "MEASURE iter=$ITER collecting (review finished; waiting on the benchmark if it is still going)"
+    measure_collect "$ITER" || say "MEASURE iter=$ITER failed — the ledger row records the failure, not a stale score"
+  fi
 
   # ── stall accounting on the MINIMUM, which is what the gate reads ─────────
   CUR_MIN="${BENCH_MIN%%.*}"; [ -n "$CUR_MIN" ] || CUR_MIN=0
