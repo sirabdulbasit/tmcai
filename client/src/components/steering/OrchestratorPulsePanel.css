@@ -1,0 +1,289 @@
+/**
+ * Brain build pulse — the orch pulse window, drawn in the browser.
+ *
+ * Colour roles are declared once here and referenced by role below, so the whole
+ * panel re-themes from one block. Every value clears 3:1 against both card
+ * surfaces (--bg-1 #111113 and --bg-2 #17181c), checked with the palette
+ * validator rather than eyeballed.
+ *
+ * The stage hues deliberately match the terminal window's own colour language —
+ * cyan-blue building, magenta review, amber measure, green score, red stalled,
+ * grey idle — so the owner's mental map carries over from the terminal without
+ * relearning. Colour is never the only carrier: every stage, phase and delta
+ * prints its own word or sign beside the mark.
+ */
+.orch-pulse {
+  --op-build:   #5a9fd7;
+  --op-checks:  #3987e5;
+  --op-measure: #e0a43c;
+  --op-review:  #d55181;
+  --op-score:   #3bc18b;
+  --op-stalled: #e25c5c;
+  --op-idle:    #9ba0aa;
+  /* Magnitude bars are one hue, light→dark, because they encode a quantity
+     (duration, score) and not an identity. */
+  --op-bar:      #3987e5;
+  --op-bar-soft: rgba(57, 135, 229, 0.16);
+  --op-grid:     rgba(255, 255, 255, 0.07);
+}
+
+/* Stale/unreadable: the frame stays on screen but is visibly not live. A status
+   display that keeps looking live while its source is unreachable is the exact
+   failure the pulse exists to prevent. */
+.orch-pulse.is-stale .orch-pulse-body { opacity: 0.5; filter: saturate(0.6); }
+
+.orch-pulse-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-4);
+}
+.orch-pulse-title {
+  display: flex; align-items: baseline; gap: var(--s-3);
+  font-size: var(--fs-lg); font-weight: var(--fw-semibold); margin: 0;
+}
+.orch-pulse-meta {
+  display: flex; align-items: center; gap: var(--s-3);
+  font-size: var(--fs-xs); color: var(--text-muted);
+}
+.orch-pulse-live { display: inline-flex; align-items: center; gap: 6px; }
+.orch-pulse-live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--op-score);
+  animation: orch-pulse-blink 2s ease-in-out infinite;
+}
+.orch-pulse.is-stale .orch-pulse-live-dot { background: var(--op-stalled); animation: none; }
+.orch-pulse.is-paused .orch-pulse-live-dot { background: var(--op-idle); animation: none; }
+@keyframes orch-pulse-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  .orch-pulse-live-dot { animation: none; }
+}
+
+/* ── stage hero ─────────────────────────────────────────────────────────── */
+.orch-stage {
+  display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap;
+  padding: var(--s-4); border-radius: 10px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--stage-color, var(--op-idle));
+}
+.orch-stage-word {
+  display: flex; align-items: center; gap: var(--s-2);
+  font-size: var(--fs-lg); font-weight: var(--fw-bold);
+  letter-spacing: 0.04em; color: var(--stage-color, var(--op-idle));
+}
+.orch-stage-word .orch-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: currentColor;
+}
+/* The hero number: how long this stage has been running. Tabular figures so a
+   ticking timer doesn't jitter its own width. */
+.orch-stage-timer {
+  font-size: var(--fs-2xl); font-weight: var(--fw-bold); line-height: 1;
+  font-variant-numeric: tabular-nums; font-family: var(--font-mono);
+}
+.orch-stage-side { display: flex; flex-direction: column; gap: 2px; margin-left: auto; text-align: right; }
+.orch-stage-detail {
+  flex-basis: 100%; font-size: var(--fs-xs); color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.orch-banner {
+  display: flex; align-items: center; gap: var(--s-2);
+  margin-top: var(--s-3); padding: 8px 12px; border-radius: 8px;
+  font-size: var(--fs-xs);
+}
+.orch-banner-warn { background: var(--warning-dim); color: var(--warning); }
+.orch-banner-bad  { background: var(--danger-dim);  color: var(--danger); }
+
+/* ── section frame ──────────────────────────────────────────────────────── */
+.orch-section { margin-top: var(--s-5); }
+.orch-section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--s-3); margin-bottom: var(--s-3);
+}
+.orch-section-title {
+  font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted);
+}
+.orch-section-note { font-size: var(--fs-xs); color: var(--text-dim); }
+
+/* ── phase timeline ─────────────────────────────────────────────────────── */
+/* Four real columns, each wide enough for its longest string, because the first
+   version let the state and the seat share one flex row: "Running 7m35s ·
+   Current" wrapped "Current" onto its own line and "claude-opus-5" broke in half.
+   A timer that reflows as it counts is a timer that can't be read at a glance. */
+.orch-phase {
+  display: grid; grid-template-columns: 74px 1fr 168px 172px; align-items: center;
+  gap: var(--s-3); padding: 5px 0;
+}
+.orch-phase-name { font-size: var(--fs-sm); color: var(--text); }
+.orch-phase-track {
+  position: relative; height: 12px; border-radius: 6px;
+  background: var(--op-bar-soft);
+}
+/* 4px rounded data-end, anchored to the track's left baseline. */
+.orch-phase-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px;
+  background: var(--op-bar); min-width: 3px;
+}
+.orch-phase-fill.is-running { background: var(--phase-color, var(--op-build)); }
+.orch-phase-fill.is-running::after {
+  content: ''; position: absolute; inset: 0; border-radius: 4px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+  animation: orch-sweep 1.8s linear infinite;
+}
+.orch-phase-fill.is-abandoned { background: var(--op-stalled); }
+@keyframes orch-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .orch-phase-fill.is-running::after { animation: none; opacity: 0.25; }
+}
+.orch-phase-state {
+  font-size: var(--fs-xs); display: flex; align-items: baseline; gap: 6px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.orch-phase-dur { font-family: var(--font-mono); color: var(--text); }
+.orch-phase-seat {
+  font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; text-align: right;
+}
+.orch-phase-empty { font-size: var(--fs-xs); color: var(--text-dim); }
+
+.orch-progress {
+  margin-top: var(--s-3); padding: 10px 12px; border-radius: 8px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  font-size: var(--fs-xs); font-family: var(--font-mono); color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.orch-progress b { color: var(--text); font-family: var(--font-sans); }
+
+/* ── capability bars ────────────────────────────────────────────────────── */
+.orch-cap {
+  display: grid; grid-template-columns: 168px 34px 1fr 34px 46px;
+  align-items: center; gap: var(--s-3); padding: 4px 0;
+}
+.orch-cap-name { font-size: var(--fs-sm); color: var(--text); }
+.orch-cap-val {
+  font-size: var(--fs-sm); font-family: var(--font-mono); text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.orch-cap-pro {
+  font-size: var(--fs-xs); font-family: var(--font-mono);
+  color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.orch-cap-track {
+  position: relative; height: 12px; border-radius: 6px;
+  /* Recessive, unlike the phase tracks: with the same soft blue behind it, the
+     stretch between the score and the benchmark read as a second bar — as if the
+     professional figure were also a filled quantity. */
+  background: rgba(255, 255, 255, 0.05);
+}
+.orch-cap-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px;
+  background: var(--op-bar); min-width: 2px;
+  transition: width 320ms ease;
+}
+/* The professional benchmark, as a reference marker rather than a second bar —
+   there is one quantity on this axis, so there is one bar. A 2px surface-coloured
+   ring keeps the marker legible where it sits on top of the fill. */
+.orch-cap-mark {
+  position: absolute; top: -4px; bottom: -4px; width: 2px;
+  background: var(--text); border-radius: 1px;
+  box-shadow: 0 0 0 2px var(--bg-1);
+}
+.orch-delta {
+  font-size: var(--fs-xs); font-family: var(--font-mono); text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--text-dim);
+}
+.orch-delta.up   { color: var(--op-score); }
+.orch-delta.down { color: var(--op-stalled); }
+
+.orch-brain {
+  display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap;
+  margin-top: var(--s-3); padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
+}
+.orch-brain-num {
+  font-size: var(--fs-2xl); font-weight: var(--fw-bold); line-height: 1;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.orch-brain-lab { font-size: var(--fs-xs); color: var(--text-muted); }
+.orch-brain-lab b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* ── trend ──────────────────────────────────────────────────────────────── */
+.orch-trend-chart { position: relative; }
+.orch-trend-chart svg { display: block; width: 100%; height: auto; }
+.orch-spark {
+  display: grid; grid-template-columns: 168px 46px 1fr 46px 46px;
+  align-items: center; gap: var(--s-3); padding: 3px 0;
+}
+/* Capped, not full-width: stretched across 700px the slope of a five-point series
+   flattens into what looks like a rule under the row. A sparkline has to be narrow
+   enough for its own shape to survive. */
+.orch-spark-svg { max-width: 280px; }
+.orch-spark svg { display: block; width: 100%; height: 22px; }
+.orch-tip {
+  position: absolute; pointer-events: none; z-index: 5;
+  transform: translate(-50%, -120%);
+  background: var(--bg-3); border: 1px solid var(--border-strong);
+  border-radius: 6px; padding: 5px 8px; white-space: nowrap;
+  font-size: var(--fs-xs); box-shadow: var(--shadow-md);
+}
+.orch-tip-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ── benchmark + history ────────────────────────────────────────────────── */
+.orch-bench {
+  display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap;
+  padding: var(--s-3) var(--s-4); border-radius: 8px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.orch-bench-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.orch-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.orch-table th {
+  text-align: left; font-weight: var(--fw-medium); color: var(--text-muted);
+  padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.orch-table td {
+  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.orch-table td.num { font-family: var(--font-mono); text-align: right; }
+.orch-scroll { overflow-x: auto; }
+
+/* Narrow: every row becomes label-and-figure on top, bar underneath. Explicit
+   grid areas rather than auto-placement — the first attempt reflowed the seat cell
+   into the next row's gap, so "Claude · claude-opus-5" appeared under a different
+   phase than the one it belonged to. A label under the wrong bar is worse than no
+   label. */
+@media (max-width: 720px) {
+  .orch-phase {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "name state" "track track" "seat seat";
+    gap: 3px var(--s-3); padding: 8px 0;
+  }
+  .orch-phase-name  { grid-area: name; }
+  .orch-phase-state { grid-area: state; justify-content: flex-end; }
+  .orch-phase-track { grid-area: track; }
+  .orch-phase-seat  { grid-area: seat; text-align: left; }
+
+  .orch-cap {
+    grid-template-columns: 1fr auto auto auto;
+    grid-template-areas: "name val pro delta" "track track track track";
+    gap: 3px var(--s-2); padding: 7px 0;
+  }
+  .orch-cap-name  { grid-area: name; }
+  .orch-cap-val   { grid-area: val; }
+  /* Two bare numbers side by side read as one figure; the slash says which is
+     which without spending a row on labels. */
+  .orch-cap-pro   { grid-area: pro; }
+  .orch-cap-pro::before { content: '/ '; }
+  .orch-cap .orch-delta { grid-area: delta; padding-left: 6px; }
+  .orch-cap-track { grid-area: track; }
+
+  .orch-spark {
+    grid-template-columns: 1fr auto auto;
+    grid-template-areas: "name last delta" "first spark spark";
+    gap: 3px var(--s-2); padding: 6px 0;
+  }
+  .orch-spark .orch-cap-name { grid-area: name; }
+  .orch-spark .orch-cap-pro  { grid-area: first; }
+  .orch-spark .orch-cap-val  { grid-area: last; }
+  .orch-spark .orch-delta    { grid-area: delta; }
+  .orch-spark .orch-spark-svg { grid-area: spark; max-width: none; }
+}

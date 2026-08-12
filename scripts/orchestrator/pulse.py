@@ -504,7 +504,24 @@ def capability_trend():
     return moved, flat, iters
 
 
-def snapshot(full=False):
+# ── collect, then render ─────────────────────────────────────────────────────
+#
+# Owner, 2026-08-12: *"what if we build live dashboard in ?tab=health which shows
+# me exact picture (same like orch pulse window) with good graphics?"*
+#
+# The window and the web dashboard MUST read the same numbers, so everything the
+# display needs is gathered here once, as plain data, and both surfaces render
+# from it. The alternative — a second stage detector written in TypeScript — is
+# the exact failure this file has already been burned by twice: the codex matcher
+# was left unguarded against the editor process because its twin, the claude
+# matcher, was guarded in a separate copy of the same rule. One detector, two
+# renderers. Anything the browser shows that the terminal does not is a bug in
+# the renderer, never a difference of opinion about what is running.
+#
+# Epochs are emitted raw (`now`, phase `start`/`end`) so the browser can count
+# its own timers up between polls instead of freezing between refreshes, and so
+# clocks can be rendered in the owner's zone there exactly as `pkt()` does here.
+def collect():
     stage, elapsed, basis, detail = detect_stage()
     # A process-derived elapsed time is the kernel's own and needs no help; a
     # file-derived one is staleness, not duration, so it is replaced by the
@@ -516,7 +533,7 @@ def snapshot(full=False):
     sc = scores()
     vd = verdicts()
     latest = sc[-1][2] if sc else {}
-    latest_iter = sc[-1][0] if sc else "—"
+    latest_iter = sc[-1][0] if sc else None
 
     # Which iteration is IN FLIGHT: build_log's newest section, which the Builder
     # writes as it finishes. If a stage is active, the live iteration is the next
@@ -528,9 +545,6 @@ def snapshot(full=False):
                                          open(bl, errors="replace").read(), re.M)]
         built = max(ns) if ns else 0
     in_flight = built + 1 if stage == "BUILDING" else built
-
-    col = {"BUILDING": C["cyn"], "REVIEWING": C["mag"], "MEASURING": C["yel"],
-           "STALLED": C["red"], "IDLE": C["dim"]}.get(stage, C["dim"])
 
     tl, newest = phase_timeline()
     cur_it = newest if newest is not None else in_flight
@@ -560,6 +574,103 @@ def snapshot(full=False):
                 current = ph
                 break
 
+    seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
+            "Review": "Codex", "Score": "Grok"}
+    models = seat_models()
+    phase_rows = []
+    for ph in PHASE_ORDER:
+        p_ = phases.get(ph, {})
+        s_, e_ = p_.get("start"), p_.get("end")
+        running = bool(s_ and not e_ and loop_alive) or ph == current
+        if running:
+            # MORE THAN ONE PHASE CAN BE RUNNING. Measure and Review overlap by
+            # design — the benchmark was moved to run alongside the review so the
+            # two agents go back-to-back — and the first version of this display
+            # marked only one as current, painting the other red as "no completion
+            # recorded". A concurrent phase must not render as an abandoned one.
+            state, dur = "running", now - (s_ or (now - elapsed))
+        elif s_ and e_:
+            state, dur = "done", e_ - s_
+        elif s_:
+            # Started, never finished, and the loop is NOT alive to be running it.
+            # Never shown as done: an abandoned phase and a completed one must not
+            # look alike.
+            state, dur = "abandoned", now - s_
+        else:
+            state, dur = "pending", None
+        mdl = models.get(ph, "")
+        phase_rows.append({
+            "name": ph, "seat": seat[ph], "state": state,
+            "model": mdl if mdl and mdl != "?" else None,
+            "start": s_, "end": e_, "duration": dur,
+            "current": ph == current, "detail": p_.get("detail"),
+        })
+
+    caps, brain = [], None
+    scp = os.path.join(STATE, "capability_scorecard.json")
+    if os.path.exists(scp):
+        try:
+            d = json.load(open(scp))
+        except Exception:
+            d = None
+        if d:
+            caps = [{"name": c["name"], "nexeo": c["nexeo"],
+                     "professional": c["professional"], "delta": c.get("delta", 0)}
+                    for c in d["capabilities"]]
+            nn = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
+            pro = round(sum(c["professional"] for c in caps) / len(caps), 1)
+            brain = {
+                "nexeo": nn, "professional": pro, "gap": round(pro - nn, 1),
+                "move": round(sum(c["delta"] for c in caps) / len(caps), 1),
+                "scored_by": (d.get("history") or [{}])[-1].get("scored_by",
+                                                               "orchestrator"),
+            }
+
+    moved, flat, iters = capability_trend()
+    trend = {"iterations": list(iters), "unmoved": flat, "rows": [
+        {"name": nm, "series": series, "first": first, "last": last,
+         "delta": round(last - first, 1), "overall": nm == "BRAIN overall"}
+        for nm, series, first, last in moved]}
+
+    bench = None
+    if latest:
+        ws = latest.get("weakestCriterionScore")
+        tgt = latest.get("target", 95)
+        bench = {
+            "criterion": latest.get("weakestCriterion"), "score": ws, "target": tgt,
+            "gap": None if ws is None else round(tgt - ws, 1),
+            "verdict": vd.get(latest_iter, "—"), "iteration": latest_iter,
+            "overall": latest.get("overall"),
+            "cases_failed": latest.get("casesFailed") or 0,
+            "mutated": bool(latest.get("mutated")),
+        }
+
+    return {
+        "now": now, "pkt_offset": PKT_OFFSET,
+        "stage": {"name": stage, "elapsed": elapsed, "basis": basis,
+                  "detail": detail},
+        "loop_alive": loop_alive,
+        "iteration": cur_it, "iteration_started": started,
+        "iterations_built": built, "iteration_in_flight": in_flight,
+        "current_phase": current, "phases": phase_rows,
+        "progress": last_stream_line(cur_it, current) if current else "",
+        "capabilities": caps, "brain": brain, "trend": trend,
+        "benchmark": bench,
+        "history": [{"iteration": it, "label": label, "overall": dd.get("overall"),
+                     "weakest": dd.get("weakestCriterionScore"),
+                     "criterion": dd.get("weakestCriterion"),
+                     "verdict": vd.get(it, "—")} for it, label, dd in sc[-6:]],
+    }
+
+
+def render(d, full=False):
+    """The terminal window, drawn from `collect()`. Formatting only — every
+    number and every judgement about what is running was decided there."""
+    now = d["now"]
+    stage = d["stage"]["name"]
+    cur_it, started = d["iteration"], d["iteration_started"]
+    current = d["current_phase"]
+
     lines = []
     # The clock sits on the divider, not the header. With both on one line the
     # header ran past ~74 columns and WRAPPED in the owner's terminal, breaking the
@@ -571,38 +682,23 @@ def snapshot(full=False):
                  + (f"  {C['dim']}({fmt_dur(now - started)} ago){C['r']}" if started else ""))
     lines.append("")
 
-    seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
-            "Review": "Codex", "Score": "Grok"}
-    models = seat_models()
-    for ph in PHASE_ORDER:
-        p_ = phases.get(ph, {})
-        s_, e_ = p_.get("start"), p_.get("end")
-        running = bool(s_ and not e_ and loop_alive) or ph == current
-        if running:
-            # MORE THAN ONE PHASE CAN BE RUNNING. Measure and Review overlap by
-            # design — the benchmark was moved to run alongside the review so the
-            # two agents go back-to-back — and the first version of this display
-            # marked only one as current, painting the other red as "no completion
-            # recorded". A concurrent phase must not render as an abandoned one.
-            base = s_ or (now - elapsed)
+    for p_ in d["phases"]:
+        ph, state, dur = p_["name"], p_["state"], p_["duration"]
+        if state == "running":
             word = "Building" if ph == "Build" else "Running"
-            txt = f"{C['cyn']}{C['b']}{word}{C['r']} {C['b']}{fmt_dur(now - base)}{C['r']}"
-            if ph == current:
+            txt = f"{C['cyn']}{C['b']}{word}{C['r']} {C['b']}{fmt_dur(dur)}{C['r']}"
+            if p_["current"]:
                 txt += f"  {C['yel']}- Current{C['r']}"
-        elif s_ and e_:
-            txt = f"{C['grn']}done{C['r']} {fmt_dur(e_ - s_)}"
-        elif s_ and not e_:
-            # Started, never finished, and the loop is NOT alive to be running it.
-            # Never shown as done: an abandoned phase and a completed one must not
-            # look alike.
-            txt = f"{C['red']}started {fmt_dur(now - s_)} ago, no completion recorded{C['r']}"
+        elif state == "done":
+            txt = f"{C['grn']}done{C['r']} {fmt_dur(dur)}"
+        elif state == "abandoned":
+            txt = f"{C['red']}started {fmt_dur(dur)} ago, no completion recorded{C['r']}"
         else:
             txt = f"{C['dim']}—{C['r']}"
-        mdl = models.get(ph, "")
-        who = seat[ph] + (f" · {mdl}" if mdl and mdl != "?" else "")
+        who = p_["seat"] + (f" · {p_['model']}" if p_["model"] else "")
         lines.append(f"  {ph + ':':<9}{txt}   {C['dim']}{who}{C['r']}")
 
-    prog = last_stream_line(cur_it, current) if current else ""
+    prog = d["progress"]
     if current and prog:
         lines.append("")
         lines.append(f"  {C['b']}Progress {current}:{C['r']} {prog}")
@@ -610,17 +706,11 @@ def snapshot(full=False):
         lines.append("")
         lines.append(f"  {C['dim']}Progress: nobody working{C['r']}")
 
-    scp = os.path.join(STATE, "capability_scorecard.json")
-    if os.path.exists(scp):
-        d = json.load(open(scp))
-        caps = d["capabilities"]
-        nn = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
-        pro = round(sum(c["professional"] for c in caps) / len(caps), 1)
-        mv = round(sum(c.get("delta", 0) for c in caps) / len(caps), 1)
-        by = (d.get("history") or [{}])[-1].get("scored_by", "orchestrator")
+    caps, brain = d["capabilities"], d["brain"]
+    if caps and brain:
         lines.append("")
         for c in caps:
-            dd = c.get("delta", 0)
+            dd = c["delta"]
             dtxt = f"{C['grn']}+{dd}{C['r']}" if dd > 0 else (
                 f"{C['red']}{dd}{C['r']}" if dd < 0 else f"{C['dim']}0{C['r']}")
             lines.append(f"  {c['name']:<23}{c['nexeo']:>3} "
@@ -628,59 +718,74 @@ def snapshot(full=False):
                          f"{C['dim']}{c['professional']:>3}{C['r']} {dtxt}")
         # Trimmed to fit ~74 columns: at 83 chars this line wrapped in the owner's
         # terminal, putting "grok" alone on the next row.
-        lines.append(f"  {C['b']}{'BRAIN':<23}{nn:>5}{C['r']}  vs {pro}  "
-                     f"gap {C['b']}{round(pro - nn, 1)}{C['r']}  "
-                     f"move {'+' if mv > 0 else ''}{mv}  {C['dim']}by {by}{C['r']}")
+        mv = brain["move"]
+        lines.append(f"  {C['b']}{'BRAIN':<23}{brain['nexeo']:>5}{C['r']}  "
+                     f"vs {brain['professional']}  "
+                     f"gap {C['b']}{brain['gap']}{C['r']}  "
+                     f"move {'+' if mv > 0 else ''}{mv}  "
+                     f"{C['dim']}by {brain['scored_by']}{C['r']}")
 
     # ── capability trend, iteration-wise ──
-    moved, flat, iters = capability_trend()
-    if moved:
+    tr = d["trend"]
+    if tr["rows"]:
+        iters = tr["iterations"]
         lines.append("")
         lines.append(f"  {C['b']}TREND{C['r']} {C['dim']}capability by iteration "
                      f"{iters[0]}→{iters[-1]}  ({len(iters)} scored){C['r']}")
-        for nm, series, first, last in moved:
-            d_ = round(last - first, 1)
+        for row in tr["rows"]:
+            d_ = row["delta"]
             dtxt = f"{C['grn']}+{d_}{C['r']}" if d_ > 0 else (
                 f"{C['red']}{d_}{C['r']}" if d_ < 0 else f"{C['dim']}0{C['r']}")
-            bold = C['b'] if nm == "BRAIN overall" else ""
-            lines.append(f"  {bold}{nm:<23}{C['r']}{first:>5} "
-                         f"{C['cyn']}{spark_ascii(series)}{C['r']} {last:>5}  {dtxt}")
-        if flat:
+            bold = C['b'] if row["overall"] else ""
+            lines.append(f"  {bold}{row['name']:<23}{C['r']}{row['first']:>5} "
+                         f"{C['cyn']}{spark_ascii(row['series'])}{C['r']} "
+                         f"{row['last']:>5}  {dtxt}")
+        if tr["unmoved"]:
             # Named, not hidden: eight capabilities that have never moved is the
             # single most important fact about this loop's progress, and printing
             # eight flat rows would bury it instead of stating it.
             lines.append(f"  {C['dim']}unmoved since scoring began: "
-                         f"{', '.join(flat)}{C['r']}")
+                         f"{', '.join(tr['unmoved'])}{C['r']}")
 
-    if latest:
-        ws = latest.get("weakestCriterionScore")
-        tgt = latest.get("target", 95)
-        gap = None if ws is None else round(tgt - ws, 1)
-        v = vd.get(latest_iter, "—")
-        vc = {"SOUND": C["grn"], "WEAK": C["yel"], "WRONG": C["red"]}.get(v, C["dim"])
+    b = d["benchmark"]
+    if b:
+        gap = b["gap"]
+        vc = {"SOUND": C["grn"], "WEAK": C["yel"],
+              "WRONG": C["red"]}.get(b["verdict"], C["dim"])
         lines.append(f"  {C['dim']}{'benchmark':<23}{C['r']}"
-                     f"{latest.get('weakestCriterion')} {ws} → {tgt}"
+                     f"{b['criterion']} {b['score']} → {b['target']}"
                      f"   {C['red'] if gap and gap > 0 else C['grn']}{gap} to go{C['r']}"
-                     f"   codex {vc}{v}{C['r']}   {C['dim']}(iter {latest_iter}){C['r']}")
-        if latest.get("casesFailed"):
-            lines.append(f"  {C['red']}{latest['casesFailed']} case(s) failed to score "
+                     f"   codex {vc}{b['verdict']}{C['r']}"
+                     f"   {C['dim']}(iter {b['iteration']}){C['r']}")
+        if b["cases_failed"]:
+            lines.append(f"  {C['red']}{b['cases_failed']} case(s) failed to score "
                          f"— incomplete, not low{C['r']}")
-        if latest.get("mutated"):
+        if b["mutated"]:
             lines.append(f"  {C['yel']}last run wrote to live data{C['r']}")
 
-    if full and sc:
+    if full and d["history"]:
         lines.append("")
-        for it, label, d in sc[-6:]:
-            v = vd.get(it, "—")
-            vc = {"SOUND": C["grn"], "WEAK": C["yel"], "WRONG": C["red"]}.get(v, C["dim"])
-            lines.append(f"  {C['dim']}iter {it} {label:<12}{C['r']} "
-                         f"{str(d.get('overall')):>5}  min {str(d.get('weakestCriterionScore')):>5} "
-                         f"{str(d.get('weakestCriterion')):<3} {vc}{v}{C['r']}")
+        for h in d["history"]:
+            vc = {"SOUND": C["grn"], "WEAK": C["yel"],
+                  "WRONG": C["red"]}.get(h["verdict"], C["dim"])
+            lines.append(f"  {C['dim']}iter {h['iteration']} {h['label']:<12}{C['r']} "
+                         f"{str(h['overall']):>5}  min {str(h['weakest']):>5} "
+                         f"{str(h['criterion']):<3} {vc}{h['verdict']}{C['r']}")
     return "\n".join(lines)
+
+
+def snapshot(full=False):
+    return render(collect(), full)
 
 
 def main():
     args = sys.argv[1:]
+    if "--json" in args:
+        # What the web dashboard reads. Same collector as the window, so the two
+        # can never disagree about the stage, the timers or the scores.
+        json.dump(collect(), sys.stdout, allow_nan=False)
+        sys.stdout.write("\n")
+        return 0
     if "--plain" in args:
         plain()
     full = "--full" in args

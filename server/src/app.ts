@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { env } from './config/env';
 import { errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/healthRoutes';
+import orchestratorPulseRoutes from './routes/orchestratorPulseRoutes';
 import indexRoutes from './routes/indexRoutes';
 import chatRoutes from './routes/chatRoutes';
 import safetyRoutes from './routes/safetyRoutes';
@@ -170,6 +171,9 @@ v1.use((_req, res, next) => {
 v1.use(optionalAuth);
 
 v1.use('/health', healthRoutes);
+// The build loop's live status, rendered on the Health Check tab. Admin-gated
+// inside the router.
+v1.use('/orchestrator', orchestratorPulseRoutes);
 v1.use('/user', userAuthRoutes);
 v1.use('/user/muted-senders', mutedSendersRoutes);
 v1.use('/user/personal-contacts', personalContactsRoutes);
