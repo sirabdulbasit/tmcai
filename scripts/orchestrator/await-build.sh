@@ -68,7 +68,33 @@ while :; do
   [ -f "$BUILD_DOC" ] && grep -qE "^## Iteration ${ITER}\b" "$BUILD_DOC" && have_section=1
   now_head="$(git -C /var/www/tmcai rev-parse HEAD)"
   have_commit=0
-  [ "$now_head" != "$START_HEAD" ] && have_commit=1
+  # The commit must touch BRAIN paths. "HEAD moved" is not enough: the
+  # orchestrator commits to this same repo, and on its first real use this
+  # watcher fired on one of MY commits (the pulse fix) while the Builder was
+  # still working — the exact "a commit alone could be someone else's" case the
+  # docstring warned about and the code did not guard. Reaching the right
+  # conclusion by luck is not a working detector.
+  if [ "$now_head" != "$START_HEAD" ]; then
+    if [ -n "$(git -C /var/www/tmcai diff --name-only "$START_HEAD" "$now_head" \
+                 -- server/src server/tests server/prisma server/docs/brain_change_log.md)" ]; then
+      have_commit=1
+    fi
+  fi
+
+  # And the turn must have gone QUIET. The Builder commits its code and then keeps
+  # working — updating the governing docs, re-running verification. Measuring while
+  # it is mid-edit would score a tree it has not finished, and attribute the result
+  # to a change that is still moving.
+  quiet=1
+  sid_file="$ORCH/state/builder-session-id"
+  if [ -s "$sid_file" ]; then
+    tp="/root/.claude/projects/-var-www-tmcai/$(cat "$sid_file").jsonl"
+    if [ -f "$tp" ]; then
+      age=$(( $(date +%s) - $(stat -c %Y "$tp") ))
+      [ "$age" -lt 90 ] && quiet=0
+    fi
+  fi
+  [ "$quiet" -eq 0 ] && have_commit=0
 
   if [ "$have_section" -eq 1 ] && [ "$have_commit" -eq 1 ]; then
     printf 'iteration %s DONE — %s → %s\n' "$ITER" \
