@@ -225,6 +225,16 @@ refuses an iteration already in history unless `--rescore` is passed.
 
 ---
 
+### G21 · Owner-report intake (raised by owner post-audit; basic version now exists)
+The owner communicates with the live Brain and had no defined way to report an
+issue into the loop. Created at audit time: `owner_reports.md` (intake file,
+append-only, loose format) + directive **D-6** making UNPROCESSED reports outrank
+the whole queue — wired through operator_directives.md, which every build turn
+already reads, so no loop-script change was needed. **Left for Opus:** an ack-back
+mechanism (owner should see "R-1 → CL-034/DEF-147" without opening files — pulse
+line + card line), dedup against existing DEF rows, and an urgent path (stop loop
+after current phase, inject report first).
+
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped

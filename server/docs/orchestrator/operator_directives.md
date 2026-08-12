@@ -17,6 +17,34 @@ why in its build entry rather than ignore it silently.
 
 ---
 
+## D-6 · STANDING, RANKS FIRST · Owner reports override the queue
+
+**Check `server/docs/orchestrator/owner_reports.md` before anything else, every
+turn.** The owner talks to the LIVE Brain; a report there is a defect observed on
+production traffic, and CLAUDE.md rule 1 (log first, same session) applies to it
+in a way it cannot apply to benchmark findings.
+
+An `UNPROCESSED` report outranks Codex's directive, the fixQueue, and every
+D-item below. Processing means: CL row + DEF row(s) same turn, chart §3 recurrence
+check before coding, fix if it fits one coherent change (otherwise the DEF stays
+OPEN with a written reason), then mark the report `PROCESSED → CL-NNN / DEF-NNN`
+in place. Reports are never deleted.
+
+If the file has no UNPROCESSED entries, proceed to Codex's directive as usual.
+
+---
+
+## S-1 · FROM THE SCORER (Grok), verbatim
+
+Written after iteration 8. Quoted as given — the orchestrator does not paraphrase the scorer.
+
+**The capability gap it would close next:**
+
+> Contain the global renderer inversion: prefer prose over receipt only when a typed ActionOutcome is present (start with update_open_item); fail closed otherwise. Thread applied/rejected/artifact identity into ComposeResult so brainAnswerSurvivesReceipt is not an empty-outcome length check.
+
+---
+
+
 ## D-1 · OPEN · The benchmark writes to the owner's live backlog
 
 **Observed, twice, in the harness's own output:**
