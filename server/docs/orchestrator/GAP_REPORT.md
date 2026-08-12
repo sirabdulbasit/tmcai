@@ -235,10 +235,27 @@ mechanism (owner should see "R-1 → CL-034/DEF-147" without opening files — p
 line + card line), dedup against existing DEF rows, and an urgent path (stop loop
 after current phase, inject report first).
 
+### G22 · Pulse in-place redraw breaks when the frame is taller than the terminal
+Owner's paste (12:17–12:19): full frames stacking in scrollback, one truncated
+mid-frame, despite in-place mode. Cause: the frame has grown to ~23 lines (5 phase
+rows + 9 capability bars + summary lines). `\033[H` homes to the top of the
+*viewport*; when the terminal has fewer rows than the frame, every write scrolls
+the overflow into scrollback, so "redraw in place" degrades to exactly the
+stacking it was built to end. The truncated middle frame is the scroll interaction
+mid-write, not data loss.
+**Fix (Opus):** use the alternate screen buffer (`\033[?1049h` on entry, restore
+on exit — what watch/top do), which gives a fixed viewport regardless of frame
+height; AND read `shutil.get_terminal_size()` each tick — if rows < frame height,
+compact (drop spacer lines, single-line phases) and show "…enlarge window" rather
+than silently scrolling. Keep per-line `\033[K`.
+Note also visible in the same paste, expected not defective: iteration 9 shows
+`Score: —` because the daemon was stopped pre-restructure — the sequential loop
+must score it on relaunch (already in the handover notes).
+
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped
-   review, score phase in-loop) + G16 label fix. The loop is already stopping
+   review, score phase in-loop) + G16 label fix + G22 alt-screen redraw. The loop is already stopping
    after iteration 9 for exactly this.
 2. **G5, G6, G7** — control-plane patches in the same edit (stall persistence,
    REVIEWSTATE, build.md prohibition).
