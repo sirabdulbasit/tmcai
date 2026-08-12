@@ -239,6 +239,12 @@ def scores():
         m = re.search(r"iter-(\d+)-(.+)\.json$", os.path.basename(p))
         if not m:
             continue
+        # Grok's capability files live in the same directory and carry no
+        # criteriaAvg. Including them made the benchmark line render "None None →
+        # 95": a status window showing None where a score belongs is worse than
+        # showing nothing, because it looks like a measurement that came back empty.
+        if m.group(2) == "capability":
+            continue
         try:
             d = json.load(open(p))
         except Exception:
@@ -278,6 +284,122 @@ def gauge(nexeo, pro, width=30):
     return "".join(cells)
 
 
+
+# ── the iteration's phase timeline, parsed from the loop's own log ───────────
+#
+# Owner, 2026-08-12: *"i need one consolidate window which will show me like:
+# Iteration #? Iteration Started: date/time / Build: Building 10m3s - Current /
+# Review: / Progress Building: and Progress Bars"*.
+#
+# Phase timings come from `loop.log`, which the loop timestamps as it goes:
+#
+#   11:25:18  ──────── iteration 8 ────────
+#   11:26:15  BUILD  iter=8 resuming "Brain Builder" (...)
+#   11:44:40  BUILD  iter=8 claude exit=0 (116 lines → iter-08-build.log)
+#   11:45:37  RAILS  iter=8 tsc=clean
+#
+# That is a RECORD of what happened, not an inference from what is running now. A
+# phase with a start and no end is running; with both, its duration is exact. The
+# earlier version of this file guessed the current phase from process lists and got
+# it wrong twice — once calling the IDE window a build turn for 16h51m, once calling
+# the Codex extension a review. Reading the log removes the guess.
+PHASE_ORDER = ["Build", "Checks", "Measure", "Review", "Score"]
+
+
+def phase_timeline():
+    """{iteration: {phase: {"start": ts, "end": ts}}}, plus the newest iteration."""
+    lg = f"{ORCH}/loop.log"
+    if not os.path.exists(lg):
+        return {}, None
+    it_re = re.compile(r"^(\S+ \S+ \S+)\s+─+ iteration (\d+) ─+")
+    ev_re = re.compile(r"^(\S+ \S+ \S+)\s+(BUILD|RAILS|MEASURE|REVIEW)\s+iter=(\d+)\s+(.*)$")
+    out, newest = {}, None
+
+    def ts(s):
+        try:
+            return time.mktime(time.strptime(s.rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            return None
+
+    for line in open(lg, errors="replace"):
+        m = it_re.match(line)
+        if m:
+            it = int(m.group(2))
+            newest = it if newest is None or it > newest else newest
+            out.setdefault(it, {})["_started"] = ts(m.group(1))
+            continue
+        m = ev_re.match(line)
+        if not m:
+            continue
+        t, kind, it, rest = ts(m.group(1)), m.group(2), int(m.group(3)), m.group(4)
+        newest = it if newest is None or it > newest else newest
+        d = out.setdefault(it, {})
+        if kind == "BUILD":
+            ph = d.setdefault("Build", {})
+            if "exit=" in rest:
+                ph["end"] = t
+                ph["detail"] = rest.split("(")[0].strip()
+            else:
+                ph.setdefault("start", t)
+        elif kind == "RAILS":
+            ph = d.setdefault("Checks", {})
+            ph.setdefault("start", t)
+            ph["detail"] = rest
+            # tests= is the last rail; measure starting is what actually ends it.
+            if "tests=" in rest:
+                ph["end"] = t
+        elif kind == "MEASURE":
+            ph = d.setdefault("Measure", {})
+            if "started" in rest:
+                ph.setdefault("start", t)
+                d.setdefault("Checks", {})["end"] = t
+            elif "overall=" in rest:
+                ph["end"] = t
+                ph["detail"] = rest
+        elif kind == "REVIEW":
+            ph = d.setdefault("Review", {})
+            if "exit=" in rest:
+                ph["end"] = t
+                ph["detail"] = rest.split("(")[0].strip()
+            else:
+                ph.setdefault("start", t)
+    # The scoring seat writes its own log, so its phase is read from there.
+    sl = f"{ORCH}/score.log"
+    if os.path.exists(sl):
+        for line in open(sl, errors="replace"):
+            m = re.match(r"^(\S+ \S+ \S+)\s+SCORE\s+iteration (\d+) (.*)$", line)
+            if not m:
+                continue
+            t, it, rest = ts(m.group(1)), int(m.group(2)), m.group(3)
+            ph = out.setdefault(it, {}).setdefault("Score", {})
+            if "scored and card appended" in rest:
+                ph["end"] = t
+            elif "unscored" in rest:
+                ph.setdefault("start", t)
+    return out, newest
+
+
+def last_stream_line(iteration, phase):
+    """The newest readable line from whichever seat is working — the 'Progress'
+    line. Read from the formatted stream logs the agents write as they go."""
+    n = f"{iteration:02d}"
+    src = {"Build": f"{LOGS}/iter-{n}-build.log",
+           "Review": f"{LOGS}/iter-{n}-review.log",
+           "Score": f"{LOGS}/iter-{n}-score-read.log"}.get(phase)
+    if not src or not os.path.exists(src):
+        return ""
+    try:
+        lines = [l.rstrip("\n") for l in open(src, errors="replace") if l.strip()]
+    except Exception:
+        return ""
+    for ln in reversed(lines[-40:]):
+        t = re.sub(r"^\[\s*\d+s\]\s*", "", ln).strip()
+        t = re.sub(r"^(BUILD|REVIEW|SCORE)\s*│\s*", "", t).strip()
+        if len(t) > 12 and not t.startswith("──"):
+            return t[:96]
+    return ""
+
+
 def snapshot(full=False):
     stage, elapsed, basis, detail = detect_stage()
     # A process-derived elapsed time is the kernel's own and needs no help; a
@@ -306,26 +428,86 @@ def snapshot(full=False):
     col = {"BUILDING": C["cyn"], "REVIEWING": C["mag"], "MEASURING": C["yel"],
            "STALLED": C["red"], "IDLE": C["dim"]}.get(stage, C["dim"])
 
-    who = {"BUILDING": "Claude building", "REVIEWING": "Codex reviewing",
-           "MEASURING": "benchmark scoring", "CHECKS": "checks running",
-           "SCORING": "Grok scoring",
-           "STALLED": "STALLED",
-           "IDLE": "nobody working"}.get(stage, stage)
-    timer = fmt_dur(elapsed)
+    tl, newest = phase_timeline()
+    cur_it = newest if newest is not None else in_flight
+    phases = tl.get(cur_it, {})
+    started = phases.get("_started")
+    now = time.time()
+
+    # Which phase is CURRENT: the live stage detector names the seat, and the
+    # timeline says whether it has an unfinished phase. They are cross-checked
+    # rather than trusted separately — a process without a log entry, or a log
+    # entry without a process, both mean something is wrong and it should show.
+    stage_to_phase = {"BUILDING": "Build", "CHECKS": "Checks", "MEASURING": "Measure",
+                      "REVIEWING": "Review", "SCORING": "Score"}
+    current = stage_to_phase.get(stage)
+
+    # THE LOG WINS when it disagrees with the process list, provided the loop is
+    # alive. The rails run several tools in sequence — tsc, npm run build, vitest —
+    # and the process matcher only recognises two of them, so during `npm run build`
+    # the detector said IDLE while the log plainly showed Checks open. That rendered
+    # a running phase as "started, no completion recorded", in red: a working loop
+    # displayed as a broken one, which is the failure this window exists to end.
+    loop_alive = any("nexeo-loop.sh" in a and "bash" in a for _, a in procs())
+    if current is None and loop_alive:
+        for ph in reversed(PHASE_ORDER):
+            p_ = phases.get(ph, {})
+            if p_.get("start") and not p_.get("end"):
+                current = ph
+                break
 
     lines = []
-    lines.append(f"{C['dim']}{'─' * 58}{C['r']}")
-    lines.append(f"{C['b']}NEXEO{C['r']} {time.strftime('%H:%M:%S')}   "
-                 f"iteration {C['b']}{in_flight}{C['r']}   "
-                 f"{col}{C['b']}{who}{C['r']} {C['b']}{timer}{C['r']}")
+    lines.append(f"{C['dim']}{'─' * 74}{C['r']}")
+    st = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)) if started else "unknown"
+    lines.append(f"{C['b']}Iteration #{cur_it}{C['r']}      Iteration Started: {st}"
+                 + (f"   {C['dim']}({fmt_dur(now - started)} ago){C['r']}" if started else "")
+                 + f"      {C['dim']}{time.strftime('%H:%M:%S')}{C['r']}")
+    lines.append("")
+
+    seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
+            "Review": "Codex", "Score": "Grok"}
+    for ph in PHASE_ORDER:
+        p_ = phases.get(ph, {})
+        s_, e_ = p_.get("start"), p_.get("end")
+        running = bool(s_ and not e_ and loop_alive) or ph == current
+        if running:
+            # MORE THAN ONE PHASE CAN BE RUNNING. Measure and Review overlap by
+            # design — the benchmark was moved to run alongside the review so the
+            # two agents go back-to-back — and the first version of this display
+            # marked only one as current, painting the other red as "no completion
+            # recorded". A concurrent phase must not render as an abandoned one.
+            base = s_ or (now - elapsed)
+            word = "Building" if ph == "Build" else "Running"
+            txt = f"{C['cyn']}{C['b']}{word}{C['r']} {C['b']}{fmt_dur(now - base)}{C['r']}"
+            if ph == current:
+                txt += f"  {C['yel']}- Current{C['r']}"
+        elif s_ and e_:
+            txt = f"{C['grn']}done{C['r']} {fmt_dur(e_ - s_)}"
+        elif s_ and not e_:
+            # Started, never finished, and the loop is NOT alive to be running it.
+            # Never shown as done: an abandoned phase and a completed one must not
+            # look alike.
+            txt = f"{C['red']}started {fmt_dur(now - s_)} ago, no completion recorded{C['r']}"
+        else:
+            txt = f"{C['dim']}—{C['r']}"
+        lines.append(f"  {ph + ':':<9}{txt}   {C['dim']}{seat[ph]}{C['r']}")
+
+    prog = last_stream_line(cur_it, current) if current else ""
+    if current and prog:
+        lines.append("")
+        lines.append(f"  {C['b']}Progress {current}:{C['r']} {prog}")
+    elif stage == "IDLE":
+        lines.append("")
+        lines.append(f"  {C['dim']}Progress: nobody working{C['r']}")
 
     scp = os.path.join(STATE, "capability_scorecard.json")
     if os.path.exists(scp):
         d = json.load(open(scp))
         caps = d["capabilities"]
-        n = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
+        nn = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
         pro = round(sum(c["professional"] for c in caps) / len(caps), 1)
         mv = round(sum(c.get("delta", 0) for c in caps) / len(caps), 1)
+        by = (d.get("history") or [{}])[-1].get("scored_by", "orchestrator")
         lines.append("")
         for c in caps:
             dd = c.get("delta", 0)
@@ -334,9 +516,9 @@ def snapshot(full=False):
             lines.append(f"  {c['name']:<23}{c['nexeo']:>3} "
                          f"{gauge(c['nexeo'], c['professional'])} "
                          f"{C['dim']}{c['professional']:>3}{C['r']} {dtxt}")
-        lines.append(f"  {C['b']}{'BRAIN':<23}{n:>5}{C['r']}   vs {pro} pro   "
-                     f"gap {C['b']}{round(pro - n, 1)}{C['r']}   "
-                     f"move {'+' if mv > 0 else ''}{mv}")
+        lines.append(f"  {C['b']}{'BRAIN':<23}{nn:>5}{C['r']}   vs {pro} pro   "
+                     f"gap {C['b']}{round(pro - nn, 1)}{C['r']}   "
+                     f"move {'+' if mv > 0 else ''}{mv}   {C['dim']}scored by {by}{C['r']}")
 
     if latest:
         ws = latest.get("weakestCriterionScore")
@@ -344,13 +526,10 @@ def snapshot(full=False):
         gap = None if ws is None else round(tgt - ws, 1)
         v = vd.get(latest_iter, "—")
         vc = {"SOUND": C["grn"], "WEAK": C["yel"], "WRONG": C["red"]}.get(v, C["dim"])
-        lines.append(f"  {C['dim']}{'gate':<23}{C['r']}"
+        lines.append(f"  {C['dim']}{'benchmark':<23}{C['r']}"
                      f"{latest.get('weakestCriterion')} {ws} → {tgt}"
                      f"   {C['red'] if gap and gap > 0 else C['grn']}{gap} to go{C['r']}"
-                     f"   codex {vc}{v}{C['r']}")
-        # Kept even in the minimal view: an incomplete measurement must never be
-        # mistaken for a low score, and a run that wrote to live data must not be
-        # silent. One short line each, only when true.
+                     f"   codex {vc}{v}{C['r']}   {C['dim']}(iter {latest_iter}){C['r']}")
         if latest.get("casesFailed"):
             lines.append(f"  {C['red']}{latest['casesFailed']} case(s) failed to score "
                          f"— incomplete, not low{C['r']}")
