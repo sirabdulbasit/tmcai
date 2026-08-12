@@ -2066,15 +2066,14 @@ export interface AddressPersona {
  * lives here, in one function that both exits call, instead of at
  * whichever exit happened to be under the cursor.
  *
- * The two rules are ORDER-INDEPENDENT, and that is worth stating because
- * the obvious guess is that they are not. They anchor on disjoint shapes:
- * the form rule needs a greeting word followed by the user's NAME, the
- * frequency rule needs the PREFERRED TOKEN at position 0. Neither can
- * create or destroy the other's match — the form rule always emits
- * "<greeting> <sep> <address>", which is never a bare opener. Verified by
- * mutation: swapping the two changes no test, so the sequence below is
- * just the order the rules were added (DEF-134 then DEF-136), not a
- * dependency. A test pins that they do not interfere.
+ * Order: FREQUENCY, then FORM — and it is load-bearing, which it was NOT
+ * when this function was written. DEF-136 checked and recorded that the
+ * two rules were order-independent, because the form rule was an
+ * unanchored global regex that would find its match anywhere. DEF-137
+ * anchored it to position 0 to stop it rewriting quoted evidence, and
+ * anchoring is exactly what creates the dependency: "Sir, hi Basit Ahmed
+ * — your 3pm moved" only exposes its greeting at position 0 after the
+ * bare vocative is stripped. A mutation test pins the order now.
  *
  * Scope is deliberately address-only. This is not a general "tidy the
  * answer" hook: the completion-claim and empty-promise guards must run on
@@ -2088,40 +2087,53 @@ export function finaliseUserVisibleProse(
   const targetAddress = persona.addressAs || persona.userFirstName || '';
   if (!targetAddress) return answer;
 
-  let out = answer;
+  // (1) FREQUENCY. Nothing pinned how OFTEN the address was used, and the
+  // persona's old "use it every time" wording made it a reflexive prefix
+  // (DEF-134). Narrow by design — see stripBareVocativeOpener: greetings,
+  // later uses and topic references all survive.
+  const out = stripBareVocativeOpener(answer, targetAddress);
 
-  // (1) FORM. Replaces greeting + full-name OR greeting + first-name
-  // openers with greeting + the user's preferred form of address
+  // (2) FORM. Rewrites a greeting + full-name / greeting + first-name
+  // OPENER to greeting + the user's preferred form of address
   // (preferredTitle from Settings → Profile, e.g. "Sir", "Boss"; falls
   // back to firstName when unset). Per Basit 2026-05-20: persona told
   // Brain to use "Sir" but Brain kept saying "Hi Basit Ahmed!" anyway —
   // a structural post-process is the only thing that stops it 100% of
-  // the time. Doesn't touch full names used as TOPIC references
-  // ("Abdul Haseeb's profile says…"), only direct ADDRESS in an opener.
+  // the time.
+  //
+  // ANCHORED AT POSITION 0 (DEF-137). It used to be an unanchored global
+  // regex, which was survivable while it only ran on the legacy tail;
+  // DEF-136 routed the DEFAULT reasoning path through it and made the
+  // latent bug reachable. A reasoning answer that faithfully quotes its
+  // evidence — `Hamna wrote: "Hi Basit Ahmed, the repository is ready"` —
+  // had the QUOTE rewritten to "Hi Sir, …", so Brain misquoted a real
+  // message and the grounding it was citing became false. Brain's own
+  // direct address is an OPENER, which is what the comment above claimed
+  // all along and what the regex never enforced. Anything after the first
+  // greeting belongs to whoever Brain is quoting, and is left alone.
+  //
+  // Ordering is load-bearing NOW, in a way it demonstrably was not before
+  // this anchor existed (DEF-136 checked, and recorded that swapping the
+  // two changed nothing). Frequency must run FIRST: "Sir, hi Basit Ahmed
+  // — your 3pm moved" only exposes the greeting at position 0 once the
+  // bare vocative is gone. A mutation test pins the order.
   const fullName = persona.userFullName || '';
   const firstName = persona.userFirstName || '';
-  if (fullName && fullName !== targetAddress) {
-    const escapedFull = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const escapedFirst = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match greeting + full name OR greeting + first name (when the
-    // preferred address differs from the first name, e.g. the user set
-    // "Sir" but the LLM defaulted to their first name).
-    const namesToReplace = firstName && firstName !== targetAddress
-      ? `(?:${escapedFull}|${escapedFirst})`
-      : escapedFull;
-    const addressRe = new RegExp(
-      `\\b(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${namesToReplace}\\b`,
-      'gi',
-    );
-    out = out.replace(addressRe, (_m, greeting, sep) => `${greeting}${sep}${targetAddress}`);
-  }
+  if (!fullName || fullName === targetAddress) return out;
 
-  // (2) FREQUENCY. The form guard above pins WHICH form Brain uses;
-  // nothing pinned how OFTEN, and the persona's old "use it every time"
-  // wording made it a reflexive prefix (DEF-134). Narrow by design — see
-  // stripBareVocativeOpener: greetings, later uses and topic references
-  // all survive.
-  return stripBareVocativeOpener(out, targetAddress);
+  const escapedFull = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedFirst = firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match greeting + full name OR greeting + first name (when the
+  // preferred address differs from the first name, e.g. the user set
+  // "Sir" but the LLM defaulted to their first name).
+  const namesToReplace = firstName && firstName !== targetAddress
+    ? `(?:${escapedFull}|${escapedFirst})`
+    : escapedFull;
+  const addressRe = new RegExp(
+    `^(\\s*)(hi|hello|hey|yes|yeah|sure|ok|okay|good\\s+morning|good\\s+afternoon|good\\s+evening|salaam|salam|aoa)([,\\s!]+)${namesToReplace}\\b`,
+    'i',
+  );
+  return out.replace(addressRe, (_m, lead, greeting, sep) => `${lead}${greeting}${sep}${targetAddress}`);
 }
 
 export async function compose(

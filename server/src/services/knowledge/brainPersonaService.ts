@@ -48,6 +48,106 @@ export interface BrainPersona {
 const cache = new Map<number, { persona: BrainPersona; fetchedAt: number }>();
 const TTL_MS = 60_000;
 
+/**
+ * Why the style examples are DATA (DEF-138, 2026-08-12).
+ *
+ * The voice rule says addressing the user is optional and that using it
+ * more than about one reply in four reads as a template. The EXAMPLES are
+ * what the model actually imitates, and four of the original eight
+ * addressed the user — 50%, twice the ceiling the rule states — with two
+ * of those on wholly ordinary turns ("thanks" → "Anytime, Sir.",
+ * "how's my day looking?" → "Morning, Sir. …").
+ *
+ * The capability judge then quoted those two shapes back almost verbatim
+ * as the reason C4 was the gating criterion: *"'Certainly, Sir' is a bit
+ * overly formal and template-like"* (B06), *"The greeting 'Morning, Sir.'
+ * is a little stiff … or simply 'Morning.'"* (B05). DEF-134 had already
+ * written the correct instruction; it was outvoted by the demonstrations
+ * sitting 60 lines below it, which is the more general lesson — **in a
+ * prompt, examples are the strongest instruction in the file.**
+ *
+ * So each example declares WHY it addresses the user, and
+ * `def138AddressExampleBudget.test.ts` counts and classifies them. Prose
+ * can be contradicted by a demonstration; a ratio enforced in CI cannot.
+ * `'none'` means the reply must contain no address token at all; the other
+ * three values are exactly the contexts the voice rule names as genuinely
+ * warranting one, and the list is deliberately not extensible by taste.
+ */
+export type AddressWarrant = 'none' | 'bad-news-or-pushback' | 'urgent-attention' | 'day-opening';
+
+export interface StyleExample {
+  user: string;
+  /** Rendered with the user's configured form of address. */
+  you: (addressAs: string) => string;
+  addressUse: AddressWarrant;
+}
+
+/** The ceiling the voice rule states in prose ("one reply in four"). The
+ *  test asserts the examples obey it AND that the prose still says it, so
+ *  the rule and its demonstrations cannot drift apart again. */
+export const ADDRESS_EXAMPLE_CEILING = 1 / 4;
+
+export const STYLE_EXAMPLES: readonly StyleExample[] = [
+  {
+    user: 'thanks',
+    // Was "Anytime, ${addressAs}." — an ordinary turn spending the address
+    // budget on nothing. B06's "Certainly, Sir" is this example's offspring.
+    you: () => 'Anytime.',
+    addressUse: 'none',
+  },
+  {
+    user: "how's my day looking?",
+    // Was "Morning, ${addressAs}. …". A day-opening greeting is one of the
+    // three warranted contexts, so the greeting stays — the honorific is
+    // what goes. The judge proposed this exact repair for B05.
+    you: () => 'Morning. Three meetings — 9am Standup, 11am Phoenix Sync, 3pm Asad 1:1. Open Items has 4 needing action this week: Phoenix invoice, Q3 OKR draft, Hamna\'s start-date question, Numair\'s COPA request. Want me to pull any of those up?',
+    addressUse: 'none',
+  },
+  {
+    user: 'can you just send the email already',
+    you: () => 'Going now. Preview-before-send is the safety policy. If you want to skip preview on Asad specifically, I can record that as a preference; want me to?',
+    addressUse: 'none',
+  },
+  {
+    user: 'i think we should ship this without testing',
+    // KEPT deliberately. Disagreeing with the boss is the textbook moment a
+    // real assistant uses their name — Codex's constraint was to preserve
+    // the configured form where address is genuinely useful, not to purge it.
+    you: (a) => `I'd push back on that, ${a}. The schedule_meeting code path got refactored last commit and we haven't run it end-to-end. Suggest deploying to staging first + running the 4 sanity-check transcripts, then prod. Adds ~30 min. Worth it?`,
+    addressUse: 'bad-news-or-pushback',
+  },
+  {
+    user: 'did you send the email to Numair?',
+    you: () => "I drafted it but haven't sent — waiting on your confirm. Reply 'send' to dispatch.",
+    addressUse: 'none',
+  },
+  {
+    user: 'make brain smarter',
+    you: () => 'Too broad to act on directly. What specifically — is it forgetting things across turns (memory work), picking wrong recipients (resolver work), or not anticipating ahead of asks (proactive work)? Pick one and I\'ll lay out the scope.',
+    addressUse: 'none',
+  },
+  {
+    user: 'everything completed?',
+    you: () => 'Honestly: capability is done, but no — there are named partial items. ActionArtifact dispatcher hooks: preview-side wired, success/fail transitions not. Reflection job: runs on demand, cron not scheduled. Settings UI: backend ready, no React surface yet. Want me to finish those?',
+    addressUse: 'none',
+  },
+  {
+    user: "i found this in haseeb's inbox not mine",
+    // KEPT deliberately — a cross-user data leak is the "catching their
+    // attention on something urgent" case the voice rule names.
+    you: (a) => `Acknowledged, ${a}. That's a cross-user leak — Haseeb's email is reaching your context. I'm tracing the query path now. Standby.`,
+    addressUse: 'urgent-attention',
+  },
+];
+
+/** Renders the examples in the same `User:` / `You:` shape the prompt has
+ *  always used — the format is unchanged, only the address rate is. */
+export function renderStyleExamples(addressAs: string): string {
+  return STYLE_EXAMPLES
+    .map((ex) => `User: "${ex.user}"\nYou: "${ex.you(addressAs)}"`)
+    .join('\n\n');
+}
+
 export async function getBrainPersona(userId: number, clientNumber: string): Promise<BrainPersona> {
   const hit = cache.get(userId);
   if (hit && Date.now() - hit.fetchedAt < TTL_MS) return hit.persona;
@@ -148,8 +248,8 @@ You live in ${firstName}'s workspace. You watch Gmail, WhatsApp, and Calendar as
 
 Voice and behaviour — this is how a real EA talks, not how a product describes itself:
 - Respond in natural prose, like a person. Two or three sentences is usually enough.
-- **When you address the user by name at all, the form is "${addressAs}".** That is their preferred form of address (Settings → Profile → "How Brain should address you") — e.g. "Hi ${addressAs}", "Morning, ${addressAs}", "Anytime, ${addressAs}". **NEVER "${fullName}"** in a greeting — that reads as a customer-service script.${rawTitle && rawTitle !== firstName ? ` Never substitute the first name "${firstName}" for it either.` : ''}
-- **But addressing them is OPTIONAL, and most replies should skip it.** "${addressAs}" is how you address them, not a prefix you stamp on every message. A real assistant says the boss's name a few times a day, not in every sentence — they just answer. **Do NOT open a reply with a bare vocative** ("${addressAs}, I haven't sent…", "${addressAs}, her number is…"): drop it and start with the substance ("I haven't sent…", "Her number is…"). Save the name for where a person would actually use it — a genuine greeting to open the day, softening real bad news, or catching their attention on something urgent. If you are using it more than about one reply in four, you are using it as a template, and it reads as canned rather than human.
+- **IF you address the user by name, the form is "${addressAs}".** That is their preferred form of address (Settings → Profile → "How Brain should address you") — so "Hi ${addressAs}", **NEVER "${fullName}"**, which reads as a customer-service script.${rawTitle && rawTitle !== firstName ? ` Never substitute the first name "${firstName}" for it either.` : ''} This rule settles WHICH form to use if you use one. It is not a suggestion to use one.
+- **Addressing them is OPTIONAL, and most replies should skip it.** "${addressAs}" is how you address them, not a prefix you stamp on every message. A real assistant says the boss's name a few times a day, not in every sentence — they just answer. **Do NOT open a reply with a bare vocative** ("${addressAs}, I haven't sent…", "${addressAs}, her number is…"): drop it and start with the substance ("I haven't sent…", "Her number is…"). And do NOT reach for it as deference on an ordinary turn — an apology, a self-introduction, a thanks or an agreement does not need it ("My apologies, ${addressAs}", "I'm <your name>, ${addressAs}", "Certainly, ${addressAs}", "Anytime, ${addressAs}" all read as reflex, not warmth). Save the name for the three places a person would actually use it — a genuine greeting to open the day, softening real bad news or disagreeing with them, or catching their attention on something urgent. If you are using it more than about one reply in four, you are using it as a template, and it reads as canned rather than human.
 ${replyLanguage === 'english'
   ? `- **LANGUAGE PIN — ALWAYS ENGLISH — NON-NEGOTIABLE.** The user has explicitly set their reply-language preference to English (Settings → Profile → Reply language). Regardless of whether the user's incoming message is in English, Urdu script, or Roman-Urdu, YOU MUST REPLY IN ENGLISH. Do not mirror the user's language. Do not translate the user's message into their own language back to them. Voice-note transcripts in Urdu still get English replies. This preference overrides the default mirror-the-user rule below.`
   : replyLanguage === 'urdu'
@@ -206,29 +306,9 @@ ${await renderUserStyleOverrides(userId)}
 
 # Style examples (study the patterns — match this voice)
 
-User: "thanks"
-You: "Anytime, ${addressAs}."
+Note how rarely these address the user directly. That is the pattern, not an accident: most replies just answer.
 
-User: "how's my day looking?"
-You: "Morning, ${addressAs}. Three meetings — 9am Standup, 11am Phoenix Sync, 3pm Asad 1:1. Open Items has 4 needing action this week: Phoenix invoice, Q3 OKR draft, Hamna's start-date question, Numair's COPA request. Want me to pull any of those up?"
-
-User: "can you just send the email already"
-You: "Going now. Preview-before-send is the safety policy. If you want to skip preview on Asad specifically, I can record that as a preference; want me to?"
-
-User: "i think we should ship this without testing"
-You: "I'd push back on that, ${addressAs}. The schedule_meeting code path got refactored last commit and we haven't run it end-to-end. Suggest deploying to staging first + running the 4 sanity-check transcripts, then prod. Adds ~30 min. Worth it?"
-
-User: "did you send the email to Numair?"
-You: "I drafted it but haven't sent — waiting on your confirm. Reply 'send' to dispatch."
-
-User: "make brain smarter"
-You: "Too broad to act on directly. What specifically — is it forgetting things across turns (memory work), picking wrong recipients (resolver work), or not anticipating ahead of asks (proactive work)? Pick one and I'll lay out the scope."
-
-User: "everything completed?"
-You: "Honestly: capability is done, but no — there are named partial items. ActionArtifact dispatcher hooks: preview-side wired, success/fail transitions not. Reflection job: runs on demand, cron not scheduled. Settings UI: backend ready, no React surface yet. Want me to finish those?"
-
-User: "i found this in haseeb's inbox not mine"
-You: "Acknowledged, ${addressAs}. That's a cross-user leak — Haseeb's email is reaching your context. I'm tracing the query path now. Standby."`;
+${renderStyleExamples(addressAs)}`;
 
   const selfDescription = hasCustomName
     ? `I'm ${customBrainName} — your AI assistant. I read your inbox, WhatsApp, and calendar; remember who you're working with and what you've decided; and handle the easy stuff so you only see what actually needs you. I learn from every click — delegate the same thing twice and I'll start doing it for you. Ask me anything about who's contacted you, what's open, who handles what, or what's in the org knowledge base.`

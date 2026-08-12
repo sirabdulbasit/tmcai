@@ -773,3 +773,186 @@ row that was reported missing on 2026-07-07 as *"I can't add contacts"*, cited i
 plausibly the whole fix — but it is a production data change on a live registry,
 it is not C4, and it is not mine to ship inside a C4 attribution window. Flagged
 here and to the owner; it needs its own turn.
+
+---
+
+## Iteration 4 — mode: incremental
+
+**Gating criterion: C4 @ 86.3** (human voice). Overall 95.5 — every other
+criterion is at or above 94.6, so C4 alone is the gate. Two changes this turn,
+both on address, in Codex's order: **DEF-137** (the correctness regression my own
+DEF-136 exposed) and **DEF-138** (the generation mechanism).
+
+### The fixQueue entries I targeted
+
+Nine of twelve cases score 80–85 on C4, and eight name the honorific. Verbatim:
+
+> **B07-compound-ask, C4 = 80** — "the opening **'Good afternoon, Sir'** and the
+> slightly formal phrasing … make it lean a bit towards a template."
+
+> **B06-just-do-it, C4 = 85** — "The phrase **'Certainly, Sir'** is a bit overly
+> formal and template-like for a human assistant."
+
+> **B05-warmth, C4 = 85** — "The greeting **'Morning, Sir.'** is a little stiff and
+> overly formal … It could be more natural, e.g. 'Good morning, sir,' or simply
+> **'Morning.'**"
+
+> **B12-reminder-referent, C4 = 85** — "The phrase **'My apologies, Sir.'** is a
+> little formal."
+
+I traced these to their source rather than treating them as tone. **Two of them are
+persona style examples coming back almost verbatim.** `"thanks"` → *"Anytime,
+${addressAs}."* is B06's parent; `"how's my day looking?"` → *"Morning,
+${addressAs}. …"* is B05's, and the judge's proposed repair (*"or simply
+'Morning.'"*) is now literally what the example says.
+
+### Governing-docs verdict, before coding: CIRCLING, and I can name why
+
+Third iteration on the same criterion with the same complaint. DEF-134 wrote the
+correct rule; DEF-136 made its backstop reachable; **C4 moved 84.8 → 86.3 across
+both, about 1.5 points.** The reason is not that either fix was wrong — it is that
+neither touched the thing the model actually imitates.
+
+The persona says *"addressing them is OPTIONAL, most replies should skip it …
+more than about one reply in four reads as a template."* Sixty lines below it,
+**four of eight style examples addressed the user — 50%, exactly twice the stated
+ceiling** — two of them on wholly ordinary turns. In a prompt, examples are the
+strongest instruction in the file. The rule was outvoted by its own
+demonstrations, and it read as satisfied during review because the prose said the
+right thing.
+
+New chart §3 tag: **`examples-outvote-the-instruction`**, and its containment is
+the part I actually care about — *any prompt rule stating a frequency or a ceiling
+must have that ceiling asserted over its own examples in CI.* Prose loses to
+demonstrations; a counted ratio does not.
+
+I also checked the third address source before touching anything: the DB
+`communication_contract` block mentions the address **once**, as a prohibition
+(*"never open with 'Of course {{addressAs}}!'"*). Not part of the budget, left
+alone — and worth noting that B06's *"Certainly, Sir"* is that prohibition's exact
+shape with a different adverb, so a literal blocklist would not have caught it.
+
+### What I changed, and why that is the mechanism
+
+**DEF-137 — `brainComposer.ts:2119-2145`.** The form normaliser matched
+`greeting + name` **anywhere**, with the `g` flag, while its own comment claimed it
+only touched *"direct ADDRESS in an opener"*. The comment described an anchor the
+code never had. Harmless for 12 weeks because it only ran on the legacy tail —
+**DEF-136 pointed the default reasoning path at it and made it reachable**, so a
+reasoning answer quoting `Hamna wrote: "Hi Basit Ahmed, the repository is ready"`
+had the QUOTE rewritten and Brain misquoted evidence it was citing. Now anchored
+at position 0, non-global.
+
+Worth recording as a shape: **a change that correctly widens a guard's reach also
+widens the reach of every bug inside it.** The precision has to be re-earned at
+the new blast radius, not inherited.
+
+This also inverted the rule order, and that part is a straight correction of my
+own last entry. DEF-136 tested and recorded that form/frequency were
+order-independent — true of an unanchored regex. **Anchoring creates the
+dependency:** `"Sir, hi Basit Ahmed — your 3pm moved"` only exposes its greeting at
+position 0 once the bare vocative is gone. Frequency runs first now, the docblock
+says why, and a mutant proves it.
+
+**DEF-138 — `brainPersonaService.ts:52-146` and `:243-244`.** `STYLE_EXAMPLES` is
+data. Each example declares *why* it addresses the user (`AddressWarrant`), and
+`renderStyleExamples` emits the identical `User:`/`You:` shape — **the format is
+unchanged, only the rate.** `"thanks"` → *"Anytime."*; the day brief keeps its
+greeting and drops the honorific.
+
+**Two examples keep the address deliberately** — pushing back on shipping
+untested, and a cross-user data leak. Those are two of the three contexts the rule
+names, and Codex's constraint was explicit: preserve the configured form where
+address is genuinely useful, not purge it. 2/8 is the stated ceiling exactly.
+
+**`brainPersonaService.ts:151-152`** — the form rule stopped demonstrating the
+address three times while claiming only to settle which form ("Hi X", "Morning, X",
+"Anytime, X" → one example, plus *"This rule settles WHICH form to use if you use
+one. It is not a suggestion to use one."*). The frequency rule now names the reflex
+shapes the judge flagged — apology-, identity-, thanks- and agreement-plus-title —
+so **frequency is the model's judgement, not a regex's.** No new stripping.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  166 passed | 1 skipped (167)
+                    Tests  1947 passed | 7 expected fail | 21 skipped | 1 todo (1976)
+                    Duration 17.89s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 3's 165 files / 1924 passed (1953): **+1 file, +23 tests**
+— `def136` grew 19 → 24 (DEF-137's five), `def138` is 18 new. No pre-existing test
+changed state.
+
+### Mutation — 4 mutants, all 4 die
+
+- **Restore the unanchored global regex** → the 3 quoted-evidence tests fail. That
+  is the bug itself, reproduced on demand.
+- **Run form before frequency** → the ordering test fails. This is the assertion
+  DEF-136 could not make honestly and now can.
+- **Re-add an address example on an ordinary turn, declared warranted** → 4 fail:
+  the ratio, the warrant set, the retired shape, and the count over the RENDERED
+  preamble.
+- **Mislabel an addressing example as `none`** → 3 fail. The classification cannot
+  lie about itself.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, the judge, or the gate.** No change to
+  `nexeoCapabilityBenchmark.ts`, `brainResponseEvaluator.ts`,
+  `calibrateResponseJudge.ts`.
+- **Did not touch `scripts/orchestrator/**`.**
+- **Did not add a broader destructive regex.** Codex's constraint, and the reason
+  DEF-138 is a prompt change with a CI-enforced budget rather than a second
+  stripper. `stripBareVocativeOpener` is untouched and still anchored at position 0.
+- **Did not take directives #3 or #4** (B04's `priority=high` renderer; B12's
+  unverified duplicate-reminder cause). They were not smaller than expected — #1
+  turned out to have a third prompt source to audit and a data refactor, and #2 was
+  a correctness bug in my own previous change. #4 is the highest truthfulness risk
+  in the report (C1 = 80) and I would take it next over more tone work.
+- **Did not reorder D-4 ahead of this turn** — same reasoning as iteration 3, and
+  it still needs owner confirmation plus D-1 first. **But the owner's chat log this
+  session has overtaken it as evidence** (see below), and I would now argue D-4
+  matters more than any remaining C4 point.
+- **Did not deploy.**
+
+### Prediction, and what would falsify it
+
+**C4 should move more than it did in either of the last two turns, because this is
+the first change aimed at the thing the model imitates rather than the thing it is
+told.** B05 and B06 are the two clearest tests: their offending phrases were
+demonstrations, and the demonstrations are gone.
+
+**What would prove me wrong:**
+- **C4 moves ≤ 2 again.** Then the honorific was never the dominant cost and the
+  judge's repeated mention of it is incidental to phrasing it dislikes for other
+  reasons — B08's *"a reply came in from an unknown number that was not surfaced to
+  you"*, B12's *"flagged the item at the same time"*, B01's *"items delegated to
+  her"*. Those are passive/technical register, not address, and they would then be
+  the target.
+- **C4 rises and C8 (persona, 99.2) falls.** Reducing demonstrated address cost
+  something real about consistent character. C8 is the criterion to watch.
+- **B05 or B10 lose points.** The day-brief greeting was kept on purpose; if
+  removing only the honorific reads as curt, the example needs the full
+  *"Good morning"* rather than *"Morning."*
+- **Any case quotes an inbound message and the quote is wrong.** DEF-137 would
+  have failed at exactly the thing it claims to fix.
+
+### The owner's chat log arrived mid-turn, and it changes what I think matters
+
+Logged as **CL-033** with four defects (DEF-139…142). I am not folding it into this
+commit — different surface, and attribution stays clean — but the loop should know
+what it says, because one line of it outweighs this iteration:
+
+**Nexeo's own self-evaluation reported a live reply scoring 29/100, worst C3 = 0,
+while this benchmark reports 95.5 overall.** The benchmark's twelve cases are not
+representative of live traffic. Related: **14 of the 19 owner-facing messages in
+that log are proactive notifications that never pass through `compose` at all** —
+so DEF-134, DEF-136, DEF-137 and DEF-138, every C4 fix in this loop, cannot reach
+the text the owner actually reads most of. One of those notifications addresses him
+as *"Basit,"* — ignoring the preferred form this loop has spent four iterations
+refining — which is direct evidence that `finaliseUserVisibleProse` is a chokepoint
+for `compose`'s prose only, not for user-visible prose.

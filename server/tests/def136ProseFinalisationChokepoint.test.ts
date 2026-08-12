@@ -201,6 +201,46 @@ describe('DEF-136 — prose finalisation is one chokepoint, reachable from every
     });
   });
 
+  // ── DEF-137. The regression DEF-136 exposed by routing reasoning here. ──
+  describe('DEF-137 — quoted evidence is never rewritten', () => {
+    // Codex, iteration-3 review, risk #1: the form rule was an unanchored
+    // GLOBAL regex. Harmless while it only ran on the legacy tail; DEF-136
+    // pointed the default reasoning path at it. A reasoning answer that
+    // quotes its own evidence had the QUOTE rewritten — so Brain misquoted
+    // a real message while citing it as grounding. That is a truthfulness
+    // failure produced by a cosmetic rule, which makes it worse than the
+    // formatting problem it was solving.
+    it('leaves a quoted email/WhatsApp greeting byte-for-byte unchanged', async () => {
+      const quoted = 'Hamna wrote: "Hi Basit Ahmed, the repository is ready".';
+      expect(await composeReasoningAnswer(quoted)).toBe(quoted);
+    });
+
+    it('still rewrites a genuine Brain opener', async () => {
+      // The other half of Codex's requirement: only the latter may change.
+      expect(await composeReasoningAnswer('Hi Basit Ahmed, your 3pm moved to 4.'))
+        .toBe('Hi Sir, your 3pm moved to 4.');
+    });
+
+    it('rewrites only the opener when the reply also quotes a greeting', async () => {
+      // Both shapes in one answer — the discriminator is position, not
+      // content, so the opener moves and the quotation does not.
+      const answer = await composeReasoningAnswer(
+        'Hi Basit Ahmed, she replied: "Hello Basit Ahmed, the repo is ready".',
+      );
+      expect(answer).toBe('Hi Sir, she replied: "Hello Basit Ahmed, the repo is ready".');
+    });
+
+    it('does not rewrite a greeting deeper in the reply', () => {
+      const midText = 'The thread opens with "Hello Basit Ahmed" and never names anyone else.';
+      expect(finaliseUserVisibleProse(midText, PERSONA)).toBe(midText);
+    });
+
+    it('still normalises an opener that carries leading whitespace', () => {
+      expect(finaliseUserVisibleProse('  Hi Basit Ahmed, the invoice cleared.', PERSONA))
+        .toBe('  Hi Sir, the invoice cleared.');
+    });
+  });
+
   // ── The other exit. Same chokepoint, reached a different way. ───────────
   describe('the LEGACY exit finalises its prose', () => {
     async function composeLegacyAnswer(answer: string): Promise<string> {
@@ -230,22 +270,22 @@ describe('DEF-136 — prose finalisation is one chokepoint, reachable from every
   });
 
   // ── Layer 1: the chokepoint's own behaviour. ────────────────────────────
-  describe('finaliseUserVisibleProse — form, then frequency', () => {
-    it('applies both rules without them interfering', () => {
-      // I first wrote this test asserting that form-BEFORE-frequency was
-      // load-bearing. Mutation proved otherwise: swapping the two changed
-      // no result, so the claim was wrong and the comment came out of the
-      // source. The rules anchor on disjoint shapes — form wants a greeting
-      // followed by the user's NAME, frequency wants the PREFERRED TOKEN at
-      // position 0 — so neither creates or destroys the other's match.
-      // What IS worth pinning is that they compose without damage.
-      expect(finaliseUserVisibleProse('Hi Basit Ahmed, your 3pm moved to 4.', PERSONA))
-        .toBe('Hi Sir, your 3pm moved to 4.');
-      // Both rules with something for each to do in the same reply: the
-      // form rule rewrites the mid-sentence greeting, the frequency rule
-      // drops the opener, and the result is what a person would write.
+  describe('finaliseUserVisibleProse — frequency, then form', () => {
+    it('runs frequency BEFORE form, which DEF-137 made load-bearing', () => {
+      // History worth keeping, because it is the same claim twice with
+      // opposite answers. DEF-136 asserted this order was load-bearing;
+      // mutation proved it was not, and the false rationale came out of the
+      // source. DEF-137 then anchored the form rule at position 0 to stop
+      // it rewriting quoted evidence — and anchoring is what CREATED the
+      // dependency the first claim only assumed.
+      //
+      // "Sir, hi Basit Ahmed — …" exposes its greeting at position 0 only
+      // after the bare vocative is stripped. Form-first would find nothing
+      // to rewrite and ship the full name.
       expect(finaliseUserVisibleProse('Sir, hi Basit Ahmed — your 3pm moved to 4.', PERSONA))
         .toBe('Hi Sir — your 3pm moved to 4.');
+      expect(finaliseUserVisibleProse('Hi Basit Ahmed, your 3pm moved to 4.', PERSONA))
+        .toBe('Hi Sir, your 3pm moved to 4.');
     });
 
     it('strips a bare vocative opener', () => {
