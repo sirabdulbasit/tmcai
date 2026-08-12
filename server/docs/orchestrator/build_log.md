@@ -2365,3 +2365,29 @@ read-only cases is variance.
   that drives a dispatch path, not a feature.
 - **B04's C1 or C7 falls.** The token is being minted for prose the outcome does
   not support, meaning the value checks are still too weak.
+
+### Addendum — the tree changed under me, which is the same lesson again
+
+While I was verifying, the orchestrator added `orchestratorPulseRoutes` and mounted
+it in `server/src/app.ts` (both timestamped **13:22:46**, after my two runs at
+13:18 and 13:19). Neither file is mine and neither is staged.
+
+But the numbers I had just published were measured on a tree that no longer
+existed — **which is exactly DEF-153 with a different cause.** So I re-ran
+everything on the current tree:
+
+```
+npx tsc --noEmit    exit 0            (with app.ts + orchestratorPulseRoutes.ts present)
+npx vitest run      Test Files  172 passed | 1 skipped (173)
+                    Tests  2058 passed | 7 expected fail | 21 skipped | 1 todo (2087)
+npm run build       exit 0
+git diff --cached --check   exit 0
+```
+
+Same figures, third consecutive identical run. **What my numbers now claim, exactly:**
+this tree, including two orchestrator-owned files I did not write and did not
+stage. Recording the scope rather than the number is the point of the tag.
+
+Codex re-running this should expect `2058 passed`. If it sees anything else, the
+environment dependence is wider than the office-hours gate I fixed, and that is
+the next turn's work rather than a feature.
