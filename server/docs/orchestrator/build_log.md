@@ -1990,3 +1990,189 @@ twelve cases never touch and preserves the twelfth's behaviour exactly.
   flag is only as good as the honesty of the branch setting it, and nothing
   structurally stops a careless `proseGrounded: true`. That is the weakness of
   opt-in and the strongest argument for Codex's threaded-outcome design.
+
+---
+
+## Iteration 10 — mode: incremental
+
+**D-7 acknowledged** (this expires it): iteration 10 runs under CLAUDE.md rule 5's
+circling verdict, and another patch on a C4 instance is forbidden. **I did not
+patch a C4 instance.** I also did not execute D-5. What I did is Codex's ranked
+directive #1 — a truthfulness mechanism — and the reason is below.
+
+### A process miss I have to report first
+
+**D-6 says check `owner_reports.md` before anything else, every turn, and an
+UNPROCESSED report outranks Codex's directive.** Both D-6 and report **R-1** were
+in HEAD when this turn started (`bd57fb5`). I read `operator_directives.md` at
+step 0 and did not follow its pointer to the reports file until after DEF-147 was
+built, tested and mutation-verified. That is my miss, not an ambiguity in the
+instruction.
+
+**R-1 is now processed in full** — CL-034, five DEF rows, four chart §3 tags
+bumped, and the report marked `PROCESSED` in place. **No R-1 fix shipped**, and
+each DEF is OPEN with a written reason, which is what D-6 permits when a fix does
+not fit the turn's one coherent change. What I will not do is pretend the ordering
+was correct.
+
+### Last iteration's prediction, tested
+
+I predicted **no criterion should move**. C4 moved **exactly 0.0** (87.3 → 87.3).
+B04 did **not** regress — still prose, and its C5 90→95 and C6 90→95 — so
+`proseGrounded` reached the renderer on the real path and the falsification
+condition did not fire.
+
+**But I set a bad falsification bar and it caught me.** I wrote *"any criterion
+moves more than a point ⇒ my reach is unmapped."* C3 +2.1, C5 +2.9 and C8 −1.3
+all exceeded that. Only B04 dispatches an action, so my change could not have
+touched the other eleven cases — those moves are variance. The criterion I wrote
+conflated *"it moved"* with *"I moved it"*, which is not a falsification test at
+all. Recorded rather than quietly reinterpreted.
+
+### The fixQueue entry I targeted
+
+**None, deliberately** — and D-7 forbids one this turn anyway. The driver is
+Codex's iteration-9 **HIGH**, which is an overclaim I wrote into a type contract:
+
+> `proseGrounded` … "compared the visible prose against the structured outcome and
+> found the prose entailed by it" … `brainComposer.ts:3617-3627` checks only
+> whether a requested priority failed to normalise and whether one deadline regex
+> is compatible with `Object.keys(data)`. **The flag records a partial lexical
+> screen, not entailment.**
+
+Its scenario: Prisma writes Project Beta = `high`, the model says *"I've set
+Project Alpha to critical. It still needs a due date."* → flag true → **WhatsApp
+hides the correct receipt and ships the false statement.**
+
+**Expected to move: nothing.** Eleven of twelve cases never dispatch an action.
+
+### Governing-docs verdict: CIRCLING, on two counts
+
+`fix-generalised-past-its-evidence` (my tag from last turn) and the ninth
+`protection-with-two-implementations` are both this family. And DEF-147 is
+specifically a **second-order** instance: I identified weakness (b) below *in my
+own iteration-9 entry* — "nothing structurally stops a careless
+`proseGrounded: true`" — and shipped it anyway. Naming a risk in a build log is
+not containing it.
+
+### What I changed, by file:line
+
+Two defects lived in one field:
+
+**(a) The checks were weaker than the name.** `verifyUpdateProse`
+(`answerReceiptPolicy.ts:216-255`) now receives **persisted values**, not field
+names — `artifactTitle`, `appliedPriority`, `appliedDueDate`, `appliedStatus`
+(`brainComposer.ts:3617-3630`). It refuses on: a dropped field; a **quoted title**
+that is not the updated row; a **named priority** that differs from what was
+written, or any named priority when none was; a deadline stated as set with none
+written; **any claim the item is done** (this path never closes an item, so that
+claim is false by construction). Synonyms pass — `urgent`→`critical`,
+`normal`→`medium` — because punishing vocabulary would send honest prose to the
+receipt for nothing.
+
+**(b) A boolean is a capability anybody can assert.** This is the half I think
+matters more. The boolean is gone; `verifyUpdateProse` is the only thing that can
+mint a `VerifiedProse`, held in a module-private `WeakSet`. A cast, a hand-built
+object and a **JSON round-trip** are all rejected — the last correctly, because
+this decision must be made in the process holding the outcome.
+
+`channelRenderer` needed **no change**: it already delegates to `receiptWins`,
+whose signature widened compatibly. That is the DEF-146 centralisation paying for
+itself one iteration later.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  172 passed | 1 skipped (173)
+                    Tests  2053 passed | 7 expected fail | 21 skipped | 1 todo (2082)
+                    Duration 19.43s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 9's 171 files / 2038 passed (2067): **+1 file, +15 tests**
+(14 in `def147`, 1 net in `def146`). `def144`/`def145`/`def146` migrated off the
+boolean.
+
+**The migration is itself evidence.** Those three suites could not be updated by
+editing a literal — a token cannot be hand-written, so each had to call the real
+verifier. The containment demonstrated itself on its own tests.
+
+### Mutation — 5 mutants, and one survivor I am recording
+
+- **Drop the quoted-title check → 1 fail.** Wrong item.
+- **Drop the priority-value check → 2 fail.** Wrong value.
+- **Drop the done-claim check → 1 fail.**
+- **Drop the deadline check → 1 fail.**
+- **Drop the `WeakSet` runtime check → 0 fail in `def147`, 2 fail in `def146`.**
+  It survived the file that is supposed to own it, because my forgery test called
+  the `__isIssuedToken` helper rather than `receiptWins`, the decision function.
+  The protection is genuinely pinned — by the other file. Left as found and
+  written down, because "it dies somewhere" is a weaker statement than it looked.
+
+**A test also caught a real bug in my own regex.** I had `'` in the quoted-title
+class, so *"I've … It's"* parsed as a quoted title, matched no item, and sent every
+contraction-bearing sentence to the receipt — including B04's own answer. Item
+titles here contain apostrophes (*"Brain's responsiveness"*), so this would have
+broken the case the whole chain exists to fix.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**`.
+- **Did not fix any of R-1's five defects.** Reasons in the report itself.
+  **DEF-150 is the one to take first**: the canned *"Hold on…"* went to the owner
+  five times on already-instructed turns, cost three further turns of *"what does
+  this mean"*, breaches invariant #4, and is the **7th** occurrence of a tag whose
+  containment (*no deterministic replacement may discard prose it did not prove
+  defective*, generalised in DEF-144) is written down and simply never wired into
+  that marker.
+- **Did not close the unquoted wrong-item case.** *"I've set Project Alpha to
+  high"* still passes. Detecting an arbitrary item name needs the user's full
+  title list, which the verifier does not have. Codex's scenario is **half**
+  closed: wrong-value yes, unquoted wrong-name no. The source says so in those
+  words rather than implying entailment again.
+- **Codex #2 (unify inline and pending `update_open_item`).** Not done, third
+  iteration. `applyOpenItemUpdate` still returns the bare receipt and mints no
+  token, so the pending route is fail-closed — correct, still not good.
+- **D-5's proactive slice.** Not done, **third** deferral. Last turn I wrote "I
+  have no further excuse after this." The excuse this turn is that Codex ranked
+  its HIGH above it and the harness makes Codex's directive outrank D-items. That
+  is a real reason and it is also the third one in a row, which is itself the
+  finding: **D-5 keeps losing to whatever I broke most recently.**
+- **DEF-143's bare-team false positive.** Still open, still able to destroy an
+  honest answer.
+- **Operator directives:** D-1 (the benchmark wrote to
+  `cmsotakwf0006rts1bdsrjjkj` again), D-2, D-4 open and untouched. D-3 standing —
+  and it is why the bad falsification bar, the surviving mutant, the apostrophe
+  bug and the D-6 miss are all in this entry.
+
+### What I am unsure about
+
+- **Whether the priority-claim regex is tight enough to be safe.** It fires on a
+  set-verb within 40 characters of a priority word. *"I've set the priority — high
+  is right for this"* passes correctly; I have not proven there is no honest
+  sentence it refuses. A false refusal costs warmth, not truth, which is the right
+  direction to fail, but it is still unmeasured.
+- **Whether a WeakSet token survives every real path.** It cannot cross a process
+  boundary or a cache, which is deliberate. If any owner-facing path serialises
+  `actionResult` between compose and render, prose silently reverts to the receipt
+  there — the safe direction, but it would look like DEF-145 all over again.
+
+### Prediction, and what would falsify it
+
+**No criterion should move**, and this time the falsification bar is stated
+properly: **B04 must still be prose, and no case that dispatches an action may
+lose C1 or C7.** Movement on the eleven read-only cases is variance and I will not
+read it either way.
+
+**What would prove me wrong:**
+- **B04 returns to `Updated "…": priority=high.`** Then the verifier is refusing
+  the real model sentence — most likely the priority or quoted-title check biting
+  honest prose, which is the risk I named above.
+- **B04's C1 or C7 falls.** The token was minted for prose the outcome does not
+  support, meaning my value checks are still too weak and Codex's HIGH is not
+  actually closed.
+- **A future branch appears with a `verifiedProse` it did not earn.** Impossible
+  by construction now, and if it happens the WeakSet is being bypassed somewhere I
+  have not looked.

@@ -169,23 +169,22 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
       expect((r.actionResult as any)?.artifactId).toBe('item-b04');
     });
 
-    it('marks the outcome proseGrounded so the WhatsApp renderer honours it', async () => {
-      // DEF-146 made the receipt the default again at the renderer, so this flag
-      // is now the ONLY thing carrying DEF-144's decision to the surface the
-      // owner reads. Without this assertion, dropping the flag regresses B04 on
-      // WhatsApp and no test notices — verified by mutation, which is why it is
-      // here.
+    it('mints a verified-prose token so the WhatsApp renderer honours it', async () => {
+      // DEF-146 made the receipt the default at the renderer, so this token is
+      // the ONLY thing carrying DEF-144's decision to the surface the owner
+      // reads. Without this assertion, dropping it regresses B04 on WhatsApp
+      // and no test notices — found by mutation, which is why it is here.
       const r = await composeUpdateTurn(THE_DISCARDED_ANSWER, 'high');
-      expect((r.actionResult as any)?.proseGrounded).toBe(true);
+      expect((r.actionResult as any)?.verifiedProse).toBeTruthy();
     });
 
-    it('does NOT mark it grounded when a requested field was dropped', async () => {
+    it('mints NO token when a requested field was dropped', async () => {
       const r = await composeUpdateTurn(
         "Got it. I've set the priority to urgent and added your note.",
         'urgent',
         { note: 'owner context' },
       );
-      expect((r.actionResult as any)?.proseGrounded).toBe(false);
+      expect((r.actionResult as any)?.verifiedProse).toBeNull();
     });
 
     it('falls BACK to the receipt when a requested field was silently dropped', async () => {

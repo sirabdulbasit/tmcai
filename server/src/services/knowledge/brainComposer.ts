@@ -14,7 +14,7 @@
  */
 import prisma from '../../db/prisma';
 import { callLLM } from '../llmRouter';
-import { brainAnswerSurvivesReceipt as answerSurvivesReceipt } from './answerReceiptPolicy';
+import { verifyUpdateProse, type VerifiedProse } from './answerReceiptPolicy';
 import { BRAIN_SCHEMA_VERSION, getBrainSchemaText } from './brainSchema';
 import { getBrainPersona } from './brainPersonaService';
 import { getRecentTenantLog } from './tenantLogService';
@@ -68,7 +68,12 @@ export interface ComposeResult {
     ok: boolean;
     artifactId?: string;
     message: string;
-    proseGrounded?: boolean;
+    /** DEF-147 — an opaque token minted ONLY by
+     *  `answerReceiptPolicy.verifyUpdateProse`, which compares the visible
+     *  prose against the values actually persisted. Replaces DEF-146's
+     *  `proseGrounded?: boolean`, which any branch could assert without
+     *  checking anything. Absent means the renderer shows the receipt. */
+    verifiedProse?: VerifiedProse | null;
   } | null;
   /** Which composer path produced this result. Used by
    *  validateBeforeRender to skip empty-promise regex checks on
@@ -2162,7 +2167,10 @@ export {
   brainAnswerSurvivesReceipt,
   isUsableBrainProse,
   MIN_ANSWER_CHARS_OVER_RECEIPT,
+  verifyUpdateProse,
   type ActionOutcome,
+  type UpdateOutcome,
+  type VerifiedProse,
 } from './answerReceiptPolicy';
 
 export async function compose(
@@ -3329,7 +3337,7 @@ ${calLines.join('\n')}`;
   // text so the user sees the actual outcome (success / artifact id /
   // error) rather than the LLM's pre-action announcement.
   let answer = parsed.answer;
-  let actionResult: { ok: boolean; artifactId?: string; message: string; proseGrounded?: boolean } | null = null;
+  let actionResult: { ok: boolean; artifactId?: string; message: string; verifiedProse?: VerifiedProse | null } | null = null;
 
   // ── Option B: Preview-by-default gate for human-facing actions ───
   // Every action that touches another human (send_email,
@@ -3616,16 +3624,20 @@ ${calLines.join('\n')}`;
               // never had.
               const requestedButNotApplied: string[] = [];
               if (act.priority && !data.priority) requestedButNotApplied.push('priority');
-              // DEF-146 — this branch is the only one that currently VERIFIES
-              // its prose against what was written, so it is the only one that
-              // may set `proseGrounded`. The flag is what lets the WhatsApp
-              // renderer prefer prose here without preferring it everywhere.
-              const proseGrounded = answerSurvivesReceipt(answer, {
+              // DEF-147 — verify against what the DATABASE received, not
+              // against the list of field names. DEF-146 passed
+              // `Object.keys(data)` and called the result "entailment", which
+              // let "I've set Project Alpha to critical" pass while Beta was
+              // written to `high`. These are the persisted values.
+              const verified = verifyUpdateProse(answer, {
+                artifactTitle: existing.title,
+                appliedPriority: (data.priority as string | undefined) ?? null,
+                appliedDueDate: Boolean(data.dueDate),
+                appliedStatus: (data.status as string | undefined) ?? null,
                 requestedButNotApplied,
-                appliedFields: Object.keys(data),
               });
-              actionResult.proseGrounded = proseGrounded;
-              if (!proseGrounded) {
+              actionResult.verifiedProse = verified;
+              if (!verified) {
                 answer = actionResult.message;
               }
             } else if (!actionResult) {

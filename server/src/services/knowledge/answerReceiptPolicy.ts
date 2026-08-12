@@ -107,44 +107,183 @@ export function brainAnswerSurvivesReceipt(answer: string, outcome: ActionOutcom
  *  second copy is how `protection-with-two-implementations` reaches nine. */
 export const __DUE_DATE_CLAIM_RE = DUE_DATE_CLAIM_RE;
 
+
+// ── DEF-147 (2026-08-12): the flag claimed more than it checked ─────────
+//
+// DEF-146 shipped `proseGrounded?: boolean` on the action result, and the type
+// contract said it meant the branch "COMPARED the visible prose against the
+// structured outcome and found the prose entailed by it". It did not. It
+// checked two things: whether a requested priority failed to normalise, and
+// whether one deadline regex was compatible with the list of written field
+// NAMES. It never looked at a single field VALUE, or at which item was
+// updated.
+//
+// Codex's iteration-9 HIGH, and it is exact:
+//
+//     Prisma updates Project Beta to `high`. The model says "I've set Project
+//     Alpha to critical. It still needs a due date." Priority normalised, no
+//     deadline claim → the flag went true → WhatsApp hid the correct Beta/high
+//     receipt and shipped the false Alpha/critical statement.
+//
+// Two separate defects in one field, and the second is the worse one:
+//
+//   1. The checks were too weak for what the name promised.
+//   2. **A plain boolean can be asserted by anybody.** Any future branch could
+//      write `proseGrounded: true` to get friendlier prose, with no comparison
+//      at all, and every existing test would stay green. A capability that can
+//      be claimed without evidence is not a capability.
+//
+// So the boolean is gone. `verifyUpdateProse` is the only thing that can mint a
+// `VerifiedProse`, the token is held in a module-private WeakSet, and
+// `receiptWins` accepts nothing else. A forged `{}`, a `true`, or a token that
+// survived a JSON round-trip all fail — correctly, because this decision has to
+// be made in the process that did the write, with the outcome in hand.
+
+/** Opaque proof that prose was checked against a real outcome. Only
+ *  `verifyUpdateProse` can produce one; there is no public constructor and the
+ *  brand is not satisfiable from outside this module. */
+declare const VERIFIED_PROSE: unique symbol;
+export type VerifiedProse = { readonly [VERIFIED_PROSE]: 'update_open_item' };
+
+/** Runtime half of the guarantee. A brand stops a *type* error; this stops a
+ *  cast, a hand-built object, and anything deserialised. */
+const issuedTokens = new WeakSet<object>();
+
+/** The persisted result of an `update_open_item`, as the branch that wrote it
+ *  knows it. Every field is what the DATABASE received, never what the model
+ *  asked for. */
+export interface UpdateOutcome {
+  /** Title of the row actually updated. */
+  artifactTitle: string;
+  /** Priority actually written, or null when none was. */
+  appliedPriority: string | null;
+  /** Whether a due date was actually written. */
+  appliedDueDate: boolean;
+  /** Status actually written, or null when unchanged. */
+  appliedStatus: string | null;
+  /** Fields the model asked for that the server did not apply. */
+  requestedButNotApplied: readonly string[];
+}
+
+const PRIORITY_WORDS = ['critical', 'high', 'medium', 'low', 'urgent', 'normal'] as const;
+
+/** A first-person claim that a PRIORITY was set to a named level. Same
+ *  claim-versus-question discipline as the deadline pattern: a set-verb is
+ *  required, so "what priority do you want?" is not a claim. */
+const PRIORITY_CLAIM_RE = new RegExp(
+  "\\b(?:set|marked|made|changed|moved|bumped|updated|flagged)\\b[^.!?\\n]{0,40}?"
+  + `\\b(${PRIORITY_WORDS.join('|')})\\b`
+  + `|\\b(?:priority|it)\\s+(?:is\\s+now|to)\\s+(${PRIORITY_WORDS.join('|')})\\b`,
+  'i',
+);
+
+/** A claim that the item is finished. `update_open_item` never closes anything,
+ *  so any such claim is false by construction on this path. */
+const DONE_CLAIM_RE =
+  /\b(?:marked|set|moved)\b[^.!?\n]{0,30}?\b(?:done|complete[d]?|closed|finished)\b|\b(?:it|that|this)\s+is\s+now\s+(?:done|complete[d]?|closed)\b/i;
+
+/** Any title the prose puts in DOUBLE quotes. Unquoted item names are NOT
+ *  detected — see the honesty note in `verifyUpdateProse`.
+ *
+ *  Single quotes are deliberately excluded, and a test caught why: an
+ *  apostrophe is not a quote mark. With `'` in the class, *"I've set the
+ *  priority to high. It's still missing a due date"* parsed as a quoted title
+ *  running from `I've` to `It's`, which matched no item and sent every
+ *  contraction-bearing sentence to the receipt. Item titles here do contain
+ *  apostrophes ("Brain's responsiveness"), so this had to be right. */
+const QUOTED_TITLE_RE = /["“”]([^"“”\n]{6,})["“”]/;
+
+function norm(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Check Brain's prose against what was actually persisted, and mint a token
+ * only if every claim it makes is borne out.
+ *
+ * Returns `null` — meaning "show the receipt" — for anything it cannot
+ * positively justify. That direction is the whole design: the receipt is true
+ * by construction, so an unproveable sentence costs the owner nothing but
+ * warmth, while a wrong one costs them the truth.
+ *
+ * WHAT IS CHECKED, exactly, so the next reader does not have to trust an
+ * adjective the way DEF-146's did:
+ *
+ *   - a requested field the server dropped        → receipt
+ *   - a quoted title that is not the updated row  → receipt   (wrong item)
+ *   - a named priority that is not what was written, or any named priority
+ *     when none was written                       → receipt   (wrong value)
+ *   - a deadline stated as set with no due date written        → receipt
+ *   - any claim the item is done/closed           → receipt   (this path
+ *     never closes an item, so the claim is false by construction)
+ *   - prose that is a marker or a stub            → receipt
+ *
+ * WHAT IS **NOT** CHECKED, stated plainly rather than implied away:
+ *
+ *   - **An UNQUOTED wrong item name.** "I've set Project Alpha to high" while
+ *     Beta was updated still passes, because detecting an arbitrary item name
+ *     needs the user's full title list, which this function does not have.
+ *     Codex's exact scenario is therefore only half-closed: the wrong-VALUE
+ *     half is caught, the unquoted wrong-NAME half is not.
+ *   - The specific date behind a deadline claim. Presence of a written due date
+ *     is checked; "Friday" versus "Monday" is not.
+ *   - Note and title text.
+ */
+export function verifyUpdateProse(prose: string, outcome: UpdateOutcome): VerifiedProse | null {
+  if (!isUsableBrainProse(prose)) return null;
+  if (outcome.requestedButNotApplied.length > 0) return null;
+
+  // Wrong item — only catchable when the model quotes the title.
+  const quoted = QUOTED_TITLE_RE.exec(prose);
+  if (quoted && norm(quoted[1]) !== norm(outcome.artifactTitle)) return null;
+
+  // Wrong priority value, or a priority claimed when none was written.
+  const priorityClaim = PRIORITY_CLAIM_RE.exec(prose);
+  if (priorityClaim) {
+    const claimed = norm(priorityClaim[1] ?? priorityClaim[2] ?? '');
+    if (!outcome.appliedPriority) return null;
+    // 'urgent'/'normal' are the words the model reaches for; the server stores
+    // 'critical'/'medium'. Treat them as the same claim rather than punishing
+    // vocabulary — but a claim of 'low' against a written 'high' still fails.
+    const synonyms: Record<string, string> = { urgent: 'critical', normal: 'medium' };
+    const canonical = synonyms[claimed] ?? claimed;
+    if (canonical !== norm(outcome.appliedPriority)) return null;
+  }
+
+  // Deadline stated as set, with nothing written.
+  if (!outcome.appliedDueDate && DUE_DATE_CLAIM_RE.test(prose)) return null;
+
+  // "Done" is never true on this path.
+  if (DONE_CLAIM_RE.test(prose)) return null;
+
+  const token = Object.freeze({}) as unknown as VerifiedProse;
+  issuedTokens.add(token as unknown as object);
+  return token;
+}
+
 /**
  * The ONE decision: for a completed action, does the owner see the receipt or
- * Brain's prose? (DEF-146, 2026-08-12)
+ * Brain's prose?
  *
- * DEF-145 inverted the renderer's preference and got B04 right — its reply
- * changed from `Updated "…": priority=high.` to *"Got it. I've set the priority
- * to high. It's still missing a due date if you have one in mind."*, moving
- * C6 75 → 90 and C7 80 → 100. But it inverted the preference for **every**
- * action, and only `update_open_item` had its prose checked against what was
- * written. Codex called that CRITICAL and it is: a successful Gmail send whose
- * receipt holds the real recipient and message id, described by a model as
- * *"I've emailed A and B and copied the finance team"*, would have shipped the
- * invented recipients and hidden the truth. That is invariant #5 (no fabricated
- * completion) weakened across every action class at once.
- *
- * Worth recording WHY no score caught it: **B04 is the only one of the twelve
- * benchmark cases that dispatches an action.** The other eleven never produce an
- * `actionResult`, so the global preference was exercised exactly once — on the
- * single case where it happened to be verified. The regression was real,
- * shipped, and structurally invisible to this loop's instrument. Benchmark-clean
- * is not the same as safe.
- *
- * So the receipt is the default and prose is the exception, granted per-branch:
- *
- *   - No receipt to show (failed action, empty message) → prose, unchanged.
- *     The `ok === true` gate that stopped the 2026-05-20 sentinel leak lives at
- *     the call site and is untouched.
- *   - `proseGrounded !== true` → **receipt**. Not "unchecked so probably fine";
- *     unchecked means the owner gets the text that is true by construction.
- *   - `proseGrounded === true` → prose, provided it is still usable prose.
- *     A branch can only set that flag by having compared claims to outcome.
+ *   - No successful, non-empty receipt → prose. The `ok === true` gate that
+ *     stopped the 2026-05-20 sentinel leak is part of this and is unchanged.
+ *   - No genuine `VerifiedProse` token → **receipt.** Not "unchecked so
+ *     probably fine": unchecked means the owner gets the text that is true by
+ *     construction. This is the DEF-146 containment, kept.
+ *   - A genuine token → prose, provided it is still usable prose.
  */
 export function receiptWins(
-  actionResult: { ok?: boolean; message?: string; proseGrounded?: boolean } | null | undefined,
+  actionResult: { ok?: boolean; message?: string; verifiedProse?: unknown } | null | undefined,
   prose: string,
 ): boolean {
   const receipt = actionResult?.ok === true && actionResult.message?.trim() ? actionResult.message : null;
-  if (!receipt) return false;                       // nothing grounded to show
-  if (actionResult?.proseGrounded !== true) return true;  // fail closed
-  return !isUsableBrainProse(prose);                // verified, but is it prose?
+  if (!receipt) return false;
+  const token = actionResult?.verifiedProse;
+  if (!token || typeof token !== 'object' || !issuedTokens.has(token as object)) return true;
+  return !isUsableBrainProse(prose);
+}
+
+/** Test-only: proves a hand-built or cast token is rejected at runtime. */
+export function __isIssuedToken(token: unknown): boolean {
+  return !!token && typeof token === 'object' && issuedTokens.has(token as object);
 }

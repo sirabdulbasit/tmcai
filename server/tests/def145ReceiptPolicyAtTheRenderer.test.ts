@@ -40,6 +40,7 @@ import { renderForChannel } from '../src/services/knowledge/channelRenderer';
 import {
   brainAnswerSurvivesReceipt,
   isUsableBrainProse,
+  verifyUpdateProse,
   __DUE_DATE_CLAIM_RE,
 } from '../src/services/knowledge/answerReceiptPolicy';
 
@@ -66,10 +67,17 @@ describe('DEF-145 — the renderer stops overriding the answer with the receipt'
     it('sends Brain\'s prose to WhatsApp, not the receipt', () => {
       // The assertion that would have failed before this commit, and the one
       // whose absence let DEF-144 measure as a no-op.
-      // DEF-146 added `proseGrounded`: the receipt is the default again, and
-      // prose wins only where the branch verified it against what was written.
-      // `update_open_item` is that branch, so this remains its real shape.
-      const body = wa(THE_PROSE, { ok: true, message: RECEIPT, artifactId: 'item-b04', proseGrounded: true });
+      // DEF-146 made the receipt the default again; DEF-147 replaced its
+      // boolean with a token only `verifyUpdateProse` can mint. This is the
+      // real shape of a verified `update_open_item` result.
+      const body = wa(THE_PROSE, {
+        ok: true, message: RECEIPT, artifactId: 'item-b04',
+        verifiedProse: verifyUpdateProse(THE_PROSE, {
+          artifactTitle: "Define rules for Brain's responsiveness to new vs. existing contacts",
+          appliedPriority: 'high', appliedDueDate: false, appliedStatus: null,
+          requestedButNotApplied: [],
+        }),
+      });
       expect(body).toBe(THE_PROSE);
       expect(body, 'the deadline question is the whole point of B04').toContain('due date');
       expect(body).not.toContain('priority=high');

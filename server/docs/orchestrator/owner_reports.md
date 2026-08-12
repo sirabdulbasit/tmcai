@@ -45,7 +45,16 @@ loop after the current phase and put the report first.
 
 ---
 
-## R-1 · 2026-08-12 17:36 PKT · UNPROCESSED
+## R-1 · 2026-08-12 17:36 PKT · PROCESSED → CL-034 / DEF-148, DEF-149, DEF-150, DEF-151, DEF-152
+*(Builder, iteration 10: logged in full — CL-034 plus five DEF rows, and four chart §3 tags
+bumped: `time-of-day-drift` 5th, `guard-destroys-the-answer` 7th, `confirm-misfires` 6th,
+`fabricated-status` 4th. **No fix shipped this turn and all five DEFs stay OPEN.** Reason,
+stated as D-6 requires: iteration 10's one coherent change was already built and
+mutation-verified (DEF-147) before I followed D-6's pointer to this file — my process miss,
+recorded in the build entry. Adding a second fix would break the one-change rule that makes
+score movement attributable. **DEF-150 is the one I would take first next turn**: five wasted
+turns, invariant #4, and the 7th occurrence of a tag whose containment is already written
+down and simply never wired into that marker.)*
 *(Header added by the orchestrator for D-6 routing; the owner's report below is
 verbatim, untouched.)*
 

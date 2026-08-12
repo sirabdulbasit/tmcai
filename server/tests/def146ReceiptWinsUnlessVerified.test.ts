@@ -27,17 +27,29 @@
  * instrument. Overall even rose, 94.4 → 95.3. Benchmark-clean is not safe.
  *
  * The fix inverts the default back: the receipt wins unless the branch that did
- * the write states it verified the prose. `proseGrounded` is opt-in, because only
- * the branch that performed the write knows what was applied. A branch that has
- * not been taught to verify keeps its grounded receipt, which is the fail-closed
- * direction.
+ * the write proves it verified the prose. DEF-147 then replaced the opt-in
+ * boolean with a token only the verifier can mint, because a boolean is a
+ * capability anybody can assert.
  *
  * These tests are the ones Codex asked for by name: exaggerated model prose must
  * never replace the real recipient/artifact/value receipt.
  */
 import { describe, it, expect } from 'vitest';
 import { renderForChannel } from '../src/services/knowledge/channelRenderer';
-import { receiptWins } from '../src/services/knowledge/answerReceiptPolicy';
+import { receiptWins, verifyUpdateProse } from '../src/services/knowledge/answerReceiptPolicy';
+
+/** DEF-147: a token can no longer be hand-written. Tests must mint one through
+ *  the real verifier, which is the point — `proseGrounded: true` used to be
+ *  assertable by anybody, including a test that proved nothing. */
+function tokenFor(prose: string, artifactTitle: string, appliedPriority: string | null = 'high') {
+  return verifyUpdateProse(prose, {
+    artifactTitle,
+    appliedPriority,
+    appliedDueDate: false,
+    appliedStatus: null,
+    requestedButNotApplied: [],
+  });
+}
 
 function wa(answer: string, actionResult: any): string {
   return renderForChannel(
@@ -72,8 +84,8 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
   describe('every unverified action class keeps its grounded receipt', () => {
     for (const kind of Object.keys(RECEIPTS) as Array<keyof typeof RECEIPTS>) {
       it(`${kind}: exaggerated prose does not replace the receipt`, () => {
-        // No `proseGrounded` — these branches do not verify, so the owner must
-        // see the text that is true by construction.
+        // No token — these branches do not verify, so the owner must see the
+        // text that is true by construction.
         const body = wa(OVERSTATEMENTS[kind], { ok: true, message: RECEIPTS[kind] });
         expect(body).toBe(RECEIPTS[kind]);
         expect(body, 'the fabrication must not reach WhatsApp').not.toBe(OVERSTATEMENTS[kind]);
@@ -91,23 +103,30 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
   describe('the verified branch still gets its prose — B04 must not regress', () => {
     const B04_PROSE = "Got it. I've set the priority to high. It's still missing a due date if you have one in mind.";
     const B04_RECEIPT = 'Updated "Define rules for Brain\'s responsiveness to new vs. existing contacts": priority=high.';
+    const B04_TITLE = "Define rules for Brain's responsiveness to new vs. existing contacts";
 
-    it('update_open_item with proseGrounded sends the prose', () => {
-      const body = wa(B04_PROSE, { ok: true, message: B04_RECEIPT, proseGrounded: true });
+    it('update_open_item with a genuine token sends the prose', () => {
+      const body = wa(B04_PROSE, {
+        ok: true, message: B04_RECEIPT,
+        verifiedProse: tokenFor(B04_PROSE, B04_TITLE),
+      });
       expect(body).toBe(B04_PROSE);
       expect(body).toContain('due date');
     });
 
-    it('the SAME result without the flag sends the receipt', () => {
+    it('the SAME result without a token sends the receipt', () => {
       // One field decides it, which is what makes the containment auditable.
       const body = wa(B04_PROSE, { ok: true, message: B04_RECEIPT });
       expect(body).toBe(B04_RECEIPT);
     });
 
-    it('proseGrounded does not rescue a marker or a stub', () => {
+    it('a token cannot be minted for a marker or a stub', () => {
+      // The verifier refuses to mint for a marker or a stub, so there is no
+      // token to present — belt and braces at both layers.
+      expect(tokenFor('[update_open_item: no recognised fields to update]', B04_TITLE)).toBeNull();
       expect(wa('[update_open_item: no recognised fields to update]',
-        { ok: true, message: B04_RECEIPT, proseGrounded: true })).toBe(B04_RECEIPT);
-      expect(wa('Done.', { ok: true, message: B04_RECEIPT, proseGrounded: true })).toBe(B04_RECEIPT);
+        { ok: true, message: B04_RECEIPT, verifiedProse: tokenFor('[update_open_item: no recognised fields to update]', B04_TITLE) })).toBe(B04_RECEIPT);
+      expect(wa('Done.', { ok: true, message: B04_RECEIPT, verifiedProse: tokenFor('Done.', B04_TITLE) })).toBe(B04_RECEIPT);
     });
   });
 
@@ -142,17 +161,31 @@ describe('DEF-146 — the receipt wins unless the branch verified the prose', ()
   });
 
   describe('receiptWins — the decision itself', () => {
-    it('fails closed when the flag is absent, false, or the wrong type', () => {
+    it('fails closed when the token is absent, null, or the wrong type', () => {
       const prose = 'A perfectly ordinary sentence about your items.';
       expect(receiptWins({ ok: true, message: 'R' }, prose)).toBe(true);
-      expect(receiptWins({ ok: true, message: 'R', proseGrounded: false }, prose)).toBe(true);
-      expect(receiptWins({ ok: true, message: 'R', proseGrounded: undefined }, prose)).toBe(true);
-      expect(receiptWins({ ok: true, message: 'R', proseGrounded: 1 as any }, prose)).toBe(true);
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: null }, prose)).toBe(true);
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: undefined }, prose)).toBe(true);
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: 1 as any }, prose)).toBe(true);
     });
 
-    it('yields to verified prose', () => {
-      expect(receiptWins({ ok: true, message: 'R', proseGrounded: true },
-        'A perfectly ordinary sentence about your items.')).toBe(false);
+    it('yields to genuinely verified prose', () => {
+      const prose = 'A perfectly ordinary sentence about your items.';
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: tokenFor(prose, 'Some item', null) },
+        prose)).toBe(false);
+    });
+
+    it('rejects a FORGED token — the DEF-146 weakness DEF-147 closes', () => {
+      const prose = 'A perfectly ordinary sentence about your items.';
+      // Every shape a careless branch might reach for.
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: true as any }, prose)).toBe(true);
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: {} as any }, prose)).toBe(true);
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: { verified: true } as any }, prose)).toBe(true);
+      // And one that has been through JSON, which is how a token would arrive
+      // from a queue or a cache.
+      const real = tokenFor(prose, 'Some item', null);
+      const roundTripped = JSON.parse(JSON.stringify(real));
+      expect(receiptWins({ ok: true, message: 'R', verifiedProse: roundTripped }, prose)).toBe(true);
     });
 
     it('has nothing to show when there is no successful receipt', () => {
