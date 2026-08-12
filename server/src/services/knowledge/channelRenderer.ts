@@ -29,6 +29,9 @@
  *     getting an empty WA message.
  */
 import type { ComposeResult, ComposedAction } from './brainComposer';
+// DEF-145: the ONE definition of receipt-versus-prose, in a dependency-free
+// module so this renderer does not pull the composer in at runtime.
+import { brainAnswerSurvivesReceipt } from './answerReceiptPolicy';
 
 export type Channel = 'web' | 'whatsapp';
 
@@ -162,8 +165,32 @@ export function renderForChannel(
   // "any open item?" → factual query → no action emitted → empty-
   // promise guard mis-fired → renderer surfaced the sentinel string
   // instead of the answer Brain had already composed.
-  const sourceText = result.actionResult?.ok === true && result.actionResult.message?.trim()
+  //
+  // DEF-145 — the preference is now the other way round, and this is the line
+  // that actually decides what the owner reads. It used to hand the receipt to
+  // WhatsApp whenever an action succeeded, which meant every successful action
+  // answered the owner in field names. It is also why DEF-144 measured as a
+  // no-op: that change kept Brain's prose inside `compose`, and this line put
+  // the receipt straight back. B04's benchmark reply was byte-identical across
+  // iterations 06 and 07 — 94 chars of `Updated "…": priority=high.` — while
+  // the composer log for the same turn shows the model had said "Got it. I've
+  // marked that as high priority. Still needs a due date if you have one."
+  //
+  // The two things the substitution was protecting both survive. The
+  // `ok === true` gate stays exactly as it was, for the 2026-05-20 sentinel
+  // leak described above. And `brainAnswerSurvivesReceipt` — the one shared
+  // definition, in `answerReceiptPolicy` — keeps the receipt whenever the
+  // prose is a marker, a stub, or makes a completion claim the outcome does
+  // not support. Fail-closed: if it cannot justify the prose, the receipt wins.
+  //
+  // `compose` has already applied the same policy to `result.answer`, so this
+  // is a second, independent chance to fall back rather than a second opinion
+  // about which text is better.
+  const receipt = result.actionResult?.ok === true && result.actionResult.message?.trim()
     ? result.actionResult.message
+    : null;
+  const sourceText = receipt && !brainAnswerSurvivesReceipt(stripped)
+    ? receipt
     : stripped;
   const body = trimToLimit(sourceText, WA_MAX_CHARS);
   return {

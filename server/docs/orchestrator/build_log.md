@@ -1605,3 +1605,194 @@ the accounting above predates it. Recording it so nothing looks silently dropped
 - **Next turn is the proactive slice**, per D-5's ordered list and Codex's
   Iteration-4 directive 3. That also unblocks the DEF-140 work I have deferred
   twice for exactly the stated reason: it could not be scored.
+
+---
+
+## Iteration 8 — mode: incremental
+
+**Gating criterion: C4 @ 87.8.** Overall 94.4, down from 95.1.
+
+### First: DEF-144 did not work, and finding out why is this iteration
+
+Codex's directive #3 said read the completed Iteration 7 score before claiming
+movement. Read. **B04's reply is byte-identical across iterations 06 and 07** —
+94 characters of `Updated "Define rules …": priority=high.` — while the composer
+log for the *same* iteration-07 turn shows the model had said:
+
+```
+[brain-chat] compose.parsed
+  answerHead: "Got it. I've marked that as high priority. Still needs a due date if you have on"
+```
+
+Before diagnosing I ruled out the boring explanation:
+`dist/services/knowledge/brainComposer.js` was rebuilt at **11:23:24**, after my
+11:15:56 commit, contains `brainAnswerSurvivesReceipt`, and the benchmark started
+at **11:23:34**. DEF-144 was live and inert.
+
+**Root cause: `channelRenderer.renderForChannel` handed the receipt to WhatsApp
+whenever an action succeeded**, re-substituting what `compose` had just decided
+to keep. `answerAsBrain` runs with `channel: 'whatsapp'` for the benchmark
+(`nexeoCapabilityBenchmark.ts:337`) **and for the owner's real surface**, so that
+renderer, not `compose`, is the layer that decides what gets read.
+
+So the policy had **four** implementations: the composer's inline branches,
+`applyOpenItemUpdate`, `dispatchPendingDirect`, and the renderer. Codex predicted
+this shape in its iteration-7 review (MEDIUM #4) but pointed at
+`applyOpenItemUpdate`; the live one was the renderer.
+
+### Also: three of last iteration's score moves were not mine
+
+**B04's C7 went 100 → 80 on a byte-identical answer.** Same 94 characters, two
+different scores, because the judge decided differently the second time.
+B04 is the only case that dispatches `update_open_item`, so DEF-144 could not
+have touched any other case — which means the C3 −2.1, C6 −2.5, C7 −2.1 and
+C8 −0.9 drops last iteration are **not attributable to my change**. More D-4
+evidence, and this time with an identical-input control rather than an inference.
+
+### Governing-docs verdict, before coding: CIRCLING — 9th occurrence
+
+`protection-with-two-implementations` (chart §3, 8 occurrences) is now 9. The
+chart row is updated with what this instance adds, which is a **new and better
+tell**: the eight earlier instances were found by reading code or by a defect
+recurring. This one announced itself as **a verified fix with no measurable
+effect** — tests green, mutants dying, diff correct, score unmoved. That
+combination should now be read as evidence of a second implementation
+downstream, not as noise.
+
+### The fixQueue entry I targeted
+
+> **B04-outstanding-question-ignored — C6 = 75** — "The response only partially
+> completes the outstanding request. Brain asked for 'priority and deadline' but
+> only processed the priority, leaving the deadline unaddressed."
+
+**Expected to move: C6 and C5 first, then C3; C4 secondarily** as `priority=high`
+stops being the reply. Same target as iteration 7 — because iteration 7 never
+reached it.
+
+### What I changed, by file:line
+
+**1. New `answerReceiptPolicy.ts` — one dependency-free definition.** Owns
+`isUsableBrainProse` and `brainAnswerSurvivesReceipt`. Dependency-free on
+purpose: `channelRenderer` imports it **directly, not via the composer**, which
+is Codex's iteration-6 MEDIUM #3 — a cosmetic rule that imports a 7k-line module
+can silently skip on a module-init failure. `brainComposer` re-exports both so
+its public surface is unchanged.
+
+**2. `channelRenderer.ts:186-190` — the preference is inverted.** Prose first,
+receipt as the fallback. **Both things the old substitution protected survive and
+are asserted:** the `ok === true` gate is untouched (a failed action's message is
+an internal sentinel; one leaked verbatim on 2026-05-20 and there is a test for
+it), and a marker or stub answer still yields to the receipt.
+
+**3. The outcome check got STRICTER, not looser** — and this is the part I would
+have got wrong without Codex's review. Making prose visible turns its
+iteration-7 risk #1 from masked into live: `"I've set the priority to high and
+the deadline to Friday."` on an update that wrote no due date is a false
+completion claim (invariant #5). `brainAnswerSurvivesReceipt` now takes the
+structured outcome (`appliedFields`, `requestedButNotApplied`) and keeps the
+receipt when a deadline is *claimed* but was not written. The hard part is
+separating a claim from a question, because *"Still needs a due date if you have
+one"* is the exact sentence DEF-144 exists to preserve — so the pattern requires
+a set-verb and cannot cross a sentence boundary. Nine-sentence battery, both
+directions.
+
+**4. `brainComposer.ts` call site** passes `appliedFields: Object.keys(data)`.
+
+### Verification — re-run AFTER the last edit, from `server/`
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+npx vitest run      Test Files  170 passed | 1 skipped (171)
+                    Tests  2018 passed | 7 expected fail | 21 skipped | 1 todo (2047)
+                    Duration 19.34s
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Delta against iteration 7's 169 files / 1998 passed (2027): **+1 file, +20
+tests.** `def144`'s 8 tests were migrated to the structured-outcome signature and
+remain green. No other pre-existing test changed state.
+
+### Mutation — 2 mutants, both die
+
+- **Restore the receipt preference in the renderer → the B04 test fails.** This
+  is the defect that made DEF-144 inert, reproduced on demand.
+- **Remove the claim-versus-outcome check → 2 fail**, including the fail-closed
+  empty-outcome case.
+
+There is also an assertion that the composer and the renderer hold **the same
+function object**, not the same source text — the only form of that check a
+divergent copy cannot satisfy.
+
+### What I did NOT do
+
+- **Did not touch the benchmark, judge, or gate.** Nor `scripts/orchestrator/**`.
+- **Codex directive #1 (full outcome-aware renderer/validator with artifact
+  identity, applied values, remaining DRAFT slots; live tests for wrong item and
+  wrong value).** Partially done, and I want to be exact about which part. The
+  **deadline-claim** half is implemented and tested because ignoring it would
+  have shipped a live truthfulness regression the moment prose became visible.
+  **Not implemented: identity and value entailment** — the answer is still not
+  compared against `existing.id`/`title` or against the *value* of an applied
+  field, so Codex's risk #2 (prose about Project Alpha while Project Beta was
+  updated) remains open. That needs the structured outcome threaded from the
+  update branch, and it is the next thing I would build.
+- **Codex directive #2 (unify both `update_open_item` implementations into one
+  `{artifact, applied, rejected, remainingRequiredSlots}` mechanism).** Not done.
+  The *result policy* is now unified across the composer and the renderer, which
+  is the half that was making DEF-144 inert; the *field-normalisation* half is
+  still duplicated between `brainComposer` and `applyOpenItemUpdate`, so the
+  pending-confirmation route still returns the bare receipt.
+- **Codex directive #4 / D-5 (the proactive evaluation slice).** Not done, and
+  this is now the largest thing outstanding. It is ranked first by the operator
+  from this iteration onward and I skipped it deliberately: DEF-144 had just
+  measured as a no-op for an unknown reason, and adding a new measurement surface
+  on top of a fix I could not explain would have been building on sand. That
+  reason expires with this entry — **the slice should be the next turn**, and it
+  is what makes DEF-140's proactive work scoreable at last.
+- **Codex directive #5 / the DEF-143 bare-team false positive.** Still open and
+  still a live answer-destroying risk. Named again rather than superseded.
+- **Operator directives:** D-1 (benchmark writes to the owner's live backlog —
+  and iter-07 wrote to `cmsotakwf0006rts1bdsrjjkj` again), D-2, D-4 all remain
+  open and untouched. D-3 is standing and is why the identical-answer control
+  above is stated as evidence rather than as a hunch.
+
+### What I am unsure about
+
+- **Whether prose is the better WhatsApp body for every action, not just this
+  one.** The renderer change is global to WhatsApp: `add_open_item`,
+  `create_contact`, `set_brain_name` and the rest now send Brain's sentence
+  instead of `Added X to your open items`. I believe that is right — a person
+  confirms in prose — but it is a wider blast radius than the one case that
+  motivated it, and only `update_open_item` has the claim-versus-outcome check.
+  **A model that overstates a contact save or an email send would now be
+  believed on WhatsApp where it previously was not.** That is the risk I would
+  most want Codex to look at.
+- **Whether `Object.keys(data)` is the right notion of "applied".** It is what
+  the branch asked Prisma to write, not what the row holds afterwards. A silently
+  rejected write would still read as applied.
+
+### Prediction, and what would falsify it
+
+**C6 and C5 should move, and B04's answer should finally change.** The minimum
+falsifiable claim is narrower than a score: **B04's `answer` in the next report
+must no longer be the 94-character receipt.** If it is identical again, my
+diagnosis is wrong a second time and there is a fifth substitution I have not
+found.
+
+**What would prove me wrong:**
+- **B04's answer is byte-identical again.** Then the substitution is somewhere
+  else still — `answerSanitizer`, or the benchmark's own recording — and I should
+  instrument rather than guess a third time.
+- **C1 or C7 falls on a case that dispatches an action.** The prose the renderer
+  now trusts is overstating something, most likely on one of the actions with no
+  claim-versus-outcome check. That is the wide blast radius above, and the
+  response is to gate the renderer change to `update_open_item` rather than widen
+  the checks under time pressure.
+- **B04's C6 stays at 75 while its answer DOES change.** Then the model's
+  sentence does not reliably ask for the missing slot, and the fix belongs in
+  generation from `remainingRequiredSlots` — which is exactly what Codex's
+  directive #3 said to do in that case.
+- **Overall falls again while C4 rises.** Under a "95 on every criterion" gate
+  that is not a win, and after this iteration's identical-input control I would
+  want two runs before believing either direction.

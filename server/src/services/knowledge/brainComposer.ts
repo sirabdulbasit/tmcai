@@ -14,6 +14,7 @@
  */
 import prisma from '../../db/prisma';
 import { callLLM } from '../llmRouter';
+import { brainAnswerSurvivesReceipt as answerSurvivesReceipt } from './answerReceiptPolicy';
 import { BRAIN_SCHEMA_VERSION, getBrainSchemaText } from './brainSchema';
 import { getBrainPersona } from './brainPersonaService';
 import { getRecentTenantLog } from './tenantLogService';
@@ -2136,53 +2137,17 @@ export function finaliseUserVisibleProse(
   return out.replace(addressRe, (_m, lead, greeting, sep) => `${lead}${greeting}${sep}${targetAddress}`);
 }
 
-/** Below this, a "reply" is a fragment rather than an answer, and the
- *  deterministic receipt is more use to the owner than three words. */
-export const MIN_ANSWER_CHARS_OVER_RECEIPT = 12;
-
-/**
- * Does Brain's own answer survive a SUCCESSFUL internal action, or does the
- * deterministic receipt replace it? (DEF-144, 2026-08-12)
- *
- * The success paths in `compose` all ended with `answer = actionResult.message`,
- * so a completed action threw away whatever Brain had said and shipped a string
- * built from field names instead. B04 in the capability benchmark is that line:
- * the model answered *"Got it. I've set the priority to high. Do you have a
- * deadline for this?"* — correct, and it asks the outstanding question — and the
- * owner received `Updated "Define rules for Brain's responsiveness to new vs.
- * existing contacts": priority=high.`
- *
- * That one substitution cost four criteria at once: C6 = 75 and C5 = 80 because
- * the deadline follow-up was in the discarded sentence, C3 = 85 because the
- * turn no longer continued the previous one, and C4 = 90 for `priority=high`
- * itself. It is also a hardcoded English sentence presented as Brain's voice,
- * which invariant #4 forbids outright — the sanctioned deterministic form is a
- * bracketed `[marker]` rendered by `answerSanitizer`, and this is not one.
- *
- * The overwrite was not pointless, though, and that is why this is a predicate
- * rather than a deletion. It guaranteed the owner saw what ACTUALLY changed.
- * A silently-dropped field — `update_open_item` discards a priority word it
- * cannot normalise — would otherwise leave Brain's "I've set it to urgent"
- * standing as a false completion claim, which is invariant #5.
- *
- * So the receipt still wins whenever it is carrying information Brain's prose
- * cannot be trusted to have: any field the model asked for and the server did
- * not apply. When everything requested was applied, Brain's sentence is at
- * least as true as the receipt and considerably more useful.
- */
-export function brainAnswerSurvivesReceipt(
-  answer: string,
-  requestedButNotApplied: readonly string[],
-): boolean {
-  // The receipt is the honest record when the two could disagree.
-  if (requestedButNotApplied.length > 0) return false;
-  const trimmed = (answer || '').trim();
-  if (trimmed.length < MIN_ANSWER_CHARS_OVER_RECEIPT) return false;
-  // A bracketed marker is not prose — answerSanitizer owns it downstream, and
-  // it must never suppress the receipt.
-  if (trimmed.startsWith('[')) return false;
-  return true;
-}
+// DEF-145 — the receipt-versus-prose policy moved to its own module so the
+// channel renderer can share it without importing this file. DEF-144 defined
+// it here, and `channelRenderer` (the layer that actually decides what the
+// owner reads on WhatsApp) had its own contradicting copy. Re-exported so the
+// composer's public surface is unchanged.
+export {
+  brainAnswerSurvivesReceipt,
+  isUsableBrainProse,
+  MIN_ANSWER_CHARS_OVER_RECEIPT,
+  type ActionOutcome,
+} from './answerReceiptPolicy';
 
 export async function compose(
   clientNumber: string,
@@ -3635,7 +3600,10 @@ ${calLines.join('\n')}`;
               // never had.
               const requestedButNotApplied: string[] = [];
               if (act.priority && !data.priority) requestedButNotApplied.push('priority');
-              if (!brainAnswerSurvivesReceipt(answer, requestedButNotApplied)) {
+              if (!answerSurvivesReceipt(answer, {
+                requestedButNotApplied,
+                appliedFields: Object.keys(data),
+              })) {
                 answer = actionResult.message;
               }
             } else if (!actionResult) {

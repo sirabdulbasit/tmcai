@@ -201,24 +201,24 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
 
   describe('brainAnswerSurvivesReceipt — when prose may stand in for the record', () => {
     it('keeps a real sentence when everything requested was applied', () => {
-      expect(brainAnswerSurvivesReceipt(THE_DISCARDED_ANSWER, [])).toBe(true);
+      expect(brainAnswerSurvivesReceipt(THE_DISCARDED_ANSWER, { appliedFields: ['priority'] })).toBe(true);
     });
 
     it('yields to the receipt when any requested field was not applied', () => {
-      expect(brainAnswerSurvivesReceipt(THE_DISCARDED_ANSWER, ['priority'])).toBe(false);
+      expect(brainAnswerSurvivesReceipt(THE_DISCARDED_ANSWER, { requestedButNotApplied: ['priority'] })).toBe(false);
     });
 
     it('yields to the receipt for an empty or fragmentary answer', () => {
-      expect(brainAnswerSurvivesReceipt('', [])).toBe(false);
-      expect(brainAnswerSurvivesReceipt('   ', [])).toBe(false);
-      expect(brainAnswerSurvivesReceipt('Done.', [])).toBe(false);
+      expect(brainAnswerSurvivesReceipt('', {})).toBe(false);
+      expect(brainAnswerSurvivesReceipt('   ', {})).toBe(false);
+      expect(brainAnswerSurvivesReceipt('Done.', {})).toBe(false);
       expect('Done.'.length).toBeLessThan(MIN_ANSWER_CHARS_OVER_RECEIPT);
     });
 
     it('yields to the receipt for a bracketed system marker', () => {
       // A marker is answerSanitizer's to render; it must never suppress the
       // receipt by looking like prose.
-      expect(brainAnswerSurvivesReceipt('[update_open_item: no recognised fields to update]', []))
+      expect(brainAnswerSurvivesReceipt('[update_open_item: no recognised fields to update]', {}))
         .toBe(false);
     });
   });
