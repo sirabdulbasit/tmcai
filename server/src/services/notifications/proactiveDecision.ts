@@ -73,6 +73,23 @@ export interface UnattachedReplyContext {
    *  window. The caller reads this from the prompt queue it writes to, so the
    *  next tick sees the decision the last one made. */
   alreadyNotifiedInWindow: boolean;
+  /**
+   * REQUIRED (DEF-157). Has the caller durably stored THIS fragment somewhere a
+   * later digest can still reach the owner from?
+   *
+   * Suppression is only permitted when this is `true`, and the field is required
+   * rather than optional so the question cannot be skipped: a caller with nowhere
+   * to keep the message must not be able to drop it silently.
+   *
+   * DEF-156 got this exactly wrong. It suppressed on volume alone and
+   * `delegationCaptureService` returned before persisting anything, so the owner
+   * received the FIRST fragment of a burst and every later one vanished. Ten noisy
+   * pushes is a nuisance he can scroll past; losing *"urgent: the server is down"*
+   * because a social message arrived two minutes earlier is not. Invariant #6 says
+   * a missing ledger means visible degradation, never silent success — and a
+   * dropped message is the purest form of silent success.
+   */
+  retained: boolean;
   windowMs?: number;
   /** Optional, and absent by design in this iteration — see the docblock. */
   relevance?: RelevanceVerdict;
@@ -108,20 +125,50 @@ export function decideUnattachedReply(ctx: UnattachedReplyContext): ProactiveDec
     .sort((a, b) => a.atMs - b.atMs);
   const covers = inWindow.length + 1;
 
+  // DEF-157 — volume suppression, and the two things it may not ignore.
+  //
+  // `retained` is the one that matters: suppressing a message the caller cannot
+  // recover is not batching, it is deletion. DEF-156 did that. Requiring proof of
+  // retention makes the regression impossible to reintroduce without the ledger
+  // actually existing, which is stronger than a comment asking the next author to
+  // remember.
+  //
+  // An explicit `worthSurfacing: true` also overrides volume — Codex's iteration-13
+  // MEDIUM #4. A classifier that decides the second message is critical must not be
+  // outvoted by "we already mentioned this sender". Volume is a courtesy; urgency
+  // is not.
   if (ctx.alreadyNotifiedInWindow) {
-    return {
-      action: 'suppress',
-      reason: `already told you about ${ctx.who} within the last ${Math.round(windowMs / 60000)} minutes`
-        + ` (${covers} message${covers === 1 ? '' : 's'} in that window)`,
-      renderedMessage: null,
-      covers,
-    };
+    const urgent = ctx.relevance?.worthSurfacing === true;
+    if (ctx.retained && !urgent) {
+      return {
+        action: 'suppress',
+        reason: `already told you about ${ctx.who} within the last ${Math.round(windowMs / 60000)} minutes`
+          + ` (${covers} message${covers === 1 ? '' : 's'} in that window, all retained`
+          + ' for the next digest)',
+        renderedMessage: null,
+        covers,
+      };
+    }
+    if (!ctx.retained) {
+      // Deliberately noisy. The owner gets another notification, which IS the
+      // DEF-139 defect — and it is the honest state until a burst ledger exists,
+      // because the alternative is losing what he was told.
+      return {
+        action: 'send',
+        reason: `already told you about ${ctx.who} in this window, but nothing retains`
+          + ' this message yet — sending rather than dropping it (DEF-157)',
+        renderedMessage: renderUnattachedDigest({ who: ctx.who, bodies: [ctx.body] }),
+        covers: 1,
+      };
+    }
   }
 
-  if (ctx.relevance && !ctx.relevance.worthSurfacing) {
+  if (ctx.relevance && !ctx.relevance.worthSurfacing && ctx.retained) {
     return {
       action: 'suppress',
-      reason: `judged not worth surfacing: ${ctx.relevance.reason}`,
+      // Also retention-gated: a message judged uninteresting is still the owner's
+      // to see later if we were wrong about it.
+      reason: `judged not worth surfacing: ${ctx.relevance.reason} (retained)`,
       renderedMessage: null,
       covers,
     };

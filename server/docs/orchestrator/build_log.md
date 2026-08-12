@@ -2771,3 +2771,183 @@ wired.
 - **The Scorer credits more than +1.** One producer of one surface should not move
   a capability much, and I would rather be marked down to 0 than credited for
   reach I did not build.
+
+---
+
+## Iteration 14 — mode: incremental · campaign C-1 (iteration 3 of 3)
+
+```
+CAPABILITY: RELIABILITY-ONLY
+PREDICTED:  +0 — and I am retracting DEF-156's +1
+MECHANISM:  This removes a data-loss regression and restores completeness. It adds
+            no capability: the owner is back to receiving every fragment, which is
+            where he was before DEF-156 — only now the suppression path cannot be
+            re-enabled without a store that makes it safe.
+FALSIFIER:  Observable — any inbound from an unattached sender that reaches
+            neither the owner nor a durable record. Asserted by replaying
+            CL-033's ten fragments and requiring all ten in the delivered text.
+```
+
+**D-6 first**: no `UNPROCESSED` owner reports.
+
+### DEF-156 was wrong, and it was worse than overstated
+
+Codex rated iteration 13 **WRONG**. I verified its CRITICAL in the code before
+accepting it, and it is exact:
+
+- First inbound of a burst: `sameSender.length === 0` → **send**, carrying only
+  that one fragment.
+- Every later inbound: a queued row exists → `alreadyNotifiedInWindow = true` →
+  `delegationCaptureService` **returns before writing anything**.
+
+So the owner received *"Gsus"* and the other nine fragments were logged and
+dropped. Not delivered, not persisted, unrecoverable. **Ten noisy pushes is a
+nuisance he can scroll past; losing *"urgent: the server is down"* because a social
+message arrived two minutes earlier is not.** Invariant #6 says a missing ledger
+means visible degradation, never silent success — and a dropped message is the
+purest silent success there is.
+
+My capability claim was not merely OVERSTATED as Codex generously put it. **The
+mechanism I described — "one notice covering all of it" — did not exist in
+production at all.** It existed in my benchmark's P05 fixture, which passed five
+earlier bodies together with `alreadyNotifiedInWindow: false`: a state production
+cannot construct, since earlier rows imply the flag is true. Third
+scenario/production mismatch in three iterations, and the first to produce a false
+capability claim.
+
+**I built the suppression before the thing that makes suppression safe.** Batching
+needs somewhere to keep what you withhold. I wrote the withholding and no store.
+
+### The fixQueue entry I targeted
+
+**None.** Codex's directive #1 is *"Fix the data-loss regression before anything
+else"*, and that outranks the campaign's third surface. **Expected to move: no
+compose criterion. The proactive slice should get WORSE**, because it will stop
+measuring a branch that never shipped.
+
+### Governing-docs verdict: CIRCLING, on a tag I am opening about myself
+
+New chart §3 tag, **`the-fix-that-deletes-the-problem`** (DEF-156 → DEF-157). A
+defect stated as *"too much X reaches the owner"* has a cheap fix that reduces X by
+destroying it — **and the cheap fix passes the defect's own acceptance test.** My
+tests asserted "exactly one message" and were green. What they never asserted was
+that the other nine still existed.
+
+### What I changed, by file:line
+
+**`proactiveDecision.ts:111-152` — suppression now requires proof of retention.**
+`UnattachedReplyContext.retained` is **required**, so the compiler forces every
+caller to answer *"have you stored this where a later digest can reach it?"* Three
+call sites had to answer. With `false` the seam **sends rather than drops**.
+
+That is the containment I want judged: a batching policy is now **unreachable**
+while the answer is no. Not a comment asking the next author to remember — the
+type will not compile without the question.
+
+**`delegationCaptureService.ts:317-325`** passes `retained: false` and says why.
+So the DEF-139 noise is back, deliberately, and **visible**.
+
+**Also reversed, per Codex's MEDIUM #4:** an explicit `worthSurfacing: true` now
+overrides volume. A classifier judging the second message critical must not be
+outvoted by *"we already mentioned this sender"*. Volume is a courtesy; urgency is
+not. Recorded as a reversal because the earlier assertion was a considered choice
+and it was wrong.
+
+**`nexeoProactiveBenchmark.ts` — P05 replays production's real sequence**: each
+arrival sees only what previous arrivals persisted. The impossible fixture is gone.
+
+### The instrument got honest and the score fell
+
+| | iter-13 | iter-14 |
+|---|---|---|
+| P05-duplicate-window | 98 | **87** |
+| slice overall | 89.3 | **83.7** |
+
+**P05's recorded decision now reads `6 separate notices for 6 messages from one
+sender — nothing retains a suppressed fragment yet, so none is dropped`.** The
+score fell because the measurement stopped flattering an unreachable branch. 87 is
+the honest reading of six notifications for one conversation, and 98 was fiction.
+
+### Verification — re-run AFTER the last edit, from `server/`, twice
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+
+npx vitest run (1)  Test Files  175 passed | 1 skipped (176)
+                    Tests  2097 passed | 7 expected fail | 21 skipped | 1 todo (2126)
+npx vitest run (2)  Test Files  175 passed | 1 skipped (176)
+                    Tests  2097 passed | 7 expected fail | 21 skipped | 1 todo (2126)
+
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+Against Codex's verified iteration-13 figure (175 files / 2093 passed, 2122
+collected): **+4 tests**, no new file.
+
+### Mutation — 4 mutants, all die, and one survived first
+
+- **Suppress without retention → 3 fail.** The data loss, reproduced on demand.
+- **Volume outranks urgency → 1 fail.** **Drop the send-instead-of-drop fallback
+  → 1 fail.**
+- **Content-suppression ignores retention → 1 fail — and this SURVIVED my first
+  pass.** Only the volume branch was covered, so removing the gate from the
+  content branch broke nothing. Two tests added. That is the fourth iteration
+  running where mutation found a hole reading did not.
+
+### What I did NOT do
+
+- **Did not build the burst ledger** (Codex #1's full remedy: persist every
+  fragment, debounce, emit one digest, mark rows surfaced). That is a table, a
+  flush job and a migration — more than one coherent change, and doing it badly is
+  how DEF-156 happened. **The retention gate is the honest interim: the unsafe
+  path is closed rather than half-built.**
+- **Did not put the window in `behaviorConfig`** (Codex #3). Codex is right that
+  owner-attention policy is not a protocol constant. It is currently inert —
+  reachable only when `retained` is true, which is nowhere — so moving it now would
+  be configuring a code path that cannot run.
+- **Did not wire relevance** (Codex #4, which explicitly says only after the ledger
+  is lossless).
+- **Did not add campaign C-1's third surface** (memory recall / self follow-up).
+  **This is the campaign's last budgeted iteration and I am not asking for an
+  extension.** The proactive slice exists, reports separately and now reports
+  honestly, which is the stated exit condition. The remaining surfaces should be a
+  new campaign with the burst ledger ranked ahead of them, because C-1 has just
+  demonstrated that a measurement surface without a correct mechanism underneath it
+  produces a confident wrong number.
+- **DEF-150** — the canned *"Hold on…"*, five times on already-instructed turns.
+  **Named for the fourth turn and still the highest live owner defect.**
+- **DEF-148/149/151/152, DEF-143 open. Inline/pending `update_open_item`: seventh
+  deferral.**
+- **Operator directives:** D-1 open for the compose benchmark; D-2, D-4 open. D-4
+  is again strengthened — the compose C4 moved 86.7 → 89.0 with no compose path
+  touched.
+- **Did not touch `scripts/orchestrator/**`, the twelve compose cases, the judge or
+  the gate.** Five files staged, all under `server/`.
+
+### What I am unsure about
+
+- **Whether restoring the noise was the right call versus holding messages
+  in-memory until a flush.** In-memory would lose them on restart, which is the
+  same defect with a smaller window. I chose visible noise over invisible loss and
+  I am confident in that ordering, but the owner is the one living with ten
+  notifications until the ledger lands.
+- **Whether `retained` is strong enough as a boolean.** It is a claim the caller
+  makes about itself, and DEF-147 is the standing lesson that a self-asserted
+  boolean is a capability anybody can assert. A future caller could pass `true`
+  without a store. The honest defence is that it is one field, required, and
+  reviewed — not that it is unforgeable.
+
+### Prediction, and what would falsify it
+
+**No compose criterion should move.** On the slice, **P05 should stay near 87 and
+the overall near 83.7** — that is the true baseline now.
+
+**What would prove me wrong:**
+- **Any inbound reaches neither the owner nor a record.** The falsifier, and the
+  replay test is what should make it impossible.
+- **P05 returns to the 90s without a ledger being built.** Then something is
+  suppressing again and the retention gate is not holding.
+- **The Scorer credits this turn with capability movement.** It should read
+  `RELIABILITY-ONLY, +0`, and it should also mark DEF-156's +1 down to 0 or
+  negative — the claim described behaviour that never existed.

@@ -59,53 +59,92 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
   describe('the burst from CL-033', () => {
     /** Replays the ten inbounds through the seam the way the job does: each tick
      *  sees what the previous ticks already sent. */
-    function replay(fragments: readonly string[]) {
+    /**
+     * Replays the burst the way the JOB does, which is the correction DEF-157
+     * makes to this file.
+     *
+     * The old helper pushed EVERY fragment into `seen` regardless of whether it was
+     * sent. Production only has a row for a fragment it sent — a suppressed one is
+     * written nowhere — so the old helper fed the seam a history production cannot
+     * produce, and its "one message" assertion was measuring a state that never
+     * occurs. That is the same unreachable-fixture error as the benchmark's P05,
+     * in the test that was supposed to catch it.
+     */
+    function replay(fragments: readonly string[], retained = false) {
       const sent: string[] = [];
-      const seen: Array<{ body: string; atMs: number }> = [];
-      let notified = false;
+      const persisted: Array<{ body: string; atMs: number }> = [];
       for (let i = 0; i < fragments.length; i++) {
         const atMs = T0 + i * 5 * 60_000;
         const d = decideUnattachedReply({
           who: WHO,
           body: fragments[i],
           atMs,
-          earlierFromSender: [...seen],
-          alreadyNotifiedInWindow: notified,
+          earlierFromSender: [...persisted],
+          alreadyNotifiedInWindow: persisted.length > 0,
+          retained,
         });
         if (d.action === 'send' && d.renderedMessage) {
           sent.push(d.renderedMessage);
-          notified = true;
+          persisted.push({ body: fragments[i], atMs });
         }
-        seen.push({ body: fragments[i], atMs });
       }
       return sent;
     }
 
-    it('ten fragments produce exactly ONE owner message', () => {
-      // Codex's success criterion, verbatim: "ten fragments → zero or one
-      // justified owner message, not a prettier repeated parenthetical."
+    it('NO FRAGMENT IS EVER LOST — the property DEF-156 broke', () => {
+      // This is the assertion that should have existed one iteration ago. DEF-156
+      // suppressed on volume alone while `delegationCaptureService` returned before
+      // persisting, so the owner got "Gsus" and the other nine vanished. Ten noisy
+      // pushes is a nuisance; losing "urgent: the server is down" because a social
+      // message arrived two minutes earlier is not.
       const sent = replay(BURST);
-      expect(sent.length, 'the owner received ten; he should receive one').toBe(1);
+      const delivered = sent.join('\n');
+      for (const fragment of BURST) {
+        expect(delivered, `"${fragment}" reached the owner nowhere`).toContain(fragment);
+      }
     });
 
-    it('the one message is the FIRST one, so he is told promptly', () => {
-      // Batching must not mean waiting. He hears about the sender immediately;
-      // what he does not get is nine more of them.
-      const sent = replay(BURST);
+    it('so with nothing retaining them, ten fragments produce ten notices', () => {
+      // The DEF-139 defect, back and VISIBLE. That is the correct trade until a
+      // burst ledger exists: noise the owner can scroll past beats silence he
+      // cannot detect. Invariant #6 — visible degradation, never silent success.
+      expect(replay(BURST).length).toBe(BURST.length);
+    });
+
+    it('and ONCE something retains them, the same burst collapses to one', () => {
+      // The mechanism is right; only its precondition was missing. With
+      // `retained: true` the very first later fragment is suppressed, which is what
+      // the next turn's ledger unlocks.
+      const sent = replay(BURST, true);
+      expect(sent.length).toBe(1);
       expect(sent[0]).toContain('Gsus');
     });
 
-    it('every later fragment is suppressed with an auditable reason', () => {
+    it('a suppression states that the message was retained', () => {
       const d = decideUnattachedReply({
         who: WHO, body: 'Okby', atMs: T0 + 25 * 60_000,
         earlierFromSender: [{ body: 'Gsus', atMs: T0 + 20 * 60_000 }],
         alreadyNotifiedInWindow: true,
+        retained: true,
       });
       expect(d.action).toBe('suppress');
       expect(d.renderedMessage).toBeNull();
-      // A silent drop is not acceptable; the reason names the sender and window.
       expect(d.reason).toContain('already told you');
-      expect(d.reason).toMatch(/20 minutes/);
+      expect(d.reason, 'a suppression must say where the message went').toContain('retained');
+    });
+
+    it('WITHOUT retention the same input sends instead of suppressing', () => {
+      // One field decides whether a message can be withheld, which is what makes
+      // the data-loss regression impossible to reintroduce by accident.
+      const d = decideUnattachedReply({
+        who: WHO, body: 'urgent: the server is down', atMs: T0 + 60_000,
+        earlierFromSender: [{ body: 'Gsus', atMs: T0 }],
+        alreadyNotifiedInWindow: true,
+        retained: false,
+      });
+      expect(d.action).toBe('send');
+      expect(d.renderedMessage).toContain('urgent: the server is down');
+      expect(d.reason).toContain('nothing retains');
     });
 
     it('a genuinely new burst after the window is a new event', () => {
@@ -114,6 +153,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
         who: WHO, body: 'Are you there?', atMs: T0 + 3 * 60 * 60_000,
         earlierFromSender: [{ body: 'Gsus', atMs: T0 }],
         alreadyNotifiedInWindow: false,
+        retained: true,
       });
       expect(d.action).toBe('send');
       expect(d.covers, 'the old message is outside the window').toBe(1);
@@ -127,6 +167,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
       // production wording rather than a paraphrase.
       const d = decideUnattachedReply({
         who: WHO, body: 'Okby', atMs: T0, earlierFromSender: [], alreadyNotifiedInWindow: false,
+        retained: true,
       });
       expect(d.renderedMessage).toBe(renderUnattachedReply({ who: WHO, body: 'Okby' }));
       expect(d.covers).toBe(1);
@@ -140,6 +181,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
           { body: 'Q Kya hwo', atMs: T0 + 5 * 60_000 },
         ],
         alreadyNotifiedInWindow: false,
+        retained: true,
       });
       expect(d.covers).toBe(3);
       expect(d.renderedMessage).toBe(renderUnattachedDigest({
@@ -159,6 +201,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
         who: 'Hamna Latif Bhutta', body: 'c', atMs: T0 + 2,
         earlierFromSender: [{ body: 'a', atMs: T0 }, { body: 'b', atMs: T0 + 1 }],
         alreadyNotifiedInWindow: false,
+        retained: true,
       });
       expect(d.renderedMessage).toContain('Hamna Latif Bhutta sent 3 messages');
     });
@@ -171,6 +214,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
       // hardcoded judgement the invariant forbids.
       const d = decideUnattachedReply({
         who: WHO, body: 'Okby', atMs: T0, earlierFromSender: [], alreadyNotifiedInWindow: false,
+        retained: true,
       });
       expect(d.action).toBe('send');
     });
@@ -180,23 +224,58 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
       // which the source states rather than implies.
       const d = decideUnattachedReply({
         who: WHO, body: 'Okby', atMs: T0, earlierFromSender: [], alreadyNotifiedInWindow: false,
+        retained: true,
         relevance: { worthSurfacing: false, reason: 'social chatter, no open work with this number' },
       });
       expect(d.action).toBe('suppress');
       expect(d.reason).toContain('social chatter');
     });
 
-    it('a verdict that says yes does not override the volume rule', () => {
-      // Order matters: already-notified wins over an enthusiastic classifier, or
-      // a relevance model could reopen the ten-push defect.
+    it('an URGENT verdict overrides the volume rule (reversed by DEF-157)', () => {
+      // This test asserted the opposite one iteration ago: that already-notified
+      // beat an enthusiastic classifier, so a relevance model could not reopen the
+      // ten-push defect. Codex's iteration-13 MEDIUM #4 is right that the priority
+      // was backwards — a classifier deciding the second message is critical must
+      // not be outvoted by "we already mentioned this sender". Volume is a
+      // courtesy; urgency is not. Recorded as a reversal rather than edited
+      // quietly, because the earlier assertion was a considered choice and it was
+      // wrong.
       const d = decideUnattachedReply({
         who: WHO, body: 'Okby', atMs: T0 + 60_000,
         earlierFromSender: [{ body: 'Gsus', atMs: T0 }],
         alreadyNotifiedInWindow: true,
+        retained: true,
         relevance: { worthSurfacing: true, reason: 'looks urgent' },
       });
+      expect(d.action).toBe('send');
+      expect(d.renderedMessage).toContain('Okby');
+    });
+
+    it('a NOT-worth-surfacing verdict still cannot drop an unretained message', () => {
+      // Found by mutation: removing the retention gate from the CONTENT branch
+      // broke nothing, because only the volume branch was tested. The same rule
+      // has to hold on both — a message judged uninteresting is still the owner's
+      // to see if we were wrong about it, and "we thought it was boring" is not a
+      // licence to delete.
+      const d = decideUnattachedReply({
+        who: WHO, body: 'Okby', atMs: T0, earlierFromSender: [],
+        alreadyNotifiedInWindow: false,
+        retained: false,
+        relevance: { worthSurfacing: false, reason: 'social chatter' },
+      });
+      expect(d.action).toBe('send');
+      expect(d.renderedMessage).toContain('Okby');
+    });
+
+    it('and suppresses it once something does retain it', () => {
+      const d = decideUnattachedReply({
+        who: WHO, body: 'Okby', atMs: T0, earlierFromSender: [],
+        alreadyNotifiedInWindow: false,
+        retained: true,
+        relevance: { worthSurfacing: false, reason: 'social chatter' },
+      });
       expect(d.action).toBe('suppress');
-      expect(d.reason).toContain('already told you');
+      expect(d.reason).toContain('retained');
     });
 
     it('the window is a constant the caller may override, not a hidden default', () => {
@@ -205,6 +284,7 @@ describe('DEF-156 — one notice per sender-window, not one per message', () => 
         who: WHO, body: 'b', atMs: T0 + 60_000,
         earlierFromSender: [{ body: 'a', atMs: T0 }],
         alreadyNotifiedInWindow: false,
+        retained: true,
         windowMs: 30_000, // tighter than the gap, so the earlier one drops out
       });
       expect(d.covers).toBe(1);

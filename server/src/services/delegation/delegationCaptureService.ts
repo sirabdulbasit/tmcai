@@ -315,6 +315,14 @@ async function notifyOwnerOfUnattachedReply(
         atMs: r.queuedAt.getTime(),
       })),
       alreadyNotifiedInWindow: sameSender.length > 0,
+      // DEF-157 — FALSE, and this is the honest answer rather than a placeholder.
+      // Nothing here stores a fragment we decline to send: the suppression branch
+      // returns before any write. Until a burst ledger exists, saying `true` would
+      // be claiming a durability this code does not have, and DEF-156 shipped
+      // exactly that claim — the owner lost every fragment after the first. So the
+      // seam sends instead of dropping, the DEF-139 noise is back, and it is
+      // visible rather than silent.
+      retained: false,
       // Relevance is deliberately not supplied: judging whether a message
       // deserves attention is LLM-with-context (invariant #3) and gets its own
       // turn. Absent a verdict this seam never suppresses on content.

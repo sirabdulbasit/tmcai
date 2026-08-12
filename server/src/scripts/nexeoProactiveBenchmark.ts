@@ -173,6 +173,8 @@ const CASES: ProactiveCase[] = [
       atMs: 1_000_000,
       earlierFromSender: [],
       alreadyNotifiedInWindow: false,
+      // Matches production exactly: nothing retains an unsent fragment yet.
+      retained: false,
     }),
   },
   {
@@ -190,6 +192,19 @@ const CASES: ProactiveCase[] = [
     // batching decision. Six inbound inside 35 minutes -> whatever production
     // would actually do with them.
     decide: () => {
+      // DEF-157 — REPLAYED, not hand-built. The previous version passed five
+      // earlier bodies together with `alreadyNotifiedInWindow: false`, a state
+      // production cannot construct: if earlier queue rows exist the flag is true,
+      // and if they do not there are no earlier bodies. Codex called that
+      // unreachable and it was — the `covers: 6` digest and the 88 -> 98 score
+      // measured a branch that never ships, which is the third scenario/production
+      // mismatch in three iterations and the one that produced a false capability
+      // claim.
+      //
+      // This now walks the fragments the way the job does: each arrival sees only
+      // what the previous arrivals actually persisted. The reported decision is the
+      // LAST one, and the case's own text records how many notices the owner got —
+      // which is the number the defect is about.
       const fragments = [
         'Gsus',
         'Hello, peace be upon you. How are you? Are you okay?',
@@ -207,17 +222,41 @@ const CASES: ProactiveCase[] = [
       // agree, which is the only way the score means anything.
       const base = 1_000_000;
       const spacingMs = 3 * 60_000;
-      return decideUnattachedReply({
-        who: '+923001234567',
-        body: fragments[fragments.length - 1],
-        atMs: base + (fragments.length - 1) * spacingMs,
-        earlierFromSender: fragments.slice(0, -1).map((body, i) => ({
-          body, atMs: base + i * spacingMs,
-        })),
-        // The first notice of the burst: this is the decision that determines
-        // whether the owner gets one message or six.
-        alreadyNotifiedInWindow: false,
+      // Only what production persists: a row exists for a fragment that was SENT.
+      const persisted: Array<{ body: string; atMs: number }> = [];
+      let last = decideUnattachedReply({
+        who: '+923001234567', body: fragments[0], atMs: base,
+        earlierFromSender: [], alreadyNotifiedInWindow: false, retained: false,
       });
+      let notices = 0;
+      for (let i = 0; i < fragments.length; i++) {
+        const atMs = base + i * spacingMs;
+        last = decideUnattachedReply({
+          who: '+923001234567',
+          body: fragments[i],
+          atMs,
+          earlierFromSender: [...persisted],
+          alreadyNotifiedInWindow: persisted.length > 0,
+          retained: false,
+        });
+        if (last.action === 'send') {
+          notices += 1;
+          persisted.push({ body: fragments[i], atMs });
+        }
+      }
+      // The judge is shown what the owner's phone showed: every notice the burst
+      // produced, in order. That is the honest artefact — six notifications for one
+      // conversation is the defect, and the score should say so.
+      return {
+        ...last,
+        reason: `${notices} separate notice${notices === 1 ? '' : 's'} for `
+          + `${fragments.length} messages from one sender — nothing retains a `
+          + 'suppressed fragment yet, so none is dropped (DEF-157)',
+        covers: notices,
+        renderedMessage: persisted
+          .map((m) => renderUnattachedReply({ who: '+923001234567', body: m.body }))
+          .join('\n\n'),
+      };
     },
   },
   {
