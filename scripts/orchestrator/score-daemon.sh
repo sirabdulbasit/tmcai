@@ -96,7 +96,10 @@ while :; do
 
   if iter="$(next_unscored)"; then
     log "iteration $iter is complete and unscored — asking Grok"
-    if "$ROOT/scripts/orchestrator/run-score.sh" "$iter" >/dev/null 2>&1; then
+    # Output is NOT swallowed: the owner asked whether the orchestrator window shows
+    # each agent's progress, and for this seat it did not — the daemon discarded
+    # exactly the lines that would have shown grok working.
+    if "$ROOT/scripts/orchestrator/run-score.sh" "$iter"; then
       json="$SCORES/iter-$(printf '%02d' "$iter")-capability.json"
       head="$(git -C "$ROOT" rev-parse --short HEAD)"
       # --commit persists; --append writes the card into capability_history.md.

@@ -2,6 +2,13 @@
 #
 # run-score.sh — the SCORING seat (Grok), the loop's third agent.
 #
+# Owner, 2026-08-12: *"will orch window (terminal) will show progress of each
+# agent?"* — it did not, for this seat. The Builder and Codex streamed to the loop
+# window while grok's output went only to a log file, so the scoring window sat
+# empty and the third agent looked dead. Phase 1 now streams `SCORE │` lines the
+# same way the other two do; phase 2's raw JSON is captured but not echoed, since a
+# wall of JSON would bury the readable narration.
+#
 # Owner, 2026-08-12: *"i want to add grok as a 3rd agent which has to build brain
 # score after reading codebase"*.
 #
@@ -137,7 +144,12 @@ run_grok_read() {
     --permission-mode dontAsk \
     --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
     --disallowed-tools 'Write,Edit,MultiEdit' \
-    --max-turns 80 ) > "$READ_LOG" 2>&1
+    --max-turns 80 2>&1 ) \
+    | tee "$READ_LOG" \
+    | sed -u 's/^/SCORE  │ /'
+  # grok's status, not tee's or sed's — a formatter exiting 0 must never launder a
+  # failed scoring pass into a success.
+  return "${PIPESTATUS[0]}"
 }
 
 run_grok_format() {
@@ -149,7 +161,12 @@ run_grok_format() {
     --permission-mode dontAsk \
     --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
     --disallowed-tools 'Write,Edit,MultiEdit' \
-    --max-turns 4 ) > "$LOG" 2>&1
+    --max-turns 4 2>&1 ) \
+    | tee "$LOG" \
+    | sed -u 's/^/SCORE  │ [json] /' >/dev/null
+  # Phase 2 is one JSON blob: tee'd for the parser, and NOT echoed to the window,
+  # where a wall of raw JSON would bury the readable phase-1 narration.
+  return "${PIPESTATUS[0]}"
 }
 
 READ_LOG="$LOGS/iter-$n-score-read.log"
