@@ -417,6 +417,93 @@ def last_stream_line(iteration, phase):
     return ""
 
 
+
+# ── seat models, read from each seat's own output ────────────────────────────
+# Owner, 2026-08-12: *"in orch window also show model of agent"*. Read from the
+# logs the seats actually produced, never hardcoded — the whole point is to know
+# which model did the work, and a hardcoded label would keep saying the old one
+# after a switch. Codex emits no model field in its event stream, so it is shown
+# as "default" rather than guessed at.
+def seat_models():
+    out = {"Build": "?", "Review": "default", "Score": "?"}
+    for f in sorted(glob.glob(f"{LOGS}/iter-*-build.jsonl"), key=os.path.getmtime)[-1:]:
+        m = re.search(r'"model":"([a-z0-9.\-]+)"', open(f, errors="replace").read(4_000_000))
+        if m:
+            out["Build"] = m.group(1)
+    for f in sorted(glob.glob(f"{LOGS}/iter-*-score.log"), key=os.path.getmtime)[-1:]:
+        m = re.search(r'"modelUsage":\s*\{\s*"([^"]+)"', open(f, errors="replace").read(4_000_000))
+        if m:
+            out["Score"] = m.group(1)
+    return out
+
+
+# ── capability trend, iteration-wise ────────────────────────────────────────
+# Owner, 2026-08-12: *"can i also see i kind of trend of brain capability in orch
+# window iteration wise / can you build trend chart?"*
+#
+# ASCII ramp, not block characters. His terminal renders █ and ░ as the same grey
+# rectangle (that is why the capability bars were rewritten in ASCII), so a
+# sparkline built from blocks would be unreadable in exactly the same way.
+#
+# Scaled per row between that row's own min and max, which is the only way a
+# +0.6 total movement over ten iterations is visible at all — and the absolute
+# numbers are printed beside it so the scaling cannot exaggerate. A flat row
+# renders flat.
+RAMP = ".-=+*#"
+
+
+def spark_ascii(vals, width=None):
+    real = [v for v in vals if v is not None]
+    if len(real) < 2:
+        return "".join("." for _ in vals)
+    lo, hi = min(real), max(real)
+    span = (hi - lo) or 1
+    return "".join("." if v is None else
+                   RAMP[min(len(RAMP) - 1, int((v - lo) / span * (len(RAMP) - 1)))]
+                   for v in vals)
+
+
+def capability_trend():
+    """[(label, series, first, last)] — one row per capability that has moved,
+    plus BRAIN overall. Capabilities that never moved are summarised in one line
+    rather than printing nine flat rows: a trend chart of nine unchanged numbers
+    is noise that hides the two that changed."""
+    scp = os.path.join(STATE, "capability_scorecard.json")
+    if not os.path.exists(scp):
+        return [], [], 0
+    try:
+        d = json.load(open(scp))
+    except Exception:
+        return [], [], 0
+    hist = d.get("history", [])
+    # One point per iteration — the last entry for that iteration wins, because a
+    # recalibration appends a second row for an iteration already recorded.
+    per_iter = {}
+    for h in hist:
+        snap = h.get("snapshot")
+        if snap:
+            per_iter[h["iteration"]] = snap
+    iters = sorted(per_iter)
+    if len(iters) < 2:
+        return [], [], 0
+    names = [c["name"] for c in d["capabilities"]]
+    moved, flat = [], []
+    for nm in names:
+        series = [next((c["nexeo"] for c in per_iter[i] if c["name"] == nm), None)
+                  for i in iters]
+        real = [v for v in series if v is not None]
+        if not real:
+            continue
+        if real[0] == real[-1] and len(set(real)) == 1:
+            flat.append(nm)
+        else:
+            moved.append((nm, series, real[0], real[-1]))
+    overall = [round(sum(c["nexeo"] for c in per_iter[i]) / len(per_iter[i]), 1)
+               for i in iters]
+    moved.append(("BRAIN overall", overall, overall[0], overall[-1]))
+    return moved, flat, iters
+
+
 def snapshot(full=False):
     stage, elapsed, basis, detail = detect_stage()
     # A process-derived elapsed time is the kernel's own and needs no help; a
@@ -486,6 +573,7 @@ def snapshot(full=False):
 
     seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
             "Review": "Codex", "Score": "Grok"}
+    models = seat_models()
     for ph in PHASE_ORDER:
         p_ = phases.get(ph, {})
         s_, e_ = p_.get("start"), p_.get("end")
@@ -510,7 +598,9 @@ def snapshot(full=False):
             txt = f"{C['red']}started {fmt_dur(now - s_)} ago, no completion recorded{C['r']}"
         else:
             txt = f"{C['dim']}—{C['r']}"
-        lines.append(f"  {ph + ':':<9}{txt}   {C['dim']}{seat[ph]}{C['r']}")
+        mdl = models.get(ph, "")
+        who = seat[ph] + (f" · {mdl}" if mdl and mdl != "?" else "")
+        lines.append(f"  {ph + ':':<9}{txt}   {C['dim']}{who}{C['r']}")
 
     prog = last_stream_line(cur_it, current) if current else ""
     if current and prog:
@@ -541,6 +631,26 @@ def snapshot(full=False):
         lines.append(f"  {C['b']}{'BRAIN':<23}{nn:>5}{C['r']}  vs {pro}  "
                      f"gap {C['b']}{round(pro - nn, 1)}{C['r']}  "
                      f"move {'+' if mv > 0 else ''}{mv}  {C['dim']}by {by}{C['r']}")
+
+    # ── capability trend, iteration-wise ──
+    moved, flat, iters = capability_trend()
+    if moved:
+        lines.append("")
+        lines.append(f"  {C['b']}TREND{C['r']} {C['dim']}capability by iteration "
+                     f"{iters[0]}→{iters[-1]}  ({len(iters)} scored){C['r']}")
+        for nm, series, first, last in moved:
+            d_ = round(last - first, 1)
+            dtxt = f"{C['grn']}+{d_}{C['r']}" if d_ > 0 else (
+                f"{C['red']}{d_}{C['r']}" if d_ < 0 else f"{C['dim']}0{C['r']}")
+            bold = C['b'] if nm == "BRAIN overall" else ""
+            lines.append(f"  {bold}{nm:<23}{C['r']}{first:>5} "
+                         f"{C['cyn']}{spark_ascii(series)}{C['r']} {last:>5}  {dtxt}")
+        if flat:
+            # Named, not hidden: eight capabilities that have never moved is the
+            # single most important fact about this loop's progress, and printing
+            # eight flat rows would bury it instead of stating it.
+            lines.append(f"  {C['dim']}unmoved since scoring began: "
+                         f"{', '.join(flat)}{C['r']}")
 
     if latest:
         ws = latest.get("weakestCriterionScore")
