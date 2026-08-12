@@ -243,6 +243,13 @@ rows + 9 capability bars + summary lines). `\033[H` homes to the top of the
 the overflow into scrollback, so "redraw in place" degrades to exactly the
 stacking it was built to end. The truncated middle frame is the scroll interaction
 mid-write, not data loss.
+**Also (same item, second owner report):** a PARKED loop renders as
+`Progress: nobody working`, indistinguishable from a hang — the owner read a
+cleanly-stopped system as "stuck". The pulse must read the loop's process state
+and say which: `LOOP STOPPED after iteration 9 (STOP consumed) — relaunch
+pending` vs `idle between phases` vs `no loop process — NOT managed`. A status
+window that cannot tell "finished as instructed" from "frozen" fails at its one
+job.
 **Fix (Opus):** use the alternate screen buffer (`\033[?1049h` on entry, restore
 on exit — what watch/top do), which gives a fixed viewport regardless of frame
 height; AND read `shutil.get_terminal_size()` each tick — if rows < frame height,
