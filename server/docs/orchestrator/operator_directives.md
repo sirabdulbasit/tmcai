@@ -863,6 +863,31 @@ he is not already exposed to, while withholding everything iterations 17–22 fi
 log asserted *"no human reply is shaped like that"* — that assertion is about
 EMBEDDED brackets, which is a different case, and Codex is right.
 
+> **CORRECTION, 2026-08-13 11:32, and it inverts the trade this directive put to the
+> owner.** The paragraph above is accurate about the BRANCH and wrong about what is
+> NEW. The whole-answer bracket interception is **pre-existing and live in production**,
+> not something iteration 22 introduced — verified, not reasoned:
+>
+> ```
+> git show df47687:server/src/services/knowledge/answerSanitizer.ts
+>   188: export function isWholeMarker(answer: string): boolean {
+>   189:   return /^\s*\[[^\]]{2,200}\]\s*$/.test(answer ?? '');
+>   273:   if (!isWholeMarker(answer)) return sanitizeAnswerForUser(answer);
+> ```
+>
+> In the DEPLOYED commit a whole-bracket answer is already intercepted and handed to
+> `renderMarkerInBrainVoice` to be prose-ified — and the deployed threshold is
+> `{2,200}`, **broader on the low end** than the branch's `{8,400}`. What iteration 22
+> changed is the SHAPE of the check and what happens after interception (a neutral
+> fallback string instead of LLM prose-ification), never its existence. The deployed
+> file contains no `NEUTRAL_MARKER_FALLBACK` at all.
+>
+> Why this matters more than tidiness: this directive told the owner that shipping
+> "would introduce a new regression". **It would not — it carries an existing one
+> forward with a narrower trigger.** Two orchestrators asserted the already-in-production
+> half for HIGH #2 only; nobody had run the same check on HIGH #1 until now. This is what
+> makes his LET IT SHIP ruling (D-20) the coherent one.
+
 **The validator already knows it produced a marker. Nothing downstream should have
 to infer it.** Tag it at creation — a field on the violation, or a sentinel the
 route carries alongside the text — and the sanitizer stops guessing by shape, so

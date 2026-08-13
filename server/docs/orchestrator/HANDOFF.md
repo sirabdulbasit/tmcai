@@ -1,4 +1,4 @@
-# Orchestrator handoff — 2026-08-13, 11:15 UTC
+# Orchestrator handoff — 2026-08-13, 11:30 UTC (state block rewritten; the 11:15 version is stale)
 
 You are the **Orchestrator Manager** of a three-agent build loop at `/var/www/tmcai`.
 Read `AGENTS.md` and `CLAUDE.md` first — they are the working contract. This file is
@@ -63,54 +63,62 @@ and kills your shell (exit 144, twice). Use `pgrep -f "nexeo-loo[p].sh"`.
 ## Where things stand right now
 
 ```
-loop            running under supervise.sh; iteration 23 CLOSED, 24 opening
+loop            running under supervise.sh (restarted 11:22:06); iteration 25 BUILDING
+iteration 24    ABORTED — no work product. The tmux server hosting the loop died
+                ~11:16, ~45s into the build, AFTER the header and BUILD line were
+                written. Logged ABORTED in ledger.jsonl; not an iteration spent.
 iteration 23    tsc clean · 182 files / 2207 tests · measured 94.9 / C4 86.7
                 Codex: WEAK (2 HIGHs) · deployed=no · stall 9/3
 deployed        NOTHING since iteration 16 (df47687, 06:39 UTC today) — 1 deploy in 14
 capability      47.4 ±1.3   objective 87.3   (the band matters — see D-18)
-campaign        C-2 Self Follow-Up, open 5 iterations, ZERO increments delivered
+campaign        C-3 Self-Pruning (33 → 60), active from iteration 25, 3 increments.
+                C-2 Self Follow-Up PARKED — starved, not failed: 5 iterations open,
+                0 increments, 3 of 8 budget unspent, every turn eaten by remediation
+remediation     TWO bounds now, and they compose: NEXEO_REMEDIATION_LIMIT=1 (env, set
+                at the tmux launch — a restart without it loses the bound) and the
+                class bound in f5e7d10 (state/remediation-streak, limit 4, cleared
+                only by SOUND). Both fired on 25; the marker path is closed as work.
 staged          nexeo-loop.next.sh — escapes backticks that ate the reviewer's score path
 ```
 
-### THE DECISION WAITING FOR THE OWNER
+### THE DECISION IS CLOSED — the owner ruled on 2026-08-13. See D-19 and D-20.
 
-Iteration 23 closed WEAK. `deployed=no` — **14 iterations, one deploy.** Codex:
+He was given the three options below and chose **campaign work on an absent capability,
+branch stays undeployed** — not option 1, and explicitly **not** option 3. He added the
+standing bar in the same breath: *"my ask is every iteration should be significant
+improvement"*. Two follow-up rulings after the orchestrator verified premises in code:
 
-> *"validator-produced unknown markers now carry provenance and both sanitizer
-> functions handle that path safely, but bare curated strings and the legacy
-> snake-case bridge still infer origin from text, so the claimed structural boundary
-> remains a partial migration."*
+- **A SOUND verdict SHIPS.** `deploy.sh:137` ships branch HEAD gated only on the current
+  verdict, so a SOUND campaign turn carries the marker work to production. Told that, he
+  ruled let it ship — he declined *lowering* the gate, not *meeting* it. `DEPLOY_ON=sound`.
+  Verified first: **both HIGH paths are already live in production** (`isWholeMarker` at
+  `df47687:188`, `markerVoice.ts` present in the deployed commit), so a deploy adds no
+  exposure that is not already there.
+- **The deletion turn (D-20) arms only if iteration 25 closes `deployed=no`.** Then
+  iteration 26 DELETES the two text-inference fallbacks rather than repairing them a
+  seventh time — provenance from iteration 23 stands alone, so they are a redundant
+  second implementation. Not a remediation turn; do not log it as one.
 
-Two HIGHs remain, and on reading the code both are **architectural completeness rather
-than live owner risk**: `isWholeMarker(answer) && !!curated` only fires when the
-bracket text matches an already-curated marker, so a legitimate `[see attached]` is
-returned untouched. `isLegacyActionMarker` matches snake-case action names.
-
-So the branch is 5 iterations deep in one path, holds 14 iterations of work, and the
-only thing between it and production is two findings whose realistic blast radius is
-very small. **Three options, and the third is the owner's risk appetite to spend:**
-
-1. One more turn on the path (the sixth). Cheap, and the pattern says it will find a
-   seventh.
-2. Move to the campaign per D-17's expiry and leave the branch undeployable. Honest,
-   but nothing reaches him again.
-3. **Accept both HIGHs as known limitations with DEF rows and ship**, using
-   `NEXEO_DEPLOY_ON=no-critical` (implemented, never activated). This is the option
-   that ends the delivery drought, and it must be the OWNER's call, not yours — the
-   crude version of this shipped a data-loss regression at iteration 13.
-
-Do not pick 3 unilaterally. Do not pretend 2 is progress.
+The historical framing, kept because it is why the branch is where it is: two HIGHs
+remain and both are **architectural completeness rather than live owner risk** —
+`isWholeMarker(answer) && !!curated` only fires when the bracket text matches an
+already-curated marker, so a legitimate `[see attached]` is returned untouched.
 
 ### Immediately next
 
-1. **Put the three options above to the owner.** That is the blocking decision; do
-   not start iteration 24's work around it without an answer.
-2. If anything ever deploys, run `scripts/orchestrator/verify-chase.sh` immediately and
+1. **Report iteration 25 leading with `deployed=`.** If it closes `deployed=no`, D-20
+   arms and iteration 26 is the deletion — say so to the owner in the same report.
+2. If anything deploys, run `scripts/orchestrator/verify-chase.sh` immediately and
    quote him real production output, not a benchmark number.
-3. **Iteration 24 must build, not repair** (D-14, D-17). The D-17 cap override was
-   granted for exactly one turn and **expires whether or not 23 shipped**.
-4. **Re-scope C-2 increment 1 on evidence** — see the correction below; the autonomous
-   chase already works, so do not build it again.
+3. **The significance bar is enforced, not asserted** (D-19): every iteration closes as
+   `deployed=yes` or a named code-complete increment. Two consecutive iterations with
+   neither → STOP the loop and go back to the owner rather than spend a third.
+4. **Do not rebuild the autonomous chase** — it works (34 to delegatees; 27 accepted
+   sends). D-12 is what is missing: re-verified 11:20 today, **zero of 31 sends carry a
+   provider receipt**, so delivery is unconfirmed.
+5. **A phantom iteration steals campaign budget.** 24's death made C-3 render as
+   "iteration 2 of 5" on its first real turn; corrected in `campaign.json`
+   (`from_iteration` 24 → 25). Check this after any mid-iteration crash.
 
 ## The five findings from today that change what you do
 
