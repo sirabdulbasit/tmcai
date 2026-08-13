@@ -613,6 +613,48 @@ def capability_series():
             "professional": round(sum(pro.values()) / len(pro), 1) if pro else None,
             "objective": round(sum(v * 0.95 for v in pro.values()) / len(pro), 1) if pro else None,
         },
+        # WHAT THE NUMBERS MEAN, stated rather than left to a chart's shape.
+        #
+        # Owner, 2026-08-13, on the Deck's BRAIN OVERALL panel: *"I couldnt
+        # understand this make it meaningfull for me"*. The panel auto-scaled its
+        # y-axis to the data range (46.7-47.3), so a 0.6-point gain filled the
+        # whole height and read as a steep climb. It was showing 1.5% of the
+        # journey as if it were most of it.
+        #
+        # `axis` therefore recommends 0-100 with the objective and professional
+        # lines included: on that scale the same series is visibly near-flat and
+        # forty points short, which is the truth. A dashboard that flatters the
+        # work is worse than no dashboard, because it removes the reason to change
+        # approach — and this loop has already spent fourteen iterations inside the
+        # benchmark's own noise.
+        "interpretation": (lambda first, last, objective: {
+            "movement": round(last - first, 1),
+            "remaining": round(objective - last, 1),
+            "journey_complete_pct": (round((last - first) / (objective - first) * 100, 1)
+                                     if objective > first else None),
+            "rate_per_iteration": (round((last - first) / max(1, len(points) - 1), 3)),
+            "iterations_at_this_rate": (
+                int((objective - last) / ((last - first) / max(1, len(points) - 1)))
+                if last > first else None),
+            "capabilities_moved": sum(1 for x in series if x["moved"]),
+            "capabilities_flat": sum(1 for x in series if not x["moved"]),
+            "headline": (
+                f"{round(last - first, 1):+} across {len(points)} scored iterations, "
+                f"{round(objective - last, 1)} still to cover — "
+                f"{round((last - first) / (objective - first) * 100, 1)}% of the way. "
+                f"{sum(1 for x in series if x['moved'])} of {len(series)} capabilities "
+                f"have ever moved."),
+        })(overalls[0] if overalls else 0, overalls[-1] if overalls else 0,
+           round(sum(v * 0.95 for v in pro.values()) / len(pro), 1) if pro else 0),
+        "axis": {
+            "recommended_min": 0, "recommended_max": 100,
+            "objective_line": round(sum(v * 0.95 for v in pro.values()) / len(pro), 1) if pro else None,
+            "professional_line": round(sum(pro.values()) / len(pro), 1) if pro else None,
+            "why": "Auto-scaling to the data range (46.7-47.3) renders a 0.6-point "
+                   "gain as a full-height climb. Draw 0-100 with the objective line "
+                   "so the 40-point gap is visible; the shape should look flat, "
+                   "because it is.",
+        },
         "note": "Capability scores are evidence judgements, not test results. "
                 "Iterations 1-6 were scored by the orchestrator; 7 onward by Grok "
                 "(scored_by per point). A green build never moves a capability.",
