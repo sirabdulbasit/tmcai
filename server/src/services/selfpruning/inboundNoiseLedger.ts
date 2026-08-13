@@ -129,9 +129,14 @@ export interface NoiseSummary {
   totalIgnored: number;
   /** True only when rows BEYOND the cap exist. Totals are then a floor. */
   truncated: boolean;
-  /** True when the thread→item join could not be read; thread-keyed subjects
-   *  may then be split from their item-keyed twins. */
+  /** True when the thread→item join could not be READ at all. */
   canonicalisationFailed: boolean;
+  /** Thread-keyed subjects that did not resolve to an item — the join returned
+   *  no row, or a row with no item (or the read failed entirely). These may be
+   *  split from their item-keyed twins, so counts for them are a FLOOR per
+   *  subject, and increment 2 must not act on them. Empty means every thread
+   *  identity in the window genuinely resolved. */
+  unresolvedSubjects: string[];
   burstMaxSpanMinutes: number;
   /** Exact subjects, aggregated across producers. Worst first. */
   subjects: SubjectGroup[];
@@ -222,8 +227,13 @@ export async function summariseInboundNoise(args: {
     sentAt: Date | null; answeredAt: Date | null;
   };
 
-  // Cursor pagination on (sentAt, id) — skip-based pages drift when rows are
-  // inserted mid-read (Codex iteration-26 directive #4). TRUNCATED is set only
+  // Cursor pagination: the ORDERING is (sentAt, id); the cursor itself is the
+  // unique `id` of the last row, which Prisma positions within that ordering.
+  // Stated exactly because iteration 27 described this as a "compound (sentAt,
+  // id) cursor", which it is not — a maintainer changing order or uniqueness
+  // semantics on the strength of that description would break the page
+  // boundary (Codex iteration-27 LOW #2). Skip-based pages were dropped because
+  // they drift when rows are inserted mid-read. TRUNCATED is set only
   // when a row PAST the cap is actually seen: the loop reads one page beyond
   // the ceiling before deciding, so exactly-HARD_ROW_CAP is a complete count.
   const rows: Row[] = [];
@@ -276,12 +286,22 @@ export async function summariseInboundNoise(args: {
         });
       for (const t of threads) if (t.openItemId) threadToItem.set(t.id, t.openItemId);
     } catch (e: any) {
-      // Split subjects are visible in the output; a silent merge or a thrown
-      // summary would both be worse. The flag makes the split explainable.
+      // The whole pass was unavailable. Split subjects stay visible in the
+      // output; a silent merge or a thrown summary would both be worse.
       canonicalisationFailed = true;
       log.warn('thread→item canonicalisation failed; thread keys stay split', { error: e?.message });
     }
   }
+  // Codex iteration-27 HIGH #1: a lookup that SUCCEEDS and resolves nothing is
+  // the ordinary failure, and the flag above said "success" for it — a missing
+  // thread row, or one with `openItemId: null`, silently left `thread:T` split
+  // from its `item:X` twin. Every requested id that did not end up in the map is
+  // therefore surfaced BY NAME, whatever the reason it failed. Success is
+  // claimed only for identities that actually resolved.
+  const unresolvedSubjects: string[] = [...threadIds]
+    .filter((t) => !threadToItem.has(t))
+    .map((t) => `thread:${t}`)
+    .sort();
 
   const subjectsByKey = new Map<string, SubjectGroup & { producerMap: Map<string, ProducerSlice> }>();
   const unattributedBySender = new Map<string, Map<string, UnattributedGroup>>();
@@ -380,6 +400,7 @@ export async function summariseInboundNoise(args: {
     totalIgnored: all.reduce((n, g) => n + g.ignored, 0),
     truncated,
     canonicalisationFailed,
+    unresolvedSubjects,
     burstMaxSpanMinutes: maxSpan,
     subjects,
     bursts: subjects.filter((g) => g.burst),
@@ -405,6 +426,11 @@ export function renderNoiseReport(s: NoiseSummary): string {
   if (s.canonicalisationFailed) {
     lines.push('');
     lines.push('⚠ Thread→item lookup failed: a subject may appear split between its thread and its item.');
+  }
+  if (s.unresolvedSubjects.length > 0) {
+    lines.push('');
+    lines.push(`⚠ ${s.unresolvedSubjects.length} thread identit${s.unresolvedSubjects.length === 1 ? 'y' : 'ies'} did not resolve to an item`
+      + ` (${s.unresolvedSubjects.join(', ')}): their counts may be split from the item they belong to.`);
   }
   lines.push('');
   lines.push('"Delivered" = sent to a channel inside this window. "Replied to" = you answered'

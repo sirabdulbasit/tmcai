@@ -177,7 +177,7 @@ describe('DEF-170 — the SUBJECT is the unit, across producers', () => {
     expect(s.canonicalisationFailed).toBe(false);
   });
 
-  it('a failed thread join splits VISIBLY instead of throwing or merging blind', async () => {
+  it('a THROWN thread join splits visibly, and names what did not resolve', async () => {
     threadLookupFails = true;
     rows = [
       push({ openItemId: 'item-X' }),
@@ -186,7 +186,59 @@ describe('DEF-170 — the SUBJECT is the unit, across producers', () => {
     const s = await summarise();
     expect(s.subjects).toHaveLength(2);
     expect(s.canonicalisationFailed).toBe(true);
+    expect(s.unresolvedSubjects).toEqual(['thread:thr-9']);
     expect(renderNoiseReport(s)).toMatch(/Thread→item lookup failed/);
+  });
+
+  describe('DEF-170 — the ORDINARY failed join is named, not blessed (Codex iter-27 HIGH #1)', () => {
+    // The flag only fired on a thrown query. A lookup that SUCCEEDS and resolves
+    // nothing — a stale threadId with no row, or a thread with openItemId null —
+    // left `thread:T` silently split from `item:X` while the summary claimed the
+    // identity pass succeeded. Increment 2 would then miss the exact
+    // cross-producer drip this counter exists to govern.
+    it('a thread the lookup cannot FIND is surfaced by name', async () => {
+      threads = [];                      // the query succeeds; the row is gone
+      rows = [
+        push({ openItemId: 'item-X', metadata: { source: 'preactive_due_nudge' } }),
+        push({ metadata: { source: 'delegation_capture', threadId: 'thr-stale' } }),
+      ];
+      const s = await summarise();
+      expect(s.subjects).toHaveLength(2);
+      expect(s.canonicalisationFailed, 'the read itself worked').toBe(false);
+      expect(s.unresolvedSubjects).toEqual(['thread:thr-stale']);
+      expect(renderNoiseReport(s)).toMatch(/did not resolve to an item/);
+      expect(renderNoiseReport(s)).toContain('thread:thr-stale');
+    });
+
+    it('a thread with NO item is unresolved, not silently split', async () => {
+      threads = [{ id: 'thr-9', openItemId: null }];
+      rows = [push({ metadata: { threadId: 'thr-9' } })];
+      const s = await summarise();
+      expect(s.canonicalisationFailed).toBe(false);
+      expect(s.unresolvedSubjects).toEqual(['thread:thr-9']);
+    });
+
+    it('mixed: the resolvable thread merges, the stale one is named, success is not over-claimed', async () => {
+      threads = [{ id: 'thr-ok', openItemId: 'item-X' }];
+      rows = [
+        push({ openItemId: 'item-X' }),
+        push({ metadata: { threadId: 'thr-ok' } }),      // joins item-X
+        push({ metadata: { threadId: 'thr-stale' } }),   // resolves to nothing
+      ];
+      const s = await summarise();
+      expect(s.subjects).toHaveLength(2);
+      const merged = s.subjects.find((g) => g.subjectKey === 'item:item-X')!;
+      expect(merged.reached, 'the good join must still merge').toBe(2);
+      expect(s.unresolvedSubjects).toEqual(['thread:thr-stale']);
+    });
+
+    it('every thread resolving means unresolvedSubjects is EMPTY — the claim is earned', async () => {
+      threads = [{ id: 'thr-9', openItemId: 'item-X' }];
+      rows = [push({ metadata: { threadId: 'thr-9' } })];
+      const s = await summarise();
+      expect(s.unresolvedSubjects).toEqual([]);
+      expect(renderNoiseReport(s)).not.toMatch(/did not resolve/);
+    });
   });
 });
 
@@ -313,6 +365,19 @@ describe('DEF-170 — exact cap semantics, stable pagination', () => {
     const s = await summarise();
     expect(s.totalReached).toBe(5000);
     expect(s.truncated, 'a complete count reported as a floor').toBe(false);
+  });
+
+  it('rows sharing one sentAt paginate exactly once each (id breaks the tie)', async () => {
+    // Codex iter-27 LOW #2: the ordering is (sentAt, id) but the cursor is the
+    // unique id. This pins the page boundary where that distinction matters —
+    // every row in the page has the SAME sentAt, so only the id cursor separates
+    // page N from page N+1.
+    const SAME = new Date('2026-08-13T09:00:00Z');
+    rows = Array.from({ length: 1200 }, (_, i) => push({
+      openItemId: `item-${i % 7}`, sentAt: SAME,
+    }));
+    const s = await summarise();
+    expect(s.totalReached, 'a row was skipped or double-counted at a page boundary').toBe(1200);
   });
 
   it('5,001 rows is truncated, capped, and says so', async () => {
