@@ -3679,3 +3679,223 @@ noise band — do not read it as the result.
   the near-miss I documented was not avoided after all.
 - **The Scorer credits capability movement beyond Accurate Communication** → it should not;
   one capability, and the honest figure until it is deployed and observed is small.
+
+---
+
+## Iteration 20 — mode: structural · REMEDIATION attempt 1 of 3 · campaign C-2 (iteration 2 of 8)
+
+**Iteration 19 produced nothing.** No commit, no build-log section, clean tree. I spent
+it investigating the C-2 follow-up machinery and ran out of turn mid-investigation without
+writing anything down. The investigation was not wasted and is recorded at the end of this
+entry so the next turn does not repeat it, but the honest summary of iteration 19 is: zero.
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### Scope: this is remediation, so the campaign waits
+
+Iteration 18 closed **WEAK**. Per the remediation rule I took its numbered risks in
+severity order rather than C-2's increment 1, and I am not claiming any Self Follow-Up
+movement this turn. C-2 is at iteration 2 of 8 with 0 increments delivered.
+
+**Codex's four findings, and what I did with each:**
+
+| # | Finding | Outcome |
+|---|---|---|
+| HIGH 1 | unrelated successful work authorizes a fabricated self-repair claim | **FIXED** — authorization is now claim-specific provenance |
+| HIGH 2 | the invented diagnosis survived the prompt rule ("system stutter") | **FIXED at the mechanism, UNPROVEN by test** — boundary moved into the evidence block |
+| MED 3 | sentence salvage destroys the grounded answer | **FIXED** — clause-aware excision |
+| MED 4 | regex is phrase-shaped, misses equivalents | **PARTLY** — the two forms he named are covered; the general point stands and is answered by making authorization, not detection, the protection |
+
+He also found that iteration 18 **shipped no capability block**. He is right; it was in the
+DEF rows and not in the build entry. This entry carries it.
+
+### Governing docs — verdict: CIRCLING, and on my own work
+
+`fabricated-status` was already at 5 with DEF-163. This turn is not a 6th report — it is
+the same defect proving incompletely fixed, which is worse in one specific way: the guard
+passed review and a mutation set and was still open on three of four fronts.
+
+### HIGH #1 — authorization, not the turn
+
+`responseValidator.ts` — the gate was `result.actionResult.ok`, which is turn-global. His
+input: *"Set the priority high, and why did you remind me twice?"* The priority update
+genuinely succeeds; it is not a diagnosis, and it bought one. **My own test asserted that
+`update_open_item` was sufficient evidence** — the defect written down as a contract, which
+is the part I most want on the record.
+
+Replaced with `selfRepairEvidence: { kind, findingId, observedCause, appliedRepair,
+recurrencePrevented }`. A cure claim is licensed only by evidence that attests it, and
+because every form this rule matches makes a promise about the future,
+`recurrencePrevented` must also be true. `actionResult` is no longer consulted at all.
+
+**No producer exists today, and that is the intended state.** Nothing in this system
+diagnoses a fault while answering a question, so every cure claim fails closed — Codex's
+own words, "until such an action exists, cure/prevention claims always fail closed". The
+seam exists so that the first real self-repair action is claim-specific from day one
+instead of turn-global again. I am flagging it as a reader with no writer, because I
+criticised `bindingDurable` for the same shape two turns ago and the criticism applies.
+
+### HIGH #2 — the boundary belongs next to the evidence
+
+This is the load-bearing one. Iteration 18's answer was a line in
+`CORE_CONVERSATIONAL_RULES` ("don't diagnose yourself"), and Codex proved it lost: the next
+measured B12 said *"That was a system stutter on my end"*.
+
+**Why it lost, which is the part worth fixing.** `buildDispatchLedgerBlock` was already in
+the prompt, authoritative, and obeyed — Brain answers "did you send that?" from it. But
+every line of it was about WHETHER an action happened. Nothing said WHY is unavailable. So
+a "why" question met an authoritative block with no answer in it, twenty blocks from a
+general rule telling it not to guess, and it filled the silence.
+
+`dispatchLedgerService.ts` — the block now states the boundary where the facts are: *WHY
+something happened is NOT in this record and is nowhere else either. There is no cause
+field… "a system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are
+GUESSES; naming one as the cause is a fabricated finding even when it sounds technical and
+modest.* Plus the sentence that should be produced instead.
+
+That is `examples-outvote-the-instruction` (DEF-138) run forwards: what sits next to the
+data wins. The euphemisms appear as **examples of guessing inside the evidence**, not as a
+banned word list in a validator — Codex was explicit that chasing synonyms with a regex is
+not the fix, and this does not.
+
+**I cannot prove this half.** No assertion shows an LLM declining to invent. The tests pin
+that the boundary is in the block, in the empty-ledger case B12 actually hits, and that the
+existing "did you" contract did not soften. The behavioural claim is a prediction and the
+score is its only judge. Iteration 18 claimed a class-level truthfulness mechanism on a
+passing regex test; that is the mistake I am trying not to repeat while fixing it.
+
+### MEDIUM #3 — cut the clause, keep the answer
+
+`exciseClausesMatching` in `responseValidator.ts`. His input:
+*"I sent the reminder twice, and I've flagged the error to prevent it happening again."*
+One sentence, one observed truth, one invention; the old code deleted both. Now →
+**"I sent the reminder twice."**
+
+Splits only on coordinating boundaries (`, and` / `, but` / `, so`, semicolons, em dashes),
+never a bare comma: *"I have flagged the error, which prevents recurrence"* is one claim and
+cutting it at the comma would ship half a fabrication. Fails closed to the marker when the
+remainder is too short or still trips the rule.
+
+### Two defects found by probing rather than reading
+
+Both are the 10th `protection-with-two-implementations`, and both had passed a review and a
+mutation set:
+
+1. **The ledger block was on the reasoning path only.** `buildDispatchLedgerBlock` was
+   wired into `reasoningCompose` at `brainComposer.ts:2460`; the legacy assembler never
+   received it, so on that path "did you send that?" had no record at all — the DEF-037
+   failure still live. Reasoning is default-ON, which is precisely why it stayed invisible:
+   the broken copy is the one nobody exercises. Now passed into
+   `assembleSystemPrompt({ dispatchLedgerBlock })` from the same builder — not a second
+   renderer, which would have been the eleventh occurrence.
+2. **The recurrence vocabulary had drifted between the pattern's three forms.** "another
+   one" reached two of them, so *"I have flagged the error, so you won't see another one"*
+   shipped unguarded. One shared `RECURRENCE_CLAUSE` now. **I found this by running the
+   built regex against inputs a person would type**, not by reading it — I would not have
+   found it by inspection, and neither did the review.
+
+Probing also exposed a half-fix in my own salvage: cutting the cure out of that sentence
+left **"I have flagged the error."** — the same fabricated completion minus its tell. A
+surviving clause that itself claims an internal remediation is now removed too.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2153 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 179 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 6 mutants, 5 die, 1 SURVIVES.**
+
+| mutation | tests that die |
+|---|---|
+| restore the turn-global `actionResult` exemption | 2 |
+| sentence-level salvage only | 2 |
+| drop the causal boundary from the evidence block | 3 |
+| keep residual remediation clauses in the salvage | 1 |
+| revert the shared recurrence vocabulary | 2 |
+| **split on bare commas too** | **0 — SURVIVES** |
+
+The survivor matters more than the five kills. My "does not split a single claim at a bare
+comma" test passes for the wrong reason: the fail-closed `re.test(salvaged)` re-check
+catches that input, not the boundary choice. So the bare-comma restriction is a
+prose-quality decision, not a safety guarantee, and I am not claiming it as one. The
+guarantee is the re-check.
+
+### CAPABILITY: Accurate Communication
+
+**PREDICTED:** B12's C1 should rise from 85 with no invented cause in the text. C2 is
+already at 100 and may not move. Overall +0 to +1 — inside the noise band, so do not read
+the aggregate as the result. **No Self Follow-Up movement: this turn built none.**
+
+**MECHANISM:** a claim that Brain repaired itself now needs evidence that attests that
+specific claim rather than any success in the turn; and the one question that had no
+evidence surface at all — why Brain itself did something — now has one, which says the
+cause is not recorded.
+
+**FALSIFIER:** B12 naming any specific cause it has no ledger row for; or a cure claim
+shipping on the strength of an unrelated action; or a compound sentence losing its grounded
+clause.
+
+### What I did NOT do
+
+- **MEDIUM #4 in full.** The two forms Codex named are covered; detection remains
+  phrase-shaped and an unenumerated paraphrase still gets through. I did not keep widening,
+  because the answer to "the regex is phrase-shaped" is that the regex is no longer the
+  protection — authorization is. Residual risk is "an unevidenced promise ships", never
+  "an evidenced one is blocked". He may judge that insufficient; it is a deliberate stop,
+  not an oversight.
+- **His #2's ledger-grounded cause for real turns.** The block now says the cause is not
+  recorded, which is the correct answer when nothing recorded it. Actually reading
+  scheduler/dispatch execution rows to explain a duplicate is a separate build and would
+  change nothing for B12, whose history is synthetic.
+- **C-2 increment 1** — the campaign's deliverable. Remediation outranked it.
+- **Codex's iteration-17 #1 leftovers** (receipt-before-bootstrap ordering, candidate
+  provenance), the durable outbox (sixth naming), deploy, production replay, D-1 teardown.
+- **I did not run the benchmark.** D-1 is open; every B12 figure here is from
+  `iter-18-post-build.json` or Codex's review.
+
+### What I am unsure about
+
+- **Whether a prompt-adjacent boundary is enough.** It is a better placement than iteration
+  18's, and placement is a real variable — but it is the same class of instrument that just
+  failed. If B12 invents a third euphemism, the conclusion is that no prompt placement
+  works and the cause question needs either a real ledger read or a refusal to answer
+  "why" at all.
+- **`selfRepairEvidence` having no producer.** Justified above, and still the shape I
+  criticised elsewhere.
+- **Whether the legacy-path ledger injection has any effect in practice.** Reasoning is
+  default-ON, so the fixed path may never run. It was still broken, and I would rather fix
+  a dormant path than leave a known DEF-037 hole in it.
+
+### Prediction, and what would prove me wrong
+
+**B12's C1 up; C4 flat-to-slightly-up; aggregate unchanged.** C4 is the gate at 88.8 and
+nothing here targets B09's identity prose, which is now its worst case.
+
+**What would prove me wrong:**
+- **B12 invents a third cause** → prompt placement is not the lever; see above.
+- **Any case regresses on C3/C6** → the clause salvage or the taller prompt is costing
+  answer quality, and the ledger block now sits high in the legacy prompt.
+- **Codex finds a fifth hole in the same guard** → three turns on one rule means the design
+  is wrong, not incomplete, and the right move becomes deleting it in favour of the
+  evidence path alone.
+
+### For the next turn: what iteration 19 found about C-2 (unwritten until now)
+
+Recorded so it is not re-derived. **`runDelegateeFollowupSweep` in
+`src/services/openItems/delegateeFollowupWorker.ts` implements C-2 increment 1 already** —
+chase the delegatee on the due date, ping at a configurable cadence, escalate to the owner
+after N days — and **it has zero callers.** `runFollowupSweep` in `followupWorker.ts` is
+called only from a smoke script. Neither appears among the 22 `protectedJob(...)`
+registrations in `server.ts`.
+
+So the capability is written and never invoked, which fits the owner's evidence exactly:
+R-2 09:03 has Brain asking *"Shall I chase Hamna Latif Bhutta for an update…"* rather than
+chasing. Increment 1 is therefore mostly a wiring-plus-safety task, and the safety part is
+not optional: `sendTenantWhatsAppText` has **no quiet-hours or office-hours gate**, so
+scheduling this as-is would message third parties at any hour — `time-of-day-drift` is a
+5-occurrence tag. The existing office-hours decision lives at
+`brainOutboundService.ts:450` (`isOutsideOfficeHours`) and should be reused rather than
+reimplemented. A first run would also fire on every already-overdue delegated item at once,
+so a staleness ceiling is needed before it is switched on.
