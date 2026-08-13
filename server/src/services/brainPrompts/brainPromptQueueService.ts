@@ -86,7 +86,7 @@ export interface EnqueueInput {
 }
 
 export interface EnqueueResult {
-  status: 'queued' | 'sent_now' | 'top_dispatched' | 'duplicate';
+  status: 'queued' | 'sent_now' | 'top_dispatched' | 'duplicate' | 'digested';
   promptId?: string;
   /** Set when status='top_dispatched' or 'sent_now'. */
   channelUsed?: string;
@@ -176,6 +176,88 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       channelUsed: channel,
       reason: r.reason,
     };
+  }
+
+  // ── C-3 increment 2 — the per-item digest decision, at the ONE chokepoint ──
+  //
+  // Every producer of owner pushes calls this function, so the decision here is
+  // what makes "one producer cannot bypass the shared per-item decision path" a
+  // property of the wiring. The policy fails toward SENDING in every uncertain
+  // case (disabled, non-item subject, owner said keep, count unreadable, its own
+  // crash), because suppression is the direction that loses information — the
+  // DEF-156 lesson. High/top criticality never reaches it.
+  //
+  // A digested push is a FULL row — created exactly as it would have been, in
+  // state 'skipped' so the dispatcher never picks it up, with `metadata.digest`
+  // as the discriminator and audit block (why, and which digest covers it).
+  // 'skipped' rather than a new 'digested' state, and NOT casually: the
+  // 20260505 migration has a CHECK constraint enumerating the five legal
+  // states, and a novel value dies with Postgres 23514 on every insert — which
+  // is DEF-060, five days of silent failures. The DEF-063 guard caught this in
+  // review before it shipped; my own tests could not, because mocked prisma has
+  // no CHECK constraints. Nothing is deleted; retrieval is a query on
+  // `metadata.digest`. The one digest message per item per window rides THIS
+  // same queue, so quiet/office hours apply via the existing dispatch path
+  // rather than a second implementation here.
+  if (criticality === 'routine') {
+    const decision = await import('../selfpruning/digestPolicy')
+      .then(({ decideDigest }) => decideDigest({
+        clientNumber: input.clientNumber,
+        userId: input.userId,
+        question: input.question,
+        criticality,
+        openItemId: input.openItemId,
+        metadata: input.metadata as Record<string, unknown> | undefined,
+      }))
+      .catch((e: any) => {
+        log.warn('digest policy failed; sending', { error: e?.message });
+        return { action: 'send' as const, reason: 'digest policy crashed — fail open to sending' };
+      });
+
+    if (decision.action === 'digest' && decision.digest) {
+      const filed = await prisma.brainPromptQueue.create({
+        data: {
+          clientNumber: input.clientNumber,
+          userId: input.userId,
+          question: input.question,
+          openItemId: input.openItemId ?? null,
+          sideEffect: (input.sideEffect ?? { kind: 'noop' }) as any,
+          criticality,
+          state: 'skipped',
+          dedupKey: input.dedupKey ?? null,
+          expiresAt,
+          metadata: {
+            ...(input.metadata ?? {}), expectsReply, provenance: input.provenance,
+            digest: {
+              reason: decision.reason,
+              subjectKey: decision.digest.subjectKey,
+              coveredByDedupKey: decision.digest.dedupKey,
+            },
+          } as any,
+        },
+        select: { id: true },
+      });
+
+      // The one message. Dedup on the window-bucketed key means the second
+      // digested push in the same window updates nothing and sends nothing.
+      await enqueueBrainPrompt({
+        clientNumber: input.clientNumber,
+        userId: input.userId,
+        question: decision.digest.question,
+        openItemId: input.openItemId,
+        provenance: input.provenance,
+        criticality: 'routine',
+        dedupKey: decision.digest.dedupKey,
+        sideEffect: { kind: 'noop' },
+        metadata: {
+          source: 'selfpruning_digest',
+          subjectKey: decision.digest.subjectKey,
+          coveredCount: decision.digest.coveredCount,
+        },
+      });
+
+      return { status: 'digested', promptId: String(filed.id), reason: decision.reason };
+    }
   }
 
   // ── Routine / high: enqueue ────────────────────────────────────

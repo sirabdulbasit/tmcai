@@ -193,6 +193,18 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     description: 'Re-alert suppression window for stale-connector pings.',
   },
   // ── C-3: self-pruning ─────────────────────────────────────────────
+  'selfpruning.digest_enabled': {
+    key: 'selfpruning.digest_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
+    description: 'C-3 increment 2 MASTER SWITCH (0/1). While 0 — the default — no push is ever digested, so deploying the mechanism changes nothing until the owner opts in. This is the owner-controlled gate Codex required before any automatic suppression, not a tuning knob.',
+  },
+  'selfpruning.digest_after_pushes': {
+    key: 'selfpruning.digest_after_pushes', unit: 'count', def: 3, min: 2, max: 20, scope: 'tenant',
+    description: 'C-3 increment 2. How many DELIVERED-and-unanswered pushes about one item, inside the digest window, before further pushes fold into the item\'s single digest message.',
+  },
+  'selfpruning.digest_window_hours': {
+    key: 'selfpruning.digest_window_hours', unit: 'hours', def: 24, min: 1, max: 168, scope: 'tenant',
+    description: 'C-3 increment 2. The window the digest counts over, and the bucket size for "one digest message per item per window".',
+  },
   'selfpruning.burst_max_span_minutes': {
     key: 'selfpruning.burst_max_span_minutes', unit: 'minutes', def: 1440, min: 30, max: 43200, scope: 'tenant',
     description: 'DEF-170. How close together repeated unanswered pushes about one subject must be to count as a burst rather than a cadence. The default separates CL-033 (45 minutes) from monthly status notices; the right value is an owner preference. NOTE: iteration 26 shipped the ledger reading this key WITHOUT registering it here, so getBehaviorValue threw "unknown behavior key" and a silent catch pinned the span to 1440 — the owner\'s override could never take effect (Codex iteration-26 HIGH #1).',
