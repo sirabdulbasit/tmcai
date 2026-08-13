@@ -475,6 +475,11 @@ export default function OrchestratorPulsePanel() {
   const trend = data.trend;
   const overall = trend.rows.find((r) => r.overall);
   const moved = trend.rows.filter((r) => !r.overall);
+  // From the collector — never recomputed in the browser. The same arithmetic in two
+  // places is how a dashboard starts quietly disagreeing with the terminal window it
+  // is meant to mirror, and this file's own header says one detector, two renderers.
+  const interp = data.capability_series?.interpretation || null;
+  const axisObjective = data.capability_series?.axis?.objective_line ?? null;
   const bench = data.benchmark;
 
   return (
@@ -576,13 +581,40 @@ export default function OrchestratorPulsePanel() {
           )}
 
           {/* aspect 3 — whether any of it is moving, iteration by iteration */}
+          {/* interpretation comes from the collector, not recomputed here: the same
+              arithmetic in two places is how a dashboard starts disagreeing with the
+              terminal it mirrors. */}
           {overall && (
             <PulseCard
               className="orch-deck-trend"
               title={`BRAIN overall · iteration ${trend.iterations[0]}→${trend.iterations[trend.iterations.length - 1]}`}
               hint={`${overall.first} → ${overall.last} across ${trend.iterations.length} scored`}
             >
+              {/* THE SCALE, STATED. Owner, 2026-08-13: "I couldnt understand this
+                  make it meaningfull for me". The chart auto-scales to the series'
+                  own range — deliberately, since the movement is fractions of a
+                  point and a 0→100 axis would draw ten iterations as a flat line —
+                  but that means +0.6 fills the full height and reads as a climb.
+                  The caption is what makes the shape honest: it names the y-range
+                  and states the share of the journey actually covered. Without it
+                  the panel flatters the work, which removes the reason to change
+                  approach. */}
+              {interp && (
+                <div className="orch-section-note" style={{ marginBottom: 4 }}>
+                  y {overall.first}–{overall.last} (auto-scaled) · {interp.movement > 0 ? '+' : ''}
+                  {interp.movement} of {interp.remaining + interp.movement} needed ·{' '}
+                  <b>{interp.journey_complete_pct}% of the way</b> to {axisObjective}
+                </div>
+              )}
               <TrendLine iterations={trend.iterations} series={overall.series} height={104} />
+              {interp && (
+                <div className="orch-section-note" style={{ marginTop: 2 }}>
+                  {interp.capabilities_moved} of{' '}
+                  {interp.capabilities_moved + interp.capabilities_flat} capabilities have
+                  ever moved · at {interp.rate_per_iteration}/iteration that is{' '}
+                  {interp.iterations_at_this_rate} more iterations
+                </div>
+              )}
               {moved.length > 0 && (
                 <div className="orch-deck-sparks">
                   {moved.map((r) => (
@@ -649,20 +681,48 @@ export default function OrchestratorPulsePanel() {
                       <th style={{ textAlign: 'right' }}>Overall</th>
                       <th style={{ textAlign: 'right' }}>Weakest</th>
                       <th>Crit</th>
+                      {/* Owner, 2026-08-13: "i want to see iteration wise progress
+                          here". Six absolute values per row gave no direction, so
+                          95.5 / 96.2 / 95.5 read as unrelated numbers. */}
+                      <th style={{ textAlign: 'right' }}>Δ</th>
                       <th>Codex</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.history.map((h) => (
+                    {data.history.map((h) => {
+                      /* `progress` is computed by the collector against the previous
+                         iteration THAT HAS A BENCHMARK, and names it — iterations
+                         9-11 have no capability card and one measured nothing, so
+                         differencing against a missing row would invent movement. */
+                      const p = (data.iterations || []).find(
+                        (r) => r.iteration === h.iteration && r.progress)?.progress;
+                      const d = p?.overall_delta;
+                      /* NOT green-for-up. C4 has read 90.0, 87.9, 88.3 and 87.3 on
+                         barely-changed code, so a +0.9 coloured as improvement would
+                         manufacture a trend the instrument cannot support. Anything
+                         the collector calls flat is drawn as dim, whatever its sign. */
+                      const noisy = (p?.direction || '').startsWith('flat');
+                      const dColor = d == null || noisy
+                        ? 'var(--text-dim)'
+                        : d > 0 ? 'var(--op-score)' : 'var(--op-stalled)';
+                      return (
                       <tr key={`${h.iteration}-${h.label}`}>
                         <td>#{h.iteration}</td>
                         <td>{h.label}</td>
                         <td className="num">{h.overall ?? '—'}</td>
                         <td className="num">{h.weakest ?? '—'}</td>
                         <td>{h.criterion ?? '—'}</td>
+                        <td className="num" style={{ color: dColor }}
+                            title={p ? `${p.direction}${p.since ? ` · vs #${p.since}` : ''}` : ''}>
+                          {d == null ? '—' : (d > 0 ? `+${d}` : d)}
+                          {noisy && d != null && (
+                            <span className="orch-section-note" style={{ marginLeft: 4 }}>noise</span>
+                          )}
+                        </td>
                         <td style={{ color: VERDICT_COLOR[h.verdict] || 'var(--text-dim)' }}>{h.verdict}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
