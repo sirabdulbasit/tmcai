@@ -48,7 +48,7 @@ const B12_Q = 'Why did you remind me about that one twice?';
 const promise = (answer: string, question: string | null = B12_Q, over: any = {}) =>
   validateBeforeRender(composed(answer), {
     pendingStatus: null, turnIntent: 'read_only', question, ...over,
-  }).violations.find((v) => v.rule === 'unevidenced_self_conduct_promise');
+  }).violations.find((v) => v.rule === 'unevidenced_self_conduct');
 
 describe('DEF-166 — the gate is the user\'s question', () => {
   it('recognises questions about Brain\'s own conduct', () => {
@@ -122,13 +122,16 @@ describe('DEF-166 — it only applies where it is justified', () => {
       .toBeUndefined();
   });
 
-  it('does not fire when a real repair authorizes the claim', () => {
+  it('DEF-167 — caller-supplied "evidence" no longer disables it', () => {
+    // This asserted the opposite until iteration 22. Codex's iteration-21 HIGH #3:
+    // the seam only trimmed strings, so any four literals turned the guard off.
+    // Deleted rather than tightened a fourth time; the guard fails closed.
     expect(promise("I'll make sure the duplicate is cleared.", B12_Q, {
       selfRepairEvidence: {
         kind: 'repair', findingId: 'finding-42', observedCause: 'duplicate tick',
         appliedRepair: 'dedup key added', preventionArtifactId: 'artifact-99',
       },
-    })).toBeUndefined();
+    })).toBeDefined();
   });
 
   it('keeps the grounded sentences and cuts only the promise', () => {
@@ -145,7 +148,7 @@ describe('DEF-166 — it only applies where it is justified', () => {
   it('its marker points at the honest shape rather than scolding', () => {
     const v = promise("I'll make sure the duplicate is cleared.")!;
     expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
-    expect(v.suggestedReplacement).toMatch(/nothing is scheduled/i);
+    expect(v.suggestedReplacement).toMatch(/nothing was flagged, fixed or scheduled/i);
     expect(v.suggestedReplacement, 'it must say what to do instead')
       .toMatch(/question/i);
   });

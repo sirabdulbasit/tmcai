@@ -262,22 +262,25 @@ export const UNEVIDENCED_SELF_REPAIR_RE = new RegExp(
  * the main rule does not match, so this pattern is never applied to it.
  */
 /**
- * A clause that names the row it rests on.
+ * DEF-167 — the citation exemption is GONE, and removing it is the fix.
  *
- * DEF-166 / Codex iteration-20 MEDIUM #3: *"I logged the duplicate in finding
- * F-1, and I'll make sure it doesn't happen again"* — the first clause is TRUE and
- * iteration 20's salvage deleted it along with the false promise, because it
- * stripped every remediation-shaped survivor without asking whether it was
- * grounded. That is `guard-destroys-the-answer` moved from sentence granularity to
- * clause granularity, which is not progress.
+ * Iteration 20 kept a surviving remediation clause when it cited an identifier, so
+ * "I logged the duplicate in finding F-1" survived while the promise beside it was
+ * cut. Codex's iteration-21 HIGH #2: the check was syntax only — it never looked
+ * the row up, never scoped it to a tenant, never confirmed it supported the claim.
+ * *"I logged it in finding F-999999"* survived purely because the string looked
+ * like an ID, which makes a fabrication MORE likely to ship than a vague one.
  *
- * A claim that cites a concrete identifier can be checked by whoever reads it,
- * which is the difference that matters: "I logged it" is unverifiable, "I logged
- * it in finding F-1" points at something. So a citing clause survives.
+ * I could have added a ledger lookup. I removed the exemption instead, because the
+ * two failure modes are not symmetrical: over-cutting fails CLOSED (the clause goes,
+ * and if nothing survives, the sanitizer gives an honest line), while under-cutting
+ * ships a false statement to the owner. A guard defeatable by inventing "F-42" is
+ * worse than one that occasionally cuts a true clause.
+ *
+ * This reinstates Codex's iteration-20 MEDIUM #3 as a KNOWN COST, recorded in
+ * DEF-167's row. The exit is his directive #3: authorize from a verified,
+ * tenant-scoped ledger record — never from text shaped like a reference.
  */
-const CITES_ARTIFACT_RE =
-  /\b(?:finding|artifact|record|row|ticket|item|message|id)\s+[#]?[A-Za-z]*[-_.]?\d[\w.-]*|\b[A-Z]{1,6}-\d+\b|\bwamid\.[\w-]+/;
-
 const RESIDUAL_SELF_REMEDIATION_RE = new RegExp(
   "\\bi(?:['’]?(?:ve|ll|m)|\\s+(?:have|will|am))?\\s+(?:\\w+[\\s,]+){0,3}?"
   + '(?:flagged|flag|logged|log|noted|recorded|reported|raised|filed|escalated'
@@ -327,11 +330,9 @@ export function exciseClausesMatching(answer: string, re: RegExp): string | unde
 
       const keptClauses = clauses.filter((c) => {
         if (re.test(c)) { removed += 1; return false; }
-        // The promise is gone; an UNVERIFIABLE claim to have acted goes with it.
-        // One that cites its row stays — see `CITES_ARTIFACT_RE`.
-        if (RESIDUAL_SELF_REMEDIATION_RE.test(c) && !CITES_ARTIFACT_RE.test(c)) {
-          removed += 1; return false;
-        }
+        // The promise is gone; the claim to have acted goes with it. DEF-167
+        // removed the "unless it cites an id" exemption — see the note above.
+        if (RESIDUAL_SELF_REMEDIATION_RE.test(c)) { removed += 1; return false; }
         return c.trim().length > 0;
       });
       if (keptClauses.length === 0) continue;
@@ -547,33 +548,6 @@ export function validateBeforeRender(
      * route, which is how `protection-with-two-implementations` reached ten.
      */
     question?: string | null;
-    selfRepairEvidence?: {
-      /**
-       * DEF-166 — only `'repair'` can authorize prose that claims a repair.
-       *
-       * Codex's iteration-20 HIGH #2: the iteration-20 contract ignored `kind`
-       * entirely, so `{kind:'diagnostic', recurrencePrevented:true}` — a finding
-       * that observed a cause and applied nothing — would license "I've fixed
-       * it". Knowing why is not fixing.
-       */
-      kind: 'diagnostic' | 'repair';
-      /** The `brain_health_findings` row this claim rests on. */
-      findingId: string;
-      observedCause: string | null;
-      /** What was actually changed. A repair claim with nothing here is a wish. */
-      appliedRepair: string | null;
-      /**
-       * DEF-166 — an IMMUTABLE reference, replacing `recurrencePrevented: boolean`.
-       *
-       * Codex: *"Require an immutable repair artifact and exact outcome, not a
-       * caller-authored boolean."* He is right that a boolean is the weakest
-       * possible evidence: an optimistic classifier sets it to true and the prose
-       * inherits a guarantee nobody verified. An id has to point at a row that
-       * exists, so the claim can be audited after the fact instead of trusted at
-       * render time.
-       */
-      preventionArtifactId: string | null;
-    } | null;
   },
 ): ValidationOutcome {
   const violations: ResponseViolation[] = [];
@@ -729,71 +703,70 @@ export function validateBeforeRender(
   //     rather than a diagnosis, it must name what was changed, it must cite the
   //     finding, and the prevention must exist as a row someone can go and read.
   //     A caller-authored boolean is not evidence of anything.
-  const cure = context?.selfRepairEvidence ?? null;
-  const cureAuthorized = !!cure
-    && cure.kind === 'repair'
-    && !!cure.findingId.trim()
-    && !!cure.appliedRepair?.trim()
-    && !!cure.preventionArtifactId?.trim();
-  if (UNEVIDENCED_SELF_REPAIR_RE.test(answer) && !cureAuthorized) {
+  // DEF-166's gate, DEF-167's selector: the user's own words decide whether the
+  // commitment half of the class applies at all.
+  const selfConductTurn = isSelfConductQuestion(context?.question);
+  // ── DEF-167 — the authorization seam is DELETED, not tightened again ──────
+  //
+  // Iterations 20 and 21 built `selfRepairEvidence` as the thing that could license
+  // a self-repair claim, tightening its required fields each turn. Codex's
+  // iteration-21 HIGH #3 is the end of that road: it only ever trimmed
+  // caller-supplied strings, so `{kind:'repair', findingId:'fake',
+  // appliedRepair:'fake', preventionArtifactId:'fake'}` disabled every protection
+  // here. No lookup, no tenant scope, no binding to the clause.
+  //
+  // Nothing produced it — I flagged it as a reader with no writer in two build
+  // entries — so deleting it changes no behaviour today and removes an
+  // authorization path satisfiable by four string literals. The guard is now
+  // unconditionally fail-closed, which is the honest description of the system:
+  // no code path diagnoses a fault or schedules a prevention while answering.
+  //
+  // When a real repair action exists, its authorization gets built against the
+  // actual ledger row (Codex directive #3). Rebuilding the seam now would only
+  // re-create the thing he rejected twice.
+  const cureAuthorized = false;
+
+  // ── DEF-167 — ONE verdict for one class, because two destroyed the answer ──
+  //
+  // Iteration 21 shipped these as two independent block-severity rules and I
+  // wrote in the build entry that the overlap was "deliberate for now". It was
+  // not survivable for one turn. Both fired on B12, and the arbitration below
+  // (`blocks.length === 1`) suppresses salvage whenever two blocks exist — so the
+  // owner received the raw marker `[unevidenced self-repair claim — …]`. Measured:
+  // B12 C4 75 -> 10, C1 -> 20, aggregate C4 86.7 -> 80.7, overall 95.3 -> 92.0.
+  //
+  // The arbitration is CORRECT and is not what changed: two DIFFERENT defects
+  // really do mean the remainder still carries the second one, which is DEF-135's
+  // reasoning. The defect was mine — I created two rules for one class, so the
+  // class could produce two blocks about the same sentence.
+  //
+  // Fixed by construction rather than by arbitration: one pattern, one violation,
+  // one salvage, one marker. The commitment half only applies when the user asked
+  // about Brain's own conduct; the cure half always does. Merging them means this
+  // class can never again present the arbitrator with a choice.
+  const selfConductRe = selfConductTurn
+    ? new RegExp(
+      `(?:${UNEVIDENCED_SELF_REPAIR_RE.source})|(?:${FIRST_PERSON_COMMITMENT_RE.source})`,
+      // Non-global, like both sources — `exciseClausesMatching` depends on it.
+      'i',
+    )
+    : UNEVIDENCED_SELF_REPAIR_RE;
+
+  if (!cureAuthorized && selfConductRe.test(answer)) {
     violations.push({
-      rule: 'unevidenced_self_repair',
+      rule: 'unevidenced_self_conduct',
       severity: 'block',
       description:
-        'Answer claims an internal fix or a guarantee against recurrence ("I have flagged the error to prevent it from happening again") with no action dispatched this turn.',
-      // Bracketed marker per the no-hardcoded-fake-Brain-replies rule, and
-      // curated for THIS class — it must not talk about escalation channels the
-      // answer never mentioned (occurrence 5 above).
+        'Answer claims or promises something about Brain\'s own conduct — an internal fix, a guarantee against recurrence, or a commitment with nothing scheduled — with no attesting evidence.',
+      // Bracketed marker per the no-hardcoded-fake-Brain-replies rule. One remedy
+      // covering both halves, and it must not mention escalation channels the
+      // answer never named (`guard-destroys-the-answer` occurrence 5).
       suggestedReplacement:
-        '[unevidenced self-repair claim — nothing was flagged and no prevention was scheduled; say what is observable and that the cause is not known]',
+        '[unevidenced claim about your own actions — nothing was flagged, fixed or scheduled; state what the record shows, say the cause is not recorded, and offer the next step as a question]',
       // DEF-165 — clause first, so a compound sentence keeps its grounded half;
       // sentence-level only when there is no clause boundary to cut at.
-      salvagedAnswer: exciseClausesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE)
-        ?? exciseSentencesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE),
-    });
-  }
-
-  // 2c. DEF-166 — A COMMITMENT ABOUT ITS OWN CONDUCT, ON A TURN THAT DISPATCHES
-  //     NOTHING.
-  //
-  //     Codex's iteration-20 HIGH #1. Three turns of this defect, three phrasings:
-  //
-  //       iter 17  "It looks like a system glitch caused a duplicate reminder"
-  //       iter 18  "That was a system stutter on my end"
-  //       iter 20  "I'll make sure the duplicate is cleared"
-  //
-  //     Each turn closed the previous wording and the model found the next one.
-  //     The third has no recurrence vocabulary, so it never reached the cure rule
-  //     at all — and Codex's conclusion is the right one: *"Stop extending the cure
-  //     regex."* Enumerating what a language model might say is not a strategy.
-  //
-  //     So this rule is GRAMMATICAL, not lexical: a first-person commitment, any
-  //     verb. What keeps it safe is not a narrow vocabulary but a narrow GATE — it
-  //     applies only when the user asked about Brain's own conduct, and only when
-  //     no repair evidence authorizes it. On such a turn nothing is dispatched, so
-  //     any "I'll …" is a promise with nothing behind it, whatever it promises.
-  //
-  //     That distinction matters for `guard-destroys-the-answer` (7 occurrences):
-  //     the previous five recurrences were all met by narrowing WHEN a guard fires
-  //     and all failed because eligibility depended on a classifier being right.
-  //     Here the gate is the user's own words, and being wrong about them costs a
-  //     salvage rather than a wrong answer.
-  //
-  //     "I'll need" / "I'll have to" are excluded: those state a limitation, which
-  //     is the honest shape, not a commitment. An offer stays available in the
-  //     interrogative — "want me to look into it?" — which is what core rule 6a
-  //     asks for anyway.
-  const selfConductTurn = isSelfConductQuestion(context?.question);
-  if (selfConductTurn && !cureAuthorized && FIRST_PERSON_COMMITMENT_RE.test(answer)) {
-    violations.push({
-      rule: 'unevidenced_self_conduct_promise',
-      severity: 'block',
-      description:
-        'Answer promises a future internal action ("I\'ll make sure the duplicate is cleared") on a turn about Brain\'s own conduct, where nothing was dispatched and no repair evidence exists.',
-      suggestedReplacement:
-        '[unevidenced commitment about your own behaviour — nothing is scheduled; state what the record shows and offer the next step as a question]',
-      salvagedAnswer: exciseClausesMatching(answer, FIRST_PERSON_COMMITMENT_RE)
-        ?? exciseSentencesMatching(answer, FIRST_PERSON_COMMITMENT_RE),
+      salvagedAnswer: exciseClausesMatching(answer, selfConductRe)
+        ?? exciseSentencesMatching(answer, selfConductRe),
     });
   }
 

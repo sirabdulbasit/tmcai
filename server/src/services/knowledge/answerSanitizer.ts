@@ -207,6 +207,35 @@ export function sanitizeAnswerForUser(answer: string): string {
     }
   }
 
+  // ── DEF-168 — this file's own promise, finally kept ─────────────────────
+  //
+  // The header says: *"Unknown bracketed markers are stripped to avoid leaking
+  // future ones."* That was false. Both the whole-answer loop above and the
+  // embedded regex below match an ENUMERATED list of marker prefixes, so a marker
+  // nobody had added to the list shipped verbatim — which is the exact failure
+  // this file was created to stop (Basit, 2026-07-07).
+  //
+  // Proven, not argued: iteration 21 added two markers and the owner-facing B12
+  // answer became `[unevidenced self-repair claim — nothing was flagged and no
+  // prevention was scheduled; say what is observable and that the cause is not
+  // known]`. Judged C4 = 10. A machine instruction addressed to the composer,
+  // delivered to the owner as if it were Brain talking.
+  //
+  // The catch-all is by SHAPE and it is safe because of what it requires: the
+  // ENTIRE answer must be one bracketed expression. No human reply is shaped like
+  // that, so there is no legitimate text to lose — unlike an embedded-bracket
+  // heuristic, which would have to guess about "[1]", "[see attached]" and
+  // markdown links. Enumeration remains for the embedded case; this closes the
+  // whole-answer case for every marker that will ever be invented.
+  //
+  // It deliberately does NOT try to render the marker's content into prose. The
+  // content is an instruction to the composer ("say what is observable…"), and
+  // paraphrasing it to the owner is how the previous leak read as Brain being
+  // broken. A short honest line is better than a translated internal note.
+  if (/^\s*\[[^\]]{8,400}\]\s*$/.test(answer)) {
+    return "I don't have a good answer for that yet — let me look again. Could you ask me once more?";
+  }
+
   // Embedded auto-send OFFER (Phase 1C) — appended after a successful
   // dispatch message, so it arrives embedded rather than whole. Render
   // the human offer with the exact toggle phrases the command parser
