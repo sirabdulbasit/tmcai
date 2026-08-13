@@ -3899,3 +3899,179 @@ scheduling this as-is would message third parties at any hour — `time-of-day-d
 `brainOutboundService.ts:450` (`isOutsideOfficeHours`) and should be reused rather than
 reimplemented. A first run would also fire on every already-overdue delegated item at once,
 so a staleness ceiling is needed before it is switched on.
+
+---
+
+## Iteration 21 — mode: structural · REMEDIATION attempt 2 of 3 · campaign C-2 (iteration 3 of 8)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### Scope: remediation, so C-2 waits again
+
+Iteration 20 closed **WEAK**. I took its four numbered risks in severity order. C-2 has
+delivered 0 of its increments across 3 iterations, and I am claiming no Self Follow-Up
+movement.
+
+### The fixQueue entry, and the honest statement about it
+
+> **B12-reminder-referent — C4 = 75**, the current minimum case: the canned *"My
+> apologies, Sir"* opener plus clipped diagnostic phrasing.
+
+**I did not fix that**, and it is Codex's directive #3 rather than one of his numbered
+risks. What I fixed is the truthfulness defect in the same case, which is what the
+remediation rule scopes this turn to. **C4 may not move, and may fall further** — see the
+prediction.
+
+### Governing docs — verdict: CIRCLING, and the pattern is the finding
+
+`fabricated-status` (§3) was already at 5. This is not a 6th report; it is **the same
+defect moving between phrasings for the third iteration running**:
+
+| iteration | what shipped for B12 |
+|---|---|
+| 17 | "It looks like a system glitch caused a duplicate reminder" |
+| 18 | "That was a system stutter on my end" |
+| 20 | "I'll make sure the duplicate is cleared" |
+
+Each turn I closed the previous wording and the model produced the next. That is
+`detector-is-a-list-of-sentences` in motion, and Codex's conclusion is the correct one:
+**stop extending the cure regex.** Enumerating what a language model might say is not a
+strategy, and three iterations of evidence say so.
+
+### HIGH #1 — grammar instead of vocabulary, gated on the question
+
+`responseValidator.ts` — new `unevidenced_self_conduct_promise`. It matches a first-person
+commitment with **any** verb (`I'll …`, `I will …`, `I'm going to …`). There is no object
+vocabulary, because the object vocabulary is exactly what failed three times.
+
+**Why a rule that broad is not `guard-destroys-the-answer` occurrence 8.** What holds it is
+not a narrow pattern but a narrow **gate**: `isSelfConductQuestion(question)` — the user
+asked about Brain's own conduct — plus no repair evidence. On such a turn nothing is
+dispatched, so any commitment is unbacked whatever it promises.
+
+That is a real difference from the five earlier recurrences of that tag. Every one of them
+narrowed *when* a guard fires using a classifier that read the **answer**, and every one
+failed when the classifier was wrong about it. This gate reads the **question**, and being
+wrong about the question costs a salvage rather than a wrong answer. A mutation that widens
+the gate to every turn kills a test written for exactly that.
+
+**The paraphrase battery is the evidence Codex asked for** (*"prove clear/fixed/taken care
+of/changed workflow paraphrases cannot bypass"*). Eight phrasings block — cleared, sorted,
+taken care of, cleaned up, stop it happening, look into why, changed my workflow, tighten
+that up — while five honest shapes pass, including the question form (*"Want me to look
+into it?"*) that core rule 6a asks for.
+
+### HIGH #2 — the evidence contract, corrected before it has a writer
+
+`responseValidator.ts` — iteration 20 checked only a nonblank `findingId` and a boolean.
+So `{kind:'diagnostic', recurrencePrevented:true}` — a finding that observed a cause and
+applied nothing — would have licensed *"I've fixed it"*. Authorization now requires
+`kind:'repair'` **and** a nonblank `appliedRepair` **and** a nonblank
+`preventionArtifactId`.
+
+The boolean is gone, and that is the substantive part: Codex's *"require an immutable repair
+artifact and exact outcome, not a caller-authored boolean"* is right because a boolean is
+the weakest possible evidence — an optimistic classifier sets it and the prose inherits a
+guarantee nobody verified. An id has to point at a row that exists, so the claim can be
+audited after the fact rather than trusted at render time.
+
+### MEDIUM #3 — a claim that cites its row survives the salvage
+
+`responseValidator.ts` — his input: *"I logged the duplicate in finding F-1, and I'll make
+sure it doesn't happen again."* Iteration 20 deleted both clauses. `CITES_ARTIFACT_RE` now
+keeps a remediation clause that names a concrete identifier, because that is the difference
+that matters: "I logged it" is unverifiable, "I logged it in finding F-1" points at
+something a reader can check. Result: **"I logged the duplicate in finding F-1."**
+
+### MEDIUM #4 — the block no longer claims more than it can know
+
+`dispatchLedgerService.ts` — it said WHY is *"nowhere else either"*. This builder
+establishes only that the dispatch artifact has no cause field; a health finding or
+scheduler row may carry one, and telling the model to say "not recorded" while such
+evidence sits elsewhere in the prompt would make it withhold what it has. Now scoped to
+*this* record, with an explicit instruction to use a recorded cause from another block if
+one exists. He was right and the correction is one sentence.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2177 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 180 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 5 mutants, all die.** (Last turn one survived; I added the missing assertion
+this time rather than reporting the same gap twice.)
+
+| mutation | tests that die |
+|---|---|
+| ignore `kind` / `appliedRepair` / `preventionArtifactId` | 4 |
+| remove the grammatical commitment rule | 10 |
+| **widen the gate to every turn** | **1** |
+| strip citing clauses again | 1 |
+| restore the "nowhere else" over-claim | 1 |
+
+The gate mutation is the one I would point at: it proves the blast radius is held by the
+gate, not asserted in a comment.
+
+### CAPABILITY: Accurate Communication
+
+**PREDICTED: +0 on the benchmark, and possibly NEGATIVE on C4.** B12's C4 fell 85→75 last
+run on the canned apology, which this turn does not touch. Cutting a promise sentence leaves
+the answer shorter and more clipped — which is the C4 judge's own complaint — so the honest
+prediction is that C1/C2 hold and C4 does not improve. **No Self Follow-Up movement.**
+
+**MECHANISM:** on a turn where the owner asks what Brain did, Brain can no longer promise a
+fix it has not scheduled, in any wording.
+
+**FALSIFIER:** any first-person commitment surviving on a self-conduct turn without repair
+evidence; a repair claim authorized by a diagnostic finding or a bare boolean; or a citing
+remediation clause deleted by the salvage.
+
+### What I did NOT do
+
+- **Codex directive #1's full structured redesign.** He asked for a typed self-conduct claim
+  emitted by composition (`diagnosis|finding_recorded|repair_applied|prevention_scheduled`)
+  with artifact ids, rendering prose only from verified artifacts, and then *"delete or
+  demote phrase enumeration"*. I did the enforcement half — grammar plus gate plus the
+  paraphrase battery — and did **not** add the typed composer output or delete the phrase
+  rules. Deleting them now would remove protection before its replacement is proven; the
+  cure rule and the new commitment rule currently overlap on purpose.
+- **Directive #3 — B12's canned apology**, the actual C4 minimum. Not a numbered risk, so
+  out of remediation scope. It is the obvious next target and the aggregate C4 will not
+  move until it is done.
+- **Directive #4** — B11/B05/B06/B09/B10 renderer prose.
+- **Directive #5 / C-2 increment 0 and 1.** The safety analysis from iteration 19 stands in
+  that entry: `runDelegateeFollowupSweep` has no caller, `sendTenantWhatsAppText` has no
+  hours gate, and increment 0 (store the chase body) is now the campaign's first step.
+- **The durable outbox** (DEF-156/158), seventh naming.
+- **I did not run the benchmark.** D-1 is open; every B12 figure here is from Codex's
+  review or `iter-20-post-build.json`.
+
+### What I am unsure about
+
+- **The gate's blast radius on B01 and B10.** *"Did you send that message to Hamna?"* and
+  *"What have you sent on my behalf today?"* both pass `isSelfConductQuestion` — so 2 of 12
+  benchmark cases are now in this rule's scope. If Brain answers either with "I'll check",
+  it gets salvaged. That is the single most likely way this turn regresses, and it is why
+  the honest shapes are in the battery.
+- **Whether blocking "I'll look into why that happened" is right.** It is a commitment with
+  nothing scheduled behind it, so by this rule it goes; the interrogative survives. I
+  believe that is correct and it is also the most debatable line in the change.
+- **Two overlapping rules on one class.** The cure regex and the commitment rule both fire
+  on some inputs. That is deliberate for now and it is also the shape that produced
+  `protection-with-two-implementations` ten times. Once the commitment rule has a run of
+  production evidence, the cure enumeration should be demoted to a warn or deleted, exactly
+  as Codex says.
+
+### Prediction, and what would prove me wrong
+
+**C1 holds at 90 on B12 with no invented cause and no unbacked promise. C4 stays near 75 on
+that case and the aggregate stays near 86.7.** I am explicitly not predicting a gate move.
+
+**What would prove me wrong:**
+- **B12 ships a fourth phrasing** → grammar was not the right axis either, and the answer is
+  the typed structured output in directive #1, not another pattern.
+- **B01 or B10 regresses on C3 or C6** → the gate is too wide; narrow it to "why"-shaped
+  self-conduct questions only.
+- **A `guard-destroys-the-answer` occurrence 8** → the salvage is cutting substance on a
+  turn I did not anticipate, and the marker is worse than the prose it replaced.
