@@ -4240,3 +4240,164 @@ one answer; or B12 still returning a marker.
   B01 and B10 remain the two other self-conduct questions in the suite.
 - **C4 does not recover** → the marker was not the whole cause of the 75 → 10 fall, and I
   have mis-attributed my own regression.
+
+---
+
+## Iteration 23 — mode: structural · REMEDIATION attempt 1 of 3 · campaign C-2 (iteration 5 of 8)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### The override, stated so it is on the record
+
+The capability cap says work Self Follow-Up and take C-2's lowest undelivered increment.
+**I did not.** The remediation section is explicit that it outranks the campaign — *"not
+the campaign's next deliverable — those all wait"* — and iteration 22's WEAK carried two
+HIGHs that reach the owner in production:
+
+- a legitimate reply of `[see attached]` is replaced with a fabricated failure message;
+- on WhatsApp, an internal composer instruction is handed to the language model as its
+  only fact and rewritten into Brain's voice.
+
+Both are live owner-visible defects introduced by me last turn, so this qualifies under the
+cap's own exception (*"a live regression that would reach the owner"*). **The orchestrator
+should report it as an override.** C-2 remains at zero increments after five iterations, and
+my position from iteration 22 stands: that is worth reporting to the owner, and the reason
+is not the campaign's difficulty — four of the five turns went on repairing a guard I broke.
+
+**This ships.** It is one boundary made correct, on both surfaces, with tests and a live
+check on the built bundle.
+
+### Governing docs — verdict: CIRCLING, and the class is now named correctly
+
+`detector-is-a-list-of-sentences` goes to **3**. The three occurrences are the same error
+at different altitudes:
+
+| | how a marker was recognised | how it failed |
+|---|---|---|
+| DEF-143 | a list of sentences | missed the wording nobody wrote down |
+| DEF-168 (iter 21) | a list of marker NAMES | missed two new markers → raw text to the owner |
+| DEF-169 (iter 22, mine) | the SHAPE `/^\[...\]$/` | caught `[see attached]` → destroyed a real reply |
+
+A list misses what it has not seen; a shape catches what it should not. **Both infer a fact
+about ORIGIN from TEXT.** The exit is not a better pattern.
+
+### The change
+
+**`systemMarker.ts` (new).** `systemMarker(body)` stamps `U+2063 INVISIBLE SEPARATOR` on
+every marker at the producer; `isSystemMarker` reads it. Zero-width, never typed by a
+person, never emitted by a model, and invisible rather than noisy if it ever leaks. The
+bracketed body is untouched, so logs and the curated-meaning rules keep working.
+
+**`responseValidator.ts`.** Its seven markers are now built through the constructor, so the
+thing that produces the signal is the thing that declares it.
+
+**`answerSanitizer.ts` — both surfaces, because only one was ever checked.**
+`sanitizeAnswerForUser` keys off provenance instead of shape. `sanitizeAnswerInBrainVoice`
+does the same and, crucially, **never hands an uncurated marker to the model**: only a
+curated plain-language meaning is safe to pass on. That closes HIGH #2 in both directions
+at once — there is no LLM-success path and no LLM-failure path to differ, because the model
+is not consulted.
+
+**`NEUTRAL_MARKER_FALLBACK`.** Codex's MEDIUM #3: my previous line said *"let me look again.
+Could you ask me once more?"* — an unscheduled promise plus a demand that the owner repeat
+himself. That is the empty-promise class inside the safety net, which is the one place it
+must not be. It now states the situation and stops.
+
+### What an existing guard caught, which is the part I want reviewed
+
+`def092MarkerVoice` went red on my first pass, and it was right to. Markers like
+`[update_open_item: id not found — reference may be stale, retry by title]` come from
+producers I did **not** migrate. Removing the shape catch-all without migrating them would
+have shipped those raw — losing protection iteration 22 actually had.
+
+So `isLegacyActionMarker` is a **named compatibility bridge**: it matches machine grammar —
+a snake_case identifier followed by a colon — which `[see attached]`, `[CONFIDENTIAL]` and
+`[Approved by Basit]` cannot satisfy. It is narrower than iteration 22's pattern by
+construction rather than by tuning. **It is still inference, and the class is not closed
+until those producers use the constructor.** I would rather say that than describe a
+half-migration as complete, which is precisely what caused DEF-168.
+
+### Three existing tests changed, each named
+
+Not absorbed silently, because "I adjusted a test" is the claim that most deserves suspicion:
+
+- **`def092MarkerVoice`, two DEF-102 guards** — their MECHANISM is changed on purpose. They
+  required the LLM to speak an uncurated marker; that is the exact path that published a
+  composer instruction as Brain's words. DEF-102's substance — never raw, never silent — is
+  intact and re-asserted, including a new length assertion so "not silent" stays pinned.
+- **`def135GuardSalvagesAnswer`** — its marker matcher asserted a leading bracket. It now
+  asserts ORIGIN (`isSystemMarker`), which is the property it was reaching for.
+- **`def167`'s three DEF-168 cases** — they passed a BARE bracketed string and expected it
+  stripped. That assertion is what made iteration 22 destroy `[see attached]`, so they now
+  build their markers through the producer.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2207 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 182 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Live check on the built bundle:**
+
+| input | web | WhatsApp |
+|---|---|---|
+| `[see attached]` | preserved | preserved |
+| `[CONFIDENTIAL]`, `[Approved by Basit]` | preserved | preserved |
+| stamped uncurated marker | neutral line | neutral line, no LLM call |
+| `[update_open_item: id not found — …]` | neutral line | neutral line |
+| curated `[no action dispatched — …]` | vetted wording | vetted wording |
+
+**Mutation: 4 mutants, all die** — shape test instead of provenance (16 tests), uncurated
+marker back to the LLM (2), validator stops stamping (2), drop the legacy bridge (2).
+
+### CAPABILITY: Accurate Communication
+
+**PREDICTED: +0 on the benchmark.** No case answers with a bare bracket, so none of this is
+visible to it. The regression guard should show B12 unchanged from 95.4/88.8.
+
+**MECHANISM:** internal text is recognised by where it came from, so it can be suppressed
+without suppressing anything a person wrote — and on WhatsApp it is no longer paraphrased
+into Brain's voice.
+
+**FALSIFIER:** any stamped marker reaching a surface; any legitimate bracketed reply
+replaced; or `markerVoice` receiving an uncurated marker.
+
+### What I did NOT do
+
+- **C-2 increment 0**, and therefore nothing for the campaign — the override above.
+- **Codex's MEDIUM #4 and #5** (true remediation evidence always cut; the question regex as
+  a semantic decision). Both remain accepted known costs recorded on DEF-167's row. My
+  position is unchanged and I am not re-arguing it in a turn that had two HIGHs to close.
+- **His directive #3** — the typed self-conduct claim from composition. Still the real exit
+  from regex-as-judgment, still not built.
+- **His directive #4 (B02) and #5 (C4 sources).** The benchmark is a regression guard now
+  and the capability cap forbids more conversational-case work; B02 is named here so it is
+  not lost.
+- **Migrating the remaining marker producers** to `systemMarker()`. Bridged, not closed.
+- **The durable outbox** (DEF-156/158), ninth naming.
+- **I did not run the benchmark.** D-1 is open.
+
+### What I am unsure about
+
+- **Whether `U+2063` survives every transport.** It is a format character; if some layer
+  strips or normalises it, a marker silently becomes unrecognised and falls through to the
+  legacy bridge or to raw text. I checked the two sanitizers and the validator, not the
+  WhatsApp transport or the web client.
+- **Whether the neutral line is good enough.** It is honest and promises nothing, but it is
+  still a non-answer. If it starts appearing often that is a symptom, not a fix.
+- **Whether the legacy bridge should have been a migration.** I chose the bridge because
+  finding every producer is a sweep, and a sweep in a remediation turn is how the last four
+  turns went wrong. It is inference and I have said so.
+
+### Prediction, and what would prove me wrong
+
+**Nothing in the benchmark moves.** This is invisible to all twelve cases.
+
+**What would prove me wrong:**
+- **Any case moves materially** → a marker is reaching a benchmark answer, which would mean
+  the guard is firing far more often than I believe.
+- **A stamped marker appears on a surface** → the sentinel does not survive transport, which
+  is the specific thing I could not check from here.
+- **A legitimate bracketed reply is still replaced** → the bridge's grammar is wider than I
+  measured.
