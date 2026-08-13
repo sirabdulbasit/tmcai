@@ -739,6 +739,44 @@ export default function OrchestratorPulsePanel() {
      layout exact without deleting the outcome strip, which is the one view that
      shows what each iteration produced. */
   const [showTrend, setShowTrend] = useState(false);
+
+  /* ── IS THE PAGE STILL RUNNING THE BUILD THAT IS DEPLOYED? ──────────────────
+     Owner, 2026-08-13: *"when u deployed are u reloading page by yourself?"* — no,
+     and that is why he had been hard-refreshing after every change I shipped. The
+     deck polls its DATA every five seconds and never once checked whether its own
+     CODE was current, so a fix could be live on disk for an hour while he looked at
+     the old bundle and reasonably concluded I had not done it.
+
+     Detected without a build step: fetch the served index.html and compare the
+     module bundle it points at with the one this component was loaded from. Vite
+     content-hashes those filenames, so a differing hash IS a new deploy.
+
+     It offers a reload rather than taking one. An unannounced reload during a live
+     build would throw away whatever he was reading. */
+  const [newBuild, setNewBuild] = useState(false);
+  useEffect(() => {
+    /* The entry bundle THIS page actually loaded, read from its own script tag
+       rather than from import.meta.url. That distinction matters: this component
+       currently lives in index-*.js so the two agree, but the day it gets
+       code-split into its own chunk, import.meta.url would stop matching the
+       served entry and the pill would show permanently. Reading the DOM is exact
+       whatever the chunking does. */
+    const entry = document.querySelector('script[type="module"][src*="/assets/"]');
+    const mine = entry?.getAttribute('src')?.split('/').pop() || null;
+    let live = true;
+    const check = async () => {
+      try {
+        const html = await fetch('/index.html', { cache: 'no-store' }).then((r) => r.text());
+        const m = html.match(/src="([^"]*\/assets\/[^"]+\.js)"/);
+        if (!live || !m) return;
+        const served = m[1].split('/').pop();
+        if (served && mine && served !== mine) setNewBuild(true);
+      } catch { /* offline or blocked — say nothing rather than nag */ }
+    };
+    check();
+    const t = setInterval(check, 30_000);
+    return () => { live = false; clearInterval(t); };
+  }, []);
   const [, setTick] = useState(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -832,6 +870,12 @@ export default function OrchestratorPulsePanel() {
           </span>
           <span>· frame {frameAge}s old</span>
           <span>· {pkt(liveNow, data.pkt_offset)}</span>
+          {newBuild && (
+            <Button variant="primary" size="sm" onClick={() => window.location.reload()}
+                    title="A newer build of this dashboard is deployed — this tab is running the previous one">
+              <Icon name="refresh" size={14} /> New build — reload
+            </Button>
+          )}
           <Button variant="secondary" size="sm" onClick={() => setPaused((p) => !p)}>
             {paused ? 'Resume' : 'Pause'}
           </Button>
