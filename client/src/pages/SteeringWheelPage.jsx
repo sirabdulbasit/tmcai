@@ -59,7 +59,7 @@ const ADMIN_TAB = { key: 'admin', label: 'Admin / Client Config', icon: 'setting
 // Admin-only, like the endpoint behind it: the frame carries builder session ids,
 // model names and raw agent output.
 const PULSE_TAB = {
-  key: 'health', label: 'Brain Pulse', icon: 'pulse', group: 'ops',
+  key: 'health', label: 'Brain Evolution', icon: 'pulse', group: 'ops',
   render: () => (
     <div style={{ padding: 'var(--s-6)' }}>
       <OrchestratorPulsePanel />

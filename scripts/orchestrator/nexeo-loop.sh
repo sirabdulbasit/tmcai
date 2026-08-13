@@ -761,6 +761,92 @@ commit and which line, and the reviewer will judge that claim."
   # loop is aiming at across several iterations; Codex's directive still governs
   # HOW. Without this the loop re-aims at whatever gates the benchmark every turn,
   # which is how eight iterations all landed on the smallest remaining gap.
+  # ── THE CAPABILITY CAP ─────────────────────────────────────────────────────
+  #
+  # Owner, 2026-08-13: *"are we in right direction of improvements?"* — and the
+  # arithmetic said no. Accurate Communication is 15 of the 359 remaining capability
+  # points, 4.2% of the journey, and it had received 22 of 22 iterations. The other
+  # eight capabilities, 95.8% of the distance, had received none.
+  #
+  # Not bad luck — both rails pointed the same way. The benchmark's fixQueue always
+  # names a conversational case and every conversational case is capability 4, while
+  # the remediation rail chains each turn to whatever the reviewer last objected to,
+  # which is that same case. I built that rail this morning and gave it no exit, so
+  # it made the loop finish its work properly AND bound it tighter to the smallest
+  # gap.
+  #
+  # So: after this many consecutive turns on one capability, the next turn must move
+  # to the campaign's capability whatever the fixQueue says. Remediation still gets
+  # its attempts — the cap is on staying, not on finishing.
+  CAP_LIMIT="${NEXEO_CAPABILITY_CAP:-3}"
+  CAP_NOTE="Not applicable."
+  # Keyed on CAMPAIGN STARVATION, not on the declared capability line.
+  #
+  # My first version compared the last three `CAPABILITY:` declarations and fired
+  # only if they matched. It would not have fired once: the Builder declares
+  # `RELIABILITY-ONLY` for most turns, which is correct under the owner's ruling and
+  # says nothing about which capability the work touched. A cap that cannot detect
+  # the thing it exists to stop is decoration.
+  #
+  # So the signal is the campaign itself: it has been open N iterations and its
+  # capability has not moved. That is the owner's question — *"are we in right
+  # direction of improvements?"* — asked of the data instead of the prose.
+  CAP_STARVED="$(python3 - "$STATE/campaign.json" "$ORCH/scores" "$ITER" "$CAP_LIMIT" <<'PYEOF'
+import glob, json, os, re, sys
+try:
+    camp = json.load(open(sys.argv[1]))["active"]
+except Exception:
+    print(""); raise SystemExit
+scores_dir, iter_no, limit = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+name = camp.get("capability")
+start = int(camp.get("from_iteration") or 0)
+open_for = iter_no - start
+if not name or open_for < limit:
+    print(""); raise SystemExit
+
+def score_at(n):
+    try:
+        d = json.load(open(os.path.join(scores_dir, f"iter-{n}-capability.json")))
+    except Exception:
+        return None
+    for c in d.get("capabilities", []):
+        if c.get("name") == name:
+            return c.get("score")
+    return None
+
+# The newest card, and the newest card at or before the campaign opened.
+newest = None
+for f in sorted(glob.glob(os.path.join(scores_dir, "iter-*-capability.json")),
+                key=lambda p: int(re.search(r"iter-(\d+)-", p).group(1))):
+    n = int(re.search(r"iter-(\d+)-", f).group(1))
+    if n <= iter_no:
+        newest = n
+at_start = next((score_at(n) for n in range(start, 0, -1) if score_at(n) is not None), None)
+now = score_at(newest) if newest else None
+if at_start is None or now is None:
+    print(""); raise SystemExit
+if now > at_start:
+    print("")  # it is moving; leave the loop alone
+else:
+    print(f"{name}|{open_for}|{at_start}|{now}")
+PYEOF
+)"
+  if [ -n "$CAP_STARVED" ]; then
+    IFS='|' read -r CS_NAME CS_FOR CS_FROM CS_NOW <<<"$CAP_STARVED"
+    say "CAP    iter=$ITER — campaign capability '$CS_NAME' open $CS_FOR iterations, still $CS_NOW (was $CS_FROM)"
+    CAP_NOTE="**CAMPAIGN STARVATION — \`$CS_NAME\` has been the active campaign for $CS_FOR iterations and has not moved ($CS_FROM to $CS_NOW).**
+
+This turn works \`$CS_NAME\`. Whatever the fixQueue says, do not add another change
+aimed at the benchmark's conversational cases: Accurate Communication is 15 of the
+359 remaining capability points — 4.2% of the journey — and has had every iteration
+so far, while the other eight capabilities are 95.8% and have had none.
+
+Start with the campaign's LOWEST-numbered undelivered increment. If you believe an
+exception is genuinely required — a live regression that would reach the owner, for
+example — say so explicitly in your build entry with the reason, so the orchestrator
+reports it as an override rather than it passing unnoticed."
+  fi
+
   CAMPAIGN_TXT="$(python3 - "$STATE/campaign.json" "$ITER" <<'PYEOF'
 import json, sys
 try:
@@ -822,7 +908,7 @@ PYEOF
     TSC "$TSC_BEFORE" TESTS "${TESTS_AFTER:-not yet run this session}" \
     MODE "$MODE" STRUCTURAL "$STRUCTURAL_NOTE" \
     FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" REMEDIATION "$REMEDIATION_NOTE" \
-    RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" \
+    RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" CAP "$CAP_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
   # Save what the Builder was actually told. I could not verify that iteration 20's

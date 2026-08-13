@@ -1,5 +1,5 @@
 /**
- * Brain build pulse — the orch pulse window, drawn in the browser.
+ * Build Pulse — the orch pulse window, drawn in the browser.
  *
  * Colour roles are declared once here and referenced by role below, so the whole
  * panel re-themes from one block. Every value clears 3:1 against both card

@@ -824,7 +824,7 @@ export default function OrchestratorPulsePanel() {
     return (
       <Card className="orch-pulse">
         <div className="orch-pulse-head">
-          <h2 className="orch-pulse-title">Brain build pulse</h2>
+          <h2 className="orch-pulse-title">Build Pulse</h2>
           <Button variant="secondary" size="sm" onClick={load}>
             <Icon name="refresh" size={14} /> Retry
           </Button>
@@ -860,7 +860,7 @@ export default function OrchestratorPulsePanel() {
     <Card className={`orch-pulse${stale ? ' is-stale' : ''}${paused ? ' is-paused' : ''}`}>
       <div className="orch-pulse-head">
         <h2 className="orch-pulse-title">
-          Brain build pulse
+          Build Pulse
           <span className="orch-section-note">the orchestrator loop, live</span>
         </h2>
         <div className="orch-pulse-meta">
