@@ -72,6 +72,35 @@ campaign        C-2 Self Follow-Up, open 5 iterations, ZERO increments delivered
 staged          nexeo-loop.next.sh — escapes backticks that ate the reviewer's score path
 ```
 
+### THE DECISION WAITING FOR THE OWNER
+
+Iteration 23 closed WEAK. `deployed=no` — **14 iterations, one deploy.** Codex:
+
+> *"validator-produced unknown markers now carry provenance and both sanitizer
+> functions handle that path safely, but bare curated strings and the legacy
+> snake-case bridge still infer origin from text, so the claimed structural boundary
+> remains a partial migration."*
+
+Two HIGHs remain, and on reading the code both are **architectural completeness rather
+than live owner risk**: `isWholeMarker(answer) && !!curated` only fires when the
+bracket text matches an already-curated marker, so a legitimate `[see attached]` is
+returned untouched. `isLegacyActionMarker` matches snake-case action names.
+
+So the branch is 5 iterations deep in one path, holds 14 iterations of work, and the
+only thing between it and production is two findings whose realistic blast radius is
+very small. **Three options, and the third is the owner's risk appetite to spend:**
+
+1. One more turn on the path (the sixth). Cheap, and the pattern says it will find a
+   seventh.
+2. Move to the campaign per D-17's expiry and leave the branch undeployable. Honest,
+   but nothing reaches him again.
+3. **Accept both HIGHs as known limitations with DEF rows and ship**, using
+   `NEXEO_DEPLOY_ON=no-critical` (implemented, never activated). This is the option
+   that ends the delivery drought, and it must be the OWNER's call, not yours — the
+   crude version of this shipped a data-loss regression at iteration 13.
+
+Do not pick 3 unilaterally. Do not pretend 2 is progress.
+
 ### Immediately next
 
 1. **Read Codex's iteration-23 verdict.** If SOUND, it deploys — then run
