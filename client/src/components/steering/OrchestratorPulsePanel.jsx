@@ -273,6 +273,20 @@ function BrainIntegrity({ data }) {
   const integrity = Math.round((brain.nexeo / brain.professional) * 100);
   const active = campaign?.capability || null;
 
+  /* The reference illustration, IF the owner has saved it. Probed once rather than
+     assumed: a broken background is invisible in CSS, so an assumed asset would
+     have failed silently and looked like the card simply ignoring him. When it is
+     absent the drawn version renders and the card is complete either way. */
+  const [art, setArt] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const img = new Image();
+    img.onload = () => { if (live) setArt('/brain-integrity.png'); };
+    img.onerror = () => { if (live) setArt(null); };
+    img.src = '/brain-integrity.png';
+    return () => { live = false; };
+  }, []);
+
   /* The repair-zone callouts. In the reference illustration they are decorative;
      here they name the four capabilities that most need work — the active campaign
      first, because that is the one being repaired right now, then the largest gaps
@@ -303,11 +317,15 @@ function BrainIntegrity({ data }) {
       position: 'relative', borderRadius: 8, overflow: 'hidden',
       background: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
       border: '1px solid rgba(232,163,61,0.25)', padding: '10px 12px 12px',
-      /* If the owner drops his illustration at client/public/brain-integrity.png it
-         becomes the backdrop and the live numbers sit on top of it. Until then this
-         renders on its own. The art cannot be generated here — the layout, palette
-         and every number can. */
-      backgroundImage: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
+      backgroundImage: art
+        /* The owner's illustration, once he saves it to client/public. It sits
+           BEHIND a dark scrim so the live numbers stay legible on top of it — the
+           art is the ground, the data is the figure, and if that order ever
+           inverts the card becomes decoration. */
+        ? `linear-gradient(rgba(7,7,7,0.62), rgba(7,7,7,0.72)), url(${art})`
+        : 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
     }}>
       {/* circuit traces, faint — the ground of the reference image */}
       <svg viewBox="0 0 400 240" preserveAspectRatio="none" aria-hidden="true"
@@ -344,8 +362,9 @@ function BrainIntegrity({ data }) {
       <div style={{ position: 'relative', marginTop: 8 }}>
         <svg viewBox="0 0 400 210" style={{ width: '100%', height: 'auto', display: 'block' }}
              role="img" aria-label={`Brain integrity ${integrity} percent of a professional assistant`}>
-          {/* cortex silhouette */}
-          <g opacity="0.55">
+          {/* cortex silhouette — hidden when the owner's illustration is the
+              backdrop, because two brains on one card is worse than either */}
+          <g opacity="0.55" style={{ display: art ? 'none' : undefined }}>
             <path d="M200,34 C252,30 300,52 312,92 C324,132 296,176 246,186 C208,193 168,191 134,180
                      C88,165 76,124 88,90 C102,50 150,38 200,34 Z"
                   fill="rgba(232,163,61,0.07)" stroke={GOLD_DIM} strokeWidth="1.4" />
@@ -706,6 +725,12 @@ export default function OrchestratorPulsePanel() {
   const [error, setError] = useState(null);
   const [paused, setPaused] = useState(false);
   const [showTable, setShowTable] = useState(false);
+  /* The owner's deck is 2x2 — four cards, no scroll ("health deck should look like
+     this", twice). Brain integrity and the ten-iteration trend both want the
+     top-right slot, so they share it and the card's hint swaps them. That keeps his
+     layout exact without deleting the outcome strip, which is the one view that
+     shows what each iteration produced. */
+  const [showTrend, setShowTrend] = useState(false);
   const [, setTick] = useState(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -874,10 +899,13 @@ export default function OrchestratorPulsePanel() {
           {/* aspect 1b — the integrity picture the owner asked for, 2026-08-13:
               "health deck should look like this", with a reference illustration of
               a brain at 47% INTEGRITY ringed by repair zones. */}
-          <PulseCard className="orch-deck-brain" title="Brain integrity"
-                     hint="capability vs a professional assistant">
-            <BrainIntegrity data={data} />
-          </PulseCard>
+          {!showTrend && (
+            <PulseCard className="orch-deck-brain" title="Brain integrity"
+                       hint="show 10-iteration trend"
+                       onHintClick={() => setShowTrend(true)}>
+              <BrainIntegrity data={data} />
+            </PulseCard>
+          )}
 
           {/* aspect 2 — how far Brain is from a professional assistant */}
           {data.capabilities.length > 0 && (
@@ -895,14 +923,15 @@ export default function OrchestratorPulsePanel() {
           {/* interpretation comes from the collector, not recomputed here: the same
               arithmetic in two places is how a dashboard starts disagreeing with the
               terminal it mirrors. */}
-          {overall && (
+          {overall && showTrend && (
             <PulseCard
-              className="orch-deck-trend"
+              className="orch-deck-brain"
               /* Owner, 2026-08-13: "this should show last 10 iterations". It spanned
                  1→18, which averages away the recent turns — the only ones a decision
                  can still affect. */
               title={`BRAIN overall · last 10 iterations${winIters.length ? ` (#${winIters[0]}→#${winIters[winIters.length - 1]})` : ''}`}
-              hint={`${overall.last} now · ${overall.first} → ${overall.last} across ${trend.iterations.length} scored`}
+              hint="show brain integrity"
+              onHintClick={() => setShowTrend(false)}
             >
               {/* THE SCALE, STATED. Owner, 2026-08-13: "I couldnt understand this
                   make it meaningfull for me". The chart auto-scales to the series'
