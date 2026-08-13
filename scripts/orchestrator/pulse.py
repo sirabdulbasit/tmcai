@@ -195,8 +195,23 @@ def detect_stage():
                 and "vscode-server" not in arg and "vscode/cli" not in arg):
             return "SCORING", et, "process", "grok reading the codebase (capability score)"
     for et, arg in ps:
-        if "nexeoCapabilityBenchmark" in arg:
-            return "MEASURING", et, "process", "benchmark: 12 cases, compose + judge"
+        # THE THIRD OCCURRENCE OF THIS FILE'S OWN TRAP — owner, 2026-08-13, looking at
+        # the Deck: *"how 2 are running at the same time"*, with Measure and Review both
+        # showing Running. They were not: the log has MEASURE finishing and REVIEW
+        # starting in the same second. The bare substring matched the CODEX process,
+        # because `codex exec` carries its entire prompt on argv and the review prompt
+        # NAMES this script in its benchmark-integrity check. Verified rather than
+        # assumed: `tr '\0' ' ' < /proc/<codex-pid>/cmdline | grep nexeoCapabilityBenchmark`
+        # hits. So the panel reported a phase that had already ended, for as long as the
+        # review ran.
+        #
+        # The real benchmark is `node -r dotenv/config dist/scripts/nexeoCapabilityBenchmark.js`
+        # (nexeo-loop.sh:180). Match THAT, and never an agent carrying it as prompt text.
+        if not re.search(r"\bnode\b.*dist/scripts/nexeoCapabilityBenchmark\.js", arg):
+            continue
+        if re.search(r"codex(\.\w+)?\s+exec\b", arg) or "grok" in arg or "/claude" in arg:
+            continue
+        return "MEASURING", et, "process", "benchmark: 12 cases, compose + judge"
     # The SAME editor-process trap as the claude matcher below. The owner's Codex
     # VSCode extension runs `.../openai.chatgpt-*/bin/linux-x86_64/codex … app-server`
     # permanently, and matching it reported "Codex reviewing" while the loop was
