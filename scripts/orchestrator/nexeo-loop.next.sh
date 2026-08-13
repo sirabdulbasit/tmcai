@@ -1054,12 +1054,28 @@ PYEOF
 )"
   FAIL_STREAK=0
   [ -s "$STATE/fail-streak" ] && FAIL_STREAK="$(cat "$STATE/fail-streak")"
-  if [ "$SHIPPED_THIS_ITER" = "no" ] && [ "$CAP_MOVED" != "yes" ]; then
-    FAIL_STREAK=$((FAIL_STREAK + 1))
-    say "ITERATION $ITER FAILED — nothing deployed, no capability movement (streak $FAIL_STREAK)"
-  else
+  # D-19, 2026-08-13 — THE STREAK RESETS ON DELIVERY, NOT ON A SCORER'S OPINION.
+  # This block used to reset the moment EITHER a deploy happened OR Grok's card said
+  # PROGRESSIVE. So at iteration 23 the loop logged "ITERATION 23 reached the owner —
+  # fail streak reset from 3" on an iteration that deployed NOTHING: the owner received
+  # nothing and the failure rail was disarmed by a third-party model's adjective. That
+  # is how fourteen iterations produced one deploy without the rail ever tripping, and
+  # it inverts the owner's standing ruling that improvement must be REAL, not numeric
+  # (D-10), and that undeployed work is worth zero (D-14).
+  #
+  # Capability movement without a deploy is still worth SAYING — it is the difference
+  # between a wasted turn and a turn whose value is stuck behind the gate — but it no
+  # longer counts as reaching him.
+  if [ "$SHIPPED_THIS_ITER" = "yes" ]; then
     [ "$FAIL_STREAK" -gt 0 ] && say "ITERATION $ITER reached the owner — fail streak reset from $FAIL_STREAK"
     FAIL_STREAK=0
+  else
+    FAIL_STREAK=$((FAIL_STREAK + 1))
+    if [ "$CAP_MOVED" = "yes" ]; then
+      say "ITERATION $ITER FAILED — capability moved but NOTHING DEPLOYED, so the owner received nothing (streak $FAIL_STREAK)"
+    else
+      say "ITERATION $ITER FAILED — nothing deployed, no capability movement (streak $FAIL_STREAK)"
+    fi
   fi
   printf '%s' "$FAIL_STREAK" > "$STATE/fail-streak"
   say "SHIP   iter=$ITER deployed=$SHIPPED_THIS_ITER capability_moved=$CAP_MOVED"

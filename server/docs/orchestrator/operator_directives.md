@@ -1034,10 +1034,30 @@ Every iteration from 24 on closes with one of exactly two honest statements:
 - **`deployed=yes`** — the owner received something, quoted back from production, or
 - **a named, code-complete increment** of the active campaign that a reviewer can judge.
 
-Anything else is a failed iteration and is reported as one. **If two consecutive
-campaign iterations produce neither, the orchestrator stops the loop and returns to the
-owner** rather than spending a third. Iteration count is not progress; D-14 and D-10 rank
-above any number the scorer produces.
+Anything else is a failed iteration and is reported as one.
+
+**AMENDED by the owner the same day — the loop is NEVER stopped.** His ruling: *"your job
+is to keep loop up (never idle nor stopped), monitoring the improvement and keep it
+significantly improving (not number but in real)"*. The first version of this directive
+said the orchestrator stops the loop after two non-delivering iterations. **That is
+withdrawn.** Two consecutive iterations with neither a deploy nor a named increment now
+means the orchestrator **re-scopes the next turn to something small enough to ship and
+reports to the owner while the loop keeps running** — never a halt, never an idle deck.
+The only sanctioned pause is the `STOP` file, which is not a stop at all: the supervisor
+finishes the iteration, swaps any staged script and restarts within seconds.
+
+Iteration count is not progress; D-14 and D-10 rank above any number the scorer produces.
+
+### The streak was resetting on an opinion — fixed in the same breath
+
+`nexeo-loop.sh:1057` reset the failure streak when EITHER a deploy happened OR Grok's card
+said `PROGRESSIVE`. So iteration 23 logged **"reached the owner — fail streak reset from
+3"** having deployed nothing. The rail that exists to catch exactly this drought was being
+disarmed by a third-party model's adjective, which is how fourteen iterations produced one
+deploy without it ever tripping. Staged into `nexeo-loop.next.sh`: **only `deployed=yes`
+resets the streak.** Capability movement without a deploy is still logged — it is the
+difference between a wasted turn and a turn whose value is stuck behind the gate — but it
+no longer counts as reaching him.
 
 ### The prediction, on the record before iteration 24 runs
 
