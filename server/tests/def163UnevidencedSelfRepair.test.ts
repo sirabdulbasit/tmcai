@@ -107,16 +107,125 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
       .toBeDefined();
   });
 
-  it('does not fire when an action really was dispatched', () => {
-    // Reporting a dispatch is not inventing one. Same gate `empty_promise` uses.
-    expect(violation(B12_ANSWER, { ...READ_ONLY, turnIntent: 'mutation' as const }))
-      .toBeDefined();  // still unbacked: no actionResult
-    expect(
-      validateBeforeRender(
+  describe('DEF-165 — evidence must attest the claim, not merely coexist with it', () => {
+    // Codex's iteration-18 HIGH #1. This block replaces a test of mine that
+    // asserted the opposite: it used `{kind:'update_open_item'}` as sufficient
+    // evidence, which was the defect written down as a contract.
+    it('an unrelated successful action does NOT authorize a cure claim', () => {
+      // His input: "Set the priority high, and why did you remind me twice?" The
+      // priority update genuinely succeeds. It is not a diagnosis, and it must not
+      // buy one.
+      const v = validateBeforeRender(
         composed(B12_ANSWER, { actionResult: { ok: true, kind: 'update_open_item' } }),
         { pendingStatus: null, turnIntent: 'mutation' },
-      ).violations.find((v) => v.rule === 'unevidenced_self_repair'),
-    ).toBeUndefined();
+      ).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v, 'an item update bought a fabricated cure').toBeDefined();
+    });
+
+    it('attesting provenance DOES authorize it', () => {
+      expect(validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'repair', findingId: 'finding-42',
+          observedCause: 'duplicate scheduler tick',
+          appliedRepair: 'dedup key added to the reminder job',
+          recurrencePrevented: true,
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair')).toBeUndefined();
+    });
+
+    it('a diagnosis that prevented nothing may not promise the future', () => {
+      // The claim under test says "to prevent it from happening again". Knowing
+      // the cause is not the same as having stopped it.
+      const v = validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'diagnostic', findingId: 'finding-42',
+          observedCause: 'duplicate scheduler tick',
+          appliedRepair: null,
+          recurrencePrevented: false,
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v, 'recurrencePrevented:false still authorized a prevention promise').toBeDefined();
+    });
+
+    it('evidence with no finding id is not evidence', () => {
+      const v = validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'repair', findingId: '   ', observedCause: null,
+          appliedRepair: null, recurrencePrevented: true,
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v).toBeDefined();
+    });
+  });
+
+  describe('DEF-165 — the forms Codex demonstrated shipping', () => {
+    // MEDIUM #4: the same promise with the recurrence clause moved onto the owner
+    // or collapsed into an adverb.
+    it('catches "you won\'t see a duplicate next time"', () => {
+      expect(violation("I've changed the workflow, so you won't see a duplicate next time."))
+        .toBeDefined();
+    });
+
+    it('catches "that\'s taken care of permanently"', () => {
+      expect(violation("Sorry about that. That's taken care of permanently.")).toBeDefined();
+    });
+  });
+
+  describe('DEF-165 — clause-level salvage keeps the grounded half', () => {
+    // MEDIUM #3, with Codex's exact input. One sentence, one truth, one invention.
+    const COMPOUND = "I sent the reminder twice, and I've flagged the error to prevent it happening again.";
+
+    it('keeps the observed fact and cuts only the cure', () => {
+      const salvaged = violation(COMPOUND)!.salvagedAnswer;
+      expect(salvaged, 'the owner lost the answer to his own question').toBeDefined();
+      expect(salvaged).toContain('I sent the reminder twice');
+      expect(salvaged).not.toContain('flagged');
+      expect(salvaged, 'no dangling conjunction').not.toMatch(/\band\s*$/);
+      expect(salvaged, 'no dangling comma').not.toMatch(/,\s*$/);
+      expect(UNEVIDENCED_SELF_REPAIR_RE.test(salvaged!)).toBe(false);
+    });
+
+    it('handles a semicolon the same way', () => {
+      const salvaged = violation(
+        "You got two reminders; I've flagged it to prevent another one.",
+      )!.salvagedAnswer;
+      expect(salvaged).toContain('You got two reminders');
+      expect(salvaged).not.toContain('flagged');
+    });
+
+    it('does not split a single claim at a bare comma', () => {
+      // "I have flagged the error, which prevents recurrence" is ONE claim.
+      // Cutting at the comma would ship "I have flagged the error." — still false.
+      const salvaged = violation(
+        'I have flagged the error, which prevents it from happening again.',
+      )!.salvagedAnswer;
+      expect(salvaged, 'half a fabrication is still a fabrication').toBeUndefined();
+    });
+
+    it('catches "so you won\'t see another one" — the recurrence lists had drifted', () => {
+      // The vocabulary was inlined per form and "another one" reached only two of
+      // three, so this shipped unguarded. One shared RECURRENCE_CLAUSE now.
+      expect(violation("I have flagged the error, so you won't see another one."))
+        .toBeDefined();
+    });
+
+    it('does not ship the remediation claim with only its promise removed', () => {
+      // Cutting the cure out of that sentence left "I have flagged the error." —
+      // the same fabricated completion minus its tell. A half-fix that reads as a
+      // whole one is worse than the marker.
+      const v = violation("I have flagged the error, so you won't see another one.")!;
+      expect(v.salvagedAnswer, 'shipped a bare "I have flagged the error"').toBeUndefined();
+      expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
+    });
+
+    it('still falls back to the marker when nothing grounded survives', () => {
+      const v = violation('I have flagged the error to prevent it from happening again.')!;
+      expect(v.salvagedAnswer).toBeUndefined();
+      expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
+    });
   });
 
   describe('the prose it must leave alone', () => {

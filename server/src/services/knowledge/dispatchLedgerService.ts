@@ -142,7 +142,33 @@ export async function buildDispatchLedgerBlock(
   const header = `# What you actually did (last ${hrs}h — the DISPATCH RECORD, not the conversation)\n`
     + 'This is the only valid source for "did you…?" / "have you…?" questions about your own\n'
     + 'actions. If something is not listed here, you did NOT do it in this window — say so.\n'
-    + 'If it IS listed, you did, even if this conversation does not mention it.\n';
+    + 'If it IS listed, you did, even if this conversation does not mention it.\n'
+    // ── DEF-165 — the boundary this block never stated ──────────────────────
+    //
+    // Codex's iteration-18 HIGH #2. Asked "Why did you remind me about that one
+    // twice?", Brain answered "That was a system stutter on my end" — with this
+    // block in the prompt saying nothing had been dispatched. Iteration 18 put
+    // "don't diagnose yourself" in the core rulebook and it lost: a general rule
+    // twenty blocks away does not compete with an unanswered question in front of
+    // the model, which fills the silence.
+    //
+    // So the boundary is stated HERE, beside the evidence, in the block whose
+    // authority the model already honours for "did you…?". The lesson of
+    // `examples-outvote-the-instruction` (DEF-138) run forwards: a constraint
+    // placed next to the data outranks one placed in a rulebook.
+    //
+    // It is deliberately about the SHAPE of the record rather than a list of
+    // forbidden words — Codex was explicit that chasing "glitch/stutter/sync/job"
+    // synonyms with a regex is not the fix, and the regex in `responseValidator`
+    // guards cures, not causes.
+    + '\nWHY something happened is NOT in this record and is nowhere else either. There is no\n'
+    + 'cause field, no error attribution, no root-cause log you can read from here. So when\n'
+    + 'asked WHY you did something — why a reminder went twice, why a message was late —\n'
+    + 'report what this record shows and then say plainly that the cause is not recorded.\n'
+    + '"A system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are\n'
+    + 'GUESSES; naming one as the cause is a fabricated finding even when it sounds\n'
+    + 'technical and modest. "I sent it twice — I can see that, but I do not have a record\n'
+    + 'of why" is the complete and correct answer.\n';
 
   if (entries.length === 0) {
     return `${header}(no actions dispatched in the last ${hrs} hours)`;

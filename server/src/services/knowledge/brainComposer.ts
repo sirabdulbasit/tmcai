@@ -1515,11 +1515,27 @@ async function assembleSystemPrompt(args: {
   todayDate: string;
   userId?: number;       // Phase 3: passed through for prompt_blocks user-scope override
   clientNumber?: string;
+  /**
+   * DEF-165 — the dispatch record, on THIS path too.
+   *
+   * `buildDispatchLedgerBlock` was wired into the reasoning path only
+   * (`reasoningCompose({ dispatchLedger })`). The legacy path assembled its
+   * prompt without it, so "did you send that?" on this path had no record to
+   * read and could only be answered from the conversation — the exact DEF-037
+   * failure the ledger exists to prevent. Reasoning is default-ON, which is why
+   * it went unnoticed; `BRAIN_USE_REASONING=never` and `useReasoning:false` both
+   * still reach here.
+   *
+   * Same builder, not a second copy — `protection-with-two-implementations` is a
+   * 9-occurrence tag and two ledger renderers would be the tenth.
+   */
+  dispatchLedgerBlock?: string;
 }): Promise<string> {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
     attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
+    dispatchLedgerBlock,
   } = args;
 
   const todayBlock = `# Today
@@ -1583,6 +1599,10 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   parts.push(persona.systemPreamble);
   parts.push(ruleBlock('core_conversational_rules', CORE_CONVERSATIONAL_RULES));
   parts.push(channelRule);
+  // DEF-165 — what Brain actually did, and the explicit statement that WHY is not
+  // in it. Placed high: it is the answer to "did you…?" and "why did you…?", and
+  // both are among the questions most likely to be answered by invention.
+  if (dispatchLedgerBlock) parts.push(dispatchLedgerBlock);
 
   // Schema — only for introspective questions (about Brain/Nexeo/tenant)
   // and for factual queries that might need to reason about the data model.
@@ -3089,11 +3109,22 @@ ${calLines.join('\n')}`;
       console.warn('[brain-chat] upcoming calendar fetch failed', { userId, error: e?.message });
     }
   }
+  // DEF-165 — the same builder the reasoning path uses at :2460. Best-effort: a
+  // ledger read that fails must not take the turn down, and an empty string is
+  // simply not pushed.
+  const legacyDispatchLedgerBlock = await (async () => {
+    try {
+      const { buildDispatchLedgerBlock } = await import('./dispatchLedgerService');
+      return await buildDispatchLedgerBlock(userId, clientNumber);
+    } catch { return ''; }
+  })();
+
   const systemPrompt = await assembleSystemPrompt({
     intent: effectiveIntent,
     isActionTurn,
     persona,
     schema,
+    dispatchLedgerBlock: legacyDispatchLedgerBlock,
     capsBlock,
     overlayBlock,
     delegationMatrixBlock,

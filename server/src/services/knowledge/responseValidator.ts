@@ -184,6 +184,20 @@ export const FABRICATED_PROCESS_RE = new RegExp(
 // cannot win — and invariant #3 puts "is this claim evidenced?" with the model,
 // which is why the composer's core rule 6 now states it. This regex is the
 // fail-closed backstop for the half that CAN be recognised structurally.
+/**
+ * The recurrence vocabulary, defined ONCE.
+ *
+ * DEF-165 — it was inlined into each form and the copies drifted: "another one"
+ * was added to the past/future forms and not to the negated one, so *"I have
+ * flagged the error, so you won't see another one"* shipped unguarded. Found by
+ * probing the built regex rather than by reading it, which is the only way this
+ * kind of divergence shows up. One list, three users.
+ */
+const RECURRENCE_CLAUSE =
+  '(?:happen\\w*\\s+again|recur\\w*|repeat\\w*'
+  + '|another\\s+(?:one|duplicate|reminder|nudge)|a\\s+second\\s+(?:one|time)'
+  + '|again|next\\s+time|twice)';
+
 const UNEVIDENCED_SELF_REPAIR_PAST =
   "\\bi(?:['’]?ve|\\s+have)\\s+(?:\\w+[\\s,]+){0,4}?"
   + '(?:flagged|logged|noted|recorded|reported|raised|filed|escalated|investigated'
@@ -191,21 +205,144 @@ const UNEVIDENCED_SELF_REPAIR_PAST =
   + '[^.!?\\n]{0,80}?'
   + '(?:prevent|stop|ensure|avoid|make\\s+sure|so\\s+(?:it|this|that))'
   + '[^.!?\\n]{0,40}?'
-  + '(?:happen\\w*\\s+again|recur\\w*|repeat\\w*)';
+  + RECURRENCE_CLAUSE;
 
 const UNEVIDENCED_SELF_REPAIR_FUTURE =
   "\\bi(?:['’]?ll|\\s+will)\\s+(?:\\w+[\\s,]+){0,4}?"
   + '(?:make\\s+sure|ensure|see\\s+to\\s+it|guarantee)\\b'
   + '[^.!?\\n]{0,60}?'
-  + '(?:happen\\w*\\s+again|recur\\w*|repeat\\w*)';
+  + RECURRENCE_CLAUSE;
+
+// DEF-165 / Codex iteration-18 MEDIUM #4 — two forms he demonstrated shipping
+// through the iteration-18 pattern, added because they are the SAME promise with
+// the recurrence clause moved onto the owner ("you won't see") or collapsed into
+// an adverb ("permanently"):
+//
+//   "I've changed the workflow, so you won't see a duplicate next time"
+//   "That's taken care of permanently"
+//
+// HIS WIDER POINT STANDS AND IS NOT FIXED BY THESE TWO LINES: detection here is
+// phrase-shaped, so an unenumerated paraphrase still gets through. What changed
+// in DEF-165 is that detection is no longer the protection — AUTHORIZATION is.
+// Nothing can license a cure claim except attesting provenance, so the residual
+// risk of a missed phrase is "an unevidenced promise ships", never "an evidenced
+// one is blocked". Closing detection itself would need the claim recognised
+// semantically, which is the model's job under invariant #3, not a longer list.
+const UNEVIDENCED_SELF_REPAIR_NEGATED_RECURRENCE =
+  "\\byou\\s+(?:won'?t|will\\s+not|shouldn'?t|should\\s+not)\\s+(?:\\w+[\\s,]+){0,4}?"
+  + '(?:see|get|receive|have|be\\s+bothered\\s+by)\\b'
+  + '[^.!?\\n]{0,50}?'
+  + RECURRENCE_CLAUSE;
+
+const UNEVIDENCED_SELF_REPAIR_PERMANENCE =
+  '\\b(?:taken\\s+care\\s+of|sorted|handled|dealt\\s+with|resolved)\\b'
+  + '[^.!?\\n]{0,25}?'
+  + '\\b(?:permanently|for\\s+good|once\\s+and\\s+for\\s+all|so\\s+it\\s+cannot\\s+recur)\\b';
 
 export const UNEVIDENCED_SELF_REPAIR_RE = new RegExp(
-  `(?:${UNEVIDENCED_SELF_REPAIR_PAST})|(?:${UNEVIDENCED_SELF_REPAIR_FUTURE})`,
+  `(?:${UNEVIDENCED_SELF_REPAIR_PAST})|(?:${UNEVIDENCED_SELF_REPAIR_FUTURE})`
+  + `|(?:${UNEVIDENCED_SELF_REPAIR_NEGATED_RECURRENCE})|(?:${UNEVIDENCED_SELF_REPAIR_PERMANENCE})`,
   // NON-global, for the same reason as `FABRICATED_PROCESS_RE`: a /g regex
   // carries `lastIndex` between `.test` calls and `exciseSentencesMatching`
   // would skip sentences.
   'i',
 );
+
+/**
+ * A first-person internal-remediation claim with the promise stripped off.
+ *
+ * DEF-165, found by probing the salvage rather than trusting it: cutting the cure
+ * out of *"I have flagged the error, so you won't see another one"* left
+ * **"I have flagged the error."** — which is the same fabricated completion minus
+ * its tell. Shipping that would be a half-fix that reads as a full one.
+ *
+ * Used ONLY to filter clauses that survive inside a sentence the main rule already
+ * matched, so it never sees ordinary prose. That containment is what lets it be
+ * this broad: "I've flagged the item for your attention" is a legitimate sentence
+ * the main rule does not match, so this pattern is never applied to it.
+ */
+const RESIDUAL_SELF_REMEDIATION_RE = new RegExp(
+  "\\bi(?:['’]?(?:ve|ll|m)|\\s+(?:have|will|am))?\\s+(?:\\w+[\\s,]+){0,3}?"
+  + '(?:flagged|flag|logged|log|noted|recorded|reported|raised|filed|escalated'
+  + '|investigated|fixed|resolved|corrected|patched|addressed)\\b',
+  'i',
+);
+
+/**
+ * DEF-165 — remove the offending CLAUSE, not the whole sentence around it.
+ *
+ * Codex's iteration-18 MEDIUM #3, with his input: *"I sent the reminder twice,
+ * and I've flagged the error to prevent it happening again."* One sentence
+ * carrying an observed truth and a fabricated cure. `exciseSentencesMatching`
+ * deletes the sentence, so the owner loses the answer to his own question in
+ * order to lose the invention — the `guard-destroys-the-answer` shape (7
+ * occurrences) reappearing at clause granularity because my iteration-18 tests
+ * only ever used a cure in its own sentence.
+ *
+ * Splits on coordinating boundaries only — `, and` / `, but` / `, so`, semicolons,
+ * em dashes — because those separate independent statements. It does NOT split on
+ * bare commas: "I have flagged the error, which prevents recurrence" is one claim
+ * and cutting it at the comma would leave a fragment asserting half of it.
+ *
+ * Fails closed exactly like its sibling: if the remainder is too short to be an
+ * answer, or still trips the rule, return undefined and let the caller use the
+ * bracketed marker.
+ */
+export function exciseClausesMatching(answer: string, re: RegExp): string | undefined {
+  if (!answer || re.global) return undefined;
+
+  const BOUNDARY = /(?:,\s+(?=and\b|but\b|so\b|then\b))|(?:;\s+)|(?:\s+—\s+)/;
+  let removed = 0;
+  const keptLines: string[] = [];
+
+  for (const line of answer.split('\n')) {
+    if (!line.trim()) { keptLines.push(line); continue; }
+
+    const sentences = line.match(/[^.!?]+[.!?]*/g) ?? [line];
+    const keptSentences: string[] = [];
+
+    for (const sentence of sentences) {
+      if (!re.test(sentence)) { keptSentences.push(sentence); continue; }
+
+      const clauses = sentence.split(BOUNDARY).filter((c) => c != null);
+      // Nothing to separate — the whole sentence is the claim.
+      if (clauses.length < 2) { removed += 1; continue; }
+
+      const keptClauses = clauses.filter((c) => {
+        if (re.test(c)) { removed += 1; return false; }
+        // The promise is gone; the claim to have acted must go with it.
+        if (RESIDUAL_SELF_REMEDIATION_RE.test(c)) { removed += 1; return false; }
+        return c.trim().length > 0;
+      });
+      if (keptClauses.length === 0) continue;
+
+      // Rejoin, then repair the seam: a kept clause may end in the comma that
+      // introduced the clause we removed, and a trailing conjunction is left
+      // dangling when the clause after it went.
+      let rebuilt = keptClauses.join(' ').replace(/\s+/g, ' ').trim();
+      rebuilt = rebuilt.replace(/[,;]\s*$/, '').replace(/\s+(?:and|but|so|then)\s*$/i, '');
+      if (!rebuilt) continue;
+      if (!/[.!?]$/.test(rebuilt)) rebuilt += '.';
+      keptSentences.push(rebuilt);
+    }
+
+    if (keptSentences.length > 0) keptLines.push(keptSentences.join(' ').replace(/\s+/g, ' ').trim());
+  }
+
+  if (removed === 0) return undefined;
+  const salvaged = keptLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // A surviving clause is a whole predicate ("I sent the reminder twice."), not
+  // the "I can see that, Sir." stub MIN_SALVAGE_CHARS exists to reject — so the
+  // floor is lower here, and deliberately so rather than by reusing a constant
+  // whose reason does not apply.
+  if (salvaged.length < MIN_CLAUSE_SALVAGE_CHARS) return undefined;
+  if (re.test(salvaged)) return undefined;
+  return salvaged;
+}
+
+/** Floor for clause-level salvage. Lower than `MIN_SALVAGE_CHARS` because what
+ *  survives a clause cut is a complete statement rather than a sentence stub. */
+const MIN_CLAUSE_SALVAGE_CHARS = 18;
 
 /** The minimum salvage worth shipping. Below this the remainder is a
  *  fragment ("I can see that, Sir.") that reads as a non-answer, and the
@@ -331,6 +468,36 @@ export function validateBeforeRender(
      * Undefined means "unknown", and unknown still blocks — fail closed.
      */
     turnIntent?: 'read_only' | 'mutation' | 'ambiguous';
+    /**
+     * DEF-165 — the ONLY thing that may authorize a self-repair claim.
+     *
+     * Iteration 18 authorized the whole class on `result.actionResult.ok`, which
+     * is turn-global: any successful business action anywhere in the turn
+     * unlocked "I've flagged the error to prevent it recurring". Codex's
+     * iteration-18 HIGH #1 gave the input — *"Set the priority high, and why did
+     * you remind me twice?"* — where an item update succeeds and buys a
+     * fabricated cure. My own test codified `update_open_item` as sufficient,
+     * which is the defect written down as a contract.
+     *
+     * Evidence must ATTEST THE CLAIM, not merely coexist with it. So this is the
+     * immutable outcome of an actual diagnostic/remediation operation, and
+     * `recurrencePrevented` has to be true before prose may promise the future.
+     *
+     * NO PRODUCER EXISTS TODAY, deliberately: there is no code path by which
+     * answering a question diagnoses a fault or schedules a prevention, so the
+     * honest state is that every cure claim fails closed. This is the seam for
+     * when such an action is built, so its authorization is claim-specific from
+     * the first day rather than turn-global again.
+     */
+    selfRepairEvidence?: {
+      kind: 'diagnostic' | 'repair';
+      /** The `brain_health_findings` row this claim rests on. */
+      findingId: string;
+      observedCause: string | null;
+      appliedRepair: string | null;
+      /** True only when a prevention was actually scheduled and recorded. */
+      recurrencePrevented: boolean;
+    } | null;
   },
 ): ValidationOutcome {
   const violations: ResponseViolation[] = [];
@@ -476,10 +643,14 @@ export function validateBeforeRender(
   //     Salvage, not replacement, wherever possible: the apology and the
   //     acknowledgement of the duplicate are true and worth keeping. Only the
   //     invented cure is cut.
-  if (
-    UNEVIDENCED_SELF_REPAIR_RE.test(answer) &&
-    (!result.actionResult || result.actionResult.ok !== true)
-  ) {
+  //     DEF-165 — the gate is the EVIDENCE, not the turn. `actionResult.ok` used
+  //     to authorize this and must never again: an unrelated item update is not
+  //     a diagnosis. A cure claim is authorized only by provenance that attests
+  //     it, and because a prevention promise is what every matched form makes,
+  //     `recurrencePrevented` must be true as well as the finding existing.
+  const cure = context?.selfRepairEvidence ?? null;
+  const cureAuthorized = !!cure && !!cure.findingId.trim() && cure.recurrencePrevented === true;
+  if (UNEVIDENCED_SELF_REPAIR_RE.test(answer) && !cureAuthorized) {
     violations.push({
       rule: 'unevidenced_self_repair',
       severity: 'block',
@@ -490,7 +661,10 @@ export function validateBeforeRender(
       // answer never mentioned (occurrence 5 above).
       suggestedReplacement:
         '[unevidenced self-repair claim — nothing was flagged and no prevention was scheduled; say what is observable and that the cause is not known]',
-      salvagedAnswer: exciseSentencesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE),
+      // DEF-165 — clause first, so a compound sentence keeps its grounded half;
+      // sentence-level only when there is no clause boundary to cut at.
+      salvagedAnswer: exciseClausesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE)
+        ?? exciseSentencesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE),
     });
   }
 
