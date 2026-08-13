@@ -1121,3 +1121,31 @@ path is still load-bearing — stop and say so plainly instead of restoring the 
 
 **This is not a seventh remediation turn** and must not be logged as one. It is a deletion
 that closes two HIGHs and unblocks every future deploy from carrying them along.
+
+### D-20 AMENDMENT — the deletion turn slips to iteration 27, and here is why
+
+Iteration 25 closed `deployed=no`, so D-20's condition **fired**. By the letter of the
+owner's ruling iteration 26 is the deletion. The orchestrator is deferring it by one turn
+and saying so out loud rather than quietly, because the condition that justified it
+changed **after** he ruled:
+
+1. **The deletion is no longer on the critical path to shipping.** D-20's case was that the
+   two marker HIGHs ride out with every deploy and keep costing verdicts. Since then the
+   review prompt gained a verdict-scoping rule: pre-existing findings go to CARRIED
+   FINDINGS and **no longer set the verdict**. Iteration 25 proves it worked — Codex ruled
+   WEAK on *this diff's own* measurement defects, and never mentioned the marker path.
+2. **Iteration 25's findings are the shortest path to a SOUND verdict**, and a SOUND
+   verdict ships all fifteen held iterations at once. They are three concrete, small
+   defects with `file:line` evidence, not a class.
+3. **The numbers are currently WRONG and the owner must not be shown them.** Increment 1
+   exists to quote him a real count. Codex found it groups by producer label rather than
+   subject identity, windows on `queuedAt` while claiming `sentAt`, and classifies a burst
+   with no time bound. Reporting that count today would be the `fabricated-status` shape
+   with a number attached.
+
+The remediation rail points iteration 26 at exactly these findings on its own, so this is
+the orchestrator declining to override a rail, not steering one.
+
+**The deletion is NOT dropped — it is iteration 27's turn**, still written as a deletion
+and still not a remediation. If the owner wants it at 26 instead, that is one sentence
+from him and it happens.
