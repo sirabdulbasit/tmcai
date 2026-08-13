@@ -2951,3 +2951,176 @@ the overall near 83.7** — that is the true baseline now.
 - **The Scorer credits this turn with capability movement.** It should read
   `RELIABILITY-ONLY, +0`, and it should also mark DEF-156's +1 down to 0 or
   negative — the claim described behaviour that never existed.
+
+---
+
+## Iteration 15 — mode: incremental · campaign C-1 (iteration 4 of 3 — over budget)
+
+```
+CAPABILITY: RELIABILITY-ONLY
+PREDICTED:  +0
+MECHANISM:  No new behaviour on the happy path. A relay that FAILS now leaves a
+            durable, queryable record carrying the counterpart's words instead of
+            a rotating log line, so the message can be recovered rather than lost.
+            An existing capability made trustworthy, not a wider one.
+FALSIFIER:  Observable — an inbound whose enqueue fails and which appears in no
+            `brain_health_findings` row. Asserted by calling the retention path
+            and inspecting the recorded finding.
+```
+
+### An owner report arrived mid-turn and it outranks everything
+
+`owner_reports.md` was clean at step 0; **R-2 landed while I was building.** D-6 ranks
+an unprocessed report above Codex's directive, so it is processed here: **CL-035,
+DEF-159/160/161, two chart tags bumped, R-2 headed and marked PROCESSED.**
+
+**A note for the orchestrator, not a complaint:** R-2 was appended as raw text with
+no `## R-<n> · UNPROCESSED` header, so the file's own D-6 routing convention did not
+fire. I found it because `git diff --check` failed on trailing whitespace in the
+owner's paste. That is luck, not a mechanism.
+
+**His three concerns, and one is sharper than anything in my fixQueue:**
+
+1. *"i don't who is sending message (although sender number and his name is saved
+   in my contacts)"* — **`+239487846228094` is not a phone number, it is a LID.**
+   `delegationCaptureService:273-280` resolves contacts by
+   `phone: { contains: <last 9 digits> }`, which cannot match a LID by
+   construction, so `who` falls back to the raw identifier every time.
+   **`whatsapp-lid-activity-rejected`, 6th — and this row already records its
+   containment as FAILED**, saying at the fifth that the next change must remove
+   the dependency rather than repair it. It was not made, and the sixth is the
+   owner asking why Brain does not know its own contacts.
+2. *"I see very old messages (like more then 10h ago is reporting here)"* —
+   **DEF-160, and I deliberately did not diagnose it.** Naming a mechanism without
+   reading the job is the invented-cause pattern.
+3. *"why brain is in asking mode"* — Hamna wrote *"the video is not yet
+   completed"*, unambiguous, and Brain replied *"about 50% sure … should I mark it
+   done, chase her, or leave it?"* **The menu offers to mark DONE work she had just
+   said was incomplete.** `confirm-misfires`, 7th, second consecutive owner report
+   of the same refusal, after he granted the authority explicitly a day earlier.
+
+**No R-2 fix shipped.** All three OPEN with reasons, which is what D-6 permits.
+**DEF-159 first next turn.**
+
+### The fixQueue entry I targeted
+
+**None.** Codex's iteration-14 HIGH #1 is the turn: **my own DEF-157 falsifier was
+false.** **Expected to move: no compose criterion, and no proactive case** — this
+only runs when something has already failed.
+
+### Governing-docs verdict: PROGRESSING on the defect, CIRCLING on my method
+
+DEF-158 is a new root cause. But it is the **fourth consecutive turn** in which the
+correction to my previous turn came from Codex rather than from me, and the shape
+repeats: I wrote a falsifier, and the path that could violate it was the one I had
+not exercised.
+
+### What I changed, by file:line
+
+**1. `delegationCaptureService.ts:365-397` — `retainUnrelayedInbound`.** The catch
+logged and returned; it now writes a `recordFinding` row carrying the
+counterpart's **words**, tenant-scoped, owner-attributed, severity `error`, with a
+summary that states the consequence (*"the owner has not seen this"*). Same durable
+surface this file already uses for `reply_consume_failed` at `:235` — no new
+mechanism, an existing one applied where it was missing.
+
+**Exported deliberately.** A test that could only read the source would assert
+that a `catch` block exists, which is not the property. The property is that the
+message survives, and that needs the function called and the record inspected.
+
+**It never throws.** Turning one lost message into a stopped inbound pipeline
+would be a worse trade.
+
+**2. The stale contracts, Codex's LOW #4.** `proactiveDecision` and
+`delegationCaptureService` still described DEF-156's batching as live. A maintainer
+trusting them could pass `retained: true` to "restore" documented behaviour and
+silently drop nine of the owner's ten messages again. Both now **lead** with what
+production actually does and name the trap in words: *"Do not 'restore' batching by
+passing `true` here."* A comment describing an unreachable path is a trap, not
+documentation.
+
+### Verification — re-run AFTER the last edit, from `server/`, twice
+
+```
+npx tsc --noEmit    exit 0, no output (clean)
+
+npx vitest run (1)  Test Files  176 passed | 1 skipped (177)
+                    Tests  2104 passed | 7 expected fail | 21 skipped | 1 todo (2133)
+npx vitest run (2)  Test Files  176 passed | 1 skipped (177)
+                    Tests  2104 passed | 7 expected fail | 21 skipped | 1 todo (2133)
+
+npm run build       exit 0 (prisma generate + tsc)
+git diff --check    exit 0, no output
+```
+
+`git diff --check` initially failed on trailing whitespace in R-2's raw paste;
+normalised without altering a word of the owner's text. Against Codex's verified
+iteration-14 figure (175 files / 2097 passed, 2126 collected): **+1 file, +7 tests.**
+
+### Mutation — 3 mutants, all die
+
+- **Back to a log line → 4 fail.** The data loss, reproduced.
+- **Record the failure but not the words → 2 fail.** A finding saying "relay
+  failed" and nothing else is the same loss with better telemetry.
+- **Drop the tenant scope → 1 fail.** A finding nobody can query is not a record.
+
+### The campaign is over budget and I am asking for it to be closed
+
+The header says **iteration 4 of 3**. Last turn I said I was not asking for an
+extension; one was taken by default, which is the thing the campaign structure
+exists to prevent.
+
+**My recommendation, on the record: close C-1.** Its exit condition —
+*"the proactive slice runs end-to-end and reports its own score separately"* — has
+been met since iteration 12 and the slice now reports **honestly**, which took
+iterations 13 and 14 to achieve. What C-1 also demonstrated is worth carrying:
+**a measurement surface built over an incorrect mechanism produces a confident
+wrong number** (P05 at 98 for behaviour that never shipped). So memory recall and
+self follow-up should not simply be added next. **The burst ledger should be its
+own campaign with its own budget**, and the remaining surfaces after it.
+
+### What I did NOT do
+
+- **Did not build the burst ledger** (Codex #1). Migration, repository, debounce,
+  flush, atomic marking. It is the right remedy and it is a campaign, not a turn.
+- **Did not replace `retained: boolean` with ledger-backed provenance** (Codex's
+  HIGH #2). His criticism stands: a required boolean forces an answer, not a
+  truthful one. The retention gate remains a review-visible convention, and I said
+  so last turn rather than being caught saying otherwise.
+- **Did not make P05 replay a repository/flush transition** (Codex #2) — there is
+  no repository to replay yet.
+- **Did not touch the compose C4 gate** (Codex #3/#4: B11's technical denial, B12's
+  ungrounded cause, B05–B10 templating). C4 is 87.1 and none of it is addressed.
+- **DEF-150** — the canned *"Hold on…"*. **Fifth turn named.** It now has company:
+  R-2's DEF-161 is the same refusal-to-act family.
+- **DEF-143, DEF-148/149/151/152 open. Inline/pending `update_open_item`: eighth
+  deferral.**
+- **Operator directives:** D-1 open for the compose benchmark; D-2, D-4 open. D-4
+  again — compose C4 moved 89.0 → 87.1 with no compose path touched.
+- **Did not touch `scripts/orchestrator/**`, the twelve compose cases, the judge or
+  the gate.**
+
+### What I am unsure about
+
+- **Whether a health finding is the right home for a lost message.** It is durable,
+  queryable and already used for this class, but nothing *replays* it — a human or
+  a future job has to notice. That is better than a log line and worse than a
+  retry queue, and I would rather say so than call it solved.
+- **Whether DEF-160 will turn out to be one defect or three.** "Old messages
+  reported late" could be capture backlog, a window measured from processing
+  rather than receipt, or the polling cadence itself. I logged it undiagnosed on
+  purpose.
+
+### Prediction, and what would falsify it
+
+**Nothing should move** — not compose, not the proactive slice. This code runs only
+when a relay has already failed, and neither harness exercises that.
+
+**What would prove me wrong:**
+- **Any score moves materially.** Then this path is reachable in a harness I did
+  not think touched it.
+- **An enqueue failure still leaves no finding.** The falsifier; the mutants say
+  it should be impossible.
+- **The Scorer credits capability movement.** It should read `+0`. Making a
+  failure path honest is reliability, and calling it capability growth is the
+  inflation the contract exists to stop.

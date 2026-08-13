@@ -108,6 +108,13 @@ export interface ProactiveDecision {
 /**
  * Decide once per sender-window instead of once per message.
  *
+ * CURRENT REALITY, stated first because the rest describes a path production
+ * cannot reach (DEF-158): the only live caller passes `retained: false`, so every
+ * fragment is SENT and CL-033's burst still produces ten notifications. The
+ * suppression and digest below are correct and inert. They become reachable when
+ * a burst ledger can answer `retained: true` truthfully — and not before, because
+ * DEF-156 enabled them without one and lost nine of the owner's ten messages.
+ *
  * Order matters and each branch states its own reason, because the reason is
  * what makes a suppression auditable rather than a silent drop:
  *

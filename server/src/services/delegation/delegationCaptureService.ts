@@ -266,6 +266,9 @@ async function notifyOwnerOfUnattachedReply(
   ownerUserId: number | null,
 ): Promise<void> {
   if (!ownerUserId) return;
+  // Hoisted so the failure path below can name the sender. If the contact lookup
+  // is what failed, the raw identifier is the honest fallback.
+  let who = input.fromIdentifier;
   try {
     const digits = input.fromIdentifier.replace(/[^0-9]/g, '').slice(-9);
     const contact = await prisma.entity.findFirst({
@@ -275,7 +278,7 @@ async function notifyOwnerOfUnattachedReply(
       },
       select: { name: true },
     }).catch(() => null);
-    const who = contact?.name ?? input.fromIdentifier;
+    who = contact?.name ?? input.fromIdentifier;
 
     // ── DEF-156: decide ONCE per sender-window, not once per message ────────
     //
@@ -343,14 +346,18 @@ async function notifyOwnerOfUnattachedReply(
       // rewrite a word of it (DEF-140).
       provenance: 'quoted_third_party',
       // DEF-155 — template moved to `proactiveMessageText`; output identical.
-      // DEF-156 — the seam renders it, so a burst arrives as one notice.
+      // DEF-156/157 — the seam renders it. NOTE: today a burst does NOT arrive
+      // as one notice. Nothing retains a withheld fragment, so `retained: false`
+      // above makes the seam send each one. The digest exists and is unreachable
+      // until a burst ledger does. Do not "restore" batching by passing `true`
+      // here: that is exactly how DEF-156 lost nine of the owner's ten messages.
       question: decision.renderedMessage,
       criticality: 'routine',
       // An answer is news, not a question — it must never hold the lock.
       expectsReply: false,
       dedupKey: `unattached_reply:${input.sourceId}`,
-      // `body` is stored so a later tick can quote this message in a digest
-      // rather than reporting a bare count.
+      // `body` is stored so a later tick can quote this message once a digest
+      // becomes reachable. Today it only records what was already sent.
       metadata: {
         source: 'unattached_counterpart_reply',
         from: input.fromIdentifier,
@@ -361,8 +368,60 @@ async function notifyOwnerOfUnattachedReply(
       who, ownerUserId, covers: decision.covers, reason: decision.reason,
     });
   } catch (error: any) {
-    log.warn('unattached reply relay failed', { error: error?.message?.slice(0, 200) });
+    // DEF-158 — a failed relay must not be a log line.
+    //
+    // This caught, logged and returned, so an inbound whose enqueue rejected —
+    // database unavailable, queue constraint, anything — reached neither the
+    // owner nor any record. Codex's iteration-14 HIGH #1, and it made DEF-157's
+    // falsifier ("no inbound reaches neither the owner nor a durable record")
+    // false on the one path where it mattered most: the path that only runs when
+    // something is already going wrong.
+    //
+    // `recordFinding` is the durable, queryable surface this file already uses
+    // for exactly this class (`reply_consume_failed`, :235). The counterpart's
+    // words go in the evidence, so "a real person wrote to us and it went
+    // nowhere" is a row rather than a rotated-away log line.
+    await retainUnrelayedInbound({
+      clientNumber: input.clientNumber,
+      ownerUserId,
+      who,
+      body: input.body,
+      sourceId: input.sourceId,
+      reason: error?.message?.slice(0, 200) ?? 'unknown',
+    });
   }
+}
+
+/**
+ * Keep an inbound that could not be relayed (DEF-158).
+ *
+ * Exported so the property can be asserted directly: the message survives the
+ * failure. A test that could only read the source would be checking that a
+ * `catch` block exists, not that anything is retained.
+ */
+export async function retainUnrelayedInbound(args: {
+  clientNumber: string;
+  ownerUserId: number | null;
+  who: string;
+  body: string;
+  sourceId?: string | undefined;
+  reason: string;
+}): Promise<void> {
+  log.warn('unattached reply relay failed — retaining it', {
+    who: args.who, reason: args.reason,
+  });
+  await recordFinding({
+    clientNumber: args.clientNumber,
+    kind: 'unattached_reply_undelivered',
+    severity: 'error',
+    source: 'delegation-capture',
+    userId: args.ownerUserId ?? undefined,
+    subjectType: 'counterpart_message',
+    subjectId: args.sourceId ?? undefined,
+    summary: `${args.who} wrote and the relay failed — the owner has not seen this`,
+    // The words themselves, because the point is that they are recoverable.
+    evidence: { who: args.who, body: args.body.slice(0, 300), reason: args.reason },
+  }).catch(() => undefined);
 }
 
 // ── DEF-075: LID alias binding ───────────────────────────────────────
