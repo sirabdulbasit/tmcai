@@ -84,16 +84,38 @@
    grid-template-areas layout means it is auto-placed and shoves the named cards
    out of position. That is why the deck came out "not completed" — the card was
    rendering the whole time, just not where the grid could put it. */
+/* ONE COLUMN, owner's order — 2026-08-13: *"Show following charts in one column:
+   1. Iteration Phase 2. Capability vs A Professional 3. Benchmark Iteration"*.
+   Replaces the two-by-two he mocked up earlier the same day; his order is the
+   reading order, so the grid states it literally rather than relying on source
+   order.
+
+   The brain/integrity card keeps an area even though he did not name it. It is
+   still rendered by the JSX (integrity and the ten-iteration trend swap places
+   behind the same class), and this file already records what happens to a
+   rendered card with no grid-area in a template-areas layout: it is auto-placed
+   and shoves the named cards out of position, which is what made the deck look
+   "not completed". Naming it last is what keeps his three in the order he asked
+   for. */
 @media (min-width: 1100px) and (min-height: 620px) {
   .orch-deck {
-    grid-template-columns: 1.15fr 1fr;
-    grid-template-rows: minmax(0, 1.05fr) minmax(0, 0.95fr);
-    grid-template-areas: "phases brain" "caps bench";
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, auto);
+    grid-template-areas: "phases" "caps" "bench" "brain";
   }
   .orch-deck-phases { grid-area: phases; }
-  .orch-deck-brain  { grid-area: brain; }
   .orch-deck-caps   { grid-area: caps; }
   .orch-deck-bench  { grid-area: bench; }
+  .orch-deck-brain  { grid-area: brain; }
+
+  /* FIT-TO-PAGE NO LONGER HOLDS, SO IT MUST NOT CLIP. The `overflow: hidden`
+     above was correct for four cards in two rows; four cards stacked in one
+     column cannot fit 100vh, and this file's own rule is that silently losing
+     rows is worse than scrolling to them. The deck scrolls; the page still does
+     not. */
+  .orch-pulse { overflow: auto; }
+  .orch-deck  { flex: none; }
 }
 .orch-card {
   min-height: 0; min-width: 0;
