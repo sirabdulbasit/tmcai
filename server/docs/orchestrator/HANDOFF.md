@@ -63,10 +63,10 @@ and kills your shell (exit 144, twice). Use `pgrep -f "nexeo-loo[p].sh"`.
 ## Where things stand right now
 
 ```
-loop            running under supervise.sh, iteration 23 in REVIEW (Codex)
-iteration 23    build exit 0 · tsc clean · 182 files / 2207 tests · measured 94.9 / C4 86.7
-                Builder says "This ships." Guard fired; verdict pending when you read this
-deployed        NOTHING since iteration 16 (df47687, 06:39 UTC today) — 1 deploy in 13
+loop            running under supervise.sh; iteration 23 CLOSED, 24 opening
+iteration 23    tsc clean · 182 files / 2207 tests · measured 94.9 / C4 86.7
+                Codex: WEAK (2 HIGHs) · deployed=no · stall 9/3
+deployed        NOTHING since iteration 16 (df47687, 06:39 UTC today) — 1 deploy in 14
 capability      47.4 ±1.3   objective 87.3   (the band matters — see D-18)
 campaign        C-2 Self Follow-Up, open 5 iterations, ZERO increments delivered
 staged          nexeo-loop.next.sh — escapes backticks that ate the reviewer's score path
@@ -103,12 +103,13 @@ Do not pick 3 unilaterally. Do not pretend 2 is progress.
 
 ### Immediately next
 
-1. **Read Codex's iteration-23 verdict.** If SOUND, it deploys — then run
-   `scripts/orchestrator/verify-chase.sh` and quote the owner real production output,
-   not a benchmark number.
-2. **Iteration 24 must build, not repair** (D-14, D-17). The D-17 cap override was
+1. **Put the three options above to the owner.** That is the blocking decision; do
+   not start iteration 24's work around it without an answer.
+2. If anything ever deploys, run `scripts/orchestrator/verify-chase.sh` immediately and
+   quote him real production output, not a benchmark number.
+3. **Iteration 24 must build, not repair** (D-14, D-17). The D-17 cap override was
    granted for exactly one turn and **expires whether or not 23 shipped**.
-3. **Re-scope C-2 increment 1 on evidence** — see the correction below; the autonomous
+4. **Re-scope C-2 increment 1 on evidence** — see the correction below; the autonomous
    chase already works, so do not build it again.
 
 ## The five findings from today that change what you do
