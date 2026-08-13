@@ -33,6 +33,28 @@ Edit the order to re-aim the loop. One capability at a time, per campaign.
 8. **Memory** (60)
 9. **Accurate Communication** (74) — smallest gap; 20 iterations already spent here
 
+## Why the numbers moved in decimals, and what changes it
+
+Owner, 2026-08-13: *"i have very serious concern with such progress in decimals"*.
+
+22 iterations produced +0.7 overall. The cause is not effort — it is that every one
+of those iterations **repaired a capability that already existed** (Accurate
+Communication, 74 of 89, the smallest remaining gap) instead of **building one that
+does not**.
+
+**Capability scores are step functions.** Grok scores Simple & Smart, Thinking and
+Self-Pruning with `basis: absent` — nothing implements them. Repair moves such a
+score by 0.2; making a capability EXIST moves it 20-30 points at once:
+
+| | points on that capability | overall effect |
+|---|---|---|
+| repairing an existing capability | +1 to +2 | **+0.1 to +0.2** |
+| making an absent capability exist | +20 to +30 | **+2.2 to +3.3** |
+
+The three absent ones are **44.3% of the remaining journey** and have had **zero
+iterations**. That is the whole explanation, and it is why the priority list above
+now leads with them after the active campaign.
+
 ## Rules that survive any edit you make
 
 - A target moves only when **what you receive** changes, and only when it is

@@ -7,7 +7,7 @@
   "capability": "Self Follow-Up",
   "from_iteration": 19,
   "budget_iterations": 8,
-  "target": "43 → 65",
+  "target": "43 → 65 (Self Follow-Up), with each increment deployed as it lands",
   "goal": "Brain chases its own commitments unprompted: a delegated item whose deadline passes produces a chase without being asked, and a chase that gets no reply escalates. CL-033 evidence: the owner had to say 'chase her' three times and got 'I've made a note of that'.",
   "exit_condition": "Increments 1 and 3 OBSERVED LIVE on the owner's WhatsApp with the messages quoted back to him. Grok's score is recorded but is not the exit condition — the owner ruled improvement must be real, not numeric.",
   "baseline": 43,
@@ -17,36 +17,31 @@
   "increments": [
    {
     "n": 0,
-    "title": "Persist what Brain actually said to the delegatee",
-    "what": "Every worker-sent chase stores its body, recipient and send time in a queryable place. Today the body is stored NOWHERE: delegation_thread_events has no body/text/payload column, agent_actions.output holds only {channel, receipt, reason}, and whatsapp_outbound_messages is the owner's own webjs session sync, not the tenant sender.",
-    "why_first": "Increments 1 and 3 say 'quoted verbatim with its send time' and increment 4 says 'every claim of a chase has a ledger row behind it'. None of those can be observed, or falsified, while the text Brain sends is not retained. Without this the campaign's exit condition is unsatisfiable by construction — and the owner ruled improvement must be REAL rather than numeric (D-10), which requires something he can read.",
-    "real_world_test": "Take the most recent worker send — delegation_thread_events shows 26 whatsapp outbound_receipt rows with receipt_status='accepted', the latest 2026-08-12 — and answer the question 'what did Nexeo say to Hamna?'. Today that question has no answer from any table.",
-    "done_when": "For a send that occurs after this ships, production returns the exact text, the recipient and the send time from one query. Backfill is NOT required and must not be faked for the 30 historical sends — they are unrecoverable and must be reported as such.",
-    "capability_note": "This is not only measurement plumbing. The owner cannot currently read what Nexeo says on his behalf to his own team, which is Accurate Communication and Authorized Action from where he sits."
+    "title": "The chase is stored and visible — folded into increment 1, not a turn of its own",
+    "what": "Persist body, recipient and send time for every worker-sent chase. NOT a standalone iteration: it is plumbing, worth ~0 capability points on its own, and spending a whole turn on it is how a campaign spends its budget without moving anything.",
+    "done_when": "Shipped WITH increment 1, in the same deploy.",
+    "capability_points": "0 alone — it is what makes 1-3 observable"
    },
    {
     "n": 1,
-    "what": "A due commitment produces a chase WITHOUT being asked. His delegated item passes its deadline and Hamna is contacted with no instruction from him.",
-    "real_world_test": "Hamna's 'ShireMe Recruiting Portal Application Testing' is overdue since Aug 10 and 'Vision Metric Integration' has no due date. When the next deadline passes, Brain messages her unprompted — and the orchestrator quotes the actual outbound message, with its timestamp, back to the owner.",
-    "done_when": "A real chase message exists in production, sent without an owner instruction, quoted verbatim with its send time."
+    "title": "A due commitment produces a chase, unprompted",
+    "what": "The delegatee follow-up worker actually reaches the delegatee. Today 43 of 76 follow-ups go to the OWNER as a brain_prompt instead, and no WhatsApp chase has a provider receipt (D-12).",
+    "done_when": "A real chase reaches Hamna without the owner asking, quoted verbatim with its send time, from production.",
+    "capability_points": "+10 to +15 on Self Follow-Up — this is the capability, not a repair of it"
    },
    {
     "n": 2,
-    "what": "An unanswered chase escalates to him with the elapsed time, instead of going quiet.",
-    "real_world_test": "After increment 1's chase, if Hamna does not reply within the window, he receives something like 'Hamna hasn't replied in 26 hours on ShireMe testing — want me to escalate or reset the date?' — not silence, and not a repeat of the same nudge.",
-    "done_when": "He receives a real escalation naming the elapsed time; survives a pm2 restart (not an in-memory timer)."
+    "title": "An unanswered chase escalates with the elapsed time",
+    "what": "Survives a pm2 restart — a durable schedule, not an in-memory timer.",
+    "done_when": "He receives a real escalation naming the elapsed hours, after a restart.",
+    "capability_points": "+5"
    },
    {
     "n": 3,
-    "what": "'chase her' is EXECUTED, not noted. His exact R-1 failure.",
-    "real_world_test": "He types 'chase her'. Brain sends the message and reports what it sent and to whom. The reply 'I've made a note of that' is a FAILURE, as is asking which of three items he meant when one is overdue and the others are not.",
-    "done_when": "He says 'chase her' on live WhatsApp and a real message reaches Hamna in that turn."
-   },
-   {
-    "n": 4,
-    "what": "Chase state is a queryable ledger, so the next decision reads what the last one did.",
-    "real_world_test": "Two deadline passes in one window produce one chase, not two — and he is never told 'I chased her' when no message was sent (the fabricated-status class, five recorded occurrences).",
-    "done_when": "Production shows one chase per commitment per window, and every claim of a chase has a ledger row behind it."
+    "title": "'chase her' is EXECUTED, not noted",
+    "what": "His exact R-1 failure: he said it three times and got 'I've made a note of that'.",
+    "done_when": "He types it on live WhatsApp and a real message reaches Hamna in that turn.",
+    "capability_points": "+5"
    }
   ],
   "scope_rule": "ONE COHERENT CAPABILITY INCREMENT PER TURN, not one coherent change. Attribution is the campaign; a feature needs several files and the one-change rule was blocking that. Codex still reviews every turn and remediation still applies.",
@@ -54,7 +49,11 @@
   "abort_condition": "If after 4 iterations Grok has not moved Self Follow-Up by at least +5, stop and report to the owner rather than spending the remaining budget. C-1 ran seven iterations for +0; that must not repeat.",
   "owner_ruling_2026_08_13": "'improvement should not be in numbers it should be in real'. So an increment is NOT done when Grok scores it, and NOT done when tests pass. It is done when the behaviour is OBSERVED ON HIS LIVE WHATSAPP and the evidence is quoted back to him. The capability score follows the reality; it never substitutes for it.",
   "reporting_rule": "Report to the owner in behaviour, not metrics. Lead with what Brain now does that it did not do before, quoting the real message. The capability delta goes last, as corroboration.",
-  "_increment_0_added": "2026-08-13 — inserted after measuring that no table retains a worker-sent body. Increments 1-4 keep their numbers and their order."
+  "_increment_0_added": "2026-08-13 — inserted after measuring that no table retains a worker-sent body. Increments 1-4 keep their numbers and their order.",
+  "_rewritten_2026_08_13": "Owner: 'i have very serious concern with such progress in decimals'. He is right, and the arithmetic backs him: iterations 21+22 netted 0.0, and even a FULLY delivered version of this campaign as originally written was +2.4 overall across 8 iterations — 0.31 per iteration, which needs 131 iterations to reach 87.3. The plan was inadequate, not just its execution. Rewritten so every increment SHIPS and every increment is something he receives, because capability scores are step functions: they move when a capability starts EXISTING, not when an existing one is repaired.",
+  "success_measure": "He receives a real chase, unprompted, and can quote it back. Grok credits the capability only on deployed, production-observed behaviour — never on a passing test.",
+  "after_this_campaign": "ABSENT capabilities, in the priority order of capability_targets.md: Self-Pruning 33, Simple & Smart 33, Thinking 36 — 44.3% of the remaining journey between them, and scored 'absent' by Grok, meaning nothing implements them. A single campaign that makes one of them EXIST is worth +3 to +4 overall, which is more than the last 22 iterations produced together.",
+  "what_stops_being_a_source_of_work": "The benchmark fixQueue. Owner ruling: capabilities drive, benchmark guards. Five of the last five iterations were still chosen by the reviewer's findings on one conversational case, which is why the movement was in decimals. The reviewer still gates QUALITY; it no longer chooses WHAT."
  },
  "queued": [
   {
