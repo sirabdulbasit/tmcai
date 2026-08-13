@@ -309,11 +309,17 @@ function BrainIntegrity({ data }) {
 
   const GOLD = '#e8a33d';
   const GOLD_DIM = 'rgba(232,163,61,0.45)';
-  const R = 54;
+  const R = 42;
   const C = 2 * Math.PI * R;
 
   return (
     <div style={{
+      /* The card body is a flex column with a bounded height (the deck is
+         fit-to-page). The first version let the SVG take its natural aspect
+         height, which overflowed that box and got cut off at the bottom — owner,
+         2026-08-13: "brain integrity is being cut". So the root fills the body and
+         the picture scales to the room that is left rather than assuming it. */
+      display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0,
       position: 'relative', borderRadius: 8, overflow: 'hidden',
       background: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
       border: '1px solid rgba(232,163,61,0.25)', padding: '10px 12px 12px',
@@ -359,14 +365,16 @@ function BrainIntegrity({ data }) {
       </div>
 
       {/* the gauge, the brain, and the callouts */}
-      <div style={{ position: 'relative', marginTop: 8 }}>
-        <svg viewBox="0 0 400 210" style={{ width: '100%', height: 'auto', display: 'block' }}
+      <div style={{ position: 'relative', marginTop: 6, flex: 1, minHeight: 0,
+                    display: 'flex' }}>
+        <svg viewBox="0 0 400 190" preserveAspectRatio="xMidYMid meet"
+             style={{ width: '100%', height: '100%', display: 'block' }}
              role="img" aria-label={`Brain integrity ${integrity} percent of a professional assistant`}>
           {/* cortex silhouette — hidden when the owner's illustration is the
               backdrop, because two brains on one card is worse than either */}
           <g opacity="0.55" style={{ display: art ? 'none' : undefined }}>
-            <path d="M200,34 C252,30 300,52 312,92 C324,132 296,176 246,186 C208,193 168,191 134,180
-                     C88,165 76,124 88,90 C102,50 150,38 200,34 Z"
+            <path d="M200,30 C248,26 294,46 306,84 C318,120 292,160 244,170 C208,177 170,175 138,164
+                     C94,150 82,112 94,82 C107,46 152,34 200,30 Z"
                   fill="rgba(232,163,61,0.07)" stroke={GOLD_DIM} strokeWidth="1.4" />
             {/* gyri — suggestion of folds, not anatomy */}
             {[[112,86,160,70],[120,112,170,100],[132,138,178,130],[246,74,292,92],[240,104,296,118],[232,136,286,150]]
@@ -374,18 +382,18 @@ function BrainIntegrity({ data }) {
                 <path key={i} d={`M${x1},${y1} C${(x1+x2)/2},${y1-14} ${(x1+x2)/2},${y2+14} ${x2},${y2}`}
                       fill="none" stroke={GOLD_DIM} strokeWidth="1" />
             ))}
-            <path d="M200,36 C200,80 200,140 200,184" fill="none" stroke={GOLD_DIM}
+            <path d="M200,32 C200,72 200,128 200,168" fill="none" stroke={GOLD_DIM}
                   strokeWidth="1" strokeDasharray="4 5" />
           </g>
 
           {/* the integrity ring */}
-          <g transform="translate(200,110)">
-            <circle r={R} fill="rgba(0,0,0,0.55)" stroke="rgba(232,163,61,0.2)" strokeWidth="10" />
+          <g transform="translate(200,104)">
+            <circle r={R} fill="rgba(0,0,0,0.55)" stroke="rgba(232,163,61,0.2)" strokeWidth="9" />
             <circle r={R} fill="none" stroke={GOLD} strokeWidth="10" strokeLinecap="round"
                     strokeDasharray={`${(integrity / 100) * C} ${C}`}
                     transform="rotate(-90)" />
-            <text textAnchor="middle" y="2" fontSize="26" fontWeight="800" fill={GOLD}>{integrity}%</text>
-            <text textAnchor="middle" y="18" fontSize="8" fill="rgba(232,163,61,0.75)">
+            <text textAnchor="middle" y="2" fontSize="22" fontWeight="800" fill={GOLD}>{integrity}%</text>
+            <text textAnchor="middle" y="16" fontSize="7.5" fill="rgba(232,163,61,0.75)">
               {brain.nexeo} of {brain.professional}
             </text>
           </g>
@@ -394,10 +402,10 @@ function BrainIntegrity({ data }) {
           {zones.map((z, i) => {
             const left = z.side === 'left';
             const top = z.row === 'top';
-            const lx = left ? 8 : 392;
-            const ly = top ? 44 + i * 6 : 168 + (i - 2) * 6;
-            const ax = left ? 118 : 286;
-            const ay = top ? 78 : 148;
+            const lx = left ? 12 : 388;
+            const ly = top ? 40 + i * 6 : 156 + (i - 2) * 6;
+            const ax = left ? 122 : 280;
+            const ay = top ? 74 : 138;
             return (
               <g key={z.name}>
                 <path d={`M${lx + (left ? 0 : 0)},${ly} H${left ? lx + 52 : lx - 52} L${ax},${ay}`}
@@ -409,7 +417,7 @@ function BrainIntegrity({ data }) {
                 <text x={lx} y={ly - 4} textAnchor={left ? 'start' : 'end'}
                       fontSize="8.5" fontWeight={z.isActive ? 700 : 400}
                       fill={z.isActive ? GOLD : 'rgba(232,163,61,0.8)'}>
-                  {z.name} <tspan fontWeight="800">{z.nexeo}</tspan>
+                  {z.name.length > 19 ? `${z.name.slice(0, 18)}\u2026` : z.name}{' '}<tspan fontWeight="800">{z.nexeo}</tspan>
                   <tspan fill="rgba(232,163,61,0.55)"> / {z.professional}</tspan>
                 </text>
                 <text x={lx} y={ly + 6} textAnchor={left ? 'start' : 'end'} fontSize="7"
