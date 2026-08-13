@@ -5,6 +5,19 @@ he sees something wrong, it lands here and the loop picks it up at the **next
 build turn** (directives are read as step 0 of every iteration, and D-6 makes
 unprocessed reports outrank everything else in the queue).
 
+## How the loop DETECTS a report (fixed 2026-08-13, after R-2 was nearly missed)
+
+**Any text below the marker line that is not already marked `PROCESSED` is an
+unprocessed report.** R-2 arrived mid-iteration-15 as pasted chat with no header, so
+the original rule — look for `## R-<n> · UNPROCESSED` — did not fire, and it was only
+picked up because the Builder read the file anyway. That was my design fault: an
+intake that requires the owner to format his report correctly is an intake that drops
+reports. The owner pastes; the Builder headers it.
+
+So the Builder's check is: does the region below the marker contain anything without a
+`PROCESSED` mark? If yes, that is the top of the queue — add the `## R-<n>` header
+itself, then process it.
+
 ## How to file (owner)
 
 Append a block at the bottom — any of these work:

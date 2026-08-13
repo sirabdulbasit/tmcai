@@ -85,7 +85,12 @@ in the DEF row so the class is recorded, not just the instance.
 ## D-6 · STANDING, RANKS FIRST · Owner reports override the queue
 
 **Check `server/docs/orchestrator/owner_reports.md` before anything else, every
-turn.** The owner talks to the LIVE Brain; a report there is a defect observed on
+turn.** **DETECTION RULE (corrected 2026-08-13):** any text below the file's marker
+line that is not already marked `PROCESSED` is an unprocessed report — do not look
+only for a `## R-<n> · UNPROCESSED` header. R-2 arrived as pasted chat with no header
+and the header-only rule did not fire; the owner pastes, and the Builder adds the
+header. An intake that requires the owner to format correctly is an intake that drops
+reports. The owner talks to the LIVE Brain; a report there is a defect observed on
 production traffic, and CLAUDE.md rule 1 (log first, same session) applies to it
 in a way it cannot apply to benchmark findings.
 
