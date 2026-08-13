@@ -23,7 +23,23 @@
     "exit_condition_status": {
       "end_to_end": "NOT MET \u2014 Codex, iteration 12: synthetic inputs",
       "d1_teardown": "NOT MET \u2014 14 runs wrote live data"
-    }
+    },
+    "deliverables": [
+      {
+        "id": "C1-D1",
+        "what": "D-1 teardown: the benchmark stops writing the owner's live backlog. Record every dispatched artifact, and AFTER scoring withdraw suite-CREATED rows via transitionStatus(...,'CANCELLED'); report writes to pre-existing rows as unrevertable; re-count and state whether the tenant returned to baseline.",
+        "status": "OPEN",
+        "blocks": "the whole campaign \u2014 15 runs have now written live data, and D-4 (sampling) multiplies it"
+      },
+      {
+        "id": "C1-D2",
+        "what": "The proactive slice runs END-TO-END through real producers, not selected text functions with synthetic inputs (Codex, iteration 12). P05 must replay fragments through the same persistence/decision sequence production uses.",
+        "status": "OPEN",
+        "blocks": "C-2 Self Follow-Up cannot be scored without it"
+      }
+    ],
+    "this_iteration_ranks_first": "C1-D1 then C1-D2. For the FINAL budgeted iteration these outrank Codex's ranked directive, and that is a change from the standing rule: for four iterations Codex's #1 item \u2014 always a defect \u2014 won every time, and the campaign's own exit condition was never reached. A campaign whose deliverables never outrank the reviewer's queue is a label, not a plan. If a Codex finding is CRITICAL it still comes first; anything less waits.",
+    "orchestrator_note": "Drift diagnosis, 2026-08-13, mine not the Builder's: the campaign block set a GOAL and left Codex's directive governing the turn. Each iteration the Builder honestly declared it was following Codex \u2014 and each time that was a defect, not the exit condition. Iterations 12 (slice, synthetic), 13 (regression), 14 (its fix), 15 (adjacent durable record). Naming deliverables and ranking them explicitly for the final iteration is the fix; if it still drifts, the campaign mechanism is wrong rather than under-specified."
   },
   "queued": [
     {
