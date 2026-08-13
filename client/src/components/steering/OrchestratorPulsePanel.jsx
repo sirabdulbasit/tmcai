@@ -607,6 +607,29 @@ export default function OrchestratorPulsePanel() {
                 </div>
               )}
               <TrendLine iterations={trend.iterations} series={overall.series} height={104} />
+              {/* THE JOURNEY BAR — the picture that carries the truth.
+                  Owner, 2026-08-13: the caption alone did not land, and he was right.
+                  A sentence under a steep line loses to the line: the chart above is
+                  auto-scaled (deliberately — the movement is fractions of a point) so
+                  it will always LOOK like a climb. This draws the same number on the
+                  scale that matters, 0 → professional, with the objective marked. The
+                  eye then gets both facts at once: real movement in the shape above,
+                  and how little of the distance it covers here. */}
+              {interp && axisObjective && (
+                <div className="orch-journey" title={`Brain ${overall.last} · objective ${axisObjective} · professional ${data.brain?.professional}`}>
+                  <div className="orch-journey-track">
+                    <div className="orch-journey-done" style={{ width: `${Math.max(0.5, (overall.last / 100) * 100)}%` }} />
+                    <div className="orch-journey-start" style={{ left: `${(overall.first / 100) * 100}%` }} />
+                    <div className="orch-journey-obj" style={{ left: `${(axisObjective / 100) * 100}%` }} />
+                  </div>
+                  <div className="orch-journey-lab">
+                    <span>0</span>
+                    <span style={{ marginLeft: 'auto' }}>
+                      <b>{overall.last}</b> now · objective <b>{axisObjective}</b> · {interp.journey_complete_pct}% covered
+                    </span>
+                  </div>
+                </div>
+              )}
               {interp && (
                 <div className="orch-section-note" style={{ marginTop: 2 }}>
                   {interp.capabilities_moved} of{' '}
