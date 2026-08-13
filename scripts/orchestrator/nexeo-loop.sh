@@ -592,7 +592,27 @@ while :; do
   # retry-until-green mechanism this project has recorded.
   REMEDIATION_LIMIT="${NEXEO_REMEDIATION_LIMIT:-3}"
   REMEDIATION_NOTE="Not applicable — the previous iteration was not left with an open review finding."
-  PREV_ITER=$((ITER - 1))
+  # The last REVIEWED iteration, not blindly ITER-1.
+  #
+  # Iteration 19 was aborted mid-build (I killed the loop to install the G26 fix),
+  # so it never got a review section. With `ITER-1` the rail then looked up
+  # iteration 19, found nothing, read NONE, and iteration 18's two HIGH findings
+  # would have gone unremediated for the second time — reproducing the exact
+  # failure the G26 fix was meant to end, by a different route. Any abort, crash
+  # or manual restart creates this hole, so the lookback asks the review log which
+  # iteration it last ruled on.
+  PREV_ITER="$(python3 - "$REVIEW_DOC" "$ITER" <<'PYEOF'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    print(int(sys.argv[2]) - 1); raise SystemExit
+nums = [int(n) for n in re.findall(r"^##\s+Iteration\s+(\d+)", txt, re.M)
+        if int(n) < int(sys.argv[2])]
+print(max(nums) if nums else int(sys.argv[2]) - 1)
+PYEOF
+)"
+  [ -n "$PREV_ITER" ] || PREV_ITER=$((ITER - 1))
   PREV_VERDICT="$(python3 - "$REVIEW_DOC" "$PREV_ITER" <<'PYEOF'
 import re, sys
 try:
