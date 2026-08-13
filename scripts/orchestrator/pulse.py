@@ -522,6 +522,103 @@ def capability_trend():
 # its own timers up between polls instead of freezing between refreshes, and so
 # clocks can be rendered in the owner's zone there exactly as `pkt()` does here.
 
+
+def capability_series():
+    """Brain capability, iteration by iteration, as NUMERIC SERIES ready to chart.
+
+    Owner, 2026-08-13: *"i want to see brain improvement iteration wise"*.
+
+    The data existed — inside each iteration's record and inside the scorecard's
+    history — but only as ASCII sparklines for the terminal and as one number per
+    row. A chart needs series: nine capability lines plus the overall, indexed by
+    iteration, with the movement and WHO scored it.
+
+    Two things are carried alongside each point on purpose:
+      · `scored_by` — iterations 1-6 were the orchestrator's own judgements and 7+
+        are Grok's. A chart that hides the change of scorer would show a
+        methodology shift as if it were progress.
+      · `disputed` — the scorer raised a capability in an iteration the reviewer
+        ruled WEAK or WRONG. The Deck should be able to mark that point rather
+        than draw it as settled.
+    """
+    scp = os.path.join(STATE, "capability_scorecard.json")
+    if not os.path.exists(scp):
+        return None
+    try:
+        d = json.load(open(scp))
+    except Exception:
+        return None
+    names = [c["name"] for c in d.get("capabilities", [])]
+    pro = {c["name"]: c["professional"] for c in d.get("capabilities", [])}
+
+    # Reviewer verdicts, so a disputed point can be flagged.
+    verdicts = {}
+    rl = f"{ORCH}/review_log.md"
+    if os.path.exists(rl):
+        txt = open(rl, errors="replace").read()
+        for m in re.finditer(r"^##\s+Iteration\s+(\d+)(.*?)(?=^##\s+Iteration|\Z)",
+                             txt, re.S | re.M):
+            v = re.search(r"\*\*(SOUND|WEAK|WRONG)\*\*", m.group(2))
+            if v:
+                verdicts[int(m.group(1))] = v.group(1)
+
+    points, per_iter = [], {}
+    for h in d.get("history", []):
+        snap = h.get("snapshot")
+        if not snap:
+            continue
+        per_iter[h["iteration"]] = (h, snap)  # a later entry for the same iteration wins
+    for it in sorted(per_iter):
+        h, snap = per_iter[it]
+        by = {c["name"]: c["nexeo"] for c in snap}
+        overall = round(sum(by.values()) / len(by), 1) if by else None
+        rv = verdicts.get(it)
+        points.append({
+            "iteration": it,
+            "head": h.get("head"),
+            "overall": overall,
+            "movement": h.get("movement"),
+            "verdict": h.get("verdict"),
+            "scored_by": h.get("scored_by", "orchestrator"),
+            "reviewer_verdict": rv,
+            "disputed": bool(rv in ("WEAK", "WRONG") and (h.get("movement") or 0) > 0),
+            "capabilities": by,
+            "what_moved": h.get("what_moved"),
+        })
+
+    # One line per capability, plus the overall — the shape a chart consumes.
+    series = []
+    for nm in names:
+        vals = [p["capabilities"].get(nm) for p in points]
+        real = [v for v in vals if v is not None]
+        series.append({
+            "name": nm, "professional": pro.get(nm),
+            "objective": round((pro.get(nm) or 0) * 0.95, 1),
+            "values": vals,
+            "first": real[0] if real else None,
+            "last": real[-1] if real else None,
+            "delta": round(real[-1] - real[0], 1) if len(real) > 1 else 0,
+            "moved": bool(len(set(real)) > 1),
+        })
+    overalls = [p["overall"] for p in points]
+    return {
+        "iterations": [p["iteration"] for p in points],
+        "points": points,
+        "series": series,
+        "overall": {
+            "values": overalls,
+            "first": overalls[0] if overalls else None,
+            "last": overalls[-1] if overalls else None,
+            "delta": round((overalls[-1] or 0) - (overalls[0] or 0), 1) if len(overalls) > 1 else 0,
+            "professional": round(sum(pro.values()) / len(pro), 1) if pro else None,
+            "objective": round(sum(v * 0.95 for v in pro.values()) / len(pro), 1) if pro else None,
+        },
+        "note": "Capability scores are evidence judgements, not test results. "
+                "Iterations 1-6 were scored by the orchestrator; 7 onward by Grok "
+                "(scored_by per point). A green build never moves a capability.",
+    }
+
+
 def campaign_snapshot():
     """The active campaign and what is queued — so the Deck can show WHAT the loop
     is aiming at, not only how it scored. Without this the dashboard shows motion
@@ -683,6 +780,7 @@ def collect():
         # unchanged so the existing panel does not break — additive, not a rename.
         "iterations": iteration_records(),
         "campaign": campaign_snapshot(),
+        "capability_series": capability_series(),
         "history": [{"iteration": it, "label": label, "overall": dd.get("overall"),
                      "weakest": dd.get("weakestCriterionScore"),
                      "criterion": dd.get("weakestCriterion"),
