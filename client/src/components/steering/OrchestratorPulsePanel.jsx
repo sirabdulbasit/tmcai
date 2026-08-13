@@ -270,84 +270,152 @@ function BrainIntegrity({ data }) {
   const objective = data.capability_series?.axis?.objective_line ?? null;
   if (!caps.length || !brain) return null;
 
-  const byName = {};
-  caps.forEach((c) => { byName[c.name] = c; });
+  const integrity = Math.round((brain.nexeo / brain.professional) * 100);
   const active = campaign?.capability || null;
 
-  /* Tint by SHARE OF PROFESSIONAL REACHED, not by raw score — 33 on a benchmark
-     of 92 and 54 on a benchmark of 89 are different distances, and colouring by
-     the raw number would draw them as closer than they are. */
-  const tint = (c) => {
-    if (!c) return { fill: 'var(--text-dim)', pct: 0 };
-    const pct = c.professional ? c.nexeo / c.professional : 0;
-    const fill = pct >= 0.9 ? 'var(--op-score)'
-      : pct >= 0.7 ? '#7cb342'
-      : pct >= 0.5 ? 'var(--op-measure)'
-      : pct >= 0.35 ? '#e07b39'
-      : 'var(--op-stalled)';
-    return { fill, pct };
-  };
+  /* The repair-zone callouts. In the reference illustration they are decorative;
+     here they name the four capabilities that most need work — the active campaign
+     first, because that is the one being repaired right now, then the largest gaps
+     to professional. A zone the owner reads as "being worked" must actually be
+     being worked. */
+  const ranked = [...caps].sort((a, b) => {
+    if (a.name === active) return -1;
+    if (b.name === active) return 1;
+    const ga = (a.professional || 100) - a.nexeo;
+    const gb = (b.professional || 100) - b.nexeo;
+    return gb - ga;
+  });
+  const zones = ranked.slice(0, 4).map((c, i) => ({
+    ...c,
+    isActive: c.name === active,
+    /* four corners, matching the reference layout */
+    side: i % 2 === 0 ? 'left' : 'right',
+    row: i < 2 ? 'top' : 'bottom',
+  }));
 
-  const integrity = Math.round((brain.nexeo / brain.professional) * 100);
+  const GOLD = '#e8a33d';
+  const GOLD_DIM = 'rgba(232,163,61,0.45)';
+  const R = 54;
+  const C = 2 * Math.PI * R;
 
   return (
-    <div>
-      {/* the headline bar — integrity against a professional assistant */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-        <span style={{ fontSize: 11, letterSpacing: 0.5, color: 'var(--text-dim)' }}>
-          {campaign ? `${campaign.id} · ${campaign.name}` : 'no campaign'}
+    <div style={{
+      position: 'relative', borderRadius: 8, overflow: 'hidden',
+      background: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
+      border: '1px solid rgba(232,163,61,0.25)', padding: '10px 12px 12px',
+      /* If the owner drops his illustration at client/public/brain-integrity.png it
+         becomes the backdrop and the live numbers sit on top of it. Until then this
+         renders on its own. The art cannot be generated here — the layout, palette
+         and every number can. */
+      backgroundImage: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
+    }}>
+      {/* circuit traces, faint — the ground of the reference image */}
+      <svg viewBox="0 0 400 240" preserveAspectRatio="none" aria-hidden="true"
+           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.18 }}>
+        {[26, 62, 98, 142, 178, 214].map((y, i) => (
+          <g key={y} stroke={GOLD} strokeWidth="0.6" fill="none">
+            <path d={`M0,${y} H${60 + i * 22} L${76 + i * 22},${y + (i % 2 ? 12 : -12)} H400`} />
+            <circle cx={60 + i * 22} cy={y} r="1.6" fill={GOLD} stroke="none" />
+          </g>
+        ))}
+      </svg>
+
+      {/* PHASE header — the campaign is the phase, not a decorative label */}
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ color: GOLD, fontWeight: 800, fontSize: 12, letterSpacing: 1 }}>
+          {campaign ? `${campaign.id} · ${(campaign.name || '').toUpperCase()}` : 'NO CAMPAIGN'}
         </span>
-        <span style={{ marginLeft: 'auto', fontSize: 20, fontWeight: 700 }}>
-          {integrity}%
+        <span style={{ marginLeft: 'auto', color: GOLD, fontWeight: 800, fontSize: 12, letterSpacing: 1 }}>
+          {integrity}% INTEGRITY
         </span>
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>of professional</span>
       </div>
-      <div style={{ position: 'relative', height: 10, borderRadius: 5,
-                    background: 'var(--surface-2, rgba(255,255,255,0.08))', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', inset: 0, width: `${integrity}%`,
-                      background: 'linear-gradient(90deg,var(--op-stalled),var(--op-measure),var(--op-score))' }} />
-      </div>
-      <div className="orch-section-note" style={{ marginTop: 3 }}>
-        Brain <b>{brain.nexeo}</b> · objective <b>{objective ?? '—'}</b> · professional{' '}
-        {brain.professional} · scored by {brain.scored_by}
+      <div style={{ position: 'relative', marginTop: 6, height: 16, borderRadius: 8,
+                    border: `1px solid ${GOLD_DIM}`, background: 'rgba(0,0,0,0.45)', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${integrity}%`,
+                      background: `linear-gradient(90deg,#7a4a12,${GOLD})` }} />
+        {objective && (
+          <div title={`objective ${objective}`} style={{
+            position: 'absolute', top: -2, bottom: -2,
+            left: `${(objective / brain.professional) * 100}%`, width: 2, background: '#fff', opacity: 0.75 }} />
+        )}
       </div>
 
-      <svg viewBox="0 0 300 190" style={{ width: '100%', height: 'auto', marginTop: 6, overflow: 'visible' }}
-           role="img" aria-label="Nexeo capability map">
-        {/* cortex silhouette, purely as context for the zones */}
-        <path d="M150,20 C196,20 246,44 254,86 C262,128 232,166 186,174 C150,180 110,178 76,166
-                 C34,150 26,110 38,76 C52,38 104,20 150,20 Z"
-              fill="none" stroke="var(--border, rgba(255,255,255,0.18))" strokeWidth="1.5" />
-        <path d="M150,22 C150,60 150,120 150,172" fill="none"
-              stroke="var(--border, rgba(255,255,255,0.12))" strokeWidth="1" strokeDasharray="3 4" />
-        {BRAIN_ZONES.map((z) => {
-          const c = byName[z.name];
-          const t = tint(c);
-          const isActive = active === z.name;
-          return (
-            <g key={z.name}>
-              <path d={z.d} fill={t.fill} fillOpacity={c ? 0.8 : 0.25}
-                    stroke={isActive ? 'var(--op-build)' : 'none'}
-                    strokeWidth={isActive ? 2 : 0}>
-                <title>{`${z.name} — ${c ? `${c.nexeo} of ${c.professional}` : 'not scored'}${
-                  isActive ? ' · REPAIR ZONE (active campaign)' : ''}`}</title>
-              </path>
-              <text x={z.lx} y={z.ly} textAnchor={z.anchor} fontSize="7.5"
-                    fill={isActive ? 'var(--op-build)' : 'var(--text-dim)'}
-                    fontWeight={isActive ? 700 : 400}>
-                {z.name.length > 15 ? `${z.name.slice(0, 14)}…` : z.name}
-                <tspan fill={t.fill} fontWeight="700"> {c ? c.nexeo : '—'}</tspan>
-              </text>
-              {isActive && (
-                <text x={z.lx} y={z.ly + 8} textAnchor={z.anchor} fontSize="6"
-                      fill="var(--op-build)">repair zone</text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-      <div className="orch-section-note">
-        zone colour = share of professional reached · outlined zone = active campaign
+      {/* the gauge, the brain, and the callouts */}
+      <div style={{ position: 'relative', marginTop: 8 }}>
+        <svg viewBox="0 0 400 210" style={{ width: '100%', height: 'auto', display: 'block' }}
+             role="img" aria-label={`Brain integrity ${integrity} percent of a professional assistant`}>
+          {/* cortex silhouette */}
+          <g opacity="0.55">
+            <path d="M200,34 C252,30 300,52 312,92 C324,132 296,176 246,186 C208,193 168,191 134,180
+                     C88,165 76,124 88,90 C102,50 150,38 200,34 Z"
+                  fill="rgba(232,163,61,0.07)" stroke={GOLD_DIM} strokeWidth="1.4" />
+            {/* gyri — suggestion of folds, not anatomy */}
+            {[[112,86,160,70],[120,112,170,100],[132,138,178,130],[246,74,292,92],[240,104,296,118],[232,136,286,150]]
+              .map(([x1,y1,x2,y2],i) => (
+                <path key={i} d={`M${x1},${y1} C${(x1+x2)/2},${y1-14} ${(x1+x2)/2},${y2+14} ${x2},${y2}`}
+                      fill="none" stroke={GOLD_DIM} strokeWidth="1" />
+            ))}
+            <path d="M200,36 C200,80 200,140 200,184" fill="none" stroke={GOLD_DIM}
+                  strokeWidth="1" strokeDasharray="4 5" />
+          </g>
+
+          {/* the integrity ring */}
+          <g transform="translate(200,110)">
+            <circle r={R} fill="rgba(0,0,0,0.55)" stroke="rgba(232,163,61,0.2)" strokeWidth="10" />
+            <circle r={R} fill="none" stroke={GOLD} strokeWidth="10" strokeLinecap="round"
+                    strokeDasharray={`${(integrity / 100) * C} ${C}`}
+                    transform="rotate(-90)" />
+            <text textAnchor="middle" y="2" fontSize="26" fontWeight="800" fill={GOLD}>{integrity}%</text>
+            <text textAnchor="middle" y="18" fontSize="8" fill="rgba(232,163,61,0.75)">
+              {brain.nexeo} of {brain.professional}
+            </text>
+          </g>
+
+          {/* repair zones — leader line from the label to the cortex */}
+          {zones.map((z, i) => {
+            const left = z.side === 'left';
+            const top = z.row === 'top';
+            const lx = left ? 8 : 392;
+            const ly = top ? 44 + i * 6 : 168 + (i - 2) * 6;
+            const ax = left ? 118 : 286;
+            const ay = top ? 78 : 148;
+            return (
+              <g key={z.name}>
+                <path d={`M${lx + (left ? 0 : 0)},${ly} H${left ? lx + 52 : lx - 52} L${ax},${ay}`}
+                      fill="none" stroke={z.isActive ? GOLD : GOLD_DIM}
+                      strokeWidth={z.isActive ? 1.3 : 0.9}
+                      strokeDasharray={z.isActive ? '' : '3 3'} />
+                <circle cx={ax} cy={ay} r={z.isActive ? 4 : 3}
+                        fill={z.isActive ? GOLD : 'none'} stroke={GOLD} strokeWidth="1" />
+                <text x={lx} y={ly - 4} textAnchor={left ? 'start' : 'end'}
+                      fontSize="8.5" fontWeight={z.isActive ? 700 : 400}
+                      fill={z.isActive ? GOLD : 'rgba(232,163,61,0.8)'}>
+                  {z.name} <tspan fontWeight="800">{z.nexeo}</tspan>
+                  <tspan fill="rgba(232,163,61,0.55)"> / {z.professional}</tspan>
+                </text>
+                <text x={lx} y={ly + 6} textAnchor={left ? 'start' : 'end'} fontSize="7"
+                      fill={z.isActive ? GOLD : 'rgba(232,163,61,0.5)'}>
+                  {z.isActive ? 'repair zone · being worked now' : 'repair zone · queued'}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* the caption, generated from state rather than written as marketing prose */}
+      <div style={{ position: 'relative', marginTop: 6, borderTop: `1px solid ${GOLD_DIM}`, paddingTop: 6 }}>
+        <div style={{ color: GOLD, fontWeight: 700, fontSize: 10, letterSpacing: 0.6 }}>
+          {campaign ? `REPAIRING: ${(campaign.capability || '').toUpperCase()}` : 'NO ACTIVE REPAIR'}
+          {` — ${integrity}% INTEGRITY`}
+        </div>
+        <div style={{ fontSize: 10, color: 'rgba(232,163,61,0.72)', marginTop: 2, lineHeight: 1.45 }}>
+          {brain.nexeo} of {brain.professional} against a professional assistant · objective{' '}
+          {objective ?? '—'} · last move {brain.move > 0 ? `+${brain.move}` : brain.move} ·
+          scored by {brain.scored_by}. {caps.filter((c) => c.delta !== 0).length === 0
+            ? 'No capability moved on the last card — nothing has been deployed to move it.'
+            : `${caps.filter((c) => c.delta !== 0).length} capability moved on the last card.`}
+        </div>
       </div>
     </div>
   );
@@ -801,6 +869,14 @@ export default function OrchestratorPulsePanel() {
                 ? <><b>Progress {data.current_phase}:</b> {data.progress}</>
                 : <><b>Progress:</b> nobody working</>}
             </div>
+          </PulseCard>
+
+          {/* aspect 1b — the integrity picture the owner asked for, 2026-08-13:
+              "health deck should look like this", with a reference illustration of
+              a brain at 47% INTEGRITY ringed by repair zones. */}
+          <PulseCard className="orch-deck-brain" title="Brain integrity"
+                     hint="capability vs a professional assistant">
+            <BrainIntegrity data={data} />
           </PulseCard>
 
           {/* aspect 2 — how far Brain is from a professional assistant */}

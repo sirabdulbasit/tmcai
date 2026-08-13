@@ -190,6 +190,40 @@ measure_collect() {
   BENCH_GATE="$(sed -E    's/.*gate=([^ ]+).*/\1/'     <<<"$line")"
   BENCH_JSON="$BENCH_JSON_PENDING"
   say "MEASURE iter=$iter overall=$BENCH_OVERALL min=$BENCH_MIN weakest=$BENCH_WEAKEST gate=$BENCH_GATE"
+
+  # THE GUARD, not the gate. Owner ruling 2026-08-13: capabilities drive, the
+  # benchmark guards. min(C1..C8) >= 95 was unreachable — C4 awarded >=95 in 4% of
+  # 228 scorings and nine of twelve cases never reached it once — so the benchmark
+  # now answers the one question it can answer honestly: did a case get WORSE?
+  GUARD_STATUS="not-run"; GUARD_TXT="The regression guard did not run this iteration."
+  if [ -x "$ROOT/scripts/orchestrator/regression-guard.py" ] && [ -s "$BENCH_JSON" ]; then
+    GUARD_OUT="$LOGS/iter-$iter-guard.json"
+    if python3 "$ROOT/scripts/orchestrator/regression-guard.py" \
+         "$ORCH/scores" "$BENCH_JSON" > "$GUARD_OUT" 2>&1; then
+      GUARD_STATUS="clean"
+      GUARD_TXT="Regression guard CLEAN — no case fell more than the calibrated band below its recent median."
+    else
+      GUARD_STATUS="regressed"
+      GUARD_TXT="$(python3 - "$GUARD_OUT" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("Regression guard reported a failure its output could not be parsed from."); raise SystemExit
+lines = ["REGRESSION GUARD FIRED. Fix these before new work — a case that got worse is",
+         "a regression whatever else the turn achieved.", ""]
+for r in d.get("regressions", [])[:8]:
+    lines.append(f"  {r['case']} {r['criterion']}: {r['baseline']} -> {r['now']} (down {r['drop']})")
+    if r.get("reason"):
+        lines.append(f"      judge: {r['reason'][:150]}")
+for r in d.get("cases_down", [])[:6]:
+    lines.append(f"  {r['case']} MEAN across criteria: {r['baseline']} -> {r['now']} (down {r['drop']})")
+print("\n".join(lines))
+PYEOF
+)"
+    fi
+    say "GUARD  iter=$iter $GUARD_STATUS"
+  fi
   grep -q 'mutated=true' <<<"$line" && say "WARNING iter=$iter benchmark MUTATED live data — see $(basename "$BENCH_JSON")"
   # Remember WHAT was measured, so a restart can tell whether re-measuring would
   # produce new information or just reprint the same number at cost.
@@ -554,9 +588,11 @@ while :; do
     rm -f "$STOP_FILE"
     break
   fi
+  # The benchmark no longer ends the loop. It was never able to: the owner's
+  # objective is nine capabilities at 95% of a professional, and this benchmark
+  # cannot see seven of them. A pass is worth saying out loud and nothing more.
   if [ "$BENCH_GATE" = "pass" ]; then
-    say "🎯 GATE PASSED — overall=$BENCH_OVERALL, every criterion >= $TARGET. Loop complete."
-    break
+    say "benchmark gate would have passed (overall=$BENCH_OVERALL, min >= $TARGET) — noted, NOT an exit"
   fi
   if [ "$ITER" -ge "$MAX_ITER" ]; then
     say "iteration cap $MAX_ITER reached without passing the gate — stopping (rail, not success)"
@@ -590,6 +626,23 @@ while :; do
   # CAPPED at REMEDIATION_LIMIT attempts. Without a cap this becomes an infinite
   # loop on one stubborn finding, burning $20 a turn — the failure mode of every
   # retry-until-green mechanism this project has recorded.
+  # D-14 re-scope. Two consecutive iterations that reached nobody means the KIND of
+  # work changes; a third attempt at the same class is what produced twenty
+  # iterations and one deploy.
+  RESCOPE_NOTE="Not applicable."
+  RESCOPE_STREAK=0
+  [ -s "$STATE/fail-streak" ] && RESCOPE_STREAK="$(cat "$STATE/fail-streak")"
+  if [ "$RESCOPE_STREAK" -ge 2 ]; then
+    say "RESCOPE iter=$ITER — $RESCOPE_STREAK consecutive iterations reached the owner with nothing"
+    RESCOPE_NOTE="**RE-SCOPE THIS TURN — $RESCOPE_STREAK consecutive iterations deployed nothing and moved no capability.**
+
+Do NOT continue the previous approach. Per D-14, pick work that can pass review and
+SHIP in this turn: one owner-visible behaviour made correct, with a test and a live
+check. A smaller change that arrives beats a better change that does not. Say in
+your build entry what you dropped and why, and predict explicitly whether this can
+be deployed at the end of this turn."
+  fi
+
   REMEDIATION_LIMIT="${NEXEO_REMEDIATION_LIMIT:-3}"
   REMEDIATION_NOTE="Not applicable — the previous iteration was not left with an open review finding."
   # The last REVIEWED iteration, not blindly ITER-1.
@@ -745,6 +798,7 @@ PYEOF
     TSC "$TSC_BEFORE" TESTS "${TESTS_AFTER:-not yet run this session}" \
     MODE "$MODE" STRUCTURAL "$STRUCTURAL_NOTE" \
     FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" REMEDIATION "$REMEDIATION_NOTE" \
+    RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
   # Save what the Builder was actually told. I could not verify that iteration 20's
@@ -861,6 +915,44 @@ PYEOF
   append_ledger "$ITER" "$(git rev-parse --short HEAD)" "$BENCH_OVERALL" "$BENCH_MIN" \
     "$BENCH_WEAKEST" "$BENCH_GATE" "$TSC_AFTER" "$TESTS_AFTER" "$MODE" \
     "stall=$STALL$([ "$FORBIDDEN_ALERT" = "none" ] || echo ' FORBIDDEN-PATH-ALERT')"
+
+  # ── D-14 · DID THIS ITERATION REACH THE OWNER? ─────────────────────────────
+  #
+  # Owner, 2026-08-13: *"we are not here to increase just numbers of iteration we
+  # need significant improvements against each iteration"*.
+  #
+  # One iteration in ten shipped, and Grok's card said why in its own words:
+  # "branch-only, NOT YET deployed; overall remains 47.4". Under the capability
+  # contract undeployed work has changed nothing for him, so the number was frozen
+  # by construction. The loop tracked the benchmark, the test count and the stall
+  # counter — and never tracked the only column he was asking about.
+  #
+  # So: an iteration that deploys nothing AND moves no capability is FAILED, not
+  # neutral. Two in a row and the next turn is re-scoped to something small enough
+  # to pass review and ship, rather than a third attempt at the same class.
+  SHIPPED_THIS_ITER="no"
+  grep -q "\"iteration\": *$ITER\b" "$STATE/deploy-history" 2>/dev/null && SHIPPED_THIS_ITER="yes"
+  CAP_MOVED="$(python3 - "$ORCH/scores/iter-$ITER-capability.json" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("unknown"); raise SystemExit
+v = (d.get("overall_verdict") or "").upper()
+print("yes" if v == "PROGRESSIVE" else "no")
+PYEOF
+)"
+  FAIL_STREAK=0
+  [ -s "$STATE/fail-streak" ] && FAIL_STREAK="$(cat "$STATE/fail-streak")"
+  if [ "$SHIPPED_THIS_ITER" = "no" ] && [ "$CAP_MOVED" != "yes" ]; then
+    FAIL_STREAK=$((FAIL_STREAK + 1))
+    say "ITERATION $ITER FAILED — nothing deployed, no capability movement (streak $FAIL_STREAK)"
+  else
+    [ "$FAIL_STREAK" -gt 0 ] && say "ITERATION $ITER reached the owner — fail streak reset from $FAIL_STREAK"
+    FAIL_STREAK=0
+  fi
+  printf '%s' "$FAIL_STREAK" > "$STATE/fail-streak"
+  say "SHIP   iter=$ITER deployed=$SHIPPED_THIS_ITER capability_moved=$CAP_MOVED"
 done
 
 say "════════ orchestrator finished · iterations=$ITER · overall=$BENCH_OVERALL min=$BENCH_MIN gate=$BENCH_GATE ════════"
