@@ -706,3 +706,71 @@ Not a licence to ship weak work to make the column look better. The gate stays o
 SOUND. The way to ship more is to attempt less per turn, not to lower the bar —
 and if a turn cannot be scoped small enough to pass review, that is worth saying
 out loud rather than spending another 30 minutes and $15 on a hold.
+
+---
+
+## D-15 · OPEN · A bracketed marker is never a reply
+
+**Iteration 21 sent the owner this, as the entire answer to "why did I get two
+reminders?":**
+
+```
+[unevidenced self-repair claim — nothing was flagged and no prevention was
+ scheduled; say what is observable and that the cause is not known]
+```
+
+Codex ruled **WRONG**; the regression guard caught it independently before the
+review landed. B12 C4 85 → 10, C6 100 → 20, C7 90 → 20, C1 85 → 20, aggregate C4
+86.7 → 80.7.
+
+### This is occurrence 8 of `guard-destroys-the-answer`, and the design invites it
+
+`brainAskRoutes.ts:189` does `result.answer = validation.replacement`. When
+`exciseClausesMatching` and `exciseSentencesMatching` both fail — because the whole
+answer is one matching sentence, which is exactly the shape of a short apology —
+`replacement` is the `suggestedReplacement` marker, and the marker becomes the
+reply.
+
+**The route already knows this failure by name.** Its own comment:
+
+> `salvaged: false` means the whole answer became a marker, **which is what
+> destroyed four correct replies on 2026-08-10 before anyone could see it
+> happening.**
+
+And the judge rubric names it as a worked example:
+*"Brain sent the literal text `[completion recorded and item closed]`: C4 = 5. A
+machine marker reached a human."*
+
+So this is not a surprise, it is a permitted outcome that has now fired at least
+twice. **Four iterations have treated the class as a detection problem** — three
+enumerating phrases, one generalising the grammar. Both halves fail for one reason:
+while a marker may be a user-facing answer, every improvement in detection
+increases the chance the owner gets a debug string instead of a reply.
+
+### THE SCOPE FOR ITERATION 22 — small, and it must SHIP
+
+1. **A bracketed marker may never reach a human.** It is an internal signal. Where
+   the code currently assigns one to `result.answer`, it must instead:
+   a. **regenerate** the answer under the constraint (the composer is right there,
+      and the violation description already states what to avoid); or
+   b. failing that, emit a **plain honest sentence** with no brackets, written for
+      that violation class — for B12: what is observable, and that the cause is not
+      known.
+2. **Never two blocking rules on one claim.** Codex's other finding: the old phrase
+   rule and the new grammar rule BOTH fired on B12. That is
+   `protection-with-two-implementations`, occurrence 9. One rule owns this class.
+3. **The test that would have caught it**: for every block-severity rule, assert the
+   user-facing result contains no `[` marker. Table-driven over the rule list, so a
+   rule added later inherits the assertion instead of needing to remember it.
+4. **Ship it.** This is a small, self-contained change on a path with existing
+   tests. Iteration 22 must end deployed — per D-14, two consecutive iterations have
+   now reached the owner with nothing.
+
+### What NOT to do
+
+- Do not narrow the DEF-166 grammar rule to make B12 pass. The rule caught a real
+  unbacked promise; the bug is what happened after it caught it.
+- Do not delete the markers. They are correct as internal signals and the logs need
+  them; they simply must not be the thing the owner reads.
+- Do not add a fifth detection improvement. The class is closed by making a block
+  safe, not by making detection cleverer.

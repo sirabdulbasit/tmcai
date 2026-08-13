@@ -9,13 +9,28 @@ caught and fed back to you.
 
 | | |
 |---|---|
-| Target | **@@TARGET@@ on EVERY criterion C1–C8** (a mean of @@TARGET@@ is NOT a pass) |
+| Benchmark role | **A REGRESSION GUARD, not the objective** (owner ruling 2026-08-13) |
 | Current overall | @@OVERALL@@ |
-| Current **minimum** criterion | **@@WEAKEST@@ @ @@MINSCORE@@** ← this is what gates the loop |
+| Current **minimum** criterion | **@@WEAKEST@@ @ @@MINSCORE@@** — do not chase this to @@TARGET@@ |
 | Baseline before the loop | @@BASELINE@@ |
 | Full report (read it) | `@@SCOREJSON@@` |
 | tsc | @@TSC@@ |
 | tests | @@TESTS@@ |
+
+**The old gate — min(C1..C8) >= 95 — is retired and you should not aim at it.** It
+was unreachable and that was measured, not argued: across 228 case-scorings C4
+awarded >=95 in 4% of them, and nine of the twelve cases never reached it once in
+nineteen runs. Every other criterion clears 95 routinely. Aiming at it produced
+twenty iterations on the smallest remaining capability. Your aim comes from the
+CAMPAIGN below; the benchmark's job is to catch a case that got WORSE.
+
+## Regression guard
+
+@@GUARD@@
+
+## Re-scope
+
+@@RESCOPE@@
 
 The score comes from `server/src/scripts/nexeoCapabilityBenchmark.ts`: twelve
 read-shaped turns pushed through `answerAsBrain` (the real composer) and scored
