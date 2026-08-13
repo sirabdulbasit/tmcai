@@ -236,6 +236,40 @@ real item that must be left alone, and say which.
 own — iter-01 already downgraded from `add` to `update`. That is evidence the
 defect is closing, not a reason to leave the teardown unbuilt.
 
+### MEASURED, 2026-08-13 — 21 runs, and the open question above is now answered
+
+Every benchmark run on record is flagged `mutated`. All 21 name **one row**:
+
+```
+runs flagged mutated                21 of 21 on record
+row                                 cmsotakwf0006rts1bdsrjjkj — open item #506
+                                    "Define rules for Brain's responsiveness to new vs. existing…"
+created                             2026-08-11 15:25:06, INSIDE iter-00's window (15:22:50→15:29:12)
+open_items count, iter-09..iter-18   283 → 283 every run — nothing created since iter-00
+what the 20 later runs did          update_open_item, idempotently: priority='high'
+notes / delegation_trail            0 / 0 — no note spam, no invented delegation
+messages sent                       none on record
+```
+
+**So the row is benchmark junk, not an owner item** — that is the deliberate
+determination D-1 asked for, made on the creation timestamp rather than on its
+plausible-looking title. The 20 updates after it are self-inflicted: the suite
+edits the row the suite created.
+
+**And the prescribed teardown would not have worked on it.** Its status is
+`DRAFT`, which is not in `ItemStatus` at all, so `transitionStatus(#506,
+'CANCELLED')` cannot resolve a transition and refuses. The row is simultaneously
+(a) junk the loop is supposed to withdraw and (b) unwithdrawable through the
+canonical entry point. See **D-11**, which is the real defect underneath this one.
+
+**Revised harm assessment, stated plainly so nobody over- or under-reacts:** the
+realised damage is one benchmark-created DRAFT item carrying `priority='high'` in a
+backlog of 283, with no note spam and no messages sent. That is small. The
+*exposure* is not bounded by it: `answerAsBrain` has no dispatch switch, so the
+next case that provokes a send would message a real person from a measurement run.
+Containment is therefore still owed — but D-1's teardown is the second priority,
+behind D-11.
+
 ---
 
 ## D-2 · OPEN · DEF-132 / DEF-133 need Codex review before any deploy
@@ -364,3 +398,78 @@ Every build entry states the verification numbers measured **after** the last
 edit, and reconciles claimed test counts with the actual suite delta. Codex caught
 iteration 1 claiming "+19 tests" against a real delta of +1 passed; that kind of
 arithmetic is what makes a green report worthless.
+
+---
+
+## D-11 · OPEN · `DRAFT` is a live status the lifecycle matrix cannot express
+
+**Found 2026-08-13 while measuring D-1. This is CIRCLING, not a new problem** — per
+CLAUDE.md rule 5, the symptom class *"an open-item status written outside the
+matrix"* is already in the chart as DEF-129's root cause. A structural fix is
+required; a patch on item #506 is not a fix.
+
+### The two vocabularies
+
+`transitionMatrix.ts:19-41` defines nine statuses: NEW, TRIAGED, IN_PROGRESS,
+DELEGATED, WAITING_INFO, SNOOZED, INFORMED, CLOSED, CANCELLED.
+
+`DRAFT` is not among them — yet it is a **designed, shipped product state**:
+
+```
+server/src/services/openItems/openItemGate.ts:296     status: 'DRAFT'   ← minted here
+server/src/services/openItems/openItemGate.ts:73,77   'NEW' | 'DELEGATED' | 'DRAFT'
+server/src/jobs/openItemDraftAskJob.ts:6,42           a DAILY job walks DRAFT items
+server/src/services/openItems/applyOpenItemUpdate.ts:91  promotes out of DRAFT
+server/src/services/openItems/zombieItemPolicy.ts:94  treats DRAFT as active
+server/src/routes/briefRoutes.ts:2400                 renders DRAFT to the owner
+```
+
+So the gate creates items in a status the canonical entry point does not know.
+
+### The consequence, which is a capability loss and not just untidiness
+
+`transitionStatus` resolves `findTransition(item.status, target)`. For a DRAFT
+item that lookup returns `undefined` for **every** target, so the function refuses
+all of them. A DRAFT item cannot be triaged, delegated, closed, snoozed or
+cancelled through the only path allowed to change status.
+
+**Nexeo cannot move an item Nexeo itself created.** State it that way in the
+capability block: this is `Authorized Action` and `Self-Pruning`, not hygiene.
+
+Worse, the two escape hatches both do harm:
+- a caller that gives up on the matrix and writes `status` directly is exactly the
+  DEF-129 bypass, re-created; or
+- the item sits forever, which is what `zombieItemPolicy` then has to reason about.
+
+### Exposure today — measured, not estimated
+
+```
+TMC-0001:  CLOSED 275 · DELEGATED 4 · CANCELLED 3 · DRAFT 1
+```
+
+One DRAFT row, and it is the benchmark's own #506. **Say this out loud in the
+build entry rather than inflating it:** no owner item is currently frozen. The
+gate's DRAFT path is nearly cold in production, so this is a live *structural*
+hole with an almost-empty blast radius — the cheapest possible moment to close it,
+and the reason to close it now rather than after it has minted fifty rows.
+
+### What a structural fix has to settle (the Builder decides and argues it)
+
+1. **One vocabulary.** Either DRAFT joins `ItemStatus` with its real transitions
+   (in from creation, out to TRIAGED/NEW on completion, out to CANCELLED on
+   withdrawal), or the gate stops minting it and expresses "missing priority/due
+   date" as a field rather than a status. Both are defensible; two vocabularies
+   are not.
+2. **If DRAFT joins the matrix**, `DRAFT → CANCELLED` must exist, which also
+   unblocks D-1's teardown for #506.
+3. **A migration for existing rows** — hand-written and idempotent, and it must
+   handle the row whose status the 20260811b migration already declined to
+   interpret rather than pretending the table is clean.
+4. **A test that fails on the hole itself**, not on one row: assert that every
+   status any production code path can write is present in `ALL_STATUSES`. That is
+   the assertion whose absence let this ship — a matrix test that only exercises
+   statuses the matrix already knows can never catch a status it does not.
+5. **Do not "fix" this by widening the `ItemStatus` type without transitions.** A
+   status with no legal transitions is still a frozen item; it would move the
+   refusal from `findTransition` to nowhere at all, which is worse because it
+   would look fixed.

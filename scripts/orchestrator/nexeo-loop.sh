@@ -599,7 +599,7 @@ try:
     txt = open(sys.argv[1], errors="replace").read()
 except Exception:
     print("NONE"); raise SystemExit
-m = re.search(r"^##\s+Iteration\s+%s(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
+m = re.search(r"^##\s+Iteration\s+%s\b(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
               txt, re.S | re.M)
 if not m:
     print("NONE"); raise SystemExit

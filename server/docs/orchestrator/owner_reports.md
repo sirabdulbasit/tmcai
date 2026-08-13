@@ -31,7 +31,7 @@ block here for you, quoted verbatim.
 
 Format (loose — the Builder normalises it into the governing docs):
 
-```
+```text
 ## R-<next number> · <date time> · UNPROCESSED
 <what happened, pasted thread, expectation — anything>
 ```
