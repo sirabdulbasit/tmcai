@@ -5010,3 +5010,93 @@ push muffled; a push with no item identity digested.
   prose built from a template string, which brushes against invariant #4; my defence is
   that it is a COUNT with a quoted verbatim push, the same shape as the DEF-155/156
   proactive renderers already reviewed, and the LLM never touches it.
+
+---
+
+## Iteration 30 — mode: structural · REMEDIATION attempt 1 of 1 · campaign C-3 (iteration 6 of 5)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### Scope: close iteration 29's WRONG on the same change
+
+All four findings are valid. The CRITICAL is the one I most need to own: the digest text
+was hardcoded Brain prose promising *"Reply 'show all' and I'll list each one"* with no
+handler — **and my own build entry flagged exactly that sentence as over-promising, then
+shipped it anyway.** Flagging a defect in prose while committing it in code is worse than
+missing it: it converts a review finding into a known-and-accepted invariant violation
+without anyone having accepted it.
+
+| # | finding | fix |
+|---|---|---|
+| CRITICAL | hardcoded Brain prose + fabricated "show all" capability claim (invariants #4, #5) | prose moved to the reviewed proactive-text boundary (`renderItemDigest`, beside DEF-155/156's renderers): facts + verbatim quote, NO promised actions; the test asserts **byte equality** with the renderer so the words cannot drift back inline |
+| HIGH | original filed as terminal BEFORE the digest existed — a failure between the writes = zero owner messages | **order is the safety property**: digest durable first ('duplicate' counts — it is durable by definition); digest failure → original sends as if the feature did not exist; filing failure → original ALSO sends. One too many is possible; zero is not |
+| HIGH | SELECT-then-INSERT dedup over a NON-unique index — two concurrent producers, two digests | migration `20260813_bpq_dedup_unique`: partial UNIQUE index on live `(user_id, dedup_key)` rows, older live duplicates EXPIRED (never deleted) first, idempotent; the losing insert gets P2002 and is reported as the duplicate it is |
+| MEDIUM | consent implied, not decided | DECIDED, in the spec + policy + a test: the master flag IS blanket consent, because per-item pre-consent is inert for every new item — the drip is only visible after it happened. Per-item `keep` always wins; unknown values are keep; `suppress` is not implemented |
+
+### Governing docs — verdict: CIRCLING on my own work
+
+The two-write finding is `guard-destroys-the-answer`'s shape at a write boundary, and the
+hardcoded prose is the invariant CLAUDE.md states in its first screen. Neither needed a
+new tag; both needed me to apply the existing ones to code I was writing rather than code
+I was reviewing.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2252 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 184 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 4 mutants, one per finding, all die** — assume durability without making it so;
+treat P2002 as a hard failure; the promise sneaking back into the prose (killed by the
+byte-equality assertion, which is the point of asserting equality rather than substrings);
+unknown-decision-as-consent.
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: +0 — as DEF-172: the mechanism exists and is now safe to enable; nothing is
+observed until deploy + owner opt-in.** No benchmark movement; nothing here touches
+composition.
+
+**MECHANISM:** unchanged from DEF-172, minus the two ways it could lie to or silence the
+owner.
+
+**FALSIFIER:** any enabled-path digest whose text differs from `renderItemDigest`'s output;
+an original parked without a durable digest; two live rows sharing a dedup key after the
+migration; a digest sent on an unknown consent value.
+
+### What I did NOT do
+
+- **The "show all" handler.** Still not built; now nothing advertises it either, which is
+  the honest state. It remains the natural next increment before inviting the opt-in.
+- **A true parallel concurrency test.** The P2002 path is simulated against the mock; the
+  real guarantee is the DB unique index, which vitest cannot exercise. Stated as residue on
+  the DEF row rather than claimed.
+- **Codex directive #5 / the C4 register queue** (B12/B01/B03/B09/B11). Named, untouched.
+- **Deploy** — the loop owns it; the migration ships with the deploy. **deployed=no.**
+  Prediction: this can be deployed at the end of this turn — the enabled path is now
+  invariant-clean and the default is still 0.
+
+### What I am unsure about
+
+- **The migration against production data.** It expires older live duplicates before
+  building the index; if production holds live duplicate pairs I have not seen, rows I
+  did not enumerate will move to `expired`. That is the designed behaviour and it is
+  reversible in the sense that nothing is deleted — but I could not dry-run it from here.
+- **'duplicate' as a durability proxy.** It means a live row with that key exists NOW;
+  between that check and the filing there is a window where the digest could expire. The
+  window is seconds against a 48h TTL, and the failure mode is the safe direction (the
+  original files under a digest that just expired — the NEXT push re-creates one), but it
+  is a proxy, not a proof.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves.** The switch is 0 and no compose path is touched.
+
+**What would prove me wrong:**
+- **The migration fails on deploy** → production live-duplicate data has a shape the
+  CTE does not handle, and the deploy stops per protocol (failed migration = stop and
+  report, never improvised recovery).
+- **Codex finds a fifth defect in the digest path** → the increment needs a redesign, not
+  a fourth patch, and I would argue for reverting DEF-172+173 together rather than
+  remediating again.
