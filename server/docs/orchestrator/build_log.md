@@ -4401,3 +4401,160 @@ replaced; or `markerVoice` receiving an uncurated marker.
   is the specific thing I could not check from here.
 - **A legitimate bracketed reply is still replaced** → the bridge's grammar is wider than I
   measured.
+
+---
+
+## Iteration 25 — mode: structural · campaign C-3 (iteration 2 of 5) · C-3 INCREMENT 1 CODE-COMPLETE
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+**Iteration 24 produced nothing** — no commit, no build entry, no review. With iteration 23
+reviewed WEAK and therefore unshipped, D-19's abort condition was one quiet turn away, so
+this turn's job was to produce a named code-complete increment. It does.
+
+### The escalation, answered: (a) accept, with a DEF row — NOT grounds for reverting
+
+Iteration 23 was remediated twice and Codex is still not satisfied. My answer is **(a)**,
+recorded as **DEF-171** with closing conditions so it cannot quietly become permanent.
+
+The reasoning, so it can be judged rather than taken: the two iteration-22 HIGHs the change
+was built to close **are** closed — `[see attached]` survives on both surfaces, and WhatsApp
+no longer hands composer instructions to a language model as fact. Codex's own attribution
+reads *RELIABILITY-ONLY (correct)* and *"the current benchmark contains no raw marker
+regression."* His remaining findings are about **completeness of the migration**, not
+correctness of what shipped. Reverting would restore a state that both destroys legitimate
+bracketed replies **and** paraphrases internal instructions to the owner — strictly worse on
+both counts.
+
+His directive #2 is the right exit and I have written it into the row as the closing
+condition: carry provenance in a **structured status field** through compose → route →
+renderer → WhatsApp serialisation, and stop depending on a character surviving
+normalisation. The transport-durability risk (his HIGH #2) is **unproven in either
+direction** — I could not test transport from the build environment, and I said so last turn
+rather than claiming it was safe.
+
+### Not the fixQueue, and why
+
+The fixQueue is headed by B09/B10 at C4=80 — vocatives, canned greetings, system-like
+phrasing. The benchmark is a regression guard now, the guard did not fire this turn, and
+C-3's increment 1 is the campaign's lowest undelivered item. I did not touch conversational
+prose. **No criterion should move.**
+
+### Governing docs — verdict: PROGRESSING
+
+Not a recurrence. Self-Pruning has no §3 tag because nothing has ever measured it — that is
+the defect DEF-170 addresses. `fabricated-status` and the marker tags are untouched by this
+work.
+
+### What I built
+
+**`src/services/selfpruning/inboundNoiseLedger.ts`** — a read-only counter over
+`brain_prompt_queue`, which is the surface that actually reaches the owner.
+`summariseInboundNoise` groups by sender **and** subject class and reports reached /
+answered / unanswered per group; `renderNoiseReport` renders it.
+
+**`src/scripts/nexeoInboundNoiseReport.ts`** — the CLI that reads the number out.
+
+**The two definitions everything rests on**, stated in the module, the report and the tests:
+
+- **REACHED** = `sent_at IS NOT NULL` — it went to a channel and he had to read it.
+- **ACTED** = `answered_at IS NOT NULL` — he replied.
+
+So **`ignored` is an upper bound, not a measurement**: acting without replying — doing it
+himself, or deciding no — is indistinguishable here. That is adequate for finding a burst
+and inadequate as evidence about a single message, and **the rendered report says so in the
+text**, because a figure that travels without its definition is how "43 of 76" became
+something nobody could check.
+
+A burst requires volume **and** disengagement. Five pushes he answered every time are work.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2219 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 183 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 6 mutants, all die** — group by sender only, burst on volume alone, count unsent
+rows, drop the per-owner scope, swallow a failed read, drop the definitions from the report.
+
+**A stray NUL byte was sitting inside the grouping key**, left by one of my own shell
+mutations and propagated by the restores. Tests passed because NUL happens to work as a
+separator. I found it by reading the file's **bytes** when a mutation would not apply, and
+replaced it with an explicit U+241F separator. Worth recording: the suite could not see it,
+and neither could reading the source.
+
+### THE NUMBER, from production (read-only, 30-day window)
+
+```
+REACHED=93 ANSWERED=49 UNANSWERED=44 BURSTS=5
+```
+
+**And it contradicts the campaign's premise, which is the most valuable thing it could have
+done.** C-3's stated evidence is *"ten unactionable pushes from one unknown number"*:
+
+| group | pushes | answered | unanswered |
+|---|---|---|---|
+| `action_lifecycle_governor` | 22 | 10 | **12** |
+| `preactive_due_nudge` | 20 | 10 | **10** |
+| `action_status_update` | 8 | 0 | **8 — never once replied to** |
+| `action_lifecycle_reply` | 9 | 4 | 5 |
+| `+239487846228094` (the CL-033 sender) | 13 | **13** | **0** |
+
+He answered **every** message from the unknown number. The noise is **Brain talking to
+itself about the same overdue item** — the `preactive_due_nudge` samples are three
+near-identical rewordings of one "Leave Request" reminder, and `action_status_update` is a
+class he has never replied to once in thirty days.
+
+**So increment 2 should digest Brain's own nudge classes, not unknown senders.** That is the
+opposite of where the campaign was pointing, and it is exactly why counting comes before
+suppressing. **The orchestrator should re-aim increment 2 on this evidence.**
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: +0 capability from this increment alone, and +0 on the benchmark.** It
+suppresses nothing, so nothing withdraws itself yet. Its value is that Self-Pruning stops
+being unmeasurable — the number exists, from production, and the mechanism is scoreable from
+code. I am not claiming 33 → anything on the strength of a counter.
+
+**MECHANISM:** the count of which push classes the owner never engages with, per sender and
+subject, carrying its own definitions.
+
+**FALSIFIER:** any write performed by this path; a count including a push that never left
+the queue; a cross-tenant or cross-owner total; or a failed read reported as a quiet inbox.
+
+### What I did NOT do
+
+- **Any suppression, digesting or deletion.** Increment 1 is explicitly read-only and
+  increment 2 is the next turn's work — now with evidence about where to aim it.
+- **Codex's iteration-23 directives #1–#3** (finish the producer migration, structured status
+  field, the typed self-conduct exit). Named in DEF-171 as the closing conditions; not
+  started, because the escalation released me to new work and D-19 needed an increment.
+- **His directives #4 and #5** (the C4 queue, B02 completeness). Untouched.
+- **Deploy.** Code-complete, not shipped: **deployed=no**. The increment's "done when"
+  requires the count quoted from production — I have the count and it is above, but the
+  ledger is not on the box until the orchestrator ships it.
+- **The durable outbox** (DEF-156/158), tenth naming.
+
+### What I am unsure about
+
+- **Whether `answered_at` is the right proxy for engagement.** It is the only signal in the
+  table, and I have bounded the claim accordingly — but if the owner routinely acts without
+  replying, the unanswered figure is inflated and increment 2 would suppress things he
+  actually values. The honest test is to show him the 44 and ask which he wanted.
+- **Whether `metadata.source` is a stable subject class.** It is producer-chosen and could
+  drift, in which case one class would split across labels and a burst would hide.
+- **Whether the 500-row cap bites.** 93 rows in thirty days says no for this tenant, and a
+  busier tenant would silently truncate. It is a cap, not a sample, and it is not logged.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves.** Nothing here touches composition or rendering.
+
+**What would prove me wrong:**
+- **Any case moves materially** → something in this diff reaches the compose path, which
+  would mean I have mis-scoped a read-only service.
+- **The production numbers do not reproduce after deploy** → the query is reading something
+  environment-specific, and the whole finding is unsafe.
+- **Codex finds a write on this path** → the read-only claim is the increment's entire safety
+  argument, and it would be false.
