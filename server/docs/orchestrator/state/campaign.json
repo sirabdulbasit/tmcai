@@ -63,5 +63,6 @@
       "exit_condition": "Grok scores Self-Pruning >= 55, and a duplicate-sender burst produces at most one grounded digest."
     }
   ],
-  "history": []
+  "history": [],
+  "_ranking_note": "Queued campaigns are ordered by GAP SIZE, not by convenience. Owner, 2026-08-13: 'i need significant improvement in each iteration' \u2014 so the loop works the largest measurable gap available. Self-Pruning (+51.5), Self Follow-Up (+48.2) and Learn (+43.5) dwarf Accurate Communication's remaining 15.3, which has already absorbed eight iterations."
 }

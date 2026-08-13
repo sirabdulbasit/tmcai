@@ -82,6 +82,48 @@ in the DEF row so the class is recorded, not just the instance.
 
 ---
 
+## D-9 · STANDING · The significance bar for every iteration
+
+Owner, 2026-08-13: *"i need significant improvement in each iteration"*.
+
+That is a fair demand and it has been failed for eight iterations, so it is now a
+condition each turn is judged against rather than an aspiration. **An iteration is
+significant only if it does one of these three, and the build entry must say which:**
+
+**S1 · It changes what the owner RECEIVES on a named capability.** Per his ruling of
+the same day, a fix and a feature both count — teaching English and teaching Spanish
+both improve communication. The test is that something reaching him is different
+afterwards. DEF-159 qualifies: he saw `+239487846228094`, he will now see a name.
+
+**S2 · It unblocks measurement of a capability with a gap larger than 30.** Not any
+measurement — those specifically. Self-Pruning needs +51, Self Follow-Up +48, Learn
++43, Authorized Action +34. Work on a capability nothing can score produces a 0 and
+reads as failure, which is what happened to iterations 3, 5, 6 and 9.
+
+**S3 · It closes a reviewer finding on a change that has not yet earned SOUND.**
+Finishing is significant. Sixteen iterations produced two SOUND verdicts because every
+turn started something new; the remediation rule now enforces this and it counts.
+
+**What does NOT clear the bar**, and should be declared plainly rather than dressed up:
+
+- another point of C4 — it is the SMALLEST remaining gap (16.3 of 360) and has absorbed
+  eight iterations;
+- internal hygiene, a refactor, or a test-only change with no owner-visible effect;
+- a change on a path that does not fire in production;
+- anything that stays in the branch. **Undeployed work is worth zero under the owner's
+  own rubric**, so an iteration that clears S1 must reach production to have been
+  significant — which is why deploy is now a loop phase.
+
+**Ranking, when several are open:** S1 on the largest gap, then S3, then S2, then S1 on
+a smaller gap. An owner report (D-6) still outranks all of them.
+
+If a turn cannot clear the bar, say so in the build entry with the reason. A turn that
+honestly reports "this was not significant, and here is why" is more useful than one
+that claims a capability movement the reviewers then refuse — that pattern has already
+cost this loop four iterations and about eighty dollars.
+
+---
+
 ## D-6 · STANDING, RANKS FIRST · Owner reports override the queue
 
 **Check `server/docs/orchestrator/owner_reports.md` before anything else, every

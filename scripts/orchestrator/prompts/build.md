@@ -27,6 +27,10 @@ guess, and it names the case id so you can read the exact reply that scored low.
 
 @@STRUCTURAL@@
 
+## Remediation
+
+@@REMEDIATION@@
+
 ## The campaign you are on
 
 @@CAMPAIGN@@
