@@ -2,71 +2,53 @@
  "_why": "Campaigns replace one-change-per-iteration aiming. Eight iterations produced +0.6 capability because every turn targeted whatever gated the benchmark — which is always Accurate Communication, the SMALLEST remaining gap (16.3 of 360). The other 340 points are absent features: Self Follow-Up (+48), Self-Pruning (+51), Learn (+43). A feature cannot be built by a 20-minute turn aimed at a criterion, so a capability now gets a multi-iteration budget and the loop is told to stay on it.",
  "_rules": "The campaign sets the TARGET; Codex still reviews every turn and its directive governs HOW, not WHAT. A campaign ends when its exit condition is met or its budget is spent — whichever first — and the orchestrator records which. Never silently extended.",
  "active": {
-  "id": "C-2",
-  "name": "Self Follow-Up",
-  "capability": "Self Follow-Up",
-  "from_iteration": 19,
-  "budget_iterations": 8,
-  "target": "43 → 65 (Self Follow-Up), with each increment deployed as it lands",
-  "goal": "Brain chases its own commitments unprompted: a delegated item whose deadline passes produces a chase without being asked, and a chase that gets no reply escalates. CL-033 evidence: the owner had to say 'chase her' three times and got 'I've made a note of that'.",
-  "exit_condition": "Increments 1 and 3 OBSERVED LIVE on the owner's WhatsApp with the messages quoted back to him. Grok's score is recorded but is not the exit condition — the owner ruled improvement must be real, not numeric.",
-  "baseline": 43,
-  "target_score": 65,
-  "why_this_one": "Largest gain reachable without a new instrument: +22 capability points = +2.44 overall, which is 3x everything 18 iterations have produced. Grok can score it from code — 'does a passed deadline produce a chase' is answerable by reading the scheduler — so it does not depend on C-1's unfinished slice.",
-  "the_capability_in_the_owner's_words": "R-1, 2026-08-12: he said 'chase her' and got 'I've made a note of that'. Then said it again. Then asked 'What did u got from my word chase her again?'. A professional assistant chases without being asked at all.",
+  "id": "C-3",
+  "name": "Self-Pruning",
+  "capability": "Self-Pruning",
+  "from_iteration": 24,
+  "budget_iterations": 5,
+  "target": "33 → 60",
+  "goal": "Junk withdraws itself without being asked. The backlog pruner exists (DEF-132) and is unmeasured; CL-033 shows ten unactionable pushes from one unknown number in a single morning.",
+  "exit_condition": "Increments 1 and 2 OBSERVED LIVE on production with the evidence quoted back to the owner, AND Grok scores Self-Pruning >= 55. The live observation is the exit condition; the score alone is not.",
+  "baseline": 33,
+  "target_score": 60,
+  "opened_by": "D-19 — owner ruled campaign work on an ABSENT capability; capability_targets.md ranks Self-Pruning #2 and it is the largest gap with nothing implemented (33 -> 85 professional).",
+  "why_this_one": "Grok scores Self-Pruning with basis: absent. Repairing an existing capability moves a score +1 to +2 (+0.1 overall); making an absent one EXIST moves it +20 to +30 (+2.2 to +3.3 overall). That single fact is the whole explanation for '+0.7 across 22 iterations', and Self-Pruning is the largest of the three absent capabilities.",
+  "the_capability_in_the_owner's_words": "CL-033: ten unactionable pushes from one unknown number in a single morning, all of which he had to read. A professional assistant does not hand its principal ten copies of noise; junk withdraws itself without being asked.",
+  "hard_constraint": "AGENTS.md invariant 7 is NOT relaxed by this campaign and outranks it: cleanup is deterministic, reversible and capped; quarantine -> grace -> soft-close with audit metadata; NEVER hard-delete user data; NEVER let an LLM decide a deletion. An LLM may score salience; only deterministic, reversible, audited code may act on that score. A pruning campaign that loses one real item is a worse outcome than no pruning at all — iteration 13 already shipped a data-loss regression once.",
   "increments": [
    {
-    "n": 0,
-    "title": "The chase is stored and visible — folded into increment 1, not a turn of its own",
-    "what": "Persist body, recipient and send time for every worker-sent chase. NOT a standalone iteration: it is plumbing, worth ~0 capability points on its own, and spending a whole turn on it is how a campaign spends its budget without moving anything.",
-    "done_when": "Shipped WITH increment 1, in the same deploy.",
-    "capability_points": "0 alone — it is what makes 1-3 observable"
-   },
-   {
     "n": 1,
-    "title": "A due commitment produces a chase, unprompted",
-    "what": "The delegatee follow-up worker actually reaches the delegatee. Today 43 of 76 follow-ups go to the OWNER as a brain_prompt instead, and no WhatsApp chase has a provider receipt (D-12).",
-    "done_when": "A real chase reaches Hamna without the owner asking, quoted verbatim with its send time, from production.",
-    "capability_points": "+10 to +15 on Self Follow-Up — this is the capability, not a repair of it"
+    "title": "Noise is measurable before anything is pruned",
+    "what": "A read-only classifier + counter over inbound: for each sender/thread, how many pushes reached the owner and how many he ever acted on. No suppression, no deletion, no behaviour change — it only produces the number that proves the problem and that Grok can score from code.",
+    "done_when": "Deployed, and the real count for the CL-033 unknown-number burst is quoted back to the owner from production data.",
+    "why_first": "Self-Pruning currently cannot be measured at all. This is one turn, has zero blast radius on his data, and is deployable on its own — which is exactly what D-19's significance bar asks for.",
+    "capability_points": "+5 to +8 (absent -> partially implemented and measurable)"
    },
    {
     "n": 2,
-    "title": "An unanswered chase escalates with the elapsed time",
-    "what": "Survives a pm2 restart — a durable schedule, not an in-memory timer.",
-    "done_when": "He receives a real escalation naming the elapsed hours, after a restart.",
-    "capability_points": "+5"
+    "title": "A duplicate-sender burst collapses into ONE grounded digest",
+    "what": "Same sender, same subject class, inside a window: the owner receives one digest naming the count, not N pushes. Suppression is reversible and every suppressed item stays fully retrievable with an audit row saying why.",
+    "done_when": "Deployed, and a real burst on production produces exactly one message, quoted back to him with the suppressed count.",
+    "capability_points": "+10 to +15"
    },
    {
     "n": 3,
-    "title": "'chase her' is EXECUTED, not noted",
-    "what": "His exact R-1 failure: he said it three times and got 'I've made a note of that'.",
-    "done_when": "He types it on live WhatsApp and a real message reaches Hamna in that turn.",
-    "capability_points": "+5"
+    "title": "Stale junk withdraws itself — quarantine, grace, soft-close, all reversible",
+    "what": "Items with no engagement past a behaviorConfig-driven window enter quarantine, then soft-close with audit metadata. Never hard-deleted, always restorable, and the owner is told once what was withdrawn.",
+    "done_when": "Deployed, and he can name one thing that withdrew itself and restore it.",
+    "capability_points": "+8 to +12"
    }
   ],
   "scope_rule": "ONE COHERENT CAPABILITY INCREMENT PER TURN, not one coherent change. Attribution is the campaign; a feature needs several files and the one-change rule was blocking that. Codex still reviews every turn and remediation still applies.",
-  "deploy_rule": "Every increment that clears the gate SHIPS the same iteration. Undeployed work is worth zero under the owner's rubric, so an unshipped increment has not moved the capability.",
-  "abort_condition": "If after 4 iterations Grok has not moved Self Follow-Up by at least +5, stop and report to the owner rather than spending the remaining budget. C-1 ran seven iterations for +0; that must not repeat.",
+  "deploy_rule": "Every increment that clears the gate SHIPS the same iteration. NOTE, D-19: the owner declined the no-critical deploy path, so DEPLOY_ON stays 'sound' and an increment reviewed WEAK does not ship. Say deployed=no plainly when that happens; never describe an unshipped increment as delivered.",
+  "abort_condition": "D-19 significance bar: if TWO consecutive iterations produce neither a deploy nor a named code-complete increment, the orchestrator stops the loop and returns to the owner. Additionally, if after 3 iterations Grok has not moved Self-Pruning by at least +5, stop and report. C-1 ran seven iterations for +0 and C-2 five for zero increments; that must not repeat.",
   "owner_ruling_2026_08_13": "'improvement should not be in numbers it should be in real'. So an increment is NOT done when Grok scores it, and NOT done when tests pass. It is done when the behaviour is OBSERVED ON HIS LIVE WHATSAPP and the evidence is quoted back to him. The capability score follows the reality; it never substitutes for it.",
   "reporting_rule": "Report to the owner in behaviour, not metrics. Lead with what Brain now does that it did not do before, quoting the real message. The capability delta goes last, as corroboration.",
-  "_increment_0_added": "2026-08-13 — inserted after measuring that no table retains a worker-sent body. Increments 1-4 keep their numbers and their order.",
-  "_rewritten_2026_08_13": "Owner: 'i have very serious concern with such progress in decimals'. He is right, and the arithmetic backs him: iterations 21+22 netted 0.0, and even a FULLY delivered version of this campaign as originally written was +2.4 overall across 8 iterations — 0.31 per iteration, which needs 131 iterations to reach 87.3. The plan was inadequate, not just its execution. Rewritten so every increment SHIPS and every increment is something he receives, because capability scores are step functions: they move when a capability starts EXISTING, not when an existing one is repaired.",
-  "success_measure": "He receives a real chase, unprompted, and can quote it back. Grok credits the capability only on deployed, production-observed behaviour — never on a passing test.",
-  "after_this_campaign": "ABSENT capabilities, in the priority order of capability_targets.md: Self-Pruning 33, Simple & Smart 33, Thinking 36 — 44.3% of the remaining journey between them, and scored 'absent' by Grok, meaning nothing implements them. A single campaign that makes one of them EXIST is worth +3 to +4 overall, which is more than the last 22 iterations produced together.",
-  "what_stops_being_a_source_of_work": "The benchmark fixQueue. Owner ruling: capabilities drive, benchmark guards. Five of the last five iterations were still chosen by the reviewer's findings on one conversational case, which is why the movement was in decimals. The reviewer still gates QUALITY; it no longer chooses WHAT."
+  "success_measure": "The owner stops receiving noise he has to read, and can point at a specific morning where he received one message instead of ten. Grok's Self-Pruning number is corroboration, reported last, with its band.",
+  "after_this_campaign": "Simple & Smart (33) then Thinking (36) — the two remaining absent capabilities."
  },
- "queued": [
-  {
-   "id": "C-3",
-   "name": "Self-Pruning",
-   "capability": "Self-Pruning",
-   "from_iteration": 21,
-   "budget_iterations": 5,
-   "target": "33 → 60",
-   "goal": "Junk withdraws itself without being asked. The backlog pruner exists (DEF-132) and is unmeasured; CL-033 shows ten unactionable pushes from one unknown number in a single morning.",
-   "exit_condition": "Grok scores Self-Pruning >= 55, and a duplicate-sender burst produces at most one grounded digest."
-  }
- ],
+ "queued": [],
  "history": [
   {
    "id": "C-1",
@@ -117,6 +99,64 @@
     "why_closed_not_extended": "Extending a third time would be the drift this file exists to stop. The honest reading is that instrument-building consumed the campaign: iterations 13/14 were a data-loss regression and its fix, 15 was WRONG, 16-18 were remediation. Owner, 2026-08-13: 'this progress makes many months to get target' — he is right, and the cause is the unit of work, not the governance.",
     "lesson": "A campaign whose deliverable is an INSTRUMENT has no capability target, so nothing tells it when to stop. Every campaign from here targets a capability by number."
    }
+  },
+  {
+   "id": "C-2",
+   "name": "Self Follow-Up",
+   "capability": "Self Follow-Up",
+   "from_iteration": 19,
+   "budget_iterations": 8,
+   "target": "43 → 65 (Self Follow-Up), with each increment deployed as it lands",
+   "goal": "Brain chases its own commitments unprompted: a delegated item whose deadline passes produces a chase without being asked, and a chase that gets no reply escalates. CL-033 evidence: the owner had to say 'chase her' three times and got 'I've made a note of that'.",
+   "exit_condition": "Increments 1 and 3 OBSERVED LIVE on the owner's WhatsApp with the messages quoted back to him. Grok's score is recorded but is not the exit condition — the owner ruled improvement must be real, not numeric.",
+   "baseline": 43,
+   "target_score": 65,
+   "why_this_one": "Largest gain reachable without a new instrument: +22 capability points = +2.44 overall, which is 3x everything 18 iterations have produced. Grok can score it from code — 'does a passed deadline produce a chase' is answerable by reading the scheduler — so it does not depend on C-1's unfinished slice.",
+   "the_capability_in_the_owner's_words": "R-1, 2026-08-12: he said 'chase her' and got 'I've made a note of that'. Then said it again. Then asked 'What did u got from my word chase her again?'. A professional assistant chases without being asked at all.",
+   "increments": [
+    {
+     "n": 0,
+     "title": "The chase is stored and visible — folded into increment 1, not a turn of its own",
+     "what": "Persist body, recipient and send time for every worker-sent chase. NOT a standalone iteration: it is plumbing, worth ~0 capability points on its own, and spending a whole turn on it is how a campaign spends its budget without moving anything.",
+     "done_when": "Shipped WITH increment 1, in the same deploy.",
+     "capability_points": "0 alone — it is what makes 1-3 observable"
+    },
+    {
+     "n": 1,
+     "title": "A due commitment produces a chase, unprompted",
+     "what": "The delegatee follow-up worker actually reaches the delegatee. Today 43 of 76 follow-ups go to the OWNER as a brain_prompt instead, and no WhatsApp chase has a provider receipt (D-12).",
+     "done_when": "A real chase reaches Hamna without the owner asking, quoted verbatim with its send time, from production.",
+     "capability_points": "+10 to +15 on Self Follow-Up — this is the capability, not a repair of it"
+    },
+    {
+     "n": 2,
+     "title": "An unanswered chase escalates with the elapsed time",
+     "what": "Survives a pm2 restart — a durable schedule, not an in-memory timer.",
+     "done_when": "He receives a real escalation naming the elapsed hours, after a restart.",
+     "capability_points": "+5"
+    },
+    {
+     "n": 3,
+     "title": "'chase her' is EXECUTED, not noted",
+     "what": "His exact R-1 failure: he said it three times and got 'I've made a note of that'.",
+     "done_when": "He types it on live WhatsApp and a real message reaches Hamna in that turn.",
+     "capability_points": "+5"
+    }
+   ],
+   "scope_rule": "ONE COHERENT CAPABILITY INCREMENT PER TURN, not one coherent change. Attribution is the campaign; a feature needs several files and the one-change rule was blocking that. Codex still reviews every turn and remediation still applies.",
+   "deploy_rule": "Every increment that clears the gate SHIPS the same iteration. Undeployed work is worth zero under the owner's rubric, so an unshipped increment has not moved the capability.",
+   "abort_condition": "If after 4 iterations Grok has not moved Self Follow-Up by at least +5, stop and report to the owner rather than spending the remaining budget. C-1 ran seven iterations for +0; that must not repeat.",
+   "owner_ruling_2026_08_13": "'improvement should not be in numbers it should be in real'. So an increment is NOT done when Grok scores it, and NOT done when tests pass. It is done when the behaviour is OBSERVED ON HIS LIVE WHATSAPP and the evidence is quoted back to him. The capability score follows the reality; it never substitutes for it.",
+   "reporting_rule": "Report to the owner in behaviour, not metrics. Lead with what Brain now does that it did not do before, quoting the real message. The capability delta goes last, as corroboration.",
+   "_increment_0_added": "2026-08-13 — inserted after measuring that no table retains a worker-sent body. Increments 1-4 keep their numbers and their order.",
+   "_rewritten_2026_08_13": "Owner: 'i have very serious concern with such progress in decimals'. He is right, and the arithmetic backs him: iterations 21+22 netted 0.0, and even a FULLY delivered version of this campaign as originally written was +2.4 overall across 8 iterations — 0.31 per iteration, which needs 131 iterations to reach 87.3. The plan was inadequate, not just its execution. Rewritten so every increment SHIPS and every increment is something he receives, because capability scores are step functions: they move when a capability starts EXISTING, not when an existing one is repaired.",
+   "success_measure": "He receives a real chase, unprompted, and can quote it back. Grok credits the capability only on deployed, production-observed behaviour — never on a passing test.",
+   "after_this_campaign": "ABSENT capabilities, in the priority order of capability_targets.md: Self-Pruning 33, Simple & Smart 33, Thinking 36 — 44.3% of the remaining journey between them, and scored 'absent' by Grok, meaning nothing implements them. A single campaign that makes one of them EXIST is worth +3 to +4 overall, which is more than the last 22 iterations produced together.",
+   "what_stops_being_a_source_of_work": "The benchmark fixQueue. Owner ruling: capabilities drive, benchmark guards. Five of the last five iterations were still chosen by the reviewer's findings on one conversational case, which is why the movement was in decimals. The reviewer still gates QUALITY; it no longer chooses WHAT.",
+   "closed_at_iteration": 24,
+   "outcome": "PARKED — STARVED, NOT FAILED",
+   "outcome_detail": "Open iterations 19-23 (5 of an 8-iteration budget), ZERO increments delivered. The cause was not the campaign: every one of those five turns was consumed by remediation of the marker path (D-17), which the remediation rail granted 3 attempts per WEAK verdict against eleven consecutive non-SOUND reviews. 3 of 8 budget iterations remain unspent and this campaign is returnable as written. CORRECTION carried forward: increment 1's premise '43 of 76 follow-ups go to the OWNER instead' is WRONG — verify-chase.sh on production shows 34 follow-ups actually reaching delegatees, latest one to Hamna at 08:47 on 2026-08-11, unprompted. The autonomous chase EXISTS. What is genuinely missing is D-12: the sent text is stored nowhere and no send carries a provider receipt (31 sends, delivery unconfirmed). Re-scope increment 1 on that evidence before ever reopening C-2.",
+   "parked_by": "D-19 — owner ruling 2026-08-13: move to an absent capability"
   }
  ],
  "_ranking_note": "Queued campaigns are ordered by GAP SIZE, not by convenience. Owner, 2026-08-13: 'i need significant improvement in each iteration' — so the loop works the largest measurable gap available. Self-Pruning (+51.5), Self Follow-Up (+48.2) and Learn (+43.5) dwarf Accurate Communication's remaining 15.3, which has already absorbed eight iterations."

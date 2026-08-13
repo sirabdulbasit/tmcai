@@ -968,3 +968,57 @@ A capability that manifests at runtime could never be credited, however much was
 The work still has not shipped, and that is separate and real. One deploy in 13
 iterations, and undeployed work changes nothing for the owner whatever any scorer says.
 A better instrument makes delivery measurable; it does not substitute for it.
+
+---
+
+## D-19 · OPEN, RANKS ABOVE THE CAMPAIGN · Owner ruling 2026-08-13: no ship on known limitations; build an ABSENT capability, and every iteration must be significant
+
+The owner was given the three options held open at the end of iteration 23 and ruled:
+
+> **Move to campaign work; leave the branch undeployed.** Not option 1 (a sixth turn on
+> the marker path), not option 3 (accept both HIGHs as DEF rows and ship on
+> `NEXEO_DEPLOY_ON=no-critical`).
+
+And, unprompted, the standing bar for what a turn is worth:
+
+> *"my ask is every iteration should be significant improvement"*
+
+### What this changes, mechanically
+
+1. **The marker path is closed as a source of work.** Iteration 23's two HIGH findings
+   are NOT to be repaired for a sixth turn. They are recorded as known limitations with
+   DEF rows so they survive in the record, and the Builder states in its build entry
+   whether each should stand as a known limitation or be grounds for reverting. The
+   remediation rail is released for iteration 24 for exactly this reason.
+2. **`NEXEO_DEPLOY_ON` stays `sound`.** The owner declined the no-critical path. Nothing
+   ships without a SOUND review. The consequence is stated below, not hidden.
+3. **The campaign moves to an absent capability.** C-2 (Self Follow-Up) is parked with 3
+   of 8 budget iterations unspent — it did not fail, it was **starved**: every one of its
+   five open iterations was consumed by remediation of the marker path. C-3 (Self-Pruning,
+   33, `basis: absent`) becomes active, per the owner's own priority order in
+   `capability_targets.md`.
+4. **Remediation may never again eat a campaign.** `NEXEO_REMEDIATION_LIMIT` drops 3 → 1.
+   A WEAK verdict buys one repair turn; after that the finding becomes a DEF row and the
+   campaign gets its turn back. Three attempts × eleven WEAK verdicts is the arithmetic
+   that produced "campaign open 5 iterations, zero increments delivered".
+
+### The significance bar, made testable rather than asserted
+
+Every iteration from 24 on closes with one of exactly two honest statements:
+
+- **`deployed=yes`** — the owner received something, quoted back from production, or
+- **a named, code-complete increment** of the active campaign that a reviewer can judge.
+
+Anything else is a failed iteration and is reported as one. **If two consecutive
+campaign iterations produce neither, the orchestrator stops the loop and returns to the
+owner** rather than spending a third. Iteration count is not progress; D-14 and D-10 rank
+above any number the scorer produces.
+
+### The prediction, on the record before iteration 24 runs
+
+With `DEPLOY_ON=sound` and eleven consecutive non-SOUND reviews, the most likely outcome
+of iteration 24 is **`deployed=no` again**. That is the direct, foreseeable cost of the
+owner's ruling and it is his to spend — but it is written down BEFORE the turn so the
+result is judged against a stated expectation instead of explained afterwards. If it
+comes true twice, the honest question back to the owner is not "one more iteration", it
+is whether the SOUND gate or the branch is the thing that has to give.
