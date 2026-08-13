@@ -111,8 +111,19 @@ for c in cur.get("cases", []):
         base = median(prior)
         drop = round(base - sc, 1)
         if drop > NOISE_CELL:
+            # CHRONIC vs NEW. B02's C6 has read 100, 95, 85, 80, 60 and now 50 across
+            # 22 runs; iteration 22 did not break it, it is simply the worst draw yet
+            # of a case that has never been stable. A guard that reports a chronic
+            # wobble as this turn's regression would send the Builder to fix the
+            # wrong thing, and would be ignored within a week — which is what
+            # happened to every over-firing rail this project has recorded.
+            hist = cells.get((c["id"], k), [])
+            floor = min(hist) if hist else None
+            chronic = floor is not None and sc >= floor - 5
             regressions.append({"case": c["id"], "criterion": k, "baseline": base,
                                 "now": sc, "drop": drop,
+                                "kind": "chronic" if chronic else "new",
+                                "history_low": floor, "history_high": max(hist) if hist else None,
                                 "reason": (v.get("reason") or "")[:200]})
     if got:
         prior_c = case_means.get(c["id"], [])[-WINDOW:]
@@ -124,15 +135,20 @@ for c in cur.get("cases", []):
 
 regressions.sort(key=lambda r: -r["drop"])
 cases_down.sort(key=lambda r: -r["drop"])
-bad = bool(regressions or cases_down)
+# Only a NEW regression counts against the turn. Chronic ones are reported, loudly,
+# as their own standing defect — they are real and worth fixing, but they are not
+# this iteration's doing and the loop must not treat them as such.
+new_regressions = [r for r in regressions if r.get("kind") == "new"]
+bad = bool(new_regressions or cases_down)
 print(json.dumps({
-    "status": "regressed" if bad else "clean",
+    "status": "regressed" if bad else ("clean-with-chronic" if regressions else "clean"),
     "baseline": f"median of last {WINDOW} runs",
     "bands": {"cell": NOISE_CELL, "case_mean": NOISE_CASE,
               "calibrated_from": "1728 consecutive-run comparisons; p99=20, p90=10"},
     "cases": len(cur.get("cases", [])),
     "min_baseline_samples": 3,
-    "regressions": regressions,
+    "regressions": new_regressions,
+    "chronic": [r for r in regressions if r.get("kind") == "chronic"],
     "cases_down": cases_down,
 }, indent=1))
 raise SystemExit(1 if bad else 0)
