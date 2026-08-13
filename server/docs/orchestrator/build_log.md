@@ -4790,3 +4790,94 @@ demonstration that ±1 is variance — I am not claiming it, and the same applie
   need a different owner; that offer stands.
 - **A tenant override in production does not change burst classification** → the
   registration is somehow still not the live path, and the HIGH is not closed.
+
+---
+
+## Iteration 28 — mode: structural · REMEDIATION attempt 1 of 1 · campaign C-3 (iteration 4 of 5)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### Scope: close iteration 27's WEAK on the same change
+
+Both findings are valid and both are fixed in `inboundNoiseLedger.ts`. The re-scope and
+capability-cap sections both pointed at campaign work; remediation outranks them, and it is
+also the shortest path to the campaign's own goal — increment 1's deploy has been blocked
+on exactly these reviews, and increment 2's design (per Codex's own directive #3) must
+build "only from exact canonical subjects", which is precisely what the HIGH made
+untrustworthy.
+
+| # | finding | fix |
+|---|---|---|
+| HIGH 1 | `canonicalisationFailed` fired only on a THROWN lookup; a successful query returning no row, or a row with `openItemId: null`, split the subject silently while the flag claimed success | every requested thread id not in the resulting map is surfaced BY NAME in `unresolvedSubjects` — missing row, null item, or thrown read alike — rendered in the report as a per-subject floor that increment 2 must not act on |
+| LOW 2 | the comment claimed a compound `(sentAt, id)` cursor; the cursor is the unique `id` positioned within that ordering | the comment now states exactly that, and why it matters at a page boundary; a new test paginates 1,200 rows sharing ONE `sentAt`, where only the id cursor separates the pages |
+
+**The shape of the HIGH is worth naming, because it recurs in my work:** the flag reported
+the health of the QUERY, not the outcome of the PASS. A read that succeeds and resolves
+nothing is the ordinary failure — the thrown case I tested is the rare one. Same error as
+testing the mocked resolver (iteration 26) and asserting the violation's private field
+(iteration 21): verifying the mechanism I built instead of the outcome it exists for.
+
+### Governing docs — verdict: PROGRESSING (third correction to my own instrument)
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2233 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 183 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 2 mutants, one per finding, both die** — blessing successful lookups again
+kills 4 tests (thrown, missing, null-item, mixed); advancing the cursor without `skip: 1`
+kills 3, including both cap-exactness tests.
+
+**Production re-check (read-only, 30 days):** `REACHED=95 ANSWERED=49 UNANSWERED=46
+BURSTS=0`, unchanged from iteration 27 — the fix changed reporting honesty, not the
+numbers — and **no unresolved-subject warning appears: every thread identity in the window
+genuinely resolves, so the clean claim is now earned rather than assumed.**
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: +0 capability and +0 benchmark.** Still the counter; still suppresses
+nothing. This closes the last known defect between increment 1 and a SOUND review, which
+is what the campaign's deploy gate requires.
+
+**MECHANISM:** identity-resolution failures are data the consumer can see, not prose the
+consumer can miss; the pagination contract says what the code does.
+
+**FALSIFIER:** a thread id that resolves to nothing while `unresolvedSubjects` is empty;
+or a page boundary that double-counts rows sharing a `sentAt`.
+
+### What I did NOT do
+
+- **Increment 2** (Codex directive #3: digest per canonical item, audit rows, quiet
+  windows, owner keep/digest/suppress feedback). It is the next turn's build, now on a
+  counter with no open findings.
+- **Codex directive #4 / the C4 register mechanism** (B09/B05/B08/B10/B11). Named, not
+  dropped: the capability cap forbids conversational-case work this turn anyway.
+- **Event↔item canonicalisation** — still no readable join; still stated as partial.
+- **Deploy** — the loop owns it. **deployed=no.** Prediction: this should ship if reviewed
+  SOUND; the diff is two files, read-only behaviour, verified against production.
+
+### What I am unsure about
+
+- **Whether `unresolvedSubjects` should carry a reason per id** (missing vs null-item vs
+  read-failed). I kept it a flat list because the consumer's obligation is identical in
+  all three cases — do not act on it — and a reason taxonomy invites acting on some. If
+  Codex reads that as under-informative, adding the reason is cheap.
+- **The mock's fidelity to Prisma cursor semantics.** The mock positions the cursor by id
+  within the sorted set, which is what Prisma documents; if Prisma's actual behaviour at a
+  deleted-cursor-row differs, the boundary test would not see it. The cursor row here is
+  always from the previous page of the same query, so deletion mid-read is the residual
+  gap, and I have not simulated it.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves.** Read-only service, no compose path — and the 87.1→87.5
+drift in the score table above this entry is the standing demonstration of variance, not
+something I claim or need.
+
+**What would prove me wrong:**
+- **Production shows unresolved subjects after deploy while the local run showed none** →
+  the window I sampled was unrepresentative, and the flag earns its keep immediately.
+- **Codex finds an eighth defect in this instrument** → my standing offer that it needs a
+  different owner applies.
