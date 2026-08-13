@@ -53,11 +53,15 @@ SESSION_FILE="$STATE/grok-session-id"
 SCORECARD="$STATE/capability_scorecard.json"
 
 ITER="${1:?usage: run-score.sh <iteration> [--dry-run]}"
-DRY=0
+DRY=0; FRESH=0
 [ "${2:-}" = "--dry-run" ] && DRY=1
+[ "${2:-}" = "--fresh" ] && FRESH=1
 
 n="$(printf '%02d' "$ITER")"
 OUT="$ORCH/scores/iter-$n-capability.json"
+# A re-baseline gets its own file and is NEVER ingested into the series: it is
+# evidence to read AGAINST the running numbers, not a replacement for them.
+[ "$FRESH" -eq 1 ] && OUT="$ORCH/scores/iter-$n-capability-fresh.json"
 LOG="$LOGS/iter-$n-score.log"
 mkdir -p "$ORCH/scores" "$LOGS" "$STATE"
 
@@ -96,6 +100,40 @@ print("\nNOTE: entries before this iteration were the ORCHESTRATOR's judgements,
 PY
 )"
   [ -n "$PREV_TXT" ] && PREVIOUS="$PREV_TXT"
+fi
+
+# ── --fresh: DERIVE ALL NINE FROM SCRATCH ───────────────────────────────────
+#
+# Owner, 2026-08-13, on 22 iterations producing +0.7: "i have very serious concern
+# with such progress in decimals". Checking the history to answer him found
+# something worse than a slow rate: across eleven cards, EIGHT of the nine
+# capabilities have never moved once, and the largest single-iteration change on any
+# of them is +2.
+#
+# Two possible causes, and they must be separated. Either nothing was ever built
+# (all 22 turns were repairs of one existing capability), or the flatness is an
+# artefact of MY OWN prompt, which tells the scorer to carry its previous numbers
+# forward, forbids moving one without citable evidence, and then states that nothing
+# is deployed so live evidence is unavailable. A scorer given those three
+# instructions will carry the numbers forward whatever the code does.
+if [ "$FRESH" -eq 1 ]; then
+  PREVIOUS="## FROM-SCRATCH RE-BASELINE — your previous card is deliberately withheld
+
+Derive all nine capabilities from the codebase as it stands, as if scoring it for the
+first time. Do not attempt to recall your earlier numbers and do not anchor to them.
+
+**Why you are being asked.** Across eleven cards you have moved eight of the nine
+capabilities exactly zero times, and the largest single change on any was +2. The
+orchestrator cannot tell whether that is because nothing was built or because the
+standing instruction to carry numbers forward has left the scorecard insensitive to
+change. This run separates those explanations, so an honest answer is worth more than
+a consistent one.
+
+If a capability is genuinely where you had it, say so and the earlier reading is
+confirmed. If a fresh read gives a different number — higher OR lower — report what
+the evidence supports and say what you had missed. **You will not be corrected for
+disagreeing with your own previous card.** This output is recorded alongside the
+running series and never substituted for it."
 fi
 
 PROMPT="$(sed -e "s|@@ITER@@|$ITER|g" "$PROMPTS/score.md")"
