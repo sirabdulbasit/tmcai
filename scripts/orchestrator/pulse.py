@@ -521,6 +521,29 @@ def capability_trend():
 # Epochs are emitted raw (`now`, phase `start`/`end`) so the browser can count
 # its own timers up between polls instead of freezing between refreshes, and so
 # clocks can be rendered in the owner's zone there exactly as `pkt()` does here.
+
+def campaign_snapshot():
+    """The active campaign and what is queued — so the Deck can show WHAT the loop
+    is aiming at, not only how it scored. Without this the dashboard shows motion
+    with no target, which is how eight iterations of drift went unnoticed."""
+    f = os.path.join(STATE, "campaign.json")
+    if not os.path.exists(f):
+        return None
+    try:
+        d = json.load(open(f))
+    except Exception:
+        return None
+    a = d.get("active") or {}
+    return {
+        "active": {k: a.get(k) for k in
+                   ("id", "name", "capability", "from_iteration",
+                    "budget_iterations", "goal", "exit_condition")},
+        "queued": [{k: c.get(k) for k in ("id", "name", "capability", "target",
+                                          "from_iteration", "budget_iterations")}
+                   for c in (d.get("queued") or [])],
+    }
+
+
 def collect():
     stage, elapsed, basis, detail = detect_stage()
     # A process-derived elapsed time is the kernel's own and needs no help; a
@@ -656,6 +679,10 @@ def collect():
         "progress": last_stream_line(cur_it, current) if current else "",
         "capabilities": caps, "brain": brain, "trend": trend,
         "benchmark": bench,
+        # The rich per-iteration record the Deck monitors. `history` below is kept
+        # unchanged so the existing panel does not break — additive, not a rename.
+        "iterations": iteration_records(),
+        "campaign": campaign_snapshot(),
         "history": [{"iteration": it, "label": label, "overall": dd.get("overall"),
                      "weakest": dd.get("weakestCriterionScore"),
                      "criterion": dd.get("weakestCriterion"),
@@ -772,6 +799,238 @@ def render(d, full=False):
                          f"{str(h['overall']):>5}  min {str(h['weakest']):>5} "
                          f"{str(h['criterion']):<3} {vc}{h['verdict']}{C['r']}")
     return "\n".join(lines)
+
+
+
+# ── the per-iteration record, for the Deck ──────────────────────────────────
+# Owner, 2026-08-13: *"i am building deck UI based… i want you to capture max
+# information at each iteration level that can help me monitor at Deck / here i
+# have given one graphical info where i want to see iteration wise improvement"*.
+#
+# Everything the four seats produce, joined on the iteration number. The pieces
+# already existed and were scattered across eight files in three formats — two of
+# them markdown, which a UI cannot consume — so the Deck could only show the six
+# fields the old `history` list carried (iter, run, overall, weakest, crit, codex).
+#
+# This is deliberately assembled in the ONE collector both renderers already share.
+# A TypeScript reimplementation in the route would be a second copy of parsing
+# logic that has been got wrong twice in this file's history, and the route's own
+# docblock says so.
+def iteration_records(limit=25):
+    recs = {}
+
+    def rec(i):
+        return recs.setdefault(int(i), {"iteration": int(i)})
+
+    # 1. ledger — one row per iteration as the loop finished it
+    lj = f"{ORCH}/ledger.jsonl"
+    if os.path.exists(lj):
+        for line in open(lj, errors="replace"):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            r = rec(d.get("iteration", -1))
+            r.update({"head": d.get("head"), "finished_at": d.get("at"),
+                      "tsc": d.get("tsc"), "tests": d.get("tests"),
+                      "mode": d.get("mode"), "note": d.get("note"),
+                      "gate": d.get("gate")})
+
+    # 2. phase timings, from the loop's own timestamped log
+    tl, _ = phase_timeline()
+    for it, ph in tl.items():
+        r = rec(it)
+        r["started_at"] = ph.get("_started")
+        phases = {}
+        for name in PHASE_ORDER:
+            p_ = ph.get(name) or {}
+            st, en = p_.get("start"), p_.get("end")
+            phases[name.lower()] = {
+                "start": st, "end": en,
+                "seconds": round(en - st) if st and en else None,
+            }
+        r["phases"] = phases
+        ends = [v["end"] for v in phases.values() if v["end"]]
+        if r.get("started_at") and ends:
+            r["duration_seconds"] = round(max(ends) - r["started_at"])
+
+    # 3. benchmark, full per-criterion — this is what "iteration wise improvement"
+    #    needs: eight series, not one number
+    for f in glob.glob(f"{ORCH}/scores/iter-*-post-build.json"):
+        m = re.search(r"iter-(\d+)-post-build\.json$", os.path.basename(f))
+        if not m:
+            continue
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        r = rec(int(m.group(1)))
+        r["benchmark"] = {
+            "overall": d.get("overall"),
+            "criteria": d.get("criteriaAvg", {}),
+            "weakest": d.get("weakestCriterion"),
+            "weakest_score": d.get("weakestCriterionScore"),
+            "target": d.get("target", 95),
+            "gate_passed": d.get("gatePassed"),
+            "cases_scored": d.get("casesScored"),
+            "cases_failed": d.get("casesFailed"),
+            "mutated": d.get("mutated"),
+            "mutation_evidence": (d.get("mutationEvidence") or [])[:3],
+            "duration_ms": d.get("durationMs"),
+            # The judge's own worst sentences: the most actionable thing in the
+            # whole record, and the Deck can show them verbatim.
+            "worst": [{"criterion": q.get("criterion"), "score": q.get("score"),
+                       "case": q.get("caseId"), "reason": (q.get("reason") or "")[:220]}
+                      for q in sorted(d.get("fixQueue") or [],
+                                      key=lambda q: q.get("score", 100))[:3]],
+        }
+
+    # 4. the proactive surface — a second, separately-reported score (C-1)
+    for f in glob.glob(f"{ORCH}/scores/proactive-iter-*.json"):
+        m = re.search(r"proactive-iter-(\d+)\.json$", os.path.basename(f))
+        if not m:
+            continue
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        rec(int(m.group(1)))["proactive"] = {
+            "overall": d.get("overall"), "surface": d.get("surface"),
+            "weakest": d.get("weakestCriterion"),
+            "weakest_score": d.get("weakestCriterionScore"),
+            "cases_scored": d.get("casesScored"),
+            "gate_passed": d.get("gatePassed"),
+            "note": (d.get("note") or "")[:300],
+        }
+
+    # 5. the scorer's card — nine capabilities with evidence and basis
+    for f in glob.glob(f"{ORCH}/scores/iter-*-capability.json"):
+        m = re.search(r"iter-(\d+)-capability\.json$", os.path.basename(f))
+        if not m:
+            continue
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        r = rec(int(m.group(1)))
+        if d.get("skipped"):
+            r["scorer"] = {"skipped": True, "reason": d.get("reason")}
+            continue
+        caps = d.get("capabilities") or []
+        r["scorer"] = {
+            "verdict": d.get("overall_verdict"),
+            "overall": (round(sum(c.get("score", 0) for c in caps) / len(caps), 1)
+                        if caps else None),
+            "what_moved": d.get("what_moved"),
+            "what_did_not": d.get("what_did_not"),
+            "unverifiable": d.get("unverifiable"),
+            "notes_for_builder": d.get("notes_for_builder"),
+            "claim_seen": d.get("capability_claim_seen"),
+            "capabilities": [{"name": c.get("name"), "score": c.get("score"),
+                              "basis": c.get("basis"), "confidence": c.get("confidence"),
+                              "evidence": (c.get("evidence") or "")[:300],
+                              "reconciliation": (c.get("claim_reconciliation") or "")[:300]}
+                             for c in caps],
+        }
+
+    # 6. the reviewer — verdict AND the capability-attribution ruling, parsed out of
+    #    markdown because that is the only place Codex writes
+    rl = f"{ORCH}/review_log.md"
+    if os.path.exists(rl):
+        txt = open(rl, errors="replace").read()
+        for m in re.finditer(r"^##\s+Iteration\s+(\d+)(.*?)(?=^##\s+Iteration|\Z)",
+                             txt, re.S | re.M):
+            it, body = int(m.group(1)), m.group(2)
+            r = rec(it)
+            v = re.search(r"\*\*(SOUND|WEAK|WRONG)\*\*", body)
+            one = re.search(r"\*\*(?:SOUND|WEAK|WRONG)\*\*\s*—\s*(.+?)(?:\n\n|\Z)",
+                            body, re.S)
+            att = re.search(r"verdict:\s*(SUPPORTED|OVERSTATED|MISATTRIBUTED|"
+                            r"RELIABILITY-ONLY[^\n]*)", body)
+            risks = re.findall(r"\*\*(CRITICAL|HIGH|MEDIUM|LOW)\s*—", body)
+            r["reviewer"] = {
+                "verdict": v.group(1) if v else None,
+                "summary": " ".join(one.group(1).split())[:400] if one else None,
+                "attribution": att.group(1).strip() if att else None,
+                "risk_counts": {lvl: risks.count(lvl)
+                                for lvl in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+                                if risks.count(lvl)},
+            }
+
+    # 7. the builder's declared claim, from its own log
+    bl = f"{ORCH}/build_log.md"
+    if os.path.exists(bl):
+        txt = open(bl, errors="replace").read()
+        for m in re.finditer(r"^##\s+Iteration\s+(\d+)(.*?)(?=^##\s+Iteration|\Z)",
+                             txt, re.S | re.M):
+            it, body = int(m.group(1)), m.group(2)
+            r = rec(it)
+            cap = re.search(r"CAPABILITY:\s*([^\n]+)", body)
+            pred = re.search(r"PREDICTED:\s*([^\n]+)", body)
+            fals = re.search(r"FALSIFIER:\s*([^\n]+)", body)
+            if cap or pred:
+                r["claim"] = {
+                    "capability": cap.group(1).strip() if cap else None,
+                    "predicted": pred.group(1).strip() if pred else None,
+                    "falsifier": fals.group(1).strip()[:200] if fals else None,
+                }
+            else:
+                r["claim"] = {"capability": None, "predicted": None,
+                              "missing": "no capability block — the contract requires one"}
+
+    # 8. deploy outcome
+    for path_, key in ((f"{STATE}/deploy-holds", "hold"),
+                       (f"{STATE}/deploy-history", "shipped")):
+        if not os.path.exists(path_):
+            continue
+        for line in open(path_, errors="replace"):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                r = rec(int(parts[1]))
+            except ValueError:
+                continue
+            if key == "hold":
+                r["deploy"] = {"shipped": False,
+                               "reason": parts[2] if len(parts) > 2 else "hold"}
+            else:
+                r["deploy"] = {"shipped": True, "at": parts[0],
+                               "head": parts[2] if len(parts) > 2 else None}
+
+    # 9. defects and cost — what the turn produced and what it cost
+    for it, r in recs.items():
+        n = f"{it:02d}"
+        raw = f"{LOGS}/iter-{n}-build.jsonl"
+        if os.path.exists(raw):
+            try:
+                blob = open(raw, errors="replace").read()
+                c = re.findall(r'"total_cost_usd":([0-9.]+)', blob)
+                if c:
+                    r["cost_usd"] = round(float(c[-1]), 4)
+                t = re.findall(r'"num_turns":(\d+)', blob)
+                if t:
+                    r["agent_turns"] = int(t[-1])
+            except Exception:
+                pass
+        rl_ = f"{LOGS}/iter-{n}-build.log"
+        if os.path.exists(rl_):
+            defs = sorted(set(re.findall(r"DEF-\d+",
+                          open(rl_, errors="replace").read())))
+            if defs:
+                r["defects"] = defs[:8]
+
+    # 10. do the reviewer and the scorer AGREE? A capability raised in an iteration
+    #     the reviewer ruled WEAK/WRONG is disputed, and the Deck should show it as
+    #     such rather than presenting a movement as settled.
+    for r in recs.values():
+        rv = (r.get("reviewer") or {}).get("verdict")
+        sc = r.get("scorer") or {}
+        moved = sc.get("verdict") in ("PROGRESSIVE",)
+        r["disputed"] = bool(rv in ("WEAK", "WRONG") and moved)
+
+    out = [recs[k] for k in sorted(recs) if k >= 0]
+    return out[-limit:]
 
 
 def snapshot(full=False):
