@@ -5,7 +5,7 @@
   "id": "C-3",
   "name": "Self-Pruning",
   "capability": "Self-Pruning",
-  "from_iteration": 24,
+  "from_iteration": 25,
   "budget_iterations": 5,
   "target": "33 → 60",
   "goal": "Junk withdraws itself without being asked. The backlog pruner exists (DEF-132) and is unmeasured; CL-033 shows ten unactionable pushes from one unknown number in a single morning.",
@@ -46,7 +46,8 @@
   "owner_ruling_2026_08_13": "'improvement should not be in numbers it should be in real'. So an increment is NOT done when Grok scores it, and NOT done when tests pass. It is done when the behaviour is OBSERVED ON HIS LIVE WHATSAPP and the evidence is quoted back to him. The capability score follows the reality; it never substitutes for it.",
   "reporting_rule": "Report to the owner in behaviour, not metrics. Lead with what Brain now does that it did not do before, quoting the real message. The capability delta goes last, as corroboration.",
   "success_measure": "The owner stops receiving noise he has to read, and can point at a specific morning where he received one message instead of ten. Grok's Self-Pruning number is corroboration, reported last, with its band.",
-  "after_this_campaign": "Simple & Smart (33) then Thinking (36) — the two remaining absent capabilities."
+  "after_this_campaign": "Simple & Smart (33) then Thinking (36) — the two remaining absent capabilities.",
+  "_budget_note": "Opened at 24, corrected to 25: iteration 24 was a PHANTOM — the loop's tmux server died ~11:16 on 2026-08-13, 45s into that build, after the header and BUILD line were already written and before any review, score or ship. The restart numbered the next real turn 25. Without this correction C-3 would silently lose one of its five budget iterations to a turn that never ran."
  },
  "queued": [],
  "history": [
