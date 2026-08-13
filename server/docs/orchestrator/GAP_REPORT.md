@@ -322,6 +322,26 @@ campaign is visible on the dashboard rather than only in a prompt. Until wired, 
 orchestrator runs it by hand each iteration — which is exactly the manual step that
 let this drift in the first place.
 
+### G26 · Remediation mode did not announce itself on its first run — unverified
+Implemented and committed at 06:46:10; loop restarted 06:47:15, so the running script
+carried the code. Iteration 16 closed WEAK, so iteration 17 should have logged
+`REMEDIATION iter=17 — iteration 16 closed WEAK …` and set `MODE=remediation`.
+**`grep REMEDIATION loop.log` returns 0.** The verdict extraction was reproduced
+standalone under the loop's own shell options and returns `WEAK` correctly, and the
+block sits in the right place (after the ITER increment, before the structural check),
+so the fault is somewhere in the runtime context, not the logic. Candidates worth
+checking, in order: two heredocs in the same file both terminated `PYEOF` (the campaign
+renderer uses it too) — a plausible parsing interaction inside `$( )`; `$REVIEW_DOC`
+resolving differently at runtime; or the block being skipped by an earlier `continue`
+on the restart path.
+**Not masked by luck:** iteration 17 IS remediating DEF-159's residual correctly, but
+because the campaign ranking pointed it there, not because remediation mode fired. So
+the mechanism is unproven, and the next WEAK verdict is the real test.
+**Fix (next clean stop):** echo the decision unconditionally — `say "REMEDIATION check:
+prev=$PREV_ITER verdict=$PREV_VERDICT mode=$MODE"` — so the branch is observable whether
+it fires or not. A rail that cannot be seen deciding is a rail that cannot be trusted,
+which is the same lesson as G24 and the pulse's stage detector.
+
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped
