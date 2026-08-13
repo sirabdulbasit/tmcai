@@ -83,6 +83,20 @@ SCORES="$ORCH/scores"
 PROMPTS="$ROOT/scripts/orchestrator/prompts"
 
 TARGET="${NEXEO_TARGET:-95}"
+
+# The guard's outputs, declared HERE rather than only inside measure_collect.
+#
+# Iteration 22 died three seconds into its build with "Provide a prompt to continue
+# the conversation", because MEASURE was skipped that turn (no server/src change),
+# so measure_collect never ran, so GUARD_TXT was unset — and under `set -u` the
+# render call that referenced it aborted, leaving BUILD_PROMPT empty. The Builder
+# was handed nothing at all.
+#
+# A variable that only exists on the happy path is a variable that will be unset on
+# the day it matters, and the skip path is not rare: it fires on every iteration
+# that follows a docs-only or orchestrator-only commit.
+GUARD_STATUS="not-run"
+GUARD_TXT="The regression guard has not run yet for this iteration (the benchmark was reused, so there is no new measurement to judge)."
 MAX_ITER="${NEXEO_MAX_ITER:-40}"
 STALL_LIMIT="${NEXEO_STALL_LIMIT:-3}"
 DEPLOY="${NEXEO_DEPLOY:-0}"
