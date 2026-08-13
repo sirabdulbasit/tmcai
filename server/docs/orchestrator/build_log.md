@@ -4075,3 +4075,168 @@ that case and the aggregate stays near 86.7.** I am explicitly not predicting a 
   self-conduct questions only.
 - **A `guard-destroys-the-answer` occurrence 8** → the salvage is cutting substance on a
   turn I did not anticipate, and the marker is worse than the prose it replaced.
+
+---
+
+## Iteration 22 — mode: structural · RE-SCOPED · campaign C-2 (iteration 4 of 8)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### What I dropped, and what I shipped instead
+
+The re-scope directive said pick work that can pass review and ship this turn. I dropped
+**C-2 increment 0** (store the chase body), which is where the campaign wanted me, because
+**iteration 21's change was actively harming the owner** and that outranks starting anything.
+
+Codex's verdict was **WRONG**, and he is right. The measured B12 answer was, in full:
+
+> "[unevidenced self-repair claim — nothing was flagged and no prevention was scheduled;
+> say what is observable and that the cause is not known]"
+
+Judged **C4 = 10, C1 = 20**. Aggregate C4 86.7 → 80.7, overall 95.3 → 92.0. That is worse
+than the fabrication it replaced: a fabricated cause is at least a sentence; this is an
+internal note addressed to the composer, delivered to the owner as if Brain were speaking.
+
+**This is one owner-visible behaviour made correct, with tests and a live check on the
+built bundle. It can and should be deployed at the end of this turn.**
+
+### The escalation question, answered plainly
+
+The orchestrator asks whether the remaining finding is (a) a known limitation with a DEF
+row or (b) grounds for reverting. **My answer: (b), and I have done the revert that
+matters — by deletion, not by another tightening.**
+
+- The second rule is **gone** (merged into one verdict). That was the regression.
+- `selfRepairEvidence` is **deleted**. Three iterations tightened its required fields and
+  never changed the fact that it only trimmed caller-supplied strings, so
+  `{findingId:'fake', appliedRepair:'fake', preventionArtifactId:'fake'}` disabled every
+  protection in the file. Nothing ever produced it — I flagged it as a reader with no
+  writer in two build entries. Deleting it changes no behaviour today and removes an
+  authorization path satisfiable by four literals.
+- The `CITES_ARTIFACT_RE` exemption is **deleted**. It was syntax-only, so *inventing*
+  "finding F-999999" preserved a claim. **Accepted cost, on the record:** a genuinely
+  logged finding is now cut too — Codex's iteration-20 MEDIUM #3 reinstated deliberately.
+  The failure modes are not symmetrical: over-cutting fails closed, under-cutting ships a
+  false statement to the owner.
+
+**What I am accepting as (a), with reasons:** the question regex still decides whether the
+commitment half applies (his HIGH #4) — but with the merge, a false positive now costs a
+salvage, and if no salvage survives the sanitizer produces a human line rather than a
+marker, so the blast radius is bounded rather than catastrophic. And the route still
+fail-opens if the validator throws (his MEDIUM #5) — I left that, because a validator
+crash blocking every reply is a worse failure than shipping an unvalidated one. Both are on
+DEF-167's row.
+
+### Governing docs — verdict: CIRCLING, and this occurrence is mine
+
+`guard-destroys-the-answer` goes to **8**. The new fact this occurrence adds: the previous
+seven were a guard firing on the **wrong input**. This one fired on the **right** input and
+destroyed the answer through **arbitration between two of my own rules** — a failure mode
+that only exists once a class has two implementations, which is why it is also the 11th
+`protection-with-two-implementations`.
+
+### The changes, by file
+
+**`responseValidator.ts` — one class, one verdict.** The two rules are merged into
+`unevidenced_self_conduct`: one pattern (cure always; commitment only on a self-conduct
+turn), one salvage, one marker. The arbitration is untouched and correct — DEF-135's
+reasoning that two *different* defects mean the remainder still carries the second is
+right, and a test now pins that a raw-JSON leak alongside a self-conduct claim still
+suppresses salvage. What was wrong was creating two rules for one class.
+
+**`answerSanitizer.ts` — DEF-168, the net that promised to catch this.** Its own header
+says *"Unknown bracketed markers are stripped to avoid leaking future ones."* False: both
+the whole-answer loop and the embedded regex match an enumerated list, so my two new
+markers shipped verbatim. The file created to stop marker leaks had the same shape as the
+thing it was catching. Now: if the **entire** answer is one bracketed expression it is a
+marker by construction — no human reply is shaped that way — and it becomes a short honest
+line. Safe by that requirement: `[1]`, `[see attached]`, markdown links and inline
+brackets are all untouched, asserted. It deliberately does not paraphrase the marker's
+content, because that content is an instruction to the composer and translating *"say what
+is observable"* to the owner is how the previous leak read as Brain being broken.
+
+### Why the suite did not catch this, which is the part worth keeping
+
+2,177 tests passed on the build that was destroying the answer. Every assertion read a
+violation's private `salvagedAnswer`; the route consumes `validation.replacement`. **Nothing
+in the suite read the string the owner receives.** Codex named this exactly and it is now
+the standing rule for this class: assert on `replacement` and on the sanitizer's output.
+Every one of the 14 new tests does.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2186 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 181 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+Test count fell 2191 → 2186 because four tests that asserted the deleted authorization
+contract were replaced by two that assert the new one, plus one citation test inverted.
+Deleting a passing test is the kind of thing that should be stated, not absorbed.
+
+**Live check on the built bundle** — the three cases that matter:
+
+| input | what the owner now reads |
+|---|---|
+| the iteration-21 measured shape | "My apologies, Sir. You received two reminders for the Fujairah pricing item." |
+| worst case, nothing survives salvage | "I don't have a good answer for that yet — let me look again…" |
+| an honest answer | unchanged, passes through |
+
+**Mutation: 4 mutants, all die** — un-merge the rules (3 tests), remove the sanitizer
+catch-all (4), restore the caller-string seam (2), restore the id-shaped exemption (1).
+
+### CAPABILITY: Accurate Communication
+
+**PREDICTED:** B12 recovers to roughly its iteration-20 level (C4 ≈ 75, C1 ≈ 85–90),
+aggregate C4 returns toward 86–88. **This is repair of my own damage, not progress — the
+honest capability delta for iterations 21 and 22 together is about zero.** No Self Follow-Up
+movement.
+
+**MECHANISM:** the owner reads prose again instead of a bracketed instruction, on the one
+turn where he asks what Brain did.
+
+**FALSIFIER:** any string beginning `[` reaching a surface; two blocks from this class on
+one answer; or B12 still returning a marker.
+
+### What I did NOT do
+
+- **C-2 increment 0**, and therefore nothing for the campaign. This is iteration 4 of 8 with
+  zero increments delivered, which meets the campaign's own **ABORT CONDITION** — after 4
+  iterations Self Follow-Up has not moved by +5, because it has not moved at all. **I think
+  the orchestrator should report that to the owner rather than spend the remaining four
+  iterations**, and the reason is not the campaign's difficulty: three of the four turns
+  went on remediating a guard I broke. The campaign never got a turn.
+- **Codex's directive #4** — the typed self-conduct claim emitted from composition. That is
+  the real exit from regex-as-judgment and it is still not built. I did not start it in a
+  turn whose job was stopping a live regression.
+- **Directive #5's C4 work** (B12's canned apology, B02/B11 prose). Deliberately: the
+  benchmark is now a regression guard, and C4 is no longer the objective.
+- **The durable outbox** (DEF-156/158), eighth naming.
+- **I did not run the benchmark.** D-1 is open; every figure quoted is from Codex's review
+  or `iter-21-post-build.json`.
+
+### What I am unsure about
+
+- **Whether the sanitizer's replacement line is the right one.** "I don't have a good answer
+  for that yet — let me look again. Could you ask me once more?" is honest but it is also a
+  non-answer. It only appears when salvage is impossible, which should now be rare, but if
+  it starts appearing often it is a symptom that the guard is over-cutting.
+- **Whether deleting the citation exemption was the right trade.** I argued over-cutting
+  fails closed and under-cutting ships falsehood, and I believe that. It does mean a true
+  "I logged it in finding F-1" is lost, which Codex previously called a defect.
+- **Whether the merged rule's commitment half should exist at all.** It is the piece with no
+  evidence behind it — grammar plus a question-shaped gate. If Codex still objects after
+  this, the honest next step is to demote it to `warn` and let the composer's rules carry
+  the class until the typed claim exists.
+
+### Prediction, and what would prove me wrong
+
+**B12 returns to prose and C4 recovers toward its pre-iteration-21 level. Nothing else moves.**
+
+**What would prove me wrong:**
+- **B12 still shows a bracket** → the leak has a third path I have not found, and the
+  sanitizer catch-all is not the last mile it claims to be.
+- **A different case regresses** → the merged rule is cutting on turns I did not check;
+  B01 and B10 remain the two other self-conduct questions in the suite.
+- **C4 does not recover** → the marker was not the whole cause of the 75 → 10 fall, and I
+  have mis-attributed my own regression.
