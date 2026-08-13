@@ -32,6 +32,10 @@ CAMPAIGN below; the benchmark's job is to catch a case that got WORSE.
 
 @@RESCOPE@@
 
+## Capability cap
+
+@@CAP@@
+
 The score comes from `server/src/scripts/nexeoCapabilityBenchmark.ts`: twelve
 read-shaped turns pushed through `answerAsBrain` (the real composer) and scored
 by `evaluateBrainResponse` (the real Living Assistant Standard judge). The JSON
