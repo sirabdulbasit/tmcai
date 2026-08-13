@@ -609,6 +609,14 @@ PYEOF
 )"
   REM_COUNT=0
   [ -s "$STATE/remediation-count" ] && REM_COUNT="$(cat "$STATE/remediation-count")"
+  # G26 — LOG THE DECISION WHETHER OR NOT IT FIRES. The first version only spoke when
+  # it triggered, so two consecutive WEAK verdicts produced silence and I could not
+  # tell a broken rail from a rail that correctly declined. Every part of the check
+  # reproduced correctly standalone; only the running loop disagreed, which is exactly
+  # the state an unconditional log would have diagnosed in one line. Same lesson as
+  # the pulse's stage detector and the completion watcher: a rail that cannot be
+  # watched deciding cannot be trusted.
+  say "REMEDIATION check: prev=$PREV_ITER verdict=${PREV_VERDICT:-<empty>} count=$REM_COUNT/$REMEDIATION_LIMIT"
   if [ "$PREV_VERDICT" = "WEAK" ] || [ "$PREV_VERDICT" = "WRONG" ]; then
     if [ "$REM_COUNT" -ge "$REMEDIATION_LIMIT" ]; then
       # Three attempts and the reviewer is still not satisfied. Escalate rather than
@@ -667,13 +675,25 @@ if not a:
     print("No active campaign."); raise SystemExit
 start, budget = a.get("from_iteration", it), a.get("budget_iterations", 1)
 spent = max(0, it - start) + 1
+incs = a.get("increments") or []
+inc_txt = ""
+if incs:
+    inc_txt = "\n**The increments, in order — take the first that is not done:**\n\n" + "\n".join(
+        f"{i['n']}. {i['what']}\n   *Done when:* {i.get('done_when','')}" for i in incs) + "\n"
+extra = ""
+for k, label in (("baseline", "Baseline"), ("target_score", "Target"),
+                 ("scope_rule", "SCOPE"), ("deploy_rule", "DEPLOY"),
+                 ("abort_condition", "ABORT CONDITION"),
+                 ("the_capability_in_the_owner's_words", "In the owner's words")):
+    if a.get(k):
+        extra += f"\n**{label}:** {a[k]}\n"
 print(f"""### ACTIVE CAMPAIGN {a['id']} — {a['name']}  (iteration {spent} of {budget})
 
-**Capability:** {a.get('capability')}
+**Capability:** {a.get('capability')}  ·  **{a.get('baseline','?')} → {a.get('target_score','?')}**
 **Goal:** {a.get('goal')}
 **Exit condition:** {a.get('exit_condition')}
-**Why this first:** {a.get('why_first', 'see the campaign file')}
-
+**Why this one:** {a.get('why_this_one', a.get('why_first', 'see the campaign file'))}
+{inc_txt}{extra}
 This is WHAT you are aiming at for this campaign. Codex's ranked directive governs
 HOW — follow it where it serves the campaign, and say so in your build entry if it
 pulls you off the campaign, rather than silently switching targets. A campaign turn
@@ -683,6 +703,16 @@ stop. Budget is {budget} iterations; if you need more, argue for it in the build
 entry and the orchestrator will extend it on the record rather than by default.""")
 PYEOF
 )"
+
+  # Header anything the owner pasted since the last turn, so D-6 sees it as a report
+  # without him having to format it. Runs BEFORE the build prompt is rendered, which is
+  # the only point at which a new report can still reach this iteration.
+  if [ -x "$ROOT/scripts/orchestrator/intake.sh" ]; then
+    INTAKE_OUT="$("$ROOT/scripts/orchestrator/intake.sh" 2>&1 | tail -1)"
+    case "$INTAKE_OUT" in
+      *headered*) say "INTAKE $INTAKE_OUT" ;;
+    esac
+  fi
 
   FORBIDDEN_ALERT="none"
   [ -s "$STATE/forbidden-alert" ] && FORBIDDEN_ALERT="$(cat "$STATE/forbidden-alert")"
