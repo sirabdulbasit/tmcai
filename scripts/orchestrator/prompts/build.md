@@ -29,6 +29,13 @@ guess, and it names the case id so you can read the exact reply that scored low.
 
 ## Remediation
 
+**If the two sections above both carry instructions, remediation wins on SCOPE and
+structural mode wins on DEPTH.** They are not alternatives: close the reviewer's
+open finding (that is the scope of this turn), and close it at the class level
+rather than on the reported instance (that is the depth). What is forbidden is
+using structural mode as a reason to leave a review finding open, or using
+remediation as a reason to patch one instance and stop.
+
 @@REMEDIATION@@
 
 ## The campaign you are on
