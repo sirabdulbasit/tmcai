@@ -114,6 +114,23 @@ Start here, then follow the code:
 - `server/src/services/knowledge/brainComposer.ts`, and the services under
   `server/src/services/` for the capability you are judging.
 
+## Production runtime evidence — READ THIS BEFORE SCORING
+
+You read the codebase, which means you cannot see the one place a capability actually
+exists: the running system. Measured on 2026-08-13, this cost real accuracy — you
+scored Self Follow-Up 43 with `basis: doc-read` while the follow-up worker had chased
+a real delegatee that morning, and again the previous day. A capability that manifests
+at runtime cannot be credited by a file reader, however much of it gets built.
+
+So here are aggregates from the live database. They are observations, not tests, and
+they are the one thing here that supports `basis: "live-evidence"`.
+
+They are deliberately aggregate — counts, dates and rates, never a name, a phone
+number or a message body. Where a count shows a capability FIRES, that is evidence it
+exists. It is not evidence it works well; quality still has to come from the code.
+
+@@EVIDENCE@@
+
 @@PREVIOUS@@
 
 ## Comparing against your own last scoring

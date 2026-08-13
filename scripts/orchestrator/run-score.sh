@@ -137,6 +137,15 @@ running series and never substituted for it."
 fi
 
 PROMPT="$(sed -e "s|@@ITER@@|$ITER|g" "$PROMPTS/score.md")"
+# Runtime evidence. A failure here must NOT block scoring — the scorer simply loses
+# live-evidence for this run and says so, which is honest. Silence would be worse:
+# it would look like the capability does not fire.
+EVIDENCE="_Runtime evidence unavailable for this run — score from the code and say so in \`unverifiable\`._"
+if [ -x "$ROOT/scripts/orchestrator/evidence-pack.sh" ]; then
+  EV_TXT="$("$ROOT/scripts/orchestrator/evidence-pack.sh" 2>/dev/null || true)"
+  [ -n "$EV_TXT" ] && EVIDENCE="$EV_TXT"
+fi
+PROMPT="${PROMPT//@@EVIDENCE@@/$EVIDENCE}"
 PROMPT="${PROMPT//@@PREVIOUS@@/$PREVIOUS}"
 
 if [ "$DRY" -eq 1 ]; then

@@ -895,3 +895,76 @@ overriding it. Stated plainly so it is judged rather than assumed:
   and iteration 24 goes to C-2 increment 0 regardless of what the reviewer says.
 - The owner is told both numbers: one turn to unlock five, versus starting 13.4% of
   the journey one turn later.
+
+---
+
+## D-18 · OPEN · The scorecard could not measure change — measured, not suspected
+
+Owner, 2026-08-13: *"i have very serious concern with such progress in decimals"*, then
+*"you mean your compaing method will boost the improvement?"* — the right question,
+and answering it honestly found that the instrument, not the rate, was the problem.
+
+### What the history showed
+
+Across eleven capability cards, **eight of the nine capabilities had never moved
+once**, and the largest single-iteration change on any of them was **+2**.
+
+### The from-scratch re-baseline (`run-score.sh 22 --fresh`)
+
+Same code, same scorer, previous card withheld:
+
+```
+capability               carried   fresh   diff
+Simple & Smart                33      36     +3
+Thinking                      36      42     +6
+Memory                        60      58     -2
+Accurate Communication        74      68     -6
+Authorized Action             52      55     +3
+Self Follow-Up                43      52     +9
+Learn                         42      38     -4
+Self-Healing                  54      48     -6
+Self-Pruning                  33      42     +9
+OVERALL                     47.4    48.8   +1.3
+```
+
+**Every one of the nine moved when the anchor was removed.** So the instrument
+disagrees with itself by ±6–9 per capability, ±1.3 overall — and the "+0.7 across 22
+iterations" the owner was rightly angry about is **smaller than the measurement's own
+noise**. The honest statement is not that progress was slow; it is that **we could not
+tell whether 22 iterations improved Brain at all.**
+
+### Cause, and it is mine
+
+`score.md` carried three instructions that jointly forbid movement:
+
+1. carry your previous numbers forward, do not re-derive;
+2. never move a score without citable evidence;
+3. nothing is deployed, so `live-evidence` is almost never available to you.
+
+Each was written for a good reason — (1) to stop drift reading as progress, (2) to stop
+invention, (3) because it was true. Together they produce a scorer that carries numbers
+forward whatever the code does, and I then asked why nothing moved.
+
+**And a fourth, worse than the other three:** the scorer reads the codebase only, so it
+cannot see the one place a capability exists. It scored Self Follow-Up 43 `doc-read`
+while the follow-up worker had chased a real delegatee that morning and the day before.
+Its fresh read of the same code gave **52**, and production says the chase fires daily.
+A capability that manifests at runtime could never be credited, however much was built.
+
+### The fixes, shipped with this row
+
+1. **`evidence-pack.sh`** — aggregates from the live database in the scoring prompt, so
+   `basis: live-evidence` is achievable. **Counts, dates and rates only: never a name, a
+   phone number, an email or a message body.** The scorer needs to know THAT a
+   capability fires, not who it fired at, and this text goes to a third-party model.
+2. **`run-score.sh --fresh`** — a from-scratch re-baseline, written to its own file and
+   NEVER ingested. Two independent readings that disagree is the finding; substituting
+   one for the other destroys it. **Run every 5 iterations.**
+3. **Report a band, not a point.** 47.4 ±1.3 is the truth. A bare 47.4 claims a
+   precision that does not exist, and it is what made a +0.2 look like a result.
+
+### What this does NOT excuse
+
+The work still has not shipped, and that is separate and real. One deploy in 13
+iterations, and undeployed work changes nothing for the owner whatever any scorer says.
+A better instrument makes delivery measurable; it does not substitute for it.
