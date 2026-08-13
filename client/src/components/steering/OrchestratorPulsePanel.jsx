@@ -228,6 +228,131 @@ function CapabilityBars({ data }) {
    this loop produces is fractions of a point and a 0→100 axis would render ten
    iterations of real work as a flat line. The absolute numbers are printed at both
    ends so the scaling cannot overstate what happened. */
+/* ── BRAIN INTEGRITY — the nine capabilities as one picture ────────────────────
+ *
+ * Owner, 2026-08-13, with a reference image of a brain at "PHASE 1: 47% INTEGRITY"
+ * ringed by labelled repair zones: *"can u show this kind of brain progress in
+ * your deck easily?"*
+ *
+ * Yes, and it carries more than the render can. The reference is a static
+ * illustration; every zone here is a real capability with its real score, tinted
+ * by how far it is from professional, and the "repair zone" marker means
+ * something specific — that capability is the ACTIVE CAMPAIGN, so it is the one
+ * being worked this week. Zones move when Grok's card moves and only then.
+ *
+ * Drawn as inline SVG on purpose: no image asset, no external request, and the
+ * numbers cannot drift out of step with the rest of the panel because they come
+ * from the same collector call.
+ *
+ * The integrity number is Grok's overall (47.4), NOT the benchmark's 95. Those
+ * two have been confused all week and they measure different things — the
+ * benchmark scores twelve conversational replies and cannot see seven of the nine
+ * capabilities below.
+ */
+const BRAIN_ZONES = [
+  // Stylised lobes. Position is layout, not neuroanatomy — each blob is one
+  // capability, arranged so the label ring around the outside stays readable.
+  { name: 'Simple & Smart',        d: 'M96,54 C118,40 150,42 164,58 C150,74 118,78 96,70 Z', lx: 130, ly: 26, anchor: 'middle' },
+  { name: 'Thinking',              d: 'M168,58 C190,44 218,50 226,70 C210,84 182,84 168,74 Z', lx: 236, ly: 46, anchor: 'start' },
+  { name: 'Memory',                d: 'M62,78 C84,66 112,72 120,88 C104,102 76,100 62,92 Z',  lx: 24,  ly: 66, anchor: 'end' },
+  { name: 'Accurate Communication',d: 'M124,86 C150,74 180,80 190,98 C172,114 142,112 124,100 Z', lx: 158, ly: 128, anchor: 'middle' },
+  { name: 'Authorized Action',     d: 'M194,92 C216,82 238,90 242,108 C226,120 202,118 194,106 Z', lx: 252, ly: 100, anchor: 'start' },
+  { name: 'Self Follow-Up',        d: 'M58,106 C82,96 108,102 116,118 C100,132 72,130 58,120 Z', lx: 20,  ly: 116, anchor: 'end' },
+  { name: 'Learn',                 d: 'M120,116 C146,106 174,112 184,128 C166,142 136,142 120,130 Z', lx: 150, ly: 160, anchor: 'middle' },
+  { name: 'Self-Healing',          d: 'M188,124 C210,114 232,122 236,138 C220,150 196,150 188,138 Z', lx: 248, ly: 142, anchor: 'start' },
+  { name: 'Self-Pruning',          d: 'M84,136 C108,126 138,132 148,148 C130,162 100,160 84,150 Z', lx: 46,  ly: 168, anchor: 'end' },
+];
+
+function BrainIntegrity({ data }) {
+  const caps = data.capabilities || [];
+  const brain = data.brain;
+  const campaign = data.campaign?.active || null;
+  const objective = data.capability_series?.axis?.objective_line ?? null;
+  if (!caps.length || !brain) return null;
+
+  const byName = {};
+  caps.forEach((c) => { byName[c.name] = c; });
+  const active = campaign?.capability || null;
+
+  /* Tint by SHARE OF PROFESSIONAL REACHED, not by raw score — 33 on a benchmark
+     of 92 and 54 on a benchmark of 89 are different distances, and colouring by
+     the raw number would draw them as closer than they are. */
+  const tint = (c) => {
+    if (!c) return { fill: 'var(--text-dim)', pct: 0 };
+    const pct = c.professional ? c.nexeo / c.professional : 0;
+    const fill = pct >= 0.9 ? 'var(--op-score)'
+      : pct >= 0.7 ? '#7cb342'
+      : pct >= 0.5 ? 'var(--op-measure)'
+      : pct >= 0.35 ? '#e07b39'
+      : 'var(--op-stalled)';
+    return { fill, pct };
+  };
+
+  const integrity = Math.round((brain.nexeo / brain.professional) * 100);
+
+  return (
+    <div>
+      {/* the headline bar — integrity against a professional assistant */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, letterSpacing: 0.5, color: 'var(--text-dim)' }}>
+          {campaign ? `${campaign.id} · ${campaign.name}` : 'no campaign'}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 20, fontWeight: 700 }}>
+          {integrity}%
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>of professional</span>
+      </div>
+      <div style={{ position: 'relative', height: 10, borderRadius: 5,
+                    background: 'var(--surface-2, rgba(255,255,255,0.08))', overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', inset: 0, width: `${integrity}%`,
+                      background: 'linear-gradient(90deg,var(--op-stalled),var(--op-measure),var(--op-score))' }} />
+      </div>
+      <div className="orch-section-note" style={{ marginTop: 3 }}>
+        Brain <b>{brain.nexeo}</b> · objective <b>{objective ?? '—'}</b> · professional{' '}
+        {brain.professional} · scored by {brain.scored_by}
+      </div>
+
+      <svg viewBox="0 0 300 190" style={{ width: '100%', height: 'auto', marginTop: 6, overflow: 'visible' }}
+           role="img" aria-label="Nexeo capability map">
+        {/* cortex silhouette, purely as context for the zones */}
+        <path d="M150,20 C196,20 246,44 254,86 C262,128 232,166 186,174 C150,180 110,178 76,166
+                 C34,150 26,110 38,76 C52,38 104,20 150,20 Z"
+              fill="none" stroke="var(--border, rgba(255,255,255,0.18))" strokeWidth="1.5" />
+        <path d="M150,22 C150,60 150,120 150,172" fill="none"
+              stroke="var(--border, rgba(255,255,255,0.12))" strokeWidth="1" strokeDasharray="3 4" />
+        {BRAIN_ZONES.map((z) => {
+          const c = byName[z.name];
+          const t = tint(c);
+          const isActive = active === z.name;
+          return (
+            <g key={z.name}>
+              <path d={z.d} fill={t.fill} fillOpacity={c ? 0.8 : 0.25}
+                    stroke={isActive ? 'var(--op-build)' : 'none'}
+                    strokeWidth={isActive ? 2 : 0}>
+                <title>{`${z.name} — ${c ? `${c.nexeo} of ${c.professional}` : 'not scored'}${
+                  isActive ? ' · REPAIR ZONE (active campaign)' : ''}`}</title>
+              </path>
+              <text x={z.lx} y={z.ly} textAnchor={z.anchor} fontSize="7.5"
+                    fill={isActive ? 'var(--op-build)' : 'var(--text-dim)'}
+                    fontWeight={isActive ? 700 : 400}>
+                {z.name.length > 15 ? `${z.name.slice(0, 14)}…` : z.name}
+                <tspan fill={t.fill} fontWeight="700"> {c ? c.nexeo : '—'}</tspan>
+              </text>
+              {isActive && (
+                <text x={z.lx} y={z.ly + 8} textAnchor={z.anchor} fontSize="6"
+                      fill="var(--op-build)">repair zone</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="orch-section-note">
+        zone colour = share of professional reached · outlined zone = active campaign
+      </div>
+    </div>
+  );
+}
+
 /* ── WHAT THE LAST TEN ITERATIONS ACTUALLY PRODUCED ────────────────────────────
  *
  * Owner, 2026-08-13: *"this should show last 10 iterations and make it more
