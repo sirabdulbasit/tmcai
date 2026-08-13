@@ -109,9 +109,15 @@ describe('DEF-092 marker voice — a marker is spoken, never printed', () => {
     });
     const leaked = '[update_open_item: id not found — reference may be stale, retry by title]';
     const out = await sanitizeAnswerInBrainVoice(leaked, { clientNumber: 'TMC-0001', userId: 2 });
+    // DEF-102's substance is intact: never raw, never silent. DEF-169 changes the
+    // MECHANISM — an UNCURATED marker no longer goes to the LLM at all, because
+    // handing internal text to a model as its only fact is how iteration 21's
+    // composer instruction got rewritten into Brain's voice for the owner
+    // (Codex iteration-22 HIGH #2). A neutral sentence is not silence.
     expect(out.startsWith('[')).toBe(false);
     expect(out).not.toContain('update_open_item');
     expect(out).not.toContain('retry by title');
+    expect(out.length, 'stripping to silence is what DEF-102 forbade').toBeGreaterThan(20);
   });
 
   it('DEF-102: an UNCURATED marker is still spoken, never passed through raw', async () => {
@@ -121,7 +127,13 @@ describe('DEF-092 marker voice — a marker is spoken, never printed', () => {
     callLLM.mockResolvedValue({ text: 'I could not find that one.', provider: 'gemini' });
     const out = await sanitizeAnswerInBrainVoice('[some_action: a marker nobody curated]', {});
     expect(out.startsWith('[')).toBe(false);
-    expect(callLLM).toHaveBeenCalled();
+    // DEF-169 inverts the second half of this assertion, deliberately and on the
+    // record. It used to require the LLM to speak an uncurated marker; that is
+    // exactly the path that published a composer instruction as Brain's words.
+    // Uncurated now means neutral, and the model is never consulted — so there is
+    // no success path and no failure path that can differ.
+    expect(callLLM, 'internal text was handed to the model as fact').not.toHaveBeenCalled();
+    expect(out.length).toBeGreaterThan(20);
   });
 
   it('keeps the synchronous sanitizer working for non-conversational surfaces', () => {

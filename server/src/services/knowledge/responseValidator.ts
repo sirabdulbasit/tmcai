@@ -72,6 +72,11 @@ export interface ValidationOutcome {
 // DEF-041 duplicated regex): a protection with two implementations has one
 // real implementation and one comforting fiction.
 import { EMPTY_PROMISE_RE, isConditionalFutureBehaviour } from './brainComposer';
+// DEF-169 — every marker this file emits is stamped at the producer, so the
+// sanitizer can recognise it by ORIGIN rather than by guessing from brackets.
+// Codex's iteration-22 HIGH #1: a shape check cannot tell `[see attached]` from
+// an internal signal, and mine destroyed the former.
+import { systemMarker } from './systemMarker';
 
 // Fabricated process / escalation language. Per rule H7a in the
 // prompt — Brain must never invent teams/channels/processes that
@@ -638,7 +643,7 @@ export function validateBeforeRender(
       // Previous text was an English sentence masquerading as Brain prose
       // ("I didn't actually complete that..."), which violated the rule
       // and read as robotic to the user (Basit, 2026-05-22).
-      suggestedReplacement: `[no action dispatched — retry with the action and target named explicitly]`,
+      suggestedReplacement: systemMarker('no action dispatched — retry with the action and target named explicitly'),
     });
   }
 
@@ -670,7 +675,7 @@ export function validateBeforeRender(
       description: 'Answer references a "support team" / "engineering team" / escalation channel that does not exist.',
       // Bracketed marker (no-hardcoded-fake-Brain-replies rule). Still the
       // remedy when the fabrication IS the whole answer.
-      suggestedReplacement: `[fabricated escalation path — that team/channel doesn't exist in the system; name the concrete task]`,
+      suggestedReplacement: systemMarker("fabricated escalation path — that team/channel doesn't exist in the system; name the concrete task"),
       salvagedAnswer: exciseSentencesMatching(answer, FABRICATED_PROCESS_RE),
     });
   }
@@ -762,7 +767,7 @@ export function validateBeforeRender(
       // covering both halves, and it must not mention escalation channels the
       // answer never named (`guard-destroys-the-answer` occurrence 5).
       suggestedReplacement:
-        '[unevidenced claim about your own actions — nothing was flagged, fixed or scheduled; state what the record shows, say the cause is not recorded, and offer the next step as a question]',
+        systemMarker('unevidenced claim about your own actions — nothing was flagged, fixed or scheduled; state what the record shows, say the cause is not recorded, and offer the next step as a question'),
       // DEF-165 — clause first, so a compound sentence keeps its grounded half;
       // sentence-level only when there is no clause boundary to cut at.
       salvagedAnswer: exciseClausesMatching(answer, selfConductRe)
@@ -776,7 +781,7 @@ export function validateBeforeRender(
       rule: 'raw_json_leak',
       severity: 'block',
       description: 'Answer starts with the raw {"answer":...} JSON envelope — parseCompose fell through.',
-      suggestedReplacement: `[Brain output malformed — retry, or check logs]`,
+      suggestedReplacement: systemMarker('Brain output malformed — retry, or check logs'),
     });
   }
 
@@ -786,7 +791,7 @@ export function validateBeforeRender(
       rule: 'provider_error_leak',
       severity: 'block',
       description: 'Answer includes raw LLM provider error text (provider names, model error codes, billing strings).',
-      suggestedReplacement: `[Brain unavailable — reasoning service down, retry shortly]`,
+      suggestedReplacement: systemMarker('Brain unavailable — reasoning service down, retry shortly'),
     });
   }
 
@@ -816,7 +821,7 @@ export function validateBeforeRender(
           rule: 'recipient_mismatch',
           severity: 'block',
           description: `Answer mentions recipient "${mentioned}" but the action dispatches to ${actionIdentifiers.join(', ')} — these don't match.`,
-          suggestedReplacement: `[Action dispatched but the prose mentioned a different recipient. Please re-issue the request clearly.]`,
+          suggestedReplacement: systemMarker('Action dispatched but the prose mentioned a different recipient. Please re-issue the request clearly.'),
         });
         break;
       }
@@ -842,7 +847,7 @@ export function validateBeforeRender(
       rule: 'preview_vs_done_confusion',
       severity: 'block',
       description: 'Pending action is still preview_shown but answer uses first-person completion language.',
-      suggestedReplacement: `[Preview not yet confirmed. Reply "send" to dispatch, or tell me what to change.]`,
+      suggestedReplacement: systemMarker('Preview not yet confirmed. Reply "send" to dispatch, or tell me what to change.'),
     });
   }
 

@@ -37,6 +37,7 @@ import { describe, it, expect } from 'vitest';
 import {
   validateBeforeRender, isSelfConductQuestion,
 } from '../src/services/knowledge/responseValidator';
+import { isSystemMarker } from '../src/services/knowledge/systemMarker';
 
 const composed = (answer: string, over: Record<string, unknown> = {}) => ({
   answer, cites: [], gaps: [], actionResult: null, ...over,
@@ -147,7 +148,8 @@ describe('DEF-166 — it only applies where it is justified', () => {
 
   it('its marker points at the honest shape rather than scolding', () => {
     const v = promise("I'll make sure the duplicate is cleared.")!;
-    expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
+    // DEF-169 — origin stamp, not a leading bracket.
+    expect(isSystemMarker(v.suggestedReplacement)).toBe(true);
     expect(v.suggestedReplacement).toMatch(/nothing was flagged, fixed or scheduled/i);
     expect(v.suggestedReplacement, 'it must say what to do instead')
       .toMatch(/question/i);

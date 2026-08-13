@@ -44,6 +44,9 @@
 import { describe, it, expect } from 'vitest';
 import { validateBeforeRender } from '../src/services/knowledge/responseValidator';
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
+// DEF-169 — these cases construct markers through the producer, because a
+// bracket alone is no longer (and never was) evidence of internal origin.
+import { systemMarker } from '../src/services/knowledge/systemMarker';
 
 const composed = (answer: string) => ({
   answer, cites: [], gaps: [], actionResult: null,
@@ -118,9 +121,12 @@ describe('DEF-167 — one class produces one verdict', () => {
 
 describe('DEF-168 — the sanitizer keeps its own promise', () => {
   it('strips a marker it has never heard of', () => {
-    // The exact string the owner received in iteration 21.
-    const leaked = '[unevidenced self-repair claim — nothing was flagged and no prevention '
-      + 'was scheduled; say what is observable and that the cause is not known]';
+    // The exact string the owner received in iteration 21, rebuilt through the
+    // producer. DEF-169: this test used to pass a BARE bracketed string and expect
+    // it stripped, which is the assertion that made iteration 22 destroy
+    // `[see attached]`. Origin is the property; brackets never were.
+    const leaked = systemMarker('unevidenced self-repair claim — nothing was flagged and no '
+      + 'prevention was scheduled; say what is observable and that the cause is not known');
     const out = sanitizeAnswerForUser(leaked);
     expect(out, 'the enumerated list did not contain it, so it shipped').not.toContain('[');
     expect(out).not.toMatch(/unevidenced/);
@@ -128,16 +134,17 @@ describe('DEF-168 — the sanitizer keeps its own promise', () => {
   });
 
   it('strips the current marker too, so this cannot recur by renaming', () => {
-    const current = '[unevidenced claim about your own actions — nothing was flagged, fixed '
-      + 'or scheduled; state what the record shows, say the cause is not recorded, and offer '
-      + 'the next step as a question]';
+    const current = systemMarker('unevidenced claim about your own actions — nothing was '
+      + 'flagged, fixed or scheduled; state what the record shows, say the cause is not '
+      + 'recorded, and offer the next step as a question');
     expect(sanitizeAnswerForUser(current)).not.toContain('[');
   });
 
   it('does not paraphrase the marker to the owner', () => {
     // The content is an instruction to the composer. Translating "say what is
     // observable" into prose is how the leak read as Brain being broken.
-    const out = sanitizeAnswerForUser('[unevidenced claim about your own actions — state what the record shows]');
+    const out = sanitizeAnswerForUser(
+      systemMarker('unevidenced claim about your own actions — state what the record shows'));
     expect(out).not.toMatch(/record shows|observable|state what/i);
   });
 

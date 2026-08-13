@@ -39,11 +39,15 @@ import {
   exciseSentencesMatching,
   FABRICATED_PROCESS_RE,
 } from '../src/services/knowledge/responseValidator';
+import { isSystemMarker } from '../src/services/knowledge/systemMarker';
 
 const res = (answer: string, extra: Record<string, unknown> = {}) =>
   ({ answer, actionResult: null, ...extra } as any);
 
-const MARKER = /^\s*\[fabricated escalation path/;
+// DEF-169 — markers now carry an invisible origin stamp (`systemMarker`), so the
+// bracket is no longer at index 0. The property being asserted is unchanged: the
+// whole answer was replaced by THIS marker.
+const MARKER = /^\s*\u2063?\[fabricated escalation path/;
 
 /** The real B12 answer, with the tail the log truncated restored. */
 const B12 =
@@ -118,7 +122,10 @@ describe('DEF-135 — the marker survives where it is the right answer', () => {
     const blocks = r.violations.filter((v) => v.severity === 'block').map((v) => v.rule);
     expect(blocks).toContain('fabricated_process');
     expect(blocks).toContain('provider_error_leak');
-    expect(r.replacement).toMatch(/^\s*\[/);
+    // DEF-169: assert the ORIGIN rather than a leading bracket — the point of
+    // this line is "the owner got a marker, not prose", and a stamp says so
+    // where punctuation only suggested it.
+    expect(isSystemMarker(r.replacement)).toBe(true);
   });
 
   it('leaves a clean answer completely alone', () => {

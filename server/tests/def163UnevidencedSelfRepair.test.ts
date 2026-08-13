@@ -39,6 +39,8 @@ import { describe, it, expect } from 'vitest';
 import {
   validateBeforeRender, UNEVIDENCED_SELF_REPAIR_RE,
 } from '../src/services/knowledge/responseValidator';
+// DEF-169 — a marker is identified by its origin stamp, not by punctuation.
+import { isSystemMarker } from '../src/services/knowledge/systemMarker';
 
 /** The composer result shape the validator reads, minimal but real. */
 const composed = (answer: string, over: Record<string, unknown> = {}) => ({
@@ -93,8 +95,10 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
     // message about routing to a team, on a question about a duplicate reminder.
     const v = violation(B12_ANSWER)!;
     expect(v.suggestedReplacement).not.toMatch(/team|engineer|support/i);
-    expect(v.suggestedReplacement, 'a bracketed system marker, not fake Brain prose')
-      .toMatch(/^\[.*\]$/);
+    // DEF-169 — the property is ORIGIN, not punctuation. `systemMarker()` stamps
+    // it at the producer, which is what the sanitizer now reads.
+    expect(isSystemMarker(v.suggestedReplacement),
+      'an unstamped marker is invisible to the sanitizer').toBe(true);
     // It says what to do instead, because a marker the composer cannot act on is
     // just a dead end for the next turn.
     // DEF-167 merged the two rules, so there is now ONE marker text.
@@ -226,13 +230,13 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
       // whole one is worse than the marker.
       const v = violation("I have flagged the error, so you won't see another one.")!;
       expect(v.salvagedAnswer, 'shipped a bare "I have flagged the error"').toBeUndefined();
-      expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
+      expect(isSystemMarker(v.suggestedReplacement)).toBe(true);
     });
 
     it('still falls back to the marker when nothing grounded survives', () => {
       const v = violation('I have flagged the error to prevent it from happening again.')!;
       expect(v.salvagedAnswer).toBeUndefined();
-      expect(v.suggestedReplacement).toMatch(/^\[.*\]$/);
+      expect(isSystemMarker(v.suggestedReplacement)).toBe(true);
     });
   });
 

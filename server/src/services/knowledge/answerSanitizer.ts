@@ -21,6 +21,10 @@
  * markers are stripped to avoid leaking future ones.
  */
 
+import {
+  isSystemMarker, isLegacyActionMarker, stripMarkerEnvelope, NEUTRAL_MARKER_FALLBACK,
+} from './systemMarker';
+
 interface MarkerRule {
   match: RegExp;
   replace: string;
@@ -207,33 +211,28 @@ export function sanitizeAnswerForUser(answer: string): string {
     }
   }
 
-  // ── DEF-168 — this file's own promise, finally kept ─────────────────────
+  // ── DEF-168 / DEF-169 — the promise kept, and then kept CORRECTLY ───────
   //
-  // The header says: *"Unknown bracketed markers are stripped to avoid leaking
-  // future ones."* That was false. Both the whole-answer loop above and the
-  // embedded regex below match an ENUMERATED list of marker prefixes, so a marker
-  // nobody had added to the list shipped verbatim — which is the exact failure
-  // this file was created to stop (Basit, 2026-07-07).
+  // The header says unknown bracketed markers are stripped. It was false: this
+  // function matched an enumerated list, so iteration 21's two new markers
+  // reached the owner verbatim (DEF-168).
   //
-  // Proven, not argued: iteration 21 added two markers and the owner-facing B12
-  // answer became `[unevidenced self-repair claim — nothing was flagged and no
-  // prevention was scheduled; say what is observable and that the cause is not
-  // known]`. Judged C4 = 10. A machine instruction addressed to the composer,
-  // delivered to the owner as if it were Brain talking.
+  // My first fix matched the SHAPE `/^\[...\]$/` instead, which cannot tell an
+  // internal signal from a person writing `[see attached]` or `[Approved by
+  // Basit]` — Codex's iteration-22 HIGH #1, and my build entry claimed the
+  // opposite while the test omitted the example. A bracket is punctuation; it
+  // carries no provenance.
   //
-  // The catch-all is by SHAPE and it is safe because of what it requires: the
-  // ENTIRE answer must be one bracketed expression. No human reply is shaped like
-  // that, so there is no legitimate text to lose — unlike an embedded-bracket
-  // heuristic, which would have to guess about "[1]", "[see attached]" and
-  // markdown links. Enumeration remains for the embedded case; this closes the
-  // whole-answer case for every marker that will ever be invented.
-  //
-  // It deliberately does NOT try to render the marker's content into prose. The
-  // content is an instruction to the composer ("say what is observable…"), and
-  // paraphrasing it to the owner is how the previous leak read as Brain being
-  // broken. A short honest line is better than a translated internal note.
-  if (/^\s*\[[^\]]{8,400}\]\s*$/.test(answer)) {
-    return "I don't have a good answer for that yet — let me look again. Could you ask me once more?";
+  // So the check is now provenance: `systemMarker()` stamps an invisible
+  // sentinel at the producer, and this reads it. Legitimate bracketed prose is
+  // untouched because it never had the stamp, and a marker invented next month
+  // is caught because its producer used the constructor.
+  if (isSystemMarker(answer) || isLegacyActionMarker(answer)) {
+    const curated = curatedMarkerMeaning(stripMarkerEnvelope(answer));
+    // A curated meaning is vetted plain language; anything else states the
+    // situation and stops (see `NEUTRAL_MARKER_FALLBACK` on why it promises
+    // nothing).
+    return curated ?? NEUTRAL_MARKER_FALLBACK;
   }
 
   // Embedded auto-send OFFER (Phase 1C) — appended after a successful
@@ -299,17 +298,44 @@ export async function sanitizeAnswerInBrainVoice(
   ctx: { clientNumber?: string; userId?: number; audience?: 'owner' | 'counterpart'; userMessage?: string } = {},
 ): Promise<string> {
   if (!answer) return answer;
-  if (!isWholeMarker(answer)) return sanitizeAnswerForUser(answer);
+  // DEF-169 — a bracket alone is not a marker on THIS path either.
+  //
+  // Found by driving the WhatsApp path after fixing the web one: `isWholeMarker`
+  // is a SHAPE test, so `[see attached]` entered this branch, found no curated
+  // meaning and became the neutral fallback — Codex's HIGH #1 reproduced exactly,
+  // on the surface he said to prove. Provenance decides; a legacy bare-bracket
+  // producer is honoured only when its meaning is one of the curated ones.
+  const curated = curatedMarkerMeaning(stripMarkerEnvelope(answer));
+  const isMarker = isSystemMarker(answer)
+    || isLegacyActionMarker(answer)
+    || (isWholeMarker(answer) && !!curated);
+  if (!isMarker) return sanitizeAnswerForUser(answer);
+
+  // ── DEF-169 — an UNCURATED marker never reaches the language model ───────
+  //
+  // Codex's iteration-22 HIGH #2. This used to call
+  // `renderMarkerInBrainVoice(curated ?? answer.trim())`, so when no curated
+  // meaning existed the raw internal text became the model's ONLY fact — and
+  // iteration 21's marker was a policy instruction addressed to the composer
+  // ("say what is observable and that the cause is not known"). The model
+  // politely rewrote an internal note into Brain's voice and gave it to the
+  // owner. `markerVoice.lastResort` does the same thing without an LLM: it
+  // capitalises the marker body and returns it as prose. So BOTH the success
+  // and the failure path published internal text, and the synchronous
+  // catch-all never ran on WhatsApp at all.
+  //
+  // Only a CURATED meaning — a vetted plain-language sentence about what
+  // happened — is safe to hand over. Everything else takes the neutral
+  // fallback, which is not a rewriting problem and so needs no model.
+  if (!curated) return NEUTRAL_MARKER_FALLBACK;
 
   try {
     const { renderMarkerInBrainVoice } = await import('./markerVoice');
-    const curated = curatedMarkerMeaning(answer);
-    // When a curated meaning exists, hand THAT to the renderer as the fact —
-    // it is a plain-language statement of what happened, already vetted. The
-    // renderer's job narrows to saying it naturally.
-    const spoken = await renderMarkerInBrainVoice(curated ?? answer.trim(), ctx);
-    return spoken || sanitizeAnswerForUser(answer);
+    // The curated sentence is the fact; the renderer's job narrows to saying it
+    // naturally. It never sees the raw marker.
+    const spoken = await renderMarkerInBrainVoice(curated, ctx);
+    return spoken || curated;
   } catch {
-    return sanitizeAnswerForUser(answer);
+    return curated;
   }
 }
