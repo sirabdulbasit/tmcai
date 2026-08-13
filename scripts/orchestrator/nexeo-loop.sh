@@ -961,7 +961,7 @@ PYEOF
   # iteration's would be the `fabricated-status` shape aimed at the reviewer —
   # the one participant whose whole job is catching claims that outrun evidence.
   if [ "$MEASURE_STARTED" = "1" ]; then
-    SCORE_STATE="**This iteration's score is MEASURED and current** — the benchmark ran after the build turn and before this review, so `@@SCOREJSON@@` is this iteration's own post-build report. Use its `fixQueue` and case text as evidence; that is how you proved the DEF-134 bypass in iteration 1.  OLD NOTE, no longer applicable: — it is computed concurrently with your review so that you start the moment the Builder stops. The numbers below are the PREVIOUS iteration's. Judge the diff against the build log's claims, which is your job and needs no score; where a claim can only be settled by the new measurement, say so explicitly and it will be in front of you next iteration."
+    SCORE_STATE="**This iteration's score is MEASURED and current** — the benchmark ran after the build turn and before this review, so \`@@SCOREJSON@@\` is this iteration's own post-build report. Use its \`fixQueue\` and case text as evidence; that is how you proved the DEF-134 bypass in iteration 1.  OLD NOTE, no longer applicable: — it is computed concurrently with your review so that you start the moment the Builder stops. The numbers below are the PREVIOUS iteration's. Judge the diff against the build log's claims, which is your job and needs no score; where a claim can only be settled by the new measurement, say so explicitly and it will be in front of you next iteration."
   else
     SCORE_STATE="No measurement ran this iteration (tsc was RED, so build/tests/measure were skipped). The numbers below are the last successful measurement's."
   fi
