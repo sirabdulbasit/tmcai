@@ -83,11 +83,43 @@ specifically:
 Required content, in this order:
 
 1. **Verdict:** `SOUND` / `WEAK` / `WRONG`, one sentence of justification.
+
+   **THE VERDICT JUDGES THIS ITERATION'S DIFF. Nothing else.** Added 2026-08-13
+   because iteration 23 was ruled WEAK on *"bare curated strings and the legacy
+   snake-case bridge still infer origin from text"* — **pre-existing code that turn
+   did not write.** A verdict dragged down by code the iteration never touched stops
+   measuring the iteration, and it is the mechanism that produced eleven consecutive
+   non-SOUND verdicts and one deploy in fourteen turns.
+
+   So: a pre-existing defect the diff neither introduced nor worsened goes in
+   **CARRIED FINDINGS** (item 3b) and does **not** set the verdict.
+
+   **This is a scoping rule, not a softening — three things still rule the verdict
+   regardless of who wrote the line:**
+   - the diff **introduces** the defect, or **widens** its trigger, or makes a
+     previously unreachable path reachable;
+   - the finding is **CRITICAL**, or is live owner risk on a messaging path;
+   - a product invariant in `AGENTS.md` §2 is violated.
+
+   Judging honestly is still the job. `SOUND` on work that does not deserve it costs
+   more than another WEAK, because a SOUND verdict **ships branch HEAD to the owner's
+   production** (`deploy.sh:137`). Never award it to be helpful, and never withhold it
+   to look rigorous.
 2. **Claims not supported by the diff** — quote the build log, then the file:line
    that contradicts it. Write "none" if there are none; do not invent findings to
    look thorough.
 3. **Correctness and regression risks**, each with `file:line` and a concrete
    failure scenario (inputs → wrong behaviour). Ranked by severity.
+3b. **CARRIED FINDINGS — pre-existing, not this diff.** Everything real you found
+   that the iteration did not cause. Same rigour: `file:line` and a concrete failure
+   scenario. State for each whether it is **already live in production** or exists
+   only on the branch — `git show <deployed-sha>:<file>` answers that, and the answer
+   changes what it means. Nothing is lost by scoping the verdict; it is recorded
+   here, and the orchestrator carries it to the owner as a DEF row.
+
+   Write "none" if there are none. **Do not pad this list to look thorough** — a
+   carried finding that is not real still costs a turn when someone acts on it.
+
 4. **Attribution judgement:** did this change target the criterion that is
    actually gating (@@WEAKEST@@)? If not, say what it targeted instead.
 5. **CAPABILITY ATTRIBUTION** — per the standing contract in
