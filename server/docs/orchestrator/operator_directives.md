@@ -557,3 +557,77 @@ Consequences, in order of severity:
 - **Do not confuse `transport_accepted` with delivered.** Whatever is stored must
   keep those distinguishable, because the current inability to tell them apart is
   half of why this capability cannot be judged.
+
+---
+
+## D-13 · OPEN · Brain chooses how to address the owner — the fixed title comes out
+
+**Owner ruling, 2026-08-13, verbatim:** *"Sir is configured in setting, but if you
+think brain should decide then well, remove it from setting and lets brain
+decide"*.
+
+I do think so, and the reason is what the measurement showed.
+
+### What was measured
+
+C4 — *"Human voice — reads as a person, not a template. No canned sentence, no
+filler apology… Excess formality is a C4 cost"*
+(`brainResponseEvaluator.ts:41,111`) — is the criterion gating the entire loop, at
+**86.7 of 95** after iteration 20. Every case scoring below 90 lost its points to
+the same thing:
+
+```
+B12  75  "My apologies, Sir" — overly formal and canned
+B05  85  "Morning, Sir." — formal/template
+B09  85  "the use of 'Sir' feels overly formal and slightly robotic"
+B11  85  "The assistant does not have the capability to…" — third-person formal
+B06  85  dry — "Here is a summary of your open items"
+B10  85  bulleted list with timestamps
+     complaint frequency across 12 cases: formal 4 · canned 3 · template 3 · Sir 3
+```
+
+And `Sir` was not a defect — `brainPersonaService.ts:23,188` exposes it as
+`preferredTitle`, *"How Brain should address you"*, with `first_name_only` as an
+alternative. **The loop has spent 20 iterations gated on a criterion that was
+docking points for honouring the owner's own setting.**
+
+### Why Brain deciding is the right answer rather than a rubric exemption
+
+A fixed title is what makes it read as a template. Prepending the same honorific
+to every reply is mechanical by construction, and mechanical is exactly what C4
+measures. A competent assistant varies register with the moment — and most human
+messages open with no address at all. So the fault is not the word `Sir`; it is
+that the word was **forced**, uniformly, by configuration.
+
+That also makes this a real capability change rather than a scoring one. **If C4
+rises here it is because what the owner receives actually changed** — which is the
+D-10 bar (improvement must be real, not numeric) and the capability contract's
+test (did what the owner receives change?). Contrast the rejected alternative:
+editing the judge rubric to exempt the honorific would have raised C4 by several
+points while Nexeo still spoke exactly the same way. That is the kind of movement
+this loop must never produce.
+
+### Scope for the Builder
+
+1. **Remove the forced title from composition.** `preferredTitle` must stop being
+   prepended as a standing instruction. Register becomes the model's choice per
+   turn, informed by context — the same way it already chooses length.
+2. **Do not replace one fixed token with another.** Substituting `Basit` for
+   `Sir` everywhere would score the same and be the same defect. The test is that
+   the address form **varies across the 12 cases, and is often absent.**
+3. **Take the other C4 complaints in the same change**, because they are one
+   register problem, not five: the third-person `"The assistant does not have the
+   capability to…"` (B11), the canned `"Here is a summary of your open items"`
+   (B06), and the filler apology opener (B12).
+4. **Honour an explicit instruction if the owner gives one.** If he ever says to
+   call him something, that is an instruction to obey and remember — this
+   directive removes a default, not his authority over it.
+5. **Do NOT touch `brainResponseEvaluator.ts`.** The judge rubric and the
+   benchmark cases stay protected. The number must move because the voice moved.
+
+### Falsifier
+
+Across the 12 benchmark answers, the opening words are not all of one shape, at
+least some replies open with no address at all, and no reply contains a filler
+apology opener. If every answer simply gained a new uniform greeting, this failed
+and C4's rise is an artefact.
