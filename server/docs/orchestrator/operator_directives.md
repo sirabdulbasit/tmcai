@@ -774,3 +774,55 @@ increases the chance the owner gets a debug string instead of a reply.
   them; they simply must not be the thing the owner reads.
 - Do not add a fifth detection improvement. The class is closed by making a block
   safe, not by making detection cleverer.
+
+---
+
+## D-16 · OPEN · The capability number must mean ONE thing: what the owner has
+
+**Owner, 2026-08-13:** *"Iteration 21 downgraded brain to 47.2"*. It did —
+Accurate Communication 74→72, overall 47.4→47.2, Grok's verdict **REGRESSION**.
+
+Grok's own note names the tension exactly: *"Branch still NOT DEPLOYED so
+production phone is unaffected; that limits debit size, not the REGRESSION verdict
+on the compose path."*
+
+### The asymmetry, stated plainly, because it is mine
+
+The contract says an improvement scores **0 until deployed** — *"a fix sitting in
+the branch has changed nothing for him, however good it is"*. Iteration 21's
+regression was equally undeployed and was scored **−2**.
+
+**So the number is currently debited for branch regressions and not credited for
+branch improvements.** That is not Grok being inconsistent; it is the contract
+being silent, and it makes the figure unreadable: 47.2 is neither what the owner
+has in production (unchanged, 47.4 by the same rule) nor what the branch would give
+him (higher than 47.4 on nineteen defects, lower on this one).
+
+### The rule, from the next card
+
+**Score what the owner HAS — production.** A branch change, in either direction,
+moves nothing until it ships. Symmetry is the whole point: a scorer that debits
+unshipped harm while ignoring unshipped good will drift downward through exactly
+the kind of week this has been, and the number stops being a measure of Nexeo and
+becomes a measure of how the branch happens to look on scoring day.
+
+**And report the branch separately**, because it is real and it matters:
+
+```
+capability (production)   47.4    what he has today
+branch delta if shipped    ?      what this HEAD would give him, +/- per capability
+blocked by                        the reviewer verdict holding it
+```
+
+That way iteration 21 reads honestly as: *production unchanged at 47.4; the branch
+currently contains a regression that must not ship*. Which is the true statement,
+and more useful than a single number that has quietly averaged the two.
+
+### What does NOT change
+
+- **Nobody edits Grok's numbers, including me** (`capability_targets.md`). 47.2
+  stands as the card that was written under the rule as it was. The correction
+  applies from the next card forward and is recorded here so the discontinuity has
+  a reason attached rather than looking like a rescore.
+- **`basis: live-evidence` still requires production**, and nothing on this branch
+  has it.
