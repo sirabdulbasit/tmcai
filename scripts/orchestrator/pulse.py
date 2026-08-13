@@ -805,6 +805,13 @@ def collect():
             "overall": latest.get("overall"),
             "cases_failed": latest.get("casesFailed") or 0,
             "mutated": bool(latest.get("mutated")),
+            # `iteration` is where the number was MEASURED, which is not where the
+            # loop is. The panel headed "BENCHMARK · ITERATION 18" while iteration
+            # 20 was building, which reads as a stalled loop rather than as a
+            # figure that is simply older than the current turn.
+            "measured_at_iteration": latest_iter,
+            "stale": bool(cur_it and latest_iter and cur_it != latest_iter),
+            "stale_by": (cur_it - latest_iter) if (cur_it and latest_iter) else 0,
         }
 
     return {
@@ -823,11 +830,66 @@ def collect():
         "iterations": iteration_records(),
         "campaign": campaign_snapshot(),
         "capability_series": capability_series(),
-        "history": [{"iteration": it, "label": label, "overall": dd.get("overall"),
-                     "weakest": dd.get("weakestCriterionScore"),
-                     "criterion": dd.get("weakestCriterion"),
-                     "verdict": vd.get(it, "—")} for it, label, dd in sc[-6:]],
+        "history": history_rows(sc, vd, cur_it),
     }
+
+
+def history_rows(sc, vd, cur_it, want=6):
+    """The last `want` ITERATIONS, not the last `want` MEASUREMENTS.
+
+    The owner, 2026-08-13, looking at a panel showing #13-#18 while the loop was
+    on #20: *"this should show me last 6 iterations data"*.
+
+    It was keyed to score files. Iterations 19 and 20 produced none — MEASURE is
+    skipped when no `server/src` or `server/prisma` change has landed since the
+    last measurement, which is correct behaviour and saves six minutes a turn —
+    so those iterations were not shown as unmeasured, they were simply absent.
+    A panel that omits what it cannot measure reads as a panel that has frozen,
+    and the owner cannot tell those two apart from the outside.
+
+    So every iteration up to the current one gets a row, and a row with no
+    measurement of its own says WHY in `label` and carries `measured: False`.
+    Numbers from an earlier iteration are never restated as if they were fresh.
+    """
+    by_iter = {it: (label, dd) for it, label, dd in sc}
+    # The ledger knows which iterations died rather than merely going unmeasured.
+    # Iteration 19 was killed mid-build to install the G26 fix; calling that
+    # "reused earlier score" would be wrong in a way the owner cannot check.
+    notes = {}
+    try:
+        for r in iteration_records():
+            n = r.get("note") or ""
+            if r.get("iteration") is not None:
+                notes[r["iteration"]] = n
+    except Exception:
+        notes = {}
+    if not sc and not cur_it:
+        return []
+    top = cur_it or max(by_iter)
+    rows = []
+    for it in range(max(1, top - want + 1), top + 1):
+        if it in by_iter:
+            label, dd = by_iter[it]
+            rows.append({"iteration": it, "label": label, "measured": True,
+                         "overall": dd.get("overall"),
+                         "weakest": dd.get("weakestCriterionScore"),
+                         "criterion": dd.get("weakestCriterion"),
+                         "verdict": vd.get(it, "—")})
+            continue
+        # No measurement for this iteration. Say which case it is rather than
+        # leaving a blank the reader has to guess at.
+        if cur_it and it == cur_it:
+            label = "in flight"
+        elif (notes.get(it) or "").startswith("RESTART"):
+            label = "aborted — loop restarted"
+        elif it in vd:
+            label = "no measurement — reviewed only"
+        else:
+            label = "no measurement — reused earlier score"
+        rows.append({"iteration": it, "label": label, "measured": False,
+                     "overall": None, "weakest": None, "criterion": None,
+                     "verdict": vd.get(it, "—")})
+    return rows
 
 
 def render(d, full=False):

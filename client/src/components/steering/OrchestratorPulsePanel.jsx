@@ -228,6 +228,111 @@ function CapabilityBars({ data }) {
    this loop produces is fractions of a point and a 0→100 axis would render ten
    iterations of real work as a flat line. The absolute numbers are printed at both
    ends so the scaling cannot overstate what happened. */
+/* ── WHAT THE LAST TEN ITERATIONS ACTUALLY PRODUCED ────────────────────────────
+ *
+ * Owner, 2026-08-13: *"this should show last 10 iterations and make it more
+ * meaningful"* — about a card titled "BRAIN OVERALL · ITERATION 1→18" whose line
+ * climbed convincingly across a y-range of 46.7 to 47.4.
+ *
+ * The line was the problem. It auto-scaled to a 0.7-point band, so seven flat
+ * iterations and one +0.1 drew the same reassuring rise that real progress would.
+ * A caption underneath said 1.7% of the way; captions lose to shapes.
+ *
+ * This replaces "did the number move?" with "what did each iteration give me?",
+ * which is the question that was actually being asked. Per iteration: the
+ * capability movement, what the reviewer ruled, and whether it reached
+ * production — because the capability contract is explicit that undeployed work
+ * has changed nothing for him, however good it is.
+ *
+ * The summary line is the part that earns the card: N shipped, N ruled
+ * WEAK/WRONG, total movement, what it cost in money and hours. Those five
+ * numbers together are what tells him whether to change approach, and no
+ * arrangement of a rising line can convey them.
+ */
+function IterationOutcomes({ data, window: win = 10 }) {
+  const pts = data.capability_series?.points || [];
+  const recs = data.iterations || [];
+  const cur = data.iteration;
+  if (!recs.length) return null;
+
+  const top = cur || Math.max(...recs.map((r) => r.iteration || 0));
+  const from = Math.max(1, top - win + 1);
+  const nums = [];
+  for (let i = from; i <= top; i += 1) nums.push(i);
+
+  const cells = nums.map((n) => {
+    const rec = recs.find((r) => r.iteration === n) || {};
+    const pt = pts.find((p) => p.iteration === n) || null;
+    const rv = rec.reviewer?.verdict || pt?.reviewer_verdict || null;
+    const shipped = rec.deploy?.shipped === true;
+    const held = rec.deploy?.shipped === false;
+    return {
+      n, rec, pt, rv, shipped, held,
+      move: pt ? pt.movement : null,
+      inFlight: cur === n && !rec.finished_at,
+      aborted: (rec.note || '').startsWith('RESTART'),
+    };
+  });
+
+  const shippedN = cells.filter((c) => c.shipped).length;
+  const weakN = cells.filter((c) => c.rv === 'WEAK' || c.rv === 'WRONG').length;
+  const soundN = cells.filter((c) => c.rv === 'SOUND').length;
+  const moveSum = Math.round(
+    cells.reduce((a, c) => a + (c.move || 0), 0) * 10) / 10;
+  const costSum = Math.round(cells.reduce((a, c) => a + (c.rec.cost_usd || 0), 0));
+  const timeSum = cells.reduce((a, c) => a + (c.rec.duration_seconds || 0), 0);
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 3, alignItems: 'stretch' }}>
+        {cells.map((c) => {
+          /* Colour carries the REVIEWER's verdict, not the score movement. An
+             iteration that raised a number in a turn the reviewer ruled WEAK is
+             not a good iteration, and colouring by movement would say it was. */
+          const bar = c.inFlight ? 'var(--op-build)'
+            : c.aborted ? 'var(--text-dim)'
+            : VERDICT_COLOR[c.rv] || 'var(--text-dim)';
+          const tip = [
+            `#${c.n}`,
+            c.inFlight ? 'in flight' : (c.aborted ? 'aborted — loop restarted' : null),
+            c.rv ? `reviewer: ${c.rv}` : 'not reviewed',
+            c.move == null ? 'not scored'
+              : `capability ${c.move > 0 ? `+${c.move}` : c.move}`,
+            c.shipped ? 'SHIPPED to production'
+              : (c.held ? `held: ${c.rec.deploy?.reason || 'not shipped'}` : null),
+            c.rec.duration_seconds ? fmtDur(c.rec.duration_seconds) : null,
+            c.rec.cost_usd ? `$${c.rec.cost_usd}` : null,
+          ].filter(Boolean).join(' · ');
+          return (
+            <div key={c.n} title={tip}
+                 style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 10 }}>
+              <div style={{ color: 'var(--text-dim)', marginBottom: 2 }}>#{c.n}</div>
+              {/* movement, which is 0 for most iterations and should look like 0 */}
+              <div style={{
+                color: c.move == null ? 'var(--text-dim)'
+                  : c.move > 0 ? 'var(--op-score)' : 'var(--text-dim)',
+                fontWeight: c.move ? 700 : 400,
+              }}>
+                {c.move == null ? '·' : (c.move > 0 ? `+${c.move}` : c.move)}
+              </div>
+              <div style={{ height: 4, background: bar, borderRadius: 2, margin: '3px 0' }} />
+              {/* the ship marker — the only mark that means the owner received it */}
+              <div style={{ color: c.shipped ? 'var(--op-score)' : 'var(--text-dim)' }}>
+                {c.shipped ? '▲' : (c.inFlight ? '…' : (c.aborted ? '×' : '·'))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="orch-section-note" style={{ marginTop: 6 }}>
+        <b>{nums.length} iterations</b> · {shippedN} shipped ▲ · {weakN} ruled
+        WEAK/WRONG · {soundN} SOUND · capability {moveSum > 0 ? `+${moveSum}` : moveSum}
+        {costSum ? ` · $${costSum}` : ''}{timeSum ? ` · ${fmtDur(timeSum)}` : ''}
+      </div>
+    </div>
+  );
+}
+
 function TrendLine({ iterations, series, height = 132 }) {
   const [hover, setHover] = useState(null);
   const wrapRef = useRef(null);
@@ -481,6 +586,11 @@ export default function OrchestratorPulsePanel() {
   const interp = data.capability_series?.interpretation || null;
   const axisObjective = data.capability_series?.axis?.objective_line ?? null;
   const bench = data.benchmark;
+  /* The last ten SCORED iterations for the line, kept in lockstep with its own
+     iteration labels — slicing the values without slicing the labels is how a
+     chart starts captioning the wrong turns. */
+  const winIters = (trend?.iterations || []).slice(-10);
+  const winSeries = (overall?.series || []).slice(-10);
 
   return (
     <Card className={`orch-pulse${stale ? ' is-stale' : ''}${paused ? ' is-paused' : ''}`}>
@@ -587,8 +697,11 @@ export default function OrchestratorPulsePanel() {
           {overall && (
             <PulseCard
               className="orch-deck-trend"
-              title={`BRAIN overall · iteration ${trend.iterations[0]}→${trend.iterations[trend.iterations.length - 1]}`}
-              hint={`${overall.first} → ${overall.last} across ${trend.iterations.length} scored`}
+              /* Owner, 2026-08-13: "this should show last 10 iterations". It spanned
+                 1→18, which averages away the recent turns — the only ones a decision
+                 can still affect. */
+              title={`BRAIN overall · last 10 iterations${winIters.length ? ` (#${winIters[0]}→#${winIters[winIters.length - 1]})` : ''}`}
+              hint={`${overall.last} now · ${overall.first} → ${overall.last} across ${trend.iterations.length} scored`}
             >
               {/* THE SCALE, STATED. Owner, 2026-08-13: "I couldnt understand this
                   make it meaningfull for me". The chart auto-scales to the series'
@@ -601,12 +714,14 @@ export default function OrchestratorPulsePanel() {
                   approach. */}
               {interp && (
                 <div className="orch-section-note" style={{ marginBottom: 4 }}>
-                  y {overall.first}–{overall.last} (auto-scaled) · {interp.movement > 0 ? '+' : ''}
-                  {interp.movement} of {interp.remaining + interp.movement} needed ·{' '}
+                  {interp.movement > 0 ? '+' : ''}{interp.movement} of{' '}
+                  {interp.remaining + interp.movement} needed ·{' '}
                   <b>{interp.journey_complete_pct}% of the way</b> to {axisObjective}
+                  {' '}· the line below spans only {overall.first}–{overall.last}, so its
+                  steepness is an artefact of a {Math.round((overall.last - overall.first) * 10) / 10}-point range
                 </div>
               )}
-              <TrendLine iterations={trend.iterations} series={overall.series} height={104} />
+              <TrendLine iterations={winIters} series={winSeries} height={104} />
               {/* THE JOURNEY BAR — the picture that carries the truth.
                   Owner, 2026-08-13: the caption alone did not land, and he was right.
                   A sentence under a steep line loses to the line: the chart above is
@@ -630,6 +745,10 @@ export default function OrchestratorPulsePanel() {
                   </div>
                 </div>
               )}
+              {/* The per-iteration outcome strip — see IterationOutcomes. This is the
+                  part that answers "make it more meaningful": movement, the reviewer's
+                  ruling, and whether it reached production, per iteration. */}
+              <IterationOutcomes data={data} window={10} />
               {interp && (
                 <div className="orch-section-note" style={{ marginTop: 2 }}>
                   {interp.capabilities_moved} of{' '}
@@ -665,7 +784,15 @@ export default function OrchestratorPulsePanel() {
           {bench && (
             <PulseCard
               className="orch-deck-bench"
-              title={`Benchmark · iteration ${bench.iteration}`}
+              /* Owner, 2026-08-13: the panel read "Benchmark · iteration 18" while
+                 the loop was building iteration 20, which looks like a stalled loop
+                 rather than a figure older than the current turn. The benchmark is
+                 only re-measured when server/src or server/prisma changed, so it is
+                 routinely a turn or two behind — say so instead of implying it is
+                 current. */
+              title={bench.stale
+                ? `Benchmark · measured at #${bench.measured_at_iteration} · loop on #${data.iteration}`
+                : `Benchmark · iteration ${bench.iteration}`}
               hint="weakest criterion vs target"
             >
             <div className="orch-bench">
@@ -750,7 +877,14 @@ export default function OrchestratorPulsePanel() {
                         ? 'var(--text-dim)'
                         : d > 0 ? 'var(--op-score)' : 'var(--op-stalled)';
                       return (
-                      <tr key={`${h.iteration}-${h.label}`}>
+                      /* An iteration with no benchmark of its own is dimmed whole,
+                         so "aborted" and "in flight" cannot be misread as a measured
+                         run that happened to score nothing. Owner, 2026-08-13:
+                         "this should show me last 6 iterations data" — they are now
+                         all present, which means the unmeasured ones have to be
+                         unmistakable rather than merely blank. */
+                      <tr key={`${h.iteration}-${h.label}`}
+                          style={h.measured === false ? { opacity: 0.55 } : undefined}>
                         <td>#{h.iteration}</td>
                         <td>{h.label}</td>
                         <td className="num">{h.overall ?? '—'}</td>
