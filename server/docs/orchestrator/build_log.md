@@ -4558,3 +4558,119 @@ the queue; a cross-tenant or cross-owner total; or a failed read reported as a q
   environment-specific, and the whole finding is unsafe.
 - **Codex finds a write on this path** → the read-only claim is the increment's entire safety
   argument, and it would be false.
+
+---
+
+## Iteration 26 — mode: structural · REMEDIATION attempt 1 of 1 · campaign C-3 (iteration 2 of 5)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### Scope: close iteration 25's WEAK on the same change
+
+All five of Codex's findings are valid and all five are fixed in
+`inboundNoiseLedger.ts`. No new work was started; the fixQueue (B09/B10/B11 at C4=80,
+canned voice) is untouched per the remediation rule, and the benchmark's regression guard
+did not fire.
+
+| # | finding | fix |
+|---|---|---|
+| HIGH 1 | grouped by producer label — five different items read as one burst | subject = the item/thread/event identity the row carries; explicit low-confidence `class:` bucket when it carries none |
+| HIGH 2 | windowed on `queuedAt` while claiming to describe delivery | `sentAt` between `since` and `until`, asserted on the query itself |
+| MED 3 | 500-row ascending cap silently dropped the newest rows | paginated; past a 5,000-row hard cap the summary is TRUNCATED and renders "a FLOOR, not a count" |
+| MED 4 | "burst" had no density bound | volume AND disengagement AND a span bound (`selfpruning.burst_max_span_minutes`, behaviorConfig, default 1440) |
+| LOW 5 | joined string key could collide | nested maps — no delimiter exists to exploit |
+
+**The part I want on the record:** my iteration-25 build entry claimed twenty
+`preactive_due_nudge` pushes concerned "the same overdue item" on the strength of three
+samples out of twenty rows. The grouping key could not support that claim, and Codex was
+right to refuse it. The subject key now carries the identity, so the claim is either
+readable from the data or not made.
+
+Production metadata was checked before choosing the identity fields (read-only, 40 rows):
+the `openItemId` column is populated on 15/40, and metadata carries `openItemId`,
+`threadId`, `eventId`. Those are the keys, in that order.
+
+### Governing docs — verdict: PROGRESSING (a correction to my own instrument, not a recurrence)
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2227 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 183 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 5 mutants — one per Codex finding — all die.** The collision mutant survived my
+first test: the inputs I had written no longer collide once the key carries `class:`
+prefixes, so the test killed nothing. It was rebuilt against the corrected key shapes
+(`a␟thread:b + thread:c` vs `a + thread:b␟thread:c`) and now dies. Recorded because a test
+that kills nothing is decoration, and this suite's job is to hold these five fixes.
+
+### THE CORRECTED NUMBER, from production (read-only, 30 days)
+
+```
+REACHED=94 ANSWERED=49 UNANSWERED=45 BURSTS=0
+```
+
+**The corrected unit revises my iteration-25 finding, and the correction IS the finding:**
+
+- **Withdrawn:** "increment 2 should digest Brain's own nudge classes." That rested on the
+  broken grouping. Under a sound definition — same subject, 3+ unanswered, inside 24h —
+  there were **zero bursts in thirty days**. The digest-a-burst design in increment 2's
+  current wording targets a phenomenon that did not occur on this tenant.
+- **Survives:** `action_status_update` is unengaged at the ITEM level too — 5/5 and 3/3
+  unanswered on its two worst items. The class the owner never replies to is real.
+- **New and sharper:** the actual noise shape is **one item accumulating pushes from
+  several producers**. Item `cmpcshpqx…` received 13 pushes from three subsystems
+  (6 lifecycle-governor + 4 lifecycle-reply + 3 status-update); item `cmqauv4xx…` another
+  13 from three. It is a cross-producer drip per item, not per-class floods.
+
+**Recommendation to the orchestrator, on the record:** increment 2 should be a per-item
+cross-producer digest — "one item, one voice" — not a same-sender burst digest. The
+instrument, twice corrected, says the flood the campaign imagined does not exist here; the
+drip it found instead is worse, because three subsystems independently nag about the same
+item and each looks reasonable in isolation.
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: +0 capability and +0 benchmark.** Still a counter; still suppresses nothing.
+The remediation makes the number trustworthy enough to aim increment 2 with, which is the
+prerequisite the campaign's own design states.
+
+**MECHANISM:** the count now measures delivery of pushes per actual subject, with density,
+truncation honesty and an explicit low-confidence bucket.
+
+**FALSIFIER:** five distinct items merging into one burst; a row counted whose delivery is
+outside the window; a truncated read presented as a total; a sparse cadence classified as
+a burst; or any write on this path.
+
+### What I did NOT do
+
+- **Increment 2.** Remediation scope, and its design should change first (above).
+- **Codex directive #3** (corroborating engagement signals, owner keep/digest/suppress
+  decisions) — that is increment 2's entry criteria, not a counter fix.
+- **His directive #5 / the C4 queue** (B09/B10/B11 canned voice). Untouched, named.
+- **Deploy.** deployed=no; the loop owns it, and this turn's job was making the instrument
+  sound enough to ship.
+
+### What I am unsure about
+
+- **Whether `metadata.threadId`/`eventId` are stable identities across producers.** I
+  verified they exist in production metadata; I did not verify every producer writes them
+  consistently. A producer that sometimes omits the id splits one subject between the exact
+  and class-only buckets, which understates that subject's count.
+- **The 24h default span bound.** It cleanly separates CL-033 (45 min) from monthly
+  cadences, but the right value is an owner-preference question, which is why it is
+  behaviorConfig-driven rather than a constant.
+- **`answered_at` as the engagement proxy** — unchanged from last turn, and still the
+  weakest link. The report says so.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves.** Nothing here touches composition or rendering.
+
+**What would prove me wrong:**
+- **Any case moves materially** → this read-only service is somehow on the compose path.
+- **The re-run numbers fail to reproduce after deploy** → the query reads something
+  environment-specific and the finding is unsafe.
+- **Codex finds a sixth defect in the measurement unit** → the instrument needs a different
+  owner than me, because two rounds of my own review missed what his one round caught.
