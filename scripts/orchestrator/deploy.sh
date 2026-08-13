@@ -51,6 +51,13 @@ LOGS="$ORCH/logs"
 CHART="$SRV/docs/brain_evaluation_chart.md"
 PORT="${NEXEO_PORT:-4002}"
 PM2_APP="${NEXEO_PM2_APP:-tmcai-server}"
+# VERIFIED BY CURL, not read off a route file. I first wrote `/api/external/health`
+# from `apiGatewayRoutes.ts` and never called it: it 404s. Every automated deploy
+# would then have restarted production, probed, seen 404, declared failure and
+# ROLLED BACK a good deploy — while leaving the schema forward-migrated. A
+# false-negative probe is worse than no probe. `/api/health` returns 200 with
+# dependency detail (database up, latency ms).
+HEALTH_PATH="${NEXEO_HEALTH_PATH:-/api/health}"
 
 ITER="${1:?usage: deploy.sh <iteration>}"
 n="$(printf '%02d' "$ITER")"
@@ -188,8 +195,14 @@ say "pm2 restart issued; probing :$PORT"
 OK=0
 for i in $(seq 1 20); do
   sleep 3
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/external/health" 2>/dev/null || echo 000)"
-  [ "$code" = "200" ] && { OK=1; say "health probe 200 after $((i*3))s"; break; }
+  body="$(curl -s --max-time 5 "http://127.0.0.1:$PORT$HEALTH_PATH" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$PORT$HEALTH_PATH" 2>/dev/null || echo 000)"
+  # 200 alone is not health: the endpoint reports dependency state, and a server
+  # answering while its database is down is the false-green this project has a
+  # chart row about.
+  if [ "$code" = "200" ] && printf '%s' "$body" | grep -q '"status":"healthy"'; then
+    OK=1; say "health probe 200 + status=healthy after $((i*3))s"; break
+  fi
 done
 
 if [ "$OK" -ne 1 ]; then
@@ -198,7 +211,7 @@ if [ "$OK" -ne 1 ]; then
   [ -d "$BACKUP" ] && rm -rf "$SRV/dist" && cp -a "$BACKUP" "$SRV/dist" && say "dist restored"
   pm2 restart "$PM2_APP" >> "$LOG" 2>&1
   sleep 6
-  back="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/external/health" 2>/dev/null || echo 000)"
+  back="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$HEALTH_PATH" 2>/dev/null || echo 000)"
   say "post-rollback probe: $back"
   say "MIGRATIONS ARE NOT ROLLED BACK — they are idempotent and forward-only by design. Schema is ahead of the restored code."
   die "deploy failed and was rolled back" 2
