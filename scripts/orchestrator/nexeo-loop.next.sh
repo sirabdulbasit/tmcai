@@ -380,9 +380,21 @@ run_claude() {
   # --dangerously-skip-permissions under root without it. Verified 2026-08-11.
   # Without it a headless turn cannot answer a permission prompt, so every tool
   # call would be denied and the build turn would silently do nothing.
+  # Owner ruling, 2026-08-13: *"use model fable5 while building"*. The seat had no
+  # --model flag at all, so it inherited the CLI default and every build turn ran on
+  # claude-opus-5[1m] — visible in the stream header, never chosen. Validated before
+  # staging rather than after, because a model string the CLI cannot resolve would
+  # kill every build turn silently:
+  #
+  #   claude -p --model fable --output-format json "Reply with exactly: OK"
+  #   → modelUsage keys: ['claude-haiku-4-5-20251001', 'claude-fable-5']
+  #
+  # The alias resolves to claude-fable-5 (haiku is the CLI's own auxiliary model).
+  # REVIEWER and SCORER seats are unchanged — the ruling is about building.
   printf '%s' "$prompt" | IS_SANDBOX=1 "$CLAUDE_BIN" -p \
     "${session_args[@]}" \
     --name "$BUILDER_NAME" \
+    --model fable \
     --output-format stream-json --verbose \
     --dangerously-skip-permissions \
     --add-dir "$ROOT" 2>&1 \
