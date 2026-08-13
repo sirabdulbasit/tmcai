@@ -473,3 +473,87 @@ and the reason to close it now rather than after it has minted fifty rows.
    status with no legal transitions is still a frozen item; it would move the
    refusal from `findTransition` to nowhere at all, which is worse because it
    would look fixed.
+
+---
+
+## D-12 · OPEN · Nobody can read what Nexeo says to the owner's team
+
+**Measured 2026-08-13 against production while building the observation query C-2
+increment 1 would be judged on.** The query cannot be written, because the data
+does not exist.
+
+### Nexeo does chase — that part is real, and I had it wrong first
+
+My first reading of `whatsapp_outbound_messages` (empty since 2026-08-07, while
+follow-up actions ran on 08-11 and 08-12) looked like proof that follow-ups were
+recorded and never sent. **It is not proof.** That table is written by
+`UserWebjsProvider` — it is the owner's own WhatsApp session sync, not the tenant
+sender the worker uses. Its silence says nothing about worker sends. Stated here
+because the wrong version of this finding is much more alarming than the true one,
+and it would have sent the Builder at a defect that does not exist.
+
+What production actually shows, from `delegation_thread_events`:
+
+```
+outbound_receipt · whatsapp · accepted · 26 · latest 2026-08-12
+outbound_receipt · whatsapp · failed   ·  4 · latest 2026-07-30
+provider_message_id present:  0 of 30
+```
+
+And from `agent_actions` (76 lifecycle rows):
+
+```
+brain_prompt  done  43     ← went to the OWNER, not the delegatee
+whatsapp      done  31
+email         done   2     ← the only sends with real provider receipts (Gmail ids)
+channel 'none'         0   ← failures are NOT recorded as done. The literal
+                             `status: 'done'` at actionLifecycleWorker.ts:264 looked
+                             like fabricated-status; it is not, because a failed send
+                             returns {sent:false, channel:'none'} and no row is written.
+```
+
+So the honest verdict on Self Follow-Up is **not** "inert". It is: chases are
+attempted, 26 were transport-accepted as recently as yesterday, more than half of
+all follow-ups go to the owner as a `brain_prompt` rather than to the delegatee,
+and **not one WhatsApp chase has a provider receipt** — so delivery is unconfirmed
+across the board (`tenantWhatsappSender.ts:70-72` returns `ok: true` with
+`confirmation: 'transport_accepted'` when Meta gives no message id).
+
+### The gap that blocks everything else
+
+**The body is stored nowhere.**
+
+```
+delegation_thread_events   no body / text / payload / snippet column (checked in information_schema)
+agent_actions.output       {channel, receipt, reason, nextFollowUpAt} — no text
+whatsapp_outbound_messages owner's webjs sync only
+```
+
+There is no query, anywhere, that answers *"what did Nexeo say to Hamna?"*
+
+Consequences, in order of severity:
+
+1. **The owner cannot see what is sent in his name to his own team.** That is the
+   thing he asked for when he ruled improvement must be REAL and not numeric
+   (D-10). It is also a trust surface, not a logging nicety.
+2. **C-2's exit condition is unsatisfiable as written.** Increments 1 and 3 both
+   say "quoted verbatim with its send time"; increment 4 requires a ledger row
+   behind every claimed chase. None can be observed — or falsified — today. This
+   is why **increment 0** was inserted ahead of them.
+3. **A fabricated chase claim cannot currently be caught.** If Brain tells the
+   owner "I chased her", there is no artifact to check that against. The
+   fabricated-status class has five recorded occurrences; this is the one place it
+   would be invisible.
+
+### Constraints on the fix
+
+- **Do not backfill the 30 historical sends.** Their text is unrecoverable, and
+  inventing it would be the exact failure the loop is trying to end. Report them
+  as unrecoverable.
+- **Store it once, on the path that already runs.** `registerWorkerSend` /
+  `recordWorkerReceipt` already bracket every worker send
+  (`actionLifecycleWorker.ts:169-175`) — that is the single site. A second
+  logging path would be `protection-with-two-implementations`, eight occurrences.
+- **Do not confuse `transport_accepted` with delivered.** Whatever is stored must
+  keep those distinguishable, because the current inability to tell them apart is
+  half of why this capability cannot be judged.

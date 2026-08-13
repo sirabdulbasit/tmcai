@@ -592,14 +592,34 @@ while :; do
   # retry-until-green mechanism this project has recorded.
   REMEDIATION_LIMIT="${NEXEO_REMEDIATION_LIMIT:-3}"
   REMEDIATION_NOTE="Not applicable — the previous iteration was not left with an open review finding."
-  PREV_ITER=$((ITER - 1))
+  # The last REVIEWED iteration, not blindly ITER-1.
+  #
+  # Iteration 19 was aborted mid-build (I killed the loop to install the G26 fix),
+  # so it never got a review section. With `ITER-1` the rail then looked up
+  # iteration 19, found nothing, read NONE, and iteration 18's two HIGH findings
+  # would have gone unremediated for the second time — reproducing the exact
+  # failure the G26 fix was meant to end, by a different route. Any abort, crash
+  # or manual restart creates this hole, so the lookback asks the review log which
+  # iteration it last ruled on.
+  PREV_ITER="$(python3 - "$REVIEW_DOC" "$ITER" <<'PYEOF'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    print(int(sys.argv[2]) - 1); raise SystemExit
+nums = [int(n) for n in re.findall(r"^##\s+Iteration\s+(\d+)", txt, re.M)
+        if int(n) < int(sys.argv[2])]
+print(max(nums) if nums else int(sys.argv[2]) - 1)
+PYEOF
+)"
+  [ -n "$PREV_ITER" ] || PREV_ITER=$((ITER - 1))
   PREV_VERDICT="$(python3 - "$REVIEW_DOC" "$PREV_ITER" <<'PYEOF'
 import re, sys
 try:
     txt = open(sys.argv[1], errors="replace").read()
 except Exception:
     print("NONE"); raise SystemExit
-m = re.search(r"^##\s+Iteration\s+%s(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
+m = re.search(r"^##\s+Iteration\s+%s\b(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
               txt, re.S | re.M)
 if not m:
     print("NONE"); raise SystemExit
@@ -704,6 +724,16 @@ entry and the orchestrator will extend it on the record rather than by default."
 PYEOF
 )"
 
+  # Header anything the owner pasted since the last turn, so D-6 sees it as a report
+  # without him having to format it. Runs BEFORE the build prompt is rendered, which is
+  # the only point at which a new report can still reach this iteration.
+  if [ -x "$ROOT/scripts/orchestrator/intake.sh" ]; then
+    INTAKE_OUT="$("$ROOT/scripts/orchestrator/intake.sh" 2>&1 | tail -1)"
+    case "$INTAKE_OUT" in
+      *headered*) say "INTAKE $INTAKE_OUT" ;;
+    esac
+  fi
+
   FORBIDDEN_ALERT="none"
   [ -s "$STATE/forbidden-alert" ] && FORBIDDEN_ALERT="$(cat "$STATE/forbidden-alert")"
 
@@ -717,6 +747,12 @@ PYEOF
     FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" REMEDIATION "$REMEDIATION_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
+  # Save what the Builder was actually told. I could not verify that iteration 20's
+  # remediation note reached the prompt, because the rendered text only ever lived
+  # in this variable — so "the rail fired" and "the Builder was instructed" were
+  # two different claims and I could only evidence the first. A loop that mediates
+  # between agents through documents has to keep the document it sent.
+  printf '%s' "$BUILD_PROMPT" > "$LOGS/iter-$ITER-build-prompt.md"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
