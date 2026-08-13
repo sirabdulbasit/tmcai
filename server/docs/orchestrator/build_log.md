@@ -3124,3 +3124,141 @@ when a relay has already failed, and neither harness exercises that.
 - **The Scorer credits capability movement.** It should read `+0`. Making a
   failure path honest is reliability, and calling it capability growth is the
   inflation the contract exists to stop.
+
+---
+
+## Iteration 16 — mode: incremental · campaign C-1 (iteration 5 of 3 — over budget)
+
+**Owner reports: checked first (D-6).** `owner_reports.md` R-1 and R-2 both
+PROCESSED, nothing UNPROCESSED. R-2 is the source of this turn's work.
+
+**Codex's iteration-15 verdict: WRONG.** I verified both of his claims with the
+source rather than accepting or disputing them, and he is right on the one that
+matters.
+
+### First: DEF-158 is retracted in part, and not re-fixed
+
+His CRITICAL: *"the fallback shares the failed dependency and fails invisibly."*
+`retainUnrelayedInbound` writes through `recordFinding`, which uses the same
+Prisma client whose failure triggered retention — and `healthFindingService.ts:128-140`
+catches, logs and returns `null` **on purpose**:
+
+> Swallowed on purpose, after being logged. A monitor that can break the turn it
+> is monitoring is worse than no monitor at all.
+
+That comment is correct as a policy and fatal to my claim. My test satisfied the
+falsifier with `recordFinding` mocked, so it could not see the one failure mode
+most likely to lose a relay: the database being down. **This is the fifth
+consecutive turn where the correction came from Codex and always in the same
+shape — I wrote a falsifier and did not exercise the path that violates it.** The
+shape is specific enough to name: I keep asserting against a seam I mocked, and
+calling that the property.
+
+What DEF-158 actually bought is recovery from enqueue-specific failures while the
+database is up. The change log now says that instead of "a failed relay is
+recoverable", and records Codex's ruling of OVERSTATED.
+
+**Deliberately not re-fixed this turn.** The real remedy is a durable outbox, and
+Codex has now asked for it three times under three names — DEF-156's burst
+ledger, DEF-158's retry path, this. Building a fourth partial version of it in the
+tail of an iteration is exactly the mechanism that produced DEF-156's data loss.
+It is one piece of work: persist the inbound before enqueue, idempotent enqueue,
+mark surfaced only after a confirmed durable insert, retry worker; health findings
+then become monitoring *derived from* the outbox rather than the store of record.
+
+His scope complaint I checked too: my two commits (`170a8d0`, `5d3926c`) touched
+no orchestrator script. The review range included concurrent orchestrator commits
+(`campaign-advance.sh`, `pulse.py`) that are not mine.
+
+### The change: DEF-159 — one answer to "who is this?"
+
+Codex's directive #3, owner-reported, and the **sixth** occurrence of
+`whatsapp-lid-activity-rejected` — a tag whose containment the chart already
+records as FAILED, with the standing instruction that *"the next change must
+remove the dependency, not repair it."* Under CLAUDE.md rule 5 this is
+**circling**, so a structural fix was required and a patch on the reported
+instance was not available to me.
+
+The owner's transcript holds both answers, two minutes apart:
+
+```
+[13/08/2026, 9:08:33 AM] Nexeo: +239487846228094 replied: "Is dafa passy nhi bjy apny"
+[13/08/2026, 9:10:33 AM] Nexeo: Hamna Latif Bhutta replied about "Vision Metric's…"
+```
+
+DEF-075 fixed **routing**: a synthetic `'+' + lid` resolves through a stored
+LID↔contact alias, which is why the 09:10 line has a name. The owner-facing
+notice never used that binding — it took `fromIdentifier`'s last nine digits and
+matched them as a substring against `entity.phone`.
+
+**The chart's diagnosis of this was incomplete, and I corrected it.** It said the
+match *"cannot succeed"*. It can. Nine digits of a 15-digit provider id compared
+as a substring against every contact in the tenant will sometimes hit, and then
+the owner is told in confident prose that a person he knows wrote words they
+never wrote — invariant #5, and worse than the unknown-sender case the code was
+trying to improve.
+
+**The fix removes an answer rather than adding one.** `resolveSenderDisplayName`
+is the single resolver, both producers use it, and it branches on identifier
+**kind**, not fallback order:
+
+- a LID resolves ONLY through `contactByLidAlias` — now also the single read of
+  that binding, shared with `resolveByLidAlias`, which previously inlined it;
+- its digits are never offered to a phone comparison, because they are not a phone;
+- unresolved fails closed: *"an unsaved WhatsApp contact (id 239487846228094)"* —
+  the id labelled as an id, so two unknown senders stay distinguishable, and never
+  `+239487846228094`, which reads as a number he could ring.
+
+Net one lookup fewer. No seventh local LID fallback, which Codex named explicitly.
+
+Resolution also moved **before** the `try`, so DEF-158's retention path names the
+sender through the same resolver — the previous hoisted default was
+`input.fromIdentifier`, i.e. the synthetic number, on the exact path that exists
+for when things are already going wrong.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2114 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 177 files
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation, on the new check.** Disabling the kind branch (`isLid = false`,
+restoring the old digit-matching) kills **6 of 10** tests, headline
+`expected 'Imran Sheikh' not to contain 'Imran'`. The 3 phone-path tests survive,
+correctly — the mutant does not change how a real phone is resolved, and a test
+that died there would be testing the wrong thing.
+
+**The end-to-end case is the one I care about**, because of the failure shape
+named above: it drives the real `captureDelegationReply` into the DEF-064 relay
+branch and asserts on the text handed to `enqueueBrainPrompt`, not on the
+resolver's return value. Routing resolves the alias correctly and the old notice
+STILL named the colliding contact — the two lookups never agreed on what the
+identifier was, and only the producer-level assertion can see that.
+
+### CAPABILITY: COMMUNICATES · PREDICTED: +0
+
+**MECHANISM:** the owner is told who wrote to him, using the binding the router
+already trusted; and when we do not know, he is told that, rather than being
+handed a number that is not one.
+
+**FALSIFIER:** any owner-facing text naming a contact resolved by matching a LID's
+digits against a phone, or presenting a synthetic `'+' + lid` as the sender's
+number.
+
+**Why +0 and not a claimed move:** no benchmark case exercises LID identity, so
+any number I attached to this would be unmeasurable. The movement is in the
+product sequence — COMMUNICATES, correctly attributing a real person's words —
+and the honest place to record it is here, not in a score.
+
+### What would prove me wrong
+
+- **A score moves materially.** Then this path is reachable in a harness I did not
+  think touched it, and I have mis-scoped the change.
+- **The class recurs a seventh time.** The chart's row stays OPEN, not contained:
+  this is verified by test and not yet seen in production, and the class has
+  already survived five fixes that each looked sufficient at the time.
+- **A LID appears in owner-facing text again.** Would mean a producer I did not
+  find. I checked: the two other `slice(-9)` sites in `brainComposer` match
+  owner-supplied numbers on contact create/edit, and `:506` matches a real phone
+  from the bootstrap. Neither takes an inbound sender identifier.

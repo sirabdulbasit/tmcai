@@ -266,19 +266,12 @@ async function notifyOwnerOfUnattachedReply(
   ownerUserId: number | null,
 ): Promise<void> {
   if (!ownerUserId) return;
-  // Hoisted so the failure path below can name the sender. If the contact lookup
-  // is what failed, the raw identifier is the honest fallback.
-  let who = input.fromIdentifier;
+  // DEF-159 — resolved once, through the canonical binding, and BEFORE the try:
+  // the retention path below has to name the sender too, and it must not name
+  // him with a LID's digits dressed up as a phone number. The resolver absorbs
+  // its own query failures, so it cannot break this path.
+  const who = (await resolveSenderDisplayName(input)).who;
   try {
-    const digits = input.fromIdentifier.replace(/[^0-9]/g, '').slice(-9);
-    const contact = await prisma.entity.findFirst({
-      where: {
-        clientNumber: input.clientNumber, entityType: 'contact',
-        phone: { contains: digits },
-      },
-      select: { name: true },
-    }).catch(() => null);
-    who = contact?.name ?? input.fromIdentifier;
 
     // ── DEF-156: decide ONCE per sender-window, not once per message ────────
     //
@@ -439,6 +432,71 @@ async function bootstrapWindowMs(clientNumber: string): Promise<number> {
   } catch { return 6 * 60 * 60 * 1000; }
 }
 
+/**
+ * The contact carrying this `@lid`, or null.
+ *
+ * DEF-159 — the ONE place the LID↔contact binding is read. It was read here for
+ * routing (`resolveByLidAlias`) while the owner-facing notice resolved the same
+ * sender a second way, by treating the LID's digits as a phone number. Two
+ * answers to "who is this?" is how the wrong one reaches a human.
+ */
+async function contactByLidAlias(
+  clientNumber: string,
+  lid: string,
+): Promise<{ id: string; name: string | null; phone: string | null } | null> {
+  if (!lid) return null;
+  return prisma.entity.findFirst({
+    where: {
+      clientNumber, entityType: 'contact',
+      metadata: { path: ['waLid'], equals: lid } as any,
+    },
+    select: { id: true, name: true, phone: true },
+  }).catch(() => null) as any;
+}
+
+/**
+ * DEF-159 — who is this sender, in words a human will read?
+ *
+ * Sixth recurrence of the `@lid` class, and the first one where the damage was
+ * not a missed message but a WRONG NAME. `notifyOwnerOfUnattachedReply` matched
+ * `fromIdentifier`'s last nine digits against `entity.phone`. For a synthetic
+ * `'+' + lid` those digits are not a phone number at all, so the match is a
+ * coincidence — and a coincidence that lands names Haseeb recognises on words
+ * somebody else wrote. Nine digits from a 15-digit LID collide readily.
+ *
+ * So the rule is by identifier KIND, not by fallback order:
+ *
+ *   - a LID is resolved ONLY through the alias binding above. Its digits are
+ *     never offered to a phone comparison, because they are not a phone.
+ *   - a real phone is matched as a phone, and is itself honest to display.
+ *
+ * Unresolved fails CLOSED (invariant #6). We say the sender is unsaved and give
+ * the provider id as an id — never as `+255043747987458`, which reads to the
+ * owner as a phone number he could ring and cannot.
+ */
+export async function resolveSenderDisplayName(
+  input: Pick<DelegationCaptureInput, 'clientNumber' | 'fromIdentifier' | 'rawSenderId'>,
+): Promise<{ who: string; resolved: boolean }> {
+  const raw = (input.rawSenderId ?? '').trim();
+  const isLid = raw.endsWith('@lid');
+
+  if (isLid) {
+    const bound = await contactByLidAlias(input.clientNumber, raw);
+    if (bound?.name) return { who: bound.name, resolved: true };
+    return { who: `an unsaved WhatsApp contact (id ${raw.replace('@lid', '')})`, resolved: false };
+  }
+
+  const digits = input.fromIdentifier.replace(/[^0-9]/g, '').slice(-9);
+  if (digits.length < 7) return { who: input.fromIdentifier, resolved: false };
+  const contact = await prisma.entity.findFirst({
+    where: { clientNumber: input.clientNumber, entityType: 'contact', phone: { contains: digits } },
+    select: { name: true },
+  }).catch(() => null);
+  return contact?.name
+    ? { who: contact.name, resolved: true }
+    : { who: input.fromIdentifier, resolved: false };
+}
+
 /** True when `fromIdentifier` is the synthetic `'+' + lid` that WebjsProvider
  *  falls back to. A real phone never equals the LID digits. */
 function isSyntheticLidIdentity(input: DelegationCaptureInput): boolean {
@@ -458,13 +516,7 @@ async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string 
   if (!lid) return null;
 
   // 1. Known alias — exact, and the path every reply after the first takes.
-  const known = await prisma.entity.findFirst({
-    where: {
-      clientNumber: input.clientNumber, entityType: 'contact',
-      metadata: { path: ['waLid'], equals: lid } as any,
-    },
-    select: { id: true, name: true, phone: true },
-  }).catch(() => null);
+  const known = await contactByLidAlias(input.clientNumber, lid);
   if (known?.phone) {
     const key = counterpartKeyFor(input.channel, known.phone);
     if (key) {
