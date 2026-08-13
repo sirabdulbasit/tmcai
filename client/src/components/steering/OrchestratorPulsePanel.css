@@ -488,3 +488,42 @@
   display: flex; gap: var(--s-2); margin-top: 3px;
   font-size: 11px; color: var(--text-dim);
 }
+
+/* ── the owner's capability diagram with live scores written into its boxes ──
+   Owner, 2026-08-13: "i want same file to be present on my dashboard where you
+   will just write the progres % on given spaces/box".
+
+   Percentage positioning, not pixels: the overlay has to stay on the boxes at
+   every card width, and the artwork is a fixed-aspect image that scales with the
+   card. translate(-50%,-50%) centres each chip on the box's own centre point, so
+   the numbers stay put even if the image is later re-exported at another size. */
+.orch-capmap { position: relative; width: 100%; align-self: center; }
+.orch-capmap img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.orch-capmap-slot {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; pointer-events: auto;
+}
+/* Readable on artwork, not just on the dark boxes: the number carries its own
+   halo so it survives whatever pixel it lands on. A dashboard figure that is
+   only legible against the background it was designed for is not a figure. */
+.orch-capmap-pct {
+  font-size: clamp(13px, 2.1vw, 22px); font-weight: var(--fw-semibold);
+  color: #fff; font-variant-numeric: tabular-nums; line-height: 1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.8);
+}
+.orch-capmap-pro {
+  font-size: clamp(8px, 1.05vw, 11px); color: rgba(255,255,255,0.72); line-height: 1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+}
+.orch-capmap-missing {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border: 1px dashed var(--border); border-radius: 8px;
+}
+.orch-capmap-fallback { display: flex; flex-wrap: wrap; gap: 6px; }
+.orch-capmap-chip {
+  font-size: var(--fs-xs); color: var(--text-dim);
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums;
+}
+.orch-capmap-chip b { color: var(--text); }

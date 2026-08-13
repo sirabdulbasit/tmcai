@@ -178,6 +178,91 @@ function PhaseTimeline({ data, liveNow }) {
    as a reference marker on the same axis — not a second bar and never a second
    scale. Value, benchmark and movement are all direct-labeled, so the bars are
    the summary and the numbers are the source. */
+/* ── the owner's own capability diagram, with the live numbers written into it ──
+   Owner, 2026-08-13: *"i want same file to be present on my dashboard where you
+   will just write the progres % on given spaces/box"*. The nine empty squares in
+   his artwork are exactly the nine capabilities the scorecard already carries, so
+   this overlays the live score onto each one.
+
+   Positions are PERCENTAGES of the image box, not pixels, so the overlay tracks
+   the artwork at any width. They are keyed to the scorecard's own capability
+   names — never to the label printed in the picture — because the picture says
+   "ACTION" and "COMMUNICATES" where the scorecard says "Authorized Action" and
+   "Accurate Communication", and a display that renames a capability is how two
+   sources of truth start disagreeing. */
+const CAP_MAP_SLOTS = [
+  { name: 'Authorized Action',      left: 50.7, top: 13.4 },
+  { name: 'Accurate Communication', left: 21.9, top: 25.0 },
+  { name: 'Self Follow-Up',         left: 80.1, top: 23.8 },
+  { name: 'Thinking',               left: 10.7, top: 44.1 },
+  { name: 'Learn',                  left: 90.9, top: 43.8 },
+  { name: 'Memory',                 left: 12.8, top: 65.5 },
+  { name: 'Self-Healing',           left: 88.6, top: 65.1 },
+  { name: 'Simple & Smart',         left: 25.6, top: 84.9 },
+  { name: 'Self-Pruning',           left: 75.1, top: 84.5 },
+];
+
+const CAP_MAP_SRC = '/nexeo-capability-map.png';
+
+function CapabilityMap({ data }) {
+  const [failed, setFailed] = useState(false);
+  const byName = new Map((data.capabilities || []).map((c) => [c.name, c]));
+
+  /* THE IMAGE IS THE OWNER'S FILE AND IT IS NOT IN THE REPO YET. It cannot be
+     reconstructed from a chat paste — a generated lookalike filed under this name
+     would read as the original to everyone who came later. So the card says
+     plainly what is missing and where to put it, rather than rendering a broken
+     image or, worse, quietly hiding itself. A card that is defined but never
+     rendered has already cost this project a false status report. */
+  if (failed) {
+    return (
+      <div className="orch-capmap-missing">
+        <div><b>The diagram file is not installed yet.</b></div>
+        <div className="orch-section-note">
+          Drop the image at <code>client/public/nexeo-capability-map.png</code> and rebuild
+          the client. The nine live scores below are already wired to it and will appear
+          in the boxes the moment the file exists.
+        </div>
+        <div className="orch-capmap-fallback">
+          {CAP_MAP_SLOTS.map((s) => {
+            const c = byName.get(s.name);
+            return (
+              <span key={s.name} className="orch-capmap-chip">
+                {s.name} <b>{c ? `${c.nexeo}%` : '—'}</b>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="orch-capmap">
+      <img src={CAP_MAP_SRC} alt="Nexeo capability map" onError={() => setFailed(true)} />
+      {CAP_MAP_SLOTS.map((s) => {
+        const c = byName.get(s.name);
+        return (
+          <div
+            className="orch-capmap-slot"
+            key={s.name}
+            style={{ left: `${s.left}%`, top: `${s.top}%` }}
+            title={c
+              ? `${s.name}: Nexeo ${c.nexeo} · professional ${c.professional} · gap ${Math.round((c.professional - c.nexeo) * 10) / 10}`
+              : `${s.name}: not scored`}
+          >
+            {/* An unscored capability shows a dash, never a zero. A zero is a
+                measurement; a missing card is not, and the two must not look the
+                same on a wall display. */}
+            <span className="orch-capmap-pct">{c ? `${c.nexeo}%` : '—'}</span>
+            {c && <span className="orch-capmap-pro">of {c.professional}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CapabilityBars({ data }) {
   const caps = data.capabilities;
   const brain = data.brain;
@@ -732,7 +817,13 @@ export default function OrchestratorPulsePanel() {
   const [frame, setFrame] = useState(null);
   const [error, setError] = useState(null);
   const [paused, setPaused] = useState(false);
-  const [showTable, setShowTable] = useState(false);
+  /* Three views behind one hint, because the owner asked for his diagram ON the
+     dashboard and the deck is fixed at three cards in one column — so the map
+     lives INSIDE the capability card rather than becoming a fourth row. It leads,
+     since it is the view he asked for; bars and table stay one click away. */
+  const [capView, setCapView] = useState('map');
+  const CAP_VIEWS = ['map', 'bars', 'table'];
+  const CAP_VIEW_HINT = { map: 'show bars', bars: 'show table', table: 'show diagram' };
   /* The owner's deck is 2x2 — four cards, no scroll ("health deck should look like
      this", twice). Brain integrity and the ten-iteration trend both want the
      top-right slot, so they share it and the card's hint swaps them. That keeps his
@@ -968,10 +1059,12 @@ export default function OrchestratorPulsePanel() {
             <PulseCard
               className="orch-deck-caps"
               title="Capability vs a professional"
-              hint={showTable ? 'show charts' : 'show table'}
-              onHintClick={() => setShowTable((s) => !s)}
+              hint={CAP_VIEW_HINT[capView]}
+              onHintClick={() => setCapView((v) => CAP_VIEWS[(CAP_VIEWS.indexOf(v) + 1) % CAP_VIEWS.length])}
             >
-              {showTable ? <PulseTable data={data} /> : <CapabilityBars data={data} />}
+              {capView === 'table' ? <PulseTable data={data} />
+                : capView === 'bars' ? <CapabilityBars data={data} />
+                : <CapabilityMap data={data} />}
             </PulseCard>
           )}
 
