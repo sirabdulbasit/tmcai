@@ -4881,3 +4881,132 @@ something I claim or need.
   the window I sampled was unrepresentative, and the flag earns its keep immediately.
 - **Codex finds an eighth defect in this instrument** → my standing offer that it needs a
   different owner applies.
+
+---
+
+## Iteration 29 — mode: structural · campaign C-3 (iteration 5 of 5) · C-3 INCREMENT 2 CODE-COMPLETE
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+**Iteration 28 was reviewed SOUND** — the first in twelve iterations — and increment 1
+ships under the loop's SOUND path per Codex's directive #1. This turn is increment 2,
+built to his directives #2 and #3.
+
+### What increment 2 is, and why it is aimed where it is
+
+The campaign's original wording imagined same-sender floods. Increment 1's corrected
+instrument measured the real shape from production: the CL-033 sender was answered 13/13,
+and the noise is a **cross-producer drip** — `item:cmqauv4xx…` took 13 pushes from three
+subsystems at 69% unanswered, each push reasonable in isolation. So increment 2 is
+**"one item, one voice"**: the Nth delivered-and-unanswered push about one item, inside a
+window, folds into that item's single digest message naming the count.
+
+**The mechanism** (`digestPolicy.ts` new; wired in `brainPromptQueueService.ts`):
+
+- The decision sits INSIDE `enqueueBrainPrompt`'s routine path — the one chokepoint every
+  producer already calls — so "one producer cannot bypass the shared per-item decision
+  path" is a property of the wiring, tested by having a brand-new producer's push digest
+  against a drip from three others.
+- **Every rule fails toward sending** (DEF-156's lesson, stated as design): master switch
+  `selfpruning.digest_enabled` **defaults to 0** — deploying changes nothing until the
+  owner opts in, which is the owner-controlled gate Codex required; only an exact
+  canonical `item:` subject may digest, so increment 1's `unresolvedSubjects` and `floods`
+  stay non-actionable constructively; an owner per-item `keep` always sends and an
+  unrecognised decision value is keep, **not** consent; `high`/`top` is never muffled; a
+  digest is never digested; a failed count sends.
+- A digested push is a **full queue row** — original text verbatim, state `'skipped'`,
+  `metadata.digest` as discriminator and audit block. Nothing is deleted; "show all" is a
+  query. The one digest message per item per window (window-bucketed dedup key) rides the
+  same queue as everything else, so quiet and office hours apply via the one existing
+  dispatch path rather than a second implementation.
+- Subject resolution reuses DEF-120's `promptSubjectItemId` accessor — I had re-implemented
+  it inline and caught it before commit; it would have been the 12th
+  `protection-with-two-implementations`.
+- Three behaviorConfig keys REGISTERED with the change (`digest_enabled`,
+  `digest_after_pushes` def 3, `digest_window_hours` def 24) — DEF-170's
+  unregistered-key failure, not repeated.
+
+### THE NEAR-MISS, which is the most important paragraph in this entry
+
+My first version used a new `state: 'digested'`. The full suite went red on an existing
+DEF-063 guard: the 20260505 migration has a **CHECK constraint enumerating the five legal
+states**, and a novel value dies with **Postgres 23514 on every insert** — which is
+DEF-060, five days of silent production failures from exactly this mistake. **My 13 new
+tests passed throughout, because mocked prisma has no CHECK constraints.** The
+source-level guard was the only thing standing between this increment and shipping a
+digest that files every push into an insert error. Switched to the existing `'skipped'`
+state with `metadata.digest`; the guard passes untouched.
+
+### Governing docs — verdict: PROGRESSING (new mechanism, no §3 recurrence)
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2246 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 184 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 6 mutants, all die** — drop the owner gate (2 tests), drop the push instead of
+filing it — the DEF-156 shape (2), ignore owner `keep` (2), unknown-value-as-consent (1),
+count only the column ignoring DEF-120's metadata producers (1), digest escalations (1 —
+dies at the policy layer; the wiring's own criticality gate also guards, defense in depth).
+The filing mutant was re-run after the state fix and still dies.
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: the mechanism now EXISTS, which is what Grok scores from code — but +0
+observed behaviour until deploy AND owner opt-in, and the campaign's exit condition (a
+real burst producing exactly one message on production) cannot be met while the switch is
+0.** I am not claiming 33→anything; the honest statement is that both increments are now
+code-complete and increment 2 is safe to ship precisely because it does nothing until
+asked.
+
+**MECHANISM:** the Nth unanswered push about one item folds into that item's single digest
+naming the count, with every original push preserved and retrievable.
+
+**FALSIFIER:** any push digested while the switch is 0; a digested push whose row is
+missing or whose text is altered; two digest messages for one item in one window; a `high`
+push muffled; a push with no item identity digested.
+
+### What I did NOT do
+
+- **The "show all" reply handler.** The digest message invites it; the handler that lists
+  the covered pushes is increment 2's second half and is honestly not built. The rows are
+  fully queryable, so nothing is lost in the meantime — but the owner cannot yet retrieve
+  them conversationally. Named as the next increment-level task.
+- **Deploy or opt-in.** deployed=no; the switch stays 0. The orchestrator ships on SOUND;
+  the owner decides on the flag. Prediction: **this can be deployed at the end of this
+  turn** — default-off is the safety argument.
+- **Codex directive #4 / the C4 register mechanism** (B07/B10/B11/B12). Named, untouched;
+  the capability cap forbids it this turn anyway.
+- **Quarantine/soft-close (increment 3).** Out of budget; the campaign is at 5 of 5 and
+  the orchestrator decides on extension. My input: both shipping increments were built in
+  the last two turns once the instrument was sound — the campaign's slow start was the
+  instrument, and that cost is already paid.
+
+### What I am unsure about
+
+- **Whether `'skipped'` overloading will confuse an existing consumer.** Failed top-dispatch
+  rows also use `'skipped'`; the discriminator is `metadata.digest`. I checked the drain
+  queries (they filter `state: 'queued'`) but have not audited every reader of terminal
+  states.
+- **The digest question's wording.** It promises "reply 'show all' and I'll list each one"
+  — and that handler does not exist yet. If the owner enables the flag before the handler
+  ships, that sentence over-promises. The safest sequencing is: ship, build the handler
+  next turn, THEN invite the opt-in. I flagged the wording rather than silently softening
+  it because the alternative — a digest that names a count with no way to expand it — is
+  worse.
+- **`answered_at` as the engagement signal**, inherited from increment 1, unchanged.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves** (the switch is 0; no compose path is touched).
+
+**What would prove me wrong:**
+- **Any push is digested in production while the switch is 0** → the gate is not where I
+  think it is, and that is a sev-1 against this change.
+- **A benchmark case moves materially** → routine enqueue is somehow on the compose path.
+- **Codex finds the digest message itself violating a product invariant** — it is Brain
+  prose built from a template string, which brushes against invariant #4; my defence is
+  that it is a COUNT with a quoted verbatim push, the same shape as the DEF-155/156
+  proactive renderers already reviewed, and the LLM never touches it.
