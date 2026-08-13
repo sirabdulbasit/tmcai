@@ -83,6 +83,8 @@ vi.mock('../src/db/prisma', () => {
           if ((e.metadata ?? {})[key] !== where.metadata.equals) return false;
         }
         if (where.phone?.contains && !String(e.phone ?? '').includes(where.phone.contains)) return false;
+        if (where.email?.equals
+            && String(e.email ?? '').toLowerCase() !== String(where.email.equals).toLowerCase()) return false;
         return true;
       });
       return hit ? project(hit, select) : null;
@@ -255,7 +257,7 @@ describe('DEF-159 — routing and display cannot disagree, because there is one 
         fromIdentifier: '+923134199294', rawSenderId: null,
       });
       expect(id).toMatchObject({
-        kind: 'plain', source: 'upstream_phone', display: 'Hamna Latif Bhutta',
+        kind: 'phone', source: 'upstream_phone', display: 'Hamna Latif Bhutta',
       });
     });
 
@@ -275,6 +277,57 @@ describe('DEF-159 — routing and display cannot disagree, because there is one 
         clientNumber: 'TMC-0001', channel: 'whatsapp',
         fromIdentifier: SYNTHETIC, rawSenderId: LID,
       })).resolves.toMatchObject({ source: 'unknown' });
+    });
+  });
+
+  describe('DEF-164 — an email address is not a phone number', () => {
+    // Codex iteration-17 HIGH #1. Every non-LID identifier went to
+    // `contactByPhone`, so an address containing a digit run was matched as a
+    // nine-digit phone fragment: routing keys off the address while display
+    // names an unrelated contact. The same coincidence DEF-159 removed from
+    // LIDs, on a different channel.
+    const DIGITY = 'accounts2026123456789@example.com';
+
+    it('never names a contact whose PHONE contains digits from the address', async () => {
+      entities = [{
+        id: 'ent-collide', name: 'Imran Sheikh', phone: '+923002026123456789',
+        clientNumber: 'TMC-0001', entityType: 'contact', metadata: {},
+      }];
+      const id = await resolveSenderIdentity({
+        clientNumber: 'TMC-0001', channel: 'email',
+        fromIdentifier: DIGITY, rawSenderId: null,
+      });
+      expect(id.kind).toBe('email');
+      expect(id.display, 'an address digit-run must never become a name').not.toContain('Imran');
+      expect(id.display).toBe(DIGITY);
+      expect(id.source).toBe('unknown');
+      expect(id.phone, 'and no second identity is attached').toBeNull();
+    });
+
+    it('resolves an email sender by ADDRESS when we have them', async () => {
+      entities = [{
+        id: 'ent-vendor', name: 'Latif Traders', phone: null,
+        email: 'accounts2026123456789@example.com',
+        clientNumber: 'TMC-0001', entityType: 'contact', metadata: {},
+      }];
+      const id = await resolveSenderIdentity({
+        clientNumber: 'TMC-0001', channel: 'email',
+        fromIdentifier: DIGITY, rawSenderId: null,
+      });
+      expect(id).toMatchObject({ kind: 'email', source: 'upstream_email', display: 'Latif Traders' });
+    });
+
+    it('does not read an email contact from another tenant', async () => {
+      entities = [{
+        id: 'ent-other-t', name: 'Another Company Person', phone: null,
+        email: DIGITY, clientNumber: 'TMC-0002', entityType: 'contact', metadata: {},
+      }];
+      const id = await resolveSenderIdentity({
+        clientNumber: 'TMC-0001', channel: 'email',
+        fromIdentifier: DIGITY, rawSenderId: null,
+      });
+      expect(id.display).toBe(DIGITY);
+      expect(id.source).toBe('unknown');
     });
   });
 

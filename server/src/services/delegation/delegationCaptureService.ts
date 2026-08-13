@@ -453,11 +453,29 @@ async function contactByPhone(
   }).catch(() => null) as any;
 }
 
+/** The contact at this email address. Exact match on the address, lowercased —
+ *  an address has no "nine digit tail" that could collide (DEF-164). */
+async function contactByEmail(
+  clientNumber: string,
+  email: string,
+): Promise<{ id: string; name: string | null } | null> {
+  const addr = email.trim().toLowerCase();
+  if (!addr.includes('@')) return null;
+  return prisma.entity.findFirst({
+    where: {
+      clientNumber, entityType: 'contact',
+      email: { equals: addr, mode: 'insensitive' } as any,
+    },
+    select: { id: true, name: true },
+  }).catch(() => null) as any;
+}
+
 /** How we arrived at the identity. Recorded so a disagreement is auditable
  *  rather than a mystery, and so `bootstrap` can be told from fact. */
 export type SenderResolutionSource =
   | 'stored_alias'   // a contact carries this `@lid`. Exact and permanent.
   | 'upstream_phone' // the provider gave us a real phone; we matched it as one.
+  | 'upstream_email' // an email sender, matched on the address (DEF-164).
   | 'bootstrap'      // inferred from exactly one recent thread (DEF-075).
   | 'unknown';       // we do not know, and say so.
 
@@ -466,8 +484,10 @@ export type SenderResolutionSource =
  * anything a human reads.
  */
 export interface SenderIdentity {
-  /** What the provider actually handed us, before any resolution. */
-  kind: 'lid' | 'plain';
+  /** What the provider actually handed us, before any resolution. DEF-164 — this
+   *  is what decides WHICH resolver may run, so an email can never reach a phone
+   *  comparison. It was `'lid' | 'plain'`, and "plain" quietly meant "phone". */
+  kind: 'lid' | 'phone' | 'email';
   /** The correlation key. Null means nothing can be keyed and capture stops. */
   counterpartKey: string | null;
   contactId: string | null;
@@ -548,10 +568,30 @@ export async function resolveSenderIdentity(
    *  unknown senders stay distinguishable. */
   const unsavedLabel = `an unsaved WhatsApp contact (id ${raw.replace('@lid', '')})`;
 
+  // DEF-164 — an email address is not a phone number, and its digits are not
+  // either. Codex's iteration-17 HIGH #1: every non-LID identifier went to
+  // `contactByPhone`, so `accounts2026123@example.com` had `2026123` matched as a
+  // nine-digit phone fragment against every contact in the tenant. Same
+  // coincidence DEF-159 removed from LIDs, on a different channel — routing keys
+  // off the address while display could name an unrelated phone contact.
+  if (!isLid && input.channel === 'email') {
+    const contact = await contactByEmail(input.clientNumber, input.fromIdentifier);
+    return finalise({
+      kind: 'email', counterpartKey: plainKey,
+      contactId: contact?.id ?? null, name: contact?.name ?? null,
+      // Deliberately null: we resolved an address, so a phone here would be a
+      // second identity for the same person, which is what this DEF removes.
+      phone: null,
+      source: contact ? 'upstream_email' : 'unknown', bindingDurable: true,
+      // An unknown address is honest to show as itself.
+      fallbackDisplay: input.fromIdentifier,
+    });
+  }
+
   if (!isLid) {
     const contact = await contactByPhone(input.clientNumber, input.fromIdentifier);
     return finalise({
-      kind: 'plain', counterpartKey: plainKey,
+      kind: 'phone', counterpartKey: plainKey,
       contactId: contact?.id ?? null, name: contact?.name ?? null,
       phone: contact?.phone ?? (plainKey ? input.fromIdentifier : null),
       source: contact ? 'upstream_phone' : 'unknown', bindingDurable: true,
