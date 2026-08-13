@@ -1,26 +1,48 @@
 {
-  "_why": "Campaigns replace one-change-per-iteration aiming. Eight iterations produced +0.6 capability because every turn targeted whatever gated the benchmark — which is always Accurate Communication, the SMALLEST remaining gap (16.3 of 360). The other 340 points are absent features: Self Follow-Up (+48), Self-Pruning (+51), Learn (+43). A feature cannot be built by a 20-minute turn aimed at a criterion, so a capability now gets a multi-iteration budget and the loop is told to stay on it.",
-  "_rules": "The campaign sets the TARGET; Codex still reviews every turn and its directive governs HOW, not WHAT. A campaign ends when its exit condition is met or its budget is spent — whichever first — and the orchestrator records which. Never silently extended.",
+  "_why": "Campaigns replace one-change-per-iteration aiming. Eight iterations produced +0.6 capability because every turn targeted whatever gated the benchmark \u2014 which is always Accurate Communication, the SMALLEST remaining gap (16.3 of 360). The other 340 points are absent features: Self Follow-Up (+48), Self-Pruning (+51), Learn (+43). A feature cannot be built by a 20-minute turn aimed at a criterion, so a capability now gets a multi-iteration budget and the loop is told to stay on it.",
+  "_rules": "The campaign sets the TARGET; Codex still reviews every turn and its directive governs HOW, not WHAT. A campaign ends when its exit condition is met or its budget is spent \u2014 whichever first \u2014 and the orchestrator records which. Never silently extended.",
   "active": {
     "id": "C-1",
     "name": "Measurement surfaces (D-5)",
-    "capability": "INSTRUMENT — not a capability itself",
+    "capability": "INSTRUMENT \u2014 not a capability itself",
     "from_iteration": 12,
-    "budget_iterations": 3,
+    "budget_iterations": 5,
     "goal": "Make the seven unmeasurable capabilities scorable. Proactive slice first (the surface that produced 14 of 19 messages in CL-033), then memory recall, then self follow-up. Each small (2-3 cases) but through the REAL path; reported SEPARATELY from the twelve compose cases; existing cases, judge and gate untouched.",
     "exit_condition": "At least the proactive slice runs end-to-end and reports its own score separately, with D-1 teardown in place so it does not write the owner's live backlog.",
-    "why_first": "Building a capability before it can be measured scores 0 and reads as failure — which is exactly what happened to iterations 3, 5, 6 and 9. The instrument comes first or the next campaign is invisible too."
+    "why_first": "Building a capability before it can be measured scores 0 and reads as failure \u2014 which is exactly what happened to iterations 3, 5, 6 and 9. The instrument comes first or the next campaign is invisible too.",
+    "extended": [
+      {
+        "at": "2026-08-13T05:36Z",
+        "from": 3,
+        "to": 5,
+        "by": "orchestrator",
+        "reason": "Budget spent at iteration 14 with NEITHER half of the exit condition met. (1) Codex ruled the slice measures selected text functions under synthetic inputs, not end-to-end real producers. (2) D-1 teardown is absent \u2014 the benchmark has written to the owner's live tenant on all 14 runs. Extended rather than closed because C-2 (Self Follow-Up) cannot be scored without an end-to-end proactive measure, so abandoning C-1 half-built would make the next campaign invisible exactly as iterations 3/5/6/9 were. Recorded here because my own rule says a campaign is never silently extended, and iteration 15 had already begun under a spent budget before I noticed.",
+        "cost_note": "Iterations 13 and 14 were consumed by a data-loss regression and its fix rather than by the campaign goal \u2014 the extension buys back that ground, it does not add scope."
+      }
+    ],
+    "exit_condition_status": {
+      "end_to_end": "NOT MET \u2014 Codex, iteration 12: synthetic inputs",
+      "d1_teardown": "NOT MET \u2014 14 runs wrote live data"
+    }
   },
   "queued": [
     {
-      "id": "C-2", "name": "Self Follow-Up", "capability": "Self Follow-Up",
-      "from_iteration": 15, "budget_iterations": 6, "target": "43 → 65",
+      "id": "C-2",
+      "name": "Self Follow-Up",
+      "capability": "Self Follow-Up",
+      "from_iteration": 15,
+      "budget_iterations": 6,
+      "target": "43 \u2192 65",
       "goal": "Brain chases its own commitments unprompted: a delegated item whose deadline passes produces a chase without being asked, and a chase that gets no reply escalates. CL-033 evidence: the owner had to say 'chase her' three times and got 'I've made a note of that'.",
       "exit_condition": "Grok scores Self Follow-Up >= 60 with basis code-read or live-evidence, on the C-1 surface."
     },
     {
-      "id": "C-3", "name": "Self-Pruning", "capability": "Self-Pruning",
-      "from_iteration": 21, "budget_iterations": 5, "target": "33 → 60",
+      "id": "C-3",
+      "name": "Self-Pruning",
+      "capability": "Self-Pruning",
+      "from_iteration": 21,
+      "budget_iterations": 5,
+      "target": "33 \u2192 60",
       "goal": "Junk withdraws itself without being asked. The backlog pruner exists (DEF-132) and is unmeasured; CL-033 shows ten unactionable pushes from one unknown number in a single morning.",
       "exit_condition": "Grok scores Self-Pruning >= 55, and a duplicate-sender burst produces at most one grounded digest."
     }

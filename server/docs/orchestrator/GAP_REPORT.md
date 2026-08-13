@@ -302,6 +302,26 @@ when the two differ, and record both samples in the ledger. Do not "fix" flakine
 retrying until green — that converts a real red into a reported green, which is the
 exact failure this project has a chart section about.
 
+### G25 · Campaign lifecycle had a rule and no enforcement (partially fixed 2026-08-13)
+The campaign file stated from the outset that "a campaign ends when its exit
+condition is met or its budget is spent — whichever first — and the orchestrator
+records which. Never silently extended." Nothing implemented it. At iteration 15 the
+build prompt rendered "ACTIVE CAMPAIGN C-1 … (iteration 4 of 3)" — over budget, with
+C-2 due to start at 15 and nothing to start it. A rule with no enforcement is a
+comment, and this one was mine.
+**Done:** `campaign-advance.sh` decides continue / roll-over / budget-spent at the
+end of an iteration, writes the closed campaign into `history` with its outcome, and
+deliberately REFUSES to extend a budget itself — an extension is a judgement with a
+reason and belongs in `extended[]`. C-1's own extension (3→5) is recorded there with
+why: neither half of its exit condition is met (Codex ruled the slice synthetic; D-1
+teardown absent after 14 live-data writes), and C-2 cannot be scored without an
+end-to-end proactive measure.
+**Left for the loop:** call it from `nexeo-loop.sh` after the SCORE phase, and
+surface `exit_condition_status` + `budget left` in the pulse/Deck so an over-budget
+campaign is visible on the dashboard rather than only in a prompt. Until wired, the
+orchestrator runs it by hand each iteration — which is exactly the manual step that
+let this drift in the first place.
+
 ## Suggested build order for Opus 5
 
 1. **G3+G4+G1** — one restructure of `nexeo-loop.sh` (sequential phases, scoped
