@@ -192,6 +192,11 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'connector.stale_realert_hours', unit: 'hours', def: 24, min: 1, max: 168, scope: 'user',
     description: 'Re-alert suppression window for stale-connector pings.',
   },
+  // ── C-3: self-pruning ─────────────────────────────────────────────
+  'selfpruning.burst_max_span_minutes': {
+    key: 'selfpruning.burst_max_span_minutes', unit: 'minutes', def: 1440, min: 30, max: 43200, scope: 'tenant',
+    description: 'DEF-170. How close together repeated unanswered pushes about one subject must be to count as a burst rather than a cadence. The default separates CL-033 (45 minutes) from monthly status notices; the right value is an owner preference. NOTE: iteration 26 shipped the ledger reading this key WITHOUT registering it here, so getBehaviorValue threw "unknown behavior key" and a silent catch pinned the span to 1440 — the owner\'s override could never take effect (Codex iteration-26 HIGH #1).',
+  },
 };
 
 /** Pure resolution: first PRESENT and VALID (numeric) candidate wins,
