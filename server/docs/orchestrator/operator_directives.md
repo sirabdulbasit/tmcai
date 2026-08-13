@@ -1022,3 +1022,57 @@ owner's ruling and it is his to spend — but it is written down BEFORE the turn
 result is judged against a stated expectation instead of explained afterwards. If it
 comes true twice, the honest question back to the owner is not "one more iteration", it
 is whether the SOUND gate or the branch is the thing that has to give.
+
+---
+
+## D-20 · CONDITIONAL, ARMS ONLY IF ITERATION 25 CLOSES `deployed=no` · Delete the second implementation; do not fix it a seventh time
+
+Two owner rulings, 2026-08-13, taken after the orchestrator verified the premises in code
+rather than asserting them.
+
+### Ruling 1 — a SOUND verdict SHIPS, and that is not the option he declined
+
+`deploy.sh:137` ships `git rev-parse HEAD` — **the whole branch**, gated only on the
+current iteration's verdict. So a SOUND campaign turn carries the marker work to
+production with it. Put to the owner with that consequence stated, he ruled: **let it
+ship.**
+
+The premise, verified before asking rather than after:
+
+```
+git show df47687:server/src/services/knowledge/answerSanitizer.ts | grep -n isWholeMarker
+  188:export function isWholeMarker(answer: string): boolean {
+  273:  if (!isWholeMarker(answer)) return sanitizeAnswerForUser(answer);
+git cat-file -e df47687:server/src/services/knowledge/markerVoice.ts   → exists
+```
+
+`df47687` is the deployed production commit. **Both HIGH paths are already running on the
+owner's WhatsApp today.** A deploy therefore adds no exposure that is not already there;
+it adds fourteen iterations of fixes on top of it. What he declined was **lowering the
+gate** (`NEXEO_DEPLOY_ON=no-critical`), not **meeting** it. `DEPLOY_ON` stays `sound`.
+
+### Ruling 2 — the deletion turn, armed only on failure
+
+Proposed by the outgoing orchestrator and put to the owner as a third resolution the
+earlier three-option framing had missed. He ruled: **only if iteration 25 closes
+`deployed=no`.** Iteration 25 keeps its campaign turn either way.
+
+**If it arms, iteration 26 is this and nothing else:**
+
+Iteration 23 landed provenance — `systemMarker()` stamps an invisible sentinel at the
+producer and `isSystemMarker` reads it. That path stands alone and is load-bearing. The
+two text-inference fallbacks are therefore a **redundant second implementation**, which is
+this codebase's most-recorded failure shape (`protection-with-two-implementations`, 11+
+occurrences, and it is always the weaker path that is live):
+
+- `answerSanitizer.ts:310-311` — `isLegacyActionMarker(answer) || (isWholeMarker(answer) && !!curated)`
+- the legacy snake-case bridge that infers origin from text
+
+**Delete them, do not repair them.** Codex's iteration-23 HIGH #1 is asking for exactly
+this. Six turns have attacked this class with detection, heuristics and provenance; none
+attacked it with removal, and removal is the only one that cannot leave a second
+implementation behind. If deleting either one breaks a test, that test is the evidence the
+path is still load-bearing — stop and say so plainly instead of restoring the heuristic.
+
+**This is not a seventh remediation turn** and must not be logged as one. It is a deletion
+that closes two HIGHs and unblocks every future deploy from carrying them along.
