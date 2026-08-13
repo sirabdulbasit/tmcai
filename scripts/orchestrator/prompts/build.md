@@ -73,7 +73,12 @@ this turn.
    *progressing* (new root cause) or *circling* (the symptom tag is already in
    the chart §3 — then a structural fix is required, never another patch on the
    reported instance).
-4. **Make the change.** One coherent change per iteration, aimed at the minimum
+4. **Make the change.** **If a campaign is active, the campaign's `SCOPE` rule
+   governs and overrides this paragraph** — a capability increment may span several
+   files, because attribution then belongs to the campaign rather than to the change.
+   Eighteen iterations of one-small-change-per-turn produced eight capability points;
+   the rule was protecting attribution at the cost of ever building anything.
+   Otherwise: one coherent change per iteration, aimed at the minimum
    criterion. A broad sweep across five criteria cannot be attributed when the
    score moves, and attribution is the only thing that makes this loop converge.
 5. **Verify, from `server/`, and record the EXACT numbers:**

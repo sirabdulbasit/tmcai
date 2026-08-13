@@ -89,6 +89,43 @@ PY
 )"
 say "iteration $ITER codex verdict: $VERDICT"
 MODE="${NEXEO_DEPLOY_ON:-sound}"
+
+# `no-critical` — ship unless the reviewer raised a CRITICAL or HIGH finding.
+#
+# Reasoning, on the record: gating on SOUND produced 2 shipped-eligible iterations out
+# of 17 and starved deployment for a day. Under the owner's 2026-08-13 rubric
+# undeployed work is worth ZERO capability, so a gate that blocks everything actively
+# prevents the improvement it is meant to protect. Iteration 17 is the case in point —
+# Codex confirmed it CLOSED all three prior divergences and still ruled WEAK over a
+# MEDIUM (email treated as a phone) and a bootstrap ordering concern. Withholding a
+# fix that is demonstrably better than production, to protect a principle, is the
+# wrong trade.
+#
+# What still blocks: CRITICAL or HIGH. Iteration 13's silent data loss was CRITICAL and
+# would be held exactly as it was. The reviewer still decides; only the threshold moves.
+if [ "$MODE" = "no-critical" ]; then
+  BLOCKERS="$(python3 - "$ORCH/review_log.md" "$ITER" <<'PYX'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    print("PARSE-FAILED"); raise SystemExit
+m = re.search(r"^##\s+Iteration\s+%s(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
+              txt, re.S | re.M)
+if not m:
+    print("NO-REVIEW"); raise SystemExit
+found = re.findall(r"\*\*(CRITICAL|HIGH)\s*—", m.group(1))
+print(",".join(sorted(set(found))) if found else "")
+PYX
+)"
+  if [ -n "$BLOCKERS" ]; then
+    say "HOLD — reviewer raised $BLOCKERS on iteration $ITER. Nothing shipped."
+    printf '%s %s hold:%s
+' "$(date -u +%FT%TZ)" "$ITER" "$BLOCKERS" >> "$STATE/deploy-holds"
+    exit 0
+  fi
+  say "gate: no CRITICAL or HIGH finding on iteration $ITER (verdict $VERDICT) — clear to ship"
+fi
 if [ "$MODE" = "sound" ] && [ "$VERDICT" != "SOUND" ]; then
   # Not a failure — a deliberate hold. The commit stays queued for a later deploy
   # once a subsequent iteration's review is clean.

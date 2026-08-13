@@ -571,6 +571,89 @@ while :; do
   TSC_BEFORE="$(tsc_status)"
   MODE="incremental"
   STRUCTURAL_NOTE="Not applicable — normal incremental improvement is fine this iteration."
+
+  # ── REMEDIATION TURNS ─────────────────────────────────────────────────────
+  # Owner approved 2026-08-13. An iteration does not end until its own change earns
+  # SOUND from the reviewer.
+  #
+  # The evidence for this: 16 iterations, 2 SOUND verdicts, the last at #4, and
+  # NOTHING shipped for a day. Each ~$20 turn built something, was told what was
+  # wrong with it, and then started something else — so four consecutive iterations
+  # (13,14,15,16) went on repairing the previous one's damage while the reviewer's
+  # actual findings stayed open. A review whose findings are never closed is a
+  # critic, not a gate.
+  #
+  # So a WEAK or WRONG verdict makes the NEXT turn a remediation turn on the SAME
+  # change. The campaign's deliverables do not advance, and new work is forbidden
+  # until the finding is closed or the Builder shows on the record that it is wrong.
+  #
+  # CAPPED at REMEDIATION_LIMIT attempts. Without a cap this becomes an infinite
+  # loop on one stubborn finding, burning $20 a turn — the failure mode of every
+  # retry-until-green mechanism this project has recorded.
+  REMEDIATION_LIMIT="${NEXEO_REMEDIATION_LIMIT:-3}"
+  REMEDIATION_NOTE="Not applicable — the previous iteration was not left with an open review finding."
+  PREV_ITER=$((ITER - 1))
+  PREV_VERDICT="$(python3 - "$REVIEW_DOC" "$PREV_ITER" <<'PYEOF'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    print("NONE"); raise SystemExit
+m = re.search(r"^##\s+Iteration\s+%s(.*?)(?=^##\s+Iteration|\Z)" % re.escape(sys.argv[2]),
+              txt, re.S | re.M)
+if not m:
+    print("NONE"); raise SystemExit
+v = re.search(r"\*\*(SOUND|WEAK|WRONG)\*\*", m.group(1))
+print(v.group(1) if v else "NONE")
+PYEOF
+)"
+  REM_COUNT=0
+  [ -s "$STATE/remediation-count" ] && REM_COUNT="$(cat "$STATE/remediation-count")"
+  # G26 — LOG THE DECISION WHETHER OR NOT IT FIRES. The first version only spoke when
+  # it triggered, so two consecutive WEAK verdicts produced silence and I could not
+  # tell a broken rail from a rail that correctly declined. Every part of the check
+  # reproduced correctly standalone; only the running loop disagreed, which is exactly
+  # the state an unconditional log would have diagnosed in one line. Same lesson as
+  # the pulse's stage detector and the completion watcher: a rail that cannot be
+  # watched deciding cannot be trusted.
+  say "REMEDIATION check: prev=$PREV_ITER verdict=${PREV_VERDICT:-<empty>} count=$REM_COUNT/$REMEDIATION_LIMIT"
+  if [ "$PREV_VERDICT" = "WEAK" ] || [ "$PREV_VERDICT" = "WRONG" ]; then
+    if [ "$REM_COUNT" -ge "$REMEDIATION_LIMIT" ]; then
+      # Three attempts and the reviewer is still not satisfied. Escalate rather than
+      # keep paying: either the finding is wrong or the change should be reverted,
+      # and both are judgements for a human.
+      say "REMEDIATION cap reached ($REM_COUNT/$REMEDIATION_LIMIT) on iteration $PREV_ITER's change — releasing to new work and flagging for the owner"
+      REMEDIATION_NOTE="ESCALATED. Iteration $PREV_ITER's change was remediated $REM_COUNT times and the reviewer is still not satisfied. You are released to new work, but say plainly in your build entry whether the remaining finding should be (a) accepted as a known limitation with a DEF row, or (b) grounds for reverting the change. The orchestrator is reporting this to the owner."
+      printf '0' > "$STATE/remediation-count"
+    else
+      REM_COUNT=$((REM_COUNT + 1))
+      printf '%s' "$REM_COUNT" > "$STATE/remediation-count"
+      MODE="remediation"
+      say "REMEDIATION iter=$ITER — iteration $PREV_ITER closed $PREV_VERDICT; this turn finishes that change (attempt $REM_COUNT/$REMEDIATION_LIMIT)"
+      REMEDIATION_NOTE="**THIS IS A REMEDIATION TURN — attempt $REM_COUNT of $REMEDIATION_LIMIT.**
+
+Iteration $PREV_ITER's review closed **$PREV_VERDICT**. Your job this turn is to CLOSE
+THAT FINDING on the same change. Not a new defect, not the next fixQueue entry, not the
+campaign's next deliverable — those all wait.
+
+Read \`$REVIEW_DOC\` \`## Iteration $PREV_ITER\` and take its numbered risks in order of
+severity. For each one, either fix it or show on the record why the reviewer is wrong —
+'I disagree' without evidence is not closing it, and neither is a build entry that
+lists the finding and moves on.
+
+Why this rule exists, so you can judge it rather than just obey it: over sixteen
+iterations the loop earned two SOUND verdicts and shipped nothing for a day, because
+every turn started something new while the previous turn's findings stayed open. Four
+consecutive iterations went on repairing the damage of the one before. Finishing is now
+the job.
+
+If you believe the finding is already closed by work in a later commit, say which
+commit and which line, and the reviewer will judge that claim."
+    fi
+  elif [ "$PREV_VERDICT" = "SOUND" ] && [ "$REM_COUNT" -gt 0 ]; then
+    say "REMEDIATION cleared — iteration $PREV_ITER earned SOUND after $REM_COUNT attempt(s)"
+    printf '0' > "$STATE/remediation-count"
+  fi
   if [ "$STALL" -ge "$STALL_LIMIT" ]; then
     MODE="structural"
     STRUCTURAL_NOTE="STRUCTURAL MODE. The minimum criterion has not improved for $STALL iterations. Per CLAUDE.md rule 5 this is *circling*, and another patch on the reported instance is FORBIDDEN. Change the mechanism that keeps producing this class — decompose the path, unify the duplicated implementation, or move the decision to where the information actually is."
@@ -592,13 +675,25 @@ if not a:
     print("No active campaign."); raise SystemExit
 start, budget = a.get("from_iteration", it), a.get("budget_iterations", 1)
 spent = max(0, it - start) + 1
+incs = a.get("increments") or []
+inc_txt = ""
+if incs:
+    inc_txt = "\n**The increments, in order — take the first that is not done:**\n\n" + "\n".join(
+        f"{i['n']}. {i['what']}\n   *Done when:* {i.get('done_when','')}" for i in incs) + "\n"
+extra = ""
+for k, label in (("baseline", "Baseline"), ("target_score", "Target"),
+                 ("scope_rule", "SCOPE"), ("deploy_rule", "DEPLOY"),
+                 ("abort_condition", "ABORT CONDITION"),
+                 ("the_capability_in_the_owner's_words", "In the owner's words")):
+    if a.get(k):
+        extra += f"\n**{label}:** {a[k]}\n"
 print(f"""### ACTIVE CAMPAIGN {a['id']} — {a['name']}  (iteration {spent} of {budget})
 
-**Capability:** {a.get('capability')}
+**Capability:** {a.get('capability')}  ·  **{a.get('baseline','?')} → {a.get('target_score','?')}**
 **Goal:** {a.get('goal')}
 **Exit condition:** {a.get('exit_condition')}
-**Why this first:** {a.get('why_first', 'see the campaign file')}
-
+**Why this one:** {a.get('why_this_one', a.get('why_first', 'see the campaign file'))}
+{inc_txt}{extra}
 This is WHAT you are aiming at for this campaign. Codex's ranked directive governs
 HOW — follow it where it serves the campaign, and say so in your build entry if it
 pulls you off the campaign, rather than silently switching targets. A campaign turn
@@ -619,7 +714,7 @@ PYEOF
     SCOREJSON "${BENCH_JSON:-none}" \
     TSC "$TSC_BEFORE" TESTS "${TESTS_AFTER:-not yet run this session}" \
     MODE "$MODE" STRUCTURAL "$STRUCTURAL_NOTE" \
-    FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" \
+    FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" REMEDIATION "$REMEDIATION_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL")"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
@@ -713,11 +808,14 @@ PYEOF
     say "PROGRESS min criterion $BEST_MIN → $CUR_MIN"
     BEST_MIN="$CUR_MIN"; STALL=0
     printf '%s' "$STALL" > "$STATE/stall"; printf '%s' "$BEST_MIN" > "$STATE/best-min"
-    if [ "$DEPLOY" = "1" ] && [ "$TSC_AFTER" = "clean" ]; then
-      say "DEPLOY iter=$ITER restarting tmcai-server (NEXEO_DEPLOY=1)"
-      pm2 restart tmcai-server >> "$ORCH/loop.log" 2>&1 \
-        && say "DEPLOY iter=$ITER pm2 restart ok" || say "DEPLOY iter=$ITER pm2 restart FAILED"
-    fi
+    # NO DEPLOY HERE. This block used to `pm2 restart` on any PROGRESS with a clean
+    # tsc — the crude flag that predated deploy.sh. I added the gated deploy phase
+    # and LEFT THIS IN PLACE, so at iteration 13 the loop logged
+    # "codex verdict: WRONG · hold" from the real gate and then restarted
+    # production anyway from here, shipping a CRITICAL data-loss regression.
+    # Two implementations of deploy, the weaker one live: the exact shape this
+    # project has recorded eight times. Deploy happens in ONE place, deploy.sh,
+    # after the review, gated on the verdict.
   else
     STALL=$((STALL + 1))
     printf '%s' "$STALL" > "$STATE/stall"
