@@ -708,6 +708,18 @@ export default function OrchestratorPulsePanel() {
                           here". Six absolute values per row gave no direction, so
                           95.5 / 96.2 / 95.5 read as unrelated numbers. */}
                       <th style={{ textAlign: 'right' }}>Δ</th>
+                      {/* Owner, 2026-08-13: "provide me information iteration wise
+                          brain improvement". Everything left of here is the BENCHMARK
+                          — twelve conversational replies scored by the judge — which
+                          is not Brain's capability and cannot see seven of the nine.
+                          These two columns are the capability itself, per iteration,
+                          so the panel stops implying that 95.2 is how good Brain is. */}
+                      {/* Owner, 2026-08-13: "which iteration took how much time and
+                          how much it improved brain" — the two questions side by side,
+                          which is the only way the cost of an iteration is legible. */}
+                      <th style={{ textAlign: 'right' }}>Took</th>
+                      <th style={{ textAlign: 'right' }}>Brain</th>
+                      <th style={{ textAlign: 'right' }}>Δ Brain</th>
                       <th>Codex</th>
                     </tr>
                   </thead>
@@ -725,6 +737,15 @@ export default function OrchestratorPulsePanel() {
                          manufacture a trend the instrument cannot support. Anything
                          the collector calls flat is drawn as dim, whatever its sign. */
                       const noisy = (p?.direction || '').startsWith('flat');
+                      /* The capability point for the SAME iteration, from the scorer.
+                         Absent for iterations 9-11 (the scoring seat was stopped during
+                         the restructure) and for any iteration not yet scored — shown as
+                         "not scored" rather than blank or interpolated, because a missing
+                         capability reading is a fact about the loop, not a gap to fill. */
+                      const rec = (data.iterations || []).find((r) => r.iteration === h.iteration);
+                      const cap = (data.capability_series?.points || [])
+                        .find((q) => q.iteration === h.iteration);
+                      const capMove = cap?.movement;
                       const dColor = d == null || noisy
                         ? 'var(--text-dim)'
                         : d > 0 ? 'var(--op-score)' : 'var(--op-stalled)';
@@ -740,6 +761,31 @@ export default function OrchestratorPulsePanel() {
                           {d == null ? '—' : (d > 0 ? `+${d}` : d)}
                           {noisy && d != null && (
                             <span className="orch-section-note" style={{ marginLeft: 4 }}>noise</span>
+                          )}
+                        </td>
+                        <td className="num" style={{ color: 'var(--text-dim)' }}
+                            title={rec?.cost_usd ? `build turn cost $${rec.cost_usd}${rec.agent_turns ? ` · ${rec.agent_turns} agent turns` : ''}` : ''}>
+                          {rec?.duration_seconds
+                            ? (rec.duration_seconds >= 3600
+                                ? `${Math.floor(rec.duration_seconds / 3600)}h${String(Math.round((rec.duration_seconds % 3600) / 60)).padStart(2, '0')}m`
+                                : `${Math.floor(rec.duration_seconds / 60)}m${String(rec.duration_seconds % 60).padStart(2, '0')}s`)
+                            : '—'}
+                        </td>
+                        <td className="num" style={{ color: cap ? 'var(--text)' : 'var(--text-dim)' }}
+                            title={cap ? `scored by ${cap.scored_by}${cap.what_moved ? ` · ${cap.what_moved}` : ''}` : 'not scored — no capability card for this iteration'}>
+                          {cap ? cap.overall : '—'}
+                        </td>
+                        <td className="num"
+                            title={cap?.disputed ? 'DISPUTED — the scorer raised a capability in an iteration the reviewer ruled WEAK or WRONG' : (cap?.what_moved || '')}>
+                          {capMove == null ? (
+                            <span style={{ color: 'var(--text-dim)' }}>—</span>
+                          ) : capMove === 0 ? (
+                            <span style={{ color: 'var(--text-dim)' }}>0</span>
+                          ) : (
+                            <span style={{ color: capMove > 0 ? 'var(--op-score)' : 'var(--op-stalled)' }}>
+                              {capMove > 0 ? `+${capMove}` : capMove}
+                              {cap?.disputed && <span className="orch-section-note" style={{ marginLeft: 3 }}>disputed</span>}
+                            </span>
                           )}
                         </td>
                         <td style={{ color: VERDICT_COLOR[h.verdict] || 'var(--text-dim)' }}>{h.verdict}</td>
