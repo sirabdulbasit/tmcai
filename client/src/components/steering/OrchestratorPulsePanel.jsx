@@ -941,11 +941,15 @@ export default function OrchestratorPulsePanel() {
             hint={`bar = time spent · ${data.iterations_built} recorded`}
           >
             <PhaseTimeline data={data} liveNow={liveNow} />
-            <div className="orch-progress">
-              {data.current_phase && data.progress
-                ? <><b>Progress {data.current_phase}:</b> {data.progress}</>
-                : <><b>Progress:</b> nobody working</>}
-            </div>
+            {/* The Progress line is gone — owner, 2026-08-13: "remove this", of a
+                row reading `← ok ## Iteration 25 ### 1. Verdict **WEAK** — the diff
+                adds a safely read-only, tenant/user-sco`. It printed the newest raw
+                line from whichever seat was working, so what it showed was a tool
+                result truncated mid-word: markdown, shell echoes and half sentences.
+                The phase rows above already carry state, seat, model and elapsed —
+                the part that was actually readable. The collector still emits
+                `progress`; nothing else consumes it, and it stays available for a
+                future surface that can render it properly. */}
           </PulseCard>
 
           {/* aspect 1b — the integrity picture the owner asked for, 2026-08-13:

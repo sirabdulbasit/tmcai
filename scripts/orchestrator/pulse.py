@@ -395,7 +395,29 @@ def phase_timeline():
                 ph["detail"] = rest.split("(")[0].strip()
             else:
                 ph.setdefault("start", t)
-    # The scoring seat writes its own log, so its phase is read from there.
+        elif kind == "SCORE":
+            # Owner, 2026-08-13, on a Score row reading "—" for a completed
+            # iteration: *"why nothing from grok? where it has executed this
+            # part"*. Grok had run every time; the PANEL could not see it.
+            #
+            # Scoring moved from the standalone daemon into the loop on
+            # 2026-08-12 ("SCORE STOP-SCORING present — exiting cleanly"), and
+            # the loop writes `SCORE iter=N ...` into loop.log while the reader
+            # below still only understood the daemon's `SCORE iteration N scored
+            # and card appended` in score.log. So the row went blank for every
+            # scoring after the handover and stayed blank for a day, while the
+            # cards were being written the whole time.
+            #
+            # Both are read now — the daemon's format is kept because its old
+            # entries are still the history for iterations 7-8.
+            ph = d.setdefault("Score", {})
+            if "card appended" in rest or "FAILED" in rest:
+                ph["end"] = t
+                ph["detail"] = rest.split("(")[0].strip()
+            else:
+                ph.setdefault("start", t)
+    # The scoring seat ALSO wrote its own log while the daemon ran; keep reading
+    # it so the older iterations still show their timings.
     sl = f"{ORCH}/score.log"
     if os.path.exists(sl):
         for line in open(sl, errors="replace"):
