@@ -826,3 +826,72 @@ and more useful than a single number that has quietly averaged the two.
   a reason attached rather than looking like a rescore.
 - **`basis: live-evidence` still requires production**, and nothing on this branch
   has it.
+
+---
+
+## D-17 · OPEN · Tag markers at creation; close the voice path; then SHIP
+
+Iteration 22 repaired iteration 21's regression — B12 went from a raw marker to
+*"My apologies, Sir. It looks like I sent that reminder twice. I can see the two
+identical messages in our conversation log, but I don't have a specific reason
+recorded for the duplication."* Case overall 50 → 95, aggregate C4 80.7 → 88.8,
+overall 92 → 95.4, and no marker in any of the twelve answers.
+
+Codex ruled **WEAK** on two HIGH findings. Both are in the same small marker path,
+and one of them is not this branch's fault.
+
+### HIGH #2 IS ALREADY IN PRODUCTION — verified, not assumed
+
+```
+git cat-file -e df47687:server/src/services/knowledge/markerVoice.ts   → exists
+```
+
+`df47687` is the last **deployed** commit (iteration 16, 2026-08-13 06:39). So
+`markerVoice.lastResort` — which takes a marker's inner text, capitalises the first
+letter and returns it as prose — is live on the owner's WhatsApp today. Its own
+header says stripping markers to silence *"is what made 77 of them feel like Brain
+ignoring the user"*, so this path fires in production.
+
+**Holding the deploy does not protect him from this.** It protects him from nothing
+he is not already exposed to, while withholding everything iterations 17–22 fixed.
+
+### HIGH #1 is real and the fix is structural, not another heuristic
+
+`answerSanitizer.ts:235` matches `^\s*\[[^\]]{8,400}\]\s*$` and replaces it with
+*"I don't have a good answer for that yet"*. A whole-answer `[see attached]`,
+`[CONFIDENTIAL]` or `[Approved by Basit]` therefore loses real content. The build
+log asserted *"no human reply is shaped like that"* — that assertion is about
+EMBEDDED brackets, which is a different case, and Codex is right.
+
+**The validator already knows it produced a marker. Nothing downstream should have
+to infer it.** Tag it at creation — a field on the violation, or a sentinel the
+route carries alongside the text — and the sanitizer stops guessing by shape, so
+legitimate content can never be misread. This is the same lesson that finally
+worked on the self-repair class: authorization, not detection.
+
+### ITERATION 23 — both HIGHs, then deploy
+
+1. **Marker provenance.** The producer marks it; consumers check the mark, never the
+   shape. Delete the shape heuristic once the mark exists.
+2. **The voice path consumes the sanitized text, never the raw marker.**
+   `markerVoice.ts:58-68,79-82,98-130`: neither the LLM call nor `lastResort` may
+   receive marker content. `lastResort` returns a fixed honest line — it must never
+   prose-ify an internal instruction.
+3. **MEDIUM #3 while you are in the file**: the fallback line promises *"let me look
+   again"* and asks the owner to repeat himself. That is the empty-promise class
+   inside the safety net. Say what is true and ask nothing of him.
+4. **Then it ships.** Five iterations of work are held behind this path.
+
+### This overrides the capability cap, explicitly and on the record
+
+The starvation cap will fire on iteration 23 pointing at Self Follow-Up, and I am
+overriding it. Stated plainly so it is judged rather than assumed:
+
+- This is **not** a fifth iteration chasing Accurate Communication. It is the work
+  that makes iterations 17–22 deliverable. Nothing counts until it ships (D-14), so
+  a turn spent unblocking delivery buys more than a turn spent starting a capability
+  on a branch that cannot ship.
+- **It is one turn.** If iteration 23 does not end deployed, the override expires
+  and iteration 24 goes to C-2 increment 0 regardless of what the reviewer says.
+- The owner is told both numbers: one turn to unlock five, versus starting 13.4% of
+  the journey one turn later.
