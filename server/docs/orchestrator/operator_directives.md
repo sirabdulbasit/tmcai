@@ -124,6 +124,40 @@ cost this loop four iterations and about eighty dollars.
 
 ---
 
+## D-10 · STANDING, OUTRANKS THE SCORE · Improvement must be REAL, not numeric
+
+Owner, 2026-08-13: *"improvement should not be in numbers it should be in real"*.
+
+The capability score is a proxy and it has been managed as if it were the goal. From
+here:
+
+**An increment is not done when tests pass. It is not done when Grok scores it. It is
+done when the behaviour is OBSERVED IN PRODUCTION and the evidence can be quoted back
+to the owner.** Ship it, then go and look at what actually happened on his WhatsApp —
+the real message, with its real timestamp.
+
+What that requires of a build turn:
+
+- **Name the observable.** Not "improves follow-up" but "Hamna is messaged when the
+  ShireMe deadline passes, with no instruction from him." If you cannot state what he
+  would SEE, you cannot claim the increment.
+- **Deploy it.** Undeployed work has changed nothing for him, so it cannot be real.
+- **Say what you could not observe.** "The code path is complete but no deadline has
+  passed since deploy" is an honest and useful report. Claiming the behaviour on the
+  strength of a passing test is the `fabricated-status` class — five recorded
+  occurrences, and it is the defect he has complained about most.
+
+What it requires of the orchestrator: report in behaviour, not metrics. Lead with what
+Brain now does that it did not do before, quote the real message, and put the capability
+delta last as corroboration. Eighteen iterations of leading with 47.3 taught him
+nothing about his own assistant.
+
+The score still exists and Grok still owns it — a real improvement should show up there
+too, and a score that moves with no observable change behind it is a signal that
+something is being credited that has not actually happened.
+
+---
+
 ## D-6 · STANDING, RANKS FIRST · Owner reports override the queue
 
 **Check `server/docs/orchestrator/owner_reports.md` before anything else, every
