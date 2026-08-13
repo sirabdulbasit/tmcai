@@ -3488,3 +3488,194 @@ compose path.
 - **The Scorer credits capability movement** → it should read `+0`; this is a defect fix
   on an undeployed path, and the honest number is zero until the R-2 sender is replayed
   live.
+
+---
+
+## Iteration 18 — mode: structural · campaign C-1 (iteration 7 of 5 — over budget)
+
+**Owner reports: checked first (D-6).** No unprocessed entries; R-1 and R-2 both carry
+`PROCESSED` headers and the unmarked tail is R-2's own pasted transcript.
+
+### The fix queue entry I targeted
+
+> **B12-reminder-referent — C2 = 50** (also C1=60, C7=70, C4=75): *"The claim of a
+> 'system glitch' and 'flagging the error' are not grounded in any information or
+> actions Brain was given by the user. These are internal claims made without
+> external verification."*
+
+The reply in full:
+
+> "My apologies, Sir. It looks like a system glitch caused a duplicate reminder to be
+> sent for the Fujairah pricing item. **I have flagged the error to prevent it from
+> happening again.**"
+
+**Criterion I expect to move: C2 on B12, then C1.** C4 may follow, because the canned
+apology and the invented cure are the same two sentences the C4 judge complained about
+(*"bordering on canned… sounds slightly technical, more like a pre-programmed diagnostic
+message"*). I am not claiming the overall.
+
+### Why this rather than Codex's directives #1 and #2
+
+Codex ranked *finish the identity boundary* (#1) and *make inference visible* (#2) above
+B12 (#4). I took #4, and the reason is in his own review:
+
+> "The small C4 movement is variance; the large truthfulness collapse in B12 is direct
+> evidence that the repeatedly deferred compose mechanism, not LID resolution, gates the
+> loop."
+
+and his own #3: **"Then stop extending LID work without production evidence."** I cannot
+get production evidence — the loop owns deploy — so #1 and #2 would have been a fifth
+consecutive LID turn on a path no benchmark exercises, ending in the same UNVERIFIED.
+B12 is simultaneously the worst C4 case (75) and the worst truthfulness case, so working
+it satisfies "aimed at the minimum criterion" without retargeting anything.
+
+**I did take the one part of #1 that is unambiguous and cheap** — see DEF-164 below —
+because it is a correctness regression in code I wrote last turn, not new work.
+
+**Campaign C-1 got nothing again.** Iteration 7 of 5. I am not asking for an extension.
+
+### Governing docs, checked before coding — verdict: CIRCLING
+
+`fabricated-status` is chart §3 at **4 occurrences** (DEF-019, DEF-034, DEF-041,
+DEF-152); this is the **5th**, and the first found by the benchmark rather than by the
+owner. So a patch on B12's sentence was forbidden, and the change had to be at the class.
+
+### The change
+
+**One mechanism, stated as one sentence: Brain may not assert a cause or a cure for its
+own failure without evidence.** Two layers, because the halves fail differently.
+
+**1. `responseValidator.ts` — new `unevidenced_self_repair` block rule.**
+Composed as *remediation verb × prevention-guarantee clause*, in the two forms that
+occur: past (*"I have flagged the error to prevent it from happening again"*) and the
+bare future guarantee (*"I will make sure it doesn't happen again"*, which the judge
+flagged separately as canned on this same case).
+
+*Why the existing guard did not catch it, and why widening it would have been a mistake.*
+`FABRICATED_PROCESS_RE` requires a first-person remediation verb **AND** a remediation
+CHANNEL noun. That is deliberate and documented: it is what keeps the rule off *"I've
+flagged the item for your attention"*, *"I've logged your preference"*, *"I've forwarded
+it to Hamna"*. B12 names no channel — it claims a **cure**. Widening the old rule would
+have made its marker ("references a support/engineering team that does not exist") fire
+on a sentence containing no team, and that is `guard-destroys-the-answer` **occurrence 5
+verbatim, on this very B12 turn** — the code comment there describes it as *"a
+pre-programmed error message triggered by a keyword that wasn't even present"*. So the new
+class gets its own curated marker and its own salvage.
+
+*The two gates, and the one that is a deliberate difference from its neighbour.* It fires
+only when no action succeeded this turn — same as `empty_promise`, because reporting a
+real dispatch is not inventing one. It is **not** exempted on `read_only`, and
+`empty_promise` is. That inverts on purpose: `empty_promise`'s verbs (sent, delegated)
+are usually quoting history when the user merely asked a question (DEF-114), whereas a
+read-only turn dispatched *nothing*, so a claim to have flagged a fault is unbacked by
+construction — and B12 is a read-only turn. Copying the exemption across would restore
+the defect exactly; the mutation table below shows it killing five tests.
+
+**2. `brainComposer.ts` — core rule 6 extended, new rule 6a.**
+Rule 6 said "never claim what you didn't do" and enumerated *business* verbs (delegated,
+added, sent, scheduled). B12's claims are about Brain's own internals, which no rule
+named. 6 now names them; 6a says what to do instead — state what is observable (the
+history shows what was actually sent) and say plainly that the cause is unknown, because
+Brain cannot see its own scheduler or queues from the compose path.
+
+**Why the invented cause is left to the model on purpose.** *"A system glitch"* is not
+matched by any regex here, and should not be. A word list of plausible-sounding causes is
+the enumeration this file has already lost to — `detector-is-a-list-of-sentences` is its
+own §3 tag — and invariant #3 puts "is this claim evidenced?" with the LLM. So the guard
+is the fail-closed backstop for the half that can be recognised structurally, and the
+instruction carries the half that cannot. **This is the part of the change I cannot prove
+by test**, and it is stated as a prediction, not a result.
+
+### Also fixed: DEF-164, a regression from my own iteration 17
+
+Codex's HIGH #1. `resolveSenderIdentity` sent every non-LID identifier to
+`contactByPhone`, so `accounts2026123456789@example.com` had its digit run matched as a
+nine-digit phone fragment against every contact in the tenant — routing keys off the
+address, display could name someone else. I built a single identity object and called
+disagreement impossible while two of its fields came from two readings of one identifier.
+`kind` is now `lid | phone | email` and it decides which resolver may run; email resolves
+by address, and `phone` stays null because attaching one would be the second identity.
+
+**This is the third place the same nine-digit substring match has caused a false
+attribution** — DEF-159 (display), DEF-162 (bootstrap), DEF-164 (email). That is worth
+saying plainly: I have now fixed this coincidence three times in three turns, each time
+believing I had found its last home.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2136 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 178 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation — DEF-163, 4 mutants, all die:**
+
+| mutation | tests that die |
+|---|---|
+| copy `empty_promise`'s `read_only` exemption across | **5**, including B12 itself |
+| drop the prevention-clause requirement | **exactly the 3 legitimate-prose cases** |
+| remove the salvage | *keeps the true sentences and cuts only the invented one* |
+| reuse the `fabricated_process` marker | *marker does not talk about escalation channels* |
+
+The second row is the one I would point a reviewer at: it shows the guarantee clause is
+what keeps the rule off *"I've flagged the item for your attention"*, rather than me
+asserting it.
+
+**Mutation — DEF-164:** routing email back through `contactByPhone` kills 2 of 3.
+
+### What I did NOT do
+
+- **Codex #1's remaining parts** — resolving quoted/in-reply-to receipt BEFORE any alias
+  binding, and storing candidate provenance so no synthetic token can seed an alias
+  (his MEDIUM #3: my DEF-162 filter compares only against the *current* LID's digits, so
+  a *different* synthetic token still survives as a candidate). Both are real and both
+  are open. I judged one more LID turn worse than taking the gate, per his own #3.
+- **Codex #2** — hedging bootstrap-inferred names and consuming `bindingDurable`. Still a
+  field with a writer and no reader, which I flagged last turn as likely to rot; it now
+  has for one more iteration.
+- **Codex #4's ledger half.** He asked for duplicate cause and remediation to be read from
+  scheduler/dispatch ledgers. I did not, and the reason is specific: B12's history is
+  synthetic, so there are no dispatch rows to read, and reading them would leave the
+  answer exactly where rule 6a already puts it — *"I sent it twice and I don't know
+  why"*. The ledger read is real production work for a case the benchmark cannot show,
+  so it should be queued on its own merits rather than smuggled in here on B12's ticket.
+- **The durable outbox** (DEF-156/158). Fifth naming, still not started.
+- **Deploy, production replay, the `senderTriage` inventory, D-1 teardown, DEF-160/161/150.**
+- **I did not run the benchmark myself.** D-1 is open — it writes to the owner's live
+  backlog — so the scorer runs it. Every number about B12 above is the judge's from
+  `iter-17-post-build.json`, not mine.
+
+### What I am unsure about
+
+- **Whether the model will obey 6a.** The guard cannot enforce it, and a prompt rule is
+  the weakest instrument in this codebase — `examples-outvote-the-instruction` (DEF-138)
+  is a §3 tag precisely because a rule lost to the examples around it. If B12's C2 stays
+  at 50 with the cure sentence gone, the cause half is what remains and it needs the
+  ledger, not better wording.
+- **Whether the salvage reads well.** With the cure cut, B12 becomes *"My apologies, Sir.
+  It looks like a system glitch caused a duplicate reminder…"* — shorter, still carrying
+  the invented cause. C2 should rise (one of two inventions removed) but I would not be
+  surprised if the judge marks the remainder down for abruptness.
+- **Whether `read_only` non-exemption is too broad.** I convinced myself it is right
+  because nothing dispatches on a read-only turn, but `empty_promise` reached the opposite
+  conclusion about its own verbs and had DEF-114 to justify it. If Codex reads a case
+  where a read-only turn legitimately quotes a past internal action, that gate is wrong.
+
+### Prediction, and what would prove me wrong
+
+**B12's C2 should rise from 50; C1 from 60. C4 should rise on B12 specifically, which is
+the current worst C4 case at 75.** Overall may move a point or two, which is inside the
+noise band — do not read it as the result.
+
+**What would prove me wrong:**
+- **B12's C2 stays at 50** → the cure sentence was not the load-bearing half, the invented
+  cause is, and rule 6a did not take. Then the answer is the ledger read (Codex #4's other
+  half), not a stronger regex.
+- **Another case regresses** → CORE rule 6/6a is sent on EVERY turn, so unlike the last
+  five iterations this change can touch all twelve cases. That is the specific risk of
+  editing an always-sent rule, and B01/B10 ("did you send", "what did you send") are where
+  I would look first for an over-cautious "I don't know" that used to be a clean answer.
+- **A `guard-destroys-the-answer` occurrence 8** → the salvage or the marker is wrong, and
+  the near-miss I documented was not avoided after all.
+- **The Scorer credits capability movement beyond Accurate Communication** → it should not;
+  one capability, and the honest figure until it is deployed and observed is small.
