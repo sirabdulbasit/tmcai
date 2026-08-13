@@ -129,7 +129,7 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
           kind: 'repair', findingId: 'finding-42',
           observedCause: 'duplicate scheduler tick',
           appliedRepair: 'dedup key added to the reminder job',
-          recurrencePrevented: true,
+          preventionArtifactId: 'artifact-99',
         },
       }).violations.find((x) => x.rule === 'unevidenced_self_repair')).toBeUndefined();
     });
@@ -143,10 +143,51 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
           kind: 'diagnostic', findingId: 'finding-42',
           observedCause: 'duplicate scheduler tick',
           appliedRepair: null,
-          recurrencePrevented: false,
+          preventionArtifactId: null,
         },
       }).violations.find((x) => x.rule === 'unevidenced_self_repair');
       expect(v, 'recurrencePrevented:false still authorized a prevention promise').toBeDefined();
+    });
+
+    it('DEF-166 — a DIAGNOSTIC finding may not authorize a repair claim', () => {
+      // Codex iteration-20 HIGH #2: the iteration-20 contract ignored `kind`, so a
+      // finding that observed a cause and applied nothing licensed "I've fixed it".
+      // Knowing why is not fixing.
+      const v = validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'diagnostic', findingId: 'finding-42',
+          observedCause: 'duplicate scheduler tick',
+          appliedRepair: 'dedup key added',
+          preventionArtifactId: 'artifact-99',
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v, 'a diagnosis authorized a repair claim').toBeDefined();
+    });
+
+    it('DEF-166 — a repair with nothing applied is a wish', () => {
+      const v = validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'repair', findingId: 'finding-42', observedCause: 'x',
+          appliedRepair: null, preventionArtifactId: 'artifact-99',
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v).toBeDefined();
+    });
+
+    it('DEF-166 — the prevention must be a row, not a caller-authored boolean', () => {
+      // The old contract took `recurrencePrevented: true` on trust: an optimistic
+      // classifier sets it and the prose inherits a guarantee nobody verified. An
+      // id has to point at something that exists.
+      const v = validateBeforeRender(composed(B12_ANSWER), {
+        ...READ_ONLY,
+        selfRepairEvidence: {
+          kind: 'repair', findingId: 'finding-42', observedCause: 'x',
+          appliedRepair: 'dedup key added', preventionArtifactId: '  ',
+        },
+      }).violations.find((x) => x.rule === 'unevidenced_self_repair');
+      expect(v).toBeDefined();
     });
 
     it('evidence with no finding id is not evidence', () => {
@@ -154,7 +195,7 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
         ...READ_ONLY,
         selfRepairEvidence: {
           kind: 'repair', findingId: '   ', observedCause: null,
-          appliedRepair: null, recurrencePrevented: true,
+          appliedRepair: 'something', preventionArtifactId: 'artifact-99',
         },
       }).violations.find((x) => x.rule === 'unevidenced_self_repair');
       expect(v).toBeDefined();
@@ -194,6 +235,19 @@ describe('DEF-163 — an invented cure cannot reach the owner', () => {
       )!.salvagedAnswer;
       expect(salvaged).toContain('You got two reminders');
       expect(salvaged).not.toContain('flagged');
+    });
+
+    it('DEF-166 — keeps a remediation clause that CITES its row', () => {
+      // Codex iteration-20 MEDIUM #3, his input. "I logged the duplicate in
+      // finding F-1" is true and checkable; iteration 20 deleted it along with the
+      // false promise, which is `guard-destroys-the-answer` moved from sentence to
+      // clause granularity.
+      const salvaged = violation(
+        "I logged the duplicate in finding F-1, and I'll make sure it doesn't happen again.",
+      )!.salvagedAnswer;
+      expect(salvaged, 'a checkable claim was deleted as if unverifiable').toBeDefined();
+      expect(salvaged).toContain('finding F-1');
+      expect(salvaged, 'the promise must still be gone').not.toMatch(/make sure/i);
     });
 
     it('does not split a single claim at a bare comma', () => {

@@ -161,10 +161,18 @@ export async function buildDispatchLedgerBlock(
     // forbidden words — Codex was explicit that chasing "glitch/stutter/sync/job"
     // synonyms with a regex is not the fix, and the regex in `responseValidator`
     // guards cures, not causes.
-    + '\nWHY something happened is NOT in this record and is nowhere else either. There is no\n'
-    + 'cause field, no error attribution, no root-cause log you can read from here. So when\n'
-    + 'asked WHY you did something — why a reminder went twice, why a message was late —\n'
-    + 'report what this record shows and then say plainly that the cause is not recorded.\n'
+    // DEF-166 / Codex iteration-20 MEDIUM #4: this said WHY is "nowhere else
+    // either", which this builder cannot know — it establishes only that the
+    // dispatch artifact has no cause field. A health finding or a scheduler row
+    // may well contain one, and instructing the model to say "not recorded" while
+    // such evidence sits elsewhere in the prompt would make it withhold what it
+    // has. Scoped to this record, with the deferral to other evidence explicit.
+    + '\nWHY something happened is NOT in THIS record. It has no cause field, no error\n'
+    + 'attribution and no root-cause log. So when asked WHY you did something — why a\n'
+    + 'reminder went twice, why a message was late — report what this record shows, then\n'
+    + 'check whether any OTHER block above carries a recorded cause (a health finding, a\n'
+    + 'scheduler or job record). If one does, use it and cite it. If none does, say plainly\n'
+    + 'that the cause is not recorded.\n'
     + '"A system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are\n'
     + 'GUESSES; naming one as the cause is a fabricated finding even when it sounds\n'
     + 'technical and modest. "I sent it twice — I can see that, but I do not have a record\n'

@@ -261,6 +261,23 @@ export const UNEVIDENCED_SELF_REPAIR_RE = new RegExp(
  * this broad: "I've flagged the item for your attention" is a legitimate sentence
  * the main rule does not match, so this pattern is never applied to it.
  */
+/**
+ * A clause that names the row it rests on.
+ *
+ * DEF-166 / Codex iteration-20 MEDIUM #3: *"I logged the duplicate in finding
+ * F-1, and I'll make sure it doesn't happen again"* — the first clause is TRUE and
+ * iteration 20's salvage deleted it along with the false promise, because it
+ * stripped every remediation-shaped survivor without asking whether it was
+ * grounded. That is `guard-destroys-the-answer` moved from sentence granularity to
+ * clause granularity, which is not progress.
+ *
+ * A claim that cites a concrete identifier can be checked by whoever reads it,
+ * which is the difference that matters: "I logged it" is unverifiable, "I logged
+ * it in finding F-1" points at something. So a citing clause survives.
+ */
+const CITES_ARTIFACT_RE =
+  /\b(?:finding|artifact|record|row|ticket|item|message|id)\s+[#]?[A-Za-z]*[-_.]?\d[\w.-]*|\b[A-Z]{1,6}-\d+\b|\bwamid\.[\w-]+/;
+
 const RESIDUAL_SELF_REMEDIATION_RE = new RegExp(
   "\\bi(?:['’]?(?:ve|ll|m)|\\s+(?:have|will|am))?\\s+(?:\\w+[\\s,]+){0,3}?"
   + '(?:flagged|flag|logged|log|noted|recorded|reported|raised|filed|escalated'
@@ -310,8 +327,11 @@ export function exciseClausesMatching(answer: string, re: RegExp): string | unde
 
       const keptClauses = clauses.filter((c) => {
         if (re.test(c)) { removed += 1; return false; }
-        // The promise is gone; the claim to have acted must go with it.
-        if (RESIDUAL_SELF_REMEDIATION_RE.test(c)) { removed += 1; return false; }
+        // The promise is gone; an UNVERIFIABLE claim to have acted goes with it.
+        // One that cites its row stays — see `CITES_ARTIFACT_RE`.
+        if (RESIDUAL_SELF_REMEDIATION_RE.test(c) && !CITES_ARTIFACT_RE.test(c)) {
+          removed += 1; return false;
+        }
         return c.trim().length > 0;
       });
       if (keptClauses.length === 0) continue;
@@ -343,6 +363,37 @@ export function exciseClausesMatching(answer: string, re: RegExp): string | unde
 /** Floor for clause-level salvage. Lower than `MIN_SALVAGE_CHARS` because what
  *  survives a clause cut is a complete statement rather than a sentence stub. */
 const MIN_CLAUSE_SALVAGE_CHARS = 18;
+
+/**
+ * DEF-166 — "is the user asking about MY conduct?", derived from their words.
+ *
+ * A pre-filter selecting which rule applies, not a judgement about the answer —
+ * invariant #3's sanctioned shape. Being wrong in either direction is cheap: a
+ * false positive costs a salvage on a turn that mentions Brain's own sending, a
+ * false negative leaves the pre-existing behaviour.
+ */
+export function isSelfConductQuestion(question: string | null | undefined): boolean {
+  const q = (question ?? '').toLowerCase();
+  if (!q.trim()) return false;
+  // "why did you remind me twice", "did you send it", "what have you sent",
+  // "have you messaged her", "why do you keep nudging me".
+  return /\b(?:why|what|did|do|have|has|are|when|how)\b[^?]{0,80}?\byou(?:'ve|'re|r)?\b/.test(q)
+    && /\b(?:remind|reminded|send|sent|sending|message|messaged|nudge|nudged|chase|chased|tell|told|say|said|keep|repeat|duplicate|twice|again)\b/.test(q);
+}
+
+/**
+ * A first-person commitment. Grammar, not vocabulary — deliberately.
+ *
+ * DEF-166: the object of the promise is whatever the model chose; enumerating
+ * objects is what failed three times. `I'll need` / `I'll have to` are statements
+ * of limitation rather than commitments and are excluded.
+ */
+const FIRST_PERSON_COMMITMENT_RE = new RegExp(
+  "\\bi(?:['’]ll|\\s+will|['’]m\\s+going\\s+to|\\s+am\\s+going\\s+to)\\s+"
+  + '(?!need\\b|have\\s+to\\b|be\\s+unable\\b|not\\b)'
+  + '\\w+',
+  'i',
+);
 
 /** The minimum salvage worth shipping. Below this the remainder is a
  *  fragment ("I can see that, Sir.") that reads as a non-answer, and the
@@ -489,14 +540,39 @@ export function validateBeforeRender(
      * when such an action is built, so its authorization is claim-specific from
      * the first day rather than turn-global again.
      */
+    /**
+     * DEF-166 — the user's question, so the self-conduct gate below is derived in
+     * ONE place. The validator already receives `turnIntent` computed from this
+     * same string; passing the string itself avoids a second classifier at the
+     * route, which is how `protection-with-two-implementations` reached ten.
+     */
+    question?: string | null;
     selfRepairEvidence?: {
+      /**
+       * DEF-166 — only `'repair'` can authorize prose that claims a repair.
+       *
+       * Codex's iteration-20 HIGH #2: the iteration-20 contract ignored `kind`
+       * entirely, so `{kind:'diagnostic', recurrencePrevented:true}` — a finding
+       * that observed a cause and applied nothing — would license "I've fixed
+       * it". Knowing why is not fixing.
+       */
       kind: 'diagnostic' | 'repair';
       /** The `brain_health_findings` row this claim rests on. */
       findingId: string;
       observedCause: string | null;
+      /** What was actually changed. A repair claim with nothing here is a wish. */
       appliedRepair: string | null;
-      /** True only when a prevention was actually scheduled and recorded. */
-      recurrencePrevented: boolean;
+      /**
+       * DEF-166 — an IMMUTABLE reference, replacing `recurrencePrevented: boolean`.
+       *
+       * Codex: *"Require an immutable repair artifact and exact outcome, not a
+       * caller-authored boolean."* He is right that a boolean is the weakest
+       * possible evidence: an optimistic classifier sets it to true and the prose
+       * inherits a guarantee nobody verified. An id has to point at a row that
+       * exists, so the claim can be audited after the fact instead of trusted at
+       * render time.
+       */
+      preventionArtifactId: string | null;
     } | null;
   },
 ): ValidationOutcome {
@@ -645,11 +721,20 @@ export function validateBeforeRender(
   //     invented cure is cut.
   //     DEF-165 — the gate is the EVIDENCE, not the turn. `actionResult.ok` used
   //     to authorize this and must never again: an unrelated item update is not
-  //     a diagnosis. A cure claim is authorized only by provenance that attests
-  //     it, and because a prevention promise is what every matched form makes,
-  //     `recurrencePrevented` must be true as well as the finding existing.
+  //     a diagnosis.
+  //
+  //     DEF-166 — and the evidence must attest THE REPAIR, which iteration 20's
+  //     version did not check (Codex HIGH #2). Every matched form promises the
+  //     future, so all four of these are required together: it must be a repair
+  //     rather than a diagnosis, it must name what was changed, it must cite the
+  //     finding, and the prevention must exist as a row someone can go and read.
+  //     A caller-authored boolean is not evidence of anything.
   const cure = context?.selfRepairEvidence ?? null;
-  const cureAuthorized = !!cure && !!cure.findingId.trim() && cure.recurrencePrevented === true;
+  const cureAuthorized = !!cure
+    && cure.kind === 'repair'
+    && !!cure.findingId.trim()
+    && !!cure.appliedRepair?.trim()
+    && !!cure.preventionArtifactId?.trim();
   if (UNEVIDENCED_SELF_REPAIR_RE.test(answer) && !cureAuthorized) {
     violations.push({
       rule: 'unevidenced_self_repair',
@@ -665,6 +750,50 @@ export function validateBeforeRender(
       // sentence-level only when there is no clause boundary to cut at.
       salvagedAnswer: exciseClausesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE)
         ?? exciseSentencesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE),
+    });
+  }
+
+  // 2c. DEF-166 — A COMMITMENT ABOUT ITS OWN CONDUCT, ON A TURN THAT DISPATCHES
+  //     NOTHING.
+  //
+  //     Codex's iteration-20 HIGH #1. Three turns of this defect, three phrasings:
+  //
+  //       iter 17  "It looks like a system glitch caused a duplicate reminder"
+  //       iter 18  "That was a system stutter on my end"
+  //       iter 20  "I'll make sure the duplicate is cleared"
+  //
+  //     Each turn closed the previous wording and the model found the next one.
+  //     The third has no recurrence vocabulary, so it never reached the cure rule
+  //     at all — and Codex's conclusion is the right one: *"Stop extending the cure
+  //     regex."* Enumerating what a language model might say is not a strategy.
+  //
+  //     So this rule is GRAMMATICAL, not lexical: a first-person commitment, any
+  //     verb. What keeps it safe is not a narrow vocabulary but a narrow GATE — it
+  //     applies only when the user asked about Brain's own conduct, and only when
+  //     no repair evidence authorizes it. On such a turn nothing is dispatched, so
+  //     any "I'll …" is a promise with nothing behind it, whatever it promises.
+  //
+  //     That distinction matters for `guard-destroys-the-answer` (7 occurrences):
+  //     the previous five recurrences were all met by narrowing WHEN a guard fires
+  //     and all failed because eligibility depended on a classifier being right.
+  //     Here the gate is the user's own words, and being wrong about them costs a
+  //     salvage rather than a wrong answer.
+  //
+  //     "I'll need" / "I'll have to" are excluded: those state a limitation, which
+  //     is the honest shape, not a commitment. An offer stays available in the
+  //     interrogative — "want me to look into it?" — which is what core rule 6a
+  //     asks for anyway.
+  const selfConductTurn = isSelfConductQuestion(context?.question);
+  if (selfConductTurn && !cureAuthorized && FIRST_PERSON_COMMITMENT_RE.test(answer)) {
+    violations.push({
+      rule: 'unevidenced_self_conduct_promise',
+      severity: 'block',
+      description:
+        'Answer promises a future internal action ("I\'ll make sure the duplicate is cleared") on a turn about Brain\'s own conduct, where nothing was dispatched and no repair evidence exists.',
+      suggestedReplacement:
+        '[unevidenced commitment about your own behaviour — nothing is scheduled; state what the record shows and offer the next step as a question]',
+      salvagedAnswer: exciseClausesMatching(answer, FIRST_PERSON_COMMITMENT_RE)
+        ?? exciseSentencesMatching(answer, FIRST_PERSON_COMMITMENT_RE),
     });
   }
 

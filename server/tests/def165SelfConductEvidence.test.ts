@@ -103,6 +103,20 @@ describe('DEF-165 — the evidence block states what it cannot tell you', () => 
     expect(block).toMatch(/WHY something happened is NOT in this record/i);
   });
 
+  it('DEF-166 — claims only what this record can prove, and defers to other evidence', async () => {
+    // Codex iteration-20 MEDIUM #4: iteration 20 wrote that WHY is "nowhere else
+    // either", which this builder cannot know — it establishes only that the
+    // dispatch artifact has no cause field. If a health finding or scheduler row
+    // DOES carry a cause, telling the model to say "not recorded" would make it
+    // withhold evidence it has, which is a different failure with the same shape.
+    const block = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(block, 'an epistemic claim wider than the data supports')
+      .not.toMatch(/nowhere else/i);
+    expect(block, 'it must send the model to look at the other blocks first')
+      .toMatch(/other block/i);
+    expect(block).toMatch(/health finding|scheduler/i);
+  });
+
   it('still answers "did you" as authoritatively as before', async () => {
     // The added boundary must not soften the existing contract. If the record
     // becomes hedged about WHAT happened, DEF-037 regresses and "did you inform

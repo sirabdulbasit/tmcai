@@ -170,6 +170,9 @@ export async function answerAsBrain(
     const validation = validateBeforeRender(result, {
       pendingStatus: pendingForValidator?.status ?? null,
       turnIntent,
+      // DEF-166 — the question itself, so the self-conduct gate is derived inside
+      // the validator rather than by a second classifier here.
+      question: question ?? null,
     });
     if (!validation.ok && validation.replacement) {
       console.warn('[brain-chat] validateBeforeRender block', {
