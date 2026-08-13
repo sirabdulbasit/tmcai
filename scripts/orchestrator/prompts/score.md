@@ -141,6 +141,34 @@ zero each iteration. Carry your previous numbers forward and move only what you
 can show moved — and if nothing moved, `what_moved` should say exactly that.
 Rescoring from scratch each time produces noise that looks like progress.
 
+## `movement_attribution` — WHY the numbers moved, not just that they did
+
+Added 2026-08-13, and you are the reason it was needed **in a good way**. At
+iteration 23 you moved Self Follow-Up 43→56, Authorized Action 52→56, Self-Pruning
+33→40 and wrote plainly in `what_moved`: *"from production aggregates … **scorer
+correction, not DEF-169**"*. That was honest and exactly right. But the loop reads
+only `overall_verdict`, saw `PROGRESSIVE`, and logged **"ITERATION 23 reached the
+owner"** for an iteration that deployed nothing to him. Your honesty was in prose
+nothing machine-read, so the machinery laundered it into progress.
+
+So state it in a field, every time:
+
+- **`ITERATION_WORK`** — this iteration's diff is why the number moved. The only
+  value that counts as progress anywhere downstream.
+- **`SCORER_CORRECTION`** — you re-rated on better information (new evidence, a
+  previous score you now judge wrong). Legitimate and welcome; just not progress.
+- **`PRODUCTION_EVIDENCE`** — the aggregates revealed a capability that already
+  existed and was under-scored. Also not this turn's doing.
+- **`INSTRUMENT_CHANGE`** — the prompt, schema or evidence pack changed under you.
+- **`NONE`** — nothing moved.
+
+**A `SCORER_CORRECTION` is never a worse answer than an `ITERATION_WORK`.** You are
+not being asked to attribute movement to the loop's work, and inflating attribution
+is a more expensive lie than inflating a score: it tells the owner he received
+something when he received nothing. When the honest answer is that a turn changed
+nothing, `overall_verdict: NEUTRAL` with `movement_attribution: NONE` is the right
+card and nobody will be unhappy with you for it.
+
 ## Rules
 
 - **READ ONLY.** You have no write permission and you must not attempt one. Two

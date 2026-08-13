@@ -109,6 +109,17 @@
     "capability_claim_seen": {
       "type": "string",
       "description": "The capability block you found in this iteration's build log, quoted, or 'none declared'. Recording its ABSENCE matters: the contract requires one, and a missing block is an incomplete turn the orchestrator must report."
+    },
+    "movement_attribution": {
+      "type": "string",
+      "enum": [
+        "ITERATION_WORK",
+        "SCORER_CORRECTION",
+        "PRODUCTION_EVIDENCE",
+        "INSTRUMENT_CHANGE",
+        "NONE"
+      ],
+      "description": "WHY the numbers moved. Only ITERATION_WORK means this iteration's diff caused it. Added because iteration 23's card said PROGRESSIVE while what_moved explained the movement was a scorer correction \u2014 honest prose the loop could not read, which it then logged as the owner having received something. NOT in `required`: a card missing this field must score as unknown, never fail validation and never default to progress."
     }
   }
 }

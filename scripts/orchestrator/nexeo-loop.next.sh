@@ -1061,7 +1061,19 @@ try:
 except Exception:
     print("unknown"); raise SystemExit
 v = (d.get("overall_verdict") or "").upper()
-print("yes" if v == "PROGRESSIVE" else "no")
+if v != "PROGRESSIVE":
+    print("no"); raise SystemExit
+# PROGRESSIVE alone is not this turn's doing. At iteration 23 the card was
+# PROGRESSIVE while `what_moved` said, in the scorer's own words, "scorer
+# correction, not DEF-169" — so the loop logged "ITERATION 23 reached the owner"
+# on a turn that deployed nothing. The scorer was honest; this read was not.
+# A card with no attribution field scores "unknown", never "yes": a missing
+# answer must not default to progress.
+a = (d.get("movement_attribution") or "").upper()
+if not a:
+    print("unknown")
+else:
+    print("yes" if a == "ITERATION_WORK" else "no")
 PYEOF
 )"
   FAIL_STREAK=0
