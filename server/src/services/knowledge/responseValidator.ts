@@ -141,6 +141,72 @@ export const FABRICATED_PROCESS_RE = new RegExp(
   'i',
 );
 
+// ── DEF-163 — the OTHER member of the fabrication class: no channel, a CURE ──
+//
+// B12 asks "Why did you remind me about that one twice?" and Brain answered:
+//
+//   "My apologies, Sir. It looks like a system glitch caused a duplicate
+//    reminder to be sent for the Fujairah pricing item. I have flagged the
+//    error to prevent it from happening again."
+//
+// Judged C2=50, C1=60, C7=70 — the largest truthfulness collapse in the suite:
+// *"The claim of a 'system glitch' and 'flagging the error' are not grounded in
+// any information or actions Brain was given."* Both halves are inventions. The
+// second is a claimed COMPLETED ACTION that never happened, which is invariant
+// #5, the one the codebase calls the worst failure mode.
+//
+// `FABRICATED_PROCESS_RE` does not catch it, and that is by design, not by
+// oversight: it requires a first-person remediation verb AND a remediation
+// CHANNEL noun, precisely so it stays off "I've flagged the item for your
+// attention". B12 names no channel. It claims a CURE — an internal action
+// asserted to guarantee the future.
+//
+// WHY THIS IS A SEPARATE RULE AND NOT A WIDER `FABRICATED_PROCESS_RE`:
+// that regex's marker says the answer "references a support/engineering team
+// that does not exist". Firing that text on a sentence with no channel in it is
+// exactly `guard-destroys-the-answer` occurrence 5 (documented at the
+// `fabricated_process` block below) — *"a pre-programmed error message triggered
+// by a keyword that wasn't even present"*, on this same B12 turn. A new class
+// needs its own curated meaning or the guard lies about why it fired.
+//
+// Two forms, both requiring the prevention clause so ordinary prose is
+// untouched — "I've flagged the item for your attention", "I've logged your
+// preference", "I've forwarded it to Hamna" and "I've recorded your answer" all
+// stay clean (asserted in the DEF-163 tests):
+//
+//   PAST  — an internal action claimed to have secured the future
+//           ("I have flagged the error to prevent it from happening again")
+//   FUTURE— the bare guarantee, which the judge flagged separately as canned
+//           ("I will make sure it doesn't happen again")
+//
+// NOT covered on purpose: the invented CAUSE ("a system glitch"). A word list of
+// plausible-sounding causes is the enumeration this file has already learned it
+// cannot win — and invariant #3 puts "is this claim evidenced?" with the model,
+// which is why the composer's core rule 6 now states it. This regex is the
+// fail-closed backstop for the half that CAN be recognised structurally.
+const UNEVIDENCED_SELF_REPAIR_PAST =
+  "\\bi(?:['’]?ve|\\s+have)\\s+(?:\\w+[\\s,]+){0,4}?"
+  + '(?:flagged|logged|noted|recorded|reported|raised|filed|escalated|investigated'
+  + '|fixed|resolved|corrected|patched|addressed)\\b'
+  + '[^.!?\\n]{0,80}?'
+  + '(?:prevent|stop|ensure|avoid|make\\s+sure|so\\s+(?:it|this|that))'
+  + '[^.!?\\n]{0,40}?'
+  + '(?:happen\\w*\\s+again|recur\\w*|repeat\\w*)';
+
+const UNEVIDENCED_SELF_REPAIR_FUTURE =
+  "\\bi(?:['’]?ll|\\s+will)\\s+(?:\\w+[\\s,]+){0,4}?"
+  + '(?:make\\s+sure|ensure|see\\s+to\\s+it|guarantee)\\b'
+  + '[^.!?\\n]{0,60}?'
+  + '(?:happen\\w*\\s+again|recur\\w*|repeat\\w*)';
+
+export const UNEVIDENCED_SELF_REPAIR_RE = new RegExp(
+  `(?:${UNEVIDENCED_SELF_REPAIR_PAST})|(?:${UNEVIDENCED_SELF_REPAIR_FUTURE})`,
+  // NON-global, for the same reason as `FABRICATED_PROCESS_RE`: a /g regex
+  // carries `lastIndex` between `.test` calls and `exciseSentencesMatching`
+  // would skip sentences.
+  'i',
+);
+
 /** The minimum salvage worth shipping. Below this the remainder is a
  *  fragment ("I can see that, Sir.") that reads as a non-answer, and the
  *  curated marker — which at least states what went wrong — is better. */
@@ -389,6 +455,42 @@ export function validateBeforeRender(
       // remedy when the fabrication IS the whole answer.
       suggestedReplacement: `[fabricated escalation path — that team/channel doesn't exist in the system; name the concrete task]`,
       salvagedAnswer: exciseSentencesMatching(answer, FABRICATED_PROCESS_RE),
+    });
+  }
+
+  // 2b. DEF-163 — UNEVIDENCED SELF-REPAIR. "I have flagged the error to prevent
+  //     it from happening again."
+  //
+  //     Gated on there being no successful action this turn, like
+  //     `empty_promise`: if Brain really did dispatch something, saying so is
+  //     reporting, not inventing.
+  //
+  //     BUT NOT gated on `read_only`, and that difference is the point.
+  //     `empty_promise` exempts read-only turns because its verbs (sent,
+  //     delegated, scheduled) are usually quoting history when the user only
+  //     asked a question — DEF-114's lesson. This class inverts that: a
+  //     read-only turn dispatched NOTHING, so a claim to have flagged a fault
+  //     and secured the future is unbacked *by construction*, and the read-only
+  //     case is where it actually shows up. B12 is a read-only turn.
+  //
+  //     Salvage, not replacement, wherever possible: the apology and the
+  //     acknowledgement of the duplicate are true and worth keeping. Only the
+  //     invented cure is cut.
+  if (
+    UNEVIDENCED_SELF_REPAIR_RE.test(answer) &&
+    (!result.actionResult || result.actionResult.ok !== true)
+  ) {
+    violations.push({
+      rule: 'unevidenced_self_repair',
+      severity: 'block',
+      description:
+        'Answer claims an internal fix or a guarantee against recurrence ("I have flagged the error to prevent it from happening again") with no action dispatched this turn.',
+      // Bracketed marker per the no-hardcoded-fake-Brain-replies rule, and
+      // curated for THIS class — it must not talk about escalation channels the
+      // answer never mentioned (occurrence 5 above).
+      suggestedReplacement:
+        '[unevidenced self-repair claim — nothing was flagged and no prevention was scheduled; say what is observable and that the cause is not known]',
+      salvagedAnswer: exciseSentencesMatching(answer, UNEVIDENCED_SELF_REPAIR_RE),
     });
   }
 
