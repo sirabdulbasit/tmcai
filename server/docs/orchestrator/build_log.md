@@ -3262,3 +3262,229 @@ and the honest place to record it is here, not in a score.
   find. I checked: the two other `slice(-9)` sites in `brainComposer` match
   owner-supplied numbers on contact create/edit, and `:506` matches a real phone
   from the bootstrap. Neither takes an inbound sender identifier.
+
+---
+
+## Iteration 17 — mode: structural · campaign C-1 (iteration 6 of 5 — over budget)
+
+**Owner reports: checked first (D-6).** `owner_reports.md` R-1 and R-2 both PROCESSED.
+Nothing below the marker is unmarked — the tail of the file is R-2's pasted transcript,
+which its own header already covers. Nothing new this turn.
+
+### What I targeted, and the honest statement that it is not the fixQueue
+
+Codex's iteration-16 verdict was **WEAK**, and his ranked directive #1 is *"finish DEF-159
+with one resolved identity result passed through routing and rendering."* I took that.
+
+**So I did NOT work the C4 queue, and this turn should not be credited with C4
+movement.** The top C4 entry is:
+
+> **C4 = 80, `B09-identity`:** "The language is generally human-like, but the use of
+> 'Sir' feels a bit overly formal and slightly template-like for a modern executive
+> assistant… It doesn't quite match the casual, direct tone of the user's question."
+
+with B11 (*"The system does not have the capability to initiate WhatsApp calls"* — third
+person about itself), B08 (*"might need your attention"*), B12 (*"I will make sure it
+doesn't happen again"*) behind it. That is one coherent class — **Brain describing itself
+in the third person and reaching for apology templates** — and it is Codex's directive
+#5, ranked last of five. I am naming it here so the next turn can take it without
+re-deriving it.
+
+**Why directive #1 outranked it, on the record:**
+
+1. **It is a regression I shipped last turn.** Codex's HIGH #1: a first-time LID whose
+   upstream mapping SUCCEEDED was reported to the owner as "an unsaved WhatsApp
+   contact", because my kind-check refused to read the real phone sitting in
+   `fromIdentifier`. I made the owner-visible output worse for a case that used to work.
+   Fixing that before chasing tone points is not a judgement call.
+2. **D-9 · S3** — closing a reviewer finding on a change that has not earned SOUND is
+   explicitly significant, and D-9 says a further point of C4 explicitly is not.
+3. **Structural mode forbids another patch on the reported instance**, which is exactly
+   what iteration 16's fix was in retrospect: it removed one wrong lookup and left the
+   shape that produced it.
+
+**Campaign C-1 got nothing this turn.** It is iteration 6 of 5, over budget, and I am not
+arguing for an extension: its exit condition (the proactive slice reporting separately)
+was met at iteration 15, and what remains — D-1 teardown for live-backlog writes — is
+not what Codex ranked first. If the orchestrator wants C-1 formally closed rather than
+drifting, that is a decision for the record.
+
+### Governing docs, checked before coding — verdict: CIRCLING
+
+`whatsapp-lid-activity-rejected` is in chart §3 at **6 occurrences**, with a containment
+note reading *"the next change must remove the dependency, not repair it"*. Under
+CLAUDE.md rule 5 that forbids another patch on the reported instance, which is what made
+directive #1 the correct shape of change rather than merely the top of a list.
+
+### The change
+
+**One resolution, one object, two consumers.**
+
+- `delegationCaptureService.ts:68-82` — `captureDelegationReply` calls
+  `resolveSenderIdentity(input)` once and takes `counterpartKey` from it.
+- `delegationCaptureService.ts` — `resolveSenderIdentity` returns a `SenderIdentity`:
+  `kind`, `counterpartKey`, `contactId`, `name`, `phone`,
+  `source: stored_alias | upstream_phone | bootstrap | unknown`, `bindingDurable`,
+  `display`.
+- `notifyOwnerOfUnattachedReply(input, ownerUserId, identity)` — takes the identity as an
+  **argument**. It cannot re-derive what it is not allowed to look up.
+- **`resolveByLidAlias` and `resolveSenderDisplayName` are both deleted.**
+  `bootstrapLidBinding` is DEF-075's temporal inference returning an identity instead of
+  a key.
+
+**Why that is the mechanism and not a tidier version of the same thing.**
+`protection-with-two-implementations` has eight recorded occurrences here. Every previous
+attempt at this class made the two copies agree; agreement is a state, and states drift.
+The three disagreements Codex found are all of the form "caller A computed identity, then
+caller B computed it again under different rules or at a different time". Passing a value
+removes the second computation, so there is no second answer to keep in sync. That is why
+the notice takes an argument rather than calling a shared helper — a shared helper called
+twice is still two answers when the database moved in between, which is precisely how
+HIGH #2 happened.
+
+**The four specific divergences, each closed and each mutation-proven:**
+
+1. **Upstream mapped phone discarded** (Codex HIGH #1, my regression). A `@lid` raw id no
+   longer implies the identifier is synthetic; `isSyntheticLidIdentity` decides that, and
+   a mapped real number is resolved as the phone it is.
+2. **Failed alias write split the answer** (HIGH #2). The bootstrap inference is returned
+   whether or not `entity.update` succeeds, with `bindingDurable: false` recording that
+   the next reply must infer again. The system has already committed to that identity by
+   attaching the reply to that person's thread; telling the owner something different is
+   the bug, not the safeguard.
+3. **Nameless saved contact called a stranger** (MEDIUM #3). One display policy: name,
+   else the resolved number, else the fail-closed label.
+4. **DEF-162 — the collision survived where it becomes PERMANENT.** Not reported by
+   anyone; found because the test drives `captureDelegationReply` rather than the
+   resolver. The bootstrap fed a thread's `counterpartNumberCanonical` into
+   `phone: { contains: <last 9 digits> }`, and when that number is itself a synthetic
+   `'+' + lid` — what a thread created by an earlier unresolved reply carries — it
+   matched the colliding contact and **wrote `metadata.waLid` onto them**. The run
+   printed it: `lid alias bound {"contact":"Imran Sheikh","phone":"+255043747987458"}`.
+   DEF-075's own comment says a wrong bind *"is durable and would misroute that person's
+   replies indefinitely"*. The bootstrap now declines a candidate whose digits are the
+   LID's own.
+
+**One behaviour change worth flagging rather than burying:** an unresolved LID still
+routes on its synthetic token. Returning a null key would have made capture drop the
+reply silently, against invariant #6 and DEF-064's rule that a known person's reply is
+never thrown away. Display stays fail-closed regardless — the split is deliberate and it
+is the point of one identity with two consumers: routing may use an opaque token it
+cannot explain, and the owner is never shown a name we do not have.
+
+### Two existing tests changed, and exactly what I did to them
+
+Both went red on my change. Neither was weakened to go green, and both are worth Codex's
+attention because "I adjusted a test" is the claim that most deserves suspicion.
+
+- **`def047ReplyCorrelation.test.ts`** — its prisma mock had no `entity` model at all, so
+  the new lookup threw `Cannot read properties of undefined`. I added
+  `entity: { findFirst, update }` and a `mockResolvedValue(null)` default. No assertion
+  touched.
+- **`def075LidAliasBinding.test.ts`, "a normal phone sender skips the alias path
+  entirely"** — asserted `entity.findFirst` was **never called**. That assertion stopped
+  expressing its own title once identity resolution became unconditional: a plain
+  sender's name is now looked up during resolution rather than inside the notice, so a
+  query count is no longer the same claim as "skips the alias path". I replaced the count
+  with the three things the alias path actually does, none of which may happen for a
+  plain sender: no `metadata.waLid` read, no bootstrap thread scan, no `entity.update`.
+  **I proved the rewrite still guards** — routing plain senders into the alias branch
+  fails it with `no waLid alias read: expected […] to have a length of +0 but got 1`.
+  I believe that is strictly stronger than what it replaced; if Codex reads it as
+  weakening, it is the one change in this diff I would revert first.
+
+**The cost I accepted, so it is judged rather than discovered:** every inbound delegation
+reply now performs one indexed `entity.findFirst` even when no owner notice is sent,
+because identity is resolved eagerly. Resolving it lazily would restore the two-call-site
+shape that caused HIGH #2. These are human-typed WhatsApp replies, not a hot path, so I
+took the query over the divergence. If that trade is wrong it should be argued as a
+trade, not fixed by moving the lookup back.
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2118 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 177 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 4 mutants, each killed by exactly one test** — 1:1 attribution, which is what
+makes them mean anything:
+
+| mutation | test that dies |
+|---|---|
+| drop the upstream-mapped-phone branch | *honours a real phone the provider DID map* |
+| bootstrap identity loses its name | *a failed alias write does not produce two answers* |
+| display requires a name | *a saved contact with no name is identified by its number* |
+| bootstrap accepts synthetic candidates | *says "unsaved contact" … when we truly do not know* |
+
+**An honest gap in that table:** the end-to-end mapped-phone case is NOT independently
+sensitive to the first mutant. With a recent thread present, the bootstrap reaches the
+same person by another route, so only the resolver-level test fails. The e2e case is
+still worth keeping — it pins the notice text — but it is not the thing proving HIGH #1
+is closed.
+
+### CAPABILITY: Accurate Communication · PREDICTED: +0
+
+**MECHANISM:** the owner is told who wrote to him by the same resolution that decided
+where the reply went, so the two can no longer disagree; and when we do not know, he is
+told that instead of being handed a number that is not one.
+
+**FALSIFIER:** any owner-facing text about a counterpart reply that names someone other
+than the identity routing used, or presents a synthetic `'+' + lid` as a phone number, or
+calls a contact unsaved when resolution produced a phone or a name for them.
+
+**Attribution correction from last turn:** I wrote `CAPABILITY: COMMUNICATES`, which is
+not one of the nine names in `capability_contract.md`. Codex ruled it MISATTRIBUTED on the
+name. The canonical name is **Accurate Communication**; the change log row is corrected in
+place.
+
+**PREDICTED: +0, and I want that on the record before the score is read.** No benchmark
+case exercises LID identity — Codex's own LOW #4 notes B05/B08 still contain
+`+239487846228094` because compose reads historical prompt rows this resolver never
+touched. C4 moved 88.3→87.1 last turn with none of the changed lines in the path. If C4
+moves either way this turn, that is variance, not this diff.
+
+### What I did NOT do
+
+- **Codex directive #2's production replay** — I cannot; the loop owns deploy. The class
+  is recorded CONTAINMENT-OPEN and the DEF rows say UNVERIFIED rather than FIXED-and-closed.
+- **Directive #2's inventory of `senderTriage` and other owner-visible LID renderers.** I
+  checked that `src/services/whatsapp/senderTriage.ts` mentions `@lid` and did not read it
+  end-to-end or migrate it to `SenderIdentity`. It is the most likely place a seventh
+  vector is hiding, and I would rather say that than imply I exhausted the class. Two
+  producers were exhausted; the class was not.
+- **Directive #3, the durable outbox** (DEF-156/158). Named for the fourth time, still one
+  piece of work, still not started.
+- **Directives #4 and #5** — DEF-160/161/150, and the C4 queue.
+- **D-1 teardown** for benchmark writes to the live backlog. Still open.
+- **No chat log row**: no new owner chat arrived this turn, so `brain_chat_log.md` is
+  untouched by design rather than by omission.
+
+### What I am unsure about
+
+- **Whether `bindingDurable` will ever be read.** Nothing consumes it yet. I added it
+  because Codex asked for binding durability in the object and because it makes the
+  failed-write case assertable — but a field with one writer and no reader is the kind of
+  thing that rots. If nothing uses it by the time the outbox lands, it should go.
+- **Whether displaying a bootstrap-inferred name unhedged is right.** DEF-075 calls it an
+  inference; I show it as a fact, on the reasoning that routing has already committed to
+  it. The alternative is to hedge it in the notice — but then it must be hedged in both
+  places or neither, which is the whole lesson of this DEF.
+- **Whether `senderTriage` disagrees with this resolver today.** I did not check.
+
+### Prediction, and what would prove me wrong
+
+**C4 should not move, and neither should the overall.** Nothing in this diff is on a
+compose path.
+
+**What would prove me wrong:**
+- **C4 moves materially in either direction** → this path is reachable from a harness I
+  believe it is not, and my scoping is wrong.
+- **A seventh recurrence of the LID class** → two producers did not exhaust it, which is
+  the specific thing I flagged above as unchecked.
+- **Codex finds a fourth divergence between routing and display** → then passing a value
+  did not remove the second computation, and I have misdiagnosed the mechanism rather
+  than fixed it.
+- **The Scorer credits capability movement** → it should read `+0`; this is a defect fix
+  on an undeployed path, and the honest number is zero until the R-2 sender is replayed
+  live.

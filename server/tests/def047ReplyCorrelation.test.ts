@@ -30,6 +30,9 @@ import path from 'path';
 
 const H = vi.hoisted(() => ({
   prismaMock: {
+    // DEF-159 — capture resolves the sender's identity once, for routing AND for
+    // anything the owner reads, so an `entity` lookup is now on this path.
+    entity: { findFirst: vi.fn(), update: vi.fn() },
     delegationThread: { findFirst: vi.fn(), findMany: vi.fn() },
     delegationThreadEvent: { findFirst: vi.fn() },
     openItem: { findFirst: vi.fn() },
@@ -93,6 +96,7 @@ beforeEach(() => {
     $queryRawUnsafe: vi.fn(async () => [{ id: 'inc_1' }]),
   }));
   H.prismaMock.delegationThreadEvent.findFirst.mockResolvedValue(null);
+  H.prismaMock.entity.findFirst.mockResolvedValue(null);  // no saved contact by default
   H.prismaMock.openItem.findFirst.mockResolvedValue({ title: 'Office attendance', dueDate: null, userId: 2 });
   H.appendEventWithTransition.mockResolvedValue({ ok: true, eventId: 'evt_inbound' });
   H.interpretActionReplyStrict.mockResolvedValue({

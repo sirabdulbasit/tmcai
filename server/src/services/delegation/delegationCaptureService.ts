@@ -65,36 +65,21 @@ export interface DelegationCaptureResult {
 export async function captureDelegationReply(input: DelegationCaptureInput): Promise<DelegationCaptureResult> {
   if (!await isDelegationCaptureEnabled(input.clientNumber)) return { matched: false, outcome: 'disabled' };
 
-  let counterpartKey = counterpartKeyFor(input.channel, input.fromIdentifier);
+  // ── DEF-075 / DEF-159 — resolve WHO this is exactly ONCE ─────────────
+  //
+  // DEF-075 stopped depending on the WhatsApp mapping API, which had failed four
+  // times; when it fails `WebjsProvider` falls back to `'+' + lid`, a SYNTHETIC
+  // number that matches nothing, so Hamna's reply arrived as `+255043747987458`
+  // while her thread is keyed `wa:+923134199294` and she was triaged as a
+  // stranger. That is why no counterpart reply had ever been correlated.
+  //
+  // DEF-159 is the other half: identity was resolved HERE for routing and again
+  // in the owner notice for display, so the two could disagree — and did, three
+  // ways (Codex iteration-16). One resolution, one object, both consumers. The
+  // notice takes it as an argument precisely so it cannot re-derive it.
+  const identity = await resolveSenderIdentity(input);
+  const counterpartKey = identity.counterpartKey;
   if (!counterpartKey) return { matched: false, outcome: 'no_thread' };
-
-  // ── DEF-075 — bind the LID once, then match exactly forever after ────
-  //
-  // Fifth recurrence of the @lid class, and the first four all tried the same
-  // thing: resolve LID → phone at read time. That depends on an upstream API
-  // which has now failed four times, and when it fails `WebjsProvider` falls
-  // back to `'+' + lid` — a SYNTHETIC number that matches nothing. Hamna's
-  // reply arrived as `+255043747987458` while her thread is keyed
-  // `wa:+923134199294`, so she was triaged as a stranger. That is the whole
-  // reason no counterpart reply has ever been correlated.
-  //
-  // This stops depending on resolution. Two steps, neither calling the API:
-  //
-  //   1. KNOWN ALIAS — a contact already carrying this LID gives the real
-  //      phone. Exact, permanent, and the path every reply after the first
-  //      takes.
-  //   2. BOOTSTRAP — an unknown LID replying while EXACTLY ONE thread is
-  //      awaiting a reply from someone we messaged in the last 6 hours is
-  //      almost certainly that person. Bind the alias to their contact, then
-  //      proceed. One temporal inference buys permanent exactness.
-  //
-  // Deliberately narrow. Two candidates ⇒ no bind, because a wrong bind is
-  // durable and would misroute that person's replies indefinitely. A known
-  // alias is never overwritten by a guess.
-  if (isSyntheticLidIdentity(input)) {
-    const bound = await resolveByLidAlias(input);
-    if (bound) counterpartKey = bound;
-  }
 
   // ── correlation ────────────────────────────────────────────────────
   let thread: { id: string; state: string; ownerUserId: number; openItemId: string } | null = null;
@@ -201,7 +186,7 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
     // sender". He asked her something; she answered; he is told. The thread
     // state machine is our bookkeeping problem, not a reason to lose her words.
     if (knownButClosedToReplies) {
-      await notifyOwnerOfUnattachedReply(input, knownThreadOwnerUserId);
+      await notifyOwnerOfUnattachedReply(input, knownThreadOwnerUserId, identity);
       return { matched: true, outcome: 'consumed' };
     }
     return { matched: false, outcome: 'no_thread' }; // silent drop upstream
@@ -264,13 +249,13 @@ export async function captureDelegationReply(input: DelegationCaptureInput): Pro
 async function notifyOwnerOfUnattachedReply(
   input: DelegationCaptureInput,
   ownerUserId: number | null,
+  /** DEF-159 — the identity ROUTING resolved. Passed in, never re-derived: a
+   *  second lookup is a second answer, and the owner got the wrong one. The
+   *  retention path below names the sender from it too. */
+  identity: SenderIdentity,
 ): Promise<void> {
   if (!ownerUserId) return;
-  // DEF-159 — resolved once, through the canonical binding, and BEFORE the try:
-  // the retention path below has to name the sender too, and it must not name
-  // him with a LID's digits dressed up as a phone number. The resolver absorbs
-  // its own query failures, so it cannot break this path.
-  const who = (await resolveSenderDisplayName(input)).who;
+  const who = identity.display;
   try {
 
     // ── DEF-156: decide ONCE per sender-window, not once per message ────────
@@ -454,80 +439,187 @@ async function contactByLidAlias(
   }).catch(() => null) as any;
 }
 
+/** The contact whose saved number matches this REAL phone, or null. Only ever
+ *  called with something we believe is a phone number. */
+async function contactByPhone(
+  clientNumber: string,
+  phone: string,
+): Promise<{ id: string; name: string | null; phone: string | null } | null> {
+  const digits = phone.replace(/[^0-9]/g, '').slice(-9);
+  if (digits.length < 7) return null;
+  return prisma.entity.findFirst({
+    where: { clientNumber, entityType: 'contact', phone: { contains: digits } },
+    select: { id: true, name: true, phone: true },
+  }).catch(() => null) as any;
+}
+
+/** How we arrived at the identity. Recorded so a disagreement is auditable
+ *  rather than a mystery, and so `bootstrap` can be told from fact. */
+export type SenderResolutionSource =
+  | 'stored_alias'   // a contact carries this `@lid`. Exact and permanent.
+  | 'upstream_phone' // the provider gave us a real phone; we matched it as one.
+  | 'bootstrap'      // inferred from exactly one recent thread (DEF-075).
+  | 'unknown';       // we do not know, and say so.
+
 /**
- * DEF-159 — who is this sender, in words a human will read?
- *
- * Sixth recurrence of the `@lid` class, and the first one where the damage was
- * not a missed message but a WRONG NAME. `notifyOwnerOfUnattachedReply` matched
- * `fromIdentifier`'s last nine digits against `entity.phone`. For a synthetic
- * `'+' + lid` those digits are not a phone number at all, so the match is a
- * coincidence — and a coincidence that lands names Haseeb recognises on words
- * somebody else wrote. Nine digits from a 15-digit LID collide readily.
- *
- * So the rule is by identifier KIND, not by fallback order:
- *
- *   - a LID is resolved ONLY through the alias binding above. Its digits are
- *     never offered to a phone comparison, because they are not a phone.
- *   - a real phone is matched as a phone, and is itself honest to display.
- *
- * Unresolved fails CLOSED (invariant #6). We say the sender is unsaved and give
- * the provider id as an id — never as `+255043747987458`, which reads to the
- * owner as a phone number he could ring and cannot.
+ * ONE resolved answer to "who is this sender?", used for BOTH correlation and
+ * anything a human reads.
  */
-export async function resolveSenderDisplayName(
-  input: Pick<DelegationCaptureInput, 'clientNumber' | 'fromIdentifier' | 'rawSenderId'>,
-): Promise<{ who: string; resolved: boolean }> {
+export interface SenderIdentity {
+  /** What the provider actually handed us, before any resolution. */
+  kind: 'lid' | 'plain';
+  /** The correlation key. Null means nothing can be keyed and capture stops. */
+  counterpartKey: string | null;
+  contactId: string | null;
+  name: string | null;
+  phone: string | null;
+  source: SenderResolutionSource;
+  /** False when we inferred a binding and could not persist it. The identity is
+   *  still returned — see the note on two answers below. */
+  bindingDurable: boolean;
+  /** The ONE string owner-facing text uses for this sender. */
+  display: string;
+}
+
+/**
+ * DEF-159 — one resolution, threaded through routing and rendering.
+ *
+ * Sixth recurrence of the `@lid` class. My iteration-16 fix removed the wrong
+ * lookup (a LID's digits substring-matched against `entity.phone`, which lands
+ * names Haseeb recognises on words somebody else wrote) but left the deeper
+ * shape intact: routing resolved identity in `resolveByLidAlias` and the notice
+ * resolved it AGAIN, so the two could still disagree. Codex's iteration-16
+ * review found three ways they do, and one was a regression I introduced.
+ *
+ * `protection-with-two-implementations` has eight recorded occurrences in this
+ * codebase. It is not fixed by making both copies agree today; it is fixed by
+ * there being one copy. So this returns a value, both callers use that value,
+ * and NOTHING re-reads identity downstream.
+ *
+ * Resolution order, and why each step exists:
+ *
+ *   1. STORED ALIAS — a contact carrying this `@lid`. Exact, permanent, and the
+ *      path every reply after the first takes.
+ *   2. UPSTREAM PHONE — the provider DID map the LID to a real number. Codex's
+ *      iteration-16 HIGH #1: my kind-check discarded that, so a first-time LID
+ *      whose mapping SUCCEEDED was reported as an unsaved contact while its real
+ *      phone sat in `fromIdentifier`. Refusing information we were given is not
+ *      failing closed, it is failing blind. The synthetic check is what
+ *      distinguishes the two — `'+' + lid` is not a phone; a mapped number is.
+ *   3. BOOTSTRAP — an unknown synthetic LID replying while EXACTLY ONE thread
+ *      awaits a reply from someone messaged recently (DEF-075). One temporal
+ *      inference buys permanent exactness.
+ *   4. UNKNOWN — fails closed. "An unsaved WhatsApp contact (id …)", never
+ *      `+239487846228094`, which reads as a number the owner could ring.
+ *
+ * ── ON THE BOOTSTRAP WRITE FAILING (Codex HIGH #2) ──────────────────────────
+ *
+ * The alias write is best-effort and always was. Previously routing returned the
+ * inferred key anyway while the notice re-read the alias that was never written,
+ * so the reply attached to Hamna's thread and the owner was told it came from an
+ * unsaved id. **The inference is returned either way, and both callers use it**,
+ * because the system has already committed to that identity by attaching the
+ * reply to that person's thread — telling the owner something different is the
+ * bug, not the safeguard. `bindingDurable: false` records that the next reply
+ * will have to infer again.
+ *
+ * If we ever decide to hedge the wording of an inferred identity, it must be
+ * hedged for routing and display together or for neither. That is the whole
+ * lesson of this DEF.
+ */
+export async function resolveSenderIdentity(
+  input: Pick<DelegationCaptureInput, 'clientNumber' | 'channel' | 'fromIdentifier' | 'rawSenderId'>,
+): Promise<SenderIdentity> {
   const raw = (input.rawSenderId ?? '').trim();
   const isLid = raw.endsWith('@lid');
+  const plainKey = counterpartKeyFor(input.channel, input.fromIdentifier);
 
-  if (isLid) {
-    const bound = await contactByLidAlias(input.clientNumber, raw);
-    if (bound?.name) return { who: bound.name, resolved: true };
-    return { who: `an unsaved WhatsApp contact (id ${raw.replace('@lid', '')})`, resolved: false };
+  /** Display policy, in one place (Codex MEDIUM #3): a name if we have one, else
+   *  the real number if we resolved one — a saved contact with a blank name is
+   *  still honestly identified by its number — else the fail-closed label. */
+  const finalise = (
+    parts: Omit<SenderIdentity, 'display'> & { fallbackDisplay: string },
+  ): SenderIdentity => {
+    const { fallbackDisplay, ...identity } = parts;
+    return { ...identity, display: identity.name || identity.phone || fallbackDisplay };
+  };
+
+  /** Never the synthetic `'+' + lid`. The bare id, labelled as an id, so two
+   *  unknown senders stay distinguishable. */
+  const unsavedLabel = `an unsaved WhatsApp contact (id ${raw.replace('@lid', '')})`;
+
+  if (!isLid) {
+    const contact = await contactByPhone(input.clientNumber, input.fromIdentifier);
+    return finalise({
+      kind: 'plain', counterpartKey: plainKey,
+      contactId: contact?.id ?? null, name: contact?.name ?? null,
+      phone: contact?.phone ?? (plainKey ? input.fromIdentifier : null),
+      source: contact ? 'upstream_phone' : 'unknown', bindingDurable: true,
+      // An unknown REAL number is honest to show as itself.
+      fallbackDisplay: input.fromIdentifier,
+    });
   }
 
-  const digits = input.fromIdentifier.replace(/[^0-9]/g, '').slice(-9);
-  if (digits.length < 7) return { who: input.fromIdentifier, resolved: false };
-  const contact = await prisma.entity.findFirst({
-    where: { clientNumber: input.clientNumber, entityType: 'contact', phone: { contains: digits } },
-    select: { name: true },
-  }).catch(() => null);
-  return contact?.name
-    ? { who: contact.name, resolved: true }
-    : { who: input.fromIdentifier, resolved: false };
-}
-
-/** True when `fromIdentifier` is the synthetic `'+' + lid` that WebjsProvider
- *  falls back to. A real phone never equals the LID digits. */
-function isSyntheticLidIdentity(input: DelegationCaptureInput): boolean {
-  const raw = (input.rawSenderId ?? '').trim();
-  if (!raw.endsWith('@lid')) return false;
-  return input.fromIdentifier.replace(/[^0-9]/g, '') === raw.replace('@lid', '');
-}
-
-/**
- * Turn a raw `@lid` into the counterpart key of a REAL phone, or null.
- *
- * Never calls the WhatsApp mapping API — that is precisely the dependency that
- * has failed four times and produced this fifth recurrence.
- */
-async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string | null> {
-  const lid = (input.rawSenderId ?? '').trim();
-  if (!lid) return null;
-
-  // 1. Known alias — exact, and the path every reply after the first takes.
-  const known = await contactByLidAlias(input.clientNumber, lid);
-  if (known?.phone) {
-    const key = counterpartKeyFor(input.channel, known.phone);
+  // 1. Stored alias.
+  const bound = await contactByLidAlias(input.clientNumber, raw);
+  if (bound?.phone) {
+    const key = counterpartKeyFor(input.channel, bound.phone);
     if (key) {
-      log.info('lid alias hit', { lid, contact: known.name });
-      return key;
+      log.info('lid alias hit', { lid: raw, contact: bound.name });
+      return finalise({
+        kind: 'lid', counterpartKey: key, contactId: bound.id,
+        name: bound.name, phone: bound.phone,
+        source: 'stored_alias', bindingDurable: true, fallbackDisplay: unsavedLabel,
+      });
     }
   }
 
-  // 2. Bootstrap. Exactly ONE thread awaiting a reply from someone messaged
-  //    recently ⇒ this is almost certainly them. Two candidates and we do not
-  //    guess: a wrong bind is durable and would misroute them indefinitely.
+  // 2. Upstream mapped it. Use what we were given.
+  if (!isSyntheticLidIdentity(input)) {
+    const contact = await contactByPhone(input.clientNumber, input.fromIdentifier);
+    return finalise({
+      kind: 'lid', counterpartKey: plainKey,
+      contactId: contact?.id ?? null, name: contact?.name ?? null,
+      phone: contact?.phone ?? (plainKey ? input.fromIdentifier : null),
+      source: contact ? 'upstream_phone' : 'unknown', bindingDurable: true,
+      // A real mapped number, so itself — not the unsaved-id label.
+      fallbackDisplay: input.fromIdentifier,
+    });
+  }
+
+  // 3. Bootstrap.
+  const inferred = await bootstrapLidBinding(input, raw);
+  if (inferred) return finalise({ ...inferred, fallbackDisplay: unsavedLabel });
+
+  // 4. We do not know who this is.
+  //
+  // The KEY is still the synthetic identifier, because it is an opaque routing
+  // token and dropping it would silently discard the reply — invariant #6, and
+  // DEF-064's rule that a reply is never thrown away. A second message from the
+  // same unresolved sender correlates to the thread the first one made.
+  //
+  // The DISPLAY is the fail-closed label regardless. That is the point of one
+  // identity with two consumers: routing may use a token it cannot explain, and
+  // the owner is never shown a name we do not have.
+  return finalise({
+    kind: 'lid', counterpartKey: plainKey, contactId: null, name: null, phone: null,
+    source: 'unknown', bindingDurable: true, fallbackDisplay: unsavedLabel,
+  });
+}
+
+/**
+ * DEF-075's temporal inference, now returning the identity rather than a key.
+ *
+ * Deliberately narrow: two candidates and we do not guess, because a wrong bind
+ * is durable and would misroute that person's replies indefinitely.
+ *
+ * Never calls the WhatsApp mapping API — that is precisely the dependency that
+ * failed four times and produced the fifth recurrence.
+ */
+async function bootstrapLidBinding(
+  input: Pick<DelegationCaptureInput, 'clientNumber' | 'channel'>,
+  lid: string,
+): Promise<Omit<SenderIdentity, 'display'> | null> {
   const since = new Date(Date.now() - await bootstrapWindowMs(input.clientNumber));
   const waiting = await prisma.delegationThread.findMany({
     where: {
@@ -540,8 +632,20 @@ async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string 
     take: 10,
   }).catch(() => [] as any[]);
 
+  // DEF-159 — a candidate whose canonical number IS this LID's own digits is a
+  // thread a previous UNRESOLVED reply created. It is not a real phone, so
+  // `contactByPhoneWithMetadata` would match it by nine-digit substring against
+  // whatever contact happens to collide, name that person to the owner, and
+  // PERSIST the wrong alias. DEF-075 is explicit that a wrong bind is durable and
+  // misroutes that person's replies indefinitely — so the collision this DEF
+  // removed from display must not survive here, where it is worse.
+  //
+  // Found by driving the real capture path in the test rather than the resolver:
+  // it logged `lid alias bound {contact: "Imran Sheikh", phone: "+255043747987458"}`.
+  const lidDigits = lid.replace('@lid', '').replace(/[^0-9]/g, '');
   const distinct = Array.from(new Set(
-    waiting.map((t: any) => t.counterpartNumberCanonical).filter(Boolean)));
+    waiting.map((t: any) => t.counterpartNumberCanonical).filter(Boolean)))
+    .filter((n: any) => String(n).replace(/[^0-9]/g, '') !== lidDigits);
   if (distinct.length !== 1) {
     log.info('lid bootstrap declined', { lid, candidates: distinct.length });
     return null;
@@ -552,25 +656,56 @@ async function resolveByLidAlias(input: DelegationCaptureInput): Promise<string 
   if (!key) return null;
 
   // Persist so this is the LAST time we infer for this person.
-  const contact = await prisma.entity.findFirst({
-    where: {
-      clientNumber: input.clientNumber, entityType: 'contact',
-      phone: { contains: phone.replace(/[^0-9]/g, '').slice(-9) },
-    },
-    select: { id: true, name: true, metadata: true },
-  }).catch(() => null);
+  const contact = await contactByPhoneWithMetadata(input.clientNumber, phone);
+  let bindingDurable = false;
   if (contact) {
     const meta = { ...((contact.metadata ?? {}) as Record<string, unknown>) };
     if (!meta.waLid) {
       meta.waLid = lid;
       meta.waLidBoundAt = new Date().toISOString();
       meta.waLidBoundBy = 'reply_bootstrap';
-      await prisma.entity.update({ where: { id: contact.id }, data: { metadata: meta as any } })
-        .catch(() => undefined);
-      log.info('lid alias bound', { lid, contact: contact.name, phone });
+      const written = await prisma.entity
+        .update({ where: { id: contact.id }, data: { metadata: meta as any } })
+        .then(() => true).catch(() => false);
+      bindingDurable = written;
+      if (written) log.info('lid alias bound', { lid, contact: contact.name, phone });
+      // The identity is still returned — routing and display must not diverge
+      // over a failed write (Codex iteration-16 HIGH #2).
+      else log.warn('lid alias write failed; identity inferred but not durable', { lid, phone });
+    } else {
+      bindingDurable = true; // already bound by someone else
     }
   }
-  return key;
+
+  return {
+    kind: 'lid', counterpartKey: key,
+    contactId: contact?.id ?? null, name: contact?.name ?? null, phone,
+    source: 'bootstrap', bindingDurable,
+  };
+}
+
+/** Same match as `contactByPhone`, plus the metadata the alias write needs. */
+async function contactByPhoneWithMetadata(
+  clientNumber: string,
+  phone: string,
+): Promise<{ id: string; name: string | null; metadata: unknown } | null> {
+  return prisma.entity.findFirst({
+    where: {
+      clientNumber, entityType: 'contact',
+      phone: { contains: phone.replace(/[^0-9]/g, '').slice(-9) },
+    },
+    select: { id: true, name: true, metadata: true },
+  }).catch(() => null) as any;
+}
+
+/** True when `fromIdentifier` is the synthetic `'+' + lid` that WebjsProvider
+ *  falls back to. A real phone never equals the LID digits. */
+function isSyntheticLidIdentity(
+  input: Pick<DelegationCaptureInput, 'fromIdentifier' | 'rawSenderId'>,
+): boolean {
+  const raw = (input.rawSenderId ?? '').trim();
+  if (!raw.endsWith('@lid')) return false;
+  return input.fromIdentifier.replace(/[^0-9]/g, '') === raw.replace('@lid', '');
 }
 
 // ── classification (persisted, idempotent) ───────────────────────────

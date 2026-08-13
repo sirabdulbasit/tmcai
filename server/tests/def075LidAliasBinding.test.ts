@@ -172,7 +172,22 @@ describe('DEF-075 — it does not touch anything else', () => {
       fromIdentifier: REAL, rawSenderId: `${REAL.slice(1)}@c.us`,
       body: 'done', sourceId: 'wamid.plain',
     });
-    expect(H.prismaMock.entity.findFirst).not.toHaveBeenCalled();
+
+    // DEF-159 — this asserted `entity.findFirst` was never called, which stopped
+    // expressing its own title once identity resolution became unconditional:
+    // routing and the owner notice now share ONE resolution (a plain sender's
+    // name is looked up there rather than inside the notice), so a query count is
+    // no longer the same claim as "skips the alias path".
+    //
+    // Named directly instead, which is a STRONGER constraint than the count was —
+    // none of the three things the alias path does may happen for a plain sender.
+    const aliasReads = H.prismaMock.entity.findFirst.mock.calls
+      .filter(([args]: any[]) => args?.where?.metadata);
+    expect(aliasReads, 'no waLid alias read').toHaveLength(0);
+    const bootstrapScans = H.prismaMock.delegationThread.findMany.mock.calls
+      .filter(([args]: any[]) => args?.where?.counterpartNumberCanonical);
+    expect(bootstrapScans, 'no bootstrap thread scan').toHaveLength(0);
+    expect(H.prismaMock.entity.update, 'no alias write').not.toHaveBeenCalled();
   });
 
   it('never calls the WhatsApp mapping API — the dependency that failed 4×', () => {
