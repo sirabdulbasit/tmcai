@@ -4674,3 +4674,119 @@ a burst; or any write on this path.
   environment-specific and the finding is unsafe.
 - **Codex finds a sixth defect in the measurement unit** → the instrument needs a different
   owner than me, because two rounds of my own review missed what his one round caught.
+
+---
+
+## Iteration 27 — mode: structural · campaign C-3 (iteration 3 of 5)
+
+**Owner reports: checked first (D-6).** Nothing unprocessed.
+
+### The escalation, answered: neither (a) nor (b) — the findings are FIXED this turn
+
+The orchestrator asks whether iteration 26's remaining finding should be accepted as a
+known limitation or grounds for reverting. **Neither: this commit closes all five of
+Codex's iteration-26 findings on the same change**, and the reviewer should judge that
+claim against the diff. Accepting them would have left a policy key that silently never
+worked; reverting would have thrown away four corrections he confirmed as supported. The
+re-scope directive wanted work that can ship — a sound counter IS the shippable unit, and
+increment 1's deploy has been blocked precisely on these findings.
+
+### What each finding got
+
+| # | finding | fix |
+|---|---|---|
+| HIGH 1 | `selfpruning.burst_max_span_minutes` never registered; catch silently pinned the span to 1440; tests mocked the resolver | key REGISTERED in `BEHAVIOR_SPECS` (min 30 / max 43200 / tenant); unknown-key now RETHROWS; tests drive the REAL resolver — tenant override takes effect, out-of-range clamps |
+| HIGH 2 | sender-first grouping meant the instrument could not produce the cross-producer finding I quoted — I had computed the "13 from three producers" by hand | the SUBJECT is the primary unit, aggregated across producers, with a per-producer breakdown inside the group; Codex's exact 2+2+2 mutation case is a test |
+| MED 3 | one item split between its `item:` and `thread:` keys | thread keys canonicalise to their item via a tenant-scoped `delegation_thread` join; a failed join sets a visible `canonicalisationFailed` flag instead of merging blind or throwing. Honestly partial: event↔item aliases have no join this code can read |
+| MED 4 | class-only groups were burst-eligible; the ban lived in prose | `bursts` contains ONLY exact subjects by construction; class aggregates live in `floods` — different collection, different type, different field name. CL-033 stays visible and quotable there, and is not auto-actionable |
+| LOW 5 | exactly 5,000 rows reported as truncated | truncation only when a row PAST the cap is actually seen; 4,999/5,000/5,001 are tests; pagination is cursor-based on `(sentAt, id)` so concurrent inserts cannot skew pages |
+
+**The part worth naming plainly:** my iteration-26 tests mocked `getBehaviorValue`, so
+they proved a configuration path production could not take. That is the same test-shaped
+failure as iteration 21 (asserting a violation's private field while the route read
+another) — the suite validated my assumption instead of the system. The new tests
+substitute only the tenant config STORE, which is the seam production itself goes
+through; the resolver, spec lookup, clamping and caching are all real.
+
+### Governing docs — verdict: PROGRESSING (second correction to my own instrument)
+
+### Verification (run from `server/`, after the last edit)
+
+- `npx tsc --noEmit` — **0 errors**
+- `npx vitest run` — **2228 passed**, 0 failed (7 expected-fail, 21 skipped, 1 todo), 183 files / 1 skipped
+- `npm run build` — **exit 0**
+- `git diff --check` — **clean**
+
+**Mutation: 6 mutants, one per finding, all die.** Unregistering the key kills **all 21
+tests** — the loud failure iteration 26 lacked, now structural: an unknown behavior key is
+a build defect, not an operational fallback.
+
+### THE NUMBER, from production (read-only, 30 days) — now stated BY the instrument
+
+```
+REACHED=95 ANSWERED=49 UNANSWERED=46 BURSTS=0
+```
+
+| subject | delivered | producers | unanswered |
+|---|---|---|---|
+| `item:cmqauv4xx…` | 13 | status 5× · nudge 5× · governor 3× | **69%** |
+| `item:cmpcshpqx…` | 14 | governor 7× · reply 4× · status 3× | 57% |
+| `item:cmsj79dnw…` | 5 | nudge 3× · governor 2× | **80%** |
+| `+239487846228094` (CL-033 sender) | 13 | — flood-shaped, non-actionable collection | **0% — he answered all 13** |
+
+Iteration 26's finding survives, but this time the data says it rather than my
+arithmetic: **the noise is a cross-producer drip per item** — three subsystems
+independently nagging about the same open item, each reasonable in isolation. Zero
+bursts in thirty days under a sound density definition. **Increment 2's design is
+confirmed: per-item cross-producer digestion — "one item, one voice" — with the sender
+floods left to human review.**
+
+### CAPABILITY: Self-Pruning
+
+**PREDICTED: +0 capability and +0 benchmark.** Still a counter; still suppresses nothing.
+This turn's value is that the instrument can now be trusted to aim increment 2, and that
+the owner's density policy actually functions.
+
+**MECHANISM:** delivery counted per actual subject across producers, with real tenant
+policy, exact truncation semantics, and a data-level wall between actionable subject
+bursts and non-actionable class aggregates.
+
+**FALSIFIER:** a tenant override that does not change classification; one item under two
+producers appearing as two subjects; a class aggregate appearing in `bursts`; exactly-cap
+rows reported as a floor; or any write on this path.
+
+### What I did NOT do
+
+- **Increment 2 itself.** The instrument had two HIGHs against it; building suppression on
+  top of them this turn would have been the C-1 pattern again. It is now unblocked.
+- **Codex directive #5's engagement corroboration** (owner keep/digest/suppress feedback,
+  quiet hours, digest caps) — that is increment 2's build, not the counter's.
+- **Event↔item canonicalisation** — no readable join exists; stated as partial on the row.
+- **The C4 queue (B09/B11/B12 canned vocatives)** — regression guard is CLEAN, benchmark is
+  a guard not a target, campaign work took the turn. Named, not dropped silently.
+- **Deploy** — the loop owns it. **deployed=no.** Prediction: this SHOULD ship this
+  iteration if reviewed SOUND; it is read-only, tested against the real resolver, and
+  verified against production data.
+
+### What I am unsure about
+
+- **Whether `configService.getConfig` is truly the only tenant-override seam.** I mocked it
+  because the resolver imports it by name; if some tenant sets overrides through the user
+  `notificationPreferences` path instead, that path is spec'd `tenant`-scope so it never
+  reads user prefs — fine — but I have not audited how the owner's UI writes this key.
+- **The producer breakdown's stability** — `metadata.source` remains producer-chosen.
+- **`answered_at` as engagement**, unchanged, still the weakest link, still stated in the
+  report's own text.
+
+### Prediction, and what would prove me wrong
+
+**No benchmark criterion moves** (read-only service, no compose path). The score table
+above this entry moving 94.9→95.5 without any compose change last turn is the standing
+demonstration that ±1 is variance — I am not claiming it, and the same applies now.
+
+**What would prove me wrong:**
+- **The production numbers fail to reproduce after deploy** → environment-specific read.
+- **Codex finds a seventh measurement defect** → I said last turn the instrument would
+  need a different owner; that offer stands.
+- **A tenant override in production does not change burst classification** → the
+  registration is somehow still not the live path, and the HIGH is not closed.
