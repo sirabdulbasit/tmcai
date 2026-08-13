@@ -1118,7 +1118,64 @@ def iteration_records(limit=25):
             if defs:
                 r["defects"] = defs[:8]
 
-    # 10. do the reviewer and the scorer AGREE? A capability raised in an iteration
+    # 10. PROGRESS — the delta against the previous MEASURED iteration.
+    #
+    # Owner, 2026-08-13, on the Deck's benchmark panel: *"i want to see iteration
+    # wise progress here"*. The table showed six absolute values per row and no
+    # movement, so nine rows of 95.5 / 96.2 / 95.5 read as noise with no direction.
+    #
+    # Deltas are computed against the previous iteration THAT HAS A BENCHMARK, not
+    # against iteration n-1: iterations 9-11 have no capability card and one
+    # iteration measured nothing at all, and differencing against a missing row
+    # would invent movement. `since` names which iteration each delta is measured
+    # from, so the Deck can say "vs #12" rather than implying "vs previous".
+    measured = sorted(k for k, v in recs.items()
+                      if (v.get("benchmark") or {}).get("overall") is not None)
+    for idx, it in enumerate(measured):
+        r = recs[it]
+        b = r["benchmark"]
+        prog = {"since": None, "overall_delta": None, "weakest_delta": None,
+                "criteria_delta": {}, "direction": "unknown"}
+        if idx > 0:
+            prev_it = measured[idx - 1]
+            pb = recs[prev_it]["benchmark"]
+            prog["since"] = prev_it
+            if b.get("overall") is not None and pb.get("overall") is not None:
+                prog["overall_delta"] = round(b["overall"] - pb["overall"], 1)
+            # The gating criterion is what the gate reads, so its delta is the one
+            # that matters — compared on the SAME criterion, since the weakest can
+            # change identity between runs and comparing C6 to C4 is meaningless.
+            if b.get("weakest") and b["weakest"] == pb.get("weakest") \
+                    and b.get("weakest_score") is not None \
+                    and pb.get("weakest_score") is not None:
+                prog["weakest_delta"] = round(b["weakest_score"] - pb["weakest_score"], 1)
+                prog["weakest_comparable"] = True
+            else:
+                prog["weakest_comparable"] = False
+            for c, v in (b.get("criteria") or {}).items():
+                pv = (pb.get("criteria") or {}).get(c)
+                if pv is not None and v is not None:
+                    prog["criteria_delta"][c] = round(v - pv, 1)
+            d_ = prog["overall_delta"]
+            # A move inside the instrument's own spread is NOT progress. C4 has read
+            # 90.0, 87.9, 88.3, 87.3 on barely-changed code, so ±2 is noise and
+            # labelling it "up" would manufacture a trend (D-4, still open).
+            if d_ is None:
+                prog["direction"] = "unknown"
+            elif d_ > 2:
+                prog["direction"] = "up"
+            elif d_ < -2:
+                prog["direction"] = "down"
+            else:
+                prog["direction"] = "flat (within noise ±2)"
+        # Capability movement for the same iteration, from the scorer — the only
+        # progress figure that is not benchmark noise.
+        sc = r.get("scorer") or {}
+        prog["capability_overall"] = sc.get("overall")
+        prog["capability_verdict"] = sc.get("verdict")
+        r["progress"] = prog
+
+    # 11. do the reviewer and the scorer AGREE? A capability raised in an iteration
     #     the reviewer ruled WEAK/WRONG is disputed, and the Deck should show it as
     #     such rather than presenting a movement as settled.
     for r in recs.values():
