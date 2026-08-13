@@ -48,6 +48,11 @@ import createLogger from '../../utils/logger';
 // other producers. One accessor, both places, everywhere the subject is needed;
 // re-implementing it here would be the 12th `protection-with-two-implementations`.
 import { promptSubjectItemId } from '../brainPrompts/brainPromptQueueService';
+// DEF-173 — the digest's words come from the reviewed proactive-text boundary
+// (DEF-155), not a template assembled here. Codex's iteration-29 CRITICAL: the
+// first version was hardcoded Brain prose promising a "show all" handler that
+// does not exist. The renderer states facts and quotes; it promises nothing.
+import { renderItemDigest } from '../notifications/proactiveMessageText';
 
 const log = createLogger('digest-policy');
 
@@ -126,8 +131,12 @@ export async function decideDigest(input: {
     return { action: 'send', reason: `criticality ${input.criticality} is never digested` };
   }
 
-  // Master switch: the owner has not opted in, nothing changes. This is the
-  // owner-controlled gate, not an optimisation.
+  // Master switch — and the DECIDED consent semantics (Codex iteration-29
+  // MEDIUM #4): turning this on IS blanket consent for per-item digesting.
+  // Per-item pre-consent was rejected deliberately, because the drip is only
+  // visible after it has happened — a consent-per-item design would be inert
+  // for every new item, which is the CL-033 failure restated. The per-item
+  // escape is `keep`, which always wins; unknown values are keep, not consent.
   const enabled = await behaviorNumber('selfpruning.digest_enabled', input.clientNumber, 0);
   if (enabled !== 1) return { action: 'send', reason: 'digest disabled (owner has not opted in)' };
 
@@ -186,9 +195,13 @@ export async function decideDigest(input: {
     digest: {
       subjectKey: `item:${itemId}`,
       coveredCount: delivered,
-      question: `${label} has ${delivered + 1} updates waiting (${delivered} earlier ones are unanswered from the last ${windowHours}h). `
-        + `Latest: "${input.question.trim().slice(0, 140)}". `
-        + `Reply "show all" and I'll list each one, or answer here and I'll route it.`,
+      question: renderItemDigest({
+        label,
+        totalCount: delivered + 1,
+        unansweredCount: delivered,
+        windowHours,
+        latest: input.question,
+      }),
       dedupKey: `selfpruning_digest:item:${itemId}:${bucket}`,
     },
   };

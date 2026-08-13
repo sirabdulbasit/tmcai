@@ -112,3 +112,36 @@ export function renderUnattachedDigest(args: {
     + '(None of it is attached to an open request — everything I had with them is'
     + ' already closed or waiting on you.)';
 }
+
+/**
+ * DEF-173 — the per-item digest notice (C-3 increment 2).
+ *
+ * Codex's iteration-29 CRITICAL: the first version was a fixed English template
+ * assembled inside the digest policy, pretending to be Brain (invariant #4) and
+ * promising *"Reply 'show all' and I'll list each one"* — a handler that does
+ * not exist (invariant #5's shape). This file is the reviewed boundary where
+ * proactive text is rendered from structured facts (DEF-155), so the digest's
+ * words live here, next to `renderUnattachedDigest`, under the same rules:
+ *
+ *   - facts and verbatim quotes only; counts the caller measured, not adjectives;
+ *   - NO promised actions. Nothing here says "reply X and I'll do Y" unless a
+ *     handler for X exists — today none does, so the text states where the
+ *     earlier updates are and stops;
+ *   - no vocative, no apology, no first-person future.
+ */
+export function renderItemDigest(args: {
+  /** The item's title in quotes, or a neutral fallback. */
+  label: string;
+  /** Every update in the window, including the one being folded in. */
+  totalCount: number;
+  /** The ones he has not answered. */
+  unansweredCount: number;
+  windowHours: number;
+  /** The newest update's text, quoted verbatim. */
+  latest: string;
+}): string {
+  const { label, totalCount, unansweredCount, windowHours, latest } = args;
+  return `${label}: ${totalCount} updates in the last ${windowHours}h, ${unansweredCount} of them unanswered. `
+    + `Latest: "${latest.trim().slice(0, 140)}". `
+    + `The earlier updates are kept in full — nothing was discarded.`;
+}

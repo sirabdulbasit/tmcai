@@ -195,7 +195,7 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
   // ── C-3: self-pruning ─────────────────────────────────────────────
   'selfpruning.digest_enabled': {
     key: 'selfpruning.digest_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
-    description: 'C-3 increment 2 MASTER SWITCH (0/1). While 0 — the default — no push is ever digested, so deploying the mechanism changes nothing until the owner opts in. This is the owner-controlled gate Codex required before any automatic suppression, not a tuning knob.',
+    description: 'C-3 increment 2 MASTER SWITCH (0/1). While 0 — the default — no push is ever digested, so deploying the mechanism changes nothing until the owner opts in. DECIDED SEMANTICS (DEF-173, Codex iteration-29 MEDIUM #4): turning this on IS blanket consent for per-item digesting across the tenant. Per-item pre-consent was rejected deliberately — the drip is only visible after it has happened, so requiring consent per item would make the feature inert for every new item. The per-item escape is `selfpruning.decision.item:<id>` = keep, which always wins; unknown values are keep, never consent; a per-item `suppress` level is NOT implemented.',
   },
   'selfpruning.digest_after_pushes': {
     key: 'selfpruning.digest_after_pushes', unit: 'count', def: 3, min: 2, max: 20, scope: 'tenant',

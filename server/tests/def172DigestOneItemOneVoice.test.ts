@@ -32,6 +32,10 @@ let existing: any[] = [];
 let created: any[] = [];
 let countWhere: any = null;
 let countFails = false;
+/** DEF-173 failure injection: which create dies, and how. */
+let digestCreateFails = false;
+let filingCreateFails = false;
+let digestCreateP2002 = false;
 /** Tenant config for the REAL behaviorConfig resolver + owner decisions. */
 let tenantConfig: Record<string, unknown> = {};
 
@@ -40,6 +44,15 @@ let nextId = 1;
 vi.mock('../src/db/prisma', () => {
   const brainPromptQueue = {
     create: async ({ data }: any) => {
+      const isDigestMsg = data?.metadata?.source === 'selfpruning_digest';
+      const isFiled = !!data?.metadata?.digest;
+      if (isDigestMsg && digestCreateFails) throw new Error('digest insert failed');
+      if (isDigestMsg && digestCreateP2002) {
+        const e: any = new Error('unique constraint');
+        e.code = 'P2002';
+        throw e;
+      }
+      if (isFiled && filingCreateFails) throw new Error('filing insert failed');
       const row = { id: nextId++, ...data };
       created.push(row);
       return { id: row.id };
@@ -136,6 +149,7 @@ const enqueue = (over: Record<string, any> = {}) => enqueueBrainPrompt({
 
 beforeEach(() => {
   existing = []; created = []; countWhere = null; countFails = false;
+  digestCreateFails = false; filingCreateFails = false; digestCreateP2002 = false;
   tenantConfig = {}; nextId = 1;
   clearBehaviorCache();
 });
@@ -279,5 +293,102 @@ describe('DEF-172 — the policy is honest about its own reasons', () => {
       expect(d.action).toBe('send');
       expect(d.reason, JSON.stringify(over)).toMatch(want);
     }
+  });
+});
+
+describe('DEF-173 — never zero owner messages (Codex iteration-29 HIGH #2)', () => {
+  beforeEach(() => {
+    tenantConfig['behavior.selfpruning.digest_enabled'] = 1;
+    existing = drip();
+  });
+
+  it('digest insert fails → the ORIGINAL sends normally, nothing is parked', async () => {
+    // The first version filed the original as terminal FIRST, then enqueued the
+    // digest — a failure between the writes left the owner with NOTHING. The
+    // order is now inverted, so this failure mode degrades to "no digesting
+    // this time", which is the behaviour the owner had before the feature.
+    digestCreateFails = true;
+    const r = await enqueue();
+    expect(r.status).toBe('queued');
+    expect(created.filter((c) => c.metadata?.digest), 'nothing may be parked without a durable digest')
+      .toHaveLength(0);
+    const normal = created.filter((c) =>
+      c.state === 'queued' && c.metadata?.source !== 'selfpruning_digest' && !c.metadata?.digest);
+    expect(normal, 'the original went out as itself').toHaveLength(1);
+    expect(normal[0].question).toContain('remove the blocker');
+  });
+
+  it('filing fails AFTER the digest is durable → the original still sends (one too many, never zero)', async () => {
+    filingCreateFails = true;
+    const r = await enqueue();
+    expect(r.status).toBe('queued');
+    expect(created.filter((c) => c.metadata?.source === 'selfpruning_digest'),
+      'the digest survived').toHaveLength(1);
+    expect(created.filter((c) =>
+      c.state === 'queued' && c.metadata?.source !== 'selfpruning_digest' && !c.metadata?.digest),
+      'and the original was not lost to the failed filing').toHaveLength(1);
+  });
+
+  it('a concurrent digest insert losing the DB race (P2002) still yields ONE voice', async () => {
+    // Codex HIGH #3: the dedup probe is SELECT-then-INSERT and can race. The
+    // 20260813 migration adds a partial unique index on live (user, dedup_key)
+    // rows; the losing insert gets P2002 and is treated as the duplicate it is —
+    // durable — so the covered push is still filed rather than sent as a second
+    // voice.
+    digestCreateP2002 = true;
+    const r = await enqueue();
+    expect(r.status, 'P2002 means the digest EXISTS — filing proceeds').toBe('digested');
+    expect(created.filter((c) => c.metadata?.source === 'selfpruning_digest'),
+      'no second digest row was created').toHaveLength(0);
+    expect(created.filter((c) => c.metadata?.digest)).toHaveLength(1);
+  });
+});
+
+describe('DEF-173 — the digest prose (Codex iteration-29 CRITICAL)', () => {
+  beforeEach(() => {
+    tenantConfig['behavior.selfpruning.digest_enabled'] = 1;
+    existing = drip();
+  });
+
+  it('is rendered by the reviewed proactive-text boundary, byte for byte', async () => {
+    // The first version assembled a template inside the policy — hardcoded
+    // Brain prose, invariant #4. Asserting EQUALITY with the renderer means the
+    // words cannot quietly drift back inline.
+    const { renderItemDigest } = await import('../src/services/notifications/proactiveMessageText');
+    await enqueue();
+    const digest = created.find((c) => c.metadata?.source === 'selfpruning_digest')!;
+    expect(digest.question).toBe(renderItemDigest({
+      label: '"Leave Request"',
+      totalCount: 4,
+      unansweredCount: 3,
+      windowHours: 24,
+      latest: 'Intervention needed on "Leave Request". Please decide whether to remove the blocker.',
+    }));
+  });
+
+  it('promises NOTHING — no handler is advertised that does not exist', async () => {
+    // The removed sentence was "Reply 'show all' and I'll list each one", with
+    // no such handler — a fabricated capability claim (invariant #5's shape).
+    await enqueue();
+    const digest = created.find((c) => c.metadata?.source === 'selfpruning_digest')!;
+    expect(digest.question).not.toMatch(/show all/i);
+    expect(digest.question, 'no first-person future commitments').not.toMatch(/i'?ll|i will/i);
+    expect(digest.question, 'no vocative, no apology').not.toMatch(/\bsir\b|apolog/i);
+    expect(digest.question, 'the facts are still there').toContain('4 updates');
+    expect(digest.question).toContain('nothing was discarded');
+  });
+});
+
+describe('DEF-173 — consent semantics are a DECISION, not an accident', () => {
+  it('the master flag IS blanket consent: enabled + no per-item decision digests', async () => {
+    // Codex iteration-29 MEDIUM #4 asked for this to be decided and tested
+    // rather than implied. Decided: per-item pre-consent would be inert for
+    // every new item, because the drip is only visible after it has happened —
+    // the CL-033 failure restated. The escape is per-item `keep`, which always
+    // wins (tested above), and unknown values are keep, never consent.
+    tenantConfig['behavior.selfpruning.digest_enabled'] = 1;
+    existing = drip();
+    const r = await enqueue();
+    expect(r.status).toBe('digested');
   });
 });

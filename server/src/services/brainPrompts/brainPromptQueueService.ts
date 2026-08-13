@@ -215,54 +215,89 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       });
 
     if (decision.action === 'digest' && decision.digest) {
-      const filed = await prisma.brainPromptQueue.create({
-        data: {
+      // ── ORDER IS THE SAFETY PROPERTY (Codex iteration-29 HIGH #2) ─────────
+      //
+      // The first version filed the original as terminal FIRST, then enqueued
+      // the digest — so a transient failure between the two writes left the
+      // owner with NOTHING: the original parked where no dispatcher reads it,
+      // and no replacement. That is guard-destroys-the-answer at a two-write
+      // boundary. The order is now:
+      //
+      //   1. the digest message is made DURABLE (queued, sent, or already
+      //      present via dedup — 'duplicate' is durable by definition);
+      //   2. only then is the original filed as covered.
+      //
+      // A failure at step 1 falls through to the normal send below — the owner
+      // gets the original as if digesting did not exist. A failure at step 2
+      // ALSO falls through: the worst case is the digest AND the original both
+      // arriving, which is one message too many, never zero. Every branch of
+      // this block keeps "at least one owner message" as an invariant.
+      let digestDurable = false;
+      try {
+        const dr = await enqueueBrainPrompt({
           clientNumber: input.clientNumber,
           userId: input.userId,
-          question: input.question,
-          openItemId: input.openItemId ?? null,
-          sideEffect: (input.sideEffect ?? { kind: 'noop' }) as any,
-          criticality,
-          state: 'skipped',
-          dedupKey: input.dedupKey ?? null,
-          expiresAt,
+          question: decision.digest.question,
+          openItemId: input.openItemId,
+          provenance: input.provenance,
+          criticality: 'routine',
+          dedupKey: decision.digest.dedupKey,
+          sideEffect: { kind: 'noop' },
           metadata: {
-            ...(input.metadata ?? {}), expectsReply, provenance: input.provenance,
-            digest: {
-              reason: decision.reason,
-              subjectKey: decision.digest.subjectKey,
-              coveredByDedupKey: decision.digest.dedupKey,
+            source: 'selfpruning_digest',
+            subjectKey: decision.digest.subjectKey,
+            coveredCount: decision.digest.coveredCount,
+          },
+        });
+        digestDurable = dr.status === 'queued' || dr.status === 'sent_now' || dr.status === 'duplicate';
+      } catch (e: any) {
+        log.warn('digest enqueue failed; sending the original instead', { error: e?.message });
+      }
+
+      if (digestDurable) {
+        try {
+          const filed = await prisma.brainPromptQueue.create({
+            data: {
+              clientNumber: input.clientNumber,
+              userId: input.userId,
+              question: input.question,
+              openItemId: input.openItemId ?? null,
+              sideEffect: (input.sideEffect ?? { kind: 'noop' }) as any,
+              criticality,
+              state: 'skipped',
+              dedupKey: input.dedupKey ?? null,
+              expiresAt,
+              metadata: {
+                ...(input.metadata ?? {}), expectsReply, provenance: input.provenance,
+                digest: {
+                  reason: decision.reason,
+                  subjectKey: decision.digest.subjectKey,
+                  coveredByDedupKey: decision.digest.dedupKey,
+                },
+              } as any,
             },
-          } as any,
-        },
-        select: { id: true },
-      });
-
-      // The one message. Dedup on the window-bucketed key means the second
-      // digested push in the same window updates nothing and sends nothing.
-      await enqueueBrainPrompt({
-        clientNumber: input.clientNumber,
-        userId: input.userId,
-        question: decision.digest.question,
-        openItemId: input.openItemId,
-        provenance: input.provenance,
-        criticality: 'routine',
-        dedupKey: decision.digest.dedupKey,
-        sideEffect: { kind: 'noop' },
-        metadata: {
-          source: 'selfpruning_digest',
-          subjectKey: decision.digest.subjectKey,
-          coveredCount: decision.digest.coveredCount,
-        },
-      });
-
-      return { status: 'digested', promptId: String(filed.id), reason: decision.reason };
+            select: { id: true },
+          });
+          return { status: 'digested', promptId: String(filed.id), reason: decision.reason };
+        } catch (e: any) {
+          // The digest exists AND the original will now send normally below —
+          // duplication in the safe direction, never silence.
+          log.warn('filing the covered push failed; sending it normally', { error: e?.message });
+        }
+      }
     }
   }
 
   // ── Routine / high: enqueue ────────────────────────────────────
-  const row = await prisma.brainPromptQueue.create({
-    data: {
+  // DEF-173 — the dedup probe above is SELECT-then-INSERT and can race. The
+  // 20260813 migration adds a partial unique index on (user_id, dedup_key) for
+  // live rows, so the loser of the race gets P2002 here and is reported as the
+  // duplicate it is, instead of creating a second live row (Codex iteration-29
+  // HIGH #3: two concurrent producers, two digest messages, "two voices").
+  let row: { id: bigint | number };
+  try {
+    row = await prisma.brainPromptQueue.create({
+      data: {
       clientNumber: input.clientNumber,
       userId: input.userId,
       question: input.question,
@@ -277,8 +312,17 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       // text this is; the sender would otherwise have to guess (DEF-140).
       metadata: { ...(input.metadata ?? {}), expectsReply, provenance: input.provenance } as any,
     },
-    select: { id: true },
-  });
+      select: { id: true },
+    });
+  } catch (e: any) {
+    if (e?.code === 'P2002' && input.dedupKey) {
+      return {
+        status: 'duplicate',
+        reason: 'dedup_key raced a concurrent insert — the DB unique index kept one live row',
+      };
+    }
+    throw e;
+  }
 
   // Try to dispatch immediately. If another prompt is already
   // awaiting_reply, this one stays queued.
