@@ -53,6 +53,43 @@ loop has been working on, is the *smallest* remaining gap.
 
 ---
 
+## OWNER RULING, 2026-08-13 — fixing and product work are BOTH capability
+
+Verbatim: *"fixing defects and product work both is improving the capability. for
+example if my english is weak, so teaching me english is fixing. and if i don't know
+spanish language so giving me this skills is product work. both above definitely
+improving my capabilities of communication. so don't take fixing and product work
+separately for me both are part of improvment."*
+
+**This overrides the framing this document shipped with**, which treated
+`RELIABILITY-ONLY` as `+0` by default and reserved capability movement for new
+behaviour. That was a builder's distinction — depth versus breadth — imported into a
+scorecard that measures what Nexeo can DO for its owner. From where he sits, a Brain
+that finally names the sender correctly communicates better, exactly as a Brain that
+learns a new language would.
+
+### The test is not "fix or feature". It is: DID WHAT THE OWNER RECEIVES CHANGE?
+
+Credit capability when the change alters what actually reaches him — whether by making
+something work that was failing, or by making something possible that was absent.
+Both are learning; both count.
+
+Do NOT credit when nothing observable changes for him:
+
+- the change is on a path that never fires in production;
+- it is internal hygiene — a refactor, a rename, a test-only change;
+- a reviewer has shown the claimed mechanism does not reach the live surface (the
+  `guard-below-early-return` and `protection-with-two-implementations` shapes);
+- **it has not been deployed.** A fix sitting in the branch has changed nothing for
+  him, however good it is. This is the honest reason twenty defects produced +0.6:
+  not that repair work is worth less, but that it never arrived.
+
+`RELIABILITY-ONLY` therefore no longer means `+0`. It means *"this improves an
+existing capability rather than adding a new one"* — and it is scored on the same
+evidence as anything else. The declaration still matters, because knowing WHICH
+capability a change serves is what makes the card readable; what changes is that
+choosing it no longer forfeits the score.
+
 ## THE CONTRACT
 
 ### Every change declares its capability impact — BUILDER
@@ -69,10 +106,12 @@ FALSIFIER:  <what observation would prove the prediction wrong>
 
 Rules that make it honest rather than ceremonial:
 
-- **`RELIABILITY-ONLY` is a first-class, respectable answer.** Most defect fixes
-  are exactly that: they make an existing capability trustworthy without widening
-  it. Declaring it costs nothing and keeps the card truthful. What is forbidden is
-  claiming a capability movement to make a turn look productive.
+- **`RELIABILITY-ONLY` names WHICH KIND of improvement, not a zero.** Per the owner's
+  2026-08-13 ruling, a fix that makes an existing capability work is capability
+  improvement — so declare the capability it serves and predict a real movement if
+  what the owner receives changes. Predict `+0` only when nothing reaching him
+  changes: an unreachable path, internal hygiene, or work that is not deployed.
+  What remains forbidden is claiming movement to make a turn look productive.
 - **One capability per change.** A change claiming to move three is a change whose
   effect cannot be attributed when the score moves.
 - **The FALSIFIER is mandatory and must be observable.** "It should feel better"

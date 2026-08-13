@@ -34,6 +34,21 @@ in that role, whose benchmarks are: Simple & Smart 92, Thinking 94, Memory 92,
 Accurate Communication 94, Authorized Action 91, Self Follow-Up 96, Learn 90,
 Self-Healing 89, Self-Pruning 89.
 
+## OWNER RULING, 2026-08-13 — a defect fix IS capability improvement
+
+*"if my english is weak, so teaching me english is fixing. and if i don't know spanish
+… that is product work. both definitely improving my capabilities of communication."*
+
+So do not withhold a score because a change was a repair rather than a feature. **The
+question is whether what the OWNER RECEIVES changed** — a Brain that finally names the
+sender correctly communicates better, exactly as one that gained a new skill would.
+
+Withhold only when nothing reaching him changed: an unreachable path, internal
+hygiene, a mechanism a reviewer showed does not reach the live surface, or — and this
+is the common one — **work that is not deployed.** Twenty defects sit in the branch;
+they have changed nothing for him yet, and that is the honest reason the score is flat.
+Say so in `unverifiable` rather than treating repair work as inherently worth less.
+
 ## How to score, and the traps
 
 - **Read the code. That is the instruction.** A capability is what the code can
