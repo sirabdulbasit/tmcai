@@ -34,6 +34,11 @@
  * suppression decision that stay invisible, not the duplication itself.
  */
 
+// DEF-174 — the digest renderer emits a provenance-stamped marker, not prose;
+// the sentinel is also STRIPPED from interpolated text so a quoted message can
+// never smuggle a second envelope into the one being built.
+import { systemMarker, stripMarkerEnvelope } from '../knowledge/systemMarker';
+
 /** Where a proactive message came from. Kept alongside the renderers so a new
  *  producer has an obvious place to declare itself and be picked up by the
  *  proactive slice rather than shipping unmeasured. */
@@ -114,20 +119,30 @@ export function renderUnattachedDigest(args: {
 }
 
 /**
- * DEF-173 — the per-item digest notice (C-3 increment 2).
+ * DEF-173 / DEF-174 — the per-item digest notice (C-3 increment 2).
+ *
+ * Two corrections from review, and the second one is why this returns a MARKER:
  *
  * Codex's iteration-29 CRITICAL: the first version was a fixed English template
  * assembled inside the digest policy, pretending to be Brain (invariant #4) and
  * promising *"Reply 'show all' and I'll list each one"* — a handler that does
- * not exist (invariant #5's shape). This file is the reviewed boundary where
- * proactive text is rendered from structured facts (DEF-155), so the digest's
- * words live here, next to `renderUnattachedDigest`, under the same rules:
+ * not exist (invariant #5's shape). Iteration 29 moved the literals here.
  *
- *   - facts and verbatim quotes only; counts the caller measured, not adjectives;
- *   - NO promised actions. Nothing here says "reply X and I'll do Y" unless a
- *     handler for X exists — today none does, so the text states where the
- *     earlier updates are and stops;
- *   - no vocative, no apology, no first-person future.
+ * Codex's iteration-30 CRITICAL: moving the literals does not satisfy the
+ * invariant — deterministic owner-facing Brain prose is forbidden WHEREVER the
+ * file is. The one sanctioned deterministic form is a bracketed system marker
+ * rendered by `answerSanitizer` (AGENTS.md invariant #4), so this now emits
+ * exactly that: a provenance-stamped `systemMarker()` carrying the FACTS, whose
+ * one vetted meaning lives in `answerSanitizer`'s curated rules, spoken through
+ * the `markerVoice` LLM boundary at delivery. The words the owner reads are no
+ * longer written in this function.
+ *
+ * The facts themselves keep the iteration-29 rules: counts the caller measured,
+ * a verbatim quote, no promised actions, no vocative, no first-person future.
+ *
+ * `[`, `]` and the marker sentinel are removed from interpolated text before it
+ * enters the marker: a `]` inside the label or quote would terminate the
+ * bracketed body early and turn the whole digest into the neutral fallback.
  */
 export function renderItemDigest(args: {
   /** The item's title in quotes, or a neutral fallback. */
@@ -141,7 +156,13 @@ export function renderItemDigest(args: {
   latest: string;
 }): string {
   const { label, totalCount, unansweredCount, windowHours, latest } = args;
-  return `${label}: ${totalCount} updates in the last ${windowHours}h, ${unansweredCount} of them unanswered. `
-    + `Latest: "${latest.trim().slice(0, 140)}". `
-    + `The earlier updates are kept in full — nothing was discarded.`;
+  const clean = (s: string) => stripMarkerEnvelope(s ?? '')
+    .replace(/[\[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return systemMarker(
+    `selfpruning_digest: ${totalCount} updates in ${windowHours}h, `
+    + `${unansweredCount} unanswered, about ${clean(label)}; `
+    + `latest: "${clean(latest).slice(0, 140)}"`,
+  );
 }

@@ -239,7 +239,12 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
           userId: input.userId,
           question: decision.digest.question,
           openItemId: input.openItemId,
-          provenance: input.provenance,
+          // DEF-174 — the digest question IS a system marker (`renderItemDigest`
+          // emits a provenance-stamped bracket, not prose), and this is the
+          // declaration that makes `brainContactsUser` render it through the
+          // curated meaning + `markerVoice` at delivery. Inheriting the covered
+          // push's provenance here would deliver the raw marker verbatim.
+          provenance: 'system_marker',
           criticality: 'routine',
           dedupKey: decision.digest.dedupKey,
           sideEffect: { kind: 'noop' },
@@ -315,11 +320,43 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       select: { id: true },
     });
   } catch (e: any) {
+    // DEF-174 (Codex iteration-30 MEDIUM): P2002 alone does not prove the dedup
+    // index fired. This catch wraps a create with several unique surfaces, and
+    // "any P2002 while a dedupKey happens to be set" would let a conflict on an
+    // UNRELATED constraint report the push as covered by a survivor that does
+    // not exist — a silently swallowed owner message. Two proofs are required
+    // before claiming 'duplicate':
+    //
+    //   1. when Prisma names the violated constraint (`e.meta.target`), it must
+    //      be the dedup index (`uq_bpq_dedup_live` / user_id+dedup_key). An
+    //      ABSENT name is tolerated — raw-SQL indexes are not always named in
+    //      the engine error — because proof 2 is the load-bearing one;
+    //   2. the surviving live row is READ BACK. No survivor, no claim.
+    //
+    // Every failed proof rethrows. For the digest caller that lands in the
+    // catch above: `digestDurable` stays false and the ORIGINAL sends normally
+    // — one message too many at worst, never zero.
     if (e?.code === 'P2002' && input.dedupKey) {
-      return {
-        status: 'duplicate',
-        reason: 'dedup_key raced a concurrent insert — the DB unique index kept one live row',
-      };
+      const target = (e?.meta as any)?.target;
+      const named = Array.isArray(target) ? target.join(',')
+        : typeof target === 'string' ? target : '';
+      if (named === '' || /dedup/i.test(named)) {
+        const survivor = await prisma.brainPromptQueue.findFirst({
+          where: {
+            userId: input.userId,
+            dedupKey: input.dedupKey,
+            state: { in: ['queued', 'awaiting_reply'] },
+          },
+          select: { id: true },
+        }).catch(() => null);
+        if (survivor) {
+          return {
+            status: 'duplicate',
+            promptId: String(survivor.id),
+            reason: 'dedup_key raced a concurrent insert — the DB unique index kept one live row (survivor verified)',
+          };
+        }
+      }
     }
     throw e;
   }

@@ -35,7 +35,13 @@ let countFails = false;
 /** DEF-173 failure injection: which create dies, and how. */
 let digestCreateFails = false;
 let filingCreateFails = false;
-let digestCreateP2002 = false;
+/** DEF-174 P2002 shapes: 'racer' = the real race (the racer's committed row is
+ *  visible for survivor verification); 'ghost' = P2002 with NO survivor to
+ *  verify; 'wrong-constraint' = a different unique surface named in
+ *  e.meta.target, with a live same-key row present so that ONLY the constraint
+ *  check can refuse it — which is what makes the mutant that drops the check
+ *  die here. */
+let digestCreateP2002: false | 'racer' | 'ghost' | 'wrong-constraint' = false;
 /** Tenant config for the REAL behaviorConfig resolver + owner decisions. */
 let tenantConfig: Record<string, unknown> = {};
 
@@ -48,8 +54,17 @@ vi.mock('../src/db/prisma', () => {
       const isFiled = !!data?.metadata?.digest;
       if (isDigestMsg && digestCreateFails) throw new Error('digest insert failed');
       if (isDigestMsg && digestCreateP2002) {
+        if (digestCreateP2002 !== 'ghost') {
+          // The racer COMMITTED between the probe and this insert — its row is
+          // what DEF-174's survivor verification reads back.
+          existing.push({ ...data, id: nextId++, state: 'queued' });
+        }
         const e: any = new Error('unique constraint');
         e.code = 'P2002';
+        e.meta = {
+          target: digestCreateP2002 === 'wrong-constraint'
+            ? 'brain_prompt_queue_pkey' : 'uq_bpq_dedup_live',
+        };
         throw e;
       }
       if (isFiled && filingCreateFails) throw new Error('filing insert failed');
@@ -115,17 +130,27 @@ vi.mock('../src/services/configService', () => ({
 import { enqueueBrainPrompt } from '../src/services/brainPrompts/brainPromptQueueService';
 import { decideDigest } from '../src/services/selfpruning/digestPolicy';
 import { clearBehaviorCache } from '../src/services/behaviorConfig';
+import { isSystemMarker } from '../src/services/knowledge/systemMarker';
+import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
 
 const NOW = new Date('2026-08-13T12:00:00Z');
 
-/** A push already DELIVERED and unanswered — what the drip looks like. */
+/** A push already DELIVERED and unanswered — what the drip looks like.
+ *
+ *  `sentAt` is RELATIVE to the wall clock, deliberately (DEF-174 while fixing
+ *  iteration-30's findings): the enqueue chokepoint calls `decideDigest`
+ *  without a `now`, so the policy windows on the REAL clock. The first version
+ *  of this fixture pinned `2026-08-13T10:00:00Z` — green for exactly 24 hours
+ *  after it was written, then eight tests failed on an unchanged HEAD. That is
+ *  the DEF-153 clock-dependence shape inside the very tests written to close a
+ *  review finding. */
 const delivered = (over: Record<string, any> = {}) => ({
   id: nextId++,
   clientNumber: 'TMC-0001', userId: 2,
   question: 'Intervention needed on "Leave Request".',
   openItemId: 'item-X', metadata: { source: 'action_lifecycle_governor' },
   state: 'answered_window', dedupKey: null,
-  sentAt: new Date('2026-08-13T10:00:00Z'), answeredAt: null,
+  sentAt: new Date(Date.now() - 60 * 60 * 1000), answeredAt: null,
   ...over,
 });
 
@@ -209,6 +234,12 @@ describe('DEF-172 — the digest, when the owner has opted in', () => {
     expect(digests[0].question).toContain('4 updates');
     expect(digests[0].question, 'the latest push is quoted').toContain('remove the blocker');
     expect(digests[0].dedupKey).toMatch(/^selfpruning_digest:item:item-X:\d+$/);
+    // DEF-174 — the digest is the sanctioned deterministic form: a
+    // provenance-stamped marker, declared as such so the outbound boundary
+    // renders it instead of delivering it.
+    expect(isSystemMarker(digests[0].question),
+      'the queued digest is a marker, not owner prose').toBe(true);
+    expect(digests[0].metadata.provenance).toBe('system_marker');
   });
 
   it('the count spans PRODUCERS and both subject encodings — no producer bypasses', async () => {
@@ -335,25 +366,59 @@ describe('DEF-173 — never zero owner messages (Codex iteration-29 HIGH #2)', (
     // rows; the losing insert gets P2002 and is treated as the duplicate it is —
     // durable — so the covered push is still filed rather than sent as a second
     // voice.
-    digestCreateP2002 = true;
+    digestCreateP2002 = 'racer';
     const r = await enqueue();
-    expect(r.status, 'P2002 means the digest EXISTS — filing proceeds').toBe('digested');
+    expect(r.status, 'a VERIFIED P2002 race means the digest exists — filing proceeds').toBe('digested');
     expect(created.filter((c) => c.metadata?.source === 'selfpruning_digest'),
       'no second digest row was created').toHaveLength(0);
     expect(created.filter((c) => c.metadata?.digest)).toHaveLength(1);
   });
 });
 
-describe('DEF-173 — the digest prose (Codex iteration-29 CRITICAL)', () => {
+describe('DEF-174 — P2002 is a claim to verify, not proof (Codex iteration-30)', () => {
+  // The catch wraps a create with several unique surfaces. "Any P2002 while a
+  // dedupKey happens to be set" would let a conflict on an UNRELATED constraint
+  // file the push as covered by a survivor that does not exist — a silently
+  // swallowed owner message. Both proofs are exercised here; failing either
+  // one must degrade to SENDING the original, never to filing it.
   beforeEach(() => {
     tenantConfig['behavior.selfpruning.digest_enabled'] = 1;
     existing = drip();
   });
 
-  it('is rendered by the reviewed proactive-text boundary, byte for byte', async () => {
-    // The first version assembled a template inside the policy — hardcoded
-    // Brain prose, invariant #4. Asserting EQUALITY with the renderer means the
-    // words cannot quietly drift back inline.
+  it('P2002 with NO surviving live row → the original SENDS, nothing is filed', async () => {
+    digestCreateP2002 = 'ghost';
+    const r = await enqueue();
+    expect(r.status, 'an unproven duplicate claim never parks the push').toBe('queued');
+    expect(created.filter((c) => c.metadata?.digest),
+      'no filing without a read-back survivor').toHaveLength(0);
+    const normal = created.filter((c) =>
+      c.state === 'queued' && c.metadata?.source !== 'selfpruning_digest' && !c.metadata?.digest);
+    expect(normal, 'the original went out as itself').toHaveLength(1);
+  });
+
+  it('P2002 naming a DIFFERENT constraint → never treated as dedup coverage, even with a live same-key row', async () => {
+    // The live same-key row is present, so survivor verification ALONE would
+    // pass — only the e.meta.target check can refuse this one. Removing that
+    // check is the exact mutant this test kills.
+    digestCreateP2002 = 'wrong-constraint';
+    const r = await enqueue();
+    expect(r.status).toBe('queued');
+    expect(created.filter((c) => c.metadata?.digest)).toHaveLength(0);
+  });
+});
+
+describe('DEF-173/DEF-174 — the digest words (Codex iteration-29 CRITICAL, iteration-30 CRITICAL)', () => {
+  beforeEach(() => {
+    tenantConfig['behavior.selfpruning.digest_enabled'] = 1;
+    existing = drip();
+  });
+
+  it('is built by the one renderer, byte for byte — and the renderer emits a marker', async () => {
+    // Iteration 29: the template moved out of the policy. Iteration 30: moving
+    // the literals was not enough — the renderer now emits the SANCTIONED
+    // deterministic form (a provenance-stamped marker), so equality here pins
+    // both that nothing drifts back inline AND that what is queued is a marker.
     const { renderItemDigest } = await import('../src/services/notifications/proactiveMessageText');
     await enqueue();
     const digest = created.find((c) => c.metadata?.source === 'selfpruning_digest')!;
@@ -364,18 +429,24 @@ describe('DEF-173 — the digest prose (Codex iteration-29 CRITICAL)', () => {
       windowHours: 24,
       latest: 'Intervention needed on "Leave Request". Please decide whether to remove the blocker.',
     }));
+    expect(isSystemMarker(digest.question)).toBe(true);
   });
 
-  it('promises NOTHING — no handler is advertised that does not exist', async () => {
-    // The removed sentence was "Reply 'show all' and I'll list each one", with
-    // no such handler — a fabricated capability claim (invariant #5's shape).
+  it('what the owner READS promises nothing and advertises no absent handler', async () => {
+    // The iteration-29 defect was the WORDS ("Reply 'show all' and I'll list
+    // each one" — no such handler, invariant #5's shape). The words now come
+    // from the curated meaning at render time, so the assertions run against
+    // the RENDERED text — what actually reaches him — not the marker body.
     await enqueue();
     const digest = created.find((c) => c.metadata?.source === 'selfpruning_digest')!;
-    expect(digest.question).not.toMatch(/show all/i);
-    expect(digest.question, 'no first-person future commitments').not.toMatch(/i'?ll|i will/i);
-    expect(digest.question, 'no vocative, no apology').not.toMatch(/\bsir\b|apolog/i);
-    expect(digest.question, 'the facts are still there').toContain('4 updates');
-    expect(digest.question).toContain('nothing was discarded');
+    const rendered = sanitizeAnswerForUser(digest.question);
+    expect(rendered, 'the marker was rendered, not delivered').not.toContain('selfpruning_digest');
+    expect(rendered).not.toMatch(/show all/i);
+    expect(rendered, 'no first-person future commitments').not.toMatch(/i'?ll|i will/i);
+    expect(rendered, 'no vocative, no apology').not.toMatch(/\bsir\b|apolog/i);
+    expect(rendered, 'the facts are still there').toContain('4 updates');
+    expect(rendered).toContain('"Leave Request"');
+    expect(rendered).toContain('nothing was discarded');
   });
 });
 

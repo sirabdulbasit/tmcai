@@ -42,6 +42,10 @@ import {
   sendTenantWhatsAppText,
   sendTenantWhatsAppVoiceNote,
 } from './tenantWhatsappSender';
+// Static import deliberately (DEF-174): this is the last-resort text when
+// marker rendering itself fails, so it must not depend on a runtime import
+// that could be the very thing that failed.
+import { NEUTRAL_MARKER_FALLBACK } from '../knowledge/systemMarker';
 
 const log = createLogger('brain-outbound');
 
@@ -66,8 +70,10 @@ export type Urgency = 'low' | 'normal' | 'high' | 'emergency';
  *     review rather than production only by luck.
  *   - `deterministic` — a rendered artifact: the day brief, the lifecycle
  *     intervention form, connector alerts. Its shape is its meaning.
- *   - `system_marker` — a bracketed marker rendered downstream by
- *     `answerSanitizer`. Never persona prose.
+ *   - `system_marker` — a bracketed marker, never persona prose. Rendered
+ *     AT THIS BOUNDARY by `answerSanitizer` (DEF-174): curated meaning →
+ *     `markerVoice`, or the neutral fallback when no curated meaning
+ *     exists. Raw marker text cannot reach the owner from here.
  *
  * Omitting this field is safe by construction: an unclassified payload is
  * treated as "not Brain prose" and is never touched. That is invariant #6
@@ -246,6 +252,36 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       // Never block an owner message on a cosmetic rule.
       log.warn('owner address policy skipped', { userId: user.id, kind: req.kind, error: e?.message });
     }
+  }
+
+  // ── system_marker rendering boundary (DEF-174) ───────────────────────
+  //
+  // `system_marker` provenance means `body` is an internal bracketed marker,
+  // never owner prose. The provenance type has SAID "rendered downstream by
+  // `answerSanitizer`" since DEF-140 — but nothing downstream ever did, so
+  // the first producer to declare it (the self-pruning digest) would have
+  // delivered raw machine text. Codex's iteration-30 CRITICAL.
+  //
+  // Rendering lives HERE because this is the one boundary every owner
+  // message crosses: `sanitizeAnswerInBrainVoice` looks the marker up in the
+  // curated meanings (the vetted FACT), lets the `markerVoice` LLM say it
+  // naturally, and turns a marker with NO curated meaning into the neutral
+  // fallback. Unlike the cosmetic block above, a failure here must not send
+  // the original: the original IS internal text, so the fallback stands —
+  // invariant #4, failing closed per #6.
+  if (req.provenance === 'system_marker' && req.body) {
+    let rendered = NEUTRAL_MARKER_FALLBACK;
+    try {
+      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+      rendered = await sanitizeAnswerInBrainVoice(req.body, {
+        userId: user.id, clientNumber: user.clientNumber, audience: 'owner',
+      });
+    } catch (e: any) {
+      log.warn('system_marker rendering failed; neutral fallback delivered', {
+        userId: user.id, kind: req.kind, error: e?.message,
+      });
+    }
+    req = { ...req, body: rendered, summary: rendered.slice(0, 120) };
   }
 
   // ── Smoke isolation ─────────────────────────────────────────────────

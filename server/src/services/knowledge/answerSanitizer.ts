@@ -166,6 +166,18 @@ const MARKERS: MarkerRule[] = [
     replace: "I couldn't read \"$1\" as a date — try something like \"Friday\" or \"in 3 days\".",
     whole: true,
   },
+  {
+    // DEF-174 / C-3 increment 2 — the per-item digest, in the sanctioned form.
+    // `renderItemDigest` emits a provenance-stamped marker carrying only facts;
+    // THIS is its one vetted meaning (the iteration-29 wording, which was
+    // reviewed for promising nothing and addressing nobody). Constructor and
+    // rule are held in sync by def174DigestMarkerProvenance.test.ts — a format
+    // drift on either side turns the digest into the neutral fallback there,
+    // loudly, instead of leaking machine text to the owner here.
+    match: /^\s*\[selfpruning_digest:\s*(\d+) updates in (\d+(?:\.\d+)?)h, (\d+) unanswered, about (.+?); latest: "(.*)"\]\s*$/i,
+    replace: '$4: $1 updates in the last $2h, $3 of them unanswered. Latest: "$5". The earlier updates are kept in full — nothing was discarded.',
+    whole: true,
+  },
 ];
 
 /**

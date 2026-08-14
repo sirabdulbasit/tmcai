@@ -37,6 +37,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const LEGAL_NAME = 'Basit Ahmed';
 const PREFERRED = 'Sir';
 
+// DEF-174 — what the boundary substitutes for a marker with no curated meaning.
+import { NEUTRAL_MARKER_FALLBACK } from '../src/services/knowledge/systemMarker';
+
 /** Every body handed to the WhatsApp transport during a test. */
 const sent: string[] = [];
 
@@ -210,9 +213,18 @@ describe('DEF-140 — one owner-address boundary, and it knows what it is lookin
       expect(await deliver(body, 'deterministic')).toBe(body);
     });
 
-    it('leaves a bracketed system marker unchanged', async () => {
+    it('a system marker is RENDERED, never delivered as machine text (DEF-174)', async () => {
+      // This test used to assert the marker passed through UNCHANGED — which
+      // pinned the defect: `system_marker` provenance claimed "rendered
+      // downstream by answerSanitizer" while nothing downstream rendered it,
+      // so raw machine text was one producer away from the owner's phone
+      // (Codex iteration-30 CRITICAL). The boundary now renders: this marker
+      // has no curated meaning, so the owner gets the neutral fallback — a
+      // plain sentence — never the internal bracket.
       const body = '[remove_open_item: could not find an open item matching "that"]';
-      expect(await deliver(body, 'system_marker')).toBe(body);
+      const delivered = await deliver(body, 'system_marker');
+      expect(delivered).toBe(NEUTRAL_MARKER_FALLBACK);
+      expect(delivered).not.toContain('[');
     });
 
     it('leaves an UNCLASSIFIED payload unchanged — fail closed', async () => {

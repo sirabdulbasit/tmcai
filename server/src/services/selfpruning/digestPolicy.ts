@@ -33,9 +33,10 @@
  *
  * ── WHAT A DIGESTED PUSH IS ─────────────────────────────────────────────────
  *
- * A full `brain_prompt_queue` row, created exactly as it would have been, with
- * `state: 'digested'` so the dispatcher never sends it, and an audit block in
- * metadata saying why and which digest covered it. Nothing is deleted; the
+ * A full `brain_prompt_queue` row, created exactly as it would have been, in
+ * `state: 'skipped'` (an EXISTING schema state — the 20260505 CHECK constraint
+ * rejects novel values, DEF-060) with `metadata.digest` as the discriminator
+ * and audit block saying why and which digest covered it. Nothing is deleted; the
  * owner's "show all" is a query, not a recovery. The single digest message per
  * item per window rides the SAME queue as everything else, so quiet hours and
  * office hours apply to it by the one existing implementation rather than a
@@ -48,10 +49,11 @@ import createLogger from '../../utils/logger';
 // other producers. One accessor, both places, everywhere the subject is needed;
 // re-implementing it here would be the 12th `protection-with-two-implementations`.
 import { promptSubjectItemId } from '../brainPrompts/brainPromptQueueService';
-// DEF-173 — the digest's words come from the reviewed proactive-text boundary
-// (DEF-155), not a template assembled here. Codex's iteration-29 CRITICAL: the
-// first version was hardcoded Brain prose promising a "show all" handler that
-// does not exist. The renderer states facts and quotes; it promises nothing.
+// DEF-173/DEF-174 — the digest's words are not written here, and after Codex's
+// iteration-30 CRITICAL they are not written ANYWHERE as prose: the renderer
+// emits a provenance-stamped system marker carrying the facts, whose one vetted
+// meaning lives in `answerSanitizer` and is spoken through the `markerVoice`
+// LLM boundary at delivery — the sanctioned deterministic form (invariant #4).
 import { renderItemDigest } from '../notifications/proactiveMessageText';
 
 const log = createLogger('digest-policy');
@@ -72,7 +74,9 @@ export interface DigestDecision {
     /** Unanswered pushes about this item already DELIVERED in the window —
      *  what the digest message reports. */
     coveredCount: number;
-    /** The one message. Names the count and quotes the latest push. */
+    /** The one message — a provenance-stamped system marker carrying the
+     *  count and the latest push's text, rendered to owner language at the
+     *  outbound boundary (DEF-174). */
     question: string;
     /** One digest per item per window: the window-bucketed dedup key. */
     dedupKey: string;
