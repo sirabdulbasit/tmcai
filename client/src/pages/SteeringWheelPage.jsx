@@ -5,6 +5,7 @@ import OpenItemsPage from './OpenItemsPage';
 import WikiPage from './WikiPage';
 import HealthCheckTab from '../components/steering/HealthCheckTab';
 import OrchestratorPulsePanel from '../components/steering/OrchestratorPulsePanel';
+import ErrorBoundary from '../components/ErrorBoundary';
 // CustomActionTab removed from rail — its JSON-rule-builder UI was a
 // developer surface and the API behind it had drifted (POST /shadow/rules
 // now writes to a different table). Standing Instructions on My Rules
@@ -60,9 +61,18 @@ const ADMIN_TAB = { key: 'admin', label: 'Admin / Client Config', icon: 'setting
 // model names and raw agent output.
 const PULSE_TAB = {
   key: 'health', label: 'Brain Evolution', icon: 'pulse', group: 'ops',
+  /* WRAPPED, because one bad field took the WHOLE APP down. 2026-08-14: a
+     collector change put an object where the panel expected a word, and React
+     error #31 unmounted everything up to the app-level boundary — the owner got a
+     full-page "Something went wrong" and lost the entire console, not just this
+     card. A status display whose failure blanks the product it reports on is
+     worse than no status display. Its own boundary keeps the blast radius to the
+     panel. */
   render: () => (
     <div style={{ padding: 'var(--s-6)' }}>
-      <OrchestratorPulsePanel />
+      <ErrorBoundary>
+        <OrchestratorPulsePanel />
+      </ErrorBoundary>
     </div>
   ),
 };

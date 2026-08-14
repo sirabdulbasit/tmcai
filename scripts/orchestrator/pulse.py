@@ -847,13 +847,19 @@ def collect():
         if hist:
             last = hist[-1]
             ev = last.get("evidence") or []
-            basis = {}
+            # NOT `basis` — that name is already taken in this scope for the
+            # STAGE's timer source ("process"/"log"), which the Deck renders as
+            # text. Shadowing it replaced that string with this dict and the panel
+            # died on React error #31, "objects are not valid as a React child",
+            # taking the whole page down with it. Verified with a headless load
+            # against the real payload, not reasoned about.
+            cap_basis = {}
             for line in ev:
                 m = re.match(r"\s*(.+?)\s*[+-]\d+.*?\[([a-z-]+)/([a-z]+)\]", str(line))
                 if m:
-                    basis[m.group(1).strip()] = {"basis": m.group(2), "confidence": m.group(3)}
+                    cap_basis[m.group(1).strip()] = {"basis": m.group(2), "confidence": m.group(3)}
             for c in caps:
-                b = basis.get(c["name"])
+                b = cap_basis.get(c["name"])
                 if b:
                     c["basis"] = b["basis"]
                     c["confidence"] = b["confidence"]
