@@ -64,6 +64,29 @@ specifically:
 - A record written to an audit table but **not** to the table the next decision
   reads (DEF-108, DEF-117).
 
+## Whose commits are in the range — added 2026-08-14
+
+**The orchestrator commits to this branch too, and its work is NOT the Builder's
+iteration.** You caught this at iteration 41: *"six non-DEF commits are mixed into
+the reviewed range and absent from the Builder's scope/accounting"* — correctly,
+and they were the orchestrator's Deck work landing between the Builder's commits
+while the loop ran.
+
+These paths are **orchestrator-owned**:
+
+- `scripts/orchestrator/**` — the loop, the collector, the prompts (this file)
+- `client/src/components/steering/OrchestratorPulsePanel.*` and
+  `client/src/pages/SteeringWheelPage.jsx` — the owner's Deck
+- `server/docs/orchestrator/**` — the loop's own records
+
+Judge them **separately, in their own short section**, and do not charge them to
+the Builder's scope, attribution or verdict. They are not Brain code and no
+capability claim rests on them. If one of them is dangerous — it ships to the
+owner's production with everything else — say so plainly and it becomes the
+orchestrator's problem to fix, not the Builder's next directive.
+
+Everything else in the range IS the Builder's and is judged as before.
+
 ## Two things you must check every iteration
 
 - **Benchmark integrity.** Did the diff touch
