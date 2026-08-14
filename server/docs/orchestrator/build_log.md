@@ -5100,3 +5100,158 @@ migration; a digest sent on an unknown consent value.
 - **Codex finds a fifth defect in the digest path** → the increment needs a redesign, not
   a fourth patch, and I would argue for reverting DEF-172+173 together rather than
   remediating again.
+
+## Iteration 41 — mode: structural · REMEDIATION attempt 1 of 1 · campaign C-3 (iteration 17 of 5) · the three carried findings CLOSED
+
+**The gap first, plainly: iterations 31–40 produced no builder output.** The build log's
+previous section is Iteration 30, HEAD was `b0a5ecb` for all ten reviews, and Codex spent
+them measuring same-SHA variance (C4 median 88.3, range 4.2 over eleven runs) while the
+same three findings from his iteration-30 review set every verdict. I state that because
+this entry would otherwise read as if the loop had been building. It had not. Meanwhile —
+established this turn from the chart's D-26 row and the live database — **`b0a5ecb` WAS
+deployed on 08-13 19:41 PKT**, so all three findings were live at production HEAD, exactly
+as his reviews said.
+
+### What this turn is
+
+Remediation scope = Codex's iteration-40 carried findings 1–3 (his directive items 4–5),
+which are also Self-Pruning increment-2 work, so the campaign cap and the remediation
+scope are the same work. Structural depth as demanded: none of the three is patched at
+the reported instance.
+
+**Verdict before coding: CIRCLING** on finding 1 — the digest-prose CRITICAL is the second
+consecutive occurrence of the same class inside one feature (iteration 29: template in the
+policy; iteration 30: same template, different file). Relocating literals a third time was
+therefore forbidden. The structural fix is that the words no longer exist as owner prose
+anywhere: the digest is a provenance-stamped marker, and the BOUNDARY renders every
+`system_marker`-provenance payload — for all producers, present and future, not this one.
+
+### Finding 1 (CRITICAL) — digest prose → the sanctioned marker path, end to end
+
+- `src/services/notifications/proactiveMessageText.ts:147-167` — `renderItemDigest` now
+  emits `systemMarker('selfpruning_digest: <total> updates in <window>h, <unanswered>
+  unanswered, about <label>; latest: "<quote>"')`. Brackets and the sentinel are stripped
+  from interpolations so a quoted push cannot terminate the marker or smuggle an envelope.
+- `src/services/knowledge/answerSanitizer.ts:170-182` — the marker's ONE curated meaning,
+  producing the iteration-29-vetted sentence (facts, verbatim quote, no promise, no
+  vocative). Constructor↔rule sync is pinned by test — drift turns the digest into the
+  neutral fallback loudly, in CI, instead of leaking machine text.
+- `src/services/brainPrompts/brainPromptQueueService.ts:247` — the digest enqueue declares
+  `provenance: 'system_marker'`.
+- `src/services/notifications/brainOutboundService.ts:257-291` — **the mechanism**: the
+  `system_marker` provenance class had CLAIMED "rendered downstream by answerSanitizer"
+  since DEF-140 while nothing downstream rendered it. `brainContactsUser` now renders it
+  at the one boundary every owner message crosses: curated fact → `markerVoice` LLM;
+  no curated meaning → `NEUTRAL_MARKER_FALLBACK`; rendering failure → fallback, never the
+  raw marker and never silence. This is why the fix is class-level: any future producer
+  declaring `system_marker` gets the same guarantee.
+
+### Finding 2 (HIGH) — the applied migration, assessed and amended
+
+`prisma/migrations/20260813_bpq_dedup_unique/migration.sql` ran on production 2026-08-13
+(index `uq_bpq_dedup_live` confirmed present, read-only). Amended step 1: survivor
+precedence `awaiting_reply` > newest (the original could expire a question already on the
+owner's phone in favour of one not yet sent), and every expired row now records
+`dedupExpiry{by, at, priorState, survivorId, reason}` (invariant #7). Evidence, all
+read-only or rolled back:
+- Amended file dry-run inside `BEGIN…ROLLBACK` on production: **`UPDATE 0`** — provably a
+  permanent no-op where the index already exists, so amending the applied file is safe.
+- Synthetic duplicate set on a temp table: the old ranking would have expired the
+  `awaiting_reply` row for a newer `queued` one; the amended SQL keeps it, and both
+  expired rows carry priorState + survivorId (one had NULL metadata — COALESCE covered).
+- Production assessment: the rows the original expired are **not exactly identifiable**
+  — the missing audit metadata is itself the defect, and the table has no `updated_at`.
+  Bounds: ≤125 expired rows share a (user_id, dedup_key) with a sibling (dominated by
+  natural expire-then-requeue), **≤14** match the harmful delivered-unanswered shape.
+  **No restoration attempted**: reviving a guessed row would re-send stale questions and
+  the guess would be fabricated audit data.
+
+### Finding 3 (MEDIUM) — P2002 is a claim to verify
+
+`src/services/brainPrompts/brainPromptQueueService.ts:322-360` — before 'duplicate' is
+returned: `e.meta.target`, when present, must name the dedup constraint (absent tolerated
+— raw-SQL indexes are not always named; the second proof is load-bearing), AND the
+surviving live row is read back and its id returned. Any failed proof rethrows, which the
+digest wiring degrades to SENDING the original — one too many, never a swallowed message.
+
+### Also fixed, found by the matrix: my own tests were time-bombed
+
+DEF-172's fixtures pinned `sentAt: 2026-08-13T10:00:00Z` while the chokepoint windows on
+the real clock — eight tests went red on UNCHANGED HEAD at 10:00 UTC today, 24h after they
+were written. `green-that-cannot-be-reproduced`, 2nd occurrence, now in the chart §3 with
+the generalisation: an absolute timestamp in a fixture is a clock gate in disguise.
+Fixtures are now clock-relative (`tests/def172DigestOneItemOneVoice.test.ts:130-140`).
+`tests/def140OwnerAddressBoundary.test.ts:222-234` updated: it had pinned the system_marker
+pass-through — the defect itself — as "keeps their shape"; it now asserts rendering.
+
+### Verification (run from `server/`, after the last code edit)
+
+- `npx tsc --noEmit` — clean
+- `npx vitest run` — **Test Files 1 failed | 184 passed | 1 skipped (186); Tests 1 failed
+  | 2261 passed | 7 expected fail | 21 skipped | 1 todo (2291)**. The 1 failure is
+  `tests/orchestratorPulseRoute.test.ts` — its contract test executes the orchestrator's
+  own live `pulse.py` (an UNTRACKED file under `scripts/orchestrator/`, which I may not
+  touch), whose `--json` output now emits `stage.basis` as a per-capability object where
+  the committed test expects a string enum. Pre-existing drift, orthogonal to this diff
+  (none of my modules are on its path); **the harness is the orchestrator's to fix** and I
+  am flagging it here per the standing rule rather than editing either side.
+- `npm run build` — passes
+- `git diff --check` — clean
+- Mutation: **5 mutants, one per finding, all die on named tests** (prose-again → def174 +
+  def172; format-drift → curated-sync; boundary-skip → def174 end-to-end; exact pre-fix
+  P2002 revert → ghost + wrong-constraint; target-check-drop → wrong-constraint). Honest
+  note: a naive survivor mutant (`survivor || true`) SURVIVES because it crashes on the
+  null survivor and lands in the same safe rethrow — the recorded mutant is the real
+  regression (the pre-fix code), which dies.
+- Live containment (Codex directive #4): `system_config` holds NO
+  `behavior.selfpruning.digest_enabled` row for any tenant → the resolver's registered
+  default **0** governs → digesting is OFF on production until the owner opts in.
+
+### Capability contract
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 on Grok this iteration (the mechanism existed at HEAD; this turn makes the
+            enabled path RELEASABLE — movement comes when increments 1–2 are observed live)
+MECHANISM:  the owner-visible half of increment 2 (the digest message) now takes the one
+            sanctioned deterministic form and is rendered at the outbound boundary, so the
+            campaign's exit condition (a real burst → exactly one message, quoted back)
+            can be pursued without shipping an invariant violation
+FALSIFIER:  set selfpruning.digest_enabled=1 for TMC-0001, drive a ≥3-push drip on one
+            item: if the owner receives bracketed machine text, an invisible-sentinel
+            artifact, or silence instead of one plain-language digest naming the count,
+            this turn failed
+```
+
+### What I did NOT do
+
+- **Codex directive #2 (variance harness)**: not built. His own eleven-run same-SHA series
+  already establishes the baseline (C4 median 88.3, range 4.2), remediation scope owned
+  this turn, and persisting per-case outputs is scorer-harness territory. It stays open on
+  the record.
+- **Codex directive #3 (B02/B08/B12 semantic constraints)**: not touched — his own
+  attribution analysis says those rotated on identical code (B08 recovered without a
+  build while B02 broke), and the campaign cap forbids another conversational-case turn.
+- The B02 regression-guard firing from iteration 40's table: per the same analysis, run
+  variance on unchanged SHA; no text-diff possible against a build that never existed.
+- Carried findings 4 (marker text-inference fallbacks) and 5 (self-conduct regex): older
+  classes, explicitly assigned by D-20 to a dedicated deletion turn — not silently
+  dropped, named here.
+- No `unattachedDigest`/other proactive renderers migrated to markers — one producer was
+  in scope; the boundary now protects any that migrate later.
+- The iteration-40 prompt's ESCALATED clause ("iteration 39's change") has no object: no
+  iteration-39 change exists. Nothing to accept or revert; said plainly rather than
+  answered ritually.
+
+### Prediction
+
+Codex should find all three iteration-30 findings closed at class level; the honest risks
+are (a) he judges the curated digest sentence still "deterministic prose" — my answer on
+the record: it is the AGENTS.md-sanctioned form, rendered through `markerVoice` (an LLM)
+on the conversational path, with the deterministic text serving as the vetted fact, which
+is exactly how every other marker in the codebase reaches the owner; (b) he faults
+amending an applied migration — answered by the `UPDATE 0` dry-run proving it is inert
+where it already ran. **Deployable at end of turn: yes, if reviewed SOUND** (D-19); the
+diff is deployed-inert by the unset flag either way. If this iteration again produces a
+WRONG on new grounds, the loop should stop per the D-19 significance bar rather than
+starting an eleventh same-SHA measurement.
