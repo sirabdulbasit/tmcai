@@ -329,6 +329,20 @@ function CapabilityMap({ data }) {
             </div>
           );
         })}
+        {/* TOTAL, on the picture. Owner, 2026-08-14: "place total brain capability
+            beautifully". It sits in the one genuinely empty part of his artwork —
+            the dark band below the chin, centred between SIMPLE & SMART and SELF
+            PRUNING — so it reads as part of the composition rather than covering
+            the face or the brain. Positioned against the FRAME like the nine box
+            figures, so it tracks the image at every width. */}
+        {data.brain && (
+          <div className="orch-capmap-total"
+               title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap}`}>
+            <span className="orch-capmap-total-lbl">TOTAL BRAIN CAPABILITY</span>
+            <span className="orch-capmap-total-num">{data.brain.nexeo}%</span>
+            <span className="orch-capmap-total-pro">of {data.brain.professional} professional</span>
+          </div>
+        )}
       </div>
     </div>
   );
