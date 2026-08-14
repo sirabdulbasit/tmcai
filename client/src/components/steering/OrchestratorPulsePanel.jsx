@@ -303,38 +303,10 @@ function CapabilityMap({ data }) {
    `code-read` vs `live-evidence` is stated rather than blended: a score derived
    from reading source is an opinion about what the code ought to do, and it must
    not look identical to one derived from production. */
-function GrokFindings({ grok }) {
-  if (!grok) return null;
-  const parts = [
-    ['moved', grok.what_moved],
-    ['did not move', grok.what_did_not],
-    ['could not verify', grok.unverifiable],
-  ].filter(([, v]) => v);
-  return (
-    <div className="orch-grok">
-      <div className="orch-grok-head">
-        <b>Grok · iteration {grok.iteration}</b>
-        <span className={`orch-grok-verdict is-${String(grok.verdict || '').toLowerCase()}`}>
-          {grok.verdict}
-        </span>
-        {grok.attribution && <span className="orch-grok-attr">{grok.attribution}</span>}
-        {grok.code_read > 0 && (
-          <span
-            className="orch-grok-basis"
-            title="A code-read score is inferred from the source, not observed in production. Grok says so itself; the deck repeats it rather than blending the two."
-          >
-            {grok.code_read} of {grok.total} figures are code-read, not evidence
-          </span>
-        )}
-      </div>
-      {parts.map(([label, v]) => (
-        <div className="orch-grok-line" key={label}>
-          <span className="orch-grok-label">{label}:</span> {v}
-        </div>
-      ))}
-    </div>
-  );
-}
+/* GrokFindings was removed 2026-08-14 — owner: "remove this", of the prose block
+   under the capability card. Grok still supplies every number on this card; what
+   came out is its commentary, which crowded the figure it was explaining. Deleted
+   rather than hidden behind a flag. */
 
 function CapabilityBars({ data }) {
   const caps = data.capabilities;
@@ -955,7 +927,6 @@ export default function OrchestratorPulsePanel() {
               {capView === 'table' ? <PulseTable data={data} />
                 : capView === 'bars' ? <CapabilityBars data={data} />
                 : <CapabilityMap data={data} />}
-              <GrokFindings grok={data.grok} />
             </PulseCard>
           )}
 

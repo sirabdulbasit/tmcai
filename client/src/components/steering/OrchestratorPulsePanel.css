@@ -112,21 +112,29 @@
       "bench  caps"
       "brain  caps";
   }
-  /* The right column is one tall card, so it must not be stretched by a short
-     left column nor clipped by a tall one. */
-  .orch-deck-caps { align-self: start; }
+  /* STRETCH, NOT START. With `start` the card sized to its own content and ran
+     past the fold — 62px of it were clipped at 1440x820, which is precisely the
+     silent row-loss this file warns against. Bounded by its grid track instead,
+     the card gets the column's full height and its contents fit inside it. */
+  .orch-deck-caps { align-self: stretch; min-height: 0; }
   .orch-deck-phases { grid-area: phases; }
   .orch-deck-caps   { grid-area: caps; }
   .orch-deck-bench  { grid-area: bench; }
   .orch-deck-brain  { grid-area: brain; }
 
-  /* FIT-TO-PAGE NO LONGER HOLDS, SO IT MUST NOT CLIP. The `overflow: hidden`
-     above was correct for four cards in two rows; four cards stacked in one
-     column cannot fit 100vh, and this file's own rule is that silently losing
-     rows is worse than scrolling to them. The deck scrolls; the page still does
-     not. */
-  .orch-pulse { overflow: auto; }
-  .orch-deck  { flex: none; }
+  /* FIT TO ONE PAGE AGAIN — owner, 2026-08-14: "make it fit to one page without
+     scroll". Two columns make this possible where one could not: the left stack
+     takes three shared rows and the capability card takes the full height beside
+     it, so nothing has to be reached by scrolling.
+
+     The rule this file already carried still holds — clipping is worse than
+     scrolling — so nothing is pinned to a height it cannot honour. The page does
+     not scroll; where a card's own content exceeds its track, THAT CARD scrolls
+     inside itself (.orch-card-body is already overflow-y: auto), and the map
+     scales to its box rather than being cut off. */
+  .orch-pulse { overflow: hidden; }
+  .orch-deck  { flex: 1; min-height: 0; }
+  .orch-deck  { grid-template-rows: minmax(0, auto) minmax(0, 1fr) minmax(0, 1fr); }
 }
 .orch-card {
   min-height: 0; min-width: 0;
@@ -562,25 +570,28 @@
 .orch-capmap-corelbl { fill: rgba(255,255,255,0.6); font-size: 15px; text-anchor: middle; }
 .orch-capmap-note { margin-top: 6px; }
 
-/* Grok's findings, carried under its own numbers. */
-.orch-grok {
-  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs);
-  color: var(--text-dim);
-}
-.orch-grok-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--text); }
-.orch-grok-verdict { font-weight: var(--fw-semibold); letter-spacing: 0.06em; }
-.orch-grok-verdict.is-progressive { color: var(--op-score); }
-.orch-grok-verdict.is-neutral     { color: var(--op-idle); }
-.orch-grok-verdict.is-regression  { color: var(--op-stalled); }
-.orch-grok-verdict.is-circular    { color: var(--op-stalled); }
-.orch-grok-verdict.is-unverified  { color: var(--op-measure); }
-.orch-grok-attr, .orch-grok-basis {
-  font-size: var(--fs-xs); color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-}
+
 /* The inference count is the one thing on this card a reader must not skim. */
-.orch-grok-basis { color: var(--op-measure); border-color: var(--op-measure); }
-.orch-grok-line { line-height: 1.45; }
-.orch-grok-label { color: var(--text); font-weight: var(--fw-semibold); }
 .orch-bench-src { color: var(--text-muted); font-style: italic; }
+
+
+/* ── fit-to-page: the map scales to its track instead of overflowing ──────────
+   The nine-box drawing is a fixed-ratio figure, so given a bounded box it must
+   shrink to MEET that box, never crop. SVG does this natively with the default
+   preserveAspectRatio once it is given a height to work with; the wrapper is what
+   supplies the height. Outside the fit-to-page viewport the map keeps its natural
+   size and the page scrolls as before. */
+@media (min-width: 1100px) and (min-height: 620px) {
+  .orch-deck-caps .orch-card-body { overflow: hidden; }
+  /* COLUMN, not row. As a row the caption became a sibling BESIDE the figure and
+     took a third of the width off it, so the map rendered small and off-centre. */
+  .orch-deck-caps .orch-capmap {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .orch-deck-caps .orch-capmap-note { flex: 0 0 auto; text-align: center; }
+  .orch-deck-caps .orch-capmap-svg { width: 100%; height: 100%; max-height: 100%; }
+  .orch-deck-caps .orch-capmap img { max-height: 100%; width: auto; margin: 0 auto; }
+  /* The bars/table views scroll inside the card, as the deck's own rule requires. */
+  .orch-deck-caps .orch-caps-wrap { overflow-y: auto; min-height: 0; }
+}
