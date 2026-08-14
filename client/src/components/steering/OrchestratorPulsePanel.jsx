@@ -848,28 +848,6 @@ export default function OrchestratorPulsePanel() {
       )}
 
       <div className="orch-pulse-body">
-        {/* ── stage hero — the one thing worth seeing from across the room ── */}
-        <div className="orch-stage" style={{ '--stage-color': stageColor }}>
-          <div className="orch-stage-word">
-            <span className="orch-dot" />
-            {stage}
-          </div>
-          <div className="orch-stage-timer">
-            {fmtDur(stage === 'IDLE' ? data.stage.elapsed : data.stage.elapsed + drift)}
-          </div>
-          <div className="orch-stage-side">
-            <div style={{ fontSize: 'var(--fs-md)', fontWeight: 'var(--fw-semibold)' }}>
-              Iteration #{data.iteration}
-            </div>
-            <div className="orch-pulse-meta" style={{ justifyContent: 'flex-end' }}>
-              started {pkt(data.iteration_started, data.pkt_offset, true)}
-              {data.iteration_started && ` · ${fmtDur(liveNow - data.iteration_started)} ago`}
-            </div>
-          </div>
-          <div className="orch-stage-detail">
-            {data.stage.detail} <span style={{ color: 'var(--text-dim)' }}>· timer from {data.stage.basis}</span>
-          </div>
-        </div>
 
         {stage === 'STALLED' && (
           <div className="orch-banner orch-banner-bad">
@@ -890,6 +868,33 @@ export default function OrchestratorPulsePanel() {
              fold. Where a card cannot fit its own content on a short screen, that
              CARD scrolls — the page never does. */}
         <div className="orch-deck">
+          {/* The hero moved INSIDE the deck, 2026-08-14 — owner: "Brain Pulse,
+              Iteration Phase, Benchmark Iteration, Brain Overall all above should
+              be in left column (Parallel); Capability would be in right column".
+              It used to span the full width above both columns, which pushed the
+              capability column down and broke the parallel he asked for. */}
+          {/* ── stage hero — the one thing worth seeing from across the room ── */}
+          <div className="orch-stage" style={{ '--stage-color': stageColor }}>
+            <div className="orch-stage-word">
+              <span className="orch-dot" />
+              {stage}
+            </div>
+            <div className="orch-stage-timer">
+              {fmtDur(stage === 'IDLE' ? data.stage.elapsed : data.stage.elapsed + drift)}
+            </div>
+            <div className="orch-stage-side">
+              <div style={{ fontSize: 'var(--fs-md)', fontWeight: 'var(--fw-semibold)' }}>
+                Iteration #{data.iteration}
+              </div>
+              <div className="orch-pulse-meta" style={{ justifyContent: 'flex-end' }}>
+                started {pkt(data.iteration_started, data.pkt_offset, true)}
+                {data.iteration_started && ` · ${fmtDur(liveNow - data.iteration_started)} ago`}
+              </div>
+            </div>
+            <div className="orch-stage-detail">
+              {data.stage.detail} <span style={{ color: 'var(--text-dim)' }}>· timer from {data.stage.basis}</span>
+            </div>
+          </div>
           {/* aspect 1 — what is happening right now, and for how long */}
           <PulseCard
             className="orch-deck-phases"

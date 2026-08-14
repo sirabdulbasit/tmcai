@@ -108,10 +108,12 @@
     grid-template-rows: none;
     grid-auto-rows: minmax(0, auto);
     grid-template-areas:
+      "stage  caps"
       "phases caps"
       "bench  caps"
       "brain  caps";
   }
+  .orch-stage { grid-area: stage; }
   /* STRETCH, NOT START. With `start` the card sized to its own content and ran
      past the fold — 62px of it were clipped at 1440x820, which is precisely the
      silent row-loss this file warns against. Bounded by its grid track instead,
@@ -134,7 +136,7 @@
      scales to its box rather than being cut off. */
   .orch-pulse { overflow: hidden; }
   .orch-deck  { flex: 1; min-height: 0; }
-  .orch-deck  { grid-template-rows: minmax(0, auto) minmax(0, 1fr) minmax(0, 1fr); }
+  .orch-deck  { grid-template-rows: minmax(0, auto) minmax(0, auto) minmax(0, 1fr) minmax(0, 1fr); }
 }
 .orch-card {
   min-height: 0; min-width: 0;
