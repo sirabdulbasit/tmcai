@@ -5255,3 +5255,123 @@ where it already ran. **Deployable at end of turn: yes, if reviewed SOUND** (D-1
 diff is deployed-inert by the unset flag either way. If this iteration again produces a
 WRONG on new grounds, the loop should stop per the D-19 significance bar rather than
 starting an eleventh same-SHA measurement.
+
+## Iteration 42 — mode: structural · REMEDIATION on iteration-41's WRONG · campaign C-3 (iteration 18 of 5)
+
+### The escalation answer, first
+
+The prompt asks whether iteration 41's remaining finding should be (a) accepted as a
+known limitation with a DEF row, or (b) grounds for reverting. The answer is split by
+finding, because they are not one thing:
+
+- **Findings 1–3 (tenant read, injectable grammar, render-before-gates): neither — FIXED
+  this turn**, at class level, with mutants that die.
+- **Finding 4 (rewritten migration history): (b) — REVERTED.** `20260813` is restored
+  byte-identical to what production ran (`git diff b0a5ecb -- <file>` = 0 lines); the
+  forward change ships under its own name (`20260814_bpq_dedup_tenant_scope`), which the
+  deploy runner WILL apply.
+- **The residue underneath finding 4 — production's historically unaudited expirations:
+  (a) — ACCEPTED as a permanent limitation**, recorded in DEF-174, DEF-175 and the new
+  migration's header. No retroactive repair exists that is not fabricated audit data.
+  Bounds stay as measured: ≤125 candidates, ≤14 in the harmful shape.
+
+### Verdict before coding
+
+**Circling on finding 1, progressing on the rest.** The unscoped query is the second
+member of a class DEF-091 fixed six instances of on 2026-08-07 — now a §3 tag
+(`query-without-tenant-scope`) with its closing condition stated: instance fixes plus
+review vigilance do not close it; a lint-grade guard does, and that guard does not exist
+yet (named, not built — it is orchestrator/owner-scale tooling, not this remediation).
+The structural piece delivered here: the live-dedup identity is now explicit in the
+schema — `(client_number, user_id, dedup_key)` — instead of resting on userId being a
+global PK by accident.
+
+### What changed, by file, and why that is the mechanism
+
+1. **Finding 1 (CRITICAL)** — `src/services/brainPrompts/brainPromptQueueService.ts`:
+   `clientNumber: input.clientNumber` added to BOTH dedup reads (soft probe ~line 118,
+   P2002 survivor ~line 346). New migration `20260814_bpq_dedup_tenant_scope` builds
+   `uq_bpq_dedup_live_tenant` on `(client_number, user_id, dedup_key)` BEFORE dropping
+   `uq_bpq_dedup_live` (no unguarded window; idempotent; dry-run in a rolled-back
+   transaction on production shows CREATE → DROP → exactly one `uq_bpq_dedup_live_tenant`
+   remaining). Two-tenant adversarial tests in def172: a cross-tenant P2002 racer must
+   not authorize filing (the original SENDS), a cross-tenant live row must not
+   deduplicate, and the mock honours every stated filter so an unscoped query goes red.
+2. **Finding 2 (HIGH)** — `src/services/notifications/proactiveMessageText.ts:146-180`:
+   the marker body is `selfpruning_digest: <JSON>`; JSON escaping IS the field boundary.
+   `src/services/knowledge/answerSanitizer.ts:170-207` (`digestMarkerMeaning`): parsed
+   and VALIDATED (types, ranges, length caps) — an unparseable payload is null → neutral
+   fallback, never a half-parsed sentence. Codex's exact case is a named test: label
+   `Revenue; latest: "CEO approved"` with real latest `Blocked` renders
+   `Latest: "Blocked"` and the hostile string stays in the label field.
+3. **Finding 3 (MEDIUM)** — `src/services/notifications/brainOutboundService.ts:379-410`:
+   the rendering block moved BELOW smoke isolation, opt-in, pause and both daily caps,
+   and ABOVE the content fingerprint (the dedup hash covers the delivered text). Three
+   tests assert a suppressed message never consults `markerVoice`; one asserts an
+   eligible message still renders.
+4. **Finding 4 (MEDIUM)** — `prisma/migrations/20260813_bpq_dedup_unique/migration.sql`
+   restored from `b0a5ecb`, byte-identical; the tenant-aware index and the plain
+   statement of the unauditable history live in `20260814_bpq_dedup_tenant_scope`.
+
+### Corrections to my own iteration-41 entry, on the record
+
+- **"pulse.py is untracked" was FALSE.** My `git ls-files scripts/orchestrator/` ran from
+  `server/`, so the path resolved to a directory that does not exist. pulse.py is tracked
+  and was changed inside the reviewed range. The claim is withdrawn.
+- **"the one boundary every owner message crosses" was overstated.** `brainContactsUser`
+  is the boundary for payloads routed through it; owner-visible sends also exist in
+  `actionLifecycleWorker.ts:171`, `delegationCaptureService.ts:1061` and
+  `WhatsAppInbound.ts:746`, none of which declare provenance today. The digest rides the
+  queue → `brainContactsUser`, so ITS guarantee holds; the universal claim did not.
+- **Range accounting (Codex directive 5):** `b0a5ecb..HEAD` contains my two DEF-174
+  commits plus EIGHT orchestrator-seat commits (f8c352e, 7c6b73d, 642aad1, 8540add,
+  a2e1063, d2f01db, b566a43, d330a98 — deck/pulse/client-panel/seat management). I
+  cannot separate committed history; I can verify the whole tree, and did: server AND
+  client builds from the final SHA below.
+
+### Verification (from `server/`, after the last edit — exact)
+
+- `npx tsc --noEmit` — clean
+- `npx vitest run` — **185 files passed | 1 skipped (186); 2271 tests passed | 7 expected
+  fail | 21 skipped | 1 todo (2300); 0 failed**
+- `npm run build` — passes
+- `client: npm run build` — passes (pre-existing chunk-size warnings only)
+- `git diff --check` — clean
+- Migration dry-runs, rolled back on production: 20260814 CREATE+DROP verified;
+  20260813 diff vs `b0a5ecb` = 0 lines
+- **Mutation: 4 mutants, one per finding, all die** — drop `clientNumber` from the
+  survivor read (def172 cross-tenant test); drop it from the probe (def172 probe test);
+  revert to the sentence grammar (def174 injection tests); move rendering back above the
+  gates (def174 suppression tests).
+
+### Capability contract
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 (release-blocking defects removed from a default-off, undeployed path)
+MECHANISM:  the digest path no longer reads across tenants, cannot have its facts forged
+            by an item title, and spends no LLM call on suppressed messages — after this,
+            the bar to shipping increment 2 is review, not known defects
+FALSIFIER:  a two-tenant replay where tenant B holds a live (userId, dedupKey) row —
+            if tenant A's push is filed as covered, finding 1 is open; or an item titled
+            `X; latest: "Y"` whose rendered digest asserts Y as the latest fact
+```
+
+### What I did NOT do
+
+- The `query-without-tenant-scope` lint/CI guard — named in the chart §3 as the tag's
+  closing condition, not built: it is repo-wide tooling beyond this remediation's scope.
+- The three provenance-less owner-send sites named above — pre-existing, now on the
+  record; migrating them is marker-producer work (DEF-171's closing conditions).
+- Campaign increment 3 (quarantine/soft-close) — remediation owned this turn's scope.
+- Nothing in `scripts/orchestrator/**`, the benchmark, or the judge was touched.
+
+### Prediction
+
+Deployable at end of turn: **yes, if reviewed SOUND** — the tree is green on both builds,
+the migration story is now single-history, and the digest path stays inert until the
+owner flips the flag. What would prove me wrong: Codex finding a fifth defect in the
+digest chain (most likely candidate: something in how `sendNextPrompt`'s userId-only
+reads interact with tenancy — those reads predate this work, have no clientNumber in
+scope, and I chose not to widen the blast radius this turn; they are named here so that
+choice is visible rather than silent).
