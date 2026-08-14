@@ -5493,3 +5493,191 @@ been swept function by function, but the class has now survived two sweeps by tw
 different readers, which is exactly why the lint guard is the real closer); or the
 B11 leak reproducing at high frequency, which would make deferring it the wrong
 call — the DEF-177 falsifier decides that with data rather than argument.
+
+## Iteration 53 — mode: structural · REMEDIATION attempt 1 of 1 on iteration-50's WRONG · D-21 executed: the three carried blockers CLOSED, HEAD is deployable
+
+### What this turn was, and what it was not
+
+Iteration 50 closed **WRONG** with no Builder diff and three carried branch-only
+blockers standing between the deployed SHA `b0a5ecbc6` and everything iterations
+44–52 built. D-21 ranks first until closed and names this turn's one job in three
+numbered points; the campaign is suspended for the same reason. So this turn is
+those three findings and nothing else. **Re-scope note (26 no-deploy iterations):
+nothing was dropped to shrink this turn — D-21's scope already IS the smallest
+shippable unit, and it is the unit the owner's D-22 standing exception blocks on.**
+
+### The findings, taken in severity order, and how each is closed
+
+**Finding 1 — CRITICAL, fail-open answer persistence** (`brainPromptQueueService.ts:1014-1029`,
+`promptReplyHandler.ts:229-258` as cited; Codex directive 1: "require a compare-and-set
+answer write with count=1 before promptReplyHandler.ts can mutate or acknowledge success").
+
+- `recordAnswer` (`server/src/services/brainPrompts/brainPromptQueueService.ts:1030-1060`;
+  state guard `:1051`, count returned `:1059`) is now a compare-and-set:
+  `awaiting_reply → answered` under `(id, userId, clientNumber, state)` or nothing,
+  **and the count is the return value**. The state guard is what makes deleted,
+  double-delivered, expired-again-after-revival and wrong-scope all collapse into the
+  same observable: zero rows, `false`.
+- `handlePromptReply` (`server/src/services/brainPrompts/promptReplyHandler.ts:229-252`;
+  the check at `:240-247`) uses that result BEFORE the side effect: no persisted answer
+  → no side effect, no ack, `handled: false`, the message routes to normal chat — which
+  is what the message is when the question it answered no longer exists.
+- `reviveExpiredPrompt` returns its count too (`:997-1018`); enforcement stays in the
+  CAS so there is exactly one decision point, not two.
+- *Why this is the mechanism:* the defect was that the proof of the write (the count)
+  was computed and thrown away. Moving it into the return type means the caller
+  cannot not-know — the same shape as DEF-176's "P2002 proves itself".
+
+**Finding 2 — outbound delivery drops tenant scope** (`brainPromptQueueService.ts:741-758`,
+`brainOutboundService.ts:187-194,304-339,374-438` as cited; Codex directive 2: "Make
+clientNumber mandatory in BrainContactRequest… scope recipient resolution, message-ledger
+suppression/dedup/rate reads, audit writes, and transport… Update every caller").
+
+- `BrainContactRequest.clientNumber` is **required at the type level**
+  (`server/src/services/notifications/brainOutboundService.ts:91-103`, the field at
+  `:102`) — a tenantless caller now fails `tsc`, which is the enforcing guard the
+  chart's `query-without-tenant-scope` row said was missing, delivered for this surface.
+- The declaration is verified against the resolved user
+  (`brainOutboundService.ts:208-221`, refusal at `:220`): mismatch →
+  `tenant_mismatch`, refused BEFORE any audit write, so a wrong-tenant attempt leaves
+  no state on the tenant it failed to reach.
+- All five `brain_user_messages` ledger reads are `(clientNumber, userId)`-scoped:
+  daily cap `:332`, diagnostic budget `:361`, content fingerprint `:404`, dedup key
+  `:434`, per-kind rate `:462`. The audit write already carried
+  `o.user.clientNumber` (`record()`, `:815-818`) and transport already dispatched
+  under `user.clientNumber` (`:557`) — after the mismatch guard those equal the
+  declared tenant, closing the loop end to end.
+- **All 20 production call sites updated**, each declaring the tenant it acts for:
+  `brainPromptQueueService.ts:143,744` (top-priority + queue dispatch),
+  `promptReplyHandler` (via queue), `criticalityNotifier.ts:112`,
+  `dayBriefDispatchJob.ts:176,258`, `openItemFollowUpJob.ts:285`,
+  `openItemDraftAskJob.ts:191`, `connectorHealthService.ts:401` (rows carry their
+  tenant), `integrationService.ts:217` (connector row's tenant),
+  `senderTriage.ts:398,436`, `findingNotifier.ts:68,155`, `brainMaturityReport.ts:361`,
+  `repairService.ts:363`, `profileRoutes.ts:311` (req.user's own tenant),
+  `whatsappNotifierRoutes.ts:272-281,331-337` (admin routes RESOLVE the target's true
+  tenant rather than inventing one — platform authority does not license a false
+  declaration), `smokeBrainOutbound.ts:68,103`.
+
+**Finding 3 — stale expiry advances on a zero-row write** (`brainPromptQueueService.ts:887-910`
+as cited; Codex directive 3: "count expiry and advance only after exactly one row transitions").
+
+- `expireStalePrompts` (`server/src/services/brainPrompts/brainPromptQueueService.ts:896-922`,
+  the count check at `:911`) honours the guarded `updateMany().count`: zero rows →
+  not expired, not counted, no slot freed, no dispatch. The returned `expired` is now
+  the number of rows that actually transitioned, not the enumeration length.
+
+### D-21 pre-flight, per file, as required
+
+**Tenant** — every query this diff touched, scoped by `client_number` (+ `user_id`):
+- `brainOutboundService.ts:332,361,404,434,462` — the five ledger reads named above.
+- `brainOutboundService.ts:208-221` — the resolved user's tenant checked against the declaration.
+- `brainPromptQueueService.ts:1014` (revive), `:1044-1052` (recordAnswer), `:905-908`
+  (expiry write) — all `(id, userId/state, clientNumber)`.
+- Caller files pass tenant they already held; none adds a new query.
+
+**Fail-closed** — every write this diff touched reports its affected-row count and every
+caller checks it before claiming success:
+- `recordAnswer` returns `count === 1` (`:1059`); checked at
+  `promptReplyHandler.ts:240-247` — no side effect, no ack without it.
+- `reviveExpiredPrompt` returns `count === 1` (`:1017`); the CAS behind it is the
+  enforcement point.
+- `expireStalePrompts` checks its own `count` at `brainPromptQueueService.ts:911` before
+  counting or dispatching.
+- `brainContactsUser` refuses (`tenant_mismatch`) before writing anything when the
+  declaration is false.
+
+### Verification — measured AFTER the last edit
+
+```
+npx tsc --noEmit      clean (no output, exit 0)
+npx vitest run        189 files: 188 passed / 1 skipped
+                      2329 tests: 2300 passed / 7 expected fail / 21 skipped / 1 todo / 0 failed
+npm run build         passes (prisma generate + tsc)
+git diff --check      clean
+```
+
+Suite delta, measured (parent commit `d87b43a` re-run in a worktree: 2287 passed /
+2316 collected → this commit: 2300 passed / 2329 collected, both +13, exact
+reconciliation via `vitest list` diff): **11** are the new DEF-178 tests (7 + 4),
+and **+2** are rows the scanning `tenantIsolation.test.ts` auto-generated for the
+two new admin-route `prisma.user.findUnique` tenant-resolution lookups
+(`whatsappNotifierRoutes.ts:275,331`) — both pass. Three pre-existing test files
+were updated to the new contract, not weakened: `promptReplyRelevance.test.ts`
+(recordAnswer mock now returns the CAS proof `true`),
+`def140OwnerAddressBoundary.test.ts` and `def174DigestMarkerProvenance.test.ts`
+(declare the tenant their mock user belongs to). Every prior assertion in those
+files is intact.
+
+**Mutation — 9 mutants, all die on named tests** (`def178AnswerWriteProvesItself.test.ts`,
+`def178TenantScopedDelivery.test.ts`; both stores honour every stated filter and none
+they do not, so drop-the-filter mutants match foreign rows loudly):
+M1 recordAnswer returns true unconditionally (4 tests fail) · M2 state guard dropped
+(3) · M3 handler ignores the result (3) · M4 expiry counts enumerated rows and
+dispatches (1) · M5 tenant-mismatch guard deleted (1) · M6–M9 clientNumber dropped
+from the dedup / daily-cap / content-fingerprint / per-kind-rate reads (1 each).
+
+### Three-docs verdict, said out loud: CIRCLING, twice — so both fixes are structural
+
+- Finding 2 is **member 3 of `query-without-tenant-scope`** (DEF-091, DEF-175 → DEF-178).
+  The structural piece is the TYPE-level requirement: the class survived two review
+  sweeps because nothing enforced the declaration; now the compiler does, for this
+  surface. The repo-wide lint-grade guard the chart demands is still owed and stays
+  the tag's closing condition.
+- Findings 1+3 are **member 6 of `fabricated-status`** — at the state-machine level:
+  code asserting an outcome (answer recorded, row expired) whose proof it discarded.
+  The structural piece is the CAS-count-as-return-value contract: the proof travels
+  with the call and the caller cannot claim success without it.
+- Chart §3 updated for both tags; DEF-178 row added to `brain_change_log.md`.
+  No new chat log arrived, so no CL row.
+
+### Capability block
+
+```
+CAPABILITY: Authorized Action
+PREDICTED:  +0 until deployed and observed live — the real value of this turn is that
+            it makes HEAD deployable: it closes D-22's standing exception, so
+            DEF-174/175/176 plus this fix can reach the owner at all.
+MECHANISM:  an owner reply can no longer produce a side effect (due date, delegation,
+            sender policy) without a persisted answer behind it, and no tenant's code
+            path can reach — or rate-influence, dedup-influence, cap-influence —
+            another tenant's user through the one outbound primitive.
+FALSIFIER:  a reply whose prompt was concurrently consumed still acks `[recorded]` or
+            still applies its side effect; a two-tenant replay where a foreign
+            brain_user_messages row suppresses or a foreign declaration reaches this
+            tenant's user; an expiry sweep reporting expired>0 with zero transitions.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- **No campaign increment** (campaign suspended by the orchestrator; D-21 point 3:
+  "Nothing else in the diff"). Self-Pruning's next increment waits for a deployable HEAD.
+- **No fixQueue work** — same rule; the fixQueue's conversational cases are explicitly
+  deprioritised by the capability cap anyway.
+- **Finding 3 is included although D-21's list has only findings 1–2**: it is review
+  50's carried finding 3, the same fail-closed class as finding 1, and one of the
+  directives ("Honor stale-expiry write counts") this remediation turn exists to
+  close. Saying so here so it reads as scope-faithful, not opportunistic.
+- **Carried finding 4 (B12 evidence boundary / stochastic composition): untouched.**
+  It is "already live in production", not a branch blocker, and Codex directive 5
+  warns against chasing it with prose rules this turn.
+- The repo-wide unscoped-query lint guard: still owed, still the tag's closing
+  condition, still beyond a remediation turn.
+- **Unsure:** (a) the reply handler's loser-routes-to-chat behaviour on a
+  double-delivered webhook — the racer's answer stands and the duplicate text goes to
+  chat as a fresh message; strictly better than double-applying the side effect, but
+  a duplicate chat turn is possible where before there was a duplicate ack. (b) The
+  two admin routes now 404 on an unknown toUserId before dispatch — previously
+  `user_not_found` came back in the result body; any external script matching on that
+  shape would see a 404 instead. Both are stated so the reviewer can weigh them.
+
+### Prediction
+
+Deployable at end of turn: **yes** — this is the turn D-21 and D-22 were waiting on,
+and nothing in the diff touches a path the review named as needing more than these
+closures. What would prove me wrong: a 21st `brainContactsUser` call site I did not
+enumerate (tsc says there is none — the required field makes a missed caller a build
+error, which is the point); or Codex finding a sixth unscoped ledger read on the
+delivery path outside the five now named. Benchmark movement: none expected — none
+of the twelve read-shaped cases exercises the prompt-answer race or a second tenant,
+and a 1–2 point move either way is noise.
