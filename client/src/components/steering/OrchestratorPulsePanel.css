@@ -527,3 +527,26 @@
   border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums;
 }
 .orch-capmap-chip b { color: var(--text); }
+
+/* The drawn stand-in for the owner's diagram. Neutral surfaces from the panel's
+   own tokens — the number is the mark, so nothing here encodes value in colour;
+   a nine-hue palette would imply a categorical difference between capabilities
+   that does not exist. */
+.orch-capmap-svg { display: block; width: 100%; height: auto; }
+.orch-capmap-link { fill: none; stroke: rgba(120,180,240,0.28); stroke-width: 2; }
+.orch-capmap-box {
+  fill: #12151b; stroke: rgba(160,190,230,0.5); stroke-width: 1.5;
+}
+.orch-capmap-boxnum {
+  fill: #fff; font-size: 30px; font-weight: 600; text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+.orch-capmap-boxpro { fill: rgba(255,255,255,0.6); font-size: 15px; text-anchor: middle; }
+.orch-capmap-boxlbl {
+  fill: rgba(255,255,255,0.88); font-size: 19px; text-anchor: middle;
+  letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600;
+}
+.orch-capmap-core { fill: rgba(255,255,255,0.72); font-size: 20px; text-anchor: middle; letter-spacing: 0.12em; }
+.orch-capmap-corenum { fill: #fff; font-size: 40px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.orch-capmap-corelbl { fill: rgba(255,255,255,0.6); font-size: 15px; text-anchor: middle; }
+.orch-capmap-note { margin-top: 6px; }

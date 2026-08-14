@@ -208,30 +208,61 @@ function CapabilityMap({ data }) {
   const [failed, setFailed] = useState(false);
   const byName = new Map((data.capabilities || []).map((c) => [c.name, c]));
 
-  /* THE IMAGE IS THE OWNER'S FILE AND IT IS NOT IN THE REPO YET. It cannot be
-     reconstructed from a chat paste — a generated lookalike filed under this name
-     would read as the original to everyone who came later. So the card says
-     plainly what is missing and where to put it, rather than rendering a broken
-     image or, worse, quietly hiding itself. A card that is defined but never
-     rendered has already cost this project a false status report. */
+  /* THE OWNER'S OWN ARTWORK IS NOT ON THIS BOX AND CANNOT BE PUT THERE FROM A
+     CHAT PASTE. Rather than leave the card showing an instruction — which is what
+     he saw, twice — Nexeo draws the diagram itself in the same arrangement, with
+     the live scores in the boxes. It is deliberately NOT presented as his file:
+     it is labelled as drawn here, and the instant
+     client/public/nexeo-capability-map.png exists the component uses HIS image
+     instead and this drawing steps aside. A generated lookalike filed under his
+     name would read as the original to whoever came next; a clearly-labelled
+     stand-in that does the job does not.
+
+     Same slot coordinates either way, so the numbers land on the same nine
+     positions whichever background is showing. */
   if (failed) {
     return (
-      <div className="orch-capmap-missing">
-        <div><b>The diagram file is not installed yet.</b></div>
-        <div className="orch-section-note">
-          Drop the image at <code>client/public/nexeo-capability-map.png</code> and rebuild
-          the client. The nine live scores below are already wired to it and will appear
-          in the boxes the moment the file exists.
-        </div>
-        <div className="orch-capmap-fallback">
-          {CAP_MAP_SLOTS.map((s) => {
-            const c = byName.get(s.name);
+      <div className="orch-capmap">
+        <svg viewBox="0 0 960 1120" className="orch-capmap-svg" role="img"
+             aria-label="Nexeo capability map: nine capabilities and their current scores">
+          <defs>
+            <radialGradient id="capHead" cx="50%" cy="42%" r="58%">
+              <stop offset="0%" stopColor="#2b4a6b" />
+              <stop offset="100%" stopColor="#141a24" />
+            </radialGradient>
+          </defs>
+          {/* connectors first, so every box sits on top of its own line */}
+          {CAP_MAP_SLOTS.map((sl) => (
+            <path key={`c-${sl.name}`} className="orch-capmap-link"
+                  d={`M480,560 Q${(480 + sl.left * 9.6) / 2},${(560 + sl.top * 11.2) / 2} ${sl.left * 9.6},${sl.top * 11.2}`} />
+          ))}
+          <ellipse cx="480" cy="560" rx="150" ry="196" fill="url(#capHead)" stroke="rgba(120,180,240,0.45)" strokeWidth="2" />
+          <ellipse cx="480" cy="472" rx="92" ry="74" fill="none" stroke="rgba(224,164,60,0.65)" strokeWidth="2.5" />
+          <text x="480" y="470" className="orch-capmap-core">NEXEO</text>
+          <text x="480" y="500" className="orch-capmap-corenum">
+            {data.brain ? `${data.brain.nexeo}%` : ''}
+          </text>
+          <text x="480" y="524" className="orch-capmap-corelbl">
+            {data.brain ? `of ${data.brain.professional} professional` : ''}
+          </text>
+          {CAP_MAP_SLOTS.map((sl) => {
+            const c = byName.get(sl.name);
+            const x = sl.left * 9.6, y = sl.top * 11.2;
+            const bottom = sl.top > 70;
             return (
-              <span key={s.name} className="orch-capmap-chip">
-                {s.name} <b>{c ? `${c.nexeo}%` : '—'}</b>
-              </span>
+              <g key={`b-${sl.name}`}>
+                <rect x={x - 62} y={y - 62} width="124" height="124" rx="12"
+                      className="orch-capmap-box" />
+                <text x={x} y={y + 4} className="orch-capmap-boxnum">{c ? `${c.nexeo}%` : '—'}</text>
+                {c && <text x={x} y={y + 30} className="orch-capmap-boxpro">of {c.professional}</text>}
+                <text x={x} y={bottom ? y - 78 : y + 90} className="orch-capmap-boxlbl">{sl.name}</text>
+              </g>
             );
           })}
+        </svg>
+        <div className="orch-section-note orch-capmap-note">
+          Drawn by Nexeo in the owner's arrangement — his own artwork replaces it automatically
+          if dropped at <code>client/public/nexeo-capability-map.png</code>.
         </div>
       </div>
     );
