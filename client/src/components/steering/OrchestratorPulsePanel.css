@@ -597,3 +597,29 @@
   /* The bars/table views scroll inside the card, as the deck's own rule requires. */
   .orch-deck-caps .orch-caps-wrap { overflow-y: auto; min-height: 0; }
 }
+
+/* ── no scrollbars inside the deck ────────────────────────────────────────────
+   Owner, 2026-08-14: "remove scroll bar from each graph it is blinking with
+   scroll bar". The panel re-renders every couple of seconds with a fresh frame,
+   and each frame changes content height by a pixel or two — enough to cross the
+   overflow threshold, so the bar appeared and vanished on a loop. A status
+   display that flickers is worse than one that shows slightly less.
+
+   The bars are hidden, NOT the overflow. Wheel and touch still reach anything
+   below the fold, so this file's standing rule holds — nothing is silently
+   clipped, it just is not advertised with a flickering gutter. `scrollbar-gutter:
+   stable` would only reserve the space; it would not stop the bar itself
+   appearing and disappearing. */
+.orch-deck .orch-card-body,
+.orch-deck .orch-caps-wrap,
+.orch-deck .orch-capmap,
+.orch-deck [class*="orch-"] {
+  scrollbar-width: none;              /* Firefox */
+  -ms-overflow-style: none;           /* legacy Edge */
+}
+.orch-deck .orch-card-body::-webkit-scrollbar,
+.orch-deck .orch-caps-wrap::-webkit-scrollbar,
+.orch-deck .orch-capmap::-webkit-scrollbar,
+.orch-deck [class*="orch-"]::-webkit-scrollbar {
+  width: 0; height: 0; display: none; /* Chrome, Safari, Edge */
+}
