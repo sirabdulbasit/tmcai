@@ -89,7 +89,12 @@ vi.mock('../src/db/prisma', () => {
           },
         },
       }),
-    findFirst: async () => null,
+    // DEF-179: the outbound service resolves the user with a tenant-
+    // constrained findFirst (id + clientNumber) — serve it, honouring both.
+    findFirst: async (args: any) => (
+      args?.where?.id === 2 && args?.where?.clientNumber === 'TMC-0001'
+        ? (await model.findUnique({ where: { id: 2 } } as any))
+        : null),
     findMany: async () => [],
     create: async () => ({ id: 'rec-1' }),
     update: async () => ({}),

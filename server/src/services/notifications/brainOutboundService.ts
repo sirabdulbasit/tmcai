@@ -91,13 +91,14 @@ export type OwnerMessageProvenance =
 export interface BrainContactRequest {
   userId: number;
   /**
-   * Tenant the caller is acting FOR. REQUIRED (DEF-178, Codex iteration-50):
-   * delivery used to resolve everything from the userId alone, which made a
-   * bare integer an authorization — any caller holding a userId could reach
-   * that user and influence their suppression/dedup/rate ledger, whatever
-   * tenant the caller was working in. The declared tenant is verified against
-   * the resolved user and a mismatch refuses delivery (fail closed); every
-   * ledger read below is scoped by (clientNumber, userId).
+   * Tenant the caller is acting FOR. REQUIRED (DEF-178, Codex iteration-50;
+   * corrected DEF-179, iteration-53): delivery used to resolve everything
+   * from the userId alone, which made a bare integer an authorization — any
+   * caller holding a userId could reach that user and influence their
+   * suppression/dedup/rate ledger, whatever tenant the caller was working
+   * in. The declaration CONSTRAINS the user-resolution query itself
+   * (id + clientNumber) — a foreign id resolves to no row, unread — and
+   * every ledger read below is scoped by (clientNumber, userId).
    */
   clientNumber: string;
   /**
@@ -195,29 +196,30 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const dedupWindowMs = req.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS;
   const bypassQuiet = req.bypassQuietHours ?? (urgency === 'emergency');
 
-  const user = await prisma.user.findUnique({
-    where: { id: req.userId },
+  // ── Tenant boundary (DEF-178, corrected by DEF-179) ────────────────
+  // The caller declares which tenant it is acting for, and the QUERY is
+  // constrained by that declaration — id + clientNumber, one read. DEF-178
+  // read the whole user by bare id and compared tenants afterwards, which
+  // meant tenant A calling with tenant B's user id had already read B's
+  // name, email, phone and preferences before being refused (Codex
+  // iteration-53 HIGH). The invariant is that every query includes
+  // `client_number`, not that cross-tenant data is read and rejected later.
+  // A foreign id now resolves to NO ROW: nothing read, nothing leaked, and
+  // wrong-tenant is indistinguishable from nonexistent — which is the
+  // point. Refused before any audit write, so a wrong-tenant attempt
+  // leaves no state on the tenant it failed to reach.
+  const user = await prisma.user.findFirst({
+    where: { id: req.userId, clientNumber: req.clientNumber },
     select: {
       id: true, name: true, email: true, clientNumber: true, isActive: true,
       contactNumber: true, notificationPreferences: true,
     },
   });
   if (!user) {
-    return { sent: false, reason: 'user_not_found', channelsUsed: [], waMessageIds: [] };
-  }
-  // ── Tenant boundary (DEF-178) ───────────────────────────────────────
-  // The caller declares which tenant it is acting for, and the declaration
-  // must match the user it is trying to reach. A userId is a global PK by
-  // accident of the schema, never an authorization (invariant #1, AGENTS.md
-  // §2.1) — without this check any tenant's code path holding an integer
-  // could message another tenant's user and leave audit rows on their
-  // ledger. Refused BEFORE any audit write: a wrong-tenant attempt must not
-  // leave state on the tenant it failed to reach.
-  if (user.clientNumber !== req.clientNumber) {
-    log.warn('outbound refused — declared tenant does not own this user', {
+    log.warn('outbound refused — no such user under the declared tenant', {
       userId: req.userId, declaredTenant: req.clientNumber, kind: req.kind,
     });
-    return { sent: false, reason: 'tenant_mismatch', channelsUsed: [], waMessageIds: [] };
+    return { sent: false, reason: 'user_not_found', channelsUsed: [], waMessageIds: [] };
   }
   // Suspended user — refuse to deliver. Critical safeguard so an
   // admin who suspends a user knows for sure that NO Brain outbound

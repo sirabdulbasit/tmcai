@@ -269,16 +269,26 @@ router.post('/whatsapp-notifier/test-brain', requireAdmin, async (req: Request, 
   const { toUserId, body, urgency, channel } = req.body ?? {};
   if (!toUserId) return res.status(400).json({ error: 'toUserId required' });
   const { brainContactsUser } = await import('../../services/notifications/brainOutboundService');
-  // DEF-178: clientNumber is required and verified against the target user.
-  // An admin probe holds platform authority, but the declaration must still
-  // be TRUE — so resolve the target's own tenant rather than inventing one.
-  const target = await prisma.user.findUnique({
-    where: { id: Number(toUserId) }, select: { clientNumber: true },
+  // DEF-179 (Codex iteration-53 CRITICAL): authority comes from the
+  // REQUESTER, never from the target row. The DEF-178 version looked the
+  // target up by bare id and passed back whatever tenant it found — so any
+  // admin holding a foreign toUserId got that tenant laundered into a valid
+  // declaration. Now: a tenant admin may only reach users of their own
+  // tenant; a SuperAdmin (platform authority) may DECLARE a tenant
+  // explicitly in the body. The target is queried UNDER the allowed tenant,
+  // so a foreign id resolves to no row — unread, unmessaged.
+  const requester = req.user!;
+  const allowedTenant = requester.isSuperAdmin && typeof req.body?.clientNumber === 'string' && req.body.clientNumber
+    ? String(req.body.clientNumber)
+    : requester.clientNumber;
+  const target = await prisma.user.findFirst({
+    where: { id: Number(toUserId), clientNumber: allowedTenant },
+    select: { id: true },
   });
-  if (!target) return res.status(404).json({ error: 'user not found' });
+  if (!target) return res.status(404).json({ error: 'user not found in your tenant' });
   const r = await brainContactsUser({
     userId: Number(toUserId),
-    clientNumber: target.clientNumber,
+    clientNumber: allowedTenant,
     kind: 'admin_test_brain',
     summary: 'Admin → Brain → user end-to-end test',
     body: String(body ?? '🔴 Brain test (criticality channel): this came from a non-WhatsApp source.'),
@@ -327,14 +337,22 @@ router.post('/nexeo-loop/notify', requireAdmin, async (req: Request, res: Respon
   if (!summary || !body) return res.status(400).json({ error: 'summary and body are both required' });
 
   const { brainContactsUser } = await import('../../services/notifications/brainOutboundService');
-  // DEF-178: same rule as the probe above — declare the target's true tenant.
-  const target = await prisma.user.findUnique({
-    where: { id: Number(toUserId) }, select: { clientNumber: true },
+  // DEF-179: same rule as the probe above — authority from the requester,
+  // never discovered from the target row. The loop's own caller
+  // (nexeoNotifyOwner.ts) mints its session AS the recipient, so requester
+  // and target share a tenant on that path by construction.
+  const requester = req.user!;
+  const allowedTenant = requester.isSuperAdmin && typeof req.body?.clientNumber === 'string' && req.body.clientNumber
+    ? String(req.body.clientNumber)
+    : requester.clientNumber;
+  const target = await prisma.user.findFirst({
+    where: { id: Number(toUserId), clientNumber: allowedTenant },
+    select: { id: true },
   });
-  if (!target) return res.status(404).json({ error: 'user not found' });
+  if (!target) return res.status(404).json({ error: 'user not found in your tenant' });
   const r = await brainContactsUser({
     userId: Number(toUserId),
-    clientNumber: target.clientNumber,
+    clientNumber: allowedTenant,
     kind: String(kind || 'nexeo_loop_report'),
     summary: String(summary),
     body: String(body),

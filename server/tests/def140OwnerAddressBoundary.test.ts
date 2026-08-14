@@ -60,7 +60,11 @@ vi.mock('../src/db/prisma', () => {
     findUnique: async (args: any) => (args?.where?.clientNumber
       ? { name: 'TallyMarks Consulting', domain: 'tmcltd.com' }
       : user),
-    findFirst: async () => null,
+    // DEF-179: the outbound service resolves the user with a tenant-
+    // constrained findFirst (id + clientNumber) — serve it, honouring both.
+    findFirst: async (args: any) => (
+      args?.where?.id === user.id && args?.where?.clientNumber === user.clientNumber
+        ? user : null),
     findMany: async () => [],
     create: async () => ({ id: 'rec-1' }),
     update: async () => ({}),

@@ -30,6 +30,8 @@ const B = 'OTHER-9';
 const users: any[] = [];
 let messages: any[] = [];
 let nextMsgId = 1;
+/** WHERE clause of every prisma.user query the service issued. */
+let userQueries: any[] = [];
 
 const msgMatches = (m: any, where: any): boolean => {
   if (!where) return true;
@@ -59,8 +61,21 @@ vi.mock('../src/db/prisma', () => {
       return m;
     },
   };
+  // DEF-179: the user store records every query's WHERE so the tests can
+  // assert that no user read on this path omits the tenant — the invariant
+  // is that the QUERY is constrained, not that foreign data is read and
+  // rejected afterwards.
   const user = {
-    findUnique: async ({ where }: any) => users.find((u) => u.id === where.id) ?? null,
+    findFirst: async ({ where }: any) => {
+      userQueries.push(where);
+      return users.find((u) =>
+        (where.id === undefined || u.id === where.id)
+        && (where.clientNumber === undefined || u.clientNumber === where.clientNumber)) ?? null;
+    },
+    findUnique: async ({ where }: any) => {
+      userQueries.push(where);
+      return users.find((u) => u.id === where.id) ?? null;
+    },
   };
   const empty: any = {
     findMany: async () => [], findFirst: async () => null, findUnique: async () => null,
@@ -135,7 +150,7 @@ const seedMsg = (over: Record<string, any> = {}) => {
 };
 
 beforeEach(() => {
-  users.length = 0; messages = []; delivered.length = 0; nextMsgId = 1;
+  users.length = 0; messages = []; delivered.length = 0; nextMsgId = 1; userQueries = [];
   users.push({
     id: 2, name: 'Owner A', email: null, clientNumber: A, isActive: true,
     contactNumber: '+920000000001',
@@ -143,16 +158,35 @@ beforeEach(() => {
   });
 });
 
-describe('DEF-178 — the declared tenant must own the user', () => {
-  it('a wrong-tenant declaration is refused before anything happens', async () => {
+describe('DEF-178/179 — the declared tenant constrains the query itself', () => {
+  it("a foreign user id resolves to NO ROW — refused without the user ever being read", async () => {
+    // User 2 exists and belongs to tenant A; the caller declares tenant B.
     const r = await brainContactsUser({
       userId: 2, clientNumber: B,
       kind: 'critical_bundle', summary: 's', body: 'should never leave',
     });
     expect(r.sent).toBe(false);
-    expect(r.reason).toBe('tenant_mismatch');
+    // Wrong-tenant is indistinguishable from nonexistent — that is the point:
+    // distinguishing them would require reading the foreign row.
+    expect(r.reason).toBe('user_not_found');
     expect(delivered.length, 'nothing reaches the transport').toBe(0);
     expect(messages.length, 'no audit row on the tenant it failed to reach').toBe(0);
+  });
+
+  it('every user read on this path carries the tenant in the WHERE — none reads by bare id', async () => {
+    await brainContactsUser({
+      userId: 2, clientNumber: B,
+      kind: 'critical_bundle', summary: 's', body: 'never',
+    });
+    await brainContactsUser({
+      userId: 2, clientNumber: A,
+      kind: 'critical_bundle', summary: 's', body: 'delivered fine',
+    });
+    expect(userQueries.length).toBeGreaterThan(0);
+    for (const where of userQueries) {
+      expect(where.clientNumber, `user query must be tenant-constrained, got WHERE ${JSON.stringify(where)}`)
+        .toBeDefined();
+    }
   });
 });
 
