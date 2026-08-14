@@ -5681,3 +5681,149 @@ error, which is the point); or Codex finding a sixth unscoped ledger read on the
 delivery path outside the five now named. Benchmark movement: none expected — none
 of the twelve read-shaped cases exercises the prompt-answer race or a second tenant,
 and a 1–2 point move either way is noise.
+
+## Iteration 54 — mode: structural · iteration-53's two release blockers CLOSED, the MEDIUM recorded as DEF-180 known limitation (option a)
+
+### The escalation question, answered first
+
+The harness asks whether iteration 53's remaining findings are (a) a known
+limitation with a DEF row or (b) grounds for reverting. **Split by finding, because
+they are not one thing:**
+
+- **Findings 1 (CRITICAL) and 2 (HIGH) are neither — they are FIXED this turn**, in
+  commit `532eeeb`. They were the two release blockers, and leaving either as a
+  "known limitation" would have left HEAD undeployable, which the deploy-debt rail
+  says is this turn's only job.
+- **Finding 3 (MEDIUM — a failed side effect consumes the prompt) is (a), a known
+  limitation, recorded as DEF-180 OPEN** with Codex's directive 2 adopted verbatim
+  as the fix spec (claim/apply/outcome ledger). It is NOT grounds for revert, and
+  the reviewer's own words are the evidence: the risk "existed conceptually
+  before" — the pre-CAS code consumed the prompt on side-effect failure
+  identically, PLUS acked success for answers that were never written. Reverting
+  DEF-178 restores the strictly worse state. The failure is also not silent today:
+  the ack names it to the owner (`[status update could not be applied]`,
+  `[owner not identified — reply with a name or email]`), so he can re-state and
+  the restatement reaches the normal instruction path through chat.
+
+### The two blockers, and why each fix is the mechanism
+
+**CRITICAL — tenant authority was derived from the target row**
+(`whatsappNotifierRoutes.ts:275-277,331-333` as cited). My DEF-178 change looked the
+target up by bare id and passed back whatever tenant it found — laundering any
+foreign `toUserId` into a valid declaration. Now
+(`src/routes/admin/whatsappNotifierRoutes.ts:272-291` test-brain, `:340-355` notify):
+
+- the allowed tenant comes from the REQUESTER — a tenant admin's own
+  `clientNumber`; a SuperAdmin (platform authority) may declare one explicitly in
+  the body, and a non-SuperAdmin's body declaration is ignored;
+- the target is queried UNDER the allowed tenant (`findFirst` on
+  `id + clientNumber`) — a foreign id resolves to NO ROW: unread, unmessaged, 404.
+- *Why the loop keeps working:* `nexeoNotifyOwner.ts:159-177,207` mints its session
+  AS the recipient, so requester and target share a tenant by construction on the
+  deploy-notification path.
+
+**HIGH — the delivery boundary read the user by bare id, then compared**
+(`brainOutboundService.ts:198-220` as cited). Tenant A calling with B's userId had
+already read B's name, email, phone and preferences before being refused. Now
+(`src/services/notifications/brainOutboundService.ts:196-224`, query at `:211-218`):
+the declaration CONSTRAINS the resolution query — one `findFirst` on
+`(id, clientNumber)` — and the post-hoc mismatch guard is DELETED because the query
+makes it unreachable. Wrong-tenant is now indistinguishable from nonexistent
+(`user_not_found`, `:222`), which is the point: distinguishing them would require
+reading the foreign row. The invariant is enforced where the reviewer said it must
+be — in the query, not after it.
+
+### Verification — measured AFTER the last code edit
+
+```
+npx tsc --noEmit      clean (no output, exit 0)
+npx vitest run        190 files: 189 passed / 1 skipped
+                      2337 tests: 2308 passed / 7 expected fail / 21 skipped / 1 todo / 0 failed
+npm run build         passes (prisma generate + tsc)
+git diff --check      clean
+```
+
+Suite delta vs iteration 53's 2300 passed / 2329 collected: **+8, reconciled** —
+7 new route-level tests in `def179AdminRouteTenantAuthority.test.ts` (supertest
+against the REAL router: foreign toUserId → 404 + no dispatch + no bare-id read,
+for both routes; non-SA body-declaration ignored; own-tenant works; SA explicit
+declaration works; SA without declaration stays home) and 1 new test in
+`def178TenantScopedDelivery.test.ts` (every `prisma.user` WHERE on the delivery
+path carries `clientNumber`); the former mismatch test was rewritten 1:1 to the
+new semantics. `def140OwnerAddressBoundary` / `def174DigestMarkerProvenance` mocks
+now serve the tenant-constrained `findFirst`, honouring BOTH filters — no prior
+assertion weakened.
+
+**Mutation — 3 mutants, all die:** route target lookup drops `clientNumber` (6
+tests fail) · body declaration honoured for non-SuperAdmin (2) · service
+resolution drops `clientNumber` (2).
+
+**Tenant pre-flight (D-21), per file:** every query this diff touched carries
+`client_number` — `brainOutboundService.ts:211-218` (the one resolution read;
+no other query changed), `whatsappNotifierRoutes.ts:284-286,348-350`. The diff
+adds no unscoped read; the two DEF-178 bare-id reads are gone. **Fail-closed:**
+no write paths changed this turn; the route refusals return 404 before any
+dispatch or audit write.
+
+### Three-docs verdict, out loud: CIRCLING — and the tag's own fix minted the member
+
+DEF-179 is **member 4 of `query-without-tenant-scope`**, and it arrived inside
+member 3's fix: the change that closed the class for the outbound API introduced
+two new bare-id reads one file over. Chart §3 updated saying exactly that. The
+structural answer inside this turn's scope is that the boundary is now the query
+itself on every touched site; the tag's closing condition (a build-failing guard
+for unscoped tenant-table queries) stands, and this iteration is its strongest
+argument yet — recorded in the chart, deliberately NOT built this turn (repo-wide
+tooling on a deploy-unblocking turn is how the last three turns died).
+
+### Capability block
+
+```
+CAPABILITY: Authorized Action
+PREDICTED:  +0 until deployed — the value is that HEAD is now deployable: five
+            commits (DEF-174/175/176/178/179) stand ready for D-22's deploy.
+MECHANISM:  no admin route or service path can read or message a user outside the
+            tenant the requester is authorized for; the boundary is the query.
+FALSIFIER:  any request with a valid foreign toUserId returning user data or
+            dispatching a message; any prisma.user read on the delivery path
+            whose WHERE lacks clientNumber.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- **Codex directive 2 (claim/apply/outcome ledger): not built** — recorded as
+  DEF-180 OPEN with the directive adopted as spec. Deploy-debt scope owned this
+  turn; a new state machine on the reply path is exactly the added surface the
+  brief forbids.
+- **Codex directives 3 (B11 marker leak) and 4 (B12 evidence gating): not
+  touched, named per rule.** Both are compose-path behaviour already live in
+  production (`b0a5ecb` — the reviewer's own carried-findings section says so),
+  logged as DEF-177 OPEN with a reproduction-first protocol. The regression guard's
+  B11 95.6→88.1 is the same open item measured on unchanged compose code — this
+  branch's diff does not traverse the compose path at all, so deferring is
+  attribution-honest, not neglect. If B11's leak reproduces at frequency under
+  DEF-177's falsifier (N≥5 captures, ≥2 leaks), it becomes the next turn's work.
+- **The repo-wide unscoped-query lint guard**: still owed (chart §3 closing
+  condition), still beyond this turn.
+- `channelForCriticality` (`brainPromptQueueService.ts`) still resolves
+  `clientNumber` from a bare-id user read for a config lookup on the queue's own
+  user — pre-existing, not named by the review, read-only, and inside a path whose
+  caller already holds the tenant. Named here so it is a decision on the record,
+  not a miss: it is the kind of site the lint guard exists to catch.
+- **Unsure:** the SuperAdmin body-declaration contract on the two admin routes is
+  my design choice for "platform authorization" — explicit declaration + SA
+  status. If the reviewer reads platform authority differently (e.g. SA may reach
+  any tenant WITHOUT declaring), the stricter version shipped is the safe default
+  and widening it is a one-line change.
+
+### Prediction
+
+Deployable at end of turn: **yes.** Both named blockers are closed in the query,
+the loop's own notification path is proven same-tenant by construction, and the
+only OPEN items on the branch are recorded limitations (DEF-177, DEF-180), not
+invariant violations. What would prove me wrong: Codex finding a bare-id read I
+did not name on a messaging path, or judging the SA body-declaration contract an
+authorization widening rather than a narrowing. Benchmark: no movement expected —
+nothing in this diff traverses the compose path; B11's next sample will move on
+its own variance whatever this turn does, and only the DEF-177 protocol can say
+whether that is signal.
