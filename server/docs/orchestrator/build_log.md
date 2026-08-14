@@ -5375,3 +5375,121 @@ digest chain (most likely candidate: something in how `sendNextPrompt`'s userId-
 reads interact with tenancy — those reads predate this work, have no clientNumber in
 scope, and I chose not to widen the blast radius this turn; they are named here so that
 choice is visible rather than silent).
+
+## Iteration 43 — mode: structural · REMEDIATION attempt 1 of 1 on iteration-42's WRONG · campaign C-3 (iteration 19 of 5)
+
+### Scope, and the two things competing for it
+
+Remediation owns the turn: Codex's iteration-42 findings 1–3, closed in severity
+order below. The REGRESSION GUARD also fired (B11 93.8→27.5 leaking an internal
+monologue, B08 94.4→61.9 on its negative constraint) — handled per Codex's OWN
+attribution and directive 4: neither case traverses this default-off diff, the same
+SHA has flip-flopped B02/B08 across iterations 38–40, and one stochastic sample is
+not a mechanism. **DEF-177 is opened for it** (rule 1: log first) with the
+reproduction protocol as its falsifier — N≥5 captured B11 generations decide whether
+there is a real leak to fix. Patching compose from one sample is the
+instance-patching structural mode forbids.
+
+**Verdict before coding: circling** — finding 1 is the SAME class DEF-175 closed one
+iteration ago (`query-without-tenant-scope`, chart §3), caught then on the dedup
+reads while the dispatch reads in the same file stayed blind. The class-level answer
+this time: `clientNumber` became REQUIRED at the type level across the whole
+dispatch/correlation surface (a caller that cannot name its tenant no longer
+compiles), and the reply handler's tenantless fallback was deleted rather than
+deprecated. The chart row's closing condition (a lint-grade guard) remains open and
+is still the only thing that closes the class for the NEXT query someone writes.
+
+### Finding 1 (CRITICAL) — the dispatcher decides inside the tenant
+
+`src/services/brainPrompts/brainPromptQueueService.ts`:
+- `sendNextPrompt(userId, clientNumber)` (line ~511): lock read, candidate read,
+  backoff SQL (`client_number = $2`), stale-subject item lookup, stale-prompt
+  expiry, and the delegation-thread notify stamp — all tenant-scoped. By-id writes
+  documented as PK-from-scoped-read.
+- `dispatchDuePrompts` enumerates distinct `(userId, clientNumber)` and dispatches
+  each pair under its own tenant; `expireStalePrompts` acts per-row under the row's
+  own tenant with a state guard (never expires a row that advanced concurrently).
+- Correlation: `getAwaitingPrompt` tenant REQUIRED; `recordAnswer` /
+  `reviveExpiredPrompt` take a `{userId, clientNumber}` scope and are `updateMany`
+  — a wrong-tenant id writes nothing. `HandleReplyInput.clientNumber` required;
+  the fallback branch whose own comment admitted it was the DEF-091 class is gone.
+- Callers updated: reply handler, self-heal repair rule (tenant from the rule's own
+  detect query), three smoke scripts.
+- `tests/def176TenantScopedDispatch.test.ts` — two-tenant adversarial suite against
+  a row store that honours every stated filter (an unscoped query happily matches
+  the other tenant and fails loudly): BLOCK, stale-EXPIRE, SELECT, DISPATCH,
+  CORRELATE, backoff-SQL scoping, plus own-tenant behaviour intact.
+
+### Finding 2 (MEDIUM) — zero renderer calls for suppressed messages
+
+`src/services/notifications/brainOutboundService.ts`: the marker render moved below
+content-fingerprint, dedup-key, per-kind and quiet/office hours (it was already
+below smoke/opt-in/pause/caps). The fingerprint hashes the STABLE marker payload —
+Codex's suggested pre-render fact fingerprint, and strictly stronger dedup: two LLM
+phrasings of one fact still collide. Below the render sit only phone resolution,
+channel selection and transport, none of which suppress by policy. Four new tests
+assert suppressed ⇒ `markerVoice` never consulted, for each gate individually.
+
+### Finding 3 (MEDIUM) — impossible facts fail closed
+
+Constructor (`proactiveMessageText.ts`): counts clamped to [0,10000], window to
+[1,8760], `unanswered ≤ total` forced, nonfinite lands on the FLOOR so garbage
+understates. Parser (`answerSanitizer.ts` `digestMarkerMeaning`): REJECTS anything
+the constructor cannot have produced — inconsistent, oversized, `1e309`→Infinity —
+to the neutral fallback, never repaired facts. Tested through the real provenance
+boundary.
+
+### Verification (from `server/`, after the last edit — exact)
+
+- `npx tsc --noEmit` — clean
+- `npx vitest run` — **186 files passed | 1 skipped (187); 2287 tests passed |
+  7 expected fail | 21 skipped | 1 todo (2316); 0 failed**
+- `npm run build` — passes · `client npm run build` — passes (run this turn; the
+  diff touches no client file)
+- `git diff --check` — clean
+- **Mutation: 7 mutants, one per sub-finding, all die on named tests** (unscoped
+  lock read; unscoped candidates; recordAnswer scope dropped; sweep distinct by
+  userId; render hoisted above the gates; parser accepts unanswered>total;
+  constructor stops forcing consistency).
+- Five pre-existing test files updated for the new signatures — including two
+  SOURCE-TEXT assertions (def017/def105) that pinned the old unscoped calls
+  verbatim, which is those tests doing their job.
+
+### Capability contract
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 (invariant-#1 closure on the digest's delivery path; still default-off)
+MECHANISM:  the dispatch path that will carry the digest cannot be blocked, raced,
+            selected or written across tenants; a suppressed digest costs zero LLM
+            calls; the digest cannot assert impossible arithmetic
+FALSIFIER:  two tenants sharing a userId: if B's awaiting_reply blocks A's dispatch,
+            B's older row wins A's sweep, or A's scope writes B's row, finding 1 is
+            reopened. For the render order: any suppressed system_marker send that
+            produces a markerVoice call.
+```
+
+### What I did NOT do
+
+- **DEF-177 (B11 internal monologue / B08 negative constraint): no compose change.**
+  Logged OPEN with the reproduction protocol; per Codex directive 4 a fix before
+  repeated reproduction is a patch on one die-roll. This is the regression-guard
+  item, addressed by attribution rather than by code, and said here so the override
+  is visible.
+- The `query-without-tenant-scope` lint guard (chart §3 closing condition) — still
+  repo-wide tooling beyond a remediation turn; the tag stays open at 2 members.
+- `sendNextPrompt`'s `brainContactsUser` call still resolves the user by id inside
+  the outbound service (its own tenant check); not widened this turn.
+- Campaign increment 3 (quarantine/soft-close): untouched; remediation owned scope.
+- Nothing in `scripts/orchestrator/**`, the benchmark, or the judge.
+
+### Prediction
+
+Deployable at end of turn: **yes, if reviewed SOUND** — Codex's iteration-42
+directive 5 conditioned deploy on findings 1–3 passing the full matrix, which they
+now do, and the digest stays inert behind the unset flag. What would prove me wrong:
+a fourth tenant-blind read on the dispatch path I did not enumerate (the file has
+been swept function by function, but the class has now survived two sweeps by two
+different readers, which is exactly why the lint guard is the real closer); or the
+B11 leak reproducing at high frequency, which would make deferring it the wrong
+call — the DEF-177 falsifier decides that with data rather than argument.
