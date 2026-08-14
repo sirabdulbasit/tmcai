@@ -925,7 +925,7 @@ export default function OrchestratorPulsePanel() {
           {data.capabilities.length > 0 && (
             <PulseCard
               className="orch-deck-caps"
-              title="Capability vs a professional"
+              title="Brain Capability"
               hint={CAP_VIEW_HINT[capView]}
               onHintClick={() => setCapView((v) => CAP_VIEWS[(CAP_VIEWS.indexOf(v) + 1) % CAP_VIEWS.length])}
             >
