@@ -421,190 +421,11 @@ const BRAIN_ZONES = [
   { name: 'Self-Pruning',          d: 'M84,136 C108,126 138,132 148,148 C130,162 100,160 84,150 Z', lx: 46,  ly: 168, anchor: 'end' },
 ];
 
-function BrainIntegrity({ data }) {
-  const caps = data.capabilities || [];
-  const brain = data.brain;
-  const campaign = data.campaign?.active || null;
-  const objective = data.capability_series?.axis?.objective_line ?? null;
-  if (!caps.length || !brain) return null;
-
-  const integrity = Math.round((brain.nexeo / brain.professional) * 100);
-  const active = campaign?.capability || null;
-
-  /* The reference illustration, IF the owner has saved it. Probed once rather than
-     assumed: a broken background is invisible in CSS, so an assumed asset would
-     have failed silently and looked like the card simply ignoring him. When it is
-     absent the drawn version renders and the card is complete either way. */
-  const [art, setArt] = useState(null);
-  useEffect(() => {
-    let live = true;
-    const img = new Image();
-    img.onload = () => { if (live) setArt('/brain-integrity.png'); };
-    img.onerror = () => { if (live) setArt(null); };
-    img.src = '/brain-integrity.png';
-    return () => { live = false; };
-  }, []);
-
-  /* The repair-zone callouts. In the reference illustration they are decorative;
-     here they name the four capabilities that most need work — the active campaign
-     first, because that is the one being repaired right now, then the largest gaps
-     to professional. A zone the owner reads as "being worked" must actually be
-     being worked. */
-  const ranked = [...caps].sort((a, b) => {
-    if (a.name === active) return -1;
-    if (b.name === active) return 1;
-    const ga = (a.professional || 100) - a.nexeo;
-    const gb = (b.professional || 100) - b.nexeo;
-    return gb - ga;
-  });
-  const zones = ranked.slice(0, 4).map((c, i) => ({
-    ...c,
-    isActive: c.name === active,
-    /* four corners, matching the reference layout */
-    side: i % 2 === 0 ? 'left' : 'right',
-    row: i < 2 ? 'top' : 'bottom',
-  }));
-
-  const GOLD = '#e8a33d';
-  const GOLD_DIM = 'rgba(232,163,61,0.45)';
-  const R = 42;
-  const C = 2 * Math.PI * R;
-
-  return (
-    <div style={{
-      /* The card body is a flex column with a bounded height (the deck is
-         fit-to-page). The first version let the SVG take its natural aspect
-         height, which overflowed that box and got cut off at the bottom — owner,
-         2026-08-13: "brain integrity is being cut". So the root fills the body and
-         the picture scales to the room that is left rather than assuming it. */
-      display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0,
-      position: 'relative', borderRadius: 8, overflow: 'hidden',
-      background: 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
-      border: '1px solid rgba(232,163,61,0.25)', padding: '10px 12px 12px',
-      backgroundImage: art
-        /* The owner's illustration, once he saves it to client/public. It sits
-           BEHIND a dark scrim so the live numbers stay legible on top of it — the
-           art is the ground, the data is the figure, and if that order ever
-           inverts the card becomes decoration. */
-        ? `linear-gradient(rgba(7,7,7,0.62), rgba(7,7,7,0.72)), url(${art})`
-        : 'radial-gradient(120% 120% at 50% 40%, #1a1206 0%, #0b0a08 60%, #070707 100%)',
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-    }}>
-      {/* circuit traces, faint — the ground of the reference image */}
-      <svg viewBox="0 0 400 240" preserveAspectRatio="none" aria-hidden="true"
-           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.18 }}>
-        {[26, 62, 98, 142, 178, 214].map((y, i) => (
-          <g key={y} stroke={GOLD} strokeWidth="0.6" fill="none">
-            <path d={`M0,${y} H${60 + i * 22} L${76 + i * 22},${y + (i % 2 ? 12 : -12)} H400`} />
-            <circle cx={60 + i * 22} cy={y} r="1.6" fill={GOLD} stroke="none" />
-          </g>
-        ))}
-      </svg>
-
-      {/* PHASE header — the campaign is the phase, not a decorative label */}
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ color: GOLD, fontWeight: 800, fontSize: 12, letterSpacing: 1 }}>
-          {campaign ? `${campaign.id} · ${(campaign.name || '').toUpperCase()}` : 'NO CAMPAIGN'}
-        </span>
-        <span style={{ marginLeft: 'auto', color: GOLD, fontWeight: 800, fontSize: 12, letterSpacing: 1 }}>
-          {integrity}% INTEGRITY
-        </span>
-      </div>
-      <div style={{ position: 'relative', marginTop: 6, height: 16, borderRadius: 8,
-                    border: `1px solid ${GOLD_DIM}`, background: 'rgba(0,0,0,0.45)', overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${integrity}%`,
-                      background: `linear-gradient(90deg,#7a4a12,${GOLD})` }} />
-        {objective && (
-          <div title={`objective ${objective}`} style={{
-            position: 'absolute', top: -2, bottom: -2,
-            left: `${(objective / brain.professional) * 100}%`, width: 2, background: '#fff', opacity: 0.75 }} />
-        )}
-      </div>
-
-      {/* the gauge, the brain, and the callouts */}
-      <div style={{ position: 'relative', marginTop: 6, flex: 1, minHeight: 0,
-                    display: 'flex' }}>
-        <svg viewBox="0 0 400 190" preserveAspectRatio="xMidYMid meet"
-             style={{ width: '100%', height: '100%', display: 'block' }}
-             role="img" aria-label={`Brain integrity ${integrity} percent of a professional assistant`}>
-          {/* cortex silhouette — hidden when the owner's illustration is the
-              backdrop, because two brains on one card is worse than either */}
-          <g opacity="0.55" style={{ display: art ? 'none' : undefined }}>
-            <path d="M200,30 C248,26 294,46 306,84 C318,120 292,160 244,170 C208,177 170,175 138,164
-                     C94,150 82,112 94,82 C107,46 152,34 200,30 Z"
-                  fill="rgba(232,163,61,0.07)" stroke={GOLD_DIM} strokeWidth="1.4" />
-            {/* gyri — suggestion of folds, not anatomy */}
-            {[[112,86,160,70],[120,112,170,100],[132,138,178,130],[246,74,292,92],[240,104,296,118],[232,136,286,150]]
-              .map(([x1,y1,x2,y2],i) => (
-                <path key={i} d={`M${x1},${y1} C${(x1+x2)/2},${y1-14} ${(x1+x2)/2},${y2+14} ${x2},${y2}`}
-                      fill="none" stroke={GOLD_DIM} strokeWidth="1" />
-            ))}
-            <path d="M200,32 C200,72 200,128 200,168" fill="none" stroke={GOLD_DIM}
-                  strokeWidth="1" strokeDasharray="4 5" />
-          </g>
-
-          {/* the integrity ring */}
-          <g transform="translate(200,104)">
-            <circle r={R} fill="rgba(0,0,0,0.55)" stroke="rgba(232,163,61,0.2)" strokeWidth="9" />
-            <circle r={R} fill="none" stroke={GOLD} strokeWidth="10" strokeLinecap="round"
-                    strokeDasharray={`${(integrity / 100) * C} ${C}`}
-                    transform="rotate(-90)" />
-            <text textAnchor="middle" y="2" fontSize="22" fontWeight="800" fill={GOLD}>{integrity}%</text>
-            <text textAnchor="middle" y="16" fontSize="7.5" fill="rgba(232,163,61,0.75)">
-              {brain.nexeo} of {brain.professional}
-            </text>
-          </g>
-
-          {/* repair zones — leader line from the label to the cortex */}
-          {zones.map((z, i) => {
-            const left = z.side === 'left';
-            const top = z.row === 'top';
-            const lx = left ? 12 : 388;
-            const ly = top ? 40 + i * 6 : 156 + (i - 2) * 6;
-            const ax = left ? 122 : 280;
-            const ay = top ? 74 : 138;
-            return (
-              <g key={z.name}>
-                <path d={`M${lx + (left ? 0 : 0)},${ly} H${left ? lx + 52 : lx - 52} L${ax},${ay}`}
-                      fill="none" stroke={z.isActive ? GOLD : GOLD_DIM}
-                      strokeWidth={z.isActive ? 1.3 : 0.9}
-                      strokeDasharray={z.isActive ? '' : '3 3'} />
-                <circle cx={ax} cy={ay} r={z.isActive ? 4 : 3}
-                        fill={z.isActive ? GOLD : 'none'} stroke={GOLD} strokeWidth="1" />
-                <text x={lx} y={ly - 4} textAnchor={left ? 'start' : 'end'}
-                      fontSize="8.5" fontWeight={z.isActive ? 700 : 400}
-                      fill={z.isActive ? GOLD : 'rgba(232,163,61,0.8)'}>
-                  {z.name.length > 19 ? `${z.name.slice(0, 18)}\u2026` : z.name}{' '}<tspan fontWeight="800">{z.nexeo}</tspan>
-                  <tspan fill="rgba(232,163,61,0.55)"> / {z.professional}</tspan>
-                </text>
-                <text x={lx} y={ly + 6} textAnchor={left ? 'start' : 'end'} fontSize="7"
-                      fill={z.isActive ? GOLD : 'rgba(232,163,61,0.5)'}>
-                  {z.isActive ? 'repair zone · being worked now' : 'repair zone · queued'}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      {/* the caption, generated from state rather than written as marketing prose */}
-      <div style={{ position: 'relative', marginTop: 6, borderTop: `1px solid ${GOLD_DIM}`, paddingTop: 6 }}>
-        <div style={{ color: GOLD, fontWeight: 700, fontSize: 10, letterSpacing: 0.6 }}>
-          {campaign ? `REPAIRING: ${(campaign.capability || '').toUpperCase()}` : 'NO ACTIVE REPAIR'}
-          {` — ${integrity}% INTEGRITY`}
-        </div>
-        <div style={{ fontSize: 10, color: 'rgba(232,163,61,0.72)', marginTop: 2, lineHeight: 1.45 }}>
-          {brain.nexeo} of {brain.professional} against a professional assistant · objective{' '}
-          {objective ?? '—'} · last move {brain.move > 0 ? `+${brain.move}` : brain.move} ·
-          scored by {brain.scored_by}. {caps.filter((c) => c.delta !== 0).length === 0
-            ? 'No capability moved on the last card — nothing has been deployed to move it.'
-            : `${caps.filter((c) => c.delta !== 0).length} capability moved on the last card.`}
-        </div>
-      </div>
-    </div>
-  );
-}
+/* BrainIntegrity was removed 2026-08-14 with its card — owner: "Remove brain
+   integrity which is being duplicated". It rendered the same capability figure
+   the nine-box map now shows directly. Deleted rather than left defined-but-
+   unrendered, which is how this project once reported a card as live that was
+   never on screen. */
 
 /* ── WHAT THE LAST TEN ITERATIONS ACTUALLY PRODUCED ────────────────────────────
  *
@@ -902,7 +723,6 @@ export default function OrchestratorPulsePanel() {
      top-right slot, so they share it and the card's hint swaps them. That keeps his
      layout exact without deleting the outcome strip, which is the one view that
      shows what each iteration produced. */
-  const [showTrend, setShowTrend] = useState(false);
 
   /* ── IS THE PAGE STILL RUNNING THE BUILD THAT IS DEPLOYED? ──────────────────
      Owner, 2026-08-13: *"when u deployed are u reloading page by yourself?"* — no,
@@ -1116,16 +936,13 @@ export default function OrchestratorPulsePanel() {
                 future surface that can render it properly. */}
           </PulseCard>
 
-          {/* aspect 1b — the integrity picture the owner asked for, 2026-08-13:
-              "health deck should look like this", with a reference illustration of
-              a brain at 47% INTEGRITY ringed by repair zones. */}
-          {!showTrend && (
-            <PulseCard className="orch-deck-brain" title="Brain integrity"
-                       hint="show 10-iteration trend"
-                       onHintClick={() => setShowTrend(true)}>
-              <BrainIntegrity data={data} />
-            </PulseCard>
-          )}
+          {/* Brain integrity REMOVED — owner, 2026-08-14: "Remove brain integrity
+              which is being duplicated". It restated the capability picture that
+              the nine-box map in the right column now shows directly, and a second
+              rendering of the same figure is how a dashboard starts disagreeing
+              with itself. The ten-iteration trend keeps this slot: movement over
+              time is the one thing neither the map nor the bars can show, so it is
+              not a duplicate. The toggle between the two goes with it. */}
 
           {/* aspect 2 — how far Brain is from a professional assistant */}
           {data.capabilities.length > 0 && (
@@ -1146,15 +963,13 @@ export default function OrchestratorPulsePanel() {
           {/* interpretation comes from the collector, not recomputed here: the same
               arithmetic in two places is how a dashboard starts disagreeing with the
               terminal it mirrors. */}
-          {overall && showTrend && (
+          {overall && (
             <PulseCard
               className="orch-deck-brain"
               /* Owner, 2026-08-13: "this should show last 10 iterations". It spanned
                  1→18, which averages away the recent turns — the only ones a decision
                  can still affect. */
               title={`BRAIN overall · last 10 iterations${winIters.length ? ` (#${winIters[0]}→#${winIters[winIters.length - 1]})` : ''}`}
-              hint="show brain integrity"
-              onHintClick={() => setShowTrend(false)}
             >
               {/* THE SCALE, STATED. Owner, 2026-08-13: "I couldnt understand this
                   make it meaningfull for me". The chart auto-scales to the series'
