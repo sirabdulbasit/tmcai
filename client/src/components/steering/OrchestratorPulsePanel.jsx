@@ -294,6 +294,48 @@ function CapabilityMap({ data }) {
   );
 }
 
+/* ── the scorer's own words, carried with its numbers ──────────────────────────
+   Owner, 2026-08-14: "dashboard will remain same where information should be
+   provided by the grok by either means". The deck showed Grok's numbers and none
+   of Grok's findings, so a page could read 94.9 (a benchmark judge's figure, not
+   Grok's) while capability sat at 50.3 and nobody could see why.
+
+   `code-read` vs `live-evidence` is stated rather than blended: a score derived
+   from reading source is an opinion about what the code ought to do, and it must
+   not look identical to one derived from production. */
+function GrokFindings({ grok }) {
+  if (!grok) return null;
+  const parts = [
+    ['moved', grok.what_moved],
+    ['did not move', grok.what_did_not],
+    ['could not verify', grok.unverifiable],
+  ].filter(([, v]) => v);
+  return (
+    <div className="orch-grok">
+      <div className="orch-grok-head">
+        <b>Grok · iteration {grok.iteration}</b>
+        <span className={`orch-grok-verdict is-${String(grok.verdict || '').toLowerCase()}`}>
+          {grok.verdict}
+        </span>
+        {grok.attribution && <span className="orch-grok-attr">{grok.attribution}</span>}
+        {grok.code_read > 0 && (
+          <span
+            className="orch-grok-basis"
+            title="A code-read score is inferred from the source, not observed in production. Grok says so itself; the deck repeats it rather than blending the two."
+          >
+            {grok.code_read} of {grok.total} figures are code-read, not evidence
+          </span>
+        )}
+      </div>
+      {parts.map(([label, v]) => (
+        <div className="orch-grok-line" key={label}>
+          <span className="orch-grok-label">{label}:</span> {v}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CapabilityBars({ data }) {
   const caps = data.capabilities;
   const brain = data.brain;
@@ -1096,6 +1138,7 @@ export default function OrchestratorPulsePanel() {
               {capView === 'table' ? <PulseTable data={data} />
                 : capView === 'bars' ? <CapabilityBars data={data} />
                 : <CapabilityMap data={data} />}
+              <GrokFindings grok={data.grok} />
             </PulseCard>
           )}
 
@@ -1220,6 +1263,16 @@ export default function OrchestratorPulsePanel() {
               {bench.overall != null && (
                 <span className="orch-section-note">overall {bench.overall}</span>
               )}
+              {/* WHOSE NUMBER THIS IS. Owner, 2026-08-14, wants the dashboard's
+                  information to come from Grok. This card's figures do NOT: they
+                  are the 12-case compose benchmark scored by an LLM judge, which
+                  is why this can read 94.9 while Grok's capability picture reads
+                  50.3. Two different questions — "did the answers read well" and
+                  "is Brain capable" — and labelling them is what stops the larger,
+                  friendlier number being mistaken for the state of the product. */}
+              <span className="orch-section-note orch-bench-src">
+                source: 12-case compose benchmark, LLM judge — not Grok's capability score
+              </span>
               {bench.cases_failed > 0 && (
                 <span style={{ color: 'var(--op-stalled)' }}>
                   {bench.cases_failed} case(s) failed to score — incomplete, not low

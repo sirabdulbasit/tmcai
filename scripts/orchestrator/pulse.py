@@ -825,6 +825,54 @@ def collect():
                                                                "orchestrator"),
             }
 
+    # ── WHAT GROK ACTUALLY SAID, not just the number it landed on ──────────────
+    # Owner, 2026-08-14, of the Brain Evolution dashboard: *"dashboard will remain
+    # same where information should be provided by the grok by either means"*.
+    #
+    # The deck was showing Grok's NUMBERS and none of Grok's FINDINGS — and its
+    # largest figure (the 94.9 benchmark) is not Grok's at all, which is how a
+    # page can read 94.9 while capability sits at 50.3. So the scorer's own words
+    # travel with its numbers now: what moved, what did not, and what it says it
+    # could not verify. `basis` comes from the evidence line Grok writes for each
+    # capability ("[code-read/high]"), because a figure derived from reading source
+    # and a figure derived from production evidence must not look identical on a
+    # dashboard.
+    grok = None
+    if os.path.exists(scp):
+        try:
+            gd = json.load(open(scp))
+        except Exception:
+            gd = None
+        hist = (gd or {}).get("history") or []
+        if hist:
+            last = hist[-1]
+            ev = last.get("evidence") or []
+            basis = {}
+            for line in ev:
+                m = re.match(r"\s*(.+?)\s*[+-]\d+.*?\[([a-z-]+)/([a-z]+)\]", str(line))
+                if m:
+                    basis[m.group(1).strip()] = {"basis": m.group(2), "confidence": m.group(3)}
+            for c in caps:
+                b = basis.get(c["name"])
+                if b:
+                    c["basis"] = b["basis"]
+                    c["confidence"] = b["confidence"]
+            grok = {
+                "iteration": last.get("iteration"),
+                "verdict": last.get("verdict"),
+                "movement": last.get("movement"),
+                "scored_by": last.get("scored_by"),
+                "attribution": last.get("movement_attribution"),
+                "what_moved": last.get("what_moved"),
+                "what_did_not": last.get("what_did_not"),
+                "unverifiable": last.get("unverifiable"),
+                # How many of the nine rest on reading code rather than evidence
+                # from production. This is the number that says how much of the
+                # capability picture is inference.
+                "code_read": sum(1 for c in caps if c.get("basis") == "code-read"),
+                "total": len(caps),
+            }
+
     moved, flat, iters = capability_trend()
     trend = {"iterations": list(iters), "unmoved": flat, "rows": [
         {"name": nm, "series": series, "first": first, "last": last,
@@ -860,7 +908,7 @@ def collect():
         "iterations_built": built, "iteration_in_flight": in_flight,
         "current_phase": current, "phases": phase_rows,
         "progress": last_stream_line(cur_it, current) if current else "",
-        "capabilities": caps, "brain": brain, "trend": trend,
+        "capabilities": caps, "brain": brain, "trend": trend, "grok": grok,
         "benchmark": bench,
         # The rich per-iteration record the Deck monitors. `history` below is kept
         # unchanged so the existing panel does not break — additive, not a rename.

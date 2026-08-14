@@ -550,3 +550,26 @@
 .orch-capmap-corenum { fill: #fff; font-size: 40px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
 .orch-capmap-corelbl { fill: rgba(255,255,255,0.6); font-size: 15px; text-anchor: middle; }
 .orch-capmap-note { margin-top: 6px; }
+
+/* Grok's findings, carried under its own numbers. */
+.orch-grok {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.orch-grok-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; color: var(--text); }
+.orch-grok-verdict { font-weight: var(--fw-semibold); letter-spacing: 0.06em; }
+.orch-grok-verdict.is-progressive { color: var(--op-score); }
+.orch-grok-verdict.is-neutral     { color: var(--op-idle); }
+.orch-grok-verdict.is-regression  { color: var(--op-stalled); }
+.orch-grok-verdict.is-circular    { color: var(--op-stalled); }
+.orch-grok-verdict.is-unverified  { color: var(--op-measure); }
+.orch-grok-attr, .orch-grok-basis {
+  font-size: var(--fs-xs); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+/* The inference count is the one thing on this card a reader must not skim. */
+.orch-grok-basis { color: var(--op-measure); border-color: var(--op-measure); }
+.orch-grok-line { line-height: 1.45; }
+.orch-grok-label { color: var(--text); font-weight: var(--fw-semibold); }
+.orch-bench-src { color: var(--text-muted); font-style: italic; }
