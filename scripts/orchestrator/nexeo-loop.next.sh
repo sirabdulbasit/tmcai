@@ -931,6 +931,50 @@ PYEOF
   printf '%s' "$BUILD_PROMPT" > "$LOGS/iter-$ITER-build-prompt.md"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
 
+  # ── DEAD-BUILD RAIL ────────────────────────────────────────────────────────
+  # An iteration whose Builder produced NOTHING must not be reviewed, scored or
+  # counted. Twice now the seat has died on resume with terminal_reason=api_error
+  # — 0 tokens, $0.00, one turn, three seconds — and the loop carried on regardless:
+  # iterations 31-40 and again 44-49. Sixteen iterations were announced, reviewed by
+  # Codex and scored by Grok over a tree that had not changed, while build_log.md
+  # sat at Iteration 30 and then at 43. Codex was reduced to writing "there is no
+  # Iteration N section" nine times running, and every one of those verdicts cost
+  # real money and told the owner an iteration had happened.
+  #
+  # The test is the TREE, not the exit code: `claude -p` exits 0 on an api_error and
+  # the formatter prints "result success" beside error=True, so neither is a signal.
+  # No new commit and a clean worktree means no work, whatever anything claims.
+  # Scoped to BRAIN paths on purpose. HEAD alone is the wrong test: the
+  # orchestrator commits to this branch too (the Deck, this script, the loop's own
+  # records), so a busy orchestrator would mask a dead Builder and the rail would
+  # never fire on the very day it is needed. Codex found the same confusion from
+  # the other side at iteration 41 — "six non-DEF commits mixed into the range".
+  BUILD_TOUCHED="$(git -C "$ROOT" diff --name-only "$BASE_HEAD" HEAD -- server/src server/tests server/prisma 2>/dev/null | head -1)"
+  BUILD_DIRTY="$(git -C "$ROOT" status --porcelain -- server/src server/tests server/prisma 2>/dev/null | head -1)"
+  if [ -z "$BUILD_TOUCHED" ] && [ -z "$BUILD_DIRTY" ]; then
+    DEAD_BUILDS=0
+    [ -s "$STATE/dead-builds" ] && DEAD_BUILDS="$(cat "$STATE/dead-builds")"
+    DEAD_BUILDS=$((DEAD_BUILDS + 1))
+    printf '%s' "$DEAD_BUILDS" > "$STATE/dead-builds"
+    say "DEAD   iter=$ITER — the Builder produced NO commit and left a clean tree. Not reviewing, not scoring, not counting it (consecutive: $DEAD_BUILDS)"
+
+    # The known cause is a resumed transcript that has grown until it fails on
+    # every resume. Rotating the seat is cheap and reversible; leaving a dead seat
+    # in place costs a full iteration each time. Two strikes, because a single
+    # api_error is often transient and the session's context is worth keeping.
+    if [ "$DEAD_BUILDS" -ge 2 ]; then
+      OLD_SID="$(cat "$STATE/builder-session-id" 2>/dev/null)"
+      NEW_SID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+      printf '%s' "$NEW_SID" > "$STATE/builder-session-id"
+      printf '0' > "$STATE/dead-builds"
+      say "DEAD   rotating the Builder seat $OLD_SID -> $NEW_SID (a fresh seat opens next iteration)"
+    fi
+
+    say "SHIP   iter=$ITER deployed=no capability_moved=no (dead build — no work product)"
+    continue
+  fi
+  printf '0' > "$STATE/dead-builds"
+
   check_forbidden "$ITER" "$BASE_HEAD" || true
 
   # ── rails, then START the measurement (it runs DURING the review) ────────
