@@ -1226,3 +1226,42 @@ An iteration is significant only if it ends in one of two states:
 
 The dead-build rail now enforces the floor: an iteration with no work product is not an
 iteration and is not counted. **Iteration count is not progress** (D-10, D-14).
+
+---
+
+## D-22 · STANDING · The orchestrator deploys, by hand, after every iteration
+
+Owner, 2026-08-14: *"i want you to deploy by yourself after end of each iteration."*
+
+**The loop no longer deploys itself.** `NEXEO_DEPLOY=0` from this restart, so there is
+exactly one deployer and no ambiguity about who shipped what. After every iteration the
+orchestrator reads the review with its own eyes and makes the call, then runs
+`scripts/orchestrator/deploy.sh <iter>` — which keeps the mechanics that are worth
+keeping: dirty-tree refusal, `npm run build`, hand-written idempotent migrations applied
+by shape detection (never `prisma migrate dev`), `pm2 restart tmcai-server`, a real HTTP
+probe, and the evaluation-chart row.
+
+### What ships and what does not — a judgement, not a threshold to hide behind
+
+- **CRITICAL, or a violation of an AGENTS.md §2 product invariant → does NOT ship.**
+  That is the line, and it is the only one. It is not conservatism: iteration 13 shipped
+  silent data loss, and iteration 43's `recordAnswer` would tell the owner an answer was
+  handled while writing nothing.
+- **Everything else ships**, including HIGH findings that are neither live owner risk nor
+  invariant violations. Each one gets a DEF row and is named in the report to the owner
+  the same day. A HIGH that has been on production for weeks is not a reason to withhold
+  fifty other improvements — the SOUND-only gate produced **three deploys in fifty
+  iterations**, and undeployed work is worth zero by the owner's own rule (D-14).
+
+### Every deploy is reported the same way, or it did not happen
+
+Lead with `deployed=yes/no`, then what he can now SEE that he could not before, quoted
+from production where the path is observable (`verify-chase.sh`, `evidence-pack.sh`),
+then what is still broken, then the verdict and next action. `DEPLOYED` is never
+`VERIFIED`: a messaging-path change is PARTIAL until it is observed live, and that is
+said plainly rather than implied from a green build (AGENTS.md §0.3).
+
+**Standing exception, stated once so it is not re-litigated every turn:** the first
+deploy under this directive cannot happen until iteration 43's CRITICAL fail-open
+`recordAnswer` is closed, because it is IN the three undeployed commits. Closing it is
+the next iteration's only job (D-21).
