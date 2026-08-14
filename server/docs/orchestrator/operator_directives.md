@@ -1149,3 +1149,80 @@ the orchestrator declining to override a rail, not steering one.
 **The deletion is NOT dropped — it is iteration 27's turn**, still written as a deletion
 and still not a remediation. If the owner wants it at 26 instead, that is one sentence
 from him and it happens.
+
+---
+
+## D-21 · RANKS FIRST UNTIL CLOSED · The loop was stopped to fix it, 2026-08-14
+
+Owner: *"stop the iterations since it is not working fine, let fix it so each iteration
+can be able to give significant improvement."* The loop was HALTed at iteration 50.
+
+### Why 50 iterations produced +0.2 capability — three distinct failures, not one
+
+**1. Sixteen of the last nineteen iterations never ran.** The Builder seat dies on
+resume with `terminal_reason: api_error` — 0 tokens, $0.00, one turn, three seconds —
+and the loop reviewed and scored an unchanged tree anyway. Iterations 31–40, then
+44–49. `build_log.md` sat at Iteration 30, then at 43, while Codex wrote *"there is no
+Iteration N section"* nine times and Grok scored an identical SHA. **Fixed:** the
+dead-build rail — no commit touching `server/src|tests|prisma` and a clean worktree
+means the iteration is logged DEAD, skipped before review and score, and never counted;
+two consecutive dead builds rotate the seat. The seat is also rotated now, by hand: its
+transcript reached **14.5 MB** and has died twice at that size.
+
+**2. Every turn that DID run broke a product invariant.** Iterations 41, 42 and 43 were
+each ruled WRONG, and correctly:
+
+| iter | finding |
+|---|---|
+| 41 | tenant-unscoped survivor read |
+| 42 | owner-message dispatcher still making tenant-unscoped queue decisions |
+| 43 | **CRITICAL** — scoped `updateMany` fails open: zero-row write still fires the side effect and acknowledges success |
+
+These were 75–120-turn, $37–43 builds. The size is the problem: a turn large enough to
+touch the dispatcher, the queue, the sanitizer and a migration is a turn too large to
+hold every invariant in view. **Nothing on this branch can deploy while the CRITICAL
+stands**, so every later iteration was worth zero before it began.
+
+**3. The campaign builds plumbing, not capability.** C-3 has been open **18 iterations
+at a flat 40**. Increment 1 was a read-only counter — it cannot change what the owner
+receives, so it was scored NEUTRAL by design. That was the orchestrator's scoping error
+and it is corrected below.
+
+### THE NEXT ITERATION HAS ONE JOB, AND IT IS NOT THE CAMPAIGN
+
+Close iteration 43's CRITICAL and the tenant boundary. Nothing else. Smallest diff that
+does it:
+
+1. `brainPromptQueueService.ts:1014-1029` — `recordAnswer` must be **exactly-one and
+   fail-closed**: check the affected-row count, and when it is 0, do NOT run
+   `applySideEffect` and do NOT return `handled: true`. Audit before mutation
+   (AGENTS.md §2.6).
+2. `brainPromptQueueService.ts:741-758` — carry `clientNumber` into `brainContactsUser`;
+   `brainOutboundService.ts:187-194` must authorize on tenant **and** user, and the
+   suppression/audit reads at `:304-339,374-438` must be tenant-scoped too.
+3. Nothing else in the diff. No campaign increment, no refactor, no opportunistic fix.
+
+### THE PRE-FLIGHT, because three consecutive turns died on the same two classes
+
+Before committing, state in the build entry, per file you changed:
+
+- **Tenant:** every query you touched is scoped by `client_number` (+ `user_id` where
+  applicable). Name each one, with `file:line`. "It inherits scope from the caller" is
+  not an answer — iteration 42 said that and was wrong.
+- **Fail-closed:** every write you touched reports its affected-row count, and every
+  caller checks it before claiming success or running a side effect. Name each one.
+
+A turn that cannot say both of those about its own diff is not finished, whatever its
+tests say. Both classes were caught by the reviewer three times running; catching them
+yourself is the difference between an iteration that ships and one that costs $40.
+
+### The significance contract, restated so it is checkable
+
+An iteration is significant only if it ends in one of two states:
+
+- **`deployed=yes`** — the owner received something, quotable from production; or
+- a **named, code-complete increment** a reviewer can judge, on a capability the owner
+  can name.
+
+The dead-build rail now enforces the floor: an iteration with no work product is not an
+iteration and is not counted. **Iteration count is not progress** (D-10, D-14).

@@ -899,6 +899,46 @@ entry and the orchestrator will extend it on the record rather than by default."
 PYEOF
 )"
 
+  # ── DEPLOY DEBT — no new work while the last one has not reached him ────────
+  # Owner, 2026-08-14: *"also deploy the iteration before start next"*. He is right,
+  # and it is the rule this loop most needed: three undeployed Brain commits sat on
+  # the branch through nineteen further iterations, so every one of those turns was
+  # worth zero before it began (D-14 — undeployed work changes nothing for him).
+  #
+  # While Brain-path commits stand between the deployed SHA and HEAD, the campaign
+  # and all new work are SUSPENDED. The only job is to make HEAD deployable: close
+  # the reviewer's blocking findings so the deploy phase can ship it. This is not a
+  # remediation attempt-counter that expires — the debt is measured from the tree
+  # every iteration and clears only when a deploy actually happens.
+  DEPLOY_DEBT=""
+  if [ -s "$STATE/deployed-sha" ]; then
+    DEPLOY_DEBT="$(git -C "$ROOT" log --oneline "$(cat "$STATE/deployed-sha")"..HEAD -- server/src server/prisma 2>/dev/null | head -20)"
+  fi
+  if [ -n "$DEPLOY_DEBT" ]; then
+    DEBT_N="$(printf '%s\n' "$DEPLOY_DEBT" | grep -c .)"
+    say "DEBT   iter=$ITER — $DEBT_N undeployed Brain commit(s) on the branch; campaign suspended until HEAD ships"
+    CAMPAIGN_TXT="**CAMPAIGN SUSPENDED — THERE IS UNDEPLOYED WORK ON THIS BRANCH.**
+
+$DEBT_N commit(s) touching Brain code stand between the deployed SHA
+($(cut -c1-9 < "$STATE/deployed-sha")) and HEAD, and the owner ruled on 2026-08-14 that an
+iteration is deployed before the next one starts. Undeployed work is worth zero to him
+whatever it scores, so starting something new on top of it only makes the debt larger.
+
+\`\`\`
+$DEPLOY_DEBT
+\`\`\`
+
+**YOUR ONLY JOB THIS TURN IS TO MAKE HEAD DEPLOYABLE.** Read the newest \`## Iteration\`
+section of \`$REVIEW_DOC\` and close every finding the reviewer says blocks release —
+CRITICAL findings and product-invariant violations first. No campaign increment, no new
+defect, no refactor, no opportunistic fix: each of those adds surface for the reviewer to
+block on, and three consecutive turns have already died that way.
+
+If you believe a blocking finding is already closed, name the commit and the file:line
+that closes it and let the reviewer judge that claim. If you believe it is wrong, say so
+with evidence — 'I disagree' does not clear a release blocker."
+  fi
+
   # Header anything the owner pasted since the last turn, so D-6 sees it as a report
   # without him having to format it. Runs BEFORE the build prompt is rendered, which is
   # the only point at which a new report can still reach this iteration.
