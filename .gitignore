@@ -93,3 +93,16 @@ logs/
 
 # Owner-owned, never committed (AGENTS.md)
 server/docs/nexeo_self_learning&development.md
+
+# Build-output backups. `dist/` is already ignored, but a timestamped copy of it
+# is not, so server/dist.bak-20260812-140334 put ~2600 compiled files into Source
+# Control and VS Code reported "2664 changes". Nothing references it and
+# `npm run build` regenerates dist from source, so a backup of it is never an
+# artefact worth versioning — it is only a hazard: one `git add -A` away from a
+# 19 MB commit, and AGENTS.md forbids that add for exactly this reason (BLD-001,
+# where a directory add committed an owner-owned file).
+dist.bak-*/
+server/dist.bak-*/
+
+# Editor settings are per-machine, not per-project.
+.vscode/

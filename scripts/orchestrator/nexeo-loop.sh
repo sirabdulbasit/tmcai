@@ -103,6 +103,9 @@ DEPLOY="${NEXEO_DEPLOY:-0}"
 SKIP_TESTS="${NEXEO_SKIP_TESTS:-0}"
 
 CLAUDE_BIN="${CLAUDE_BIN:-/root/.local/bin/claude}"
+# Owner ruling 2026-08-13: build on Fable 5. One place, so the flag and the log
+# can never disagree, and a single turn falls back to opus on a 429 (run_claude).
+BUILD_MODEL="${NEXEO_BUILD_MODEL:-fable}"
 CODEX_BIN="${CODEX_BIN:-/usr/local/bin/codex}"
 
 BUILD_DOC="$ORCH/build_log.md"
@@ -380,9 +383,21 @@ run_claude() {
   # --dangerously-skip-permissions under root without it. Verified 2026-08-11.
   # Without it a headless turn cannot answer a permission prompt, so every tool
   # call would be denied and the build turn would silently do nothing.
+  # Owner ruling, 2026-08-13: *"use model fable5 while building"*. The seat had no
+  # --model flag at all, so it inherited the CLI default and every build turn ran on
+  # claude-opus-5[1m] — visible in the stream header, never chosen. Validated before
+  # staging rather than after, because a model string the CLI cannot resolve would
+  # kill every build turn silently:
+  #
+  #   claude -p --model fable --output-format json "Reply with exactly: OK"
+  #   → modelUsage keys: ['claude-haiku-4-5-20251001', 'claude-fable-5']
+  #
+  # The alias resolves to claude-fable-5 (haiku is the CLI's own auxiliary model).
+  # REVIEWER and SCORER seats are unchanged — the ruling is about building.
   printf '%s' "$prompt" | IS_SANDBOX=1 "$CLAUDE_BIN" -p \
     "${session_args[@]}" \
     --name "$BUILDER_NAME" \
+    --model "$BUILD_MODEL" \
     --output-format stream-json --verbose \
     --dangerously-skip-permissions \
     --add-dir "$ROOT" 2>&1 \
@@ -393,6 +408,33 @@ run_claude() {
   # claude's status, NOT tee's or python's — a formatter exiting 0 must never
   # launder a failed build turn into a success.
   local rc=${PIPESTATUS[1]}
+
+  # ── RATE-LIMIT FALLBACK ─────────────────────────────────────────────────────
+  # The seat's "api_error" was never a corrupt transcript. The raw event says it
+  # plainly: api_error_status 429, type=seven_day_overage_included, "You've reached
+  # your Fable 5 limit". That is what killed iterations 44-49 and 51 — 0 tokens,
+  # $0.00, three seconds — and what the orchestrator twice misdiagnosed as a session
+  # grown too large, rotating a 14.5 MB transcript that was never the problem.
+  #
+  # The owner chose Fable for building, so Fable stays primary. But an empty quota
+  # must not cost a day of iterations: the turn is retried once on opus and the
+  # substitution is logged, because a loop that stops building when one model is
+  # full is not "never idle" — it is idle with an explanation.
+  if grep -q '"api_error_status":429' "$raw" 2>/dev/null; then
+    say "BUILD  iter=$iter RATE-LIMITED on model=$BUILD_MODEL — retrying this turn on opus"
+    printf '%s' "$prompt" | IS_SANDBOX=1 "$CLAUDE_BIN" -p \
+      "${session_args[@]}" \
+      --name "$BUILDER_NAME" \
+      --model opus \
+      --output-format stream-json --verbose \
+      --dangerously-skip-permissions \
+      --add-dir "$ROOT" 2>&1 \
+      | tee -a "$raw" \
+      | python3 "$FORMATTER" --prefix \
+      | tee -a "$log" \
+      | sed -u 's/^/BUILD  │ /'
+    rc=${PIPESTATUS[1]}
+  fi
 
   say "BUILD  iter=$iter claude exit=$rc ($(wc -l < "$log" 2>/dev/null || echo 0) lines → $(basename "$log"))"
   # A dead session must not silently start a fresh one every iteration; that
@@ -887,6 +929,46 @@ entry and the orchestrator will extend it on the record rather than by default."
 PYEOF
 )"
 
+  # ── DEPLOY DEBT — no new work while the last one has not reached him ────────
+  # Owner, 2026-08-14: *"also deploy the iteration before start next"*. He is right,
+  # and it is the rule this loop most needed: three undeployed Brain commits sat on
+  # the branch through nineteen further iterations, so every one of those turns was
+  # worth zero before it began (D-14 — undeployed work changes nothing for him).
+  #
+  # While Brain-path commits stand between the deployed SHA and HEAD, the campaign
+  # and all new work are SUSPENDED. The only job is to make HEAD deployable: close
+  # the reviewer's blocking findings so the deploy phase can ship it. This is not a
+  # remediation attempt-counter that expires — the debt is measured from the tree
+  # every iteration and clears only when a deploy actually happens.
+  DEPLOY_DEBT=""
+  if [ -s "$STATE/deployed-sha" ]; then
+    DEPLOY_DEBT="$(git -C "$ROOT" log --oneline "$(cat "$STATE/deployed-sha")"..HEAD -- server/src server/prisma 2>/dev/null | head -20)"
+  fi
+  if [ -n "$DEPLOY_DEBT" ]; then
+    DEBT_N="$(printf '%s\n' "$DEPLOY_DEBT" | grep -c .)"
+    say "DEBT   iter=$ITER — $DEBT_N undeployed Brain commit(s) on the branch; campaign suspended until HEAD ships"
+    CAMPAIGN_TXT="**CAMPAIGN SUSPENDED — THERE IS UNDEPLOYED WORK ON THIS BRANCH.**
+
+$DEBT_N commit(s) touching Brain code stand between the deployed SHA
+($(cut -c1-9 < "$STATE/deployed-sha")) and HEAD, and the owner ruled on 2026-08-14 that an
+iteration is deployed before the next one starts. Undeployed work is worth zero to him
+whatever it scores, so starting something new on top of it only makes the debt larger.
+
+\`\`\`
+$DEPLOY_DEBT
+\`\`\`
+
+**YOUR ONLY JOB THIS TURN IS TO MAKE HEAD DEPLOYABLE.** Read the newest \`## Iteration\`
+section of \`$REVIEW_DOC\` and close every finding the reviewer says blocks release —
+CRITICAL findings and product-invariant violations first. No campaign increment, no new
+defect, no refactor, no opportunistic fix: each of those adds surface for the reviewer to
+block on, and three consecutive turns have already died that way.
+
+If you believe a blocking finding is already closed, name the commit and the file:line
+that closes it and let the reviewer judge that claim. If you believe it is wrong, say so
+with evidence — 'I disagree' does not clear a release blocker."
+  fi
+
   # Header anything the owner pasted since the last turn, so D-6 sees it as a report
   # without him having to format it. Runs BEFORE the build prompt is rendered, which is
   # the only point at which a new report can still reach this iteration.
@@ -918,6 +1000,54 @@ PYEOF
   # between agents through documents has to keep the document it sent.
   printf '%s' "$BUILD_PROMPT" > "$LOGS/iter-$ITER-build-prompt.md"
   run_claude "$ITER" "$BUILD_PROMPT" || say "BUILD  iter=$ITER claude returned non-zero — continuing, the rails below will judge the tree"
+
+  # ── DEAD-BUILD RAIL ────────────────────────────────────────────────────────
+  # An iteration whose Builder produced NOTHING must not be reviewed, scored or
+  # counted. Twice now the seat has died on resume with terminal_reason=api_error
+  # — 0 tokens, $0.00, one turn, three seconds — and the loop carried on regardless:
+  # iterations 31-40 and again 44-49. Sixteen iterations were announced, reviewed by
+  # Codex and scored by Grok over a tree that had not changed, while build_log.md
+  # sat at Iteration 30 and then at 43. Codex was reduced to writing "there is no
+  # Iteration N section" nine times running, and every one of those verdicts cost
+  # real money and told the owner an iteration had happened.
+  #
+  # The test is the TREE, not the exit code: `claude -p` exits 0 on an api_error and
+  # the formatter prints "result success" beside error=True, so neither is a signal.
+  # No new commit and a clean worktree means no work, whatever anything claims.
+  # Scoped to BRAIN paths on purpose. HEAD alone is the wrong test: the
+  # orchestrator commits to this branch too (the Deck, this script, the loop's own
+  # records), so a busy orchestrator would mask a dead Builder and the rail would
+  # never fire on the very day it is needed. Codex found the same confusion from
+  # the other side at iteration 41 — "six non-DEF commits mixed into the range".
+  BUILD_TOUCHED="$(git -C "$ROOT" diff --name-only "$BASE_HEAD" HEAD -- server/src server/tests server/prisma 2>/dev/null | head -1)"
+  BUILD_DIRTY="$(git -C "$ROOT" status --porcelain -- server/src server/tests server/prisma 2>/dev/null | head -1)"
+  if [ -z "$BUILD_TOUCHED" ] && [ -z "$BUILD_DIRTY" ]; then
+    DEAD_BUILDS=0
+    [ -s "$STATE/dead-builds" ] && DEAD_BUILDS="$(cat "$STATE/dead-builds")"
+    DEAD_BUILDS=$((DEAD_BUILDS + 1))
+    printf '%s' "$DEAD_BUILDS" > "$STATE/dead-builds"
+    say "DEAD   iter=$ITER — the Builder produced NO commit and left a clean tree. Not reviewing, not scoring, not counting it (consecutive: $DEAD_BUILDS)"
+
+    # The known cause is a resumed transcript that has grown until it fails on
+    # every resume. Rotating the seat is cheap and reversible; leaving a dead seat
+    # in place costs a full iteration each time. Two strikes, because a single
+    # api_error is often transient and the session's context is worth keeping.
+    if [ "$DEAD_BUILDS" -ge 2 ]; then
+      OLD_SID="$(cat "$STATE/builder-session-id" 2>/dev/null)"
+      NEW_SID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+      printf '%s' "$NEW_SID" > "$STATE/builder-session-id"
+      printf '0' > "$STATE/dead-builds"
+      say "DEAD   rotating the Builder seat $OLD_SID -> $NEW_SID (a fresh seat opens next iteration)"
+    fi
+
+    say "SHIP   iter=$ITER deployed=no capability_moved=no (dead build — no work product)"
+    # Do not spin. A dead build closes in seconds, so without this the loop burns
+    # its whole iteration budget in minutes and the deck fills with failed turns
+    # that never reached an API. Iteration 51 to 52 took 63 seconds.
+    sleep 60
+    continue
+  fi
+  printf '0' > "$STATE/dead-builds"
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
 
@@ -1049,17 +1179,45 @@ try:
 except Exception:
     print("unknown"); raise SystemExit
 v = (d.get("overall_verdict") or "").upper()
-print("yes" if v == "PROGRESSIVE" else "no")
+if v != "PROGRESSIVE":
+    print("no"); raise SystemExit
+# PROGRESSIVE alone is not this turn's doing. At iteration 23 the card was
+# PROGRESSIVE while `what_moved` said, in the scorer's own words, "scorer
+# correction, not DEF-169" — so the loop logged "ITERATION 23 reached the owner"
+# on a turn that deployed nothing. The scorer was honest; this read was not.
+# A card with no attribution field scores "unknown", never "yes": a missing
+# answer must not default to progress.
+a = (d.get("movement_attribution") or "").upper()
+if not a:
+    print("unknown")
+else:
+    print("yes" if a == "ITERATION_WORK" else "no")
 PYEOF
 )"
   FAIL_STREAK=0
   [ -s "$STATE/fail-streak" ] && FAIL_STREAK="$(cat "$STATE/fail-streak")"
-  if [ "$SHIPPED_THIS_ITER" = "no" ] && [ "$CAP_MOVED" != "yes" ]; then
-    FAIL_STREAK=$((FAIL_STREAK + 1))
-    say "ITERATION $ITER FAILED — nothing deployed, no capability movement (streak $FAIL_STREAK)"
-  else
+  # D-19, 2026-08-13 — THE STREAK RESETS ON DELIVERY, NOT ON A SCORER'S OPINION.
+  # This block used to reset the moment EITHER a deploy happened OR Grok's card said
+  # PROGRESSIVE. So at iteration 23 the loop logged "ITERATION 23 reached the owner —
+  # fail streak reset from 3" on an iteration that deployed NOTHING: the owner received
+  # nothing and the failure rail was disarmed by a third-party model's adjective. That
+  # is how fourteen iterations produced one deploy without the rail ever tripping, and
+  # it inverts the owner's standing ruling that improvement must be REAL, not numeric
+  # (D-10), and that undeployed work is worth zero (D-14).
+  #
+  # Capability movement without a deploy is still worth SAYING — it is the difference
+  # between a wasted turn and a turn whose value is stuck behind the gate — but it no
+  # longer counts as reaching him.
+  if [ "$SHIPPED_THIS_ITER" = "yes" ]; then
     [ "$FAIL_STREAK" -gt 0 ] && say "ITERATION $ITER reached the owner — fail streak reset from $FAIL_STREAK"
     FAIL_STREAK=0
+  else
+    FAIL_STREAK=$((FAIL_STREAK + 1))
+    if [ "$CAP_MOVED" = "yes" ]; then
+      say "ITERATION $ITER FAILED — capability moved but NOTHING DEPLOYED, so the owner received nothing (streak $FAIL_STREAK)"
+    else
+      say "ITERATION $ITER FAILED — nothing deployed, no capability movement (streak $FAIL_STREAK)"
+    fi
   fi
   printf '%s' "$FAIL_STREAK" > "$STATE/fail-streak"
   say "SHIP   iter=$ITER deployed=$SHIPPED_THIS_ITER capability_moved=$CAP_MOVED"
