@@ -190,16 +190,21 @@ function PhaseTimeline({ data, liveNow }) {
    "ACTION" and "COMMUNICATES" where the scorecard says "Authorized Action" and
    "Accurate Communication", and a display that renames a capability is how two
    sources of truth start disagreeing. */
+/* `above` mirrors the owner's artwork: in his picture ACTION, COMMUNICATES, SELF
+   FOLLOW-UP, SIMPLE & SMART and SELF PRUNING are captioned ABOVE their box, while
+   THINKING, LEARN, MEMORY and SELF HEALING are captioned below. Matching it means
+   the numbers sit where he already expects to read them — and when his own file is
+   installed, the overlay lands on the same nine boxes with the same captions. */
 const CAP_MAP_SLOTS = [
-  { name: 'Authorized Action',      left: 50.7, top: 13.4 },
-  { name: 'Accurate Communication', left: 21.9, top: 25.0 },
-  { name: 'Self Follow-Up',         left: 80.1, top: 23.8 },
-  { name: 'Thinking',               left: 10.7, top: 44.1 },
-  { name: 'Learn',                  left: 90.9, top: 43.8 },
-  { name: 'Memory',                 left: 12.8, top: 65.5 },
-  { name: 'Self-Healing',           left: 88.6, top: 65.1 },
-  { name: 'Simple & Smart',         left: 25.6, top: 84.9 },
-  { name: 'Self-Pruning',           left: 75.1, top: 84.5 },
+  { name: 'Authorized Action',      left: 50.7, top: 13.4, above: true,  cap: 'ACTION' },
+  { name: 'Accurate Communication', left: 21.9, top: 25.0, above: true,  cap: 'COMMUNICATES' },
+  { name: 'Self Follow-Up',         left: 80.1, top: 23.8, above: true,  cap: 'SELF FOLLOW-UP' },
+  { name: 'Thinking',               left: 10.7, top: 44.1, above: false, cap: 'THINKING' },
+  { name: 'Learn',                  left: 90.9, top: 43.8, above: false, cap: 'LEARN' },
+  { name: 'Memory',                 left: 12.8, top: 65.5, above: false, cap: 'MEMORY' },
+  { name: 'Self-Healing',           left: 88.6, top: 65.1, above: false, cap: 'SELF HEALING' },
+  { name: 'Simple & Smart',         left: 25.6, top: 84.9, above: true,  cap: 'SIMPLE & SMART' },
+  { name: 'Self-Pruning',           left: 75.1, top: 84.5, above: true,  cap: 'SELF PRUNING' },
 ];
 
 const CAP_MAP_SRC = '/nexeo-capability-map.png';
@@ -226,36 +231,56 @@ function CapabilityMap({ data }) {
         <svg viewBox="0 0 960 1120" className="orch-capmap-svg" role="img"
              aria-label="Nexeo capability map: nine capabilities and their current scores">
           <defs>
-            <radialGradient id="capHead" cx="50%" cy="42%" r="58%">
-              <stop offset="0%" stopColor="#2b4a6b" />
-              <stop offset="100%" stopColor="#141a24" />
+            <radialGradient id="capHead" cx="50%" cy="40%" r="60%">
+              <stop offset="0%" stopColor="#31557a" />
+              <stop offset="55%" stopColor="#1d2f45" />
+              <stop offset="100%" stopColor="#11161f" />
             </radialGradient>
+            {/* One ribbon gradient, cool at the head warming outward — it reads as
+                a connection, not as nine different categories. Colour still
+                carries no value here; the number is the mark. */}
+            <linearGradient id="capRibbon" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#5aa9e6" />
+              <stop offset="100%" stopColor="#e0a43c" />
+            </linearGradient>
+            <filter id="capGlow" x="-40%" y="-40%" width="180%" height="180%">
+              <feDropShadow dx="0" dy="0" stdDeviation="7" floodColor="#5aa9e6" floodOpacity="0.35" />
+            </filter>
           </defs>
-          {/* connectors first, so every box sits on top of its own line */}
-          {CAP_MAP_SLOTS.map((sl) => (
-            <path key={`c-${sl.name}`} className="orch-capmap-link"
-                  d={`M480,560 Q${(480 + sl.left * 9.6) / 2},${(560 + sl.top * 11.2) / 2} ${sl.left * 9.6},${sl.top * 11.2}`} />
-          ))}
-          <ellipse cx="480" cy="560" rx="150" ry="196" fill="url(#capHead)" stroke="rgba(120,180,240,0.45)" strokeWidth="2" />
-          <ellipse cx="480" cy="472" rx="92" ry="74" fill="none" stroke="rgba(224,164,60,0.65)" strokeWidth="2.5" />
-          <text x="480" y="470" className="orch-capmap-core">NEXEO</text>
+          {/* Sweeping ribbons, not straight spokes — his artwork connects each box
+              to the head with a curve that bows AWAY from centre. The control
+              point is pushed perpendicular to the centre-to-box line so every
+              ribbon bows the same way regardless of which quadrant it is in. */}
+          {CAP_MAP_SLOTS.map((sl) => {
+            const x = sl.left * 9.6, y = sl.top * 11.2;
+            const mx = (480 + x) / 2, my = (560 + y) / 2;
+            const dx = x - 480, dy = y - 560;
+            const len = Math.hypot(dx, dy) || 1;
+            const bow = 62;
+            return (
+              <path key={`c-${sl.name}`} className="orch-capmap-link"
+                    d={`M480,560 Q${mx - (dy / len) * bow},${my + (dx / len) * bow} ${x},${y}`} />
+            );
+          })}
+          <ellipse cx="480" cy="560" rx="152" ry="198" className="orch-capmap-head" />
+          <ellipse cx="480" cy="470" rx="96" ry="76" className="orch-capmap-ring" />
+          <text x="480" y="452" className="orch-capmap-core">NEXEO</text>
           <text x="480" y="500" className="orch-capmap-corenum">
             {data.brain ? `${data.brain.nexeo}%` : ''}
           </text>
-          <text x="480" y="524" className="orch-capmap-corelbl">
+          <text x="480" y="526" className="orch-capmap-corelbl">
             {data.brain ? `of ${data.brain.professional} professional` : ''}
           </text>
           {CAP_MAP_SLOTS.map((sl) => {
             const c = byName.get(sl.name);
             const x = sl.left * 9.6, y = sl.top * 11.2;
-            const bottom = sl.top > 70;
             return (
               <g key={`b-${sl.name}`}>
-                <rect x={x - 62} y={y - 62} width="124" height="124" rx="12"
+                <rect x={x - 64} y={y - 64} width="128" height="128" rx="16"
                       className="orch-capmap-box" />
-                <text x={x} y={y + 4} className="orch-capmap-boxnum">{c ? `${c.nexeo}%` : '—'}</text>
+                <text x={x} y={y + 2} className="orch-capmap-boxnum">{c ? `${c.nexeo}%` : '—'}</text>
                 {c && <text x={x} y={y + 30} className="orch-capmap-boxpro">of {c.professional}</text>}
-                <text x={x} y={bottom ? y - 78 : y + 90} className="orch-capmap-boxlbl">{sl.name}</text>
+                <text x={x} y={sl.above ? y - 82 : y + 96} className="orch-capmap-boxlbl">{sl.cap}</text>
               </g>
             );
           })}

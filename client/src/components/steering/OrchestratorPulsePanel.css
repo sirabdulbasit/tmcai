@@ -554,9 +554,15 @@
    a nine-hue palette would imply a categorical difference between capabilities
    that does not exist. */
 .orch-capmap-svg { display: block; width: 100%; height: auto; }
-.orch-capmap-link { fill: none; stroke: rgba(120,180,240,0.28); stroke-width: 2; }
+.orch-capmap-link {
+  fill: none; stroke: url(#capRibbon); stroke-width: 3; stroke-linecap: round;
+  opacity: 0.55;
+}
+.orch-capmap-head { fill: url(#capHead); stroke: rgba(120,180,240,0.45); stroke-width: 2; }
+.orch-capmap-ring { fill: none; stroke: rgba(224,164,60,0.7); stroke-width: 2.5; }
 .orch-capmap-box {
-  fill: #12151b; stroke: rgba(160,190,230,0.5); stroke-width: 1.5;
+  fill: #0e1117; stroke: rgba(160,195,235,0.55); stroke-width: 1.75;
+  filter: url(#capGlow);
 }
 .orch-capmap-boxnum {
   fill: #fff; font-size: 30px; font-weight: 600; text-anchor: middle;
