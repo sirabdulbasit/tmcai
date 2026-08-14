@@ -191,10 +191,15 @@ function digestMarkerMeaning(answer: string): string | null {
   if (!m) return null;
   try {
     const p = JSON.parse(m[1]);
+    // DEF-176: domain bounds and internal consistency are part of validity —
+    // `unanswered > total`, a negative count, a non-integer (JSON.parse turns
+    // `1e309` into Infinity), or a count/window past the constructor's own
+    // clamps is a payload the constructor cannot have produced, so it is NOT
+    // a digest. Reject to the neutral fallback; never render impossible facts.
     if (typeof p?.label !== 'string' || typeof p?.latest !== 'string'
-      || !Number.isInteger(p?.total) || p.total < 0
-      || !Number.isInteger(p?.unanswered) || p.unanswered < 0
-      || !Number.isInteger(p?.windowHours) || p.windowHours < 1) return null;
+      || !Number.isInteger(p?.total) || p.total < 0 || p.total > 10_000
+      || !Number.isInteger(p?.unanswered) || p.unanswered < 0 || p.unanswered > p.total
+      || !Number.isInteger(p?.windowHours) || p.windowHours < 1 || p.windowHours > 8_760) return null;
     const label = p.label.slice(0, 120);
     const latest = p.latest.slice(0, 140);
     return `${label}: ${p.total} updates in the last ${p.windowHours}h, `

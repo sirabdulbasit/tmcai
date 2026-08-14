@@ -37,11 +37,37 @@ let voiceSaw: string | null = null;
 let voiceReturns: string | null = null;
 let voiceThrows = false;
 
-/** Mutable delivery prefs — the gates under test read these (vi.hoisted so the
- *  hoisted prisma factory can close over them). */
-const prefs = vi.hoisted(() => ({ outboundEnabled: true as boolean, outboundPaused: false as boolean }));
+/** Mutable delivery prefs and gate states — the gates under test read these
+ *  (vi.hoisted so the hoisted prisma factory can close over them). */
+const prefs = vi.hoisted(() => ({
+  outboundEnabled: true as boolean,
+  outboundPaused: false as boolean,
+  quietStart: undefined as string | undefined,
+  quietEnd: undefined as string | undefined,
+}));
+/** Which brainUserMessage-backed suppression gate should fire (DEF-176). */
+const gate = vi.hoisted(() => ({
+  fingerprintDup: false, dedupKeyDup: false, kindRecent: false,
+}));
 
 vi.mock('../src/db/prisma', () => {
+  const brainUserMessage = {
+    findFirst: async ({ where }: any) => {
+      // The three suppression reads, told apart by their own filters.
+      if (where?.metadata?.path) {
+        return gate.fingerprintDup ? { id: 'm1', createdAt: new Date(Date.now() - 5 * 60_000) } : null;
+      }
+      if (where?.dedupKey) {
+        return gate.dedupKeyDup ? { id: 'm2', createdAt: new Date(Date.now() - 5 * 60_000) } : null;
+      }
+      if (where?.kind) {
+        return gate.kindRecent ? { id: 'm3', createdAt: new Date(Date.now() - 30_000) } : null;
+      }
+      return null;
+    },
+    count: async () => 0,
+    create: async () => ({ id: 'rec-1' }),
+  };
   const model = {
     findUnique: async (args: any) => (args?.where?.clientNumber
       ? { name: 'TallyMarks Consulting', domain: 'tmcltd.com' }
@@ -57,7 +83,9 @@ vi.mock('../src/db/prisma', () => {
           brain_channel: {
             outboundEnabled: prefs.outboundEnabled,
             outboundPaused: prefs.outboundPaused,
-            quietHours: null,
+            quietStart: prefs.quietStart,
+            quietEnd: prefs.quietEnd,
+            timezone: 'UTC',
           },
         },
       }),
@@ -72,7 +100,7 @@ vi.mock('../src/db/prisma', () => {
     groupBy: async () => [],
   };
   const p: any = new Proxy(
-    { $queryRaw: async () => [], $queryRawUnsafe: async () => [], $executeRaw: async () => 0 },
+    { brainUserMessage, $queryRaw: async () => [], $queryRawUnsafe: async () => [], $executeRaw: async () => 0 },
     { get: (t: any, k: string) => (k in t ? t[k] : model) },
   );
   return { __esModule: true, default: p, prisma: p };
@@ -117,9 +145,15 @@ const DIGEST_ARGS = {
 };
 
 /** Drive the real outbound boundary and return the full result plus whatever
- *  reached the transport. bypassQuietHours because the subject is rendering
- *  and gate ORDER, not delivery scheduling (the DEF-153 lesson). */
-async function attempt(body: string, provenance?: any, metadata?: Record<string, unknown>) {
+ *  reached the transport. Defaults bypass rate limits and quiet hours (the
+ *  DEF-153 hermeticity lesson); the DEF-176 gate-order tests override those
+ *  defaults to make each individual suppression gate fire. */
+async function attempt(
+  body: string,
+  provenance?: any,
+  metadata?: Record<string, unknown>,
+  over: Record<string, unknown> = {},
+) {
   sent.length = 0;
   const result = await brainContactsUser({
     userId: 2,
@@ -132,7 +166,8 @@ async function attempt(body: string, provenance?: any, metadata?: Record<string,
     bypassRateLimit: true,
     bypassQuietHours: true,
     metadata,
-  });
+    ...over,
+  } as any);
   return { result, delivered: sent[0] };
 }
 
@@ -149,6 +184,8 @@ beforeEach(() => {
   sent.length = 0;
   voiceSaw = null; voiceReturns = null; voiceThrows = false;
   prefs.outboundEnabled = true; prefs.outboundPaused = false;
+  prefs.quietStart = undefined; prefs.quietEnd = undefined;
+  gate.fingerprintDup = false; gate.dedupKeyDup = false; gate.kindRecent = false;
 });
 
 describe('DEF-174 — the renderer emits the sanctioned form', () => {
@@ -297,5 +334,79 @@ describe('DEF-175 — rendering sits BELOW the suppression gates (Codex iteratio
     const body = await deliver(marker(), 'system_marker');
     expect(voiceSaw, 'the LLM was consulted for an eligible message').not.toBeNull();
     expect(body).toContain('4 updates in the last 24h');
+  });
+
+  // ── DEF-176 (Codex iteration-42 MEDIUM): the four gates iteration 41 left
+  //    BELOW the renderer are now above it. Same assertion pair each time:
+  //    suppressed, and zero renderer calls.
+  it('content-fingerprint duplicate → suppressed before rendering (hash is over the STABLE marker payload)', async () => {
+    gate.fingerprintDup = true;
+    const { result, delivered } = await attempt(marker(), 'system_marker', undefined, { bypassRateLimit: false });
+    expect(result.sent).toBe(false);
+    expect(delivered).toBeUndefined();
+    expect(voiceSaw, 'the pre-render fact fingerprint decided; no LLM call').toBeNull();
+  });
+
+  it('dedup-key duplicate → suppressed before rendering', async () => {
+    gate.dedupKeyDup = true;
+    const { result, delivered } = await attempt(marker(), 'system_marker', undefined, {
+      bypassRateLimit: false, dedupKey: 'digest:item:item-X:1',
+    });
+    expect(result.sent).toBe(false);
+    expect(delivered).toBeUndefined();
+    expect(voiceSaw).toBeNull();
+  });
+
+  it('per-kind rate limit → suppressed before rendering', async () => {
+    gate.kindRecent = true;
+    const { result, delivered } = await attempt(marker(), 'system_marker', undefined, { bypassRateLimit: false });
+    expect(result.sent).toBe(false);
+    expect(delivered).toBeUndefined();
+    expect(voiceSaw).toBeNull();
+  });
+
+  it('quiet hours → suppressed before rendering', async () => {
+    prefs.quietStart = '00:00'; prefs.quietEnd = '23:59';
+    const { result, delivered } = await attempt(marker(), 'system_marker', undefined, { bypassQuietHours: false });
+    expect(result.sent).toBe(false);
+    expect(delivered).toBeUndefined();
+    expect(voiceSaw).toBeNull();
+  });
+});
+
+describe('DEF-176 — impossible facts fail closed (Codex iteration-42 MEDIUM)', () => {
+  it('the constructor cannot produce a digest where unanswered exceeds total', () => {
+    const curated = curatedMarkerMeaning(stripMarkerEnvelope(renderItemDigest({
+      ...DIGEST_ARGS, totalCount: 1, unansweredCount: 999_999, windowHours: 999_999,
+    })));
+    expect(curated, 'clamped into a possible world, not rejected — the counts are ours').not.toBeNull();
+    expect(curated!).toContain('1 updates in the last 8760h, 1 of them unanswered');
+  });
+
+  it('nonfinite and negative constructor inputs land on the floor values', () => {
+    const curated = curatedMarkerMeaning(stripMarkerEnvelope(renderItemDigest({
+      ...DIGEST_ARGS, totalCount: Number.NaN, unansweredCount: -5, windowHours: Number.POSITIVE_INFINITY,
+    })));
+    expect(curated).not.toBeNull();
+    // NaN/-5/Infinity are not measurements — each lands on its FLOOR (0, 0, 1h),
+    // never on the ceiling: a garbage input must understate, not overstate.
+    expect(curated!).toContain('0 updates in the last 1h, 0 of them unanswered');
+  });
+
+  it('the parser REJECTS what the constructor cannot have produced', () => {
+    const bad = [
+      // inconsistent: more unanswered than delivered
+      '{"label":"x","total":1,"unanswered":2,"windowHours":24,"latest":"y"}',
+      // beyond the constructor clamps
+      '{"label":"x","total":999999,"unanswered":3,"windowHours":24,"latest":"y"}',
+      '{"label":"x","total":4,"unanswered":3,"windowHours":999999,"latest":"y"}',
+      // JSON.parse("1e309") is Infinity — nonfinite must not render
+      '{"label":"x","total":1e309,"unanswered":3,"windowHours":24,"latest":"y"}',
+    ];
+    for (const payload of bad) {
+      const m = systemMarker(`selfpruning_digest: ${payload}`);
+      expect(curatedMarkerMeaning(stripMarkerEnvelope(m)), payload).toBeNull();
+      expect(sanitizeAnswerForUser(m)).toBe(NEUTRAL_MARKER_FALLBACK);
+    }
   });
 });

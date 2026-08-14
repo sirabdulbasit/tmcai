@@ -356,44 +356,18 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }, `daily_cap_exceeded (${sentToday}/${dailyCap} in last 24h)`);
   }
 
-  // ── system_marker rendering boundary (DEF-174, positioned per DEF-175) ──
-  //
-  // `system_marker` provenance means `body` is an internal bracketed marker,
-  // never owner prose. The provenance type had SAID "rendered downstream by
-  // `answerSanitizer`" since DEF-140 — but nothing downstream ever did, so
-  // the first producer to declare it would have delivered raw machine text
-  // (Codex iteration-30 CRITICAL). `sanitizeAnswerInBrainVoice` looks the
-  // marker up in the curated meanings (the vetted FACT), lets the
-  // `markerVoice` LLM say it naturally, and turns a marker with NO curated
-  // meaning into the neutral fallback. A rendering failure must not send the
-  // original — the original IS internal text — so the fallback stands:
-  // invariant #4, failing closed per #6.
-  //
-  // POSITION is part of the contract (Codex iteration-41 MEDIUM): AFTER
-  // smoke isolation, opt-in, pause and the daily caps — a message those
-  // gates suppress must not spend an LLM call or hand the payload's facts
-  // to the provider — and BEFORE the content fingerprint below, so the
-  // dedup hash is taken over the text actually delivered.
-  if (req.provenance === 'system_marker' && req.body) {
-    let rendered = NEUTRAL_MARKER_FALLBACK;
-    try {
-      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
-      rendered = await sanitizeAnswerInBrainVoice(req.body, {
-        userId: user.id, clientNumber: user.clientNumber, audience: 'owner',
-      });
-    } catch (e: any) {
-      log.warn('system_marker rendering failed; neutral fallback delivered', {
-        userId: user.id, kind: req.kind, error: e?.message,
-      });
-    }
-    req = { ...req, body: rendered, summary: rendered.slice(0, 120) };
-  }
-
   // ── Content-fingerprint dedup ──────────────────────────────────────
   // Dedup by SHA-256 of the body text within the last hour. Catches
   // identical-content sends that slipped past the dedupKey/race guards.
   // bypassRateLimit DOES bypass this for admin verify panel; it's the
   // only legitimate case where the same body should be allowed twice.
+  //
+  // For `system_marker` provenance the body here is still the MARKER — the
+  // pre-render stable fact fingerprint (DEF-176, Codex iteration-42 MEDIUM):
+  // hashing the deterministic payload instead of the LLM's rendition makes
+  // the dedup STRONGER (two phrasings of one fact still collide) and lets
+  // rendering move below every suppression gate, so a suppressed message
+  // never spends the LLM call.
   if (!req.bypassRateLimit && req.body) {
     const cHash = contentHash(req.body);
     const sinceContent = new Date(Date.now() - CONTENT_DEDUP_WINDOW_MS);
@@ -491,6 +465,42 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
     }, 'outside_office_hours');
+  }
+
+  // ── system_marker rendering boundary (DEF-174/175/176) ──────────────
+  //
+  // `system_marker` provenance means `body` is an internal bracketed marker,
+  // never owner prose. The provenance type had SAID "rendered downstream by
+  // `answerSanitizer`" since DEF-140 — but nothing downstream ever did, so
+  // the first producer to declare it would have delivered raw machine text
+  // (Codex iteration-30 CRITICAL). `sanitizeAnswerInBrainVoice` looks the
+  // marker up in the curated meanings (the vetted FACT), lets the
+  // `markerVoice` LLM say it naturally, and turns a marker with NO curated
+  // meaning into the neutral fallback. A rendering failure must not send the
+  // original — the original IS internal text — so the fallback stands:
+  // invariant #4, failing closed per #6.
+  //
+  // POSITION is the contract (Codex iteration-42 MEDIUM, completing
+  // iteration-41's): BELOW every suppression gate — smoke, opt-in, pause,
+  // both daily caps, content fingerprint (taken over the stable marker
+  // payload above), dedup-key, per-kind rate limit, quiet hours, office
+  // hours. A message any of those refuse spends no LLM call and hands no
+  // payload facts to the provider. Only phone resolution, channel selection
+  // and the transport itself sit below this point, and none of them can
+  // suppress-by-policy — they can only fail, which is recorded as failure.
+  if (req.provenance === 'system_marker' && req.body) {
+    let rendered = NEUTRAL_MARKER_FALLBACK;
+    try {
+      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+      rendered = await sanitizeAnswerInBrainVoice(req.body, {
+        userId: user.id, clientNumber: user.clientNumber, audience: 'owner',
+      });
+    } catch (e: any) {
+      log.warn('system_marker rendering failed; neutral fallback delivered', {
+        userId: user.id, kind: req.kind, error: e?.message,
+      });
+    }
+    req = { ...req, body: rendered, summary: rendered.slice(0, 120) };
   }
 
   // ── Resolve target phone ────────────────────────────────────────────

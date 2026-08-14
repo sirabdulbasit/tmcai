@@ -121,7 +121,7 @@ describe('DEF-095 — a late reply still finds the question it answers', () => {
     // question being dragged back to awaiting would re-ask the user something
     // they had settled.
     updateMany.mockResolvedValue({ count: 1 });
-    await reviveExpiredPrompt(288);
+    await reviveExpiredPrompt(288, { userId: 2, clientNumber: 'TMC-0001' });
     expect(updateMany.mock.calls[0][0].where).toMatchObject({ id: BigInt(288), state: 'expired' });
     expect(updateMany.mock.calls[0][0].data).toEqual({ state: 'awaiting_reply' });
   });

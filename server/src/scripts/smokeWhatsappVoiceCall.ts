@@ -236,7 +236,7 @@ async function main() {
         where: { userId: user.id, state: 'awaiting_reply' },
         data: { state: 'skipped' },
       });
-      try { await sendNextPrompt(user.id); } catch { /* best effort */ }
+      try { await sendNextPrompt(user.id, user.clientNumber); } catch { /* best effort */ }
     }
   }
 

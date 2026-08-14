@@ -86,7 +86,7 @@ describe('DEF-105 — the queue honours the backoff', () => {
     // Filtering at SELECTION rather than at send time is the difference between
     // "skip this one" and "deliver nothing" — the queue must keep moving past a
     // prompt that cannot currently go out.
-    expect(src).toContain('const backoffIds = await promptsInBackoff(userId)');
+    expect(src).toContain('const backoffIds = await promptsInBackoff(userId, clientNumber)');
     const pick = src.slice(src.indexOf('const candidates = await prisma.brainPromptQueue.findMany'));
     expect(pick.slice(0, 1200)).toContain('notIn: backoffIds');
   });

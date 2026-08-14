@@ -89,13 +89,22 @@ describe('handlePromptReply integration — gate placement', () => {
 
   const arm = async (llmText: string | Error) => {
     const recordAnswer = vi.fn(async () => {});
+    // DEF-176: the tenantless fallback (getAwaitingPrompt without a tenant) is
+    // deleted; correlation always goes through the tenant-scoped candidate
+    // search, so that is what the mock provides.
     vi.doMock('../src/services/brainPrompts/brainPromptQueueService', () => ({
-      getAwaitingPrompt: vi.fn(async () => ({
+      getAnswerableQuestions: vi.fn(async () => ([{
         id: 42n, question: 'Any update on the EXIM filing?',
         sideEffect: { kind: 'action_status_update' }, openItemId: null,
-      })),
+        state: 'awaiting_reply',
+      }])),
+      reviveExpiredPrompt: vi.fn(async () => {}),
       recordAnswer,
       sendNextPrompt: vi.fn(async () => {}),
+    }));
+    vi.doMock('../src/services/behaviorConfig', () => ({
+      getBehaviorValue: vi.fn(async (key: string) =>
+        (key === 'prompt_reply.max_candidates' ? 5 : 24)),
     }));
     if (llmText instanceof Error) callLLMMock.mockRejectedValue(llmText);
     else callLLMMock.mockResolvedValue({ text: llmText, provider: 'gemini' as any });
@@ -106,27 +115,30 @@ describe('handlePromptReply integration — gate placement', () => {
   it('greeting judged new_conversation_turn → NOT consumed, no recordAnswer', async () => {
     const { handlePromptReply, recordAnswer } =
       await arm('{"relevance":"new_conversation_turn","confidence":0.95}');
-    const r = await handlePromptReply({ userId: 2, text: 'Whatsup?' });
+    const r = await handlePromptReply({ userId: 2, clientNumber: 'TMC-0001', text: 'Whatsup?' });
     expect(r.handled).toBe(false);
     expect(recordAnswer).not.toHaveBeenCalled();
   });
   it('legitimate blocker answer judged relevant → consumed via recordAnswer', async () => {
     const { handlePromptReply, recordAnswer } =
       await arm('{"relevance":"answers_pending_prompt","confidence":0.92}');
-    const r = await handlePromptReply({ userId: 2, text: 'waiting on finance approval since monday' });
+    const r = await handlePromptReply({ userId: 2, clientNumber: 'TMC-0001', text: 'waiting on finance approval since monday' });
     expect(r.handled).toBe(true);
-    expect(recordAnswer).toHaveBeenCalledWith(42n, 'waiting on finance approval since monday');
+    // DEF-176: the answer is recorded UNDER the caller's tenant — the scope
+    // argument is part of the contract, not decoration.
+    expect(recordAnswer).toHaveBeenCalledWith(42n, 'waiting on finance approval since monday',
+      { userId: 2, clientNumber: 'TMC-0001' });
   });
   it('classifier failure → prompt untouched, message goes to chat', async () => {
     const { handlePromptReply, recordAnswer } = await arm(new Error('LLM outage'));
-    const r = await handlePromptReply({ userId: 2, text: 'done' });
+    const r = await handlePromptReply({ userId: 2, clientNumber: 'TMC-0001', text: 'done' });
     expect(r.handled).toBe(false);
     expect(recordAnswer).not.toHaveBeenCalled();
   });
   it('roman-Urdu greeting with ambiguous verdict → falls through', async () => {
     const { handlePromptReply, recordAnswer } =
       await arm('{"relevance":"ambiguous","confidence":0.9}');
-    const r = await handlePromptReply({ userId: 2, text: 'kya haal hai' });
+    const r = await handlePromptReply({ userId: 2, clientNumber: 'TMC-0001', text: 'kya haal hai' });
     expect(r.handled).toBe(false);
     expect(recordAnswer).not.toHaveBeenCalled();
   });

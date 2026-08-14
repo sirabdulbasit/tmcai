@@ -371,7 +371,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
 
   // Try to dispatch immediately. If another prompt is already
   // awaiting_reply, this one stays queued.
-  const dispatched = await sendNextPrompt(input.userId);
+  const dispatched = await sendNextPrompt(input.userId, input.clientNumber);
 
   return dispatched && String(dispatched.promptId) === String(row.id)
     ? { status: 'sent_now', promptId: String(row.id), channelUsed: dispatched.channelUsed }
@@ -458,14 +458,14 @@ function backoffUntil(reason: string | undefined): Date {
  * from delivering. Worst case we retry a little early, which is the behaviour
  * we had before DEF-105 and is strictly better than silence.
  */
-async function promptsInBackoff(userId: number): Promise<bigint[]> {
+async function promptsInBackoff(userId: number, clientNumber: string): Promise<bigint[]> {
   try {
     const rows = await prisma.$queryRawUnsafe<Array<{ id: bigint }>>(
       `SELECT id FROM brain_prompt_queue
-        WHERE user_id = $1 AND state = 'queued'
+        WHERE client_number = $2 AND user_id = $1 AND state = 'queued'
           AND metadata->>'retryAfter' IS NOT NULL
           AND (metadata->>'retryAfter')::timestamptz > NOW()`,
-      userId,
+      userId, clientNumber,
     );
     return rows.map((r) => BigInt(r.id));
   } catch {
@@ -497,7 +497,18 @@ export function promptSubjectItemId(
   return m || null;
 }
 
-export async function sendNextPrompt(userId: number): Promise<SendNextResult | null> {
+/**
+ * DEF-176 (Codex iteration-42 CRITICAL) — `clientNumber` is REQUIRED, not
+ * optional, and every read below carries it. This function makes owner-visible
+ * dispatch DECISIONS (which row holds the lock, which row goes next, which
+ * rows are stale), and a decision informed by another tenant's rows lets one
+ * tenant block, select or expire another's messages — invariant #1. userId
+ * being a global PK today is an accident of the schema, never authorization.
+ * Writes that go by primary-key id are ids resolved by the tenant-scoped
+ * reads in this same function, one statement earlier — stated so the by-id
+ * `update` calls are readably safe rather than accidentally so.
+ */
+export async function sendNextPrompt(userId: number, clientNumber: string): Promise<SendNextResult | null> {
   // ── DEF-077 / DEF-063 second half — the lock is not absolute ────────
   //
   // The guard used to be "anything in flight ⇒ send nothing". That is right
@@ -510,7 +521,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // one. A notice is not part of the conversation, so the lock does not apply
   // to it in either direction.
   let inFlight = await prisma.brainPromptQueue.findFirst({
-    where: { userId, state: 'awaiting_reply' },
+    where: { clientNumber, userId, state: 'awaiting_reply' },
     select: { id: true, sentAt: true, question: true },
   });
 
@@ -536,7 +547,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   // 'top' > 'routine' > 'high' — wrong. Fetch the small candidate set
   // and sort by explicit weight in Node.
   const CRIT_WEIGHT: Record<string, number> = { top: 3, high: 2, routine: 1 };
-  const backoffIds = await promptsInBackoff(userId);
+  const backoffIds = await promptsInBackoff(userId, clientNumber);
   const candidates = await prisma.brainPromptQueue.findMany({
     // DEF-105: a prompt in backoff is still 'queued' — it simply is not due
     // yet. Filtering here rather than at send time means the sweep moves on to
@@ -549,7 +560,7 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
     // Only emit the exclusion when there is something to exclude: an empty
     // `notIn` is a predicate that can filter everything out rather than
     // nothing, and a backoff list is empty in the overwhelmingly common case.
-    where: { userId, state: 'queued', ...(backoffIds.length ? { id: { notIn: backoffIds } } : {}) },
+    where: { clientNumber, userId, state: 'queued', ...(backoffIds.length ? { id: { notIn: backoffIds } } : {}) },
     orderBy: [{ queuedAt: 'asc' }],
     select: { id: true, criticality: true, question: true, clientNumber: true, openItemId: true, dedupKey: true, queuedAt: true, metadata: true },
     take: 50,  // bounded — full queue depth shouldn't ever realistically exceed this per-user
@@ -617,7 +628,9 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   if (withItems.length > 0) {
     try {
       const items = await prisma.openItem.findMany({
-        where: { id: { in: withItems.map((x) => x.itemId) } },
+        // DEF-176: the tenant's own items only — a stale-subject verdict must
+        // never be read off another tenant's item that shares an id shape.
+        where: { id: { in: withItems.map((x) => x.itemId) }, clientNumber },
         select: { id: true, status: true, delegateeName: true, delegateeEmail: true },
       });
       const { isBrainOwned } = await import('../openItems/brainOwnership');
@@ -643,7 +656,9 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
 
   if (stalePromptIds.length > 0) {
     await prisma.brainPromptQueue.updateMany({
-      where: { id: { in: stalePromptIds } },
+      // ids come from the tenant-scoped candidate read; the scope here is
+      // defence in depth, so a bug upstream cannot expire across tenants.
+      where: { id: { in: stalePromptIds }, clientNumber, userId },
       data: { state: 'expired' },
     }).catch(() => undefined);
     log.info('dropped prompts whose subject is finished', {
@@ -803,7 +818,9 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
   const notifiedThreadId = (queueMeta as Record<string, unknown>).threadId;
   if (typeof notifiedThreadId === 'string' && notifiedThreadId) {
     await prisma.delegationThread.updateMany({
-      where: { id: notifiedThreadId, ownerNotifiedAt: null },
+      // DEF-176: tenant-scoped — a threadId riding queue metadata must never
+      // stamp another tenant's thread as owner-notified.
+      where: { id: notifiedThreadId, clientNumber, ownerNotifiedAt: null },
       data: { ownerNotifiedAt: new Date() },
     }).catch(() => undefined);
   }
@@ -834,17 +851,20 @@ export async function sendNextPrompt(userId: number): Promise<SendNextResult | n
  * advances as the owner answers rather than arriving as a burst.
  */
 export async function dispatchDuePrompts(): Promise<{ users: number; sent: number }> {
+  // DEF-176: this sweep is the system's own cross-tenant enumeration — the one
+  // legitimately unscoped read on this path — and it grants no authority: each
+  // (tenant, user) pair is dispatched strictly under its OWN identity below.
   const rows = await prisma.brainPromptQueue.findMany({
     where: { state: 'queued' },
-    select: { userId: true },
-    distinct: ['userId'],
+    select: { userId: true, clientNumber: true },
+    distinct: ['userId', 'clientNumber'],
     take: 200,
   });
   let sent = 0;
-  for (const { userId } of rows) {
+  for (const { userId, clientNumber } of rows) {
     try {
       // Failure for one user must never stop the sweep for the others.
-      if (await sendNextPrompt(userId)) sent += 1;
+      if (await sendNextPrompt(userId, clientNumber)) sent += 1;
     } catch (error: any) {
       log.warn('prompt dispatch failed for user', { userId, error: error?.message?.slice(0, 200) });
     }
@@ -862,23 +882,27 @@ export async function dispatchDuePrompts(): Promise<{ users: number; sent: numbe
 export async function expireStalePrompts(): Promise<{ expired: number; advanced: number }> {
   const now = new Date();
   // Find every non-terminal prompt past its TTL.
+  // DEF-176: the sweep's enumeration is legitimately cross-tenant (a system
+  // maintenance job over its own table), but every ACTION below is taken under
+  // the row's own (tenant, user) identity, never on behalf of another.
   const stale = await prisma.brainPromptQueue.findMany({
     where: {
       state: { in: ['queued', 'awaiting_reply'] },
       expiresAt: { lt: now },
     },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, clientNumber: true },
     take: 200,
   });
   let advanced = 0;
   for (const s of stale) {
-    await prisma.brainPromptQueue.update({
-      where: { id: s.id },
+    await prisma.brainPromptQueue.updateMany({
+      // State-guarded: never expire a row that advanced concurrently.
+      where: { id: s.id, clientNumber: s.clientNumber, state: { in: ['queued', 'awaiting_reply'] } },
       data: { state: 'expired', metadata: { autoSkipReason: 'ttl' } as any },
     }).catch(() => {});
     // Try to dispatch the next prompt for this user — the active slot
     // just freed up.
-    const r = await sendNextPrompt(s.userId).catch(() => null);
+    const r = await sendNextPrompt(s.userId, s.clientNumber).catch(() => null);
     if (r) advanced += 1;
   }
   if (stale.length > 0) {
@@ -897,9 +921,12 @@ const PROMPT_SELECT = {
   ackMessageId: true, sentAt: true, metadata: true, state: true,
 } as const;
 
-export async function getAwaitingPrompt(userId: number, clientNumber?: string) {
+export async function getAwaitingPrompt(userId: number, clientNumber: string) {
+  // DEF-176: clientNumber was OPTIONAL here, and the one caller that omitted
+  // it was correlating replies against an unscoped read — the exact class
+  // DEF-091 closed. Required now; there is no legitimate tenantless lookup.
   return prisma.brainPromptQueue.findFirst({
-    where: { userId, state: 'awaiting_reply', ...(clientNumber ? { clientNumber } : {}) },
+    where: { userId, clientNumber, state: 'awaiting_reply' },
     // DEF-095: previously unordered. With two questions outstanding, WHICH one a
     // reply attached to was whatever order Postgres happened to return — so an
     // answer could silently be recorded against the wrong question. Newest asked
@@ -967,9 +994,14 @@ export async function getAnswerableQuestions(args: {
  * that jumped straight from `expired → answered` would make the queue's own
  * history unreadable.
  */
-export async function reviveExpiredPrompt(promptId: string | bigint): Promise<void> {
+export async function reviveExpiredPrompt(
+  promptId: string | bigint,
+  scope: { userId: number; clientNumber: string },
+): Promise<void> {
   await prisma.brainPromptQueue.updateMany({
-    where: { id: BigInt(promptId), state: 'expired' },
+    // DEF-176: the id is a PK, but the caller resolved it from a correlation
+    // read — the scope makes a wrong-tenant id a no-op instead of a write.
+    where: { id: BigInt(promptId), state: 'expired', userId: scope.userId, clientNumber: scope.clientNumber },
     data: { state: 'awaiting_reply' },
   });
 }
@@ -979,9 +1011,15 @@ export async function reviveExpiredPrompt(promptId: string | bigint): Promise<vo
  * text. Caller is responsible for applying the side-effect; this only
  * mutates the queue row + advances to the next prompt.
  */
-export async function recordAnswer(promptId: string | bigint, answerText: string): Promise<void> {
-  await prisma.brainPromptQueue.update({
-    where: { id: BigInt(promptId) },
+export async function recordAnswer(
+  promptId: string | bigint,
+  answerText: string,
+  scope: { userId: number; clientNumber: string },
+): Promise<void> {
+  await prisma.brainPromptQueue.updateMany({
+    // DEF-176: updateMany with the tenant+user scope — recording an answer
+    // against a wrong-tenant id writes nothing rather than something.
+    where: { id: BigInt(promptId), userId: scope.userId, clientNumber: scope.clientNumber },
     data: {
       state: 'answered',
       answeredAt: new Date(),

@@ -88,6 +88,17 @@ vi.mock('../../../db/prisma', () => ({
         const matches = rows.filter((r) => matchesWhere(r, where ?? {}));
         return matches.slice(0, take ?? 200);
       }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        const hit = rows.filter((r) => matchesWhere(r, where ?? {}));
+        for (const row of hit) {
+          if (data.state === 'awaiting_reply' && rows.some((r) => r.id !== row.id && r.userId === row.userId && r.state === 'awaiting_reply')) {
+            const err: any = new Error('partial unique violation'); err.code = 'P2002';
+            throw err;
+          }
+          Object.assign(row, data);
+        }
+        return { count: hit.length };
+      }),
       update: vi.fn(async ({ where, data }: any) => {
         const row = rows.find((r) => r.id === where.id);
         if (!row) throw new Error(`row ${where.id} not found`);
@@ -223,13 +234,13 @@ describe('reply flow', () => {
   it('getAwaitingPrompt + recordAnswer + sendNextPrompt advances', async () => {
     await enqueueBrainPrompt({ userId: 1, clientNumber: 'TMC-0001', question: 'Q1' });
     await enqueueBrainPrompt({ userId: 1, clientNumber: 'TMC-0001', question: 'Q2' });
-    const awaiting = await getAwaitingPrompt(1);
+    const awaiting = await getAwaitingPrompt(1, 'TMC-0001');
     expect(awaiting?.question).toBe('Q1');
-    await recordAnswer(awaiting!.id, 'answer to Q1');
+    await recordAnswer(awaiting!.id, 'answer to Q1', { userId: 1, clientNumber: 'TMC-0001' });
     expect(rows[0].state).toBe('answered');
     expect(rows[0].answerText).toBe('answer to Q1');
     sendMock.mockClear();
-    const next = await sendNextPrompt(1);
+    const next = await sendNextPrompt(1, 'TMC-0001');
     expect(next?.promptId).toBe(String(rows[1].id));
     expect(rows[1].state).toBe('awaiting_reply');
     expect(sendMock).toHaveBeenCalledTimes(1);
@@ -238,7 +249,7 @@ describe('reply flow', () => {
   it('sendNextPrompt is no-op when slot is full', async () => {
     await enqueueBrainPrompt({ userId: 1, clientNumber: 'TMC-0001', question: 'Q1' });
     sendMock.mockClear();
-    const next = await sendNextPrompt(1);
+    const next = await sendNextPrompt(1, 'TMC-0001');
     expect(next).toBeNull();
     expect(sendMock).not.toHaveBeenCalled();
   });

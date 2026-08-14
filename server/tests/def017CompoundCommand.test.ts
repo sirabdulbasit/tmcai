@@ -88,7 +88,7 @@ describe('wiring — the residual reaches the SAME compose path', () => {
 
   it('only the answering half is recorded and fed to the side effect', () => {
     const c = CODE(HANDLER);
-    expect(c).toContain('recordAnswer(awaiting.id, answerText)');
+    expect(c).toContain('recordAnswer(awaiting.id, answerText, {');
     expect(c).toMatch(/applySideEffect\(\s*awaiting\.sideEffect as any,\s*answerText/);
   });
   it('the handler returns the residual', () => {

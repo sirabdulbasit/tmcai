@@ -147,16 +147,16 @@ async function main() {
 
   // ── 6. Reply flow ────────────────────────────────────────────
   outboundCalls.length = 0;
-  const awaiting = await getAwaitingPrompt(user.id);
+  const awaiting = await getAwaitingPrompt(user.id, user.clientNumber);
   assert(awaiting?.question.includes('Q1'), '6.1 awaiting prompt is Q1');
-  await recordAnswer(awaiting!.id, 'tomorrow');
+  await recordAnswer(awaiting!.id, 'tomorrow', { userId: user.id, clientNumber: user.clientNumber });
   const after = await prisma.brainPromptQueue.findFirst({
     where: { id: awaiting!.id },
   });
   assert(after?.state === 'answered', '6.2 prompt marked answered');
   assert(after?.answerText === 'tomorrow', '6.3 answer_text persisted');
 
-  const next = await sendNextPrompt(user.id);
+  const next = await sendNextPrompt(user.id, user.clientNumber);
   assert(next !== null, '6.4 next prompt dispatched after answer');
   assert(outboundCalls.length === 1, '6.5 outbound fired for next prompt');
   // Highest-criticality first: Q3 (high) should win over Q2/Q5 (routine).

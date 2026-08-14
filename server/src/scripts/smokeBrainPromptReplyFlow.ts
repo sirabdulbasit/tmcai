@@ -101,7 +101,7 @@ async function main() {
   });
   assert(e1.status === 'sent_now', '1. enqueue dispatched immediately');
 
-  const r1 = await handlePromptReply({ userId: user.id, text: 'tomorrow' });
+  const r1 = await handlePromptReply({ userId: user.id, clientNumber: user.clientNumber, text: 'tomorrow' });
   assert(r1.handled === true, '2.1 reply handled');
   assert(r1.sideEffectStatus === 'applied', '2.2 set_due_date applied');
   assert(r1.ackMessage?.includes('Got it'), '2.3 ack composed');
@@ -121,7 +121,7 @@ async function main() {
     sideEffect: { kind: 'assign_owner', openItemId: item2 },
     metadata: { smoke: true },
   });
-  const r2 = await handlePromptReply({ userId: user.id, text: 'Asad Khan <asad@tmcltd.com>' });
+  const r2 = await handlePromptReply({ userId: user.id, clientNumber: user.clientNumber, text: 'Asad Khan <asad@tmcltd.com>' });
   assert(r2.handled === true, '3.1 reply handled');
   assert(r2.sideEffectStatus === 'applied', '3.2 assign_owner applied');
   const updated2 = await prisma.openItem.findFirst({ where: { id: item2 } });
@@ -140,7 +140,8 @@ async function main() {
     metadata: { smoke: true },
   });
   const r3 = await handlePromptReply({
-    userId: user.id, text: 'spoke to vendor, they ship next week',
+    userId: user.id, clientNumber: user.clientNumber,
+    text: 'spoke to vendor, they ship next week',
   });
   assert(r3.handled === true && r3.sideEffectStatus === 'applied', '4.1 free_form_note applied');
   const updated3 = await prisma.openItem.findFirst({ where: { id: item3 } });
@@ -205,7 +206,7 @@ async function main() {
     sideEffect: { kind: 'set_due_date', openItemId: item4 },
     metadata: { smoke: true },
   });
-  const r4 = await handlePromptReply({ userId: user.id, text: 'no idea, whenever' });
+  const r4 = await handlePromptReply({ userId: user.id, clientNumber: user.clientNumber, text: 'no idea, whenever' });
   assert(r4.handled === true, '6.1 unparseable reply still consumed');
   assert(r4.sideEffectStatus === 'failed', '6.2 side-effect marked failed');
   const updated4 = await prisma.openItem.findFirst({ where: { id: item4 } });

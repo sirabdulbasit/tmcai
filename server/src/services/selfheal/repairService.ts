@@ -429,14 +429,19 @@ const stuckQueuedPrompt: RepairRule = {
       before: { promptIds: rows.map((r) => r.id), userIds: [...new Set(rows.map((r) => r.user_id))] },
     };
   },
-  async apply(_ctx, pre) {
+  async apply(ctx, pre) {
+    // Tenant-scoped rule: detect() already refuses to run without a tenant
+    // (repairService.ts:115), so this is a type guard, not a new branch.
+    if (!ctx.clientNumber) return { promptIds: pre.before.promptIds, dispatchedForUsers: [] };
+    const clientNumber = ctx.clientNumber;
     const userIds = (pre.before.userIds as number[]) ?? [];
     const { sendNextPrompt } = await import('../brainPrompts/brainPromptQueueService');
     const dispatched: number[] = [];
     for (const userId of userIds) {
       // Per-user: the dispatcher advances one user's queue at a time, and a
-      // failure for one user must not abandon the others.
-      await sendNextPrompt(userId).then(() => dispatched.push(userId)).catch(() => {});
+      // failure for one user must not abandon the others. Tenant comes from
+      // the rule's own detect query (DEF-176) — never inferred from the user.
+      await sendNextPrompt(userId, clientNumber).then(() => dispatched.push(userId)).catch(() => {});
     }
     return { promptIds: pre.before.promptIds, dispatchedForUsers: dispatched };
   },

@@ -42,7 +42,7 @@ beforeEach(() => {
 /** One queued prompt for `userId`, then an empty list for the per-user pick. */
 function queueFor(userIds: number[], candidates: any[] = []) {
   H.prismaMock.brainPromptQueue.findMany.mockImplementation(async (args: any) => {
-    if (args?.distinct) return userIds.map((userId) => ({ userId }));
+    if (args?.distinct) return userIds.map((userId) => ({ userId, clientNumber: 'TMC-0001' }));
     return candidates;
   });
 }

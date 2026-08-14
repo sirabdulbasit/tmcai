@@ -162,11 +162,20 @@ export function renderItemDigest(args: {
 }): string {
   const { label, totalCount, unansweredCount, windowHours, latest } = args;
   const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
+  // DEF-176 (Codex iteration-42 MEDIUM): the counts are CLAMPED into a sane
+  // domain and forced consistent (unanswered can never exceed total) — a
+  // caller bug must not become a mathematically impossible owner fact. The
+  // parser side (`digestMarkerMeaning`) REJECTS rather than clamps, so a
+  // payload this constructor cannot have produced fails to the neutral
+  // fallback instead of being repaired into something nobody asserted.
+  const int = (n: number, lo: number, hi: number) =>
+    (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : lo);
+  const total = int(totalCount, 0, 10_000);
   const payload = {
     label: clean(label).slice(0, 120),
-    total: Math.max(0, Math.floor(totalCount)),
-    unanswered: Math.max(0, Math.floor(unansweredCount)),
-    windowHours: Math.max(1, Math.floor(windowHours)),
+    total,
+    unanswered: Math.min(int(unansweredCount, 0, 10_000), total),
+    windowHours: int(windowHours, 1, 8_760),
     latest: clean(latest).slice(0, 140),
   };
   return systemMarker(`selfpruning_digest: ${JSON.stringify(payload)}`);

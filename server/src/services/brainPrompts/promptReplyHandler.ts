@@ -40,10 +40,11 @@ export interface HandleReplyInput {
    * Tenant this user belongs to. Correlation is per-user under a tenant —
    * never a global "the owner" (owner instruction, 2026-08-07: *"nothing should
    * be hardcoded related me it should be user under tenant/client"*).
-   * Optional only so existing callers keep compiling; when absent the search
-   * falls back to the single-awaiting-prompt behaviour.
+   * REQUIRED (DEF-176): this used to be optional with an unscoped
+   * single-prompt fallback — the exact cross-tenant read class DEF-091 closed,
+   * living on in a branch. Every real caller has the tenant in hand.
    */
-  clientNumber?: string;
+  clientNumber: string;
 }
 
 export interface HandleReplyResult {
@@ -81,15 +82,11 @@ export interface HandleReplyResult {
 /**
  * The questions this user could still plausibly be answering, newest first.
  *
- * Falls back to the old single-awaiting-prompt behaviour when the caller could
- * not supply a tenant — correlation is per-user under a tenant, and searching
- * history without one would be exactly the cross-tenant read DEF-091 closed.
+ * DEF-176: the tenantless fallback that lived here is deleted, not kept for
+ * compatibility — its own comment admitted it was the DEF-091 read class.
+ * `clientNumber` is required at the type level now.
  */
 async function findCandidates(input: HandleReplyInput) {
-  if (!input.clientNumber) {
-    const one = await getAwaitingPrompt(input.userId);
-    return one ? [one] : [];
-  }
   const { getBehaviorValue } = await import('../behaviorConfig');
   const ctx = { userId: input.userId, clientNumber: input.clientNumber };
   const [lookbackHours, limit] = await Promise.all([
@@ -203,7 +200,9 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
   // `awaiting_reply → answered` transition stays truthful; a row jumping
   // `expired → answered` would make the queue's own history unreadable.
   if (awaiting.state === 'expired') {
-    await reviveExpiredPrompt(awaiting.id).catch((err) => {
+    await reviveExpiredPrompt(awaiting.id, {
+      userId: input.userId, clientNumber: input.clientNumber,
+    }).catch((err) => {
       log.warn('could not revive expired prompt before recording answer', {
         promptId: String(awaiting!.id), err: err?.message,
       });
@@ -230,7 +229,9 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
   // 1. Persist the answer immediately. Even if side-effect application
   //    fails, the conversation must advance; we don't want a broken
   //    side-effect handler to deadlock the queue.
-  await recordAnswer(awaiting.id, answerText);
+  await recordAnswer(awaiting.id, answerText, {
+    userId: input.userId, clientNumber: input.clientNumber,
+  });
 
   // 2. Apply side-effect.
   const seResult = await applySideEffect(
@@ -244,7 +245,7 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
 
   // 4. Dispatch next prompt. If this errors we still ack — the queue
   //    is consistent, just delayed by one tick.
-  void sendNextPrompt(input.userId).catch((err) => {
+  void sendNextPrompt(input.userId, input.clientNumber).catch((err) => {
     log.warn('sendNextPrompt failed after answer', { err: err.message });
   });
 
