@@ -196,18 +196,24 @@ function PhaseTimeline({ data, liveNow }) {
    the numbers sit where he already expects to read them — and when his own file is
    installed, the overlay lands on the same nine boxes with the same captions. */
 const CAP_MAP_SLOTS = [
-  { name: 'Authorized Action',      left: 50.7, top: 13.4, above: true,  cap: 'ACTION' },
-  { name: 'Accurate Communication', left: 21.9, top: 25.0, above: true,  cap: 'COMMUNICATES' },
-  { name: 'Self Follow-Up',         left: 80.1, top: 23.8, above: true,  cap: 'SELF FOLLOW-UP' },
-  { name: 'Thinking',               left: 10.7, top: 44.1, above: false, cap: 'THINKING' },
-  { name: 'Learn',                  left: 90.9, top: 43.8, above: false, cap: 'LEARN' },
-  { name: 'Memory',                 left: 12.8, top: 65.5, above: false, cap: 'MEMORY' },
-  { name: 'Self-Healing',           left: 88.6, top: 65.1, above: false, cap: 'SELF HEALING' },
-  { name: 'Simple & Smart',         left: 25.6, top: 84.9, above: true,  cap: 'SIMPLE & SMART' },
-  { name: 'Self-Pruning',           left: 75.1, top: 84.5, above: true,  cap: 'SELF PRUNING' },
+  // MEASURED FROM THE OWNER'S OWN FILE, not estimated from a screenshot. The nine
+  // dark squares were found by flood-filling the image (960x1102) for near-black
+  // regions and keeping the square ones ~112-119px; these are their centres as a
+  // percentage of the image box, so the numbers stay on their boxes at any width.
+  // `cap` is his wording, used only by the drawn stand-in — his artwork carries
+  // its own captions. Names stay keyed to the SCORECARD so the data cannot drift.
+  { name: 'Authorized Action',      left: 50.4, top: 13.6, above: true,  cap: 'ACTION' },
+  { name: 'Accurate Communication', left: 21.5, top: 24.6, above: true,  cap: 'COMMUNICATES' },
+  { name: 'Self Follow-Up',         left: 80.0, top: 24.5, above: true,  cap: 'SELF FOLLOW-UP' },
+  { name: 'Thinking',               left: 10.6, top: 44.6, above: false, cap: 'THINKING' },
+  { name: 'Learn',                  left: 90.3, top: 44.6, above: false, cap: 'LEARN' },
+  { name: 'Memory',                 left: 13.0, top: 66.6, above: false, cap: 'MEMORY' },
+  { name: 'Self-Healing',           left: 88.2, top: 66.6, above: false, cap: 'SELF HEALING' },
+  { name: 'Simple & Smart',         left: 25.0, top: 85.6, above: true,  cap: 'SIMPLE & SMART' },
+  { name: 'Self-Pruning',           left: 75.6, top: 85.6, above: true,  cap: 'SELF PRUNING' },
 ];
 
-const CAP_MAP_SRC = '/nexeo-capability-map.png';
+const CAP_MAP_SRC = '/nexeo-capability-map.jpg';
 
 function CapabilityMap({ data }) {
   const [failed, setFailed] = useState(false);
@@ -295,26 +301,35 @@ function CapabilityMap({ data }) {
 
   return (
     <div className="orch-capmap">
-      <img src={CAP_MAP_SRC} alt="Nexeo capability map" onError={() => setFailed(true)} />
-      {CAP_MAP_SLOTS.map((s) => {
-        const c = byName.get(s.name);
-        return (
-          <div
-            className="orch-capmap-slot"
-            key={s.name}
-            style={{ left: `${s.left}%`, top: `${s.top}%` }}
-            title={c
-              ? `${s.name}: Nexeo ${c.nexeo} · professional ${c.professional} · gap ${Math.round((c.professional - c.nexeo) * 10) / 10}`
-              : `${s.name}: not scored`}
-          >
-            {/* An unscored capability shows a dash, never a zero. A zero is a
-                measurement; a missing card is not, and the two must not look the
-                same on a wall display. */}
-            <span className="orch-capmap-pct">{c ? `${c.nexeo}%` : '—'}</span>
-            {c && <span className="orch-capmap-pro">of {c.professional}</span>}
-          </div>
-        );
-      })}
+      {/* THE FRAME IS THE IMAGE'S OWN BOX, and the numbers are positioned against
+          IT rather than against the card. Whenever the picture is height-limited the
+          card is wider than it is, so percentages taken from the card push every
+          number outward — measured at up to 39px of drift on the outer boxes,
+          growing with distance from centre, while the vertical was exact. An
+          inline-block frame shrink-wraps the image so the overlay and the picture
+          share one coordinate system. */}
+      <div className="orch-capmap-frame">
+        <img src={CAP_MAP_SRC} alt="Nexeo capability map" onError={() => setFailed(true)} />
+        {CAP_MAP_SLOTS.map((s) => {
+          const c = byName.get(s.name);
+          return (
+            <div
+              className="orch-capmap-slot"
+              key={s.name}
+              style={{ left: `${s.left}%`, top: `${s.top}%` }}
+              title={c
+                ? `${s.name}: Nexeo ${c.nexeo} · professional ${c.professional} · gap ${Math.round((c.professional - c.nexeo) * 10) / 10}`
+                : `${s.name}: not scored`}
+            >
+              {/* An unscored capability shows a dash, never a zero. A zero is a
+                  measurement; a missing card is not, and the two must not look the
+                  same on a wall display. */}
+              <span className="orch-capmap-pct">{c ? `${c.nexeo}%` : '—'}</span>
+              {c && <span className="orch-capmap-pro">of {c.professional}</span>}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
