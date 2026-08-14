@@ -34,6 +34,15 @@ in that role, whose benchmarks are: Simple & Smart 92, Thinking 94, Memory 92,
 Accurate Communication 94, Authorized Action 91, Self Follow-Up 96, Learn 90,
 Self-Healing 89, Self-Pruning 89.
 
+**SELF-HEALING has a definition now — owner, 2026-08-14: "it means to deploy
+itself automatically."** Score it as a ladder: (1) Brain notices its own failure,
+(2) it restores service itself, (3) it fixes the underlying defect, (4) it ships
+that repair to production without being asked. Rung 4 is his stated meaning and
+is where the remaining points sit. A Brain that cannot deploy its own repair is
+not self-healing however good its retry logic is — say which rung the code
+actually reaches, with evidence, rather than scoring the word. Full text in
+`server/docs/orchestrator/capability_contract.md`.
+
 ## OWNER RULING, 2026-08-13 — a defect fix IS capability improvement
 
 *"if my english is weak, so teaching me english is fixing. and if i don't know spanish

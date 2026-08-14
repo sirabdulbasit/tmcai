@@ -192,3 +192,44 @@ that naming, three things become impossible to hide:
 
 The contract does not make Brain better by itself. It makes the loop's aim
 legible, which is the precondition for aiming it well.
+
+---
+
+## OWNER RULING, 2026-08-14 — what SELF-HEALING means
+
+*"in product vision there is self healing (it means to deploy itself automatically)"*
+
+Until now this capability had a number (54) and no definition anywhere in the contract,
+the score prompt or the campaign file — so the scorer has been rating it against its own
+idea of the word, and the Builder had nothing to build toward. It is defined here, in
+the owner's terms, and all three seats read it from this file.
+
+**Self-Healing is Brain keeping itself running and current without being asked, and its
+full form is that Brain ships its own repair to production.**
+
+Scored as a ladder, because the rungs are separable and the top one is the goal:
+
+| rung | what it means | evidence that it exists |
+|---|---|---|
+| 1 · detect | Brain notices its own failure — a dead worker, a failed send, a job not ticking | a health finding written without a human asking |
+| 2 · recover | it restores service itself — restart, retry, re-lease, reconnect | the incident closes with no human command |
+| 3 · repair | it fixes the underlying defect, not just the symptom | a defect closed by Brain's own change |
+| 4 · **deploy itself** | **it puts that repair on production without being asked** | a production deploy whose author is Brain |
+
+**Rung 4 is the owner's stated meaning and is where the remaining points are.**
+
+### The one constraint, and it is not a hedge
+
+A Brain that can deploy itself must refuse to deploy what a human deployer would refuse:
+**a CRITICAL finding or an AGENTS.md §2 product-invariant violation never ships**, by its
+hand any more than by ours (D-22). Iteration 13 shipped silent data loss and iteration
+43 would have told the owner an answer was handled while writing nothing — a self-healer
+without that refusal is a self-harmer with a faster loop. Self-deployment is therefore
+built ON the deploy gate, never around it: same dirty-tree refusal, same idempotent
+migrations, same probe, same evaluation-chart row, and the same one line it will not
+cross.
+
+**Today the orchestrator holds rung 4 by hand** (D-22, owner ruling the same day). That
+is the human-held version of a capability Brain is meant to own, which makes it the
+clearest target on the board: every mechanic is already written and exercised — what is
+missing is Brain deciding, and being trusted, to run it.
