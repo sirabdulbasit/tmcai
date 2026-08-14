@@ -395,6 +395,7 @@ export async function triageUnregisteredInbound(params: {
       const who = describeSender(params.fromNumber, senderName);
       await brainContactsUser({
         userId: ownerUserId,
+        clientNumber: params.clientNumber,
         kind: 'wa_counterpart_message',
         // Embeds a counterpart's message verbatim — never rewrite (DEF-140).
         provenance: 'quoted_third_party',
@@ -432,6 +433,7 @@ async function relayToOwner(
 
   await brainContactsUser({
     userId: ownerUserId,
+    clientNumber: params.clientNumber,
     kind: 'wa_counterpart_message',
     // Forwards a counterpart's words verbatim — never rewrite (DEF-140).
     provenance: 'quoted_third_party',

@@ -226,12 +226,26 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
     residualPreview: residualText?.slice(0, 80),
   });
 
-  // 1. Persist the answer immediately. Even if side-effect application
-  //    fails, the conversation must advance; we don't want a broken
-  //    side-effect handler to deadlock the queue.
-  await recordAnswer(awaiting.id, answerText, {
+  // 1. Persist the answer FIRST, and believe the write (DEF-178).
+  //
+  //    `recordAnswer` is a compare-and-set: exactly one row moves
+  //    `awaiting_reply → answered` or nothing does. Until iteration 53 the
+  //    count was ignored, so a prompt that was deleted, consumed by a
+  //    concurrent delivery of the same webhook, expired again after revival,
+  //    or resolved under the wrong scope still got its side effect applied
+  //    and its "[recorded]" ack sent — owner state changed with no durable
+  //    answer ledger behind it (Codex iteration-50 CRITICAL). No persisted
+  //    answer, no mutation, no ack: the message routes to normal chat, which
+  //    is what it is when the question it answered no longer exists.
+  const persisted = await recordAnswer(awaiting.id, answerText, {
     userId: input.userId, clientNumber: input.clientNumber,
   });
+  if (!persisted) {
+    log.warn('answer did not persist — prompt gone, already consumed, or out of scope; no side effect applied', {
+      userId: input.userId, promptId: String(awaiting.id), state: awaiting.state,
+    });
+    return { handled: false };
+  }
 
   // 2. Apply side-effect.
   const seResult = await applySideEffect(

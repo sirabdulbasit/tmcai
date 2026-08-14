@@ -8,7 +8,7 @@
  *
  *   import { brainContactsUser } from '.../brainOutboundService';
  *   await brainContactsUser({
- *     userId, kind: 'critical_bundle', urgency: 'high',
+ *     userId, clientNumber, kind: 'critical_bundle', urgency: 'high',
  *     summary: 'Two critical emails arrived in the last 20 min',
  *     body: '<message text>',
  *     dedupKey: 'criticals:abc,def',
@@ -90,6 +90,16 @@ export type OwnerMessageProvenance =
 
 export interface BrainContactRequest {
   userId: number;
+  /**
+   * Tenant the caller is acting FOR. REQUIRED (DEF-178, Codex iteration-50):
+   * delivery used to resolve everything from the userId alone, which made a
+   * bare integer an authorization — any caller holding a userId could reach
+   * that user and influence their suppression/dedup/rate ledger, whatever
+   * tenant the caller was working in. The declared tenant is verified against
+   * the resolved user and a mismatch refuses delivery (fail closed); every
+   * ledger read below is scoped by (clientNumber, userId).
+   */
+  clientNumber: string;
   /**
    * What kind of text `body` is — see OwnerMessageProvenance. Address
    * policy is applied to `brain_prose` and nothing else. Optional and
@@ -194,6 +204,20 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   });
   if (!user) {
     return { sent: false, reason: 'user_not_found', channelsUsed: [], waMessageIds: [] };
+  }
+  // ── Tenant boundary (DEF-178) ───────────────────────────────────────
+  // The caller declares which tenant it is acting for, and the declaration
+  // must match the user it is trying to reach. A userId is a global PK by
+  // accident of the schema, never an authorization (invariant #1, AGENTS.md
+  // §2.1) — without this check any tenant's code path holding an integer
+  // could message another tenant's user and leave audit rows on their
+  // ledger. Refused BEFORE any audit write: a wrong-tenant attempt must not
+  // leave state on the tenant it failed to reach.
+  if (user.clientNumber !== req.clientNumber) {
+    log.warn('outbound refused — declared tenant does not own this user', {
+      userId: req.userId, declaredTenant: req.clientNumber, kind: req.kind,
+    });
+    return { sent: false, reason: 'tenant_mismatch', channelsUsed: [], waMessageIds: [] };
   }
   // Suspended user — refuse to deliver. Critical safeguard so an
   // admin who suspends a user knows for sure that NO Brain outbound
@@ -303,6 +327,9 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const sentToday = await prisma.brainUserMessage.count({
     where: {
+      // DEF-178: every ledger read on this path is (tenant, user)-scoped —
+      // a userId alone is never the identity a cap/dedup decision hangs on.
+      clientNumber: user.clientNumber,
       userId: user.id,
       createdAt: { gte: since24h },
       status: { in: ['sent', 'partial'] },
@@ -331,6 +358,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     const diagnosticCap = Math.max(1, Math.floor((dailyCap * pct) / 100));
     const diagnosticsToday = await prisma.brainUserMessage.count({
       where: {
+        clientNumber: user.clientNumber,
         userId: user.id,
         createdAt: { gte: since24h },
         status: { in: ['sent', 'partial'] },
@@ -373,6 +401,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     const sinceContent = new Date(Date.now() - CONTENT_DEDUP_WINDOW_MS);
     const dup = await prisma.brainUserMessage.findFirst({
       where: {
+        clientNumber: user.clientNumber,
         userId: user.id,
         createdAt: { gte: sinceContent },
         status: { in: ['sent', 'partial'] },
@@ -402,6 +431,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   if (req.dedupKey && !req.bypassRateLimit) {
     const last = await prisma.brainUserMessage.findFirst({
       where: {
+        clientNumber: user.clientNumber,
         userId: user.id, kind: req.kind, dedupKey: req.dedupKey,
         createdAt: { gte: new Date(Date.now() - dedupWindowMs) },
         status: { in: ['sent', 'partial'] },
@@ -429,6 +459,7 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   const KIND_MIN_INTERVAL_MS = 60_000;
   const rec = !req.bypassRateLimit ? await prisma.brainUserMessage.findFirst({
     where: {
+      clientNumber: user.clientNumber,
       userId: user.id, kind: req.kind,
       createdAt: { gte: new Date(Date.now() - KIND_MIN_INTERVAL_MS) },
       status: { in: ['sent', 'partial'] },

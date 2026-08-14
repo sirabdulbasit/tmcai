@@ -114,6 +114,9 @@ async function deliver(body: string, provenance?: any): Promise<string | undefin
   sent.length = 0;
   const result = await brainContactsUser({
     userId: 2,
+    // DEF-178: the caller declares the tenant it acts for, verified against
+    // the resolved user — the mock user above belongs to TMC-0001.
+    clientNumber: 'TMC-0001',
     kind: `test_${Math.abs(body.length)}_${provenance ?? 'none'}`,
     summary: 'test',
     body,

@@ -65,6 +65,7 @@ export async function notifySevereFindings(clientNumber: string): Promise<Notify
     const more = items.length > 5 ? `\n…and ${items.length - 5} more.` : '';
     const result = await brainContactsUser({
       userId,
+      clientNumber,
       kind: 'brain_health_alert',
       provenance: 'brain_prose',
       summary: `${items.length} problem(s) I found on my own`,
@@ -151,6 +152,7 @@ export async function sendDailyDigest(clientNumber: string, userId: number): Pro
   const { brainContactsUser } = await import('../notifications/brainOutboundService');
   const r = await brainContactsUser({
     userId,
+    clientNumber,
     kind: 'brain_daily_digest',
     summary: 'Daily check on how I did',
     body: `How I did in the last 24 hours:\n\n${lines}\n\nAsk me about any of these if you want the detail.`,

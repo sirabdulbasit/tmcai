@@ -173,6 +173,7 @@ export async function runDayBriefDispatch(): Promise<RunResult> {
       // happened to be similar.
       const dispatch = await brainContactsUser({
         userId: u.id,
+        clientNumber: u.clientNumber,
         kind: 'day_brief',
         summary: `Day Brief — ${wall.ymd}`,
         body,
@@ -254,6 +255,7 @@ export async function manualDispatchDayBrief(
 
   const dispatch = await brainContactsUser({
     userId: u.id,
+    clientNumber: u.clientNumber,
     kind: 'day_brief_manual',
     summary: `Day Brief (manual) — ${wall?.ymd ?? 'now'}`,
     body,

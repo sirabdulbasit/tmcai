@@ -358,6 +358,7 @@ export async function sendMaturityReport(clientNumber: string, userId: number): 
   const { brainContactsUser } = await import('../notifications/brainOutboundService');
   const r = await brainContactsUser({
     userId,
+    clientNumber,
     kind: 'brain_daily_digest',
     summary: `Brain Maturity — ${label}`,
     body,

@@ -157,6 +157,8 @@ async function attempt(
   sent.length = 0;
   const result = await brainContactsUser({
     userId: 2,
+    // DEF-178: the declared tenant must own the user — the mock user is TMC-0001.
+    clientNumber: 'TMC-0001',
     kind: `test_def174_${provenance ?? 'none'}`,
     summary: 'test',
     body,

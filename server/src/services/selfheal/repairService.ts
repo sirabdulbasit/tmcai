@@ -360,6 +360,7 @@ const unnotifiedAnsweredAsk: RepairRule = {
       // Per-thread, not per-batch: a send that fails must not stamp anything.
       const result = await brainContactsUser({
         userId: r.owner_user_id,
+        clientNumber: ctx.clientNumber!,
         kind: 'unnotified_answered_ask',
         provenance: 'brain_prose',
         summary: 'A reply came in that you were never told about',

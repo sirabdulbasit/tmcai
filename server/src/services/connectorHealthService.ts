@@ -396,6 +396,9 @@ async function fireStaleAlerts(stale: StaleConnector[]): Promise<void> {
     const realertHours = await getBehaviorValue('connector.stale_realert_hours', { userId }).catch(() => 24);
     await brainContactsUser({
       userId,
+      // Every stale row for one user carries that user's own tenant — the
+      // rows were selected with clientNumber and grouped per user above.
+      clientNumber: group[0].clientNumber,
       kind: 'connector_stale',
       summary,
       body,

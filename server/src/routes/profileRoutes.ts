@@ -308,6 +308,7 @@ router.post('/test-ping', async (req: Request, res: Response) => {
     const { brainContactsUser } = await import('../services/notifications/brainOutboundService');
     const r = await brainContactsUser({
       userId: req.user!.id,
+      clientNumber: req.user!.clientNumber,
       kind: 'test_ping',
       summary: 'Test ping from Settings → Brain',
       body: "Hi — this is Brain. The WhatsApp channel is working. You can reply here any time.",

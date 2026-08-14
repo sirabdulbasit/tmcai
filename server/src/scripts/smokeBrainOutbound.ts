@@ -65,6 +65,7 @@ const fail = (label: string, err: any) => console.log(`${RED}✗${RESET} ${label
 
     const r = await brainContactsUser({
       userId: testUser.id,
+      clientNumber: testUser.clientNumber,
       kind: 'smoke_test_no_phone',
       summary: 'no-phone-fallback test',
       body: 'should never deliver',
@@ -99,6 +100,7 @@ const fail = (label: string, err: any) => console.log(`${RED}✗${RESET} ${label
     });
     const r = await brainContactsUser({
       userId: testUser.id,
+      clientNumber: testUser.clientNumber,
       kind: 'smoke_dedup',
       summary: 'should be suppressed',
       body: 'x',

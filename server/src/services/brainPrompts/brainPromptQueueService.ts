@@ -140,6 +140,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
     const channel = await pickTopChannel(input.userId);
     const r = await brainContactsUser({
       userId: input.userId,
+      clientNumber: input.clientNumber,
       kind: 'brain_prompt_top',
       provenance: input.provenance,
       summary: clip(input.question, 120),
@@ -740,6 +741,7 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
 
   const r = await brainContactsUser({
     userId,
+    clientNumber,
     kind: 'brain_prompt',
     provenance: (queueMeta.provenance as OwnerMessageProvenance | undefined),
     summary: clip(questionText, 120),
@@ -893,22 +895,30 @@ export async function expireStalePrompts(): Promise<{ expired: number; advanced:
     select: { id: true, userId: true, clientNumber: true },
     take: 200,
   });
+  let expired = 0;
   let advanced = 0;
   for (const s of stale) {
-    await prisma.brainPromptQueue.updateMany({
+    // DEF-178 (Codex iteration-50): the guarded update's count is the fact.
+    // This used to count every ENUMERATED row as expired and dispatch for it,
+    // so a prompt the user answered between the read and the write was
+    // reported expired anyway and its "freed slot" dispatched an extra
+    // prompt. Zero rows transitioned means nothing expired and nothing freed.
+    const r = await prisma.brainPromptQueue.updateMany({
       // State-guarded: never expire a row that advanced concurrently.
-      where: { id: s.id, clientNumber: s.clientNumber, state: { in: ['queued', 'awaiting_reply'] } },
+      where: { id: s.id, userId: s.userId, clientNumber: s.clientNumber, state: { in: ['queued', 'awaiting_reply'] } },
       data: { state: 'expired', metadata: { autoSkipReason: 'ttl' } as any },
-    }).catch(() => {});
+    }).catch(() => ({ count: 0 }));
+    if (r.count !== 1) continue;
+    expired += 1;
     // Try to dispatch the next prompt for this user — the active slot
     // just freed up.
-    const r = await sendNextPrompt(s.userId, s.clientNumber).catch(() => null);
-    if (r) advanced += 1;
+    const next = await sendNextPrompt(s.userId, s.clientNumber).catch(() => null);
+    if (next) advanced += 1;
   }
-  if (stale.length > 0) {
-    log.info('expired stale prompts', { expired: stale.length, advanced });
+  if (expired > 0) {
+    log.info('expired stale prompts', { expired, advanced });
   }
-  return { expired: stale.length, advanced };
+  return { expired, advanced };
 }
 
 /**
@@ -997,35 +1007,56 @@ export async function getAnswerableQuestions(args: {
 export async function reviveExpiredPrompt(
   promptId: string | bigint,
   scope: { userId: number; clientNumber: string },
-): Promise<void> {
-  await prisma.brainPromptQueue.updateMany({
+): Promise<boolean> {
+  const r = await prisma.brainPromptQueue.updateMany({
     // DEF-176: the id is a PK, but the caller resolved it from a correlation
     // read — the scope makes a wrong-tenant id a no-op instead of a write.
     where: { id: BigInt(promptId), state: 'expired', userId: scope.userId, clientNumber: scope.clientNumber },
     data: { state: 'awaiting_reply' },
   });
+  return r.count === 1;
 }
 
 /**
  * Mark the user's currently-awaiting prompt as answered with the given
  * text. Caller is responsible for applying the side-effect; this only
  * mutates the queue row + advances to the next prompt.
+ *
+ * DEF-178 — compare-and-set, and the caller must believe the answer.
+ *
+ * This wrote with a scoped updateMany and returned void, so the reply
+ * handler applied the side effect and acked "recorded" whether or not any
+ * row actually transitioned (Codex iteration-50 CRITICAL: deleted, raced,
+ * already-consumed or wrong-scope prompt → owner state changed with no
+ * durable answer ledger). The state guard makes it a true CAS —
+ * `awaiting_reply → answered` or nothing — and the count is the proof.
+ * Exactly one row transitioning returns true; anything else returns false
+ * and the caller must not mutate on the answer's behalf.
  */
 export async function recordAnswer(
   promptId: string | bigint,
   answerText: string,
   scope: { userId: number; clientNumber: string },
-): Promise<void> {
-  await prisma.brainPromptQueue.updateMany({
+): Promise<boolean> {
+  const r = await prisma.brainPromptQueue.updateMany({
     // DEF-176: updateMany with the tenant+user scope — recording an answer
     // against a wrong-tenant id writes nothing rather than something.
-    where: { id: BigInt(promptId), userId: scope.userId, clientNumber: scope.clientNumber },
+    where: {
+      id: BigInt(promptId),
+      userId: scope.userId,
+      clientNumber: scope.clientNumber,
+      // DEF-178: only a question still waiting can be answered. A row that is
+      // already 'answered' (double-delivered webhook), 'expired' (revival
+      // raced) or gone entirely writes zero rows, and zero rows means false.
+      state: 'awaiting_reply',
+    },
     data: {
       state: 'answered',
       answeredAt: new Date(),
       answerText: answerText.slice(0, 4000),
     },
   });
+  return r.count === 1;
 }
 
 // ─── Internal helpers ────────────────────────────────────────────

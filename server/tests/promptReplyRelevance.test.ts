@@ -88,7 +88,10 @@ describe('handlePromptReply integration — gate placement', () => {
   });
 
   const arm = async (llmText: string | Error) => {
-    const recordAnswer = vi.fn(async () => {});
+    // DEF-178: recordAnswer is a CAS — true means exactly one row moved
+    // `awaiting_reply → answered`, and the handler refuses to mutate or ack
+    // without that proof. The happy-path mock persists.
+    const recordAnswer = vi.fn(async () => true);
     // DEF-176: the tenantless fallback (getAwaitingPrompt without a tenant) is
     // deleted; correlation always goes through the tenant-scoped candidate
     // search, so that is what the mock provides.
@@ -98,7 +101,7 @@ describe('handlePromptReply integration — gate placement', () => {
         sideEffect: { kind: 'action_status_update' }, openItemId: null,
         state: 'awaiting_reply',
       }])),
-      reviveExpiredPrompt: vi.fn(async () => {}),
+      reviveExpiredPrompt: vi.fn(async () => true),
       recordAnswer,
       sendNextPrompt: vi.fn(async () => {}),
     }));

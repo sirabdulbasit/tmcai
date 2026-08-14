@@ -212,6 +212,9 @@ export async function getAuthenticatedClient(userId: number): Promise<{ client: 
               const isExpiry = /invalid_grant|token has been expired|expired or revoked/i.test(errorMessage);
               await brainContactsUser({
                 userId,
+                // The connector row that failed is this user's own row and
+                // carries their tenant (full-row findUnique above).
+                clientNumber: userConnector.clientNumber,
                 kind: 'connector_stale',
                 summary: isExpiry ? 'Google token expired — reconnect needed' : 'Google connector failed',
                 body: isExpiry

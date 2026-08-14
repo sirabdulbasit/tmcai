@@ -109,6 +109,7 @@ export async function maybePushCriticalBundle(
 
     const r = await brainContactsUser({
       userId,
+      clientNumber,
       kind: 'critical_bundle',
       summary: `${criticals.length} critical item${criticals.length === 1 ? '' : 's'} surfaced`,
       body,

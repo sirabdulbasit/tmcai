@@ -188,6 +188,7 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
       // unique even if multiple ticks fire.
       const dispatchRes = await brainContactsUser({
         userId: item.userId,
+        clientNumber: item.clientNumber,
         kind: 'open_item_draft_ask',
         // Brain's own words, addressed to the owner (DEF-140 inventory).
         provenance: 'brain_prose',
