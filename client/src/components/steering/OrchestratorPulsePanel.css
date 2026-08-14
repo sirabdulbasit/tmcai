@@ -98,12 +98,23 @@
    "not completed". Naming it last is what keeps his three in the order he asked
    for. */
 @media (min-width: 1100px) and (min-height: 620px) {
+  /* TWO COLUMNS — owner, 2026-08-14: "move Capability vs a professional to right
+     side as new column beside existing graphs". The capability card spans every
+     row on the right, because the thing inside it is the nine-box map: a tall
+     figure that wants height, not width. The loop's own graphs keep the left
+     column in the order he set earlier — phases, benchmark, then the trend. */
   .orch-deck {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
     grid-template-rows: none;
     grid-auto-rows: minmax(0, auto);
-    grid-template-areas: "phases" "caps" "bench" "brain";
+    grid-template-areas:
+      "phases caps"
+      "bench  caps"
+      "brain  caps";
   }
+  /* The right column is one tall card, so it must not be stretched by a short
+     left column nor clipped by a tall one. */
+  .orch-deck-caps { align-self: start; }
   .orch-deck-phases { grid-area: phases; }
   .orch-deck-caps   { grid-area: caps; }
   .orch-deck-bench  { grid-area: bench; }
