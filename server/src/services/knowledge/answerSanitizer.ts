@@ -166,19 +166,44 @@ const MARKERS: MarkerRule[] = [
     replace: "I couldn't read \"$1\" as a date — try something like \"Friday\" or \"in 3 days\".",
     whole: true,
   },
-  {
-    // DEF-174 / C-3 increment 2 — the per-item digest, in the sanctioned form.
-    // `renderItemDigest` emits a provenance-stamped marker carrying only facts;
-    // THIS is its one vetted meaning (the iteration-29 wording, which was
-    // reviewed for promising nothing and addressing nobody). Constructor and
-    // rule are held in sync by def174DigestMarkerProvenance.test.ts — a format
-    // drift on either side turns the digest into the neutral fallback there,
-    // loudly, instead of leaking machine text to the owner here.
-    match: /^\s*\[selfpruning_digest:\s*(\d+) updates in (\d+(?:\.\d+)?)h, (\d+) unanswered, about (.+?); latest: "(.*)"\]\s*$/i,
-    replace: '$4: $1 updates in the last $2h, $3 of them unanswered. Latest: "$5". The earlier updates are kept in full — nothing was discarded.',
-    whole: true,
-  },
 ];
+
+/**
+ * DEF-174/DEF-175 — the per-item digest's curated meaning, COMPUTED from a
+ * structured payload rather than pattern-substituted from a sentence.
+ *
+ * The first version serialized the fields into a regex-delimited English
+ * sentence and re-parsed it here — so an item titled `Revenue; latest: "CEO
+ * approved"` terminated its own field at the delimiter and injected a false
+ * Latest fact into what the owner reads (Codex iteration-41 HIGH). The marker
+ * body is now JSON: escaping is the field boundary, so quotes, semicolons,
+ * brackets and the literal delimiter text stay inside the field they belong
+ * to. Anything that fails to parse or validate is NOT a digest — the caller
+ * falls through to the neutral fallback, never to a half-parsed sentence.
+ *
+ * The rendered wording is the iteration-29 vetted sentence: facts and a
+ * verbatim quote, no promise, no vocative, no first-person future.
+ * Constructor and this parser are held in sync by
+ * def174DigestMarkerProvenance.test.ts.
+ */
+function digestMarkerMeaning(answer: string): string | null {
+  const m = /^\s*\[selfpruning_digest:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (typeof p?.label !== 'string' || typeof p?.latest !== 'string'
+      || !Number.isInteger(p?.total) || p.total < 0
+      || !Number.isInteger(p?.unanswered) || p.unanswered < 0
+      || !Number.isInteger(p?.windowHours) || p.windowHours < 1) return null;
+    const label = p.label.slice(0, 120);
+    const latest = p.latest.slice(0, 140);
+    return `${label}: ${p.total} updates in the last ${p.windowHours}h, `
+      + `${p.unanswered} of them unanswered. Latest: "${latest}". `
+      + `The earlier updates are kept in full — nothing was discarded.`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The curated meaning of a whole-answer marker, when we have one.
@@ -194,6 +219,10 @@ const MARKERS: MarkerRule[] = [
  */
 export function curatedMarkerMeaning(answer: string): string | null {
   if (!answer) return null;
+  // Structured payloads first (DEF-175): parsed and validated, never
+  // regex-substituted — an unparseable payload is null, not a guess.
+  const digest = digestMarkerMeaning(answer);
+  if (digest) return digest;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }

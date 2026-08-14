@@ -116,6 +116,10 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
   if (input.dedupKey) {
     const existing = await prisma.brainPromptQueue.findFirst({
       where: {
+        // DEF-175 (Codex iteration-41 CRITICAL): every read is tenant-scoped,
+        // invariant #1. userId being a global PK is an accident of the current
+        // schema, not an authorization argument.
+        clientNumber: input.clientNumber,
         userId: input.userId,
         dedupKey: input.dedupKey,
         state: { in: ['queued', 'awaiting_reply'] },
@@ -343,6 +347,10 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       if (named === '' || /dedup/i.test(named)) {
         const survivor = await prisma.brainPromptQueue.findFirst({
           where: {
+            // DEF-175 (Codex iteration-41 CRITICAL): the survivor proof must
+            // not read outside the tenant — a cross-tenant row must never
+            // authorize filing this tenant's push as covered (invariant #1).
+            clientNumber: input.clientNumber,
             userId: input.userId,
             dedupKey: input.dedupKey,
             state: { in: ['queued', 'awaiting_reply'] },

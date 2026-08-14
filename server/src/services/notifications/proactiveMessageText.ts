@@ -140,9 +140,14 @@ export function renderUnattachedDigest(args: {
  * The facts themselves keep the iteration-29 rules: counts the caller measured,
  * a verbatim quote, no promised actions, no vocative, no first-person future.
  *
- * `[`, `]` and the marker sentinel are removed from interpolated text before it
- * enters the marker: a `]` inside the label or quote would terminate the
- * bracketed body early and turn the whole digest into the neutral fallback.
+ * The payload is JSON, not an English sentence (DEF-175, Codex iteration-41
+ * HIGH): the first marker serialized the fields into a regex-delimited sentence,
+ * so an item titled `Revenue; latest: "CEO approved"` terminated its own field
+ * and INJECTED a false Latest fact into what the owner reads. JSON escaping is
+ * the field boundary — a title can contain quotes, semicolons, brackets or the
+ * literal delimiter text and it stays inside its field. Only the marker
+ * SENTINEL is stripped from inputs (a quoted push must not smuggle a second
+ * envelope); everything else survives verbatim into its own field.
  */
 export function renderItemDigest(args: {
   /** The item's title in quotes, or a neutral fallback. */
@@ -156,13 +161,13 @@ export function renderItemDigest(args: {
   latest: string;
 }): string {
   const { label, totalCount, unansweredCount, windowHours, latest } = args;
-  const clean = (s: string) => stripMarkerEnvelope(s ?? '')
-    .replace(/[\[\]]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return systemMarker(
-    `selfpruning_digest: ${totalCount} updates in ${windowHours}h, `
-    + `${unansweredCount} unanswered, about ${clean(label)}; `
-    + `latest: "${clean(latest).slice(0, 140)}"`,
-  );
+  const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
+  const payload = {
+    label: clean(label).slice(0, 120),
+    total: Math.max(0, Math.floor(totalCount)),
+    unanswered: Math.max(0, Math.floor(unansweredCount)),
+    windowHours: Math.max(1, Math.floor(windowHours)),
+    latest: clean(latest).slice(0, 140),
+  };
+  return systemMarker(`selfpruning_digest: ${JSON.stringify(payload)}`);
 }

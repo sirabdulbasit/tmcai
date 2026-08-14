@@ -254,36 +254,6 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     }
   }
 
-  // ── system_marker rendering boundary (DEF-174) ───────────────────────
-  //
-  // `system_marker` provenance means `body` is an internal bracketed marker,
-  // never owner prose. The provenance type has SAID "rendered downstream by
-  // `answerSanitizer`" since DEF-140 — but nothing downstream ever did, so
-  // the first producer to declare it (the self-pruning digest) would have
-  // delivered raw machine text. Codex's iteration-30 CRITICAL.
-  //
-  // Rendering lives HERE because this is the one boundary every owner
-  // message crosses: `sanitizeAnswerInBrainVoice` looks the marker up in the
-  // curated meanings (the vetted FACT), lets the `markerVoice` LLM say it
-  // naturally, and turns a marker with NO curated meaning into the neutral
-  // fallback. Unlike the cosmetic block above, a failure here must not send
-  // the original: the original IS internal text, so the fallback stands —
-  // invariant #4, failing closed per #6.
-  if (req.provenance === 'system_marker' && req.body) {
-    let rendered = NEUTRAL_MARKER_FALLBACK;
-    try {
-      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
-      rendered = await sanitizeAnswerInBrainVoice(req.body, {
-        userId: user.id, clientNumber: user.clientNumber, audience: 'owner',
-      });
-    } catch (e: any) {
-      log.warn('system_marker rendering failed; neutral fallback delivered', {
-        userId: user.id, kind: req.kind, error: e?.message,
-      });
-    }
-    req = { ...req, body: rendered, summary: rendered.slice(0, 120) };
-  }
-
   // ── Smoke isolation ─────────────────────────────────────────────────
   // Suppress any test-flagged outbound unless explicitly opted in. This
   // is the FIRST check so a stray smoke test on a developer machine
@@ -384,6 +354,39 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
     }, `daily_cap_exceeded (${sentToday}/${dailyCap} in last 24h)`);
+  }
+
+  // ── system_marker rendering boundary (DEF-174, positioned per DEF-175) ──
+  //
+  // `system_marker` provenance means `body` is an internal bracketed marker,
+  // never owner prose. The provenance type had SAID "rendered downstream by
+  // `answerSanitizer`" since DEF-140 — but nothing downstream ever did, so
+  // the first producer to declare it would have delivered raw machine text
+  // (Codex iteration-30 CRITICAL). `sanitizeAnswerInBrainVoice` looks the
+  // marker up in the curated meanings (the vetted FACT), lets the
+  // `markerVoice` LLM say it naturally, and turns a marker with NO curated
+  // meaning into the neutral fallback. A rendering failure must not send the
+  // original — the original IS internal text — so the fallback stands:
+  // invariant #4, failing closed per #6.
+  //
+  // POSITION is part of the contract (Codex iteration-41 MEDIUM): AFTER
+  // smoke isolation, opt-in, pause and the daily caps — a message those
+  // gates suppress must not spend an LLM call or hand the payload's facts
+  // to the provider — and BEFORE the content fingerprint below, so the
+  // dedup hash is taken over the text actually delivered.
+  if (req.provenance === 'system_marker' && req.body) {
+    let rendered = NEUTRAL_MARKER_FALLBACK;
+    try {
+      const { sanitizeAnswerInBrainVoice } = await import('../knowledge/answerSanitizer');
+      rendered = await sanitizeAnswerInBrainVoice(req.body, {
+        userId: user.id, clientNumber: user.clientNumber, audience: 'owner',
+      });
+    } catch (e: any) {
+      log.warn('system_marker rendering failed; neutral fallback delivered', {
+        userId: user.id, kind: req.kind, error: e?.message,
+      });
+    }
+    req = { ...req, body: rendered, summary: rendered.slice(0, 120) };
   }
 
   // ── Content-fingerprint dedup ──────────────────────────────────────

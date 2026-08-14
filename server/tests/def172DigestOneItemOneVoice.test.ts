@@ -35,13 +35,15 @@ let countFails = false;
 /** DEF-173 failure injection: which create dies, and how. */
 let digestCreateFails = false;
 let filingCreateFails = false;
-/** DEF-174 P2002 shapes: 'racer' = the real race (the racer's committed row is
- *  visible for survivor verification); 'ghost' = P2002 with NO survivor to
+/** DEF-174/175 P2002 shapes: 'racer' = the real race (the racer's committed row
+ *  is visible for survivor verification); 'ghost' = P2002 with NO survivor to
  *  verify; 'wrong-constraint' = a different unique surface named in
  *  e.meta.target, with a live same-key row present so that ONLY the constraint
- *  check can refuse it — which is what makes the mutant that drops the check
- *  die here. */
-let digestCreateP2002: false | 'racer' | 'ghost' | 'wrong-constraint' = false;
+ *  check can refuse it; 'cross-tenant' = the only matching live row belongs to
+ *  ANOTHER tenant, so only a tenant-scoped survivor read can refuse it
+ *  (Codex iteration-41 CRITICAL — each mode kills the mutant that drops its
+ *  check). */
+let digestCreateP2002: false | 'racer' | 'ghost' | 'wrong-constraint' | 'cross-tenant' = false;
 /** Tenant config for the REAL behaviorConfig resolver + owner decisions. */
 let tenantConfig: Record<string, unknown> = {};
 
@@ -56,14 +58,19 @@ vi.mock('../src/db/prisma', () => {
       if (isDigestMsg && digestCreateP2002) {
         if (digestCreateP2002 !== 'ghost') {
           // The racer COMMITTED between the probe and this insert — its row is
-          // what DEF-174's survivor verification reads back.
-          existing.push({ ...data, id: nextId++, state: 'queued' });
+          // what DEF-174's survivor verification reads back. In 'cross-tenant'
+          // mode the row lives under ANOTHER tenant: visible to an unscoped
+          // read, invisible to a correct one.
+          existing.push({
+            ...data, id: nextId++, state: 'queued',
+            ...(digestCreateP2002 === 'cross-tenant' ? { clientNumber: 'OTHER-9' } : {}),
+          });
         }
         const e: any = new Error('unique constraint');
         e.code = 'P2002';
         e.meta = {
           target: digestCreateP2002 === 'wrong-constraint'
-            ? 'brain_prompt_queue_pkey' : 'uq_bpq_dedup_live',
+            ? 'brain_prompt_queue_pkey' : 'uq_bpq_dedup_live_tenant',
         };
         throw e;
       }
@@ -73,11 +80,16 @@ vi.mock('../src/db/prisma', () => {
       return { id: row.id };
     },
     findFirst: async ({ where }: any) => {
-      // The dedup probe: any non-terminal row with this dedupKey, existing or
-      // created earlier in the same test.
+      // The dedup probe / survivor verification: any non-terminal row with
+      // this dedupKey. The mock HONOURS every filter the query states —
+      // including clientNumber — so a query that omits tenant scoping will
+      // happily match a cross-tenant row here, which is exactly what the
+      // DEF-175 adversarial tests below exploit to kill that mutant.
       if (where?.dedupKey) {
         return [...existing, ...created].find((r) =>
           r.dedupKey === where.dedupKey
+          && (where.clientNumber === undefined || r.clientNumber === where.clientNumber)
+          && (where.userId === undefined || r.userId === where.userId)
           && ['queued', 'awaiting_reply'].includes(r.state)) ?? null;
       }
       // sendNextPrompt's "next queued row" probe — nothing dispatches in tests.
@@ -230,9 +242,6 @@ describe('DEF-172 — the digest, when the owner has opted in', () => {
     const digests = created.filter((c) => c.metadata?.source === 'selfpruning_digest');
     expect(digests, 'exactly one digest message').toHaveLength(1);
     expect(digests[0].state).toBe('queued');
-    expect(digests[0].question).toContain('"Leave Request"');
-    expect(digests[0].question).toContain('4 updates');
-    expect(digests[0].question, 'the latest push is quoted').toContain('remove the blocker');
     expect(digests[0].dedupKey).toMatch(/^selfpruning_digest:item:item-X:\d+$/);
     // DEF-174 — the digest is the sanctioned deterministic form: a
     // provenance-stamped marker, declared as such so the outbound boundary
@@ -240,6 +249,12 @@ describe('DEF-172 — the digest, when the owner has opted in', () => {
     expect(isSystemMarker(digests[0].question),
       'the queued digest is a marker, not owner prose').toBe(true);
     expect(digests[0].metadata.provenance).toBe('system_marker');
+    // The FACTS are asserted on what the owner would read (DEF-175: the marker
+    // body is JSON, so prose assertions belong on the rendered text).
+    const rendered = sanitizeAnswerForUser(digests[0].question);
+    expect(rendered).toContain('"Leave Request"');
+    expect(rendered).toContain('4 updates');
+    expect(rendered, 'the latest push is quoted').toContain('remove the blocker');
   });
 
   it('the count spans PRODUCERS and both subject encodings — no producer bypasses', async () => {
@@ -405,6 +420,36 @@ describe('DEF-174 — P2002 is a claim to verify, not proof (Codex iteration-30)
     const r = await enqueue();
     expect(r.status).toBe('queued');
     expect(created.filter((c) => c.metadata?.digest)).toHaveLength(0);
+  });
+
+  it("a CROSS-TENANT live row is never this tenant's survivor (Codex iteration-41 CRITICAL)", async () => {
+    // The only matching (userId, dedupKey) live row belongs to OTHER-9. An
+    // unscoped survivor read finds it and files the owner's push as covered
+    // by a row it was not authorized to read — invariant #1. The tenant-scoped
+    // read finds nothing, rethrows, and the original SENDS.
+    digestCreateP2002 = 'cross-tenant';
+    const r = await enqueue();
+    expect(r.status, 'no cross-tenant row may authorize filing').toBe('queued');
+    expect(created.filter((c) => c.metadata?.digest)).toHaveLength(0);
+    const normal = created.filter((c) =>
+      c.state === 'queued' && c.metadata?.source !== 'selfpruning_digest' && !c.metadata?.digest);
+    expect(normal, 'the original went out as itself').toHaveLength(1);
+  });
+});
+
+describe('DEF-175 — the soft-dedup probe is tenant-scoped too', () => {
+  it("another tenant's live row with the same (userId, dedupKey) is not a duplicate here", async () => {
+    existing = [delivered({
+      clientNumber: 'OTHER-9', dedupKey: 'shared-key', state: 'queued',
+    })];
+    const r = await enqueue({ dedupKey: 'shared-key' });
+    expect(r.status, "OTHER-9's row must not suppress TMC-0001's push").toBe('queued');
+  });
+
+  it("the SAME tenant's live row with that key still deduplicates", async () => {
+    existing = [delivered({ dedupKey: 'shared-key', state: 'queued' })];
+    const r = await enqueue({ dedupKey: 'shared-key' });
+    expect(r.status).toBe('duplicate');
   });
 });
 
