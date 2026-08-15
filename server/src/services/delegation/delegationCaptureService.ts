@@ -1259,8 +1259,12 @@ async function resolveNotifyContext(
 /** Owner-facing prompt text. These are structured system notices about
  *  machine state (delegation thread events), rendered factually — the
  *  invariant's bracketed-marker class; no fabricated Brain prose, no
- *  counterpart content beyond the bounded classifier summary. */
-function buildOwnerQuestion(
+ *  counterpart content beyond the bounded classifier summary.
+ *
+ *  Exported because it is the single rendering path for BOTH the enqueue
+ *  side (notifyOwner) and the send-time rebuild (rerenderOwnerQuestion) —
+ *  tests hold the two identical by calling it the way each path does. */
+export function buildOwnerQuestion(
   metadata: Record<string, unknown>,
   ctx: { who?: string; item?: string; said?: string; guess?: string; confidence?: number } = {},
 ): string {
@@ -1280,8 +1284,23 @@ function buildOwnerQuestion(
   switch (metadata.kind) {
     case 'delegation_completion_reported':
       return `${who} says ${about} is done: ${String(metadata.summary ?? '').slice(0, 300)} — confirm to close it, or tell me what is still missing.`;
-    case 'delegation_reply_unclear':
-      return `${who} replied about ${about}.${said}${guess}\n\nI am not confident enough to act on it — should I mark it done, chase her, or leave it?`;
+    case 'delegation_reply_unclear': {
+      // DEF-161 — the options must agree with the reading two lines above them.
+      // Hamna said the video was NOT finished, Brain read it as in-progress, and
+      // the fixed option list still opened with "should I mark it done" — the
+      // one action its own reading had just ruled out. Taking it would record a
+      // false completion. So the option set is DERIVED from the reading:
+      // "mark it done" is offered only when the reading itself is completed;
+      // in-progress / blocked / not-started / unknown / absent all drop it.
+      // And the counterpart is named, never "her" — the 08-14 notice called
+      // Muhammad Yousaf "her".
+      const reading = String(ctx.guess ?? '').trim().toLowerCase().replace(/[\s_]+/g, '_');
+      const chase = ctx.who || 'them';
+      const options = reading === 'completed'
+        ? `should I mark it done, chase ${chase}, or leave it?`
+        : `should I chase ${chase}, or leave it?`;
+      return `${who} replied about ${about}.${said}${guess}\n\nI am not confident enough to act on it — ${options}`;
+    }
     case 'delegation_reply_unclassified':
       return `${who} replied about ${about}, and I could not read it well enough to judge.${said}${guess}\n\nWhat would you like me to do?`;
     case 'delegation_reply_ambiguous_asked': {
