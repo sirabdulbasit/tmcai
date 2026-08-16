@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v5).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v6).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -122,9 +122,10 @@ following cases are required by name. Each must fail if its invariant is broken:
 | B-5 | an already-`applied` record invokes **no** side effect on replay | §4.4 |
 | B-6 | a `failed` record remains retryable by the governor sweep | §4.4 |
 | B-7 | unrelated `metadata` written between the initial read and the outcome write **survives** | §4.5 |
-| B-8 | a CAS failure is returned as failure and is **never** reported as a completed outcome | §4.4, §5 |
+| B-8 | a CAS failure is returned as failure and is **never** translated into a completed outcome **by the handler** | §4.4, §5 |
 
 | B-9 | two concurrent claims for the same awaiting row produce **exactly one** successful `recordAnswer`; the loser applies no side effect and emits no acknowledgement | §4.2 |
+| B-10 | the **governor/retry sweep** never translates a lost outcome CAS into a completed outcome | §4.4, §5 |
 
 B-1 and B-2 are separate cases deliberately: a guard that checks the pair jointly
 can pass while either half is unenforced. **They must be instantiated against
@@ -158,7 +159,7 @@ listRetryableSideEffects(args): Promise<PromptRow[]>
 
 | # | criterion | how it is checked |
 |---|---|---|
-| AC-1 | **No production code outside an owner allowlist reaches the `brainPromptQueue` Prisma model.** Repository-wide over `server/src`, allowlisting only `brainPromptQueueService`. AST/import-aware. **"Reaches" is defined in §6.1**, and the guard is proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
+| AC-1 | **`promptReplyHandler.ts` contains zero access to the `brainPromptQueue` Prisma model**, and cannot reacquire one. Bound to that file — **not repository-wide**; see §6.4 for why and for the measured remainder. AST/import-aware, "reaches" defined in §6.1, proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
 | AC-2 | The six `open_item` calls are unchanged; the handler may retain its Prisma import | diff review |
 | AC-3 | **Preservation coverage only — see §6.3.** `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
 | AC-4 | The protected relevance suite makes **zero `brainPromptQueue` model calls** — this is the claim, and it is narrower than "no database contact"; the production ownership boundary is AC-1's job, not AC-4's. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
@@ -178,7 +179,7 @@ be read as such. The split:
 | AC-3 | the existing relevance scenarios still hold — **preservation only** |
 | `chat18` (§7) | the handler actually calls the service outcome writer |
 | B-1..B-9 (§4.6) | the real invariants — **at the execution level fixed below**, because several are integration properties, not service return values |
-| AC-1 / AC-4 | no seam bypass (AC-1, production-wide); no queue-model contact from the protected relevance suite (AC-4) |
+| AC-1 / AC-4 | no seam bypass **in the repaired handler** (AC-1 — handler-bound, see §6.4); no queue-model contact from the protected relevance suite (AC-4). Neither claims a repository-wide ownership boundary |
 
 Correctness rests on `chat18` and the B-cases; AC-3 guards against regression in
 what already worked.
@@ -191,7 +192,7 @@ never proving the handler and governor consequences the cases actually name:
 |---|---|
 | B-1, B-2, B-7 | the **real queue-service implementation**, with the Prisma/model boundary controlled |
 | B-3, B-4, B-5, B-8, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; **B-8 asserts that a CAS failure is never translated into a completed outcome by the handler or governor — a service test can prove the `false` return but not that consequence**; B-9 additionally asserts acknowledgement suppression for the losing claim |
-| B-6 | **real governor/retry orchestration + real queue-service logic** |
+| B-6, B-10 | **real governor/retry orchestration + real queue-service logic**. B-6 proves failed records stay retryable; **B-10 proves the governor does not complete a lost CAS** — which B-6 does not cover and handler-level B-8 cannot reach |
 
 A case executed below its stated level does not satisfy AC-5.
 
@@ -220,8 +221,11 @@ and only if it is:
 
 - a string literal; **or**
 - an identifier bound by a **same-file `const`** whose initializer is exactly a
-  string literal, with **zero reassignment**, optionally reached through a
-  bounded chain of direct `const` aliases (`const a = 'x'; const b = a;`).
+  string literal, with **zero reassignment**, optionally reached through **any
+  finite acyclic chain of same-file direct `const` aliases**, resolved through
+  lexical bindings with **cycle detection** (`const a = 'x'; const b = a;`).
+  No numeric depth limit: the chain is bounded by being acyclic and same-file,
+  which is decidable, rather than by an arbitrary number.
 
 Nothing else qualifies. Concatenation, template interpolation, imported
 constants, conditional expressions and function returns are **outside** the
@@ -255,10 +259,10 @@ promise, so the matrix is named here:
 | E-2 | bracket access — `prisma['brainPromptQueue']` |
 | E-3 | destructured — `const { brainPromptQueue } = prisma` |
 | E-4 | renamed import — `import db from '../db/prisma'` then `db.brainPromptQueue` |
-| E-5 | namespace import — `import * as P from '../db/prisma'` |
+| E-5 | namespace import, **executable form** — `import * as P from '../db/prisma'` then `P.default.brainPromptQueue` (the module default-exports the client, so the bare import is not access and would not be a valid fixture) |
 | E-6 | access from a **different file** than `promptReplyHandler.ts` |
 | E-7 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
-| E-8 | **computed key under the §6.1 grammar** — `const m = 'brainPromptQueue'; prisma[m]…`. Must use *exactly* that grammar: a same-file `const` initialized to a string literal, never reassigned |
+| E-8 | **computed key under the §6.1 grammar**, exercising the **alias chain**, not a single binding: `const a = 'brainPromptQueue'; const b = a; prisma[b]…` — a one-hop fixture does not prove the chain behaviour the grammar promises |
 | E-9 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
 
 **Review-only prohibitions — deliberately NOT in the matrix**, because §6.1 does
@@ -274,6 +278,47 @@ not claim the guard detects them:
 they were outside the guarantee — the two sections contradicted each other and
 could not both govern an implementation. Third instance in this document of
 fixing one place and leaving another; recorded, not quietly patched.)*
+
+### 6.4 · Why AC-1 is bound to the handler, and what remains
+
+v1–v5 wrote AC-1 as repository-wide, allowlisting only the owning service. That
+criterion **the specified implementation cannot pass**: `prisma.brainPromptQueue.*`
+appears at **75 access sites across 34 files** today, and excluding the owning
+service and the handler under repair, **16 files** access the model directly. A
+repository-wide guard would go red the moment DEF-185's six calls landed. §3's
+scope and §6's promise contradicted each other, and five rounds of tightening the
+wording never touched it.
+
+Owner ruling: **narrow AC-1 to the handler and name the remainder.** DEF-185
+exists to close one seam and un-red one test; converting it into a 34-file
+ownership refactor is a different piece of work with its own review surface.
+
+**The measured remainder — recorded, NOT claimed safe.** Six of the sixteen are
+operator scripts already excluded from the shipped artifact by CMP-2026-08-16
+chunk 1, so the follow-up that actually ships is **10 files / 13 sites**:
+
+| file | sites |
+|---|---:|
+| `services/triage/starCadenceService.ts` | 2 |
+| `services/knowledge/systemCapabilitiesService.ts` | 2 |
+| `services/brain/preactiveEngine.ts` | 2 |
+| `services/whatsapp/WhatsAppInbound.ts` | 1 |
+| `services/selfpruning/inboundNoiseLedger.ts` | 1 |
+| `services/selfpruning/digestPolicy.ts` | 1 |
+| `services/delegation/delegationCaptureService.ts` | 1 |
+| `services/brainPrompts/negativeFeedbackHandler.ts` | 1 |
+| `services/actions/handlers/brain/notifyUserRisk.ts` | 1 |
+| `jobs/actionLifecycleWorker.ts` | 1 |
+
+Already out of the artifact (chunk 1), still direct accessors:
+`smokeBrainPromptProducer` (11), `smokeBrainPromptQueue` (7),
+`smokeWhatsappVoiceCall` (5), `smokeOpsManualRetrieval` (5),
+`smokeBrainPromptReplyFlow` (5), `smokeBrainPromptDelegateeEmail` (5).
+
+This inventory is stated so nobody reads AC-1 as a repository-wide ownership
+guarantee it does not make — the same discipline applied to the 38 untriaged
+scripts in chunk 1. Extending the boundary to those 10 files is **follow-up
+work**, not part of DEF-185.
 
 **AC-1 and AC-4 are the load-bearing pair.** v1 proposed a grep for
 `prisma.brainPromptQueue.*` in one file, which proves only that today's six calls
@@ -389,7 +434,7 @@ eight findings and their resolution:
 | # | finding | resolved |
 |---|---|---|
 | 1 | **BLOCKER** — AC-3 internally impossible: the `vi.doMock` factory exports only `getAnswerableQuestions`, `reviveExpiredPrompt`, `recordAnswer`, `sendNextPrompt`; a factory mock replaces the module, so any new service export is `undefined` and throws "not a function". v1 demanded new calls AND forbade the mock update | AC-3 rewritten: assertions and arrangement unchanged, **mock surface may grow**. Verified against `promptReplyRelevance.test.ts:98-107` |
-| 2 | **HIGH** — AC-1 relocated the class: a grep in one handler proves only that today's six calls moved | AC-1 is now repository-wide, AST/import-aware, allowlist-based, and mutation-proven |
+| 2 | **HIGH** — AC-1 relocated the class: a grep in one handler proves only that today's six calls moved | AC-1 became repository-wide, AST/import-aware, allowlist-based and mutation-proven. **SUPERSEDED at v6** — repository-wide proved unachievable at this scope; see §6.4 and §16. The AST/import-aware and mutation-proven parts survive, scoped to the handler |
 | 3 | `open_item` boundary correct; handler may keep the Prisma import | recorded in AC-2 — which makes AC-1's model-specific guard more important, not less |
 | 4 | **HIGH** — §4 invariants not falsified by AC-5 | §4.6 adds eight named behavioural cases, B-1/B-2 split deliberately |
 | 5 | **HIGH** — AC-4 not checkable: unset `DATABASE_URL` proves neither zero calls nor safety from a local socket | AC-4 now requires a fail-on-access Prisma proxy asserting zero calls, with command and evidence recorded |
@@ -506,3 +551,24 @@ occurrences of *"however the client is obtained"* are historical quotations in
 §6.1's preamble and §14 describing what v3 claimed — not live promises. That
 check is now part of freezing a version, because reviewer-found internal
 contradictions have cost this contract two rounds.
+
+## 16 · Review record — v5 `74d921d` ruled WRONG / BLOCKED
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | **AC-1 contradicted the declared implementation scope** — repository-wide with only the service allowlisted, while 16 other production files already access the model. The guard would fail immediately after the specified fix | **§6.4**: AC-1 bound to `promptReplyHandler.ts` by owner ruling, with the remainder measured and named — 75 sites / 34 files total, 16 direct accessors, of which 10 ship and 6 are already out of the artifact via chunk 1 |
+| 2 | **B-8 could not prove its full claim** — assigned to handler execution while asserting the governor also never completes a lost CAS | B-8 narrowed to **the handler**; **B-10** added for the **governor/retry sweep**, executed at governor level. B-6 proves retryability, which is not the same property |
+| 3 | **alias chain unbounded, fixtures under-exercised** | §6.1 now specifies **any finite acyclic same-file `const` chain, resolved lexically with cycle detection** — decidable without an arbitrary depth number. **E-8** now exercises a real two-hop chain; **E-5** is made executable as `P.default.brainPromptQueue`, since a bare namespace import is not access |
+
+### What five rounds of wording could not fix
+
+Finding 1 is the one worth keeping. It was not a phrasing defect — it was a
+contradiction between §3's scope and §6's promise, present since v1 and untouched
+by four rounds of tightening AC-1's language. Each round made the *guarantee*
+sharper while leaving it aimed at a target the implementation could never hit.
+
+The measurement is what exposed it: 16 files, not zero. No amount of re-reading
+the contract would have produced that number, and the reviewer found it by
+checking the claim against the tree rather than against the document. That is the
+same lesson this campaign has produced at every level — check the object, not the
+description of it.
