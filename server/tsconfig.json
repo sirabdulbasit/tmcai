@@ -19,6 +19,20 @@
     "dist",
     "src/**/__tests__/**",
     "src/**/*.test.ts",
-    "src/**/*.spec.ts"
+    "src/**/*.spec.ts",
+    "src/scripts/smoke*.ts",
+    "src/scripts/_smoke_undo.ts",
+    "src/scripts/nexeoCapabilityBenchmark.ts",
+    "src/scripts/brainChatRegressionBattery.ts",
+    "src/scripts/brainChatBattery.ts",
+    "src/scripts/cleanupBatterySeeds.ts",
+    "src/scripts/seedGoldenDataset.ts",
+    "src/scripts/verifyGuruFix.ts",
+    "src/scripts/chaosDrill.ts",
+    "src/scripts/loadTestFeed.ts",
+    "src/scripts/draftTestWaToBasit.ts",
+    "src/scripts/probeTasks.ts",
+    "src/scripts/diagnoseAttention.ts",
+    "src/scripts/scribeBackfillEmails.ts"
   ]
 }
