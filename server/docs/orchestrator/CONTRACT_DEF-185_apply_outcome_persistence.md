@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v3).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v4).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -161,7 +161,7 @@ listRetryableSideEffects(args): Promise<PromptRow[]>
 | AC-1 | **No production code outside an owner allowlist reaches the `brainPromptQueue` Prisma model.** Repository-wide over `server/src`, allowlisting only `brainPromptQueueService`. AST/import-aware. **"Reaches" is defined in §6.1**, and the guard is proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
 | AC-2 | The six `open_item` calls are unchanged; the handler may retain its Prisma import | diff review |
 | AC-3 | **Preservation coverage only — see §6.3.** `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
-| AC-4 | The suite performs **zero** `brainPromptQueue` database calls. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
+| AC-4 | The protected relevance suite makes **zero `brainPromptQueue` model calls** — this is the claim, and it is narrower than "no database contact"; the production ownership boundary is AC-1's job, not AC-4's. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
 | AC-5 | Each invariant in §4 is falsified by a **behavioural** case, enumerated in §4.6 — not merely "an assertion exists" | test review against the §4.6 list |
 | AC-6 | `chat18` scenario exists, paired, and is demonstrated **RED for the defect's own reason** | §7 |
 | AC-7 | Full matrix green at the implementation SHA | `tsc --noEmit`, `vitest run`, `npm run build`, `git diff --check` |
@@ -177,16 +177,47 @@ be read as such. The split:
 |---|---|
 | AC-3 | the existing relevance scenarios still hold — **preservation only** |
 | `chat18` (§7) | the handler actually calls the service outcome writer |
-| B-1..B-9 (§4.6) | the real service behaviour, against the real invariants |
-| AC-1 / AC-4 | no seam bypass, and no database contact |
+| B-1..B-9 (§4.6) | the real invariants — **at the execution level fixed below**, because several are integration properties, not service return values |
+| AC-1 / AC-4 | no seam bypass (AC-1, production-wide); no queue-model contact from the protected relevance suite (AC-4) |
 
 Correctness rests on `chat18` and the B-cases; AC-3 guards against regression in
 what already worked.
 
+**Execution level per case — mandatory.** v3 described B-1..B-9 as "real service
+behaviour", which would let an implementer assert on service return values while
+never proving the handler and governor consequences the cases actually name:
+
+| cases | must execute |
+|---|---|
+| B-1, B-2, B-7, B-8 | the **real queue-service implementation**, with the Prisma/model boundary controlled |
+| B-3, B-4, B-5, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; B-9 additionally asserts acknowledgement suppression for the losing claim |
+| B-6 | **real governor/retry orchestration + real queue-service logic** |
+
+A case executed below its stated level does not satisfy AC-5.
+
 ### 6.1 · What "reaches" means (AC-1)
 
-**In scope:** any executable access to the `brainPromptQueue` model from
-`server/src`, however the client is obtained.
+**AC-1 is bounded to a static-analysis model, deliberately.** Arbitrary
+reachability through helpers and dynamic JavaScript is undecidable, so a contract
+that promises to detect it "however the client is obtained" promises more than
+any fixture set can demonstrate. v3 made that promise; v4 withdraws it and states
+what the guard actually guarantees.
+
+**The guard's model — what it MUST detect** (over the module graph of
+`server/src`):
+
+- imports of the Prisma singleton, under any local name;
+- local aliases established by direct assignment (`const db = prisma`);
+- member access on such a binding, whether by property (`db.brainPromptQueue`),
+  by literal bracket (`db['brainPromptQueue']`), or by a bracket whose key is a
+  **statically resolvable** string constant;
+- destructuring of the model off such a binding.
+
+**Outside the static guarantee — prohibited by rule, enforced at review, and NOT
+claimed as detected:** a client reached through `Reflect.get`, a computed key not
+statically resolvable, or a client returned from an arbitrary helper. §6.1
+forbids these outright; the guard is not asserted to catch them. Stating this is
+the difference between a bounded guarantee and an unfalsifiable one.
 
 **Excluded, explicitly:** generated `dist` output; type-only references
 (`import type`, type positions); `server/tests`; and the allowlisted owning
@@ -210,6 +241,16 @@ promise, so the matrix is named here:
 | E-6 | client returned from a helper function |
 | E-7 | client obtained via a re-exporting module |
 | E-8 | access from a **different file** than `promptReplyHandler.ts` |
+| E-9 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
+| E-10 | **computed property with a statically resolvable key** — `const m = 'brainPromptQueue'; prisma[m]…` |
+
+E-9 and E-10 were added in v4: E-4 covered a renamed *import* but not a local
+alias, and E-2 covered a *literal* bracket but not a computed one. An
+implementation could have passed E-1..E-8 while violating AC-1.
+
+**Not in the matrix, by design:** `Reflect.get(prisma, 'brainPromptQueue')` and
+non-resolvable computed keys. They are prohibited by §6.1 and checked at review;
+the guard does not claim to detect them.
 
 **AC-1 and AC-4 are the load-bearing pair.** v1 proposed a grep for
 `prisma.brainPromptQueue.*` in one file, which proves only that today's six calls
@@ -384,3 +425,36 @@ applied above.
 Recorded because the pushback was the right call: complying with a mis-scoped
 policy would have lowered the owner's own acceptance bar, and the resolution came
 from citing the governing text rather than deferring.
+
+## 14 · Review record — v3 `b3b75aa` ruled WRONG / BLOCKED
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | **HIGH** — AC-1's proof narrower than its promise: E-4 covered a renamed import but not a local alias (`const db = prisma`), E-2 a literal bracket but not a computed key; `Reflect.get` uncovered | **E-9** (local alias) and **E-10** (statically resolvable computed key) added, and — more importantly — **§6.1 now bounds the promise**. See below |
+| 2 | **HIGH** — §6.3 misassigned B-3/4/5/6/9 to "service behaviour" when they are integration properties, letting an implementer assert service return values without proving handler/governor consequences | §6.3 fixes the **execution level per case**: real service with controlled model boundary (B-1/2/7/8); real handler orchestration + real service (B-3/4/5/9); real governor + real service (B-6). A case executed below its level does not satisfy AC-5 |
+| 3 | **MEDIUM** — AC-4 overclaimed "no database contact" | AC-4 now claims exactly "zero `brainPromptQueue` model calls from the protected relevance suite", and §6.3 records that the production boundary is AC-1's job |
+
+### The real correction: a bounded guarantee replaces an unfalsifiable one
+
+The reviewer's sharpest point was not any single evasion form:
+
+> *"Arbitrary reachability through helpers/dynamic JavaScript is unfalsifiable
+> unless AC-1 defines a bounded static-analysis model. The contract currently
+> promises more than its fixtures demonstrate."*
+
+v3 said AC-1 detects access "however the client is obtained" and then proved it
+with a finite matrix — an absolute promise with a finite proof, which is the same
+overclaim shape as `b3a213d`'s exclude-array assertion and this contract's own
+earlier "no write reachable anywhere". Adding E-9 and E-10 alone would have
+repeated it one rung higher.
+
+So §6.1 now states the guard's **model** — imports under any local name, local
+aliases by direct assignment, member/literal-bracket/statically-resolvable-computed
+access, destructuring — and states plainly what falls **outside** it:
+`Reflect.get`, non-resolvable computed keys, and clients returned from arbitrary
+helpers. Those are **prohibited by rule and checked at review**, not claimed as
+detected.
+
+A bounded guarantee that is true beats an absolute one that cannot be tested.
+That is the lesson this campaign has now produced four times, and it is recorded
+here so the implementation is built against the honest version.
