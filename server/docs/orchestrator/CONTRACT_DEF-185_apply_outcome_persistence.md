@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v7).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v8).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -158,7 +158,7 @@ listRetryableSideEffects(args): Promise<PromptRow[]>
 
 | # | criterion | how it is checked |
 |---|---|---|
-| AC-1 | **`promptReplyHandler.ts` contains zero access to the `brainPromptQueue` Prisma model**, and cannot reacquire one. Bound to that file — **not repository-wide**; see §6.4 for why and for the measured remainder. AST/import-aware, "reaches" defined in §6.1, proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
+| AC-1 | **`promptReplyHandler.ts` contains zero access to the `brainPromptQueue` Prisma model** — by any form the guard detects (§6.2, E-1..E-10) and by any form §6.2 prohibits (R-1..R-5). It does **not** claim "cannot reacquire by any means whatsoever": that is unbounded, and the detected and prohibited sets are enumerated instead. Bound to that file — **not repository-wide**; see §6.4 for why and for the measured remainder. AST/import-aware, "reaches" defined in §6.1, proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
 | AC-2 | The six `open_item` calls are unchanged; the handler may retain its Prisma import | diff review |
 | AC-3 | **Preservation coverage only — see §6.3.** `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
 | AC-4 | The protected relevance suite makes **zero `brainPromptQueue` model calls** — this is the claim, and it is narrower than "no database contact"; the production ownership boundary is AC-1's job, not AC-4's. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
@@ -209,7 +209,11 @@ undecidable, so the guard states what it can decide.
 
 **MUST detect, within the handler's own source:**
 
-- an import of the Prisma singleton, under any local name;
+- **the import itself is PERMITTED and is a tracked root, not a violation.** AC-2
+  requires the handler to keep its Prisma import for the six `open_item` calls,
+  so rejecting the import would contradict AC-2. The guard treats any import of
+  the Prisma singleton, under any local name, as a **root to track**; what it
+  flags is obtaining `brainPromptQueue` *from* that root;
 - a local alias by direct assignment (`const db = prisma`);
 - member access on such a binding — by property (`db.brainPromptQueue`), by
   literal bracket (`db['brainPromptQueue']`), or by a bracket key **statically
@@ -230,10 +234,16 @@ Concatenation, template interpolation, imported constants, conditional
 expressions and function returns are outside the grammar by definition.
 
 **Outside the static guarantee — prohibited by rule for the handler, checked at
-review, NOT claimed as detected** (R-1..R-3 in §6.2): a computed key outside the
-grammar; a client the handler obtains from an **arbitrary helper**; a client the
-handler obtains through a **re-exporting module**. These are ways *the handler*
-could reacquire the model, which is the only thing AC-1 governs.
+review, NOT claimed as detected** (R-1..R-5 in §6.2):
+
+- a client the handler obtains from an **arbitrary helper** (interprocedural flow);
+- a client the handler obtains through a **re-exporting module**;
+- a **computed key** outside the grammar above;
+- the client or model **received as a parameter / by dependency injection**;
+- the client retrieved from **global or shared mutable state**.
+
+These are ways *the handler* could reacquire the model. AC-1 governs exactly the
+union of the detected set (E-1..E-10) and this prohibited set — no more.
 
 **Excluded from the subject:** generated `dist`; type-only references
 (`import type`, type positions); `server/tests`; every file other than the
@@ -254,12 +264,16 @@ A single direct-access mutant does not satisfy AC-1.
 | E-6 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
 | E-7 | **computed key exercising the alias chain**, not a single binding — `const a = 'brainPromptQueue'; const b = a; prisma[b]…` |
 | E-8 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
+| E-9 | **a second client constructed in the handler** — `new PrismaClient()` then `.brainPromptQueue` |
+| E-10 | **CommonJS / dynamic import with a literal specifier** — `require('../db/prisma')` or `await import('../db/prisma')`, then model access |
 
 *(v6 defect: the matrix carried an "access from a different file" fixture, which
 could not coexist with the handler-bound subject — flagging another production
 file would recreate the repository-wide obligation §6.4 rejects, and would go red
 immediately against the 10 existing accessors. Removed, and the matrix renumbered
-E-1..E-8 with no gaps.)*
+E-1..E-8 at v7. **v8 then added E-9 and E-10** — a second `PrismaClient`
+constructed in the handler, and `require()`/dynamic `import()` with a literal
+specifier — so the live matrix is **E-1..E-10**.)*
 
 **Review-only prohibitions — deliberately NOT in the matrix**, because §6.1 does
 not claim the guard detects them:
@@ -269,6 +283,8 @@ not claim the guard detects them:
 | R-1 | client returned from an arbitrary helper | prohibited by §6.1, checked at review |
 | R-2 | client obtained via a re-exporting module | prohibited by §6.1, checked at review |
 | R-3 | computed key outside the §6.1 grammar | prohibited by §6.1, checked at review |
+| R-4 | the client or the model **received as a parameter** or by dependency injection | prohibited by §6.1, checked at review |
+| R-5 | the client retrieved from **global or shared mutable state** | prohibited by §6.1, checked at review |
 
 *(v4 defect: these three were E-6/E-7 in the must-detect matrix while §6.1 said
 they were outside the guarantee — the two sections contradicted each other and
