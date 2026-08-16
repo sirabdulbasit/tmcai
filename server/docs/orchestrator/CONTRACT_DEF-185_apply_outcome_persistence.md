@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v2).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v3).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -124,8 +124,17 @@ following cases are required by name. Each must fail if its invariant is broken:
 | B-7 | unrelated `metadata` written between the initial read and the outcome write **survives** | §4.5 |
 | B-8 | a CAS failure is returned as failure and is **never** reported as a completed outcome | §4.4, §5 |
 
+| B-9 | two concurrent claims for the same awaiting row produce **exactly one** successful `recordAnswer`; the loser applies no side effect and emits no acknowledgement | §4.2 |
+
 B-1 and B-2 are separate cases deliberately: a guard that checks the pair jointly
-can pass while either half is unenforced.
+can pass while either half is unenforced. **They must be instantiated against
+every new read, write and list operation in §5** — not once against a
+representative operation. "Every" in §4.1 is satisfied only by a case per
+operation.
+
+**B-9 covers §4.2, which v2 left unfalsified.** It must mutation-prove for the
+claimed reason: removing the `state: 'awaiting_reply'` predicate, or ignoring
+`updateMany.count`, has to fail B-9 specifically.
 
 ## 5 · Required service API
 
@@ -149,14 +158,58 @@ listRetryableSideEffects(args): Promise<PromptRow[]>
 
 | # | criterion | how it is checked |
 |---|---|---|
-| AC-1 | **No production code outside an owner allowlist reaches the `brainPromptQueue` Prisma model.** Repository-wide over `server/src`, allowlisting only `brainPromptQueueService`. Must be AST/import-aware: it must catch aliased clients, destructuring, bracket access (`prisma['brainPromptQueue']`), a renamed import, and access from any other file — not a grep for one literal in one handler. Comments and strings must not satisfy it | an executable guard test resolving real modules; mutation-proven per AC-6 |
+| AC-1 | **No production code outside an owner allowlist reaches the `brainPromptQueue` Prisma model.** Repository-wide over `server/src`, allowlisting only `brainPromptQueueService`. AST/import-aware. **"Reaches" is defined in §6.1**, and the guard is proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
 | AC-2 | The six `open_item` calls are unchanged; the handler may retain its Prisma import | diff review |
-| AC-3 | `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
+| AC-3 | **Preservation coverage only — see §6.3.** `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
 | AC-4 | The suite performs **zero** `brainPromptQueue` database calls. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
 | AC-5 | Each invariant in §4 is falsified by a **behavioural** case, enumerated in §4.6 — not merely "an assertion exists" | test review against the §4.6 list |
 | AC-6 | `chat18` scenario exists, paired, and is demonstrated **RED for the defect's own reason** | §7 |
 | AC-7 | Full matrix green at the implementation SHA | `tsc --noEmit`, `vitest run`, `npm run build`, `git diff --check` |
 | AC-8 | Live acceptance observed on production | §8 |
+
+### 6.3 · Division of labour — what each criterion is and is not for
+
+AC-3 alone could pass with a broken service implementation, since a mock can be
+made to return anything. It is **not** load-bearing on correctness and must not
+be read as such. The split:
+
+| criterion | proves |
+|---|---|
+| AC-3 | the existing relevance scenarios still hold — **preservation only** |
+| `chat18` (§7) | the handler actually calls the service outcome writer |
+| B-1..B-9 (§4.6) | the real service behaviour, against the real invariants |
+| AC-1 / AC-4 | no seam bypass, and no database contact |
+
+Correctness rests on `chat18` and the B-cases; AC-3 guards against regression in
+what already worked.
+
+### 6.1 · What "reaches" means (AC-1)
+
+**In scope:** any executable access to the `brainPromptQueue` model from
+`server/src`, however the client is obtained.
+
+**Excluded, explicitly:** generated `dist` output; type-only references
+(`import type`, type positions); `server/tests`; and the allowlisted owning
+service itself. **Indirect re-export of the Prisma client is prohibited** rather
+than merely detected — a helper that returns the client, or a module that
+re-exports it, is an AC-1 violation in its own right.
+
+### 6.2 · The evasion matrix the guard must survive (AC-1)
+
+Each row is a fixture the guard must flag. Passing one direct-access mutant while
+missing these would satisfy a narrower reading of §7 while failing AC-1's actual
+promise, so the matrix is named here:
+
+| # | evasion form |
+|---|---|
+| E-1 | direct member access — `prisma.brainPromptQueue.findFirst(...)` |
+| E-2 | bracket access — `prisma['brainPromptQueue']` |
+| E-3 | destructured — `const { brainPromptQueue } = prisma` |
+| E-4 | renamed import — `import db from '../db/prisma'` then `db.brainPromptQueue` |
+| E-5 | namespace import — `import * as P from '../db/prisma'` |
+| E-6 | client returned from a helper function |
+| E-7 | client obtained via a re-exporting module |
+| E-8 | access from a **different file** than `promptReplyHandler.ts` |
 
 **AC-1 and AC-4 are the load-bearing pair.** v1 proposed a grep for
 `prisma.brainPromptQueue.*` in one file, which proves only that today's six calls
@@ -223,8 +276,8 @@ where:
 
 | audience | may contain |
 |---|---|
-| **the owner**, in his own report | verbatim quotation of his own conversation, with send times — this is his data and his standard |
-| **any scored artifact, evidence pack, or third-party model** | bounded metadata ONLY: scoped prompt id, pre/post state, outcome `phase`, `attempts`, timestamps, inbound correlation. Never a name, phone number, email, or message body |
+| **a direct, private response to the owner** — not retained in any repository or scorer artifact | verbatim quotation of his own conversation, with send times — his data, his standard |
+| **any repository record, log, scored artifact, evidence pack, mutation/acceptance command output, or third-party prompt** | bounded metadata ONLY: scoped prompt id, pre/post state, outcome `phase`, `attempts`, timestamps, inbound correlation. Never a name, phone number, email, or message body |
 
 Until all three are observed the DEF row reads **BUILT, NOT VERIFIED**, and
 `DEPLOYED` is never written as `VERIFIED`.
@@ -247,9 +300,14 @@ DEF-182 set with `one-concept-many-definitions`.
 - Not changing the DEF-180 protocol's semantics.
 - Not deploying. Deploy is approval #7 and remains absent; `deployed-sha` is
   `e356d42` and this defect is not in it.
-- Not modifying `tests/promptReplyRelevance.test.ts` — AC-3 requires it pass
-  **unmodified**, because editing the test to accommodate the code is the failure
-  mode this contract exists to prevent.
+- Not rewriting `tests/promptReplyRelevance.test.ts`'s **scenarios**. Per AC-3
+  the `it(...)` bodies, inputs and expectations are frozen; **only** the
+  `vi.doMock` factory's export surface may grow, and only to add the new service
+  operations. New mock return values that bypass ordering, CAS failure or failure
+  propagation in the existing scenarios are prohibited.
+  *(v2 defect: this bullet still carried v1's "must pass unmodified" and
+  contradicted AC-3 — the same fix-one-place-miss-the-other shape this contract
+  exists to close. Recorded rather than quietly corrected.)*
 
 ## 11 · What "done" means
 
@@ -302,3 +360,27 @@ only. That would weaken the acceptance bar the owner set, in the name of a rule
 written for a third-party scorer. If the owner rules otherwise, this contract
 gets re-frozen against that ruling — but it should be his call, not an inference
 from a mis-scoped policy.
+
+## 13 · Review record — v2 `cfa8d29` ruled WRONG / BLOCKED
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | **BLOCKER** — §10 still carried v1's "must pass unmodified", contradicting the corrected AC-3 | §10 rewritten to freeze `it(...)` bodies/inputs/expectations while permitting only the mock's export surface to grow. **Mine, and ironic:** I corrected AC-3 and left the same claim standing elsewhere in the document — the fix-one-place-miss-the-other shape this contract exists to close. Recorded, not quietly patched |
+| 2 | **HIGH** — §4.2 (CLAIM exactly-once) had no falsifier among B-1..B-8 | **B-9** added: two concurrent claims yield exactly one successful `recordAnswer`, loser applies no side effect and emits no acknowledgement; mutation-proven by removing the `state` predicate or ignoring `updateMany.count` |
+| 3 | **HIGH** — AC-1's mutation proof narrower than AC-1's promise; a guard could pass one direct-access mutant and still miss re-exports, namespace imports, destructured aliases and helper-returned clients | **§6.2 evasion matrix E-1..E-8**, including access from a foreign file, plus **§6.1** defining what "reaches" excludes (generated `dist`, type-only references, test code) and prohibiting indirect re-export outright |
+| 4 | **MEDIUM** — AC-3 safe only in combination; the division of labour was implicit | **§6.3** states it explicitly: AC-3 is preservation coverage only; correctness rests on `chat18` and B-1..B-9; new mock return values that bypass ordering, CAS failure or failure propagation are prohibited |
+| 5 | wording — "the owner, in his own report" could describe a persisted file | §8 now reads "a direct, private response to the owner — not retained in any repository or scorer artifact", and the metadata-only row now enumerates repository records, logs, and mutation/acceptance command output |
+| 6 | B-1/B-2 instantiated once against a representative operation | §4.6 now requires them **per operation** across every new read, write and list in §5 |
+
+### The dissent was upheld
+
+Codex ruled: *"Your audience scoping is substantively correct … I do not uphold
+finding 8 as a blocker after this clarification."* The later explicit owner
+ruling controls the owner-facing acceptance report under AGENTS.md's precedence
+clause, and `evidence-pack.sh`'s aggregate-only rule is expressly justified by
+transmission to a third-party scorer. The one wording correction it asked for is
+applied above.
+
+Recorded because the pushback was the right call: complying with a mis-scoped
+policy would have lowered the owner's own acceptance bar, and the resolution came
+from citing the governing text rather than deferring.
