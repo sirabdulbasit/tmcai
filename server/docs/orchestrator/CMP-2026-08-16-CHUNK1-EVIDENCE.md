@@ -214,13 +214,55 @@ loop-owned state, likewise outside the range.
    `tsconfig.scripts.json`, which would keep type checking while keeping the
    scripts out of the shipped artifact.
 
-## 11 · Status
+## 11 · Status — reviewed 2026-08-16
 
 ```
-ITERATION_VERDICT: (none — UNREVIEWED)
-RELEASE_STATUS:    NOT RELEASABLE — no verdict exists
+ITERATION_VERDICT: WRONG
+RELEASE_STATUS:    BLOCKED
 DEPLOYED:          NO
 ```
 
-Deploy is approval #7 and is **not authorized**. This package requests review
-only.
+Full review: `CODEX_REVIEW_c572ccf.md`. Bound to `e356d42..c572ccf`; it does not
+travel to any other base.
+
+**Why WRONG:** the mechanism is wrong for the objective, not the analysis. One
+tsconfig serves both `npm run build` and the standing `npx tsc --noEmit` gate, so
+excluding the 41 scripts from the artifact also removed them from the mandatory
+type check — including the four that can act on production. Codex's phrasing:
+the change *"weakens a standing safety gate without replacing it"*, and because
+all 41 type-checked clean beforehand the loss is **unnecessary rather than
+remedial**. This is the cost §4 disclosed; the reviewer ruled it not worth
+paying when a split configuration avoids it entirely.
+
+| # | severity | finding |
+|---|---|---|
+| 1 | **HIGH** | Artifact exclusion also silently removes type coverage. Split the concerns: keep a typecheck config covering all source scripts, add a build-only config excluding the 41, point `npm run build` at the build config. Prove it by planting a deliberate type error in an excluded script and showing it fails typecheck while staying absent from `dist`. |
+| 2 | LOW | The glob encodes filename classification, not a safety inventory: every future `smoke*.ts` silently loses emission *and* type checking regardless of its actual class. Retain the glob with an explicit stated rule, or use an inventory plus a parity test. |
+
+**Correction to §10 of this package, from the reviewer.** I offered
+`smokeVectorRetrieval.ts` as excluded on filename rather than on the stated
+rationale. Codex checked further: it invokes `answerAsBrain` against the live
+tenant, so it is production-acting and **should stay excluded** from the
+artifact. Its absence of a direct prisma-singleton import is not grounds to
+restore it to `dist`. The finding it does support is the maintainability one
+above.
+
+**Confirmed by the reviewer**, independently:
+
+- The exclusion count is **41, not 40**; no file should be dropped from the set.
+- 28 files match `smoke*.ts`; 27 import the prisma singleton.
+- All 13 named files exist, none overlaps the glob.
+- Zero runtime references across `src/server.ts`, `src/jobs/`, `package.json`.
+- `e356d42:server/src` == `c572ccf:server/src` == `8b116cdef00f72e3d210afd53b75666572db060f`.
+- Dirty `deploy.sh` and loop state are outside the reviewed range.
+- Nothing is authorized for deployment.
+
+Capability movement **0.0 — NEUTRAL**: a configuration-only, undeployed change
+alters no Brain behaviour.
+
+**Next turn** (not started in this session): replace the single-config exclusion
+with split typecheck/build configurations, keeping all 41 under compile-time
+checking and all 41 out of `dist`; rerun the full matrix; publish the resulting
+one-commit range with updated evidence.
+
+`WRONG` never advances. Deploy is approval #7 and is **not authorized**.
