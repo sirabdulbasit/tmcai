@@ -266,3 +266,129 @@ checking and all 41 out of `dist`; rerun the full matrix; publish the resulting
 one-commit range with updated evidence.
 
 `WRONG` never advances. Deploy is approval #7 and is **not authorized**.
+
+---
+
+# Remediation — `b3a213d`
+
+| | |
+|---|---|
+| `BASE_SHA` | `ff57f19` |
+| `REVIEW_SHA` | `b3a213d71c95e2e4ec12996f7adf4f02afc473d9` |
+| Range | `ff57f19..b3a213d` — 4 files |
+| Verdict | **UNREVIEWED** — re-review required at this base |
+
+The c572ccf verdict was bound to `e356d42..c572ccf` and **does not travel** to
+this base. This is a new artifact requiring its own review.
+
+## 12 · The split
+
+| file | job |
+|---|---|
+| `server/tsconfig.json` | **TYPECHECK** — reverted to the pre-c572ccf exclude list. All 41 operator scripts are type-checked again. `npx tsc --noEmit` and `deploy.sh:170` both use it. |
+| `server/tsconfig.build.json` | **BUILD ONLY** — excludes the 41 so they never reach `server/dist`. |
+| `server/package.json` | `build` → `tsc -p tsconfig.build.json`; adds `typecheck` naming the gate. |
+| `server/tests/operatorScriptParity.test.ts` | 6 assertions pinning the arrangement. |
+
+`extends` **replaces** the parent `exclude` array rather than merging it, so
+`tsconfig.build.json` repeats the five base entries. Omitting them would have
+silently re-included `node_modules` and the test files in the build.
+
+## 13 · Classification by production surface (Codex finding 2)
+
+The `smoke*` glob is **gone**. Every entry is named, so a new `smoke*.ts`
+inherits nothing. Tiers established by reading each file:
+
+| tier | n | rationale |
+|---|---:|---|
+| 1 · action registry | 5 | `executeViaRegistry` / `registerAllHandlers` — running it performs the action for real |
+| 2 · Brain answer path | 10 | `answerAsBrain` / `runBrainTurn` against the live tenant |
+| 3 · outbound messaging | 6 | `brainContactsUser` / `sendNextPrompt` / `scheduleStarCadence` / `notifyOwner` |
+| 4 · production writes | 7 | prisma `create`/`update`/`delete` |
+| 5 · production reads | 13 | prisma singleton against the production database |
+| **total** | **41** | |
+
+`smokeVectorRetrieval.ts` sits in Tier 2 **on rationale**: it does not import the
+prisma singleton, so a singleton rule would have missed it and the old glob
+caught it only by accident — the reviewer's point, now load-bearing.
+
+## 14 · The proof Codex asked for — executed, not asserted
+
+Deliberate type error planted in `src/scripts/smokeWhatsappVoiceCall.ts`, an
+excluded script:
+
+| command | result |
+|---|---|
+| `npx tsc --noEmit` | **FAILS, exit 2** — `smokeWhatsappVoiceCall.ts(284,7): error TS2322: Type 'string' is not assignable to type 'number'.` |
+| `npm run build` | **SUCCEEDS, exit 0** |
+| `dist/scripts/smokeWhatsappVoiceCall.js` | **absent** |
+| same error, **old c572ccf config** | **0 errors, exit 0 — INVISIBLE** |
+
+The last row is the defect this commit repairs, demonstrated rather than
+described. The error was then reverted and the tree confirmed clean.
+
+## 15 · Parity test, mutation-checked
+
+`tests/operatorScriptParity.test.ts` — 6 passed. A test that cannot fail proves
+nothing, so both load-bearing guards were mutated:
+
+| mutation | expected | observed |
+|---|---|---|
+| reintroduce the c572ccf mistake (operator exclusion moved into `tsconfig.json`) | guard 5 RED | **RED** — "5 · tsconfig.json (typecheck) excludes NONE of the 41 — the c572ccf guard" |
+| add an untriaged `smokeBrandNewThing.ts` | guard 4 RED | **RED** — "new smoke-prefixed script(s) not classified: smokeBrandNewThing" |
+| both reverted | 6 pass | **6 passed** |
+
+Guard 5 is the standing protection against this exact WRONG verdict recurring
+silently.
+
+## 16 · Verification at `b3a213d`
+
+| check | result | mode |
+|---|---|---|
+| `npx tsc --noEmit` | clean, exit 0; **41 operator scripts in the program** | working tree |
+| `npx vitest run` | 191 passed / 1 skipped (192 files); **2324 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo (2353) | UNISOLATED |
+| `npx vitest run` | 189 passed / 2 failed / 1 skipped (192); 2318 passed, 6 failed (2353) | ISOLATED, `unshare -n` |
+| `npm run build` | passes, exit 0 | isolated clone — **not in place** |
+| `git diff --check` | clean | working tree |
+
+2353 = 2347 + the 6 new parity assertions. The 6 isolated failures are the same
+Redis-dependency class as before, unchanged from `e356d42`.
+
+## 17 · Artifact — unchanged by the remediation
+
+```
+dist manifest  59d6cde85ca91bf472fd235c73f87502ffa4f29ffae5ac913b63ad55b8e2099a
+js file count  596
+reproducible   YES — two consecutive builds, identical manifest
+```
+
+**Byte-identical to `c572ccf`'s manifest.** The remediation changed which config
+produces the artifact, not the artifact. So the shipped output Codex already
+inspected is unchanged, while the typecheck gate it objected to losing is
+restored.
+
+`server/src` untouched: `b3a213d:server/src` == `e356d42:server/src` ==
+`8b116cdef00f72e3d210afd53b75666572db060f`. **R-1 src-parity HELD.**
+
+## 18 · Deploy gate
+
+`scripts/orchestrator/deploy.sh:170` runs `npx tsc --noEmit` from `server/`,
+which resolves to the **typecheck** config. After the split that gate asserts
+strictly more than before — it now covers the 41 that `c572ccf` had removed from
+it. No change to `deploy.sh` was needed; the call site was checked rather than
+assumed. (`deploy.sh` remains dirty with the supervisor's unrelated SD-001 rails,
+still unstaged, still outside the range.)
+
+## 19 · Concurrency
+
+Written after the operator cleared the `server/tsconfig.json` prohibition. Both
+peer sessions (`tmcai-b1`, `tmcai-d6`) explicitly disclaimed the file. The 13:42
+"collision" resolved to my own second edit — mtime 13:42:34 matches it, `b1`
+reports only *observing* the file dirty, and the working tree was clean against
+HEAD throughout, so **no lost update occurred**.
+
+```
+ITERATION_VERDICT: (none — UNREVIEWED at this base)
+RELEASE_STATUS:    NOT RELEASABLE — no verdict exists
+DEPLOYED:          NO
+```
