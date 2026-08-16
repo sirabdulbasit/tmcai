@@ -15,9 +15,30 @@ architecture map. This file holds the short-form stack notes only.
 - **Scripts** (`server/package.json`): `npm run build` = `prisma generate && tsc`;
   `npm test` = `vitest run`; `npm start` = `node dist/server.js`.
 - **Standing verification matrix, run from `server/` before any handoff** (AGENTS.md §5):
-  `npx tsc --noEmit` (clean) · `npx vitest run` (0 failed — ~1185 tests) · `npm run build`
-  (passes) · `git diff --check` (clean). Report the EXACT numbers, and re-run them AFTER
+  `npx tsc --noEmit` (clean) · `npx vitest run` (0 failed — ~1185 tests) ·
+  `git diff --check` (clean). Report the EXACT numbers, and re-run them AFTER
   the last edit — a figure measured before a later change is stale, not evidence.
+- **`npm run build` is NOT in the matrix, and `server/dist` is immutable
+  (`chattr +i`, 2026-08-16).** `dist` is the deployed artifact: the running process is the
+  only copy of what production is executing, so a build in this tree silently replaces it
+  and any later restart activates code nobody authorized. That happened at 19:15 on
+  2026-08-16 by someone following the previous version of this line. **`--noEmit` is the
+  build check.** A build that emits happens only inside a deploy, only after an explicit
+  unlock, and only with a verified manifest:
+
+  ```bash
+  chattr -R -i server/dist            # the unlock IS the authorization moment
+  npm run build
+  cd server/dist && find . -name '*.js' -type f -printf '%P\n' \
+    | LC_ALL=C sort | xargs sha256sum | sha256sum      # must match the expected manifest
+  chattr -R +i server/dist
+  ```
+
+  **The manifest command is canonical and must be copied exactly.** It is sensitive to
+  BOTH path rendering and sort locale: the same directory yields four different digests
+  across `./path` vs `%P` and ambient vs `LC_ALL=C`. A digest quoted without its command
+  is not evidence. To build without deploying, clone (`git clone --no-local`) and build
+  the clone — never this tree.
 - **Database:** PostgreSQL + Prisma. Hand-written idempotent migrations only
   (`server/prisma/migrations/<date>_<name>/migration.sql`); NEVER `prisma migrate dev`,
   never `npx prisma` on prod, never `CREATE TABLE` from runtime code.
