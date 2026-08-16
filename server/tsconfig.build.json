@@ -1,0 +1,97 @@
+// Build-only TypeScript configuration.
+//
+// `tsconfig.json` is the TYPECHECK config and covers every file under src/,
+// including all the operator scripts named below. `npx tsc --noEmit` — the
+// standing verification gate, and the one deploy.sh runs — uses it, so these
+// scripts stay type-checked.
+//
+// This config is used ONLY by `npm run build`. It excludes 41 operator entry
+// points from the emitted artifact so they never reach server/dist on the
+// production box.
+//
+// The two concerns are deliberately separate. A single config cannot do both:
+// excluding a file from the build also removes it from the typecheck program,
+// which is what made the previous attempt (c572ccf) WRONG.
+//
+// CLASSIFICATION RULE — membership is by production surface, established by
+// reading each file, never by filename. A script belongs here when a human
+// running it by hand reaches production data or production behaviour. Every
+// entry is listed explicitly; there is no glob, so a new file named smoke*.ts
+// does NOT silently inherit exclusion. tests/operatorScriptParity.test.ts
+// enforces that: it fails if this list drifts from the classified inventory,
+// or if a new script in src/scripts/ has not been triaged.
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    // --- inherited from tsconfig.json (extends REPLACES this array, so the
+    //     base entries must be repeated here or they stop applying) ---
+    "node_modules",
+    "dist",
+    "src/**/__tests__/**",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts",
+
+    // === TIER 1 — executes real actions through the action registry (5) ===
+    // registerAllHandlers / executeViaRegistry: running these performs the
+    // action for real, against real rows.
+    "src/scripts/_smoke_undo.ts",
+    "src/scripts/chaosDrill.ts",
+    "src/scripts/smokeMcp.ts",
+    "src/scripts/smokeNewSystems.ts",
+    "src/scripts/smokeNextSession.ts",
+
+    // === TIER 2 — drives the real Brain answer path (10) ===
+    // answerAsBrain / runBrainTurn against the live tenant.
+    // smokeVectorRetrieval.ts is here on this rationale: it does NOT import the
+    // prisma singleton, so a singleton-based rule would have missed it, and a
+    // filename rule would have caught it only by accident.
+    "src/scripts/brainChatBattery.ts",
+    "src/scripts/brainChatRegressionBattery.ts",
+    "src/scripts/nexeoCapabilityBenchmark.ts",
+    "src/scripts/verifyGuruFix.ts",
+    "src/scripts/smokeBatch2.ts",
+    "src/scripts/smokeBrainOverWa.ts",
+    "src/scripts/smokeBrainRetryLoop.ts",
+    "src/scripts/smokeGru.ts",
+    "src/scripts/smokeLiveSnapshots.ts",
+    "src/scripts/smokeVectorRetrieval.ts",
+
+    // === TIER 3 — reaches the outbound messaging path (6) ===
+    // brainContactsUser / sendNextPrompt / scheduleStarCadence / notifyOwner:
+    // these can put a message in front of a real recipient.
+    "src/scripts/smokeBrainOutbound.ts",
+    "src/scripts/smokeBrainPromptDelegateeEmail.ts",
+    "src/scripts/smokeBrainPromptProducer.ts",
+    "src/scripts/smokeBrainPromptQueue.ts",
+    "src/scripts/smokeBrainPromptReplyFlow.ts",
+    "src/scripts/smokeWhatsappVoiceCall.ts",
+
+    // === TIER 4 — writes production tables through the prisma singleton (7) ===
+    // draftTestWaToBasit.ts plants a one-click WhatsApp draft addressed to the
+    // owner's live number.
+    "src/scripts/cleanupBatterySeeds.ts",
+    "src/scripts/draftTestWaToBasit.ts",
+    "src/scripts/seedGoldenDataset.ts",
+    "src/scripts/smokeOpsManualRetrieval.ts",
+    "src/scripts/smokeRetrievalFeedback.ts",
+    "src/scripts/smokeRiskRadarV2.ts",
+    "src/scripts/smokeUserPromptOverlay.ts",
+
+    // === TIER 5 — reads production data through the prisma singleton (13) ===
+    // No writes observed, but they open a client against the production
+    // database and are operator-run entry points with no runtime caller.
+    "src/scripts/diagnoseAttention.ts",
+    "src/scripts/loadTestFeed.ts",
+    "src/scripts/probeTasks.ts",
+    "src/scripts/scribeBackfillEmails.ts",
+    "src/scripts/smokeBrainIntelligence.ts",
+    "src/scripts/smokeCommitments.ts",
+    "src/scripts/smokeCriticality.ts",
+    "src/scripts/smokeFeedback.ts",
+    "src/scripts/smokeInstructions.ts",
+    "src/scripts/smokeInstructionVeto.ts",
+    "src/scripts/smokeMeetingDigest.ts",
+    "src/scripts/smokeTenantIsolation.ts",
+    "src/scripts/smokeWaDailyLimit.ts"
+  ]
+}
