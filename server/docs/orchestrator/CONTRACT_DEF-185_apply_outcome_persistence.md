@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v6).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v7).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -123,7 +123,6 @@ following cases are required by name. Each must fail if its invariant is broken:
 | B-6 | a `failed` record remains retryable by the governor sweep | §4.4 |
 | B-7 | unrelated `metadata` written between the initial read and the outcome write **survives** | §4.5 |
 | B-8 | a CAS failure is returned as failure and is **never** translated into a completed outcome **by the handler** | §4.4, §5 |
-
 | B-9 | two concurrent claims for the same awaiting row produce **exactly one** successful `recordAnswer`; the loser applies no side effect and emits no acknowledgement | §4.2 |
 | B-10 | the **governor/retry sweep** never translates a lost outcome CAS into a completed outcome | §4.4, §5 |
 
@@ -178,92 +177,89 @@ be read as such. The split:
 |---|---|
 | AC-3 | the existing relevance scenarios still hold — **preservation only** |
 | `chat18` (§7) | the handler actually calls the service outcome writer |
-| B-1..B-9 (§4.6) | the real invariants — **at the execution level fixed below**, because several are integration properties, not service return values |
+| B-1..B-10 (§4.6) | the real invariants — **at the execution level fixed below**, because several are integration properties, not service return values |
 | AC-1 / AC-4 | no seam bypass **in the repaired handler** (AC-1 — handler-bound, see §6.4); no queue-model contact from the protected relevance suite (AC-4). Neither claims a repository-wide ownership boundary |
 
-Correctness rests on `chat18` and the B-cases; AC-3 guards against regression in
+Correctness rests on `chat18` and B-1..B-10; AC-3 guards against regression in
 what already worked.
 
-**Execution level per case — mandatory.** v3 described B-1..B-9 as "real service
+**Execution level per case — mandatory.** v3 described B-1..B-10 as "real service
 behaviour", which would let an implementer assert on service return values while
 never proving the handler and governor consequences the cases actually name:
 
 | cases | must execute |
 |---|---|
 | B-1, B-2, B-7 | the **real queue-service implementation**, with the Prisma/model boundary controlled |
-| B-3, B-4, B-5, B-8, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; **B-8 asserts that a CAS failure is never translated into a completed outcome by the handler or governor — a service test can prove the `false` return but not that consequence**; B-9 additionally asserts acknowledgement suppression for the losing claim |
+| B-3, B-4, B-5, B-8, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; **B-8 asserts that a CAS failure is never translated into a completed outcome by the handler** — a service test can prove the `false` return but not that consequence. The governor half is B-10, at governor level; B-9 additionally asserts acknowledgement suppression for the losing claim |
 | B-6, B-10 | **real governor/retry orchestration + real queue-service logic**. B-6 proves failed records stay retryable; **B-10 proves the governor does not complete a lost CAS** — which B-6 does not cover and handler-level B-8 cannot reach |
 
 A case executed below its stated level does not satisfy AC-5.
 
-### 6.1 · What "reaches" means (AC-1)
+### 6.1 · What "reaches" means (AC-1) — scoped to the handler
 
-**AC-1 is bounded to a static-analysis model, deliberately.** Arbitrary
-reachability through helpers and dynamic JavaScript is undecidable, so a contract
-that promises to detect it "however the client is obtained" promises more than
-any fixture set can demonstrate. v3 made that promise; v4 withdraws it and states
-what the guard actually guarantees.
+**AC-1 is bounded twice over, deliberately: by SUBJECT and by MODEL.**
 
-**The guard's model — what it MUST detect** (over the module graph of
-`server/src`):
+**Subject.** The guard's subject is **`promptReplyHandler.ts` alone** (§6.4). It
+asks one question: *does this file obtain the `brainPromptQueue` model?* It makes
+no claim about any other file. Other production accessors exist — 10 shipping
+files, 13 sites, enumerated in §6.4 — and are out of scope by owner ruling.
 
-- imports of the Prisma singleton, under any local name;
-- local aliases established by direct assignment (`const db = prisma`);
-- member access on such a binding, by property (`db.brainPromptQueue`), by
-  literal bracket (`db['brainPromptQueue']`), or by a bracket whose key is
-  **statically resolvable** under the grammar below;
-- destructuring of the model off such a binding;
-- `Reflect.get(<binding>, 'brainPromptQueue')` with a **literal** key — cheap and
-  deterministic for an AST guard, so it is guarded rather than left to review.
+**Model.** Arbitrary reachability through helpers and dynamic JavaScript is
+undecidable, so the guard states what it can decide.
 
-**"Statically resolvable" — the mechanical grammar.** A bracket key qualifies if
-and only if it is:
+**MUST detect, within the handler's own source:**
+
+- an import of the Prisma singleton, under any local name;
+- a local alias by direct assignment (`const db = prisma`);
+- member access on such a binding — by property (`db.brainPromptQueue`), by
+  literal bracket (`db['brainPromptQueue']`), or by a bracket key **statically
+  resolvable** under the grammar below;
+- destructuring the model off such a binding;
+- `Reflect.get(<binding>, 'brainPromptQueue')` with a **literal** key.
+
+**"Statically resolvable" — the grammar.** A bracket key qualifies iff it is:
 
 - a string literal; **or**
 - an identifier bound by a **same-file `const`** whose initializer is exactly a
   string literal, with **zero reassignment**, optionally reached through **any
-  finite acyclic chain of same-file direct `const` aliases**, resolved through
-  lexical bindings with **cycle detection** (`const a = 'x'; const b = a;`).
-  No numeric depth limit: the chain is bounded by being acyclic and same-file,
-  which is decidable, rather than by an arbitrary number.
+  finite acyclic chain of same-file direct `const` aliases**, resolved lexically
+  with **cycle detection**. No depth number: acyclic-and-same-file is decidable,
+  which is what bounds it.
 
-Nothing else qualifies. Concatenation, template interpolation, imported
-constants, conditional expressions and function returns are **outside** the
-grammar by definition, so the term carries no undecidability.
+Concatenation, template interpolation, imported constants, conditional
+expressions and function returns are outside the grammar by definition.
 
-**Outside the static guarantee — prohibited by rule, enforced at review, and NOT
-claimed as detected:**
+**Outside the static guarantee — prohibited by rule for the handler, checked at
+review, NOT claimed as detected** (R-1..R-3 in §6.2): a computed key outside the
+grammar; a client the handler obtains from an **arbitrary helper**; a client the
+handler obtains through a **re-exporting module**. These are ways *the handler*
+could reacquire the model, which is the only thing AC-1 governs.
 
-- a computed key outside the grammar above;
-- a client returned from an **arbitrary helper** (interprocedural flow);
-- a client obtained through a **re-exporting module**.
-
-§6.1 forbids all three outright; the guard is not asserted to catch them. Stating
-this is the difference between a bounded guarantee and an unfalsifiable one.
-
-**Excluded, explicitly:** generated `dist` output; type-only references
-(`import type`, type positions); `server/tests`; and the allowlisted owning
-service itself. **Indirect re-export of the Prisma client is prohibited** rather
-than merely detected — a helper that returns the client, or a module that
-re-exports it, is an AC-1 violation in its own right.
+**Excluded from the subject:** generated `dist`; type-only references
+(`import type`, type positions); `server/tests`; every file other than the
+handler.
 
 ### 6.2 · The evasion matrix the guard must survive (AC-1)
 
-Each row is a fixture the guard must flag. Passing one direct-access mutant while
-missing these would satisfy a narrower reading of §7 while failing AC-1's actual
-promise, so the matrix is named here:
+Each row is a fixture the guard must flag **in the handler's source under test**.
+A single direct-access mutant does not satisfy AC-1.
 
 | # | evasion form |
 |---|---|
 | E-1 | direct member access — `prisma.brainPromptQueue.findFirst(...)` |
-| E-2 | bracket access — `prisma['brainPromptQueue']` |
+| E-2 | literal bracket — `prisma['brainPromptQueue']` |
 | E-3 | destructured — `const { brainPromptQueue } = prisma` |
 | E-4 | renamed import — `import db from '../db/prisma'` then `db.brainPromptQueue` |
-| E-5 | namespace import, **executable form** — `import * as P from '../db/prisma'` then `P.default.brainPromptQueue` (the module default-exports the client, so the bare import is not access and would not be a valid fixture) |
-| E-6 | access from a **different file** than `promptReplyHandler.ts` |
-| E-7 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
-| E-8 | **computed key under the §6.1 grammar**, exercising the **alias chain**, not a single binding: `const a = 'brainPromptQueue'; const b = a; prisma[b]…` — a one-hop fixture does not prove the chain behaviour the grammar promises |
-| E-9 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
+| E-5 | namespace import, **executable form** — `import * as P from '../db/prisma'` then `P.default.brainPromptQueue` (the module default-exports the client, so a bare namespace import is not access and is not a valid fixture) |
+| E-6 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
+| E-7 | **computed key exercising the alias chain**, not a single binding — `const a = 'brainPromptQueue'; const b = a; prisma[b]…` |
+| E-8 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
+
+*(v6 defect: the matrix carried an "access from a different file" fixture, which
+could not coexist with the handler-bound subject — flagging another production
+file would recreate the repository-wide obligation §6.4 rejects, and would go red
+immediately against the 10 existing accessors. Removed, and the matrix renumbered
+E-1..E-8 with no gaps.)*
 
 **Review-only prohibitions — deliberately NOT in the matrix**, because §6.1 does
 not claim the guard detects them:
@@ -477,7 +473,7 @@ from a mis-scoped policy.
 | 1 | **BLOCKER** — §10 still carried v1's "must pass unmodified", contradicting the corrected AC-3 | §10 rewritten to freeze `it(...)` bodies/inputs/expectations while permitting only the mock's export surface to grow. **Mine, and ironic:** I corrected AC-3 and left the same claim standing elsewhere in the document — the fix-one-place-miss-the-other shape this contract exists to close. Recorded, not quietly patched |
 | 2 | **HIGH** — §4.2 (CLAIM exactly-once) had no falsifier among B-1..B-8 | **B-9** added: two concurrent claims yield exactly one successful `recordAnswer`, loser applies no side effect and emits no acknowledgement; mutation-proven by removing the `state` predicate or ignoring `updateMany.count` |
 | 3 | **HIGH** — AC-1's mutation proof narrower than AC-1's promise; a guard could pass one direct-access mutant and still miss re-exports, namespace imports, destructured aliases and helper-returned clients | **§6.2 evasion matrix E-1..E-8**, including access from a foreign file, plus **§6.1** defining what "reaches" excludes (generated `dist`, type-only references, test code) and prohibiting indirect re-export outright |
-| 4 | **MEDIUM** — AC-3 safe only in combination; the division of labour was implicit | **§6.3** states it explicitly: AC-3 is preservation coverage only; correctness rests on `chat18` and B-1..B-9; new mock return values that bypass ordering, CAS failure or failure propagation are prohibited |
+| 4 | **MEDIUM** — AC-3 safe only in combination; the division of labour was implicit | **§6.3** states it explicitly: AC-3 is preservation coverage only; correctness rests on `chat18` and the B-cases (B-1..B-9 at v3; **B-1..B-10 from v6**, after B-10 was added for the governor); new mock return values that bypass ordering, CAS failure or failure propagation are prohibited |
 | 5 | wording — "the owner, in his own report" could describe a persisted file | §8 now reads "a direct, private response to the owner — not retained in any repository or scorer artifact", and the metadata-only row now enumerates repository records, logs, and mutation/acceptance command output |
 | 6 | B-1/B-2 instantiated once against a representative operation | §4.6 now requires them **per operation** across every new read, write and list in §5 |
 
@@ -572,3 +568,35 @@ the contract would have produced that number, and the reviewer found it by
 checking the claim against the tree rather than against the document. That is the
 same lesson this campaign has produced at every level — check the object, not the
 description of it.
+
+## 17 · Review record — v6 `e9257b0` ruled WRONG / BLOCKED
+
+Every finding was an internal contradiction or a structural defect in this
+document. **No substantive disagreement remains** — the reviewer confirmed the
+alias-chain rule is decidable, E-5/E-8 exercise their stated forms, and B-10's
+governor execution level is correct.
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | AC-1 bound to the handler by §6/§6.4, while §6.1 still defined the guard over the whole `server/src` module graph, the matrix still required flagging access **from another file**, and §6.1 still called helper/re-export "an AC-1 violation in its own right". The different-file fixture could not coexist with the narrowed boundary — it recreates the repository-wide obligation §6.4 rejects and would go red against the 10 existing accessors | §6.1 and §6.2 **rewritten wholesale**, not patched. §6.1 now bounds AC-1 twice — by **subject** (the handler's source alone) and by **model** (what a static guard can decide). The different-file fixture is removed, the matrix renumbered **E-1..E-8**, and R-1..R-3 restated as ways *the handler* could reacquire the model |
+| 2 | §6.3 still said B-8 covers "the handler **or governor**", contradicting the narrowed B-8 and the B-10 split | corrected to the handler; the governor half is named as B-10 |
+| 3 | §6.3 said `B-1..B-9` in two places, omitting B-10 | both corrected to B-1..B-10; the one surviving `B-1..B-9` is an annotated historical note in §13 |
+| 4 | a blank line after B-8 terminated the §4.6 Markdown table, leaving B-9 and B-10 outside it — so the "B-1..B-10" enumeration was not structurally one table | blank line removed; table verified as **10 contiguous rows** |
+
+### The method was the defect, not the wording
+
+Rounds 6 and 7 produced no substantive findings at all — only contradictions I
+introduced while fixing the previous round. The cause is identifiable: I had been
+editing a long governing document by targeted string replacement, section by
+section, which reliably updates one statement of a claim and leaves its restatements
+standing. Narrowing AC-1 in §6 and §6.4 left three contradicting sentences in §6.1
+and §6.2 and one stale range in §6.3.
+
+v7 changed the method: §6.1 and §6.2 were **rewritten whole** rather than patched,
+and the self-check now verifies structure as well as content — matrix rows
+enumerated for gaps, every B-case checked as defined once and assigned once,
+cross-references to B-ranges grepped, §6.1's exclusions diffed against R-1..R-3,
+and the Markdown tables checked for contiguity, which is how finding 4 hid.
+
+Recorded because it is the same lesson at a different altitude: for four rounds I
+verified what the contract *said* and never verified the document *as an object*.
