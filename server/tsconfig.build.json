@@ -66,9 +66,9 @@
     "src/scripts/smokeBrainPromptReplyFlow.ts",
     "src/scripts/smokeWhatsappVoiceCall.ts",
 
-    // === TIER 4 — writes production tables through the prisma singleton (7) ===
-    // draftTestWaToBasit.ts plants a one-click WhatsApp draft addressed to the
-    // owner's live number.
+    // === TIER 4 — writes production data (11) ===
+    // Via the Prisma model API OR raw SQL. draftTestWaToBasit.ts plants a
+    // one-click WhatsApp draft addressed to the owner's live number.
     "src/scripts/cleanupBatterySeeds.ts",
     "src/scripts/draftTestWaToBasit.ts",
     "src/scripts/seedGoldenDataset.ts",
@@ -76,12 +76,19 @@
     "src/scripts/smokeRetrievalFeedback.ts",
     "src/scripts/smokeRiskRadarV2.ts",
     "src/scripts/smokeUserPromptOverlay.ts",
+    // Corrected from Tier 5 (Codex LOW on b3a213d). The original scan matched
+    // only `prisma.<model>.create|update|…` and never looked for raw SQL, so
+    // these four were wrongly labelled read-only:
+    "src/scripts/loadTestFeed.ts",          // $executeRaw`DELETE FROM feed_events …`
+    "src/scripts/smokeInstructionVeto.ts",  // $executeRawUnsafe × 1
+    "src/scripts/smokeMeetingDigest.ts",    // $executeRawUnsafe × 2
+    "src/scripts/smokeWaDailyLimit.ts",     // $executeRawUnsafe × 5
 
-    // === TIER 5 — reads production data through the prisma singleton (13) ===
-    // No writes observed, but they open a client against the production
-    // database and are operator-run entry points with no runtime caller.
+    // === TIER 5 — reads production data through the prisma singleton (9) ===
+    // No write detected through EITHER the Prisma model API or raw SQL. They
+    // still open a client against the production database and are operator-run
+    // entry points with no runtime caller.
     "src/scripts/diagnoseAttention.ts",
-    "src/scripts/loadTestFeed.ts",
     "src/scripts/probeTasks.ts",
     "src/scripts/scribeBackfillEmails.ts",
     "src/scripts/smokeBrainIntelligence.ts",
@@ -89,9 +96,6 @@
     "src/scripts/smokeCriticality.ts",
     "src/scripts/smokeFeedback.ts",
     "src/scripts/smokeInstructions.ts",
-    "src/scripts/smokeInstructionVeto.ts",
-    "src/scripts/smokeMeetingDigest.ts",
-    "src/scripts/smokeTenantIsolation.ts",
-    "src/scripts/smokeWaDailyLimit.ts"
+    "src/scripts/smokeTenantIsolation.ts"
   ]
 }
