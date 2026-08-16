@@ -413,8 +413,64 @@ peer sessions (`tmcai-b1`, `tmcai-d6`) explicitly disclaimed the file. The 13:42
 reports only *observing* the file dirty, and the working tree was clean against
 HEAD throughout, so **no lost update occurred**.
 
+## 20 · Status — reviewed 2026-08-16
+
 ```
-ITERATION_VERDICT: (none — UNREVIEWED at this base)
-RELEASE_STATUS:    NOT RELEASABLE — no verdict exists
+ITERATION_VERDICT: WEAK
+RELEASE_STATUS:    BLOCKED
 DEPLOYED:          NO
 ```
+
+Full review: `CODEX_REVIEW_b3a213d.md`. `WEAK` never advances.
+
+**The HIGH is closed.** Codex resolved both TypeScript programs independently
+rather than trusting §14, and reports:
+
+- typecheck program: all **79** `src/scripts/*.ts`, including the classified 41
+- build program: **38** scripts, **none** of the 41
+- the five inherited exclusions in `tsconfig.build.json` exactly match the base
+- `deploy.sh:154` runs `npx tsc --noEmit` from `server/`, so it uses the restored
+  typecheck config
+
+So the split does what §12–§14 claim. `WEAK` is about the durability of the
+guard, not the fix.
+
+| # | severity | finding |
+|---|---|---|
+| 1 | MEDIUM | Guard 5 checks only that `tsconfig.json.exclude` has no `src/scripts/` entry. It still passes if `include`, `files`, or inheritance removes the 41 from the **resolved program** by another route. Guard 3 likewise compares two handwritten lists instead of proving absence from the resolved build program. The programs are correct today; the standing protection is incomplete. |
+| 2 | MEDIUM | Guard 6 is a substring search for `scripts/<name>` in `server.ts` and `src/jobs` only. It misses routes, controllers, services, startup helpers, alias and non-literal imports — and TypeScript can re-include an excluded source reached through an import. It cannot support the claim that none of the 41 can return to the emitted graph. |
+| 3 | LOW | **Tier 5's "No writes observed" is false.** |
+| 4 | SCOPE NOTE | The remaining 38 scripts are not harmless: migrations, backfills, cleanup/purge, token provisioning, seeders, one-off WhatsApp sending, Brain replay. Not a finding against this four-file diff, but `b3a213d` must **not** be represented as completing the removal of operator tooling from the artifact. |
+
+### Correction to §13 — Tier 5 is wrong for four files
+
+Finding 3 verified here before acceptance. My tier scan matched only the Prisma
+**model** API (`prisma.<model>.create|update|delete|…`) and never looked for raw
+SQL, so four Tier 5 entries write to production:
+
+```
+loadTestFeed.ts          prisma.$executeRaw`DELETE FROM feed_events WHERE …`
+smokeInstructionVeto.ts  prisma.$executeRawUnsafe(…)              × 1
+smokeMeetingDigest.ts    prisma.$executeRawUnsafe(…)              × 2
+smokeWaDailyLimit.ts     prisma.$executeRawUnsafe(…)              × 5
+```
+
+They belong in **Tier 4 (production writes)**, making it 11 files, and Tier 5
+drops to 9. The exclusion **set** is unaffected — all 41 remain correctly
+excluded and no artifact exposure reopens — but the *rationale*, which was the
+whole point of addressing the earlier LOW, is inaccurate for those four. The
+tiers were therefore partly post-hoc labelling, exactly as Codex charges. Not
+corrected in this range; it is next-turn work with findings 1 and 2.
+
+### Next turn (not started in this session)
+
+1. Resolve both configs with the TypeScript configuration API; assert every
+   inventory file is **present in the typecheck program** and **absent from the
+   build program** — program membership, not `exclude`-array text.
+2. Validate the emitted/runtime dependency graph via module resolution or an
+   emitted-file manifest, not substring search.
+3. Correct the four Tier 5 classifications and their rationale.
+4. Keep the other 38 scripts as an explicitly bounded follow-up inventory; do not
+   silently classify them as safe runtime artifact content.
+
+Deploy is approval #7 and is **not authorized**.
