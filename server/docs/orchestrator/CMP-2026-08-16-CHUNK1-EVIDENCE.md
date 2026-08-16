@@ -372,12 +372,38 @@ restored.
 
 ## 18 · Deploy gate
 
-`scripts/orchestrator/deploy.sh:170` runs `npx tsc --noEmit` from `server/`,
-which resolves to the **typecheck** config. After the split that gate asserts
-strictly more than before — it now covers the 41 that `c572ccf` had removed from
-it. No change to `deploy.sh` was needed; the call site was checked rather than
-assumed. (`deploy.sh` remains dirty with the supervisor's unrelated SD-001 rails,
-still unstaged, still outside the range.)
+The deploy gate's typecheck call site is this line, cited by text because the
+number moves (see below):
+
+```bash
+( cd "$SRV" && npx tsc --noEmit ) >> "$LOG" 2>&1 || die "tsc RED at deploy commit"
+```
+
+`scripts/orchestrator/deploy.sh:154` **at `ff57f19` and at every commit in this
+range**. It runs `npx tsc --noEmit` from `server/`, which resolves to the
+**typecheck** config. After the split that gate asserts strictly more than before
+— it now covers the 41 that `c572ccf` had removed from it. No change to
+`deploy.sh` was needed; the call site was checked rather than assumed.
+
+**Correction, and the reason for citing text over a number.** An earlier draft of
+this section cited `deploy.sh:170`. That was read off the **working tree**, which
+carries the supervisor's uncommitted SD-001 rails; those add 16 lines above this
+call site. At the reviewed commits the line is **154**, and line 170 there is
+`import re, sys, datetime` — an unrelated block. Anyone checking out `b3a213d`
+and following the old citation would have read the wrong line.
+
+```
+git show ff57f19:scripts/orchestrator/deploy.sh | grep -n 'tsc --noEmit'   ->  154
+grep -n 'tsc --noEmit' scripts/orchestrator/deploy.sh                      ->  170   (working tree)
+git show ff57f19:scripts/orchestrator/deploy.sh | sed -n '170p'            ->  import re, sys, datetime
+```
+
+Caught by peer session `tmcai-b1` and verified here before acceptance. The
+conclusion is unaffected; the citation was wrong, not the reasoning. This is the
+same error class the campaign exists to prevent — a figure quoted from a tree
+that is not the one under review — so it is recorded rather than quietly fixed.
+`deploy.sh` remains dirty with those unrelated SD-001 rails, still unstaged,
+still outside the range.
 
 ## 19 · Concurrency
 
