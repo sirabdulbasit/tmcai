@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v8).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v9).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -158,7 +158,7 @@ listRetryableSideEffects(args): Promise<PromptRow[]>
 
 | # | criterion | how it is checked |
 |---|---|---|
-| AC-1 | **`promptReplyHandler.ts` contains zero access to the `brainPromptQueue` Prisma model** — by any form the guard detects (§6.2, E-1..E-10) and by any form §6.2 prohibits (R-1..R-5). It does **not** claim "cannot reacquire by any means whatsoever": that is unbounded, and the detected and prohibited sets are enumerated instead. Bound to that file — **not repository-wide**; see §6.4 for why and for the measured remainder. AST/import-aware, "reaches" defined in §6.1, proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
+| AC-1 | **`promptReplyHandler.ts` contains zero access to the `brainPromptQueue` Prisma model** — by any form the guard detects (§6.2, E-1..E-11) and by any form §6.2 prohibits (R-1..R-5). It does **not** claim "cannot reacquire by any means whatsoever": that is unbounded, and the detected and prohibited sets are enumerated instead. Bound to that file — **not repository-wide**; see §6.4 for why and for the measured remainder. AST/import-aware, "reaches" defined in §6.1, proven by the **evasion matrix in §6.2** — a single direct-access mutant does not satisfy it | executable guard resolving real modules; evasion matrix per §6.2 |
 | AC-2 | The six `open_item` calls are unchanged; the handler may retain its Prisma import | diff review |
 | AC-3 | **Preservation coverage only — see §6.3.** `tests/promptReplyRelevance.test.ts` keeps its **existing assertions and scenario arrangement unchanged**. Its `vi.doMock` factory **may** gain the new service operations, because a factory mock replaces the whole module and an absent export throws "not a function" | diff review: the `it(...)` bodies and expectations are untouched; only the mock surface grows |
 | AC-4 | The protected relevance suite makes **zero `brainPromptQueue` model calls** — this is the claim, and it is narrower than "no database contact"; the production ownership boundary is AC-1's job, not AC-4's. Not "DATABASE_URL is unset" — an explicit fail-on-access Prisma proxy at the suite boundary that throws on any model access, asserting zero calls | `unshare -n` isolated run with the proxy installed; command and output recorded |
@@ -209,11 +209,23 @@ undecidable, so the guard states what it can decide.
 
 **MUST detect, within the handler's own source:**
 
-- **the import itself is PERMITTED and is a tracked root, not a violation.** AC-2
-  requires the handler to keep its Prisma import for the six `open_item` calls,
-  so rejecting the import would contradict AC-2. The guard treats any import of
-  the Prisma singleton, under any local name, as a **root to track**; what it
-  flags is obtaining `brainPromptQueue` *from* that root;
+**Tracked roots — the three ways a client enters the handler.** A *root* is a
+binding that holds a Prisma client. Acquiring a root is **not** itself a
+violation; obtaining `brainPromptQueue` **from** a root is. The three roots:
+
+| root | form |
+|---|---|
+| ROOT-1 | a **static import** of the Prisma singleton, under any local name. **PERMITTED and required** — AC-2 needs it for the six `open_item` calls, so rejecting the import would contradict AC-2 |
+| ROOT-2 | **`new PrismaClient()`** constructed in the handler |
+| ROOT-3 | **`require('../db/prisma')`** or **`await import('../db/prisma')`** with a **literal** specifier |
+
+**Every access rule below applies identically from every root.** Property access,
+literal bracket, grammar-resolvable computed key, destructuring, local alias
+chains and `Reflect.get` propagate from ROOT-2 and ROOT-3 exactly as from ROOT-1
+— an implementer does not have to decide this, and the matrix's examples are
+illustrations of the rule, not the whole of it.
+
+**What the guard flags, from any root:**
 - a local alias by direct assignment (`const db = prisma`);
 - member access on such a binding — by property (`db.brainPromptQueue`), by
   literal bracket (`db['brainPromptQueue']`), or by a bracket key **statically
@@ -243,7 +255,7 @@ review, NOT claimed as detected** (R-1..R-5 in §6.2):
 - the client retrieved from **global or shared mutable state**.
 
 These are ways *the handler* could reacquire the model. AC-1 governs exactly the
-union of the detected set (E-1..E-10) and this prohibited set — no more.
+union of the detected set (E-1..E-11) and this prohibited set — no more.
 
 **Excluded from the subject:** generated `dist`; type-only references
 (`import type`, type positions); `server/tests`; every file other than the
@@ -264,8 +276,9 @@ A single direct-access mutant does not satisfy AC-1.
 | E-6 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
 | E-7 | **computed key exercising the alias chain**, not a single binding — `const a = 'brainPromptQueue'; const b = a; prisma[b]…` |
 | E-8 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
-| E-9 | **a second client constructed in the handler** — `new PrismaClient()` then `.brainPromptQueue` |
-| E-10 | **CommonJS / dynamic import with a literal specifier** — `require('../db/prisma')` or `await import('../db/prisma')`, then model access |
+| E-9 | **a second client constructed in the handler** — `new PrismaClient()` then `.brainPromptQueue` (ROOT-2) |
+| E-10 | **CommonJS `require`** with a literal specifier — `require('../db/prisma').brainPromptQueue…` (ROOT-3) |
+| E-11 | **dynamic `import()`** with a literal specifier — `(await import('../db/prisma')).default.brainPromptQueue…` (ROOT-3). A **separate fixture from E-10**: the two syntaxes resolve differently and one passing does not prove the other |
 
 *(v6 defect: the matrix carried an "access from a different file" fixture, which
 could not coexist with the handler-bound subject — flagging another production
@@ -273,7 +286,7 @@ file would recreate the repository-wide obligation §6.4 rejects, and would go r
 immediately against the 10 existing accessors. Removed, and the matrix renumbered
 E-1..E-8 at v7. **v8 then added E-9 and E-10** — a second `PrismaClient`
 constructed in the handler, and `require()`/dynamic `import()` with a literal
-specifier — so the live matrix is **E-1..E-10**.)*
+specifier — so the live matrix is **E-1..E-11** (v9 split the require and dynamic-import fixtures).)*
 
 **Review-only prohibitions — deliberately NOT in the matrix**, because §6.1 does
 not claim the guard detects them:
@@ -616,3 +629,33 @@ and the Markdown tables checked for contiguity, which is how finding 4 hid.
 
 Recorded because it is the same lesson at a different altitude: for four rounds I
 verified what the contract *said* and never verified the document *as an object*.
+
+## 18 · Review record — v7 `7ba1fdf` ruled WRONG / BLOCKED
+
+This section was **missing at v8** and the v8 submission told the reviewer to read
+it. That is the second time in this campaign I have cited a section I had not
+written — the first was an evidence "§21" in the chunk-1 remediation, recorded and
+supposedly learned from. Writing it now, and the repeat is recorded rather than
+quietly filled in.
+
+| # | finding | resolved at v8 |
+|---|---|---|
+| 1 | **HIGH** — the handler's Prisma import was undecidable and contradicted AC-2: §6.1 listed "an import of the Prisma singleton" as MUST DETECT, while AC-2 requires the handler to keep that import for its six `open_item` calls. An implementer could not tell whether the guard rejects the import or only rejects obtaining the model from it | the import is stated as **permitted and a tracked root**; what is flagged is obtaining `brainPromptQueue` *from* it. v9 completes this with the full **ROOT-1..ROOT-3** model |
+| 2 | **HIGH** — AC-1's "cannot reacquire one" exceeded E-1..E-8 and R-1..R-3: a handler could construct a second `PrismaClient`, use `require()` or dynamic `import()`, receive a client by parameter or DI, or read one from global mutable state | the absolute claim is removed. AC-1 governs **exactly the union** of the detected and prohibited sets. The two decidable forms became **E-9/E-10**; the two undecidable ones became **R-4/R-5** |
+
+Confirmed repaired at v7: §4.6 as one contiguous B-1..B-10 table, every B-case
+assigned once at the correct level, B-8 handler-only with B-10 owning the
+governor, E-matrix sequential and handler-bound, R-list matching §6.1.
+
+## 19 · Review record — v8 `abe7ec3` ruled WRONG / BLOCKED
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | **HIGH** — §6.1 contradicted E-9/E-10: its normative MUST-detect model defined only **static imports** as tracked roots, never `new PrismaClient()`, literal `require()` or literal dynamic `import()`, although AC-1 and the matrix require detecting them. An implementer could not tell whether the alias, destructuring, computed-key and `Reflect.get` rules propagate from those roots, or whether only the literal examples must be detected | §6.1 now defines **ROOT-1 (static import, permitted), ROOT-2 (`new PrismaClient()`), ROOT-3 (literal `require()` / dynamic `import()`)** and states that **every access rule applies identically from every root** — the matrix examples are illustrations of the rule, not its extent |
+| 2 | **MEDIUM** — the requested §18 did not exist at the review SHA | written above, with the repeat named |
+
+Also confirmed: the import retained for `open_item` is correctly permitted, "exactly
+the union" is no longer an absolute reachability claim, R-4/R-5 are appropriately
+review-only, and E-9/E-10 belong on the detectable side. **E-10 is split into E-10
+(`require`) and E-11 (dynamic `import()`)** at v9, because the two syntaxes resolve
+differently and one passing does not prove the other.
