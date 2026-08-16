@@ -1,6 +1,6 @@
 # CONTRACT · DEF-185 — apply-outcome persistence routes through `brainPromptQueueService`
 
-**Status: RE-FROZEN 2026-08-16 (v4).** v1 (`92077f7`) was reviewed **WRONG /
+**Status: RE-FROZEN 2026-08-16 (v5).** v1 (`92077f7`) was reviewed **WRONG /
 BLOCKED**: the direction was confirmed correct, the contract was not buildable.
 All eight findings are resolved below, one with a documented dissent (§12).
 No implementation exists yet; this document is the thing under review.
@@ -189,8 +189,8 @@ never proving the handler and governor consequences the cases actually name:
 
 | cases | must execute |
 |---|---|
-| B-1, B-2, B-7, B-8 | the **real queue-service implementation**, with the Prisma/model boundary controlled |
-| B-3, B-4, B-5, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; B-9 additionally asserts acknowledgement suppression for the losing claim |
+| B-1, B-2, B-7 | the **real queue-service implementation**, with the Prisma/model boundary controlled |
+| B-3, B-4, B-5, B-8, B-9 | **real handler orchestration + real queue-service logic**; only the database and provider boundaries mocked. B-3 asserts ordering between persistence and side-effect invocation; B-4/B-5 assert that orchestration invokes **no** side effect; **B-8 asserts that a CAS failure is never translated into a completed outcome by the handler or governor — a service test can prove the `false` return but not that consequence**; B-9 additionally asserts acknowledgement suppression for the losing claim |
 | B-6 | **real governor/retry orchestration + real queue-service logic** |
 
 A case executed below its stated level does not satisfy AC-5.
@@ -208,16 +208,34 @@ what the guard actually guarantees.
 
 - imports of the Prisma singleton, under any local name;
 - local aliases established by direct assignment (`const db = prisma`);
-- member access on such a binding, whether by property (`db.brainPromptQueue`),
-  by literal bracket (`db['brainPromptQueue']`), or by a bracket whose key is a
-  **statically resolvable** string constant;
-- destructuring of the model off such a binding.
+- member access on such a binding, by property (`db.brainPromptQueue`), by
+  literal bracket (`db['brainPromptQueue']`), or by a bracket whose key is
+  **statically resolvable** under the grammar below;
+- destructuring of the model off such a binding;
+- `Reflect.get(<binding>, 'brainPromptQueue')` with a **literal** key — cheap and
+  deterministic for an AST guard, so it is guarded rather than left to review.
+
+**"Statically resolvable" — the mechanical grammar.** A bracket key qualifies if
+and only if it is:
+
+- a string literal; **or**
+- an identifier bound by a **same-file `const`** whose initializer is exactly a
+  string literal, with **zero reassignment**, optionally reached through a
+  bounded chain of direct `const` aliases (`const a = 'x'; const b = a;`).
+
+Nothing else qualifies. Concatenation, template interpolation, imported
+constants, conditional expressions and function returns are **outside** the
+grammar by definition, so the term carries no undecidability.
 
 **Outside the static guarantee — prohibited by rule, enforced at review, and NOT
-claimed as detected:** a client reached through `Reflect.get`, a computed key not
-statically resolvable, or a client returned from an arbitrary helper. §6.1
-forbids these outright; the guard is not asserted to catch them. Stating this is
-the difference between a bounded guarantee and an unfalsifiable one.
+claimed as detected:**
+
+- a computed key outside the grammar above;
+- a client returned from an **arbitrary helper** (interprocedural flow);
+- a client obtained through a **re-exporting module**.
+
+§6.1 forbids all three outright; the guard is not asserted to catch them. Stating
+this is the difference between a bounded guarantee and an unfalsifiable one.
 
 **Excluded, explicitly:** generated `dist` output; type-only references
 (`import type`, type positions); `server/tests`; and the allowlisted owning
@@ -238,19 +256,24 @@ promise, so the matrix is named here:
 | E-3 | destructured — `const { brainPromptQueue } = prisma` |
 | E-4 | renamed import — `import db from '../db/prisma'` then `db.brainPromptQueue` |
 | E-5 | namespace import — `import * as P from '../db/prisma'` |
-| E-6 | client returned from a helper function |
-| E-7 | client obtained via a re-exporting module |
-| E-8 | access from a **different file** than `promptReplyHandler.ts` |
-| E-9 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
-| E-10 | **computed property with a statically resolvable key** — `const m = 'brainPromptQueue'; prisma[m]…` |
+| E-6 | access from a **different file** than `promptReplyHandler.ts` |
+| E-7 | **local alias** — `const db = prisma; db.brainPromptQueue…` |
+| E-8 | **computed key under the §6.1 grammar** — `const m = 'brainPromptQueue'; prisma[m]…`. Must use *exactly* that grammar: a same-file `const` initialized to a string literal, never reassigned |
+| E-9 | **`Reflect.get`** with a literal key — `Reflect.get(prisma, 'brainPromptQueue')` |
 
-E-9 and E-10 were added in v4: E-4 covered a renamed *import* but not a local
-alias, and E-2 covered a *literal* bracket but not a computed one. An
-implementation could have passed E-1..E-8 while violating AC-1.
+**Review-only prohibitions — deliberately NOT in the matrix**, because §6.1 does
+not claim the guard detects them:
 
-**Not in the matrix, by design:** `Reflect.get(prisma, 'brainPromptQueue')` and
-non-resolvable computed keys. They are prohibited by §6.1 and checked at review;
-the guard does not claim to detect them.
+| # | form | status |
+|---|---|---|
+| R-1 | client returned from an arbitrary helper | prohibited by §6.1, checked at review |
+| R-2 | client obtained via a re-exporting module | prohibited by §6.1, checked at review |
+| R-3 | computed key outside the §6.1 grammar | prohibited by §6.1, checked at review |
+
+*(v4 defect: these three were E-6/E-7 in the must-detect matrix while §6.1 said
+they were outside the guarantee — the two sections contradicted each other and
+could not both govern an implementation. Third instance in this document of
+fixing one place and leaving another; recorded, not quietly patched.)*
 
 **AC-1 and AC-4 are the load-bearing pair.** v1 proposed a grep for
 `prisma.brainPromptQueue.*` in one file, which proves only that today's six calls
@@ -458,3 +481,28 @@ detected.
 A bounded guarantee that is true beats an absolute one that cannot be tested.
 That is the lesson this campaign has now produced four times, and it is recorded
 here so the implementation is built against the honest version.
+
+## 15 · Review record — v4 `23fa274` ruled WRONG / BLOCKED
+
+| # | finding | resolved |
+|---|---|---|
+| 1 | **HIGH** — §6.1 and §6.2 contradicted each other: §6.1 placed helper-returned and re-exported clients outside the guarantee while §6.2 still required the guard to flag them as E-6/E-7. Both cannot govern an implementation | E-6/E-7 removed from the must-detect matrix and restated as **R-1/R-2 review-only prohibitions**. Matrix renumbered E-1..E-9 with no gaps |
+| 2 | **HIGH** — "statically resolvable" had no bounded grammar | §6.1 now defines it mechanically: a string literal, or a **same-file `const`** initialized to exactly a string literal with **zero reassignment**, optionally through a bounded chain of direct `const` aliases. Concatenation, templates, imported constants, conditionals and function returns are outside it by definition. **E-8 must use exactly that grammar** |
+| 3 | **MEDIUM** — B-8 assigned to service-only execution while asserting an orchestration consequence | B-8 moved to **real handler orchestration + real service logic**. A service test can prove the `false` return; it cannot prove the handler or governor never translates it into a completed outcome |
+| — | assessment: `Reflect.get` with a literal key is cheap and deterministic to detect and should preferably be guarded | accepted — added as **E-9** inside the guarantee, rather than left review-only as v4 had it |
+
+### Third instance of the same shape, and the self-check that finally caught it
+
+Finding 1 was mine, and it is the third time in this contract that fixing one
+section left a contradicting claim standing in another — AC-3 vs §10 in v2, then
+§6.1 vs §6.2 here. That is precisely the defect class DEF-185 exists to close,
+reproduced inside the document that governs it.
+
+So v5 was checked **against itself** before submission, not only against the
+findings: matrix rows enumerated for gaps and duplicates, every B-case confirmed
+assigned exactly once in §6.3, §6.1's exclusion list diffed against R-1..R-3, and
+the document grepped for the withdrawn absolute promise. The two surviving
+occurrences of *"however the client is obtained"* are historical quotations in
+§6.1's preamble and §14 describing what v3 claimed — not live promises. That
+check is now part of freezing a version, because reviewer-found internal
+contradictions have cost this contract two rounds.
