@@ -474,3 +474,89 @@ corrected in this range; it is next-turn work with findings 1 and 2.
    silently classify them as safe runtime artifact content.
 
 Deploy is approval #7 and is **not authorized**.
+
+---
+
+# Remediation 2 — WEAK on `7fe41c0`
+
+## 21 · What changed, against each finding
+
+Codex closed the HIGH on `b3a213d` and the two MEDIUMs on `7fe41c0` were about
+the guard, not the split. All four findings are addressed here.
+
+**MEDIUM 1 — guard 7 omitted triple-slash edges.** `ts.preProcessFile` returns
+`/// <reference path="…" />` targets in `referencedFiles`, and guard 7 read only
+`importedFiles`. It now walks both. Triple-slash paths are file paths relative to
+the referencing file rather than module specifiers, so they are resolved
+directly instead of through `resolveModuleName`, and edges are labelled
+`-import->` or `-reference->` so the route is visible in the failure message.
+
+**MEDIUM 2 — guard 5 compared only script basenames.** It claimed the programs
+"differ by exactly the 41" while comparing a projection that could not detect an
+unrelated file vanishing from the build program. It now compares complete
+normalized `fileNames` and asserts **both** directions: typecheck-minus-build
+equals the 41 exact paths, and build-minus-typecheck is empty.
+
+**LOW — tier classification, corrected by making it computed.** Codex was right a
+second time: the rescan covered direct Prisma and raw SQL but missed
+service-mediated writes. All four named were verified —
+
+```
+scribeBackfillEmails  -> backfillUserScribe        -> prisma.wikiPage.create
+smokeCommitments      -> extractAndFileCommitments -> prisma.openItem.create
+smokeFeedback         -> recordFeedback            -> prisma.brainFeedback.create
+smokeInstructions     -> createInstructionFromText -> prisma.wikiPage.create
+```
+
+Rather than hand-patch a third time, the classification is now **measured**.
+Guard 9 walks each script's full import closure and asserts the declared tiers
+match the computation, so the lists are the expected value of a measurement
+rather than a label. Running it over all 41 gives:
+
+| | before (declared) | after (measured) |
+|---|---:|---:|
+| Tier 4 — reaches a production write | 11 | **19** |
+| Tier 5 — no write reachable | 9 | **1** |
+
+Only `smokeTenantIsolation` reaches no write. The earlier "reads only" tier of
+nine was substantially fiction, and two rounds of hand-reading could not have
+found that — which is the point of computing it.
+
+**LOW — §21 did not exist at the review SHA.** Correct, and mine. The submission
+told the reviewer to read a section that had never been written; the evidence
+lived only in the commit message. This section is that record, and it is
+committed **in the same commit as the code** so it cannot be absent at the review
+SHA again.
+
+## 22 · Mutation checks — five, each red then restored
+
+| # | mutation | expected | observed |
+|---|---|---|---|
+| A | narrow `include` so scripts leave the typecheck program, `exclude` untouched | guard 3 RED | **RED** — and the old b3a213d assertion still passes, demonstrating the closed hole |
+| B | `import './scripts/smokeWhatsappVoiceCall'` in server.ts | guard 7 RED | **RED** — `server.ts -import-> smokeWhatsappVoiceCall.ts` |
+| C | exclude `seedActionDefinitions` (runtime-reachable) | guard 8 RED | **RED** — over-reach caught |
+| D | `/// <reference path="./scripts/smokeWhatsappVoiceCall.ts" />` in server.ts | guard 7 RED | **RED** — `server.ts -reference-> smokeWhatsappVoiceCall.ts` |
+| E | declare `smokeInstructions` write-free | guard 9 RED | **RED** — "declared Tier 4 disagrees with measured write-reachability" |
+
+D and E are the new ones, covering exactly the two routes this round added.
+
+## 23 · Verification
+
+| check | result |
+|---|---|
+| `npx tsc --noEmit` | clean, exit 0 |
+| `npx vitest run` | 191 passed / 1 skipped (192 files); **2327 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo (2356) |
+| `npm run build` | passes, exit 0 — isolated clone, not in place |
+| `git diff --check` | clean |
+
+Guard runtime: config resolution 63 ms, entry graph 649 ms, closure scan ~100 ms.
+
+## 24 · Scope, unchanged
+
+The 38 untriaged scripts are still emitted and still not triaged. Guard 6 fails
+closed on both additions and renames. Naming them removes the silent assumption;
+it does not make their emission safe, and their triage remains follow-up work.
+
+`server/tsconfig.json` is not touched by this round. `server/src` is unchanged,
+so R-1 src-parity holds and the artifact manifest stays
+`59d6cde85ca91bf472fd235c73f87502ffa4f29ffae5ac913b63ad55b8e2099a` / 596 `.js`.

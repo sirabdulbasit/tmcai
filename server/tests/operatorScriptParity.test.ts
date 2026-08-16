@@ -50,10 +50,10 @@ const programScripts = (p: ts.ParsedCommandLine) =>
 // Membership is by PRODUCTION SURFACE, read out of each file. No glob, so a
 // new smoke*.ts inherits nothing.
 //
-// Tiers 4 and 5 were CORRECTED after Codex's LOW on b3a213d: the original scan
-// matched only the Prisma model API (`prisma.<model>.create|update|…`) and
-// never looked for raw SQL, so four scripts that write via `$executeRaw` /
-// `$executeRawUnsafe` were labelled read-only. They are Tier 4 below.
+// Tiers 1-3 are surface classifications read out of each file. Tiers 4 and 5
+// are COMPUTED by guard 9 from the import closure, because hand-labelling got
+// them wrong twice: the first scan saw only the Prisma model API and missed raw
+// SQL, the second added raw SQL and still missed service-mediated writes.
 
 const TIER_1_ACTION_REGISTRY = [
   '_smoke_undo', 'chaosDrill', 'smokeMcp', 'smokeNewSystems', 'smokeNextSession',
@@ -67,27 +67,30 @@ const TIER_3_OUTBOUND_MESSAGING = [
   'smokeBrainOutbound', 'smokeBrainPromptDelegateeEmail', 'smokeBrainPromptProducer',
   'smokeBrainPromptQueue', 'smokeBrainPromptReplyFlow', 'smokeWhatsappVoiceCall',
 ];
-/** Writes production data — via the Prisma model API OR raw SQL. */
+/**
+ * Reaches a production write. MEASURED by guard 9 through the import closure,
+ * not asserted by hand — two rounds of hand-labelling produced two rounds of
+ * Codex LOWs (raw SQL missed, then service-mediated writes missed), so the
+ * classification is now computed and the list below is only its expected value.
+ */
 const TIER_4_PRODUCTION_WRITES = [
   'cleanupBatterySeeds', 'draftTestWaToBasit', 'seedGoldenDataset',
   'smokeOpsManualRetrieval', 'smokeRetrievalFeedback', 'smokeRiskRadarV2',
   'smokeUserPromptOverlay',
-  // corrected from Tier 5 — these write through raw SQL:
-  'loadTestFeed',           // $executeRaw`DELETE FROM feed_events …`
-  'smokeInstructionVeto',   // $executeRawUnsafe × 1
-  'smokeMeetingDigest',     // $executeRawUnsafe × 2
-  'smokeWaDailyLimit',      // $executeRawUnsafe × 5
-];
-/** No write detected through EITHER the Prisma model API or raw SQL. */
-const TIER_5_PRODUCTION_READS = [
+  // direct raw SQL (first correction):
+  'loadTestFeed', 'smokeInstructionVeto', 'smokeMeetingDigest', 'smokeWaDailyLimit',
+  // service-mediated writes (second correction) — e.g. scribeBackfillEmails ->
+  // backfillUserScribe -> prisma.wikiPage.create:
   'diagnoseAttention', 'probeTasks', 'scribeBackfillEmails',
   'smokeBrainIntelligence', 'smokeCommitments', 'smokeCriticality',
-  'smokeFeedback', 'smokeInstructions', 'smokeTenantIsolation',
+  'smokeFeedback', 'smokeInstructions',
 ];
+/** No write reachable anywhere in the import closure. Exactly one script. */
+const TIER_5_NO_WRITE_REACHABLE = ['smokeTenantIsolation'];
 
 const INVENTORY = [
   ...TIER_1_ACTION_REGISTRY, ...TIER_2_BRAIN_ANSWER_PATH, ...TIER_3_OUTBOUND_MESSAGING,
-  ...TIER_4_PRODUCTION_WRITES, ...TIER_5_PRODUCTION_READS,
+  ...TIER_4_PRODUCTION_WRITES, ...TIER_5_NO_WRITE_REACHABLE,
 ];
 
 /**
@@ -128,8 +131,8 @@ describe('operator-script parity — resolved programs, not config text', () => 
     expect(TIER_1_ACTION_REGISTRY.length).toBe(5);
     expect(TIER_2_BRAIN_ANSWER_PATH.length).toBe(10);
     expect(TIER_3_OUTBOUND_MESSAGING.length).toBe(6);
-    expect(TIER_4_PRODUCTION_WRITES.length).toBe(11);
-    expect(TIER_5_PRODUCTION_READS.length).toBe(9);
+    expect(TIER_4_PRODUCTION_WRITES.length).toBe(19);
+    expect(TIER_5_NO_WRITE_REACHABLE.length).toBe(1);
   });
 
   it('2 · every inventory entry exists on disk — no stale exclusions', () => {
@@ -160,12 +163,30 @@ describe('operator-script parity — resolved programs, not config text', () => 
     expect(leaked, `would be emitted into dist: ${leaked.join(', ')}`).toEqual([]);
   });
 
-  it('5 · the two programs differ by exactly the 41', () => {
-    const tc = programScripts(resolveConfig('tsconfig.json'));
-    const bd = programScripts(resolveConfig('tsconfig.build.json'));
-    const diff = [...tc].filter((n) => !bd.has(n)).sort();
-    expect(diff).toEqual([...INVENTORY].sort());
-    expect(tc.size - bd.size).toBe(41);
+  it('5 · the FULL programs differ by exactly the 41, in both directions', () => {
+    // Compares complete normalized fileNames, not just src/scripts basenames.
+    // The basename-only version passed even if an unrelated source file had
+    // vanished from the build program, so it did not support the claim it made.
+    const norm = (p: ts.ParsedCommandLine) =>
+      new Set(p.fileNames.map((f) => f.replace(/\\/g, '/')));
+    const tc = norm(resolveConfig('tsconfig.json'));
+    const bd = norm(resolveConfig('tsconfig.build.json'));
+
+    const expected = INVENTORY
+      .map((n) => join(SERVER, `src/scripts/${n}.ts`).replace(/\\/g, '/'))
+      .sort();
+
+    const onlyTypecheck = [...tc].filter((f) => !bd.has(f)).sort();
+    const onlyBuild = [...bd].filter((f) => !tc.has(f)).sort();
+
+    expect(
+      onlyTypecheck,
+      'typecheck-minus-build must be exactly the 41 operator scripts',
+    ).toEqual(expected);
+    expect(
+      onlyBuild,
+      `build program contains file(s) the typecheck program does not: ${onlyBuild.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('6 · src/scripts is exhaustively partitioned — a new script forces triage', () => {
@@ -204,14 +225,26 @@ describe('operator-script parity — resolved programs, not config text', () => 
 
     for (const file of bd.fileNames) {
       const pre = ts.preProcessFile(readFileSync(file, 'utf8'), true, true);
-      for (const imported of pre.importedFiles) {
-        const r = ts.resolveModuleName(
-          imported.fileName, file, bd.options, ts.sys, cache,
-        );
-        const resolvedFile = r.resolvedModule?.resolvedFileName;
-        if (!resolvedFile || !resolvedFile.includes('/src/scripts/')) continue;
-        if (inventory.has(basename(resolvedFile, '.ts'))) {
-          edges.push(`${basename(file)} -> ${basename(resolvedFile)}`);
+
+      // importedFiles carries import/require/re-export/literal dynamic import.
+      // referencedFiles carries `/// <reference path="…" />`, which TypeScript
+      // also follows into the program — omitting it left a route by which an
+      // emitted file could pull an excluded script back into dist.
+      for (const ref of pre.importedFiles) {
+        const r = ts.resolveModuleName(ref.fileName, file, bd.options, ts.sys, cache);
+        const resolved = r.resolvedModule?.resolvedFileName;
+        if (resolved && inventory.has(basename(resolved, '.ts'))
+            && resolved.includes('/src/scripts/')) {
+          edges.push(`${basename(file)} -import-> ${basename(resolved)}`);
+        }
+      }
+      for (const ref of pre.referencedFiles) {
+        // Triple-slash paths are file paths relative to the referencing file,
+        // not module specifiers, so they are resolved directly.
+        const resolved = join(file, '..', ref.fileName).replace(/\\/g, '/');
+        if (resolved.includes('/src/scripts/')
+            && inventory.has(basename(resolved, '.ts'))) {
+          edges.push(`${basename(file)} -reference-> ${basename(resolved)}`);
         }
       }
     }
@@ -220,6 +253,61 @@ describe('operator-script parity — resolved programs, not config text', () => 
       `emitted code imports excluded operator script(s): ${edges.join(', ')}. ` +
         'The import re-includes them in dist, defeating the exclusion.',
     ).toEqual([]);
+  });
+
+  it('9 · tier 4/5 membership is COMPUTED from the import closure, not declared', () => {
+    // Two rounds of hand-labelling produced two rounds of Codex LOWs: the first
+    // scan saw only `prisma.<model>.write`, the second added raw SQL and still
+    // missed service-mediated writes (scribeBackfillEmails -> backfillUserScribe
+    // -> prisma.wikiPage.create). Hand-reading a file cannot answer "does this
+    // reach a write", so the test computes it and the declared lists are only
+    // the expected value of that computation.
+    const cfg = resolveConfig('tsconfig.json');
+    const cache = ts.createModuleResolutionCache(SERVER, (s) => s, cfg.options);
+    const SRC = join(SERVER, 'src');
+    const WRITE =
+      /prisma\.[a-zA-Z]+\.(create|update|upsert|delete|deleteMany|updateMany|createMany)\b|\$executeRaw(Unsafe)?\s*[`(]/;
+
+    const text = new Map<string, string>();
+    const read = (f: string) => {
+      if (!text.has(f)) {
+        try { text.set(f, readFileSync(f, 'utf8')); } catch { text.set(f, ''); }
+      }
+      return text.get(f)!;
+    };
+
+    const reachesWrite = (name: string): boolean => {
+      const seen = new Set<string>();
+      const stack = [join(SRC, `scripts/${name}.ts`)];
+      while (stack.length) {
+        const f = stack.pop()!;
+        if (seen.has(f)) continue;
+        seen.add(f);
+        const body = read(f);
+        if (!body) continue;
+        if (WRITE.test(body)) return true;
+        const pre = ts.preProcessFile(body, true, true);
+        for (const ref of [...pre.importedFiles, ...pre.referencedFiles]) {
+          const r = ts.resolveModuleName(ref.fileName, f, cfg.options, ts.sys, cache);
+          const rf = r.resolvedModule?.resolvedFileName;
+          if (rf && rf.startsWith(SRC) && !rf.endsWith('.d.ts')) stack.push(rf);
+        }
+      }
+      return false;
+    };
+
+    const candidates = [...TIER_4_PRODUCTION_WRITES, ...TIER_5_NO_WRITE_REACHABLE];
+    const measuredWriters = candidates.filter(reachesWrite).sort();
+    const measuredClean = candidates.filter((n) => !reachesWrite(n)).sort();
+
+    expect(
+      measuredWriters,
+      'declared Tier 4 disagrees with measured write-reachability',
+    ).toEqual([...TIER_4_PRODUCTION_WRITES].sort());
+    expect(
+      measuredClean,
+      'a script declared write-free reaches a write, or vice versa',
+    ).toEqual([...TIER_5_NO_WRITE_REACHABLE].sort());
   });
 
   it('8 · runtime-reachable scripts are NOT excluded — the over-reach control', () => {
