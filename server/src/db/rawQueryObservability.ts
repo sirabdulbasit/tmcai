@@ -263,6 +263,34 @@ export const OBSERVED_RAW_OPERATIONS = [
  *  small a limit truncates exactly the application frame we are after. */
 export const CALLER_STACK_FRAMES = 40;
 
+/**
+ * Wrap the four raw operations on ONE client object, in place.
+ *
+ * Applied to the exported client AND to every transaction client, because a
+ * `tx` handed to a `$transaction` callback is a different object built by
+ * Prisma's internals — wrapping only the top-level client leaves
+ * transactional raw calls completely unobserved. `brainResetRoutes` alone has ten such calls. Missing that would have been the
+ * `protection-with-two-implementations` shape from the inside: one real choke
+ * point, one silent path around it, and a guard that reads as complete.
+ *
+ * `sqlTextOf` is passed in so this module keeps no Prisma dependency.
+ */
+export function installRawQueryObservers(
+  client: Record<string, any>,
+  sqlTextOf: (args: unknown) => string,
+): void {
+  for (const op of OBSERVED_RAW_OPERATIONS) {
+    const original = client[op];
+    if (typeof original !== 'function') continue;
+    const bound = original.bind(client);
+    client[op] = (...args: unknown[]) => {
+      // Synchronous, on the caller's own frames. See `observeRawQuery`.
+      const callerStack = captureCallerStack();
+      return observeRawQuery(op, sqlTextOf(args), callerStack, () => bound(...args));
+    };
+  }
+}
+
 /** Capture the caller's stack. MUST be called synchronously by the wrapper,
  *  on the caller's own stack — see `observeRawQuery`. */
 export function captureCallerStack(): string | undefined {

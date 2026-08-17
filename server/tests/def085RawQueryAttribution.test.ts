@@ -26,6 +26,7 @@ import {
   signatureOf,
   __resetRawQueryObservability,
   captureCallerStack,
+  installRawQueryObservers,
   FINDING_THRESHOLD,
   FINDING_WINDOW_MS,
   RAW_QUERY_FAILED_KIND,
@@ -300,6 +301,9 @@ describe('DEF-085 — the interception has ONE implementation and no bypass', ()
   const prismaSrc = fs.readFileSync(
     path.resolve(__dirname, '../src/db/prisma.ts'), 'utf8',
   );
+  const observerSrc = fs.readFileSync(
+    path.resolve(__dirname, '../src/db/rawQueryObservability.ts'), 'utf8',
+  );
 
   it('observes ALL FOUR raw operations the client exposes', () => {
     // Mutation: dropping an entry leaves that operation unattributed, which is
@@ -312,9 +316,12 @@ describe('DEF-085 — the interception has ONE implementation and no bypass', ()
   it('routes them through the shared observer rather than a second copy', () => {
     const code = stripComments(prismaSrc);
     expect(code).toContain("from './rawQueryObservability'");
-    // ONE wrapper over the shared list, not four hand-written copies.
-    expect(code).toMatch(/for \(const op of OBSERVED_RAW_OPERATIONS\)/);
-    expect((code.match(/observeRawQuery\(/g) ?? []).length).toBe(1);
+    // prisma.ts declares WHERE to observe; the observer owns HOW. There is no
+    // second hand-written copy of the wrapping logic here.
+    expect(code).not.toMatch(/observeRawQuery\(/);
+    const observerCode = stripComments(observerSrc);
+    expect(observerCode).toMatch(/for \(const op of OBSERVED_RAW_OPERATIONS\)/);
+    expect((observerCode.match(/observeRawQuery\(/g) ?? []).length).toBe(1);
   });
 
   it('captures the caller stack SYNCHRONOUSLY, outside the awaited callback', () => {
@@ -323,15 +330,12 @@ describe('DEF-085 — the interception has ONE implementation and no bypass', ()
     // the application frames were already gone and the live client reported
     // `callSite: "unknown"`. Capture must happen on the caller's own stack,
     // before the observer is entered.
-    const code = stripComments(prismaSrc);
-    const capture = code.indexOf('captureCallerStack()');
-    const observe = code.indexOf('observeRawQuery(');
+    const observerCode = stripComments(observerSrc);
+    const capture = observerCode.indexOf('captureCallerStack()');
+    const observe = observerCode.indexOf('observeRawQuery(op,');
     expect(capture).toBeGreaterThan(-1);
+    // Captured on the caller's frames, BEFORE the observer is entered.
     expect(capture).toBeLessThan(observe);
-    // And the observer must take it as a parameter rather than making its own.
-    const observerCode = stripComments(fs.readFileSync(
-      path.resolve(__dirname, '../src/db/rawQueryObservability.ts'), 'utf8',
-    ));
     expect(observerCode).toMatch(/export async function observeRawQuery<T>\(\s*operation: string,\s*sql: string,\s*callerStack: string \| undefined,/);
   });
 
@@ -355,6 +359,49 @@ describe('DEF-085 — the interception has ONE implementation and no bypass', ()
     expect(observerSrc).not.toContain('healthFindingService');
     expect(observerSrc).not.toMatch(/from\s+'\.\.\/services\//);
     expect(observerSrc).toContain('setRawQueryFindingReporter');
+  });
+
+  it('observes a TRANSACTION client too — the bypass production actually proved', () => {
+    // Found the hard way. After the first deploy, production produced 47
+    // anonymous 22021 errors and ZERO attributed lines, because a `tx` handed to
+    // a $transaction callback is a different object built by Prisma's internals
+    // and never went through the top-level wrapper. brainResetRoutes alone makes
+    // ten tx.$executeRawUnsafe calls. One choke point with a silent path around
+    // it is not a choke point.
+    const code = stripComments(prismaSrc);
+    expect(code).toMatch(/\$transaction\s*=/);
+    // The tx object must be observed before the caller's callback runs on it.
+    const install = code.lastIndexOf('installRawQueryObservers(tx');
+    expect(install).toBeGreaterThan(-1);
+    // Mutation: dropping the tx wrapping leaves every transactional raw query
+    // unattributed, which is the state that produced the 47 silent failures.
+    expect((code.match(/installRawQueryObservers\(/g) ?? []).length).toBe(2);
+  });
+
+  it('wraps the four operations on any client object handed to it', () => {
+    // Unit-level proof of the shared installer, independent of Prisma.
+    const calls: string[] = [];
+    const fake: Record<string, any> = {
+      $queryRaw: async () => 'a', $queryRawUnsafe: async () => 'b',
+      $executeRaw: async () => 'c', $executeRawUnsafe: async () => { throw new Error(REAL_22021); },
+      notRaw: async () => 'untouched',
+    };
+    const before = fake.notRaw;
+    const originals = Object.fromEntries(OBSERVED_RAW_OPERATIONS.map((o) => [o, fake[o]]));
+    installRawQueryObservers(fake, () => 'SELECT 1');
+    // Mutation: dropping an operation from the list leaves it un-wrapped here.
+    for (const op of OBSERVED_RAW_OPERATIONS) expect(fake[op]).not.toBe(originals[op]);
+    expect(fake.notRaw).toBe(before);          // only raw ops are touched
+    return fake.$executeRawUnsafe('x').catch((e: Error) => {
+      expect(e.message).toContain('22021');    // still rethrown
+      calls.push('rethrew');
+      expect(calls).toEqual(['rethrew']);
+    });
+  });
+
+  it('leaves the array form of $transaction alone — it carries no client to wrap', () => {
+    const code = stripComments(prismaSrc);
+    expect(code).toMatch(/typeof arg !== 'function'/);
   });
 
   it('reads only the statement text, never the parameters, when building the shape', () => {

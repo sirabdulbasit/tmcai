@@ -1,10 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { currentTenant } from './tenantContext';
-import {
-  observeRawQuery,
-  captureCallerStack,
-  OBSERVED_RAW_OPERATIONS,
-} from './rawQueryObservability';
+import { installRawQueryObservers } from './rawQueryObservability';
 
 const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -265,13 +261,26 @@ const prisma = base.$extends({
  * failure says where it came from, and a REPEATING failure becomes a health
  * finding without anyone asking — rung 1's definition, capability_contract.md:214.
  */
-for (const op of OBSERVED_RAW_OPERATIONS) {
-  const original = (prisma as any)[op].bind(prisma);
-  (prisma as any)[op] = (...args: unknown[]) => {
-    const callerStack = captureCallerStack();
-    return observeRawQuery(op, sqlTextOf(args), callerStack, () => original(...args));
-  };
-}
+installRawQueryObservers(prisma as any, sqlTextOf);
+
+/**
+ * The transaction path, which the first deploy missed and production proved it
+ * missed: after `c769cb4` shipped, 47 anonymous `22021` errors appeared with
+ * ZERO attributed lines, because a `tx` handed to a `$transaction` callback is a
+ * different object built by Prisma's internals and never passed through the
+ * wrapper above. `brainResetRoutes` alone makes ten transactional raw-execute
+ * calls. One choke point with a silent path around it is not a choke point.
+ */
+const originalTransaction = (prisma as any).$transaction.bind(prisma);
+(prisma as any).$transaction = (arg: unknown, ...rest: unknown[]) => {
+  // The array form (`$transaction([p1, p2])`) carries no client to wrap; those
+  // promises were already created through the wrapped methods.
+  if (typeof arg !== 'function') return originalTransaction(arg, ...rest);
+  return originalTransaction((tx: Record<string, any>) => {
+    installRawQueryObservers(tx, sqlTextOf);
+    return (arg as (t: unknown) => unknown)(tx);
+  }, ...rest);
+};
 
 /**
  * The statement text out of whichever arg shape the operation uses: the
