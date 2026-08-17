@@ -32,16 +32,18 @@ const contractRaw = fs.readFileSync(p('src/services/knowledge/reasoningCompose.t
 
 describe('DEF-205 — the decline reply comes from the owner-facing field', () => {
   it('prefers answerText over declineReason', () => {
-    // Mutation: reverting to `result.declineReason || ...` restores the exact
-    // B11 defect — an internal note handed to the owner as his reply.
-    expect(dispatchCode).toMatch(/answer:\s*result\.answerText \|\| result\.declineReason \|\|/);
-    expect(dispatchCode).not.toMatch(/answer:\s*result\.declineReason \|\|/);
+    // DEF-206 SUPERSEDED the exact expression: the fallback is no longer the raw
+    // reason but a marker wrapping it, because the decider kept not filling
+    // answer_text. The PROPERTY this test guards is unchanged and now stronger —
+    // answerText wins, and the raw reason is never the reply.
+    expect(dispatchCode).toMatch(/answer:\s*result\.answerText\?\.trim\(\) \|\| declineMarker\(result\.declineReason\)/);
+    expect(dispatchCode).not.toMatch(/answer:\s*result\.declineReason/);
   });
 
-  it('keeps declineReason as a fallback, so an old-shaped decision still says something true', () => {
-    // Not removed: a decider that filled only the old field must not fall
-    // through to the bracketed marker, which would be a regression in honesty.
-    expect(dispatchCode).toMatch(/result\.declineReason/);
+  it('keeps declineReason as the fallback CONTENT, so nothing true is lost', () => {
+    // Still the fallback — DEF-206 only changed how it is DELIVERED (wrapped as
+    // a marker so the owner-facing renderer frames it), not whether it survives.
+    expect(dispatchCode).toMatch(/declineMarker\(result\.declineReason\)/);
   });
 
   it('still ends at a bracketed system marker, never hardcoded English', () => {

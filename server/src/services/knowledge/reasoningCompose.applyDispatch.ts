@@ -19,6 +19,20 @@ import { dispatchAction } from './genericActionDispatcher';
 import { recordResolution, findResolution } from './clarificationMemoryService';
 import { validateReasoningAction } from './reasoningCompose';
 
+/**
+ * DEF-206 — wrap a decline reason as a bracketed system marker.
+ *
+ * The payload is cleaned for the curated rule's own regex
+ * (`/^\s*\[declined:\s*([^\]]+)\]\s*$/`): a `]` inside the reason would
+ * terminate the marker early and leak the tail as bare prose, and a newline
+ * would stop it matching as a WHOLE marker — which is the shape test that
+ * decides whether it gets rendered at all.
+ */
+export function declineMarker(reason: string | null | undefined): string {
+  const clean = String(reason ?? '').replace(/[\[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  return clean ? `[declined: ${clean}]` : `[declined: no reason captured from decider]`;
+}
+
 /** Build a ComposeResult envelope from a reasoning decision. Wires
  *  dispatch / clarification memory / safety gates as appropriate. */
 export async function applyReasoningDecision(args: {
@@ -63,7 +77,24 @@ export async function applyReasoningDecision(args: {
       // The answerSanitizer rewrites the marker to human-readable text on the
       // way out.
       return {
-        answer: result.answerText || result.declineReason || `[declined: no reason captured from decider]`,
+        // DEF-206 — the internal note can no longer reach him UNWRAPPED.
+        //
+        // DEF-205 preferred `answerText` and told the contract to require it on
+        // decline. The decider ignored that: B11 came back as
+        // "The user requested an action (initiating a WhatsApp call) that is not
+        // supported by the available tools or actions" — `decline_reason`
+        // verbatim, third person, C6 90 -> 70, C5 85 -> 70, C1 100 -> 85, C4 50.
+        // Asking the model to fill a field is not a guarantee; this is.
+        //
+        // The reason still travels — nothing is lost — but as a MARKER PAYLOAD,
+        // so the ONE existing owner-facing renderer decides how he hears it.
+        // `answerSanitizer`'s curated rule turns `[declined: X]` into
+        // "I can't do that: X" (answerSanitizer.ts:119-123), which is verbatim
+        // what the judge asked for: "could be clearer by stating 'I can't'".
+        // On WhatsApp `sanitizeAnswerInBrainVoice` rewrites the whole marker in
+        // Brain's voice instead. Either way the framing is owner-facing and it
+        // is chosen in one place, not by whatever the decider happened to type.
+        answer: result.answerText?.trim() || declineMarker(result.declineReason),
         citedPageIds: [],
         gaps: [],
         sources: [],
