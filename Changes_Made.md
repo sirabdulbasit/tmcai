@@ -2890,3 +2890,34 @@ Codex's iteration-1 review of DEF-193 closed WRONG on three counts: `(+N more no
 ### Known issues deliberately not fixed
 
 Codex's HIGH #3 — an oversized list headed "here is the full list" is still shortened under an unchanged completeness claim. The claim is composed before the budget is known, so no transport-layer change makes "full" true; closing it needs the composition boundary to know the channel budget (his directive 3), a composer change deliberately not attempted inside a remediation turn. His MEDIUM #4 (WhatsApp brevity now has no shared enforcement, only composer format rules) and MEDIUM #5 (the C4 register gate behind B10/B12/B02/B06) are likewise open and recorded in DEF-194. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
+
+## 46. DEF-194 (deeper) — the consolidation reaches all four WhatsApp truncators, and the escalation ruling (2026-08-17, BUILDER: Claude — orchestrator iteration 2, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+§45 closed Codex's CRITICAL and both HIGHs by putting one transport policy behind `channelRenderer` and `WhatsAppInbound.sendReply`. A grep for the remaining slicers showed that covered only **two of four** independent WhatsApp truncators. The other two:
+
+- `whatsappNotifierService.ts:99` — `body.slice(0, 4096)` on the **proactive push path**, which is where the owner's notices go. A blind cut severs a word, a bullet, or a phone number mid-digit, with no marker at all.
+- `whatsappService.ts:363` — `sanitizeOutbound`'s `.slice(0, 4096)`.
+
+### Confirmed root cause
+
+`protection-with-two-implementations` was worse than the review stated: not two implementations but four. A fix landing on any one was invisible on the others, which is precisely why the previous turn's careful work could be true and still not reach the owner.
+
+### Files changed (complete list, commit `0ab6288`)
+
+- `server/src/services/notifications/whatsappNotifierService.ts` — the provider clamp calls `fitToTransport(body, 4096)`.
+- `server/src/services/whatsappService.ts` — `sanitizeOutbound` calls `fitToTransport(stripped, 4096)`; imports the dependency-free policy module.
+- `server/tests/def194OneTransportBudget.test.ts` — the parity guard is now exhaustive over all four sites, asserts no site keeps a blind `.slice(0, 4096|3900)` or its own bare `'...'`, adds a proactive-path block-integrity test, and **strips comments before asserting** — the first version of the guard passed by reading these files' own prose about the code they replaced.
+
+### The escalation ruling (rail: accept as known limitation, or revert?)
+
+**(a) Accept as a known limitation with a DEF row — not (b) revert.** The remaining finding (HIGH #3, the "here is the full list" claim above a shortened list) is not introduced by this work and is strictly improved by it: before DEF-193 an oversized list was severed *mid-item* under the same false claim, so the claim was equally untrue **and** the content was mutilated. Reverting would restore the 1000-char guillotine that severed the day brief (owner-reported, Basit 2026-05-20), the mid-item severing, and the four-way drift — strictly worse for the owner than the recorded limitation. Closing it properly requires composition to know the channel budget before it promises (Codex's directive 3), which is a composer change and new work.
+
+### Tests added / verification (measured after the last code edit, at `0ab6288`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 196 files — 194 passed, 1 failed, 1 skipped; 2,422 tests — 2,391 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py`. `git diff --check` clean. Actual `npm run build` at `0ab6288` in the fully isolated clean clone: generate + emit OK.
+
+### Known issues deliberately not fixed
+
+HIGH #3 (completeness claim), MEDIUM #4 (no shared brevity enforcement for WhatsApp — only composer format rules), MEDIUM #5 (the C4 register gate behind B10/B12/B02/B06). All three recorded in DEF-194 and all three needing composition-side work. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.

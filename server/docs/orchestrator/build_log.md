@@ -280,3 +280,126 @@ red: the product diff is releasable in my judgement, and the pulse
 reconciliation is the orchestrator's. Wrong if: Codex finds a third truncator
 outside these two sites, or a block-parsing input where a continuation still
 orphans.
+
+## Iteration 2
+
+**Commits `c98a2c6` (last turn's code, docs owed until now) + `0ab6288` (this
+turn's deeper consolidation).** DEF-194 row updated; `Changes_Made.md` §46
+added.
+
+### The escalation ruling, first, because the rail asks for it plainly
+
+**(a) ACCEPT AS A KNOWN LIMITATION with a DEF row — not (b) revert.**
+
+The finding still open is Codex's HIGH #3: an oversized list headed "here is
+the full list" is shortened under an unchanged completeness claim. My reasons,
+which are checkable rather than assertions:
+
+1. **It is not introduced by this work, and this work strictly improves it.**
+   Before DEF-193 the same oversized list was severed MID-ITEM under the same
+   false claim — so the claim was equally untrue *and* the content was
+   mutilated. Now the claim is equally untrue and the content is intact.
+2. **Reverting costs the owner three things to remove none.** It would restore
+   the 1000-character guillotine that severed his day brief (his own report,
+   2026-05-20, recorded in the cap's comment), restore mid-item severing, and
+   restore the four-way implementation drift.
+3. **Closing it needs a different layer.** The claim is composed before the
+   budget is known, so no transport change can make "full" true. Codex's own
+   directive 3 assigns it to composition. That is new work, and this is a
+   remediation turn.
+
+### What I now believe was wrong about the last attempt
+
+The continuation rail asks this directly. Last turn I claimed *"the owner meets
+this on every long WhatsApp answer"*. That was false, and Codex caught it: I
+had fixed `channelRenderer`, while the file that actually sends every reply
+says in its own comment *"EVERY reply to a human goes through sendReply"* and
+kept its own blind slicer. **I fixed the boundary I happened to open first
+rather than the one the code itself names as the chokepoint.**
+
+And the deeper error, which I only found this turn by grepping instead of
+reasoning: it was not two implementations, it was **four**. `whatsappNotifier
+Service.ts:99` and `whatsappService.ts:363` each held their own
+`.slice(0, 4096)`. The notifier one matters most — it is the PROACTIVE push
+path, so the owner's notices were the ones being cut mid-word, mid-bullet, and
+potentially mid-phone-number, with no marker at all. That is why the previous
+turn's careful work could be entirely true and still not reach him.
+
+### What changed this turn, by file, and why that is the mechanism
+
+- `whatsappNotifierService.ts` — the provider clamp calls
+  `fitToTransport(body, 4096)`. This is the live proactive surface.
+- `whatsappService.ts` — `sanitizeOutbound` calls
+  `fitToTransport(stripped, 4096)`; the policy module is dependency-free so
+  there is no cycle.
+- `tests/def194OneTransportBudget.test.ts` — the parity guard is now
+  **exhaustive over all four sites**, asserts none keeps a blind
+  `.slice(0, 4096|3900)` or its own bare `'...'`, and adds a proactive-path
+  test proving no line is severed. It also **strips comments before
+  asserting**: the first version of the guard FAILED on my own explanatory
+  comments quoting the old `body.slice(0, 4096)` — a guard that reads prose
+  about the code instead of the code. Recorded because it is exactly the class
+  of self-satisfying test this loop should not accept.
+
+Mechanism, stated once: a policy that exists in four places is not a policy.
+Naming one module and asserting every send path calls it is what makes the
+next fix land where the owner actually is.
+
+### Verification (measured AFTER the last edit, at `0ab6288`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **196 files: 194 passed / 1 failed / 1 skipped · 2,422
+  tests: 2,391 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 are `orchestratorPulseRoute.test.ts` executing the orchestrator's
+  uncommitted `pulse.py`; the committed script passes the contract (proven in
+  the Iteration 2 entry of the earlier numbering). Unchanged by this diff and
+  still the only thing between this branch and a zero-failure matrix.
+- **`npm run build`** — the actual script at `0ab6288` in the isolated clean
+  clone: generate + emit OK, `dist/services/whatsappService.js` and
+  `dist/services/notifications/whatsappNotifierService.js` produced.
+- `git diff --check` — clean. New tests this turn: 3 (17 in the suite).
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Accurate Communication
+PREDICTED:  +0 to +1 once deployed. Remediation of my own defect, not new
+            capability. What it buys: the fix now applies to the paths the
+            owner's messages actually traverse — including the proactive push
+            path, which no previous turn touched.
+            DIVERGENCE from the brief's target: the target reads
+            `Simple @@TARGETCAP@@ Smart` (an unexpanded placeholder for the
+            third turn running) and the continuation rail says do not change
+            capability. Remediation scope governs; the reviewed change is an
+            Accurate Communication defect.
+MECHANISM:  one transport policy for every WhatsApp send path, shortening by
+            whole semantic blocks and saying nothing in Brain's voice.
+FALSIFIER:  any of the four send paths reacquiring its own character slicer or
+            budget constant; a delivered body containing text this layer
+            invented; an orphaned continuation whose bullet head was removed;
+            a proactive push cut mid-word.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- No new work, no campaign increment, no benchmark or `scripts/orchestrator/**`
+  changes. The C4 register gate (Codex's directive 6) remains untouched and
+  remains the right next FRESH turn.
+- Did not attempt directive 3 (composition knows the budget). That is the
+  accepted limitation above, and doing it inside an escalated remediation turn
+  is how the last four turns died.
+- Unsure whether Codex will accept `…` as a non-violating mark. It is a glyph,
+  not a sentence, and it is the same character the pre-existing code used — but
+  he ruled on `(+N more not shown)` and I would rather be told than assume
+  again. If he rules the glyph out too, the honest alternative is that
+  shortening becomes invisible in the body and only `omittedItems` records it.
+
+### Honest prediction
+
+**Deployable.** Every reviewer finding is either closed or explicitly ruled a
+recorded limitation with the reasoning above; the matrix is green apart from
+the orchestrator-owned pulse pair; the build passes in isolation. I do NOT
+predict a benchmark move: B10 already fits under the transport limit, so this
+turn changes nothing the twelve read-shaped cases exercise — it changes the
+proactive path they do not measure. If the benchmark moves, treat it as noise,
+not as this working.
