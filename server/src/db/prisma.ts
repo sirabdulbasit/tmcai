@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { currentTenant } from './tenantContext';
-import { installRawQueryObservers } from './rawQueryObservability';
+import { installRawQueryObservers, noteObserversInstalled } from './rawQueryObservability';
 
 const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -261,7 +261,7 @@ const prisma = base.$extends({
  * failure says where it came from, and a REPEATING failure becomes a health
  * finding without anyone asking — rung 1's definition, capability_contract.md:214.
  */
-installRawQueryObservers(prisma as any, sqlTextOf);
+noteObserversInstalled('client', installRawQueryObservers(prisma as any, sqlTextOf));
 
 /**
  * The transaction path, which the first deploy missed and production proved it

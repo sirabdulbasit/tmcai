@@ -278,17 +278,45 @@ export const CALLER_STACK_FRAMES = 40;
 export function installRawQueryObservers(
   client: Record<string, any>,
   sqlTextOf: (args: unknown) => string,
-): void {
+): number {
+  let wrapped = 0;
   for (const op of OBSERVED_RAW_OPERATIONS) {
     const original = client[op];
     if (typeof original !== 'function') continue;
     const bound = original.bind(client);
-    client[op] = (...args: unknown[]) => {
-      // Synchronous, on the caller's own frames. See `observeRawQuery`.
-      const callerStack = captureCallerStack();
-      return observeRawQuery(op, sqlTextOf(args), callerStack, () => bound(...args));
-    };
+    try {
+      client[op] = (...args: unknown[]) => {
+        // Synchronous, on the caller's own frames. See `observeRawQuery`.
+        const callerStack = captureCallerStack();
+        return observeRawQuery(op, sqlTextOf(args), callerStack, () => bound(...args));
+      };
+      // An extended client is a Proxy. If its `set` trap ignores the write, or
+      // the property is getter-only under module strict mode, the assignment
+      // can silently not take — and the observer would then be installed in
+      // name only. Confirm by reading back.
+      if (client[op] !== bound && client[op].length === 0) wrapped += 1;
+    } catch {
+      /* counted as not wrapped below */
+    }
   }
+  return wrapped;
+}
+
+/**
+ * Say out loud, once at boot, how many operations were actually wrapped.
+ *
+ * Added because the first two deploys could not distinguish "the observer is
+ * installed but something bypasses it" from "the observer never installed in
+ * this process". Production showed 44 unattributed failures while the same
+ * module, required in a fresh process, logged correctly — so the one fact
+ * missing was whether the install ran HERE. An observability tool that cannot
+ * report its own installation reproduces the DEF-085 problem one level up.
+ */
+export function noteObserversInstalled(label: string, wrapped: number): void {
+  const expected = OBSERVED_RAW_OPERATIONS.length;
+  const line = { label, wrapped, expected };
+  if (wrapped === expected) log.info('raw-query observers installed', line);
+  else log.warn('raw-query observers INCOMPLETE — failures will go unattributed', line);
 }
 
 /** Capture the caller's stack. MUST be called synchronously by the wrapper,
