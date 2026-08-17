@@ -3370,3 +3370,46 @@ Reverting restores a guard above an asynchronous gap that Codex has now named tw
 **Unsure: transaction duration under load.** The boundary holds up to `OWED_ROWS_PER_NOTICE` (200) per-row updates plus one insert, against Prisma's 5s default interactive-transaction timeout. Not measured against production row counts.
 
 **Still open from Codex's iteration-4 list:** HIGH 4 (the 200-row cap starving unclaimed debt behind claimed rows) and directive 5 (`delegationFollowUpJob` settings authority and tenant scope). Named, not dropped.
+
+## 60. DEF-209 — the receipt was the reply, and the question was only half answered (2026-08-17, BUILDER: Claude — orchestrator iteration 5, remediation 2/3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Regression guard fired on `B04-outstanding-question-ignored`: C6 85→40, C5 90→50, C3 90→60, C4 90→60, C1 100→80, mean **94.4 → 73.8**. The entire reply was *"Proceeding with update open item."* Judge: *"Brain only handled the 'priority' part of its original question, completely ignoring the 'deadline'"*, *"sounds robotic and templated"*, *"unclear if this action has actually been initiated"*.
+
+### Root cause — two defects in one three-word string, at two sites
+
+**(a) `guard-destroys-the-answer`.** `reasoningCompose.applyDispatch.ts:155` fell back to `` `Proceeding with ${type}.` ``, and `brainComposer.ts:3357` overwrote the model's prose unconditionally — its own comment: *"replace whatever confused prose the main compose produced with a neutral descriptive line"*. That is the member Codex named (*"DEF-144 showed the equivalent success-renderer failure, where a deterministic receipt replaced useful model prose"*), and it is hardcoded English pretending to be Brain, which the standing memory rule forbids.
+
+**(b) The outstanding question.** Brain asked for a priority AND a deadline, got the priority, and never mentioned the deadline again. Neither site *could* have chased it: neither was ever told what the previous turn asked for. The information existed — Brain's last message in `history`, the filled slots in the action payload — and nothing compared them.
+
+**What was wrong with my last attempts:** DEF-205 and DEF-206 fixed the *decline* branch of the same function, twice, and I never looked one case down at the *act* branch, which had the identical defect in a worse form. DEF-206 even established the pattern that fixes this — wrap the internal value as a marker, let the one curated renderer speak it — and it sat unused three lines away.
+
+### Files changed
+
+- `server/src/services/knowledge/actionReceipt.ts` (new) — `requestedSlots` (gated on the turn being a question), `filledSlots` (blank/null/empty-array is NOT filled), `outstandingSlots`, `lastBrainQuestion`, and `actionReceiptMarker`, a **provenance-stamped** `systemMarker('proceeding: {JSON}')`. Provenance matters concretely: `isWholeMarker`'s regex is `[^\]]{2,200}`, so the `]` closing a JSON array makes the shape test false and a bare bracketed payload would reach the owner as raw internal text.
+- `server/src/services/knowledge/answerSanitizer.ts` — `proceedingMarkerMeaning`, computed and validated (an unknown slot key rejects to null), stating two facts: the action is under way and **not yet confirmed**, and which part of the earlier question is still unanswered. The vocabulary is imported from the constructor, so parser and builder cannot drift.
+- `server/src/services/knowledge/reasoningCompose.applyDispatch.ts` — prose wins; the marker is the fallback; the history is threaded in.
+- `server/src/services/knowledge/brainComposer.ts` — the decider commits to the action but no longer deletes the reply; only an empty answer falls back.
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — **Codex iteration-4 MEDIUM 4 closed**: the owed-row query pages past claimed rows, bounded at 10 pages, and logs when the bound is hit, so a permanently failing clear in the first 200 cannot starve row 201.
+- `server/tests/def209ActionReceipt.test.ts` (21 tests) and `server/tests/def186SelfPruneWithdrawnNotice.test.ts` (+1 starvation test at real size: 200 stuck rows and one newer).
+
+### Rollback considered and rejected
+
+Reverting restores a template as the owner's reply and re-drops the unanswered half of Brain's own question.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 205 files — 204 passed, 1 skipped; 2,592 tests — **2,563 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (the template confirmed gone from the emitted JS with comments stripped; the marker builder confirmed present; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+**Ten mutants applied and RUN, all ten die:** treat any prose as an open question · a blank value counts as filled · read the last turn whoever said it · drop marker provenance · accept an unknown slot key · the fact claims completion · the reasoning path prefers the template · the legacy decider overwrites prose again · read one page only · never advance the page offset.
+
+### Known issues deliberately not fixed
+
+**When the decider produces prose, the outstanding slot is not appended.** Prose wins and the marker never runs; appending hardcoded English to LLM prose is the rule this fix obeys. Closing that half needs the reasoning contract to carry outstanding slots as input — a separate turn. B04's `answerText` was empty, so the measured case is covered.
+
+**The vocabulary is four slots** (priority, due date, owner, title). A question outside it leaves nothing outstanding — deliberate, because a false open question is its own fabrication.
+
+**Unsure whether C5 fully recovers:** the judge wanted Brain to ask *before* proceeding; this proceeds *and* asks. If the case demands withholding the dispatch, that is a decider change.
+
+**Unlike DEF-208, this is owner-visible if deployed** — no feature gate stands between it and a live reply.

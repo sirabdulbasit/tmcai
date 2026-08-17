@@ -2511,3 +2511,133 @@ on an existing capability, not a new one). **MECHANISM:** the announcement and t
 asserts commit together. **FALSIFIER:** a `[selfpruning_withdrawn]` message names an item whose
 status is not CANCELLED as of the queue row's `created_at` — or the transaction times out under
 production row counts, which would show as `errors` climbing with `noticesEnqueued` at zero.
+
+## Iteration 5 — the receipt was the reply, and the question was only half answered (DEF-209)
+
+**Mode: structural · REMEDIATION attempt 2/3 · regression guard FIRED · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer`**
+
+### 0. The fix-queue entry I targeted, quoted
+
+`B04-outstanding-question-ignored`, mean **94.4 → 73.8**. The whole reply was:
+
+> "Proceeding with update open item."
+
+> C6 85→40 "Brain only handled the 'priority' part of its original question, completely
+> ignoring the 'deadline'."
+> C5 90→50 "Brain did not ask for the missing information (deadline) before 'proceeding'."
+> C3 90→60 "Brain proceeded without asking for the deadline, which was still outstanding."
+> C4 90→60 "sounds robotic and templated, not like a competent human assistant."
+> C1 100→80 "implies that an action is being taken, but it's unclear if this action has
+> actually been initiated."
+
+**Criteria I expect to move: C1, C3, C4, C5, C6 on B04.**
+
+### 1. What I now believe was wrong with the last attempt
+
+The continuation asks this directly. DEF-205 and DEF-206 fixed the **decline** branch of
+`applyReasoningDecision` — twice — and I never looked one case down at the **act** branch, which
+had the identical defect in a worse form. DEF-206's own lesson was *"asking a model to fill a
+field is not a guarantee; the fix has to be in code"*, and I applied that lesson to exactly one
+of the four branches that produce owner-facing text from that function. The class was
+`guard-destroys-the-answer`; I closed one member and called the shape handled.
+
+Worse: DEF-206 established the pattern that fixes this — wrap the internal value as a marker and
+let the ONE curated renderer speak it. That pattern was sitting there unused three lines away.
+
+### 2. Circling or progressing
+
+**Circling — `guard-destroys-the-answer` is 8 in chart §3** — so structural mode forbade another
+string edit, and this changes the mechanism rather than the wording.
+
+### 3. What changed, and why that is the mechanism
+
+**`src/services/knowledge/actionReceipt.ts` (new).** The comparison nobody was making:
+
+- `requestedSlots(priorQuestion)` — what Brain asked for, gated on the turn being a question at
+  all, so a statement full of slot words leaves nothing open;
+- `filledSlots(payload)` — what the action ACTUALLY sets. A key present but blank, null or an
+  empty array is **not** filled; treating it as filled is how a slot goes silently unchased;
+- `outstandingSlots` — the difference, which is the answer to "what did he not answer?";
+- `lastBrainQuestion(history)` — walks back past the owner's reply to Brain's own last turn.
+
+**The receipt is a provenance-stamped structured marker**, `systemMarker('proceeding: {JSON}')`.
+JSON body for the DEF-175 reason (escaping is the field boundary), and `systemMarker()` because
+of DEF-169: `isWholeMarker` is a SHAPE test whose regex is `[^\]]{2,200}`, so the `]` closing a
+JSON array makes it false — a bare bracketed payload would never be recognised and the raw
+internal text would reach the owner. That is pinned by a test rather than left as a comment.
+
+**`answerSanitizer.proceedingMarkerMeaning`** computes the fact and REJECTS anything the
+constructor cannot have produced, including a slot key outside the shared vocabulary. Two facts
+only: the action is *under way and not yet confirmed* (C1's complaint, answered honestly rather
+than by claiming completion), and which part of the earlier question is still unanswered.
+`sanitizeAnswerInBrainVoice` then chooses the words — which is what stops it reading as a
+template, and is the C4 half.
+
+**Both receipt sites now prefer the model's prose.** `reasoningCompose.applyDispatch.ts` falls
+back to the marker only on an empty answer; `brainComposer.ts` no longer overwrites
+unconditionally. Its old comment said the quiet part out loud — *"replace whatever confused prose
+the main compose produced with a neutral descriptive line"* — which is `guard-destroys-the-answer`
+written down as policy.
+
+**Codex iteration-4 MEDIUM 4, also closed** (`openItemsBacklogCleanupJob.ts`): the owed-row query
+pages past claimed rows, bounded at 10 pages, and logs when the bound is hit — so a permanently
+failing clear in the first 200 can no longer starve row 201, and a silent stop can no longer be
+mistaken for "no debt".
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  204 passed | 1 skipped (205)
+                    Tests  2563 passed | 7 expected fail | 21 skipped | 1 todo (2592)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the template is confirmed GONE from the
+                                   emitted JS with comments stripped, and the marker builder
+                                   confirmed present)
+git diff --check    clean
+```
+
+**22 new tests. 10 mutants applied and RUN, all 10 die:**
+
+| mutant | result |
+|---|---|
+| treat any prose as an outstanding question (drop the `?` gate) | DIED |
+| a present-but-blank value counts as filled | DIED |
+| read the last turn whoever said it | DIED |
+| drop marker provenance — emit a bare bracketed payload | DIED |
+| accept an unknown slot key in the parser | DIED |
+| the fact claims completion | DIED |
+| the reasoning path prefers the template over the prose | DIED |
+| the legacy decider overwrites the prose unconditionally again | DIED |
+| read one page only (the original starving query) | DIED |
+| never advance the page offset | DIED |
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **When the decider DOES produce prose, the outstanding slot is not appended.** Prose wins and
+  the marker never runs. Appending hardcoded English to LLM prose is precisely the rule this fix
+  obeys, so closing that half needs the reasoning contract to carry the outstanding slots as
+  INPUT — a separate turn. B04's answerText was empty, so this case is the measured one.
+- **The vocabulary is four slots** (priority, due date, owner, title). A question outside it
+  leaves nothing outstanding. Deliberate: a false open question is its own fabrication, pointing
+  the other way.
+- **Dropped: the C-3 campaign increment**, plainly. The regression guard fired on an
+  owner-visible Accurate Communication case and the brief orders that first.
+- **Unsure whether C5 fully recovers.** The judge wanted Brain to ask BEFORE proceeding; this
+  proceeds *and* asks. If the case demands withholding the dispatch, that is a decider change,
+  not a renderer change, and this will move C6/C3/C1 more than C5.
+
+### 6. Deployability, predicted explicitly
+
+**Deployed=no** — the orchestrator owns the phase. **But unlike last turn, I predict this one IS
+owner-visible if deployed**: no feature gate stands between it and a live reply. Every dispatch
+turn that previously produced `Proceeding with <type>` now produces Brain's own sentence, and a
+half-answered question gets chased.
+
+### 7. Falsifier
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a dispatch turn
+still reaching him as `Proceeding with <type>`; or Brain proceeding after a two-part question with
+one part answered and never naming the other; or B04 failing to recover materially, which would
+mean the low score came from the decider's choice to dispatch rather than from the sentence.
