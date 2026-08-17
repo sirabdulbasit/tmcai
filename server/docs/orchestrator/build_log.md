@@ -1107,3 +1107,72 @@ observed list; drop the transaction wrapping.
 - **Deployable at the end of this turn: YES**, and two deploys already happened this
   session (D-27 `90587e0`, D-28 `c769cb4`). `7a66824` is committed, green, and NOT yet
   deployed — the honest state is `deployed=no` for that commit specifically.
+
+### CORRECTION AND RESULT — DEF-085 IS DIAGNOSED (appended 17:15 UTC, same turn)
+
+Two corrections to the entry above, both in the direction of "I was wrong", recorded
+before Codex has to find them.
+
+**1. `7a66824` IS deployed.** The entry says `deployed=no` for it. The orchestrator
+deployed it at 17:08 (`deployed-sha` = `7a66824`, process started 17:08:18 from a dist
+built 17:08:08–17:08:15). That statement was true when written and is now stale.
+
+**2. I briefly concluded the falsifier had refuted the change a second time. That
+conclusion was mine and it was wrong — I grepped the wrong file.** `log.warn` goes to
+stderr, so the attributed lines are in `tmcai-server-error.log`; I was counting
+`tmcai-server-out.log`, found zero, and started hunting a third bypass that does not
+exist. The lesson is the same one the transaction bypass taught: check the instrument
+before concluding from its silence.
+
+**THE ANSWER, after ten days of "cause unknown":**
+
+```
+callSite     src/services/triage/criticalityEngineService.ts:289
+operation    $queryRawUnsafe
+sqlState     22021
+sqlShape     SELECT id, title, page_type AS "pageType",
+             SUBSTRING(COALESCE(body_markdown,'?'), ?, ?) AS snippet
+             FROM wiki_pages WHERE client_number = $? AND status = '?' …
+occurrences  44 in one window; 138 attributed lines since the deploy
+signatures   ONE — a single call site accounts for the whole class
+```
+
+**Root cause, reproduced read-only against production:**
+
+```
+select count(*) from wiki_pages
+ where octet_length(body_markdown) > 280
+   and length(substring(body_markdown from 1 for 280)) <> 280;
+ERROR:  invalid byte sequence for encoding "UTF8": 0xe2
+```
+
+`wiki_pages.body_markdown` is `text`, but some rows hold bytes that are NOT valid
+UTF-8. `octet_length` succeeds because it is byte semantics; `length` and `substring`
+must DECODE, so the snippet projection at line 289 fails on those rows every time the
+criticality engine runs. My earlier reasoning — "the value is reaching Postgres as raw
+BYTES, and a JS `.slice()` cannot produce `0xe2 0x80`" — was right about the mechanism
+and wrong about the direction: the bytes are not being SENT, they are already STORED,
+and the read is what trips.
+
+This also explains the two things that made it look unfindable. The cadence matched no
+job interval because it is per-ROW, not per-tick. And it survived every restart because
+the corruption is in the data, not the process.
+
+**What this means for the class, stated carefully:** DEF-085's row moves from OPEN
+(cause unknown) to OPEN (cause known, fix not built). Two things are now separable and
+neither is done:
+  (a) the READER is fragile — one corrupt row silently kills the whole criticality
+      snippet query, and the caller's `.catch` turns that into an empty result, so
+      criticality scoring has been running without wiki context for at least a month;
+  (b) the DATA is corrupt — some `wiki_pages.body_markdown` rows are invalid UTF-8,
+      and I have NOT counted them, because every counting predicate that decodes hits
+      the same error. That count is the first task of the next turn.
+
+I am not fixing either in this turn. (a) is a genuine repair and (b) touches production
+data, and neither should be improvised at the end of a turn whose verification numbers
+are already published. What I will say plainly is that this is the first time this
+defect has had a file, a line and a mechanism, and that came from the mechanism built
+this turn rather than from more reading.
+
+**Falsifier outcome: the prediction held.** "A raw query fails on production and no
+line appears carrying a callSite" — a line appeared, with a callSite, 138 times.
