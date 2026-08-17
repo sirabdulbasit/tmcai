@@ -148,3 +148,135 @@ move on B10; if the benchmark shows C6 unchanged AND a fresh run still ends
 B10 with an ellipsis, I was wrong about the mechanism and the cut is happening
 somewhere I have not found. If C6 moves but other criteria move too, treat
 that as sampling noise, not as this change working better than claimed.
+
+## Iteration 2 — remediation of the iteration-1 WRONG on DEF-193
+
+**Commit `c98a2c6`** on `release/cmp-2026-08-16`. DEF-194 row added;
+`Changes_Made.md` §45 added. Remediation attempt 3 of 3, so this turn closes
+findings rather than starting anything.
+
+### What I now believe was wrong about the last attempt
+
+The continuation block asks this directly, and the answer is not flattering.
+**I fixed the boundary I was looking at instead of the one the code names.**
+`WhatsAppInbound.sendReply` carries a comment saying *"EVERY reply to a human
+goes through sendReply, so every reply is rendered here and nowhere else"* —
+and it had its own blind `slice(0, 3900)` with a bare `...`. I found
+`channelRenderer` first, fixed it carefully, tested it thoroughly, and wrote
+"the owner meets this on every long WhatsApp answer". That sentence was false
+for any reply not routed through `brainAskRoutes`. Codex caught it as a carried
+HIGH, and it is the same `protection-with-two-implementations` shape I have now
+written into three DEF rows this week — which is exactly why I should have
+grepped for a second truncator before claiming the path.
+
+The second thing I got wrong I had already half-seen: I invented prose at a
+transport layer, flagged it, and asked Codex to arbitrate. He ruled it a §2.4
+violation. Flagging is better than hiding it, but the right move was not to
+write it.
+
+### The findings, in severity order
+
+**CRITICAL — deterministic owner-facing English (`channelRenderer.ts:180`).**
+Closed by removal, not softening. `(+N more not shown)` is gone. The count
+leaves `fitToTransport` as **structured data** (`omittedItems`) so a caller
+that owns a sanctioned boundary can speak it in Brain's voice; the body itself
+gains at most an `…` glyph — the same mark the code already used, and not a
+sentence. Two tests hold the line: every line the layer added must be exactly
+`…`, and the body must contain none of `not shown / more / omitted / truncated
+/ hidden / remaining`. Codex's directive 1 is followed literally: *"the
+transport layer may return truncation metadata/count"*, and no explanation.
+
+**HIGH — wrapped items mutilated.** Closed structurally, per directive 2. An
+item is now a semantic **BLOCK**: its line, plus every non-blank non-peer line
+after it, plus any item line indented DEEPER — so a sub-bullet belongs to its
+parent and dropping the parent takes its children rather than orphaning them.
+Head prose and trailing prose are structural and never dropped. A head that
+alone exceeds the budget falls back to prose trimming and claims **no** item
+count, which was Codex's finding #3 on claims-not-supported. His exact
+falsifiers are now tests: wrapped bullets carrying a URL and a quotation,
+nested sub-bullets, tail prose after the list, a head over the cap, plus a
+"never cuts inside a line" assertion (every surviving line must exist verbatim
+in the input) and `kept + omitted = total`.
+
+**CARRIED HIGH — two truncators.** Closed by consolidation, per directive 4.
+`transportBudget.ts` owns the algorithm and the single
+`WA_TRANSPORT_MAX_CHARS`; both `channelRenderer` and
+`WhatsAppInbound.sendReply` call `fitToTransport`. The parity test is
+source-inspection and adversarial: it fails if `WhatsAppInbound` regains
+`clean.slice(0, 3900)` or `clean += '...'`, if `channelRenderer` regains
+`function fitToChannel`/`trimProse` or the string `not shown`, or if either
+declares a second `WA_*MAX*` constant. That is the assertion Codex asked for —
+one that "cannot pass with two drifting implementations".
+
+**NOT CLOSED, and I am saying so rather than implying otherwise:**
+
+- **HIGH #3, the completeness contradiction.** An oversized list headed "here
+  is the full list" is still shortened under an unchanged claim. I cannot fix
+  this from transport: the claim is composed *before* the budget is known, so
+  the only real fix is Codex's directive 3 — the composition boundary must know
+  the channel budget and not promise "full" for something it will not fully
+  render. That is a composer change; adding it to a third-attempt remediation
+  turn is how the last three turns died. Recorded OPEN in DEF-194.
+- **MEDIUM #4**, WhatsApp brevity now has no shared enforcement (only composer
+  format rules). Related to the same directive-3 work. I did NOT re-add a
+  content ceiling, because a renderer that cuts for taste is the defect this
+  whole thread is about.
+- **MEDIUM #5**, the C4 register gate (B10/B12 "Sir"/canned formality, B02/B06
+  template phrasing). Untouched, and it remains his directive 6 for a fresh turn.
+- **Directive 5's build-log restoration** is orchestrator-owned; I cannot
+  restore a record in a file the orchestrator resets between turns, and I am
+  not touching `scripts/orchestrator/**`. Named so it is not lost.
+
+### Governing-docs verdict (rule 5)
+
+**Circling — `protection-with-two-implementations`, 11th occurrence**, and this
+turn's fix is the sanctioned structural one: delete one implementation, keep
+one, and add the parity assertion that makes a third impossible to add quietly.
+
+### Verification (measured AFTER the last code edit, commit `c98a2c6`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **196 files: 194 passed / 1 failed / 1 skipped · 2,419
+  tests: 2,388 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 remain `orchestratorPulseRoute.test.ts` executing the orchestrator's
+  uncommitted live `pulse.py`. I accept Codex's ruling that a red matrix is a
+  release stop condition regardless of cause — it is simply not a stop I can
+  clear from inside the Builder's permitted paths.
+- **`npm run build`** — the actual script at `c98a2c6` in the fully isolated
+  clean clone (own `npm ci` deps): generate + emit OK,
+  `dist/services/knowledge/transportBudget.js` and
+  `dist/services/whatsapp/WhatsAppInbound.js` produced in the clone.
+- `git diff --check` — clean.
+- Tests: 14 new; `def193ListSurvivesTheChannelCap.test.ts` deleted (its subject
+  moved into the shared module). Adjacent renderer suites re-run green
+  (def072/145/146/147/078 — 69 tests). One fixture of mine was wrong again on
+  first run (8 wrapped items needed, not 4, to exceed the old cap); recorded.
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Accurate Communication
+PREDICTED:  +0 to +1. This is remediation of my own defect, not new
+            capability. What it buys: the previous turn's improvement now
+            applies to the chokepoint the owner's replies actually traverse,
+            and no invented sentence rides out with it. The continuation
+            block says do not change capability, and I have not.
+MECHANISM:  one transport policy for every WhatsApp reply, shortening by
+            whole semantic blocks and saying nothing in Brain's voice.
+FALSIFIER:  a delivered body containing text this layer invented; an orphaned
+            continuation whose bullet head was removed; a body over 3900
+            characters from either call site; a second slicer or budget
+            constant reappearing in channelRenderer or WhatsAppInbound.
+```
+
+### Honest prediction
+
+The three findings I can close are closed at the class level, with the parity
+test Codex specified. **The benchmark should be flat** — B10 already fit under
+3900 last turn and nothing about composition changed, so I predict no C6 move
+and no C4 move, and I would treat any movement as sampling noise rather than
+evidence for this diff. Deployability is not mine to claim while the matrix is
+red: the product diff is releasable in my judgement, and the pulse
+reconciliation is the orchestrator's. Wrong if: Codex finds a third truncator
+outside these two sites, or a block-parsing input where a continuation still
+orphans.

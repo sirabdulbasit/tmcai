@@ -2865,3 +2865,28 @@ Benchmark B10, "What have you sent on my behalf today?", replied "Here is the fu
 ### Known issues deliberately not fixed
 
 `(+N more not shown)` is deterministic text in an owner-facing body — flagged in DEF-193 for the reviewer to arbitrate against invariant #4. I argue it is a rendering artifact in the same category as the `…` it replaces (no vocative, no promise, no first-person future — asserted by a named test); if Codex disagrees, the alternative is extending the sanctioned marker path, which today carries only whole-answer markers. The composer is still free to write "the full list" for a list it does not fully render — the renderer now prevents the contradiction rather than the composer avoiding the phrase; making the composer budget-aware is the larger change and was not attempted. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
+
+## 45. DEF-194 — one transport policy, no invented words, whole semantic blocks (2026-08-17, BUILDER: Claude — orchestrator iteration 8, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex's iteration-1 review of DEF-193 closed WRONG on three counts: `(+N more not shown)` was deterministic owner-facing English on a live messaging path (AGENTS.md §2.4 violation — I flagged the call myself and asked him to arbitrate; he ruled against it); an "item" was defined as the line starting with `•`, so a wrapped bullet lost its head and left its URL/quotation/sub-bullet behind as an orphan while the count claimed a whole item had gone; and the ACTUAL chokepoint, `WhatsAppInbound.sendReply` — whose own comment says every reply to a human passes through it — kept a blind `slice(0, 3900)` with a bare `...` and no list semantics, so DEF-193's work was irrelevant to traffic that does not go through `channelRenderer`.
+
+### Confirmed root cause
+
+`protection-with-two-implementations` (11th occurrence) plus fixing the boundary I was looking at rather than the one the code names. Both failures are the same kind: acting where I was looking instead of where the decision lives.
+
+### Files changed (complete list, commit `c98a2c6`)
+
+- `server/src/services/knowledge/transportBudget.ts` (new) — owns the algorithm and the single `WA_TRANSPORT_MAX_CHARS = 3900`. `fitToTransport` returns `{ body, truncated, omittedItems }`: no English is added, the count leaves as structured data, and the body gains at most an `…` glyph. Items are semantic BLOCKS (continuation lines and deeper sub-bullets travel with their parent); head and tail prose are never dropped; a head that alone exceeds the budget falls back to prose trimming and claims no item count.
+- `server/src/services/knowledge/channelRenderer.ts` — local `fitToChannel`/`trimProse`/`isItemLine` and the local budget constant deleted; calls `fitToTransport`.
+- `server/src/services/whatsapp/WhatsAppInbound.ts` — the blind `slice(0, 3900)` + `'...'` replaced by `fitToTransport`.
+- `server/tests/def194OneTransportBudget.test.ts` (new, 14 tests) — replaces `def193ListSurvivesTheChannelCap.test.ts` (deleted). Covers Codex's exact falsifiers: wrapped bullets with URL/quotation lines, nested sub-bullets, tail prose, a head over the cap, no severed lines, `kept + omitted = total`, no invented words, and source-inspection parity assertions that fail if either site regrows a slicer or a second budget constant.
+
+### Tests added / verification (measured after the last code edit, at `c98a2c6`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 196 files — 194 passed, 1 failed, 1 skipped; 2,419 tests — 2,388 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py`. `git diff --check` clean. Actual `npm run build` at `c98a2c6` in the fully isolated clean clone: generate + emit OK.
+
+### Known issues deliberately not fixed
+
+Codex's HIGH #3 — an oversized list headed "here is the full list" is still shortened under an unchanged completeness claim. The claim is composed before the budget is known, so no transport-layer change makes "full" true; closing it needs the composition boundary to know the channel budget (his directive 3), a composer change deliberately not attempted inside a remediation turn. His MEDIUM #4 (WhatsApp brevity now has no shared enforcement, only composer format rules) and MEDIUM #5 (the C4 register gate behind B10/B12/B02/B06) are likewise open and recorded in DEF-194. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
