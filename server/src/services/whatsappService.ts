@@ -12,6 +12,8 @@
 import prisma from '../db/prisma';
 import { isFeatureEnabled } from './featureFlagService';
 import createLogger from '../utils/logger';
+// DEF-194 — the one transport policy. Dependency-free module, no cycle risk.
+import { fitToTransport } from './knowledge/transportBudget';
 
 const log = createLogger('whatsapp');
 
@@ -355,12 +357,16 @@ export async function getSessionHistory(sessionId: number): Promise<any[]> {
 
 function sanitizeOutbound(content: string): string {
   // Strip any injected instructions or system prompt leakage
-  return content
+  const stripped = content
     .replace(/\[SYSTEM\]/gi, '')
     .replace(/\[INST\]/gi, '')
     .replace(/<\|.*?\|>/g, '')
-    .trim()
-    .slice(0, 4096); // Meta message size limit
+    .trim();
+  // DEF-194 — Meta's size limit goes through the ONE transport policy rather
+  // than a blind `.slice(0, 4096)`, which severed words and list items. The
+  // fourth independent WhatsApp truncator; upstream already fits, so this is a
+  // safety net that must not mutilate when it fires.
+  return fitToTransport(stripped, 4096).body;
 }
 
 async function callMetaAPI(toPhone: string, content: string): Promise<string> {

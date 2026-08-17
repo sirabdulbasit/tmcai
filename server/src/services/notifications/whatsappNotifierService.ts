@@ -88,6 +88,17 @@ export async function sendViaNotifier(
     return { ok: false, error: 'notifier token decrypt failed' };
   }
   const phone = toPhone.replace(/^\+/, '');
+  // DEF-194 — the last-resort provider clamp uses the ONE transport policy.
+  //
+  // This was `body.slice(0, 4096)`: a blind cut that severs a word, a bullet,
+  // or a phone number mid-digit, with no marker at all. It is the PROACTIVE
+  // path — the owner's push notices come through here — so it is exactly the
+  // surface where a mutilated list matters, and it was the third independent
+  // truncator on WhatsApp (`protection-with-two-implementations`). Upstream
+  // already fits to 3900, so this should never fire; when it does, it now
+  // shortens by whole semantic blocks and adds no words.
+  const { fitToTransport } = await import('../knowledge/transportBudget');
+  const wireBody = fitToTransport(body, 4096).body;
   try {
     const r = await fetch(`${META_GRAPH}/${n.phoneNumberId}/messages`, {
       method: 'POST',
@@ -96,7 +107,7 @@ export async function sendViaNotifier(
         messaging_product: 'whatsapp',
         to: phone,
         type: 'text',
-        text: { body: body.slice(0, 4096) },
+        text: { body: wireBody },
       }),
     });
     const j: any = await r.json();

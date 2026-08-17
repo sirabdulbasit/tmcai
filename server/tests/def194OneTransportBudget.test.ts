@@ -171,6 +171,58 @@ describe('DEF-194 — fitting is a no-op below the budget', () => {
   });
 });
 
+describe('DEF-194 — ALL FOUR WhatsApp truncators are the same one (Codex directive 4)', () => {
+  /**
+   * The consolidation is only true if it is exhaustive. These were four
+   * independent character slicers on the owner's WhatsApp path:
+   *
+   *   channelRenderer            the web/WA adapter (had its own list algorithm)
+   *   WhatsAppInbound.sendReply  the reply chokepoint (blind slice + bare '...')
+   *   whatsappNotifierService    the PROACTIVE push path (blind slice, no marker)
+   *   whatsappService            the provider sanitiser (blind slice)
+   *
+   * A fix landing on any one of them was invisible on the others, which is the
+   * `protection-with-two-implementations` class this closes.
+   */
+  const SITES = [
+    'services/knowledge/channelRenderer.ts',
+    'services/whatsapp/WhatsAppInbound.ts',
+    'services/notifications/whatsappNotifierService.ts',
+    'services/whatsappService.ts',
+  ];
+
+  it('every WhatsApp send path routes its size limit through fitToTransport', () => {
+    for (const site of SITES) {
+      expect(src(site), `${site} does not use the shared policy`).toContain('fitToTransport');
+    }
+  });
+
+  it('no WhatsApp send path keeps a blind character slice to a transport limit', () => {
+    // Comments are stripped first: these files DOCUMENT the old
+    // `.slice(0, 4096)` they replaced, and a guard that reads prose about the
+    // code instead of the code would fail on its own explanation.
+    const stripComments = (s: string) =>
+      s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    for (const site of SITES) {
+      const code = stripComments(src(site));
+      expect(code, `${site} still slices blindly`).not.toMatch(/\.slice\(0, *(?:4096|3900)\)/);
+      expect(code, `${site} still appends a bare ellipsis of its own`).not.toMatch(/\+= *'\.\.\.'/);
+    }
+  });
+
+  it('a proactive push body over the provider limit loses whole items, not characters', () => {
+    // The notifier path's shape: it hands `body` straight to Meta. Whatever it
+    // sends must be block-shortened, because this is where the owner's pushes go.
+    const fit = fitToTransport(wrappedList(600), 4096);
+    expect(fit.body.length).toBeLessThanOrEqual(4096);
+    const original = new Set(wrappedList(600).split('\n'));
+    for (const l of fit.body.split('\n')) {
+      if (l.trim() === '…' || l.trim() === '') continue;
+      expect(original.has(l), `proactive body severed a line: ${JSON.stringify(l)}`).toBe(true);
+    }
+  });
+});
+
 describe('DEF-194 — ONE implementation, asserted structurally (Codex carried HIGH)', () => {
   const RENDERER = src('services/knowledge/channelRenderer.ts');
   const CHOKEPOINT = src('services/whatsapp/WhatsAppInbound.ts');
