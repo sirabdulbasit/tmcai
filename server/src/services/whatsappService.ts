@@ -382,7 +382,10 @@ async function callMetaAPI(toPhone: string, content: string): Promise<string> {
     messaging_product: 'whatsapp',
     to: toPhone,
     type: 'text',
-    text: { body: content },
+    // DEF-195 — fitted AT the wire. Callers already pass `sanitizeOutbound`
+    // output, so this is idempotent; what it buys is that the boundary is
+    // provable by reading this line instead of trusting every caller.
+    text: { body: fitToTransport(content, 4096).body },
   };
 
   const resp = await fetch(url, {

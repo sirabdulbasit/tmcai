@@ -83,48 +83,117 @@ function itemIndent(line: string): number | null {
   return m ? m[1].length : null;
 }
 
-interface Parsed {
-  head: string[];
-  blocks: string[][];
-  tail: string[];
+/**
+ * DEF-195 (Codex iteration-2 HIGH #2) — a body is a SEQUENCE of segments, not
+ * "a head, the first list, and an opaque tail".
+ *
+ * The previous parser stopped permanently at the first blank line after the
+ * first list, which is wrong for the shape the owner actually receives most
+ * often: a Day Brief with Calendar bullets, a blank line, Email bullets,
+ * another blank line, Open Items bullets. Everything after the first section
+ * became undroppable `tail`, so fitting either deleted Calendar facts merely
+ * for occurring FIRST, or gave up and character-trimmed the whole body —
+ * losing the block guarantee this module exists to provide.
+ *
+ * Now every line lands in exactly one segment:
+ *
+ *   - `item`  — a bullet plus everything belonging to it: wrapped text, a URL,
+ *               a quotation, and any DEEPER bullet (a child travels with its
+ *               parent rather than being orphaned).
+ *   - `prose` — anything else, including blank lines and section headings.
+ *
+ * Only `item` segments are droppable, and they are dropped from the END, so
+ * removal is positional and explainable rather than "whichever list came
+ * first". Prose is never dropped — except a heading left with nothing beneath
+ * it, which would otherwise read as an empty section.
+ */
+type Segment =
+  | { kind: 'prose'; lines: string[] }
+  | { kind: 'item'; lines: string[] };
+
+/**
+ * A section heading, for the one prose case that must not survive alone.
+ *
+ * The WhatsApp-rendered form is `*Calendar:*` — `stripMarkdown` turns a
+ * markdown heading into a bold line — so the emphasis markers come off before
+ * the colon test. The first version of this checked `endsWith(':')` on the raw
+ * line and therefore matched no real Day Brief heading at all, which the
+ * empty-section test caught.
+ */
+function isHeadingLike(seg: Segment): boolean {
+  if (seg.kind !== 'prose') return false;
+  const t = seg.lines.join(' ').trim().replace(/^[*_~]+|[*_~]+$/g, '').trim();
+  return t.length > 0 && t.endsWith(':');
+}
+
+function parseSegments(lines: readonly string[]): Segment[] {
+  const segments: Segment[] = [];
+  let openItemIndent: number | null = null;
+
+  for (const line of lines) {
+    const indent = itemIndent(line);
+
+    if (indent !== null) {
+      if (openItemIndent !== null && indent > openItemIndent) {
+        // A deeper bullet belongs to the item above it.
+        segments[segments.length - 1].lines.push(line);
+        continue;
+      }
+      segments.push({ kind: 'item', lines: [line] });
+      openItemIndent = indent;
+      continue;
+    }
+
+    if (line.trim() === '') {
+      // A blank line closes the current item run and is itself prose, so
+      // section boundaries survive and the NEXT list is parsed too.
+      openItemIndent = null;
+      segments.push({ kind: 'prose', lines: [line] });
+      continue;
+    }
+
+    if (openItemIndent !== null) {
+      // Wrapped continuation of the open item.
+      segments[segments.length - 1].lines.push(line);
+      continue;
+    }
+    segments.push({ kind: 'prose', lines: [line] });
+  }
+
+  return segments;
 }
 
 /**
- * Split a body into head prose, list blocks, and trailing prose.
- *
- * A blank line after the list closes it: everything from there on is tail and
- * is preserved. A blank line INSIDE a block (before a continuation) also
- * closes the list, which is the conservative reading — it means fewer lines are
- * treated as droppable, never more.
+ * Render a retained set of segments, inserting the removal mark exactly where
+ * content was dropped, and shedding a heading that no longer has any item
+ * under it.
  */
-function parseBlocks(lines: readonly string[]): Parsed {
-  const firstItem = lines.findIndex((l) => itemIndent(l) !== null);
-  if (firstItem < 0) return { head: [...lines], blocks: [], tail: [] };
+function renderSegments(segments: readonly Segment[], dropFrom: number, mark: string): string {
+  const kept: Array<{ seg: Segment; index: number }> = [];
+  let markInserted = false;
+  const out: string[] = [];
 
-  const head = lines.slice(0, firstItem);
-  const blocks: string[][] = [];
-  let tailStart = lines.length;
-  let baseIndent: number | null = null;
-
-  for (let i = firstItem; i < lines.length; i++) {
-    const line = lines[i];
-    const indent = itemIndent(line);
-
-    if (line.trim() === '') { tailStart = i; break; }   // blank line closes the list
-
-    if (indent !== null && (baseIndent === null || indent <= baseIndent)) {
-      // A peer item (or the first one) starts a new block.
-      baseIndent = baseIndent === null ? indent : Math.min(baseIndent, indent);
-      blocks.push([line]);
-      continue;
+  segments.forEach((seg, index) => {
+    if (seg.kind === 'item' && index >= dropFrom) {
+      if (!markInserted) { kept.push({ seg: { kind: 'prose', lines: [mark] }, index }); markInserted = true; }
+      return;
     }
-    // Anything else — wrapped text, a URL, a quotation, a deeper sub-bullet —
-    // belongs to the block above it.
-    if (blocks.length === 0) { tailStart = i; break; }
-    blocks[blocks.length - 1].push(line);
-  }
+    kept.push({ seg, index });
+  });
 
-  return { head, blocks, tail: lines.slice(tailStart) };
+  // A heading with no retained item before the next heading (or the end) would
+  // announce an empty section, so it goes with its items.
+  const survives = kept.map(({ seg }, i) => {
+    if (!isHeadingLike(seg)) return true;
+    for (let j = i + 1; j < kept.length; j++) {
+      if (kept[j].seg.kind === 'item') return true;
+      if (isHeadingLike(kept[j].seg)) return false;
+    }
+    return false;
+  });
+
+  kept.forEach(({ seg }, i) => { if (survives[i]) out.push(...seg.lines); });
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /**
@@ -157,31 +226,28 @@ export function fitToTransport(text: string, max: number = WA_TRANSPORT_MAX_CHAR
     return { body: text ?? '', truncated: false, omittedItems: 0 };
   }
 
-  const lines = text.split('\n');
-  const { head, blocks, tail } = parseBlocks(lines);
+  const segments = parseSegments(text.split('\n'));
+  const itemIdx = segments.reduce<number[]>((acc, s, i) => (s.kind === 'item' ? [...acc, i] : acc), []);
 
-  // Two or more blocks is what makes "a list that lost items" meaningful. One
+  // Two or more items is what makes "a list that lost items" meaningful. One
   // oversized bullet is prose as far as this decision goes.
-  if (blocks.length >= 2) {
-    // The ellipsis marks that something was removed. A glyph, not a sentence:
+  if (itemIdx.length >= 2) {
+    // The mark records that something was removed. A glyph, not a sentence:
     // the COUNT travels in `omittedItems` for a caller that owns a sanctioned
-    // owner-facing boundary.
-    const MARK = '…';
-    for (let keep = blocks.length - 1; keep >= 1; keep--) {
-      const kept = [
-        ...head,
-        ...blocks.slice(0, keep).flat(),
-        MARK,
-        ...tail,
-      ];
-      const candidate = kept.join('\n').trim();
+    // owner-facing boundary (this module never speaks in Brain's voice).
+    const MARK = '\u2026';
+    // Drop from the END, keeping at least one item, so removal is positional
+    // and never "whichever section happened to come first".
+    for (let keep = itemIdx.length - 1; keep >= 1; keep--) {
+      const dropFrom = itemIdx[keep];
+      const candidate = renderSegments(segments, dropFrom, MARK);
       if (candidate.length <= max) {
-        return { body: candidate, truncated: true, omittedItems: blocks.length - keep };
+        return { body: candidate, truncated: true, omittedItems: itemIdx.length - keep };
       }
     }
   }
 
-  // Head+tail alone exceed the budget (or there is no list): prose trimming is
-  // the only honest option left, and it never cuts mid-word.
+  // Prose alone exceeds the budget (or there is no list): prose trimming is the
+  // only honest option left, and it never cuts mid-word.
   return { body: trimProse(text, max), truncated: true, omittedItems: 0 };
 }

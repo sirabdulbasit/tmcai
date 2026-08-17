@@ -8,6 +8,8 @@
 import { IWhatsAppProvider, SendMessageParams, SendResult, ConnectionStatus, TestResult } from './IWhatsAppProvider';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+// DEF-195 — the one transport policy, applied at the provider boundary.
+import { fitToTransport } from '../knowledge/transportBudget';
 
 const log = createLogger('whatsapp:meta');
 
@@ -78,7 +80,7 @@ export class MetaProvider implements IWhatsAppProvider {
               components: [{ type: 'body', parameters: (params.templateParams || []).map(p => ({ type: 'text', text: p })) }],
             },
           }
-        : { messaging_product: 'whatsapp', to: params.to, type: 'text', text: { body: params.message } };
+        : { messaging_product: 'whatsapp', to: params.to, type: 'text', text: { body: fitToTransport(params.message).body } };
 
       const resp = await fetch(
         `https://graph.facebook.com/v18.0/${config.phoneNumberId}/messages`,

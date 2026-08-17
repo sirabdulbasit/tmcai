@@ -20,6 +20,8 @@ import { ingest as ingestFeedEvent } from '../feed/feedIngestionService';
 import fs from 'fs';
 import path from 'path';
 import { resolveWebjsHeadlessMode, resolveWebjsDisplayEnv, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
+// DEF-195 — the one transport policy, applied at the provider boundary.
+import { fitToTransport } from '../knowledge/transportBudget';
 
 const log = createLogger('whatsapp:user-webjs');
 
@@ -1430,7 +1432,11 @@ export async function sendReply(
     return { success: false, error: 'WhatsApp session not active — open Connectors and re-scan the QR to re-pair.' };
   }
   try {
-    const msg = await client.sendMessage(toChatId, text);
+    // DEF-195 (Codex iteration-2 HIGH #1) — the owner's own WhatsApp session
+    // is a wire path too: the approved Day Brief draft (`briefRoutes` →
+    // `sendReply`) and self-dictation both arrive here without passing
+    // `channelRenderer` or `WhatsAppInbound`. Fit at the send.
+    const msg = await client.sendMessage(toChatId, fitToTransport(text).body);
     const messageId = msg?.id?._serialized || msg?.id?.id;
 
     // Fire-and-forget commitment extraction on every outbound message.

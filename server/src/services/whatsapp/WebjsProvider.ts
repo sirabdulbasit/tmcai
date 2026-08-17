@@ -26,6 +26,8 @@ import {
 } from './webjsInitTelemetry';
 import type { PreparedWebjsVersionCache } from './webjsVersionCache';
 import { resolveWebjsHeadlessMode, resolveWebjsDisplayEnv, assertHeadfulDisplayAvailable } from './webjsRuntimeMode';
+// DEF-195 — the one transport policy, applied at the provider boundary.
+import { fitToTransport } from '../knowledge/transportBudget';
 
 const log = createLogger('whatsapp:webjs');
 
@@ -1523,7 +1525,12 @@ export class WebjsProvider implements IWhatsAppProvider {
         chatId = digitsOnly + '@c.us';
       }
 
-      const msg = await client.sendMessage(chatId, params.message);
+      // DEF-195 (Codex iteration-2 HIGH #1) — the FIT happens here, at the
+      // provider contract, not in an enumerated list of upstream files. Every
+      // path that reaches whatsapp-web.js goes through this call, so fitting
+      // here dominates agent sends, scheduler sends, and anything added later
+      // that never heard of `channelRenderer`.
+      const msg = await client.sendMessage(chatId, fitToTransport(params.message).body);
       // A resolved send without an id is transport-accepted but unconfirmed.
       // Never retry it: production proved those sends can arrive, and retrying
       // from a false failure creates duplicate user-visible messages.
