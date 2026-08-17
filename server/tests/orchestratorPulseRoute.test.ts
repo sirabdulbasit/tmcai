@@ -32,7 +32,7 @@ const FRAME = {
   now: 1786540905.5,
   pkt_offset: 18000,
   stage: { name: 'BUILDING', elapsed: 993, basis: 'process', detail: 'claude -p' },
-  phases: [{ name: 'Build', seat: 'Claude', state: 'running', duration: 994, current: true }],
+  phases: [{ name: 'Build & Deploy', seat: 'Claude -> production', state: 'running', duration: 994, current: true }],
   capabilities: [{ name: 'Memory', nexeo: 60, professional: 92, delta: 0 }],
   trend: { iterations: [1, 2], rows: [], unmoved: [] },
 };
@@ -171,7 +171,13 @@ describe('pulse.py --json contract (what the dashboard reads by name)', () => {
     // Five phases, in loop order, each in one of four states. The panel draws a
     // different thing for each — done and abandoned in particular must never
     // collapse into one another.
-    expect(d.phases.map((p: any) => p.name)).toEqual(['Build', 'Checks', 'Measure', 'Review', 'Score']);
+    expect(d.phases.map((p: any) => p.name)).toEqual([
+      'Capability Evaluation',
+      'Chat Analysis',
+      'Build & Deploy',
+      'Check & Measure',
+      'Review Capabilities',
+    ]);
     for (const p of d.phases) {
       expect(['running', 'done', 'abandoned', 'pending']).toContain(p.state);
       expect(typeof p.seat).toBe('string');
@@ -200,6 +206,6 @@ describe('pulse.py --json contract (what the dashboard reads by name)', () => {
     // The window still draws. This is the guard on the collect/render split: the
     // browser dashboard must not be able to break the owner's terminal window.
     expect(out).toMatch(/Iteration #/);
-    expect(out).toMatch(/Build:/);
+    expect(out).toMatch(/Build & Deploy:/);
   });
 });

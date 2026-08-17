@@ -332,7 +332,15 @@ def gauge(nexeo, pro, width=30):
 # earlier version of this file guessed the current phase from process lists and got
 # it wrong twice — once calling the IDE window a build turn for 16h51m, once calling
 # the Codex extension a review. Reading the log removes the guess.
-PHASE_ORDER = ["Build", "Checks", "Measure", "Review", "Score"]
+ROOT_DOCS = "/var/www/tmcai/server/docs"
+# Owner, 2026-08-17: "merge Building & Deploy". They are one act now that the ship no
+# longer waits for a review — Claude builds and the result goes to production in the
+# same stretch. The merged row spans from the build starting to the deploy finishing;
+# Check & Measure runs inside that span and keeps its own row, because tsc and vitest
+# are the only gate left between the diff and the owner's production WhatsApp and a
+# gate that cannot be seen is not a gate.
+PHASE_ORDER = ["Capability Evaluation", "Chat Analysis", "Build & Deploy",
+               "Check & Measure", "Review Capabilities"]
 
 
 def phase_timeline():
@@ -341,7 +349,8 @@ def phase_timeline():
     if not os.path.exists(lg):
         return {}, None
     it_re = re.compile(r"^(\S+ \S+ \S+)\s+─+ iteration (\d+) ─+")
-    ev_re = re.compile(r"^(\S+ \S+ \S+)\s+(BUILD|RAILS|MEASURE|REVIEW)\s+iter=(\d+)\s+(.*)$")
+    ev_re = re.compile(
+        r"^(\S+ \S+ \S+)\s+(BUILD|RAILS|MEASURE|REVIEW|SCORE|CHAT|DEPLOY)\s+iter=(\d+)\s+(.*)$")
     out, newest = {}, None
 
     def ts(s):
@@ -358,7 +367,14 @@ def phase_timeline():
         if m:
             it = int(m.group(2))
             newest = it if newest is None or it > newest else newest
-            out.setdefault(it, {})["_started"] = ts(m.group(1))
+            d0 = out.setdefault(it, {})
+            d0.setdefault("_started", ts(m.group(1)))
+            # Bank every open span before the new attempt begins, so nothing is lost
+            # and nothing double-counts the gap between attempts.
+            for _k, _v in d0.items():
+                if isinstance(_v, dict) and _v.get("start") and _v.get("end"):
+                    _v["acc"] = _v.get("acc", 0) + (_v["end"] - _v["start"])
+                    _v.pop("start", None); _v.pop("end", None)
             continue
         m = ev_re.match(line)
         if not m:
@@ -367,30 +383,56 @@ def phase_timeline():
         newest = it if newest is None or it > newest else newest
         d = out.setdefault(it, {})
         if kind == "BUILD":
-            ph = d.setdefault("Build", {})
+            ph = d.setdefault("Build & Deploy", {})
             if "exit=" in rest:
                 ph["end"] = t
                 ph["detail"] = rest.split("(")[0].strip()
             else:
                 ph.setdefault("start", t)
         elif kind == "RAILS":
-            ph = d.setdefault("Checks", {})
+            ph = d.setdefault("Check & Measure", {})
             ph.setdefault("start", t)
             ph["detail"] = rest
             # tests= is the last rail; measure starting is what actually ends it.
             if "tests=" in rest:
                 ph["end"] = t
         elif kind == "MEASURE":
-            ph = d.setdefault("Measure", {})
+            ph = d.setdefault("Check & Measure", {})
             if "started" in rest:
                 ph.setdefault("start", t)
-                d.setdefault("Checks", {})["end"] = t
             elif "overall=" in rest:
                 ph["end"] = t
                 ph["detail"] = rest
         elif kind == "REVIEW":
-            ph = d.setdefault("Review", {})
+            ph = d.setdefault("Review Capabilities", {})
             if "exit=" in rest:
+                ph["end"] = t
+                ph["detail"] = rest.split("(")[0].strip()
+            else:
+                ph.setdefault("start", t)
+        elif kind == "DEPLOY":
+            # Shipping is a STAGE, not a side effect. Owner, 2026-08-17: "i don't want
+            # to see 'not shipped' … at which stage? you tell me." It was running at
+            # the end of every iteration and appearing nowhere on a five-row panel.
+            ph = d.setdefault("Build & Deploy", {})
+            ph.setdefault("start", t)
+            if "restarted" in rest or "HOLD" in rest or "ABORT" in rest \
+                    or "already deployed" in rest or "probe" in rest:
+                ph["end"] = t
+                ph["detail"] = rest.split("(")[0].strip()[:60]
+        elif kind == "CHAT":
+            # Codex reading the 18 owner conversations before the build. Cached on the
+            # archive's hash, so most iterations log "reusing" and the phase is a
+            # near-instant no-op — which is correct and should still be visible as a
+            # completed stage rather than a blank row.
+            ph = d.setdefault("Chat Analysis", {})
+            # "exit=" is the dedicated analyst finishing; the others are the cache
+            # hit and the failure paths. Any of them ENDS the phase — a stage left
+            # open would render as running for as long as the loop lives, which is
+            # the defect that made a killed build read "Running 7m52s".
+            if "exit=" in rest or "written to" in rest or "reusing" in rest \
+                    or "no output" in rest or "non-zero" in rest:
+                ph.setdefault("start", t)
                 ph["end"] = t
                 ph["detail"] = rest.split("(")[0].strip()
             else:
@@ -410,7 +452,7 @@ def phase_timeline():
             #
             # Both are read now — the daemon's format is kept because its old
             # entries are still the history for iterations 7-8.
-            ph = d.setdefault("Score", {})
+            ph = d.setdefault("Capability Evaluation", {})
             if "card appended" in rest or "FAILED" in rest:
                 ph["end"] = t
                 ph["detail"] = rest.split("(")[0].strip()
@@ -425,7 +467,7 @@ def phase_timeline():
             if not m:
                 continue
             t, it, rest = ts(m.group(1)), int(m.group(2)), m.group(3)
-            ph = out.setdefault(it, {}).setdefault("Score", {})
+            ph = out.setdefault(it, {}).setdefault("Capability Evaluation", {})
             if "scored and card appended" in rest:
                 ph["end"] = t
             elif "unscored" in rest:
@@ -437,9 +479,9 @@ def last_stream_line(iteration, phase):
     """The newest readable line from whichever seat is working — the 'Progress'
     line. Read from the formatted stream logs the agents write as they go."""
     n = f"{iteration:02d}"
-    src = {"Build": f"{LOGS}/iter-{n}-build.log",
-           "Review": f"{LOGS}/iter-{n}-review.log",
-           "Score": f"{LOGS}/iter-{n}-score-read.log"}.get(phase)
+    src = {"Build & Deploy": f"{LOGS}/iter-{n}-build.log",
+           "Review Capabilities": f"{LOGS}/iter-{n}-review.log",
+           "Capability Evaluation": f"{LOGS}/iter-{n}-score-read.log"}.get(phase)
     if not src or not os.path.exists(src):
         return ""
     try:
@@ -462,15 +504,15 @@ def last_stream_line(iteration, phase):
 # after a switch. Codex emits no model field in its event stream, so it is shown
 # as "default" rather than guessed at.
 def seat_models():
-    out = {"Build": "?", "Review": "default", "Score": "?"}
+    out = {"Build & Deploy": "?", "Review Capabilities": "default", "Capability Evaluation": "?"}
     for f in sorted(glob.glob(f"{LOGS}/iter-*-build.jsonl"), key=os.path.getmtime)[-1:]:
         m = re.search(r'"model":"([a-z0-9.\-]+)"', open(f, errors="replace").read(4_000_000))
         if m:
-            out["Build"] = m.group(1)
+            out["Build & Deploy"] = m.group(1)
     for f in sorted(glob.glob(f"{LOGS}/iter-*-score.log"), key=os.path.getmtime)[-1:]:
         m = re.search(r'"modelUsage":\s*\{\s*"([^"]+)"', open(f, errors="replace").read(4_000_000))
         if m:
-            out["Score"] = m.group(1)
+            out["Capability Evaluation"] = m.group(1)
     return out
 
 
@@ -501,17 +543,20 @@ def spark_ascii(vals, width=None):
 
 
 def capability_trend():
-    """[(label, series, first, last)] — one row per capability that has moved,
-    plus BRAIN overall. Capabilities that never moved are summarised in one line
-    rather than printing nine flat rows: a trend chart of nine unchanged numbers
-    is noise that hides the two that changed."""
+    """[(label, series, first, last)] — EVERY capability, plus BRAIN overall.
+
+    Previously only movers were listed and the rest were summarised in one line.
+    That hid the answer to the question the panel exists to answer once movement
+    stopped: with nothing moving the table collapsed to a single row. A flat row is
+    itself the finding, so all nine are listed; `flat` is still returned for the
+    summary line."""
     scp = os.path.join(STATE, "capability_scorecard.json")
     if not os.path.exists(scp):
-        return [], [], 0
+        return [], [], []
     try:
         d = json.load(open(scp))
     except Exception:
-        return [], [], 0
+        return [], [], []
     hist = d.get("history", [])
     # One point per iteration — the last entry for that iteration wins, because a
     # recalibration appends a second row for an iteration already recorded.
@@ -522,7 +567,7 @@ def capability_trend():
             per_iter[h["iteration"]] = snap
     iters = sorted(per_iter)
     if len(iters) < 2:
-        return [], [], 0
+        return [], [], []
     names = [c["name"] for c in d["capabilities"]]
     moved, flat = [], []
     for nm in names:
@@ -532,13 +577,238 @@ def capability_trend():
         if not real:
             continue
         if real[0] == real[-1] and len(set(real)) == 1:
-            flat.append(nm)
-        else:
-            moved.append((nm, series, real[0], real[-1]))
+            flat.append(nm)          # still reported, for the one-line summary
+        moved.append((nm, series, real[0], real[-1]))
     overall = [round(sum(c["nexeo"] for c in per_iter[i]) / len(per_iter[i]), 1)
                for i in iters]
     moved.append(("BRAIN overall", overall, overall[0], overall[-1]))
     return moved, flat, iters
+
+
+
+def iteration_timings(limit=10):
+    """[{iteration, total, stages:{name: seconds}}] for the last `limit` iterations.
+
+    Owner, 2026-08-17: "total time of iteration and also time of each stage."
+    Built from the SAME phase_timeline the phase rows use, so the trend and the bars
+    can never disagree — one derivation, two renderings.
+
+    `total` is wall-clock from the earliest stage start to the latest stage end, NOT
+    the sum of the stages. Stages can overlap (the display supports it deliberately)
+    and summing overlapping spans would report more time than actually elapsed.
+    """
+    tl, _ = phase_timeline()
+    out = []
+    for it in sorted(tl)[-limit:]:
+        d = tl[it]
+        stages, starts, ends = {}, [], []
+        for name in PHASE_ORDER:
+            ph = d.get(name) or {}
+            st, en = ph.get("start"), ph.get("end")
+            if st is not None:
+                starts.append(st)
+            if en is not None:
+                ends.append(en)
+            stages[name] = round(en - st) if (st is not None and en is not None) else None
+        total = round(max(ends) - min(starts)) if starts and ends else None
+        out.append({"iteration": it, "total": total, "stages": stages})
+    return out
+
+
+
+def observed_gaps(top=6):
+    """{capability:[...], chat:[...]} — the two evidence sources, side by side.
+
+    Owner, 2026-08-17: replace the BRAIN overall graph with "capability gap observed
+    and chat log gaps/bugs/issue observed, in bullet form, very least text."
+
+    They are deliberately kept apart. The capability list is Grok READING CODE; the
+    chat list is what actually happened to the owner. They disagree — the code-read
+    gaps are Simple & Smart and Self-Healing, while the chats are dominated by
+    fabrication and the WhatsApp path — and showing them in one merged ranking would
+    hide exactly that disagreement.
+    """
+    out = {"capability": [], "chat": []}
+    scp = os.path.join(STATE, "capability_scorecard.json")
+    if os.path.exists(scp):
+        try:
+            caps = json.load(open(scp))["capabilities"]
+            rows = sorted(caps, key=lambda c: (c.get("professional") or 0) - (c.get("nexeo") or 0),
+                          reverse=True)[:top]
+            out["capability"] = [
+                {"name": c["name"], "nexeo": c.get("nexeo"),
+                 "gap": (c.get("professional") or 0) - (c.get("nexeo") or 0),
+                 "basis": c.get("basis")} for c in rows]
+        except Exception:
+            pass
+    # Symptom tags the OWNER reported, counted from the archive itself. Not a summary
+    # anybody wrote — the tags are the unit of recurrence this project already uses.
+    arc = os.path.join(ROOT_DOCS, "brain_chat_archive.md")
+    if os.path.exists(arc):
+        try:
+            txt = open(arc, errors="replace").read()
+            # COUNT DISTINCT CHATS, not raw mentions. Counting every backticked
+            # occurrence double-counted tags that appear in the file's own summary
+            # tables as well as in the chat entry — capability-fabrication read 5 when
+            # the owner had reported it in 3 conversations. "How many times did this
+            # happen to me" is the question; mentions in a summary are not occurrences.
+            sections = re.split(r"^## Chat ", txt, flags=re.M)[1:]
+            counts = {}
+            for sec in sections:
+                for t in set(re.findall(r"`([a-z][a-z0-9-]{6,})`", sec)):
+                    counts[t] = counts.get(t, 0) + 1
+            # SHIPPED STATE PER TAG. Owner, 2026-08-17: "strike out the item in chat
+            # log reported which is built and shipped."
+            #
+            # The link has to be made somewhere, and today it does not exist: the
+            # archive is keyed by symptom tag, the change log by DEF id, and only one
+            # of six tags appears in the change log at all. So this matches the tag
+            # against COMMIT MESSAGES, and requires the builder to name the tag it
+            # closed (build.md now demands it). Until a fix names its tag, the item
+            # stays on the list — an unmatched tag is never struck, because telling
+            # the owner something is fixed when it is not is the worse error.
+            import subprocess
+            try:
+                log = subprocess.run(["git", "-C", "/var/www/tmcai", "log",
+                                      "--format=%ct|%s%n%b", "-200"],
+                                     capture_output=True, text=True, timeout=8).stdout
+            except Exception:
+                log = ""
+            try:
+                deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
+            except Exception:
+                deployed_at = 0
+            shipped_tags = set()
+            built_tags = set()
+            for chunk in log.split("\n"):
+                if "|" not in chunk:
+                    continue
+                ts, _, msg = chunk.partition("|")
+                if not ts.strip().isdigit():
+                    continue
+                for t in counts:
+                    if t in msg:
+                        built_tags.add(t)
+                        if deployed_at and int(ts) <= deployed_at:
+                            shipped_tags.add(t)
+            out["chat"] = [{"tag": k, "times": v,
+                            "state": ("shipped" if k in shipped_tags
+                                      else "built" if k in built_tags else "open")}
+                           for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
+        except Exception:
+            pass
+    return out
+
+
+
+def upgrade_feed(limit=8):
+    """[{def_id, title, at, iteration, verdict, shipped}] — newest first.
+
+    Owner, 2026-08-17: "in replace of Brain Overall we need to build Upgrade News Feed
+    iteration wise."
+
+    Built from DURABLE sources — git commits, review_log.md, and the deployed SHA —
+    not from loop.log, which is archived on every reset and would empty the feed
+    exactly when the history matters most.
+
+    `shipped` is the field that carries the meaning. Five DEF fixes sat on the branch
+    for a day scoring zero capability, because Grok credits only what reaches the
+    owner. A feed that listed them as upgrades without saying whether they SHIPPED
+    would repeat that error in a nicer format.
+    """
+    import subprocess
+    try:
+        raw = subprocess.run(
+            ["git", "-C", "/var/www/tmcai", "log", "--format=%h|%ct|%s", "-40"],
+            capture_output=True, text=True, timeout=8).stdout
+    except Exception:
+        return []
+    # Which commit is actually deployed: the last line of deploy-history, else the
+    # running dist. Anything newer than it is built-but-not-shipped.
+    shipped_sha = ""
+    try:
+        dh = os.path.join(STATE, "deploy-history")
+        if os.path.exists(dh):
+            lines = [l for l in open(dh).read().splitlines() if l.strip()]
+            if lines:
+                shipped_sha = lines[-1].split()[-1]
+    except Exception:
+        pass
+    verdicts = {}
+    rl = f"{ORCH}/review_log.md"
+    if os.path.exists(rl):
+        cur = None
+        for line in open(rl, errors="replace"):
+            m = re.match(r"^## Iteration (\d+)", line)
+            if m:
+                cur = int(m.group(1)); continue
+            v = re.search(r"\*\*(SOUND|WEAK|WRONG)\*\*", line)
+            if v and cur is not None and cur not in verdicts:
+                verdicts[cur] = v.group(1)
+    # SHIPPED is decided by the ARTIFACT'S OWN TIMESTAMP, not by deploy-history.
+    # The 2026-08-17 12:41 deploy was run by hand — unlock, build, manifest, relock,
+    # pm2 restart — so deploy-history never recorded it and every commit since would
+    # have been reported as unshipped. What is running is the only authority on what
+    # shipped, and dist/server.js is written by the build that produced it.
+    deployed_at = 0
+    try:
+        deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
+    except Exception:
+        pass
+    out, seen_def = [], set()
+    for line in raw.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        sha, ct, subj = parts
+        m = re.match(r"(DEF-\d+)(?: docs)?[:\s]", subj)
+        if not m:
+            continue
+        it = re.search(r"Iteration (\d+)", subj)
+        # One row per DEF. Each fix lands as a code commit and a docs commit; two
+        # rows for one upgrade reads as twice the progress.
+        if m.group(1) in seen_def:
+            continue
+        seen_def.add(m.group(1))
+        out.append({
+            "sha": sha, "def_id": m.group(1),
+            "title": subj.split(":", 1)[-1].strip()[:90],
+            "at": int(ct),
+            "iteration": int(it.group(1)) if it else None,
+            "verdict": verdicts.get(int(it.group(1))) if it else None,
+            "shipped": bool(deployed_at and int(ct) <= deployed_at),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+
+def _iteration_banner_times(it):
+    """Every start time recorded for `it` — one per attempt."""
+    lg = f"{ORCH}/loop.log"
+    if not os.path.exists(lg):
+        return []
+    out = []
+    rx = re.compile(r"^(\S+ \S+ \S+)\s+─+ iteration (\d+) ─+")
+    for line in open(lg, errors="replace"):
+        m = rx.match(line)
+        if m and int(m.group(2)) == it:
+            try:
+                out.append(calendar.timegm(
+                    time.strptime(m.group(1).rsplit(" ", 1)[0], "%Y-%m-%d %H:%M:%S")))
+            except Exception:
+                pass
+    return out
+
+
+def attempts_this_iteration(it):
+    return len(_iteration_banner_times(it)) or 1
+
+
+def first_attempt_start(it):
+    ts = _iteration_banner_times(it)
+    return ts[0] if ts else None
 
 
 # ── collect, then render ─────────────────────────────────────────────────────
@@ -755,8 +1025,10 @@ def collect():
     # timeline says whether it has an unfinished phase. They are cross-checked
     # rather than trusted separately — a process without a log entry, or a log
     # entry without a process, both mean something is wrong and it should show.
-    stage_to_phase = {"BUILDING": "Build", "CHECKS": "Checks", "MEASURING": "Measure",
-                      "REVIEWING": "Review", "SCORING": "Score"}
+    stage_to_phase = {"BUILDING": "Build & Deploy", "CHECKS": "Check & Measure",
+                      "MEASURING": "Check & Measure",
+                      "REVIEWING": "Review Capabilities",
+                      "SCORING": "Capability Evaluation"}
     current = stage_to_phase.get(stage)
 
     # THE LOG WINS when it disagrees with the process list, provided the loop is
@@ -773,23 +1045,33 @@ def collect():
                 current = ph
                 break
 
-    seat = {"Build": "Claude", "Checks": "orchestrator", "Measure": "benchmark",
-            "Review": "Codex", "Score": "Grok"}
+    seat = {"Build & Deploy": "Claude -> production", "Checks": "orchestrator",
+            "Check & Measure": "orchestrator", "Chat Analysis": "Codex",
+            "Review Capabilities": "Codex",
+            "Capability Evaluation": "Grok"}
     models = seat_models()
     phase_rows = []
     for ph in PHASE_ORDER:
         p_ = phases.get(ph, {})
         s_, e_ = p_.get("start"), p_.get("end")
-        running = bool(s_ and not e_ and loop_alive) or ph == current
+        _acc = p_.get("acc", 0)
+        running = bool(s_ and not e_ and loop_alive and cur_it == newest) \
+            or ph == current
         if running:
             # MORE THAN ONE PHASE CAN BE RUNNING. Measure and Review overlap by
             # design — the benchmark was moved to run alongside the review so the
             # two agents go back-to-back — and the first version of this display
             # marked only one as current, painting the other red as "no completion
             # recorded". A concurrent phase must not render as an abandoned one.
-            state, dur = "running", now - (s_ or (now - elapsed))
+            state, dur = "running", _acc + (now - (s_ or (now - elapsed)))
         elif s_ and e_:
-            state, dur = "done", e_ - s_
+            state, dur = "done", _acc + (e_ - s_)
+        elif _acc and not s_:
+            # Banked time with no open span: the stage ran in an earlier attempt of
+            # this same iteration and has not been re-entered yet. It is DONE for the
+            # iteration, and its time stands — that is the owner's rule, that time is
+            # never reset within an iteration.
+            state, dur = "done", _acc
         elif s_:
             # Started, never finished, and the loop is NOT alive to be running it.
             # Never shown as done: an abandoned phase and a completed one must not
@@ -911,6 +1193,29 @@ def collect():
                   "detail": detail},
         "loop_alive": loop_alive,
         "iteration": cur_it, "iteration_started": started,
+        # TOTAL FOR THIS ATTEMPT. Falls back to `now` whenever ANY stage is still
+        # open, not only when none has ended — the first version took the last END,
+        # so a turn six minutes in showed 3m07s because the running Build had no end
+        # yet and Capability Evaluation's end was the newest timestamp available.
+        # THE ITERATION'S OWN CLOCK, from its FIRST attempt to now. Never reset by a
+        # re-run — owner's rule. An iteration that has been attempted five times has
+        # cost all five, and that is the number that says what the hold is spending.
+        "iteration_total": ((now - first_attempt_start(cur_it))
+                            if first_attempt_start(cur_it) else
+                            ((now - started) if started else None)),
+        # AND THE ATTEMPTS BEFORE IT. Owner, 2026-08-17: "where the previous has gone?"
+        # The counter now holds until BRAIN overall rises, so one iteration can be
+        # attempted many times — iteration 2 has begun five. Resetting the phase rows
+        # per attempt made each turn readable but hid the cost of the whole iteration,
+        # which is the number that says what the hold is actually spending.
+        "iteration_attempts": attempts_this_iteration(cur_it),
+        # Owner, 2026-08-17: "the ideal time of an iteration should be 30min-40min to
+        # complete end to end with improvement … no iteration should stuck in any loop
+        # or move around the circle." The budget is shown so circling is VISIBLE rather
+        # than inferred from a total nobody is comparing against anything.
+        "iteration_budget_s": 2400,
+        "iteration_elapsed_all": (first_attempt_start(cur_it) and
+                                  now - first_attempt_start(cur_it)) or None,
         "iterations_built": built, "iteration_in_flight": in_flight,
         "current_phase": current, "phases": phase_rows,
         "progress": last_stream_line(cur_it, current) if current else "",
@@ -921,6 +1226,9 @@ def collect():
         "iterations": iteration_records(),
         "campaign": campaign_snapshot(),
         "capability_series": capability_series(),
+        "iteration_timings": iteration_timings(),
+        "observed": observed_gaps(),
+        "upgrade_feed": upgrade_feed(),
         "history": history_rows(sc, vd, cur_it),
     }
 
@@ -1005,7 +1313,7 @@ def render(d, full=False):
     for p_ in d["phases"]:
         ph, state, dur = p_["name"], p_["state"], p_["duration"]
         if state == "running":
-            word = "Building" if ph == "Build" else "Running"
+            word = "Building" if ph == "Build & Deploy" else "Running"
             txt = f"{C['cyn']}{C['b']}{word}{C['r']} {C['b']}{fmt_dur(dur)}{C['r']}"
             if p_["current"]:
                 txt += f"  {C['yel']}- Current{C['r']}"
