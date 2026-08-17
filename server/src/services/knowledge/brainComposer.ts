@@ -2521,7 +2521,7 @@ export async function compose(
       // empty string would let the model infer a duplicate it cannot see, and a
       // silent zero is the DEF-085 shape ("a read that failed is not no noise").
       const pushHistoryBlock = await buildPushHistoryBlock(
-        userId, clientNumber, conversationTextForPushHistory(question, history),
+        userId, clientNumber, conversationTextForPushHistory(question, history), question,
       );
       const result = await reasoningCompose({
         userId, clientNumber,
@@ -3163,7 +3163,7 @@ ${calLines.join('\n')}`;
   // because its sibling block was wired to one path only; this is the second
   // call site added in the same edit so that cannot recur here.
   const legacyPushHistoryBlock = await buildPushHistoryBlock(
-    userId, clientNumber, conversationTextForPushHistory(question, history),
+    userId, clientNumber, conversationTextForPushHistory(question, history), question,
   );
 
   const systemPrompt = await assembleSystemPrompt({

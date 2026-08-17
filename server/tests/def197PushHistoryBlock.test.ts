@@ -30,6 +30,7 @@ import {
   renderPushHistoryBlock,
   renderPushHistoryUnavailable,
   selectSubjectsForConversation,
+  questionIsAboutPushes,
 } from '../src/services/selfpruning/pushHistoryBlock';
 import type { NoiseSummary, SubjectGroup } from '../src/services/selfpruning/inboundNoiseLedger';
 
@@ -178,7 +179,9 @@ describe('DEF-197 — BOTH composer paths receive the block (the DEF-165 guard)'
     // DEF-200 — and BOTH must pass the conversation, or the resolver is off on
     // that path and the block reverts to offering candidates. A path wired
     // without it is the DEF-165 shape again, one argument deeper.
-    const scoped = code.match(/buildPushHistoryBlock\(\s*userId\s*,\s*clientNumber\s*,\s*conversationTextForPushHistory\(question,\s*history\)/g) ?? [];
+    const scoped = code.match(/buildPushHistoryBlock\(\s*userId\s*,\s*clientNumber\s*,\s*conversationTextForPushHistory\(question,\s*history\),\s*question\s*,?\s*\)/g) ?? [];
+    // DEF-203 — and BOTH must pass the QUESTION, or the relevance gate is off on
+    // that path and the block returns to every turn, which is the B03 regression.
     expect(scoped.length).toBe(2);
   });
 
@@ -449,8 +452,8 @@ describe('DEF-200 — the resolver runs in code, and the collision is the test',
     // it is not there — this is the structural half DEF-198 lacked.
     expect(out).not.toContain(SHIREME);
     expect(out).not.toContain('item:shireme');
-    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION');
-    expect(out).toMatch(/no\s+repeat-push record for it/);
+    expect(out).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR THE ITEM UNDER DISCUSSION');
+    expect(out).toMatch(/no\s+repeat-push\s+record for it/);
   });
 
   it('renders ONLY the matched subject when the conversation does name it', () => {
@@ -459,7 +462,7 @@ describe('DEF-200 — the resolver runs in code, and the collision is the test',
     expect(out).toContain(SHIREME);
     expect(out).toContain('2 pushes delivered');
     expect(out).toContain('The subject(s) from THIS conversation');
-    expect(out).not.toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+    expect(out).not.toContain('YOUR PUSH RECORD HAS NO ENTRY FOR');
   });
 
   it('withholds a NON-matching subject even while another one matches', () => {
@@ -480,7 +483,7 @@ describe('DEF-200 — the resolver runs in code, and the collision is the test',
   it('an UNNAMEABLE subject can never be "the one he means"', () => {
     // No title -> no way to match it to his words -> it must not be offered.
     const out = renderPushHistoryBlock(collision(), new Map(), 'why did you remind me twice?');
-    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+    expect(out).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR');
     expect(out).not.toContain('item:shireme');
   });
 
@@ -489,7 +492,7 @@ describe('DEF-200 — the resolver runs in code, and the collision is the test',
     // distinctiveness. Mutation: dropping MIN_DISTINCTIVE_TITLE dies here.
     const s = summary({ subjects: [subject({ subjectKey: 'item:c', reached: 2 })] });
     const out = renderPushHistoryBlock(s, new Map([['item:c', 'Call']]), 'call him about the call');
-    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+    expect(out).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR');
   });
 
   it('matches across punctuation and case, because his words are not the stored string', () => {
@@ -504,7 +507,7 @@ describe('DEF-200 — the resolver runs in code, and the collision is the test',
     // Scripts and digests have no dialogue; they must still get the record.
     const out = renderPushHistoryBlock(collision(), titles);
     expect(out).toContain(SHIREME);
-    expect(out).not.toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+    expect(out).not.toContain('YOUR PUSH RECORD HAS NO ENTRY FOR');
   });
 });
 
@@ -599,7 +602,7 @@ describe('DEF-201 — Codex\'s exact fixture, through the real builder', () => {
     expect(out).not.toContain('item:vision');
     expect(out).not.toContain('2 pushes delivered');   // no count to misattach
     expect(out).not.toContain('06:01');
-    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION');
+    expect(out).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR THE ITEM UNDER DISCUSSION');
   });
 
   it('still answers correctly when the conversation DOES name a held subject', async () => {
@@ -643,5 +646,101 @@ describe('DEF-201 — the incompleteness reason names itself, and the claim is w
     expect(out).toMatch(/IN THE LAST 36 HOURS/);
     // Mutation: dropping the window qualification dies here.
     expect(out).toMatch(/never an unqualified "I only sent it once"/);
+  });
+});
+
+/**
+ * DEF-203 — the regression guard fired on `B03-pronoun-followup`, and it was my
+ * change that caused it.
+ *
+ * Asked *"And what about the second one?"* about a Q3 headcount plan Brain had
+ * itself named one turn earlier, Brain answered *"I'm not finding anything under
+ * \"Q3 headcount plan\". Could you give me a different name for it?"*
+ * Mean 98.1 -> 68.8; C3 90 -> 30; C6 100 -> 50; C7 100 -> 60.
+ *
+ * DEF-200's no-match branch was correct for B12 and catastrophic here: a block
+ * answering ONE question was injected on EVERY turn, and its push-record miss
+ * was read as the ITEM not existing. That is `guard-destroys-the-answer`, 8 in
+ * chart §3, and I built the ninth.
+ */
+describe('DEF-203 — a block that answers one question must not be present for all of them', () => {
+  it('is NOT built at all when the question is not about pushes — the B03 shape', async () => {
+    // The whole fix in one assertion: an absent block cannot deny anything.
+    vi.resetModules();
+    const findMany = vi.fn(async () => { throw new Error('must not be reached'); });
+    vi.doMock('../src/db/prisma', () => ({ default: { openItem: { findMany } } }));
+    vi.doMock('../src/services/selfpruning/inboundNoiseLedger', () => ({
+      summariseInboundNoise: async () => { throw new Error('must not be reached'); },
+    }));
+    const { buildPushHistoryBlock } = await import('../src/services/selfpruning/pushHistoryBlock');
+    const out = await buildPushHistoryBlock(
+      2, 'TMC-0001', 'Q3 headcount plan is at risk\nAnd what about the second one?',
+      'And what about the second one?',
+    );
+    expect(out).toBe('');
+    // Mutation: removing the gate makes the summariser run and this throws.
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it('gates on the QUESTION, not the conversation — history mentions reminders constantly', async () => {
+    // Caught by mutation testing: gating on the conversation text passed every
+    // other test here, because the B03 fixture has no push words on either side.
+    // It is still wrong — a history that merely MENTIONS a reminder would
+    // re-inject the block on an unrelated question, which is the B03 failure
+    // returning by another door.
+    vi.resetModules();
+    vi.doMock('../src/db/prisma', () => ({ default: { openItem: { findMany: async () => [] } } }));
+    vi.doMock('../src/services/selfpruning/inboundNoiseLedger', () => ({
+      summariseInboundNoise: async () => { throw new Error('must not be reached'); },
+    }));
+    const { buildPushHistoryBlock } = await import('../src/services/selfpruning/pushHistoryBlock');
+    const out = await buildPushHistoryBlock(
+      2, 'TMC-0001',
+      'I reminded you about the pricing yesterday and pushed it twice\nAnd what about the second one?',
+      'And what about the second one?',   // the QUESTION is not about pushes
+    );
+    expect(out).toBe('');
+  });
+
+  it('IS built when he genuinely asks about repeat pushes', () => {
+    for (const q of [
+      'Why did you remind me about that one twice?',
+      'why was I notified again?',
+      'how many times did you push me on this?',
+      'did you nudge him twice?',
+      'that looks like a duplicate reminder',
+    ]) expect(questionIsAboutPushes(q)).toBe(true);
+  });
+
+  it('is NOT built for ordinary follow-ups that merely reference an item', () => {
+    for (const q of [
+      'And what about the second one?',
+      'what is the status of the Q3 headcount plan?',
+      'summarise my day',
+      'who is Asad?',
+    ]) expect(questionIsAboutPushes(q)).toBe(false);
+  });
+
+  it('the no-match text FORBIDS denying the item — the exact sentence B03 produced', () => {
+    const out = renderPushHistoryBlock(
+      summary({ subjects: [subject({ subjectKey: 'item:x', reached: 2 })] }),
+      new Map([['item:x', 'Some other thing entirely']]),
+      'And what about the Q3 headcount plan?',
+    );
+    expect(out).toContain('THIS IS A STATEMENT ABOUT PUSH COUNTS ONLY');
+    expect(out).toMatch(/NOT evidence that the item does\s+not exist/);
+    // Mutation: dropping the scoping paragraph dies on these three.
+    expect(out).toMatch(/NEVER answer "I cannot find that item"/);
+    expect(out).toMatch(/ask him to rename it/);
+    expect(out).toMatch(/answer from the blocks that hold\s+items and ignore this one entirely/);
+  });
+
+  it('still withholds the unrelated subject while doing so', () => {
+    const out = renderPushHistoryBlock(
+      summary({ subjects: [subject({ subjectKey: 'item:x', reached: 2 })] }),
+      new Map([['item:x', 'Some other thing entirely']]),
+      'And what about the Q3 headcount plan?',
+    );
+    expect(out).not.toContain('Some other thing entirely');
   });
 });

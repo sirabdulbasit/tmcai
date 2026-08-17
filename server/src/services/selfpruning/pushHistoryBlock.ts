@@ -102,6 +102,46 @@ export async function resolveSubjectTitles(
   return resolved;
 }
 
+/**
+ * DEF-203 — is THIS turn actually about Brain's own pushes?
+ *
+ * THE REGRESSION THIS EXISTS TO UNDO, and it was mine. DEF-200 made the block
+ * withhold subjects the conversation does not name, and print a loud
+ * "NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION" when none
+ * matched. That was right for B12. It was catastrophic for `B03-pronoun-followup`,
+ * which is not about pushes at all: asked *"And what about the second one?"*
+ * about a Q3 headcount plan Brain had itself just named, Brain answered
+ * *"I'm not finding anything under \"Q3 headcount plan\"."* — mean 98.1 -> 68.8,
+ * C3 90 -> 30. The block's push-record miss was read as the ITEM not existing.
+ *
+ * That is `guard-destroys-the-answer` (8 occurrences in chart §3) and I built the
+ * ninth. The root cause is not the wording: it is that a block answering ONE
+ * question was injected on EVERY turn. A page of "I have no record of that"
+ * sitting in front of a model that was asked something else will eventually be
+ * repeated as a denial.
+ *
+ * So relevance is decided where the information is — in the question. The block
+ * is built only when he is actually asking about repeat pushes; otherwise it is
+ * absent, and an absent block cannot deny anything.
+ *
+ * Deliberately matched on the QUESTION, not the history: history routinely
+ * mentions reminders, and gating on it would re-inject the block everywhere.
+ */
+const PUSH_QUESTION = new RegExp([
+  'remind(?:ed|er|ers|ing)?',
+  'push(?:ed|es|ing)?',
+  'notif(?:y|ied|ication|ications)',
+  'nudge[ds]?',
+  'chase[ds]?',
+  'ping(?:ed|ged)?',
+  '\\btwice\\b', '\\bagain\\b', 'duplicate', 'double',
+  'how many times', 'how often',
+].join('|'), 'i');
+
+export function questionIsAboutPushes(question: string): boolean {
+  return PUSH_QUESTION.test(String(question ?? ''));
+}
+
 /** A prompt is a budget. Repeat-pushed subjects, worst first, capped. */
 const MAX_SUBJECT_LINES = 12;
 
@@ -319,13 +359,23 @@ export function renderPushHistoryBlock(
   // none of it was about the item under discussion. Showing that record anyway
   // is what produced two different fabricated referents in two runs.
   if (scoped && shown.length === 0) {
-    lines.push('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION.');
+    lines.push('YOUR PUSH RECORD HAS NO ENTRY FOR THE ITEM UNDER DISCUSSION.');
     lines.push('');
-    lines.push('Your record for THIS item is therefore empty in this window. Say that you have no');
-    lines.push('repeat-push record for it. The other subjects in your record are deliberately NOT');
-    lines.push('listed here, because they are not what he asked about — do not name one, and do not');
-    lines.push('take a title from another block. "I have no record of pushing that one twice" is a');
-    lines.push('complete and correct answer.');
+    // DEF-203 — the scope of this miss, stated before anything else, because
+    // B03 proved the model will otherwise generalise it into a denial of the
+    // ITEM. Brain answered "I'm not finding anything under \"Q3 headcount plan\""
+    // about an item it had named one turn earlier: C3 90 -> 30.
+    lines.push('THIS IS A STATEMENT ABOUT PUSH COUNTS ONLY. It is NOT evidence that the item does');
+    lines.push('not exist, is not on his list, or cannot be found. The item may be perfectly real and');
+    lines.push('present in your other blocks — this record only counts how many times you PUSHED it,');
+    lines.push('and it has no row for it in this window. NEVER answer "I cannot find that item", "I');
+    lines.push('have nothing under that name", or ask him to rename it on the strength of this block.');
+    lines.push('');
+    lines.push('If he asked why something was pushed more than once, say you have no repeat-push');
+    lines.push('record for it. If he asked about the item itself, answer from the blocks that hold');
+    lines.push('items and ignore this one entirely. The other subjects in your record are deliberately');
+    lines.push('NOT listed here because they are not what he asked about — do not name one, and do not');
+    lines.push('take a title from another block.');
     lines.push('');
     lines.push(rulesFor(false, incompletenessReasons(s, 0, allRepeats.length), s.windowHours));
     return lines.join('\n');
@@ -402,7 +452,16 @@ export async function buildPushHistoryBlock(
    * composer path supplies it.
    */
   conversationText?: string,
+  /**
+   * DEF-203 — THIS turn's question. When supplied and it is not about pushes,
+   * the block is not built at all: an absent block cannot deny an item the
+   * owner asked about. Optional so a caller with no question keeps the old
+   * behaviour.
+   */
+  question?: string,
 ): Promise<string> {
+  // DEF-203 — the gate, before any read. Also saves a query on ~every turn.
+  if (question !== undefined && !questionIsAboutPushes(question)) return '';
   try {
     const summary = await summariseInboundNoise({ clientNumber, userId });
     // DEF-199 — perform the join the model was previously left to guess. A
