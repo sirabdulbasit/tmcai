@@ -14,7 +14,7 @@
  */
 import prisma from '../../db/prisma';
 import { callLLM } from '../llmRouter';
-import { verifyUpdateProse, type VerifiedProse } from './answerReceiptPolicy';
+import { verifyUpdateProse, verifyAppliedMarker, type VerifiedProse } from './answerReceiptPolicy';
 import { BRAIN_SCHEMA_VERSION, getBrainSchemaText } from './brainSchema';
 import { getBrainPersona } from './brainPersonaService';
 import { getRecentTenantLog } from './tenantLogService';
@@ -29,7 +29,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // C-3 — Brain's own push record. Statically imported because it is needed on
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
-import { actionReceiptMarker, lastBrainQuestion, answerThenAsk } from './actionReceipt';
+import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, outstandingSlots } from './actionReceipt';
 
 export interface OpenedPage {
   id: string;
@@ -3742,7 +3742,30 @@ ${calLines.join('\n')}`;
               });
               actionResult.verifiedProse = verified;
               if (!verified) {
-                answer = actionResult.message;
+                // DEF-212 — the receipt stays the FACT; it stops being the
+                // sentence. `answer = actionResult.message` handed the owner
+                // `Updated "…": priority=high.` — field names and an equals
+                // sign, which is the exact string DEF-144 and DEF-145 were
+                // written about, and it also discarded whichever half of
+                // Brain's own earlier question is still unanswered (DEF-209).
+                //
+                // Fail-closed is UNCHANGED: unverifiable prose still loses. What
+                // ships instead is the same receipt, verbatim, inside a marker
+                // whose curated meaning states it and then names what is still
+                // outstanding. Outstanding is computed from what the DATABASE
+                // received (`data`), never from what the model asked for.
+                const appliedMarker = actionAppliedMarker({
+                  receipt: actionResult.message as string,
+                  outstanding: outstandingSlots(
+                    lastBrainQuestion(history),
+                    data as unknown as Record<string, unknown>,
+                  ),
+                });
+                actionResult.verifiedProse = verifyAppliedMarker(appliedMarker, {
+                  receipt: actionResult.message as string,
+                  artifactId: existing.id,
+                });
+                answer = appliedMarker;
               }
             } else if (!actionResult) {
               actionResult = { ok: false, message: `[update_open_item: no recognised fields to update]` };

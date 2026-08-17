@@ -40,6 +40,8 @@
  * half; DEF-134 shipped dead because its proof lived in the cheap half.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { curatedMarkerMeaning } from '../src/services/knowledge/answerSanitizer';
+import { stripMarkerEnvelope } from '../src/services/knowledge/systemMarker';
 
 const ITEM_TITLE = "Define rules for Brain's responsiveness to new vs. existing contacts";
 
@@ -178,13 +180,27 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
       expect((r.actionResult as any)?.verifiedProse).toBeTruthy();
     });
 
-    it('mints NO token when a requested field was dropped', async () => {
+    // DEF-212 UPDATED THIS DELIBERATELY. The property DEF-144 defends is that
+    // the model's UNVERIFIABLE PROSE never wins — that is unchanged and asserted
+    // directly below. What changed is that the fallback is no longer the bare
+    // receipt string: it is that same receipt carried in a marker, and the token
+    // on the result now vouches for THAT marker (minted by `verifyAppliedMarker`
+    // from the receipt, in the process that did the write). So "no token" is no
+    // longer the way to say "the prose lost".
+    it('never vouches for the dropped-field PROSE — the answer is not the model sentence', async () => {
       const r = await composeUpdateTurn(
         "Got it. I've set the priority to urgent and added your note.",
         'urgent',
         { note: 'owner context' },
       );
-      expect((r.actionResult as any)?.verifiedProse).toBeNull();
+      expect(r.answer, 'the false completion claim is gone').not.toContain('urgent');
+      expect(r.answer).not.toContain("Got it. I've set");
+      // Whatever token exists is bound to the marker that ships, not the prose.
+      // The receipt survives inside it — checked through the REAL renderer, so
+      // this asserts what the owner reads rather than a JSON-escaped substring.
+      const meaning = curatedMarkerMeaning(stripMarkerEnvelope(String(r.answer)));
+      expect(meaning, 'the marker renders').toBeTruthy();
+      expect(meaning!).toContain('Updated "');
     });
 
     it('falls BACK to the receipt when a requested field was silently dropped', async () => {
@@ -201,7 +217,12 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
       expect(updates.length, 'the note is a real field, so a write happens').toBe(1);
       expect(updates[0].data.priority, 'an unnormalisable priority is dropped').toBeUndefined();
       expect(r.answer).not.toContain('urgent');
-      expect(r.answer).toContain('Updated "');
+      // DEF-212 — the receipt text is preserved VERBATIM; it is now the payload
+      // of a marker rather than the raw reply, so the owner reads it in Brain's
+      // voice with the still-unanswered part of the earlier question attached.
+      // The substring assertion is unchanged because nothing about the receipt
+      // was reworded.
+      expect(r.answer).toContain('Updated \\"');
     });
 
     it('emits an honest marker — not Brain\'s false claim — when NOTHING applied', async () => {

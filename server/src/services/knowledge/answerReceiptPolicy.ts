@@ -43,6 +43,8 @@
  * the whole 7k-line composer and could silently skip on a module-init failure.
  */
 
+import { isSystemMarker } from './systemMarker';
+
 /** Below this, a "reply" is a fragment rather than an answer, and the
  *  deterministic receipt is more use to the owner than three words. */
 export const MIN_ANSWER_CHARS_OVER_RECEIPT = 12;
@@ -55,6 +57,13 @@ export const MIN_ANSWER_CHARS_OVER_RECEIPT = 12;
 export function isUsableBrainProse(answer: string): boolean {
   const trimmed = (answer || '').trim();
   if (trimmed.length < MIN_ANSWER_CHARS_OVER_RECEIPT) return false;
+  // DEF-212 — this rejects a BARE bracket, and a provenance-stamped marker is
+  // not one: `systemMarker()` prefixes the sentinel, so a stamped marker does
+  // not start with `[` and already passes. I added an `isSystemMarker` branch
+  // here and a mutation test proved it changed nothing — the rule was already
+  // correct — so it is gone rather than left as decoration. What stays rejected
+  // is exactly what DEF-169 meant to reject: `[see attached]`, shape without
+  // provenance.
   if (trimmed.startsWith('[')) return false;
   return true;
 }
@@ -291,6 +300,36 @@ export function verifyUpdateProse(prose: string, outcome: UpdateOutcome): Verifi
     prose,
     artifactId: outcome.artifactId ?? null,
     receipt: outcome.receipt ?? '',
+  });
+  return token;
+}
+
+/**
+ * DEF-212 — mint a token for the APPLIED-receipt marker.
+ *
+ * This is not a second opinion about prose; it carries no claim of its own. The
+ * marker's payload IS the receipt, verbatim, built in the process that did the
+ * write — which is exactly the provenance `verifyUpdateProse` demands and the
+ * reason a bare boolean was removed in DEF-147. Binding it to (marker, receipt,
+ * artifact) means a replay onto different prose, a changed set of applied
+ * values, or a different artifact all fail closed to the receipt, unchanged.
+ */
+export function verifyAppliedMarker(
+  marker: string,
+  outcome: { receipt: string; artifactId?: string | null },
+): VerifiedProse | null {
+  if (!isSystemMarker(marker)) return null;
+  if (!outcome.receipt?.trim()) return null;
+  // The receipt must actually be inside the marker it claims to carry — a
+  // marker built from some other outcome is not this one's record.
+  if (!marker.includes(JSON.stringify(outcome.receipt.replace(/\s+/g, ' ').trim().slice(0, 400)).slice(1, -1))) {
+    return null;
+  }
+  const token = Object.freeze({}) as unknown as VerifiedProse;
+  tokenRecords.set(token as unknown as object, {
+    prose: marker,
+    artifactId: outcome.artifactId ?? null,
+    receipt: outcome.receipt,
   });
   return token;
 }

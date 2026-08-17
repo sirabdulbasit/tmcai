@@ -215,3 +215,36 @@ export function answerThenAsk(
   if (a.includes(q)) return a;
   return `${a}\n\n${q}`;
 }
+
+/**
+ * DEF-212 — the receipt survives as FACT without being the owner's sentence.
+ *
+ * B04's reply came back as `Updated "Define rules for Brain's responsiveness to
+ * new vs. existing contacts": priority=high.` — field names and an equals sign,
+ * the exact string DEF-144 and DEF-145 were written about. The path is
+ * `brainComposer`'s update branch: when `verifyUpdateProse` cannot positively
+ * justify the composed answer it does `answer = actionResult.message`, and the
+ * deterministic receipt becomes the reply.
+ *
+ * That fallback is RIGHT about truth and WRONG about everything else. The
+ * receipt is true by construction — it lists what the database actually
+ * received — so replacing unverifiable prose with it is the correct fail-closed
+ * move, and I am not touching that judgement. What it also does is throw away
+ * the outstanding half of Brain's own question (DEF-209) and hand the owner a
+ * log line.
+ *
+ * So the receipt stops being the SENTENCE and becomes the PAYLOAD: the curated
+ * meaning states it verbatim — no rewording, nothing added to the claim — and
+ * then names whatever the owner still has not answered. `sanitizeAnswerInBrainVoice`
+ * chooses the words from that fact. Nothing about what was written is softened,
+ * asserted or inferred; the receipt text travels intact.
+ */
+export function actionAppliedMarker(args: {
+  receipt: string;
+  outstanding?: readonly string[];
+}): string {
+  const receipt = String(args.receipt ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const known = new Set(RECEIPT_SLOTS.map((s) => s.key));
+  const outstanding = (args.outstanding ?? []).filter((k) => known.has(k)).slice(0, 4);
+  return systemMarker(`applied: ${JSON.stringify({ receipt, outstanding })}`);
+}

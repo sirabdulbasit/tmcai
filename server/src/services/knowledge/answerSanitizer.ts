@@ -313,6 +313,40 @@ function proceedingMarkerMeaning(answer: string): string | null {
 }
 
 /**
+ * DEF-212 — the applied receipt's curated meaning.
+ *
+ * The receipt is quoted VERBATIM. That is the whole point: it is true by
+ * construction because it lists what the database actually received, and
+ * rewording it here would put this parser in the business of restating a fact it
+ * did not establish. What this adds is the part the bare receipt could never
+ * carry — which half of Brain's earlier question is still unanswered.
+ */
+function appliedMarkerMeaning(answer: string): string | null {
+  const m = /^\s*\[applied:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (typeof p?.receipt !== 'string' || !p.receipt.trim()) return null;
+    if (!Array.isArray(p?.outstanding) || p.outstanding.length > 4) return null;
+    if (p.outstanding.some((k: unknown) => typeof k !== 'string')) return null;
+    const labels = (p.outstanding as string[])
+      .map((k) => RECEIPT_SLOTS.find((s) => s.key === k)?.label)
+      .filter((l): l is string => Boolean(l));
+    if (labels.length !== p.outstanding.length) return null;
+
+    const done = String(p.receipt).trim().slice(0, 400);
+    if (labels.length === 0) return done;
+    const named = labels.length === 1
+      ? labels[0]
+      : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+    return `${done} ${named} ${labels.length === 1 ? 'is' : 'are'} still unanswered `
+      + `from the earlier question and should be asked for.`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The curated meaning of a whole-answer marker, when we have one.
  *
  * These 25 replacements are not throwaway strings — several were reworded
@@ -334,6 +368,8 @@ export function curatedMarkerMeaning(answer: string): string | null {
   if (withdrawn) return withdrawn;
   const proceeding = proceedingMarkerMeaning(answer);
   if (proceeding) return proceeding;
+  const applied = appliedMarkerMeaning(answer);
+  if (applied) return applied;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }
