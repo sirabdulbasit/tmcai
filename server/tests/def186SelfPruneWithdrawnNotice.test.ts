@@ -27,6 +27,8 @@
  * settings module against a rejecting Prisma.)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 const mocks = vi.hoisted(() => {
   const state = {
@@ -849,5 +851,83 @@ describe('DEF-187/188/189/190 — the cleanup job: CAS writes, atomic outbox bat
     expect(stats.noticesEnqueued).toBe(0);
     expect(mocks.state.batches).toHaveLength(0);
     expect(mocks.enqueueBrainPrompt).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * DEF-202 — Codex iteration-4 HIGH 2 and HIGH 3, on the source.
+ *
+ * HIGH 2: "a sent batch permanently consumes an item ID and erases a later
+ * withdrawal event … the old sent batch still places A in `claimed`, no new
+ * batch is created, and `clearOwedFlags` clears the new `owed:true` as if it
+ * belonged to the old event."
+ *
+ * HIGH 3: "two workers pass the read before either creates … create different
+ * random dedup keys, and can enqueue two notices. The migration's only
+ * uniqueness constraint is on random `dedup_key`, not on membership/event
+ * identity."
+ *
+ * Both were regressions I introduced in DEF-190 by moving identity off the row
+ * and onto an item-keyed batch. These read the committed source, with comments
+ * stripped, because the guard must read code and not prose about it (DEF-195).
+ */
+describe('DEF-202 — identity belongs to the withdrawal EVENT, not to the item', () => {
+  const code = (() => {
+    const raw = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/jobs/openItemsBacklogCleanupJob.ts'), 'utf8');
+    return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  })();
+
+  it('mints a fresh event token every time a withdrawal debt is recorded', () => {
+    expect(code).toMatch(/function owedNotice\([^)]*\)/);
+    expect(code).toMatch(/eventToken: randomUUID\(\)/);
+    // ONE implementation. Five inline copies of the stamp would be
+    // protection-with-two-implementations on the field that IS the identity.
+    expect((code.match(/eventToken: randomUUID\(\)/g) ?? []).length).toBe(1);
+    expect((code.match(/selfPruneNotice: owedNotice\(/g) ?? []).length).toBe(5);
+  });
+
+  it('claims batch membership by EVENT TOKEN, never by item id', () => {
+    // Mutation: reverting to itemIdsOf here restores HIGH 2 — a re-withdrawn
+    // item stays claimed by the old sent batch and is never announced again.
+    expect(code).toMatch(/const claimed = new Set\(batches\.flatMap\(\(b\) => eventTokensOf\(b\)\)\)/);
+    expect(code).not.toMatch(/const claimed = new Set\(batches\.flatMap\(\(b\) => itemIdsOf\(b\)\)\)/);
+  });
+
+  it('derives the dedup identity FROM the membership, so the unique index owns the event', () => {
+    // HIGH 3: a random key cannot collide, so two creators both insert. A key
+    // derived from the sorted member tokens makes the EXISTING unique index the
+    // ownership constraint.
+    expect(code).toMatch(/update\(tokens\.join\('\|'\)\)/);
+    expect(code).not.toMatch(/update\(batchId\)/);
+    // And the loser of the race must treat the collision as success, not error.
+    expect(code).toMatch(/unique\|duplicate key/);
+  });
+
+  it('clears ONLY the event the batch claimed, so a later withdrawal survives', () => {
+    expect(code).toMatch(/if \(owned\.size > 0 && !owned\.has\(key\)\)/);
+    expect(code).toMatch(/eventTokenOf\(fresh\.metadata\)/);
+    // Both call sites hand the batch's own tokens down.
+    expect((code.match(/eventTokensOf\(batch\)/g) ?? []).length).toBe(2);
+  });
+
+  it('a pre-DEF-202 batch claims no event, so existing debt is not stranded', () => {
+    // Nullable column + legacy fallback: the changeover must neither lose debt
+    // nor announce it twice.
+    expect(code).toMatch(/Array\.isArray\(batch\.eventTokens\)/);
+    expect(code).toMatch(/`legacy:\$\{/);
+  });
+
+  it('the migration is additive and idempotent', () => {
+    const sql = fs.readFileSync(path.resolve(
+      __dirname, '..', 'prisma/migrations/20260817_self_prune_notice_event_tokens/migration.sql'), 'utf8');
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS event_tokens JSONB/);
+    // Never destructive: hand-written idempotent migrations only (CLAUDE.md).
+    expect(sql).not.toMatch(/DROP|DELETE|TRUNCATE|ALTER COLUMN/i);
+  });
+
+  it('the schema field is nullable, matching the migration', () => {
+    const schema = fs.readFileSync(path.resolve(__dirname, '..', 'prisma/schema.prisma'), 'utf8');
+    expect(schema).toMatch(/eventTokens\s+Json\?\s+@map\("event_tokens"\)/);
   });
 });

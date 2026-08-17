@@ -2944,6 +2944,9 @@ model SelfPruneNoticeBatch {
   batchId         String    @map("batch_id")
   dedupKey        String    @unique(map: "self_prune_notice_batches_dedup_uq") @map("dedup_key") @db.VarChar(120)
   itemIds         Json      @map("item_ids")
+  /// DEF-202 — the withdrawal EVENTS this batch claimed. Nullable so
+  /// pre-DEF-202 rows keep working: a batch with no tokens claims no event.
+  eventTokens     Json?     @map("event_tokens")
   titles          Json
   count           Int
   state           String    @default("pending") @db.VarChar(20)

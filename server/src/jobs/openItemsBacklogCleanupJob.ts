@@ -131,6 +131,7 @@ interface NoticeBatchRow {
   batchId: string;
   dedupKey: string;
   itemIds: unknown;
+  eventTokens: unknown;
   titles: unknown;
   count: number;
   state: string;
@@ -156,6 +157,41 @@ interface NoticeBatchDelegate {
 function noticeBatchDelegate(): NoticeBatchDelegate | null {
   const d = (prisma as any).selfPruneNoticeBatch;
   return d && typeof d.findMany === 'function' ? (d as NoticeBatchDelegate) : null;
+}
+
+/**
+ * DEF-202 — the owed-notice stamp, and the EVENT TOKEN that makes it an event.
+ *
+ * Codex iteration-4 HIGH 2: "a sent batch permanently consumes an item ID and
+ * erases a later withdrawal event … A is withdrawn and announced, restored, then
+ * later quarantined and withdrawn again; the old sent batch still places A in
+ * `claimed`, no new batch is created, and `clearOwedFlags` clears the new
+ * `owed:true` as if it belonged to the old event." That is exactly what moving
+ * identity from the row's metadata onto an item-keyed batch did, and it is my
+ * own regression from DEF-190.
+ *
+ * The token is minted fresh every time a withdrawal is recorded, so the SECOND
+ * withdrawal of the same item is a different event with a different identity.
+ * Batch membership and debt-clearing both key on it (`:claimed`, `clearOwedFlags`),
+ * which is Codex iteration-4 directive 1: "model a withdrawal event, not
+ * permanent item membership … clearing must match that exact token."
+ */
+function owedNotice(reason: string, recordedAt: string): Record<string, unknown> {
+  return { owed: true, reason, recordedAt, eventToken: randomUUID() };
+}
+
+/** The event token currently stamped on a row, if any. */
+function eventTokenOf(metadata: unknown): string | null {
+  const meta = (metadata as Record<string, unknown> | null) ?? {};
+  const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
+  const t = notice.eventToken;
+  return typeof t === 'string' && t ? t : null;
+}
+
+/** The event identities this batch claimed. A batch with no tokens is a
+ *  pre-DEF-202 row; it claims nothing, so a fresh event can proceed. */
+function eventTokensOf(batch: NoticeBatchRow): string[] {
+  return Array.isArray(batch.eventTokens) ? (batch.eventTokens as unknown[]).map(String) : [];
 }
 
 function itemIdsOf(batch: NoticeBatchRow): string[] {
@@ -340,7 +376,7 @@ async function cleanupUserBacklog(
             inactivationReason: `Self-pruned after quarantine (${prunePlan.reason})`,
             // The owed notice is written IN the archiving write (DEF-187):
             // the row either carries its announcement debt or was not archived.
-            selfPruneNotice: { owed: true, reason: archivedReason, recordedAt: archivedAt },
+            selfPruneNotice: owedNotice(archivedReason, archivedAt),
           } as any,
         });
         if (!ok) { stats.raced++; continue; }
@@ -366,7 +402,7 @@ async function cleanupUserBacklog(
           status: 'CANCELLED' as any,
           metadata: {
             ...(meta as any), archivedReason: 'smoke_leftover', archivedAt,
-            selfPruneNotice: { owed: true, reason: 'smoke_leftover', recordedAt: archivedAt },
+            selfPruneNotice: owedNotice('smoke_leftover', archivedAt),
           } as any,
         }))) { stats.raced++; continue; }
         stats.archivedSmoke++;
@@ -400,7 +436,7 @@ async function cleanupUserBacklog(
           status: 'CANCELLED' as any,
           metadata: {
             ...(meta as any), archivedReason: `gate:${verdict.code}`, archivedAt,
-            selfPruneNotice: { owed: true, reason: `gate:${verdict.code}`, recordedAt: archivedAt },
+            selfPruneNotice: owedNotice(`gate:${verdict.code}`, archivedAt),
           } as any,
         }))) { stats.raced++; continue; }
         stats.archivedByGate++;
@@ -418,7 +454,7 @@ async function cleanupUserBacklog(
             status: 'CANCELLED' as any,
             metadata: {
               ...(meta as any), archivedReason: 'duplicate_collapsed', duplicateOf: keeper, archivedAt,
-              selfPruneNotice: { owed: true, reason: 'duplicate_collapsed', recordedAt: archivedAt },
+              selfPruneNotice: owedNotice('duplicate_collapsed', archivedAt),
             } as any,
           }))) { stats.raced++; continue; }
           stats.archivedDuplicate++;
@@ -439,7 +475,7 @@ async function cleanupUserBacklog(
             status: 'CANCELLED' as any,
             metadata: {
               ...(meta as any), archivedReason: 'duplicate_title', duplicateOf: keeper, archivedAt,
-              selfPruneNotice: { owed: true, reason: 'duplicate_title', recordedAt: archivedAt },
+              selfPruneNotice: owedNotice('duplicate_title', archivedAt),
             } as any,
           }))) { stats.raced++; continue; }
           stats.archivedDuplicate++;
@@ -536,7 +572,10 @@ async function processUserNotices(
     where: { clientNumber, userId, state: { in: ['pending', 'sent'] } },
     orderBy: { createdAt: 'asc' },
   } as any);
-  const claimed = new Set(batches.flatMap((b) => itemIdsOf(b)));
+  // DEF-202 — claimed by EVENT TOKEN, not by item id. An item withdrawn, restored
+  // and withdrawn again carries a NEW token, so the old sent batch no longer
+  // suppresses its second withdrawal (Codex iteration-4 HIGH 2).
+  const claimed = new Set(batches.flatMap((b) => eventTokensOf(b)));
 
   // 1. Settle pending batches under their ORIGINAL identity.
   for (const batch of batches.filter((b) => b.state === 'pending')) {
@@ -546,7 +585,7 @@ async function processUserNotices(
   // 2. Sent batches whose members still carry the owed flag: a prior clear
   //    raced or failed. Retry clearing — never re-announce.
   for (const batch of batches.filter((b) => b.state === 'sent')) {
-    await clearOwedFlags(clientNumber, userId, itemIdsOf(batch), batch.batchId, stats);
+    await clearOwedFlags(clientNumber, userId, itemIdsOf(batch), batch.batchId, stats, eventTokensOf(batch));
   }
 
   // 3. Owed rows claimed by NO batch form one new batch — a single atomic
@@ -554,11 +593,18 @@ async function processUserNotices(
   //    partial claim cannot exist (Codex iteration-3 HIGH 2).
   const candidates = await prisma.openItem.findMany({
     where: { clientNumber, userId, ...(OWED_WHERE as any) },
-    select: { id: true, title: true },
+    select: { id: true, title: true, metadata: true },
     orderBy: { createdAt: 'asc' },
     take: OWED_ROWS_PER_NOTICE,
   });
-  const fresh = candidates.filter((c) => !claimed.has(c.id));
+  const withToken = candidates.map((c) => ({
+    id: c.id,
+    title: c.title,
+    token: eventTokenOf(c.metadata),
+  }));
+  // A row with no token predates DEF-202; it keeps the old item-id identity so
+  // existing debt is neither lost nor double-announced during the changeover.
+  const fresh = withToken.filter((c) => !claimed.has(c.token ?? `legacy:${c.id}`));
   if (fresh.length === 0) return;
   if (candidates.length === OWED_ROWS_PER_NOTICE) {
     log.warn('owed-notice batch at cap — remainder rides the next tick', {
@@ -567,18 +613,37 @@ async function processUserNotices(
   }
 
   const batchId = randomUUID();
+  const tokens = fresh.map((f) => f.token ?? `legacy:${f.id}`).sort();
+  // DEF-202 — DETERMINISTIC from the member events, not from a random id. Codex
+  // iteration-4 HIGH 3: "two workers pass the read before either creates …
+  // create different random dedup keys, and can enqueue two notices. The
+  // migration's only uniqueness constraint is on random `dedup_key`, not on
+  // membership/event identity." Deriving the key FROM the membership makes that
+  // existing unique index the ownership constraint: the second writer collides.
+  const dedupKey = `selfpruning_withdrawn:${createHash('sha256').update(tokens.join('|')).digest('hex').slice(0, 32)}`;
   const created = await nb.create({
     data: {
       clientNumber,
       userId,
       batchId,
-      dedupKey: `selfpruning_withdrawn:${createHash('sha256').update(batchId).digest('hex').slice(0, 16)}`,
+      dedupKey,
       itemIds: fresh.map((f) => f.id),
+      eventTokens: tokens,
       titles: fresh.slice(0, 3).map((f) => f.title),
       count: fresh.length,
       state: 'pending',
     },
-  } as any);
+  } as any).catch((err: any) => {
+    // The collision IS the guarantee working. The other writer owns this event.
+    if (/unique|duplicate key/i.test(String(err?.message ?? ''))) {
+      log.info('owed-notice batch already owned by a concurrent run — not duplicated', {
+        clientNumber, userId,
+      });
+      return null;
+    }
+    throw err;
+  });
+  if (!created) return;
 
   await settleBatch(clientNumber, userId, created, stats);
 }
@@ -659,7 +724,7 @@ async function settleBatch(
     });
   }
 
-  await clearOwedFlags(clientNumber, userId, live.map((r) => r.id), batch.batchId, stats);
+  await clearOwedFlags(clientNumber, userId, live.map((r) => r.id), batch.batchId, stats, eventTokensOf(batch));
 }
 
 /**
@@ -675,7 +740,10 @@ async function clearOwedFlags(
   ids: string[],
   batchId: string,
   stats: CleanupStats,
+  /** DEF-202 — the events this batch actually owns. */
+  ownedTokens: string[] = [],
 ): Promise<void> {
+  const owned = new Set(ownedTokens);
   for (const id of ids) {
     try {
       const fresh = await prisma.openItem.findFirst({
@@ -683,6 +751,19 @@ async function clearOwedFlags(
         select: { metadata: true, updatedAt: true },
       });
       if (!fresh) continue; // already cleared, or restored — either way not ours to touch
+      // DEF-202 — the debt in front of us must be THE EVENT THIS BATCH CLAIMED.
+      // Codex iteration-4 HIGH 2: without this, an old sent batch clears the
+      // owed flag of a LATER, distinct withdrawal of the same item, and that
+      // second withdrawal is never announced. A legacy row (no token) is only
+      // ours if this batch is itself legacy.
+      const rowToken = eventTokenOf(fresh.metadata);
+      const key = rowToken ?? `legacy:${id}`;
+      if (owned.size > 0 && !owned.has(key)) {
+        log.info('owed flag belongs to a later withdrawal event — left for its own batch', {
+          clientNumber, userId, itemId: id, batchId,
+        });
+        continue;
+      }
       const meta = (fresh.metadata as Record<string, unknown> | null) ?? {};
       const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
       const ok = await guardedItemUpdate(
