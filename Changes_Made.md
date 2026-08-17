@@ -3478,3 +3478,41 @@ Reverting restores a reply that is a question and nothing else, on a path where 
 **CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** asking is no longer a reason to delete, and the output contract can now express both. **FALSIFIER:** a clarifying turn still reaching him as a bare question when `answer_text` was filled.
 
 **DEF-209 landed:** B04's reply in `iter-05-post-build.json` is now *"Got it. I've set the priority to high. Does it need a due date?"*
+
+## 63. DEF-212 — the receipt stays the fact, stops being the sentence (2026-08-17, BUILDER: Claude — orchestrator iteration 6, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+`B04-outstanding-question-ignored` in `iter-06-post-build.json`: *`Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.`* — field names and an equals sign, byte-for-byte the string DEF-144 and DEF-145 were written about.
+
+The regression guard fired on `B07-compound-ask` instead, and that one is a **judge artifact, not a defect**: Brain said the item "was due on August 5th, 2026" and today is 2026-08-17, so "overdue" is correct. The judge called Aug 5 2026 "in the future" because `brainResponseEvaluator.ts` never puts today's date in its prompt (`grep -c "todayDate|Asia/Karachi|toISOString"` → 0). Reported and left alone — the benchmark and judge are not the Builder's to edit.
+
+### Root cause
+
+`brainComposer`'s `update_open_item` success branch did `answer = actionResult.message` whenever `verifyUpdateProse` could not positively justify the composed prose. That fail-closed judgement is **right** — the receipt is true by construction, it lists what the database actually received — and it is untouched. What it also did was hand the owner a log line and discard the still-unanswered half of Brain's own question (DEF-209). `update_open_item` was the only SUCCESS branch doing this; every other branch already emits a bracketed marker.
+
+### Files changed
+
+- `server/src/services/knowledge/actionReceipt.ts` — `actionAppliedMarker({receipt, outstanding})`: the receipt travels verbatim as a JSON payload inside a provenance-stamped marker.
+- `server/src/services/knowledge/answerSanitizer.ts` — `appliedMarkerMeaning` quotes the receipt **without rewording** (this parser must not restate a fact it did not establish), then names what is still outstanding; rejects any payload the constructor could not have produced.
+- `server/src/services/knowledge/brainComposer.ts` — outstanding is computed from `data`, the Prisma payload actually written, never from `act`, what the model asked for.
+- `server/src/services/knowledge/answerReceiptPolicy.ts` — `verifyAppliedMarker` mints the `VerifiedProse` token from the receipt and artifact in the process that did the write, so `channelRenderer.receiptWins` — the line DEF-145 identified as "the line that actually decides what the owner reads" — does not put the raw receipt back one layer down. **Fail-closed is unchanged: no token, receipt wins.**
+- `server/tests/def212AppliedReceipt.test.ts` (15 tests); `server/tests/def144ReceiptDoesNotReplaceAnswer.test.ts` — two assertions updated, not silenced.
+
+### Rollback considered and rejected
+
+Reverting restores a reply written in field names that also drops the owner's open question.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 207 files — 206 passed, 1 skipped; 2,622 tests — **2,593 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone · `git diff --check` clean.
+
+**Eight mutants applied and RUN, all eight die.** Mutation caught two real holes, both mine: an `isUsableBrainProse` widening I wrote **changed nothing** (a stamped marker starts with the sentinel, not `[`, so it already passed) and was deleted rather than left as decoration; and a hand-built parser payload contained an escaped quote, making it invalid JSON so the test passed for the wrong reason — it now asserts the payload parses first.
+
+### Known issues deliberately not fixed
+
+**B07 is not fixed because nothing is wrong with the reply** — the judge is not told the date.
+
+**The two composer paths still disagree.** B04 was prose in iteration 5 and the receipt in iteration 6 from the same code; this repairs the branch that produced the bad one but does not converge the reasoning and legacy paths. That is a bigger build.
+
+**Iteration 4's remediation is complete**, with commits: CRITICAL 1 → DEF-208 `2acb272`, HIGH 2 → DEF-202, HIGH 3 → DEF-210 `b095875`, MEDIUM 4 → DEF-209 `41358ab`, MEDIUM 5 → matrix green, MEDIUM 6 → DEF-209/211/212, and CARRIED 1 (`delegationFollowUpJob`) → **DEF-191 `bb0cf57` / DEF-192 `9cb7720`**, which already tenant-scoped the enumeration, the identity lookup and the settings authority.

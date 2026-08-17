@@ -2768,3 +2768,129 @@ reaches him.
 turn still reaching him as a bare question when the decider filled `answer_text`; or B03 C5 not
 recovering, which would mean the decider ignores the relaxed contract and the remaining fix has to
 be in code.
+
+## Iteration 6 (second entry under this number) — the receipt stays the fact, stops being the sentence (DEF-212)
+
+**Mode: structural · REMEDIATION attempt 1/3 · regression guard FIRED on B07 · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer` — the success-renderer member**
+
+### 0. The regression guard's B07 is a JUDGE artifact, and here is the evidence
+
+> B07-compound-ask C7 95 → 80: *"states that 'Vision Metric's service sales package video' is
+> overdue, but then provides a due date of August 5th, 2026, which is in the f[uture]"*
+
+Brain's reply: *"It was due on August 5th, 2026."* **Today is 2026-08-17.** August 5th is twelve
+days in the PAST, so "overdue" is correct and the reply is not contradictory.
+
+The judge believes 2026-08-05 is in the future because **it is never told what day it is**:
+
+```
+grep -n "today|Date()|currentDate|now"  src/services/knowledge/brainResponseEvaluator.ts
+  298:  const since = new Date(Date.now() - RECURRENCE_WINDOW_HOURS * 3600_000);   # a recurrence
+                                                                                  # window, not the prompt
+grep -c "todayDate|Asia/Karachi|toISOString"  src/services/knowledge/brainResponseEvaluator.ts  ->  0
+```
+
+The evaluator prompt carries no date, so the model grades date arithmetic against its own
+training-time notion of "now", which is before 2026. **I have not touched the benchmark or the
+judge** — the standing rule is to say so and leave it alone, and the fix belongs to whoever owns
+the harness. Reported, not fixed.
+
+### 1. Remediation: every numbered risk from iteration 4 is closed, with commits
+
+| finding | closed by |
+|---|---|
+| CRITICAL 1 — a restored item can still be announced | DEF-208 `2acb272` — revalidation, claim-CAS, queue insert and sent-mark in ONE transaction |
+| HIGH 2 — a sent batch erases a later withdrawal event | DEF-202 — per-event tokens; clearing matches the token |
+| HIGH 3 — concurrent dispatch, two sendable batches | DEF-210 `b095875` — the test he named; membership-derived dedup key against the real unique index |
+| MEDIUM 4 — the 200-row cap starves later debt | DEF-209 `41358ab` — paging past claimed rows + a 201-row test |
+| MEDIUM 5 — release evidence red | matrix green, this turn included |
+| MEDIUM 6 — C4 untouched | DEF-209 / DEF-211 / DEF-212 all change the register mechanism |
+| **CARRIED 1** — `delegationFollowUpJob` global enumeration and bare-user-id identity | **already closed before this review**: DEF-191 `bb0cf57` and DEF-192 `9cb7720`. `runDelegationFollowUp` reads the tenant REGISTRY then calls `runDelegationFollowUpForTenant(clientNumber)` (`:78-107`); identity is `getUserNameAndEmail(userId, clientNumber)`; settings authority is `resolveOpenItemsSettings` at `:197-198` with `no_user` holding |
+
+`review_log.md` has not grown (692 lines, 10 sections), so Codex has not re-reviewed since. I am
+not re-doing closed work; the citations above are the claim, and he can judge it.
+
+### 2. The fix queue entry I actually targeted
+
+Not from the guard — from reading the report. **B04's reply in `iter-06-post-build.json`:**
+
+> `Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.`
+
+Field names and an equals sign. That is byte-for-byte the string DEF-144 and DEF-145 were written
+about, and `answerReceiptPolicy.ts`'s own header predicted it would come back.
+**Criteria I expect to move: C4, C6, C7 on B04.**
+
+**Circling — `guard-destroys-the-answer`, 8 in chart §3** — so no string edit; the mechanism moves.
+
+### 3. What changed, and why that is the mechanism
+
+`brainComposer`'s update branch did `answer = actionResult.message` whenever `verifyUpdateProse`
+could not positively justify the composed prose. **That judgement is right and I did not touch
+it**: the receipt is true by construction, so unverifiable prose must still lose. What it also did
+was hand the owner a log line and throw away the still-unanswered half of Brain's own question.
+
+So the receipt stops being the SENTENCE and becomes the PAYLOAD:
+
+- **`actionReceipt.ts`** — `actionAppliedMarker({receipt, outstanding})`, JSON body, provenance
+  stamped.
+- **`answerSanitizer.ts`** — `appliedMarkerMeaning` quotes the receipt **verbatim**. No rewording:
+  this parser must not restate a fact it did not establish. Then it names what is outstanding.
+- **`brainComposer.ts`** — outstanding is computed from `data`, the Prisma payload actually
+  WRITTEN, never from `act`, what the model asked for. A dropped field must not read as filled.
+- **`answerReceiptPolicy.ts`** — `verifyAppliedMarker` mints the token from the receipt and
+  artifact, in the process that did the write. Without it, `channelRenderer.receiptWins` — the
+  line DEF-145 called *"the line that actually decides what the owner reads"* — would have put the
+  raw receipt straight back, and this whole change would have measured as a no-op exactly like
+  DEF-144 did.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  206 passed | 1 skipped (207)
+                    Tests  2593 passed | 7 expected fail | 21 skipped | 1 todo (2622)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; `answer = appliedMarker` and `appliedMarkerMeaning`
+                                   confirmed in the emitted JS)
+git diff --check    clean
+```
+
+**15 new tests. 8 mutants applied and RUN, all 8 die:** bare receipt again · outstanding from the
+REQUEST not the write · no token minted · mint skips the receipt-carriage check · the meaning
+rewords the receipt · unknown slot key accepted by the parser · bare-bracket rejection removed ·
+token replayed onto another marker.
+
+**MUTATION TESTING CAUGHT TWO REAL HOLES, and both were mine:**
+
+1. I added an `isUsableBrainProse` widening for stamped markers. The mutant that removed it
+   **passed everything** — because `systemMarker()` puts the sentinel BEFORE the bracket, so a
+   stamped marker never started with `[` and already passed. The widening changed nothing. I
+   deleted it rather than leave a long comment justifying decoration.
+2. My hand-built parser payload contained an escaped quote, so it was invalid JSON and the parser
+   returned null before reaching the check under test — the test passed for the wrong reason. It
+   now asserts the payload PARSES first.
+
+**Two DEF-144 assertions were UPDATED, not silenced.** They said "mints NO token" and matched the
+raw receipt string; the property they defend — the model's unverifiable prose never wins — is
+unchanged and is now asserted through the REAL renderer instead of a JSON-escaped substring.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not fix B07**, because there is nothing wrong with the reply. Evidence above.
+- **No C-3 campaign progress**, plainly.
+- **`update_open_item` was the only success branch** handing over a plain receipt; the others
+  already emit bracketed markers. I did not sweep them, because they are already correct.
+- **Unsure whether B04's benchmark reply changes.** The composer may take the reasoning path
+  instead of this legacy branch on any given run — B04 was prose in iteration 5 and the receipt in
+  iteration 6 from the same code. This repairs the branch that produced the bad one; it does not
+  make the two paths agree, and that convergence is a bigger build.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** no gate stands
+between this and a live reply, and it is on the WhatsApp render path the owner actually uses.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a successful
+update still reaching him as `Updated "…": field=value.`; or a rendered reply asserting something
+the receipt does not contain, which would mean the verbatim-quoting rule leaked.
