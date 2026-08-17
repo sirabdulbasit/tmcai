@@ -2711,3 +2711,32 @@ runs older `dist/`, but any pm2 restart would load the newer code against the un
 migration. That is tolerable — the DEF-132 writer fixes only *stop* new out-of-vocabulary
 statuses; existing bad rows stay unmovable either way — but it is not a state anyone chose, and
 it should be closed by applying the migration and deploying deliberately.
+
+## 39. DEF-186/187/188 — C-3 increment 3: junk withdraws itself, the owner is told once, and the telling can be neither false nor lost (2026-08-17, BUILDER: Claude — orchestrator iterations 1–2, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Backlog junk either nagged the owner or vanished in silence: a well-formed item nobody engaged with was CANCELLED instantly with no quarantine and no notice, so the campaign bar — "he can name one thing that withdrew itself and restore it" — was unmeetable. Codex's iteration-1 review then found the first cut of the fix could fabricate a withdrawal (a `.catch(() => {})` swallowed failed archive writes), could lose the only notice (enqueue after commit, no durable state), ignored `staleThresholdDays=0`, and sat on a tenant-blind cleanup path that is live in production today.
+
+### Confirmed root cause
+
+Two implementations of one decision (the job's private notes+delegation engagement check beside `zombieItemPolicy.hasEngagementEvidence`); claims standing in for verification (`.catch(() => {})` converting failure to success; an in-memory notice claiming durability; `> 0 ? : DEFAULT` conflating the owner's 0 with absent); and `query-without-tenant-scope` member 5 — bare-id selection, mutation, caching and settings resolution across the whole cleanup surface.
+
+### Files changed (complete list, commits `f9f5ebf` + `08237bb`)
+
+- `server/src/services/openItems/zombieItemPolicy.ts` — `stale_no_engagement` joins the reversible quarantine → grace → soft-close lifecycle; caller-supplied window (`StalePruneOptions`); hold-not-release when the caller cannot judge staleness; 0 = disable releases.
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — tenant-partitioned selection (distinct pairs → per-tenant pass); ONE guarded mutation path (`updateMany` by id+tenant+user, count checked, fail closed); the archiving write records `selfPruneNotice.owed`; `dispatchOwedNotices` announces per (tenant, user) every tick and clears the debt only on queue acceptance; `staleThresholdDays` passes through verbatim, `undefined` on read failure = hold.
+- `server/src/services/notifications/proactiveMessageText.ts` — `renderSelfPruneNotice`: provenance-stamped `selfpruning_withdrawn` marker, JSON payload, constructor clamps.
+- `server/src/services/knowledge/answerSanitizer.ts` — `withdrawnMarkerMeaning`: the marker's one vetted meaning; parser rejects to the neutral fallback.
+- `server/src/services/openItems/openItemsSettings.ts` — tenant required: `getOpenItemsSettings(userId, clientNumber)`, resolution query constrained `(id, clientNumber)`, cache + invalidation keyed per (tenant, user).
+- `server/src/services/openItems/openItemGate.ts`, `server/src/jobs/delegationFollowUpJob.ts`, `server/src/routes/profileRoutes.ts` — callers declare their tenant; the follow-up job's per-run cache is tenant-keyed.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — 24 tests; the prisma mock honours every stated filter, so dropping a tenant scope turns tests red. Named scenarios: rejected archive write → no false notice; zero-row write → same; transient enqueue failure → eventual exactly-once across ticks; disable end to end; unreadable settings → hold; cross-tenant duplicate isolation; per-tenant notices.
+- `server/tests/def129CancelAndAtomicity.test.ts` — write-site count 6→5 (the stale write site merged into the policy-archive site; the property is unchanged).
+
+### Tests added / verification (measured after the last code edit, at `08237bb`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 193 files — 191 passed, 1 failed, 1 skipped; 2,380 tests — 2,349 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures are `tests/orchestratorPulseRoute.test.ts`, which executes the LIVE `scripts/orchestrator/pulse.py`; that file carries the orchestrator's uncommitted renames. The COMMITTED `pulse.py` at HEAD passes the contract's exact assertions (verified directly). `git diff --check` clean. **Build:** `server/dist` is immutable (`chattr +i`, CLAUDE.md 2026-08-16), so the emit build was proven in a clean `git clone --no-local` at `08237bb`: `tsc -p tsconfig.build.json` succeeds and produces `dist/server.js`; `prisma generate` skipped in the clone — `schema.prisma` is byte-identical to the deployed `e356d42`.
+
+### Known issues deliberately not fixed
+
+The two pulse-contract failures (orchestrator-owned working-tree WIP; Builder is forbidden from `scripts/orchestrator/**`). Smoke/gate/duplicate archives do not quarantine — deliberate: quarantine protects fallible classifications; a smoke tag, a hard gate code and an exact duplicate carry their own evidence, and their archives remain reversible, audited and announced. Historical rows archived before this change carry no `selfPruneNotice` and are not announced retroactively (backfilling would fabricate audit data). No migration is included; no schema change.

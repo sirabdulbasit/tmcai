@@ -169,3 +169,149 @@ produces exactly one owner notice naming the count, and its items are
 restorable via CANCELLED→TRIAGED. If a run archives with no notice, or a notice
 arrives as a raw bracket instead of prose, this turn failed at exactly the
 place its tests claim it cannot.
+
+## Iteration 2 — remediation of the iteration-1 WRONG, finding by finding
+
+**Commit `08237bb`** (code) on `release/cmp-2026-08-16`. DEF-187 and DEF-188
+rows added; `Changes_Made.md` §39 added (Codex claim 3 — the missing ledger
+entry). No fixQueue entry targeted: remediation wins on scope, and the C4
+entries (B07/B09/B10 register) are Codex's own directive 5 for the NEXT fresh
+turn, not this one.
+
+### The findings, in severity order, and what closed each
+
+**CRITICAL — fabricated withdrawal after a failed write.** Closed at the class
+level, not the four call sites: the job now has ONE mutation path,
+`guardedItemUpdate` (`openItemsBacklogCleanupJob.ts:104-119`) — `updateMany`
+constrained by `(id, clientNumber, userId)` whose affected-row count IS the
+result. Every `.catch(() => {})` on a write is gone; a throw or a zero-row
+write increments `errors` and NOTHING else — no stat, no owed state, no owner
+fact. Named tests: a rejected write and a vanished row (count 0) both produce
+no false notice (`def186…test.ts` "REJECTED archive write" / "ZERO-ROW
+write").
+
+**HIGH — the notice had no durable handoff.** The debt now rides the archiving
+write itself: the same confirmed update that sets CANCELLED writes
+`selfPruneNotice.owed = true` — one atomic row write, so a row either carries
+its debt or was never archived. `dispatchOwedNotices` runs every tick,
+independent of what the tick archived, announces owed rows per (tenant, user)
+and clears `owed` only after the queue accepted the notice. A transient
+enqueue failure leaves `owed = true` discoverable next tick. Honest edge,
+stated rather than hidden: if the MARK write fails after a successful enqueue,
+the row is re-announced with the same id-hash dedupKey, which the queue
+collapses while the prior prompt is live — at-least-once is the floor, and the
+reviewer's transient-failure scenario is exactly-once, proven across three
+ticks in one test (enqueue rejected → delivered once → nothing further; the
+row is CANCELLED and OUT of the candidate set in ticks 2-3, so the test proves
+the dispatcher, not the archiver, delivers it).
+
+**HIGH — the owner's 0 did not disable.** `staleThresholdDays` now passes
+through VERBATIM (`cleanupTenantBacklog`), zero included; the policy already
+treated 0 as disable-and-release. A settings READ failure passes `undefined`,
+under which the policy neither detects staleness nor releases an existing
+quarantine — it cannot judge either, so it holds (fail closed in both
+directions). Named tests: disable end to end (a stale quarantine RECOVERS,
+nothing cancelled, nothing announced) and unreadable-settings hold. The old
+`0 → 30` mapping predates DEF-186, but DEF-186 made it harmful — Codex is
+right that the integration boundary was untested, and now it is.
+
+**Carried CRITICAL — tenant-blind cleanup (live at `e356d42`).** Closed
+structurally per directive 3: selection enumerates distinct
+`(clientNumber, userId)` pairs and processes each inside its tenant (the
+DEF-176 `dispatchDuePrompts` shape); the dedup maps exist per partition, so a
+cross-tenant collision is impossible rather than filtered; every mutation goes
+through the guarded tenant-scoped path; `getOpenItemsSettings(userId,
+clientNumber)` requires the tenant and the declaration constrains the
+resolution query itself (`findFirst id + clientNumber`, DEF-179 pattern);
+cache and invalidation are (tenant, user)-keyed; all three callers declare
+their tenant (`openItemGate.ts`, `delegationFollowUpJob.ts` including its
+per-run cache, `profileRoutes.ts`). The test mock honours every stated
+filter — dropping a tenant scope anywhere in the job turns tests red — and a
+same-userId two-tenant fixture proves duplicates never collapse across the
+boundary. The `clientNumber=null` skip Codex flagged is deleted: the schema
+column is NOT NULL (`schema.prisma` OpenItem `client_number VarChar(20)`), so
+the guard was dead code masquerading as a policy.
+
+**MEDIUM — C4 not addressed.** Correct, and per Codex's own directive 5 the
+register work is the NEXT fresh capability turn. Not started here — a
+remediation turn that also rewires the conversational register would be the
+three-deaths-by-added-surface pattern this brief warns about.
+
+**Claim 2 (lifecycle overstated) — accepted and corrected on the record.** The
+quarantine → grace lifecycle covers the POLICY classes (malformed + stale),
+which are fallible classifications. Smoke tags, hard gate codes and exact
+duplicates carry their own evidence, and quarantining them would only delay
+cleanup — they stay immediate, but every archive is reversible
+(CANCELLED → TRIAGED), audited, and now announced and fail-closed. The
+build-log sentence "one reversible lifecycle" claimed more than the diff did;
+this entry is the correction.
+
+### Verification (measured AFTER the last code edit)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **193 files: 191 passed / 1 failed / 1 skipped · 2,380
+  tests: 2,349 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+- The 2 failures are both `tests/orchestratorPulseRoute.test.ts`, the contract
+  test that EXECUTES the live `scripts/orchestrator/pulse.py`. That script is
+  the orchestrator's uncommitted WIP (modified in git status since before
+  iteration 1 began). **Proof the reviewed RANGE is green there:** running the
+  COMMITTED script — `git show HEAD:scripts/orchestrator/pulse.py` — against
+  the contract's exact assertions passes: phases
+  `['Build','Checks','Measure','Review','Score']`, all states valid,
+  `loop_alive` boolean. The red is working-tree contamination from a path the
+  Builder is forbidden to touch. Named for the orchestrator: commit or revert
+  the pulse rename, WITH its panel and contract-test counterparts, in one
+  reviewed change.
+- `npm run build` — the emit build is proven WITHOUT touching the immutable
+  dist (CLAUDE.md, 2026-08-16 ruling): clean `git clone --no-local` at
+  `08237bb`, `tsc -p tsconfig.build.json` → success, `dist/server.js` and
+  `dist/jobs/openItemsBacklogCleanupJob.js` produced in the clone.
+  `prisma generate` was skipped in the clone because `schema.prisma` is
+  byte-identical to the deployed `e356d42` (empty diff) and the generated
+  client exists; the deploy phase runs the real `npm run build` under its own
+  unlock per the standing protocol.
+- `git diff --check` — clean.
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 until deployed — this turn makes iteration 1's increment
+            HONEST (no fabricated or lost notice, disable honored, tenant
+            boundary closed); the owner-visible behaviour still arrives only
+            with the deploy. Divergence from the brief's UNKNOWN target is
+            per the remediation rule: the reviewed change is the scope.
+MECHANISM:  every owner-facing withdrawal fact now has a confirmed
+            tenant-scoped write behind it, and the notice survives transient
+            failure instead of being lost.
+FALSIFIER:  a tick where stats or a notice reflect an unconfirmed write; an
+            owed row two consecutive healthy ticks fail to announce; a tenant
+            with staleThresholdDays=0 acquiring a new stale quarantine; any
+            cleanup query or write reaching across the tenant boundary.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- Did not touch `scripts/orchestrator/**` (the pulse red), the benchmark, or
+  the C4 register mechanism (directive 5, next turn).
+- Did not add an outbox TABLE for notices — the durable state lives in the
+  row's own metadata because the archiving write is already the atomic moment;
+  a second table would need its own two-phase write and reaper (the DEF-181
+  shape). If Codex judges a table the stronger form, that is one contained
+  change, but I argue row-carried debt is the smaller honest mechanism.
+- Unsure: `dispatchOwedNotices` batches at most 200 owed rows per pair per
+  tick (logged when at cap, remainder rides the next tick) — a deliberate
+  bound, stated so it is judged rather than found.
+- The governing-docs verdict (rule 5): **circling on two known classes**
+  (`fabricated-status`, `query-without-tenant-scope`) — closed here at the
+  class level (one guarded mutation path; partition + constrained queries),
+  which is what rule 5 demands, not another instance patch.
+
+### Honest prediction
+
+This closes every numbered iteration-1 finding at class level; the range
+should be reviewable SOUND and deployable, with the pulse-contract red
+explicitly attributed to orchestrator WIP outside the range. Wrong if: Codex
+shows a write path that still claims success without a count, a notice
+scenario that loses the debt (not merely delays it), or a cleanup query I
+missed that reads across tenants.
