@@ -80,8 +80,9 @@ export async function runDelegationFollowUp(): Promise<FollowUpRunSummary> {
   const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
   const { sendUserEmail } = await import('../services/gmailService');
 
-  // Per-user setting cache for this run.
-  const settingsCache = new Map<number, { followUpDays: number }>();
+  // Per-(tenant, user) setting cache for this run (DEF-188 — a bare userId
+  // key could serve one tenant another tenant's preferences).
+  const settingsCache = new Map<string, { followUpDays: number }>();
   const ownerCache = new Map<number, { name: string; email: string } | null>();
 
   for (const item of items) {
@@ -101,11 +102,12 @@ export async function runDelegationFollowUp(): Promise<FollowUpRunSummary> {
       }
 
       // Per-user followUpDays baseline.
-      let s = settingsCache.get(item.userId);
+      const settingsKey = `${item.clientNumber}|${item.userId}`;
+      let s = settingsCache.get(settingsKey);
       if (!s) {
-        const oi = await getOpenItemsSettings(item.userId);
+        const oi = await getOpenItemsSettings(item.userId, item.clientNumber);
         s = { followUpDays: oi.followUpDays };
-        settingsCache.set(item.userId, s);
+        settingsCache.set(settingsKey, s);
       }
 
       // Owner identity for compose + disclosure footer.

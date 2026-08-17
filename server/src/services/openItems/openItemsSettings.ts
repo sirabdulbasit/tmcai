@@ -6,9 +6,16 @@
  * every consumer (draft-ask job, backlog cleanup, gate, follow-up
  * job, /open-items page) sees the same values for the same user.
  *
- * Cached for 60s per userId — the prefs barely change and the
+ * Cached for 60s per (tenant, user) — the prefs barely change and the
  * consumer jobs hit this once per tick per user; a Redis or DB
  * round-trip per item would be wasteful.
+ *
+ * DEF-188 (Codex iteration-1 carried CRITICAL) — the caller DECLARES the
+ * tenant it is acting for, and the declaration CONSTRAINS the resolution
+ * query itself (`id + clientNumber`, the DEF-179 pattern): a foreign or
+ * mismatched pair resolves to NO row — unread — and gets pure defaults,
+ * never another tenant's preferences. A bare userId was an authorization,
+ * which is invariant #1's recorded failure shape.
  */
 import prisma from '../../db/prisma';
 
@@ -38,8 +45,9 @@ export const DEFAULTS: OpenItemsSettings = {
   defaultSort: 'priority',
 };
 
-const cache = new Map<number, { value: OpenItemsSettings; expiresAt: number }>();
+const cache = new Map<string, { value: OpenItemsSettings; expiresAt: number }>();
 const TTL_MS = 60 * 1000;
+const cacheKey = (userId: number, clientNumber: string) => `${clientNumber}|${userId}`;
 
 function coerce(raw: any): OpenItemsSettings {
   const out: any = { ...DEFAULTS };
@@ -58,27 +66,30 @@ function coerce(raw: any): OpenItemsSettings {
   return out;
 }
 
-export async function getOpenItemsSettings(userId: number): Promise<OpenItemsSettings> {
+export async function getOpenItemsSettings(userId: number, clientNumber: string): Promise<OpenItemsSettings> {
   const now = Date.now();
-  const hit = cache.get(userId);
+  const key = cacheKey(userId, clientNumber);
+  const hit = cache.get(key);
   if (hit && hit.expiresAt > now) return hit.value;
 
-  const u = await prisma.user.findUnique({
-    where: { id: userId },
+  // The tenant declaration constrains the query (DEF-188): a pair that does
+  // not exist in this tenant reads nothing and falls to defaults.
+  const u = await prisma.user.findFirst({
+    where: { id: userId, clientNumber },
     select: { notificationPreferences: true },
   }).catch(() => null);
 
   const raw = (u?.notificationPreferences as any)?.open_items;
   const value = coerce(raw);
-  cache.set(userId, { value, expiresAt: now + TTL_MS });
+  cache.set(key, { value, expiresAt: now + TTL_MS });
   return value;
 }
 
 /** Clear cache for a user — call this from the PUT /profile/open-items
  *  handler so a settings change takes effect on the next tick instead
  *  of waiting 60s. */
-export function invalidateOpenItemsSettings(userId: number): void {
-  cache.delete(userId);
+export function invalidateOpenItemsSettings(userId: number, clientNumber: string): void {
+  cache.delete(cacheKey(userId, clientNumber));
 }
 
 /** Map criticality floor → numeric for comparison. */

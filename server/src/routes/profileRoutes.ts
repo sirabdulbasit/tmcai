@@ -510,7 +510,7 @@ router.put('/open-items', async (req: Request, res: Response) => {
   // the new values immediately instead of waiting for the 60s TTL.
   try {
     const { invalidateOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
-    invalidateOpenItemsSettings(req.user!.id);
+    invalidateOpenItemsSettings(req.user!.id, req.user!.clientNumber);
   } catch { /* non-critical */ }
   res.json({ success: true });
 });

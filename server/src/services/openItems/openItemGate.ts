@@ -144,7 +144,7 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
       });
       const { getOpenItemsSettings, sourceToggleKey, meetsCriticalityFloor } =
         await import('./openItemsSettings');
-      const settings = await getOpenItemsSettings(input.userId);
+      const settings = await getOpenItemsSettings(input.userId, input.clientNumber);
       const key = sourceToggleKey(event?.sourceType ?? null);
       if (key && settings[key] === false) {
         return {
