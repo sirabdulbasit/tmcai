@@ -1176,3 +1176,142 @@ this turn rather than from more reading.
 
 **Falsifier outcome: the prediction held.** "A raw query fails on production and no
 line appears carrying a callSite" — a line appeared, with a callSite, 138 times.
+
+---
+
+## Iteration 2 — the block supplied the subject as well as the count (DEF-198)
+
+**Mode: structural · remediation attempt 3 of 3 · campaign C-3 (Self-Pruning) · deployed=no**
+
+### 0. The remediation finding — I claim it is ALREADY CLOSED, with the evidence
+
+The turn brief sends me to `review_log.md` `## Iteration 1`, whose verdict on `8ae7dfa`
+was **WRONG**. I did not re-fix it, because four later commits already closed it. The
+brief explicitly allows this claim if I name commit and line, so here they are, and
+Codex should judge them rather than take my word:
+
+| Iteration-1 finding | Closed by | Evidence, read this turn |
+|---|---|---|
+| **CRITICAL** — fabricated owner status after a failed mutation (`.catch(() => {})` at `:202-210`, `:236-245`, `:258-267`, `:281-290`) | `08237bb` (DEF-187/188), `e441723` (DEF-189) | `openItemsBacklogCleanupJob.ts:172-188` is now the ONE mutation path, returning `res.count === 1`. Every archive site is `if (!(await guardedItemUpdate(...))) { stats.raced++; continue; }` — `:317`, `:329`, `:352`, `:365`, `:399`, `:417`, `:438`. Stats increment only after a confirmed write. Exactly one `.catch(()` survives in the file (`:509`) and it is on a READ. |
+| **HIGH** — owner cannot disable the stale lifecycle (`staleThresholdDays=0` mapped to the default) | `08237bb`, `e441723` | `:294` is `staleAfterDays = resolved.value!.staleThresholdDays` — passed through unchanged, zero included; the comment at `:280` says so. `zombieItemPolicy.ts:144` gates staleness on `> 0`, and `:187` lets a stale-quarantined item under a RESOLVED zero fall to `action: 'recover'` — recover, never cancel, which is what the directive demanded. |
+| **HIGH** — notification has no durable handoff; `clientNumber=null` silently skipped | `08237bb`, `8576274` (DEF-190) | The notice debt is written INSIDE the archiving write (`selfPruneNotice: { owed: true, … }`, `:344`), so a row either carries its announcement debt or was not archived. `clearOwedFlags` (`:672-706`) does a FRESH per-row read then a status+updatedAt compare-and-set; a raced clear stays owed and retries next tick. Tenants are enumerated from the registry (`:195-205`) and a pair with no authority HOLDS and is counted (`heldNoAuthority`, `:291`) instead of being skipped. |
+| **carried CRITICAL** — tenant isolation absent from selection and mutation | `e441723` | `guardedItemUpdate` constrains by `id + clientNumber + userId` (`:178-181`); the sweep runs per tenant partition; duplicate maps live inside the partition (`:300`). |
+| **MEDIUM** — the C4 gate was not addressed | superseded | This brief retires that gate: *"The old gate — min(C1..C8) >= 95 — is retired and you should not aim at it."* |
+
+**So remediation had no work left in it, and I say that rather than manufacturing a
+re-fix to look busy.** If Codex disagrees on any row above, that row is the next turn.
+
+### 1. The fix queue entry I targeted, quoted
+
+> `B12-reminder-referent`, C1 60: *"Brain misidentified the task it sent reminders for.
+> It claimed to send reminders for 'ShireMe Recruiting Portal Application Testing' but
+> the conversation clearly shows the reminder was for 'Send the revised Fujairah pricing
+> to Latif'."*
+> C3 60: *"It essentially ignored the immediate context."*
+
+This ONE case holds **five of the top six** fixQueue entries (C1/C2/C3/C6 = 60, C5 = 70),
+so it is not a tie-break — it is the measured worst thing in the report.
+
+### 2. Circling or progressing — the verdict out loud
+
+**Progressing on the referent half, circling on the fabrication half.** `fabricated-status`
+is already in the chart §3 with 6 occurrences, so structural mode applies and I did not
+patch the reported instance: I changed the block's CONTRACT, not the B12 wording, and
+touched no benchmark string. The referent half is a new root cause with no prior tag.
+
+### 3. What changed, by file:line, and why that is the mechanism
+
+`server/src/services/selfpruning/pushHistoryBlock.ts`
+
+- **`:68-131` — `rulesFor(absenceInformative)` replaces the constant `RULES`.**
+  The old rules led with *"answer from THIS block: name the producers and the times, and
+  say the count"* and never said WHICH subject. The owner's "that one" is a referent that
+  lives in the conversation; the block therefore had explicit authority to answer from its
+  own page and no instruction to match his subject. That is the mechanism of B12: the
+  count and timestamps were correct, the subject was not. The rules now resolve the
+  referent from the conversation FIRST, look that subject up, and forbid substitution
+  outright. **The order is part of the fix** and is asserted by a test, because leading
+  with the rows instruction is what let the block outrank the conversation.
+- **`:60-84` — `absenceIsInformative()`.** *"If the subject is absent below, your record
+  shows at most one push"* is a sound READ only when every repeat-pushed subject is on the
+  page. The renderer has four ways to be short: `repeats.slice(0, MAX_SUBJECT_LINES)`,
+  `truncated`, `canonicalisationFailed`, `unresolvedSubjects`. In any of them the block was
+  authorising a count nobody read — `fabricated-status` using this block as its evidence.
+  The inference is now conditional; a degraded page says the record is incomplete.
+  The slice case carries **no ⚠ of its own**, so it was invisible to a reader checking flags.
+- **`:158` — the renderer passes the computed flag.**
+
+`server/tests/def197PushHistoryBlock.test.ts` — 9 added (22 total).
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  198 passed | 1 skipped (199)
+                    Tests  2455 passed | 7 expected fail | 21 skipped | 1 todo (2484)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+`npm run build` was run in a **clean clone with the working-tree files copied in**, not in
+this tree: `server/dist` is `chattr +i` and IS the deployed artifact (CLAUDE.md — a build
+here silently replaces what production runs). Verified afterwards: both new strings are
+present in the clone's emitted `dist/services/selfpruning/pushHistoryBlock.js`, and this
+tree's `dist` is untouched — still immutable, mtime `17:24:07`, the last deploy.
+
+**Mutation checks, applied and RUN, not asserted — all four die:**
+unconditional absence rule (4 tests fail) · drop the line-cap clause from the completeness
+test (1) · rows rule before referent rule (1) · delete the no-substitution sentence (1).
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not touch the C-3 dispatcher**, though it is the campaign's live blocker. All
+  three increments are BUILT; increment 3 is gated off by `selfpruning.withdrawal_notice_enabled`
+  (default 0) because Codex still holds three findings against it — non-atomic
+  revalidate-then-enqueue, immortal batch membership (`itemIds` is an immutable snapshot and
+  `claimed` unions pending+sent, so a restored-then-re-withdrawn item can never be announced
+  again), and no DB ownership constraint (`fresh` is filtered by an IN-MEMORY set, so two
+  concurrent runs can claim the same row). I designed the fix — move ownership onto the row
+  as a claim token so the DB enforces it — and dropped it for this turn because it is a
+  ~150-line rewrite of a **gated-off, unreachable** path, and the brief says to prefer a
+  change that reaches a live surface and that a smaller change which arrives beats a better
+  one that does not. It is the strongest candidate for the next turn.
+- **I did not flip either C-3 master switch.** Both default to 0, which is why the campaign
+  "reaches nobody" — but the 0 default was a REVIEWED decision (DEF-173/DEF-191), and
+  turning increment 3 on would make three open findings live. Not mine to override.
+- **Correction to a scoring sentence:** Grok's Simple & Smart evidence says
+  *"digestPolicy.ts:144-146 returns send while switch is off"*, implying a defect. It is
+  correct behaviour — `send` means "do not digest, deliver normally" — so the disabled
+  switch suppresses nothing. The real point is only that the default is 0.
+- **Unsure:** this is a PROMPT-CONTRACT change. It steers a stochastic model; it does not
+  force an outcome. A composer that ignores the instruction will still name the wrong item.
+
+### 6. Prediction, and what would prove me wrong
+
+**C1, C2, C3 and C6 on `B12-reminder-referent` should rise from 60**, because the block now
+forbids exactly what the judge caught. C4 (87.5, the weakest) I predict **will not move** —
+this changes nothing about register, and B12's C4 already scores 85 with the complaint being
+*"My apologies, Sir"* formality, which I did not touch.
+
+**Proved wrong by:** B12 still naming a subject other than the conversation's referent;
+or C1/C2/C3/C6 staying at 60; or any run whose subject list was degraded still emitting
+*"your record shows at most one push"*. A 1–2 point overall move is noise and I will not
+claim it either way.
+
+### 7. Deployability
+
+**Deployed=no this turn — the Builder does not deploy.** Matrix is fully green including a
+real `npm run build`, so nothing in the required evidence blocks a deploy; the decision is
+the orchestrator's under `DEPLOY_ON=sound`.
+
+### 8. Directives skipped
+
+None from `operator_directives.md` were consumed this turn; the remediation instruction took
+scope and it resolved to "already closed" (§0). **Harness defect, reported not fixed** (I
+must not touch `scripts/orchestrator/**`): the brief's capability table renders
+`Simple @@CAPGAPS@@ Smart` — an unsubstituted placeholder — and its prose says
+*"TARGET THIS ITERATION: Accurate Communication — the widest gap"* while the same table shows
+Accurate Communication with the SMALLEST gap (18) and Simple & Smart the widest (59). I aimed
+at Accurate Communication, matching the stated target, and note the contradiction rather than
+silently picking one.

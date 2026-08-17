@@ -2981,3 +2981,41 @@ Reverting would restore the blind character slicers (severing words, bullets, ph
 ### Known issues deliberately not fixed
 
 Truncation metadata (`omittedItems`) is still discarded by callers and the completeness-claim problem stays open — both need the composition boundary. The pre-approval queued row keeps the composed draft deliberately (status `queued`, nothing sent, re-fitted on approval). The two pulse failures remain orchestrator-owned WIP.
+
+## 49. DEF-198 — the push-history block supplied the subject as well as the count (2026-08-17, BUILDER: Claude — orchestrator iteration 2, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Benchmark `iter-02-post-build.json`: case `B12-reminder-referent` holds **five of the top six fixQueue entries** — C1, C2, C3 and C6 at 60, C5 at 70. Asked *"Why did you remind me about that one twice?"*, Brain answered about the **"ShireMe Recruiting Portal Application Testing"** item. The judge: *"the conversation clearly shows the reminder was for 'Send the revised Fujairah pricing to Latif'"*, and on C3, *"It essentially ignored the immediate context."*
+
+The count and the timestamps were correct. The subject belonged to someone else's question.
+
+### Root cause — a contract hole, not a bug
+
+DEF-197 built `pushHistoryBlock` for this exact case and closed the invented-cause member of it. Two things survived:
+
+- **The block never said WHICH subject.** Its standing rules led with *"answer from THIS block: name the producers and the times, and say the count"*. The owner's "that one" is a referent that lives in the conversation, so the block held explicit authority to answer from its own page and carried no instruction to match his subject. A context block that outranks the conversation for the REFERENT is a guard destroying a correct answer — the counts look authoritative while describing something he never asked about, and he cannot see that the subject was switched.
+- **Absence was read as evidence on a page that can be short.** *"If the subject is absent below, your record shows at most one push"* is sound only when every repeat-pushed subject is listed. There are four ways it is not: `repeats.slice(0, MAX_SUBJECT_LINES)`, `truncated`, `canonicalisationFailed`, `unresolvedSubjects`. In any of them the block authorised a count nobody read. The slice case carries no ⚠ of its own, so it was invisible to a reader checking the flags.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — the constant `RULES` becomes `rulesFor(absenceInformative)`; the referent rule comes FIRST and forbids substitution outright; `absenceIsInformative()` requires no truncation, no canonicalisation failure, no unresolved threads and `shown === repeats.length`. The complete-page wording is preserved verbatim, so the prior contract is unchanged where it was right.
+- `server/tests/def197PushHistoryBlock.test.ts` — 9 tests added (22 total).
+
+### Rollback considered and rejected
+
+Reverting restores a block that hands the composer a subject it was never asked about, on the worst-scoring case in the report. The change is additive to the rules and preserves every existing assertion, so there is no behaviour to restore.
+
+### Tests added / verification (measured after the last code edit, at `3a2b112`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,484 tests — **2,455 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK**, run in a clean clone with the working-tree files copied in because `server/dist` is `chattr +i` and is the deployed artifact (CLAUDE.md); both new strings confirmed in the clone's emitted JS and this tree's `dist` left untouched · `git diff --check` clean.
+
+Four mutants applied and RUN, all four die: unconditional absence rule (4 tests fail), drop the line-cap clause (1), rows rule before referent rule (1), delete the no-substitution sentence (1).
+
+### Known issues deliberately not fixed
+
+This is a **prompt-contract** change: it steers a stochastic model, it does not force an outcome, and the benchmark has not been re-run — the predicted C1/C2/C3/C6 movement is a prediction. C4 (87.5, the weakest criterion) is untouched and predicted not to move; B12's C4 complaint is *"My apologies, Sir"* formality, a register mechanism this does not address.
+
+The C-3 dispatcher (increment 3) remains gated off behind `selfpruning.withdrawal_notice_enabled = 0` with three open Codex findings — non-atomic revalidate-then-enqueue, immortal batch membership, no DB ownership constraint. Designed but not built this turn: move ownership onto the row as a claim token so the database enforces it. Named as the next turn's strongest candidate.
+
+**Ledger gap noted, not silently filled:** DEF-197 has no entry in this file. It is the twin's turn to record, and inventing an entry for work I did not do would be worse than naming the gap — this is the same omission Codex charged against DEF-186.
