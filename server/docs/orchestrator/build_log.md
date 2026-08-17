@@ -1463,3 +1463,115 @@ not touch `scripts/orchestrator/**`): the capability table still renders
 while its own table shows it smallest at 18. Also: the brief's "Full report" path
 (`scores/iter-02-post-build.json`) is the file I read, but it is labelled iteration 2 while this
 is iteration 3 — the reviewer should know the report I worked from is that file.
+
+---
+
+## Iteration 3 (second entry under this number — remediation of Codex's iteration-2 review) — DEF-200
+
+**Mode: structural · REMEDIATION attempt 1 of 3 · CONTINUATION 2 of 3 on Accurate Communication · deployed=no**
+
+### 0. The remediation — both findings sustained, neither disputed
+
+Codex reviewed DEF-198 **WRONG**. I am not arguing with either finding; both were mine.
+
+| Finding | My position | Closed by |
+|---|---|---|
+| 1. *"The code does not resolve or pass a subject identity. It merely adds instructions telling the model to resolve one … the measured mechanism is still `examples-outvote-the-instruction`."* | **Sustained in full.** | `selectSubjectsForConversation()` — the resolver is now code, and the renderer shows only what matched. |
+| 2. *"`NoiseSummary` also contains `unattributed` and `floods` … A repeated unattributed push can therefore exist while the block authorizes 'your record shows at most one push.'"* | **Sustained.** I wrote "four ways to be short" and missed the two with no ⚠ of their own. | `absenceIsInformative()` now requires both empty; the non-empty case is tested, which the old fixture never did. |
+| 3. *"Adding stronger uppercase prose in the same block does not create a resolver or constrain the data supplied to the model."* | **Sustained — this is the same point as 1 and it is the correct diagnosis of two of my turns.** | as 1. |
+
+### 1. What I now believe was wrong with the last attempt — the continuation question
+
+**Three turns, three wrong referents, and C2 fell to 0.** "ShireMe Recruiting Portal
+Application Testing" → "Vision Metric's service sales package video" → the same again. The
+judge stopped calling it misidentification and called it **invention**.
+
+DEF-198 added rules. DEF-199 added the title join. Both were *necessary* and both were
+*insufficient for the same reason*, which I did not see until Codex named it: **neither took
+the candidates away.** As long as a page of other items sits in the prompt with real counts
+and real timestamps, the model answers from it — concrete data beats prose, every time. I
+was arguing with the model instead of changing what it could see.
+
+That is why this turn's change is subtractive. The fix is not a better sentence; it is the
+absence of the wrong evidence.
+
+### 2. Circling or progressing — the verdict out loud
+
+**Circling on `fabricated-status` (6 in chart §3), for the third turn.** Structural mode
+therefore forbade another wording patch, and this one changes the mechanism: it removes the
+data that produced the defect rather than instructing the model not to use it. No benchmark
+string was touched.
+
+### 3. What changed, by file:line, and why that is the mechanism
+
+- **`pushHistoryBlock.ts:144-200` — `selectSubjectsForConversation()`.** Matches the dialogue
+  against the subjects' REAL TITLES. This was only writable because DEF-199 added the join;
+  before that there was nothing to match against.
+- **`pushHistoryBlock.ts:216-250` — the renderer is scoped.** Matched subjects only. **The
+  no-match branch is the mechanism**: it prints no subject lines and says the record holds
+  nothing about the item under discussion, so nothing remains to outvote the dialogue.
+- **`pushHistoryBlock.ts:128-142` — `absenceIsInformative()`** additionally requires
+  `unattributed` and `floods` empty.
+- **`brainComposer.ts` — one shared `conversationTextForPushHistory(question, history)`**,
+  used by BOTH call sites. One helper, not two implementations.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  198 passed | 1 skipped (199)
+                    Tests  2473 passed | 7 expected fail | 21 skipped | 1 todo (2502)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+`npm run build` in a **clean clone with the working-tree files copied in** — `server/dist` is
+`chattr +i` and IS the deployed artifact (CLAUDE.md). Resolver, no-match branch and both
+scoped call sites confirmed in the emitted JS; this tree's `dist` untouched.
+
+**Six mutants applied and RUN — all six die:** render `allRepeats` ignoring the resolver
+(4 fail) · drop `unattributed` · drop `floods` · drop the distinctive-title floor · let
+unnameable subjects match · stop passing the conversation on the legacy path.
+
+The **DEF-165 both-paths guard was tightened, not relaxed**: it now also requires both call
+sites to pass the conversation, because a path wired without it is that same defect one
+argument deeper.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not write the end-to-end composer test Codex asked for**, and I would rather say so
+  than let it be found. The final sentence comes from an LLM; a unit test asserting it goes
+  green on a lucky sample, which is failure in the direction that matters most here. What is
+  asserted instead is deterministic and I think stronger: **the wrong candidate is ABSENT
+  from the prompt the composer receives**, on the exact Fujairah-versus-ShireMe collision the
+  directive named. A real end-to-end assertion needs a recorded-response harness — a separate
+  build, and I am naming it rather than pretending the gap is closed.
+- **I did not touch C4/C6 register** (C6 @ 84.2 is now the minimum). Continuation status
+  ordered depth on Accurate Communication, and register is a different mechanism.
+- **Unsure:** whether B12's score rises. The honest answer there is now *"I have no
+  repeat-push record for that one"*, because its conversation item is fictional and can never
+  appear in a production push record. That is **correct and may still score low on C6**, which
+  wants the question answered. I would rather be right than score, and I am saying which one I
+  expect.
+
+### 6. Prediction, and what would prove me wrong
+
+**C2 on B12 should rise sharply from 0** — invention is exactly what this makes impossible.
+**C1/C3 should rise.** **C6 may not**, for the reason above. **C4 will not move.**
+
+**Proved wrong by:** a reply naming a push subject the conversation never mentioned while the
+block is scoped; a repeated `unattributed` push still producing "at most one push"; or C2
+staying at 0. A 1–2 point overall move is noise and I will not claim it.
+
+### 7. Deployability and directives
+
+**Deployed=no — the Builder does not deploy.** Matrix fully green including a real
+`npm run build`; nothing in the required evidence blocks a deploy.
+
+No `operator_directives.md` item consumed. **Harness defects, reported not fixed** (I must not
+touch `scripts/orchestrator/**`): the capability table still renders `Simple @@CAPGAPS@@ Smart`;
+the brief calls Accurate Communication "the widest gap" while its own table shows it smallest
+at 18; and `review_log.md` now holds **four separate `## Iteration 2` sections** from restarts,
+so "read `## Iteration 2`" is ambiguous — I remediated the newest, which is the one reviewing
+DEF-198 (`3a2b112`).

@@ -3050,3 +3050,36 @@ Five mutants applied and RUN, all five die: restore the bare key, drop `userId` 
 B12's conversation item is **fictional** and can never appear in a production push record, so the correct answer there is now "I have no repeat-push record for that item" — honest, but possibly not what the judge rewards. This removes the fusion mechanism; it may not raise the score, and that is stated in advance rather than explained afterwards.
 
 The C-3 dispatcher's event-token redesign remains unbuilt and increment 3 stays gated off at `selfpruning.withdrawal_notice_enabled = 0`. On the escalated Iteration 2 finding, the recorded position is **(a) accept as a known limitation with a DEF row, do not revert**: the tenant-blindness CRITICAL is stale against HEAD (verified — the entry point takes `clientNumber` and `openItemsBacklogCleanupJob.ts:493` is tenant-scoped), and what remains is confined to an announce path that is off by default, while reverting would remove live safety work.
+
+## 51. DEF-200 — the resolver runs in code, so there is nothing left to outvote the dialogue (2026-08-17, BUILDER: Claude — orchestrator iteration 3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Three turns, three wrong referents. `iter-03-post-build.json`: B12 C2 = **0** — *"Brain invents the 'Vision Metric's service sales package video' as the subject of the reminders. This is not grounded in any prior input."* The judge stopped calling it misidentification and called it invention.
+
+### Root cause — remediation of Codex's iteration-2 review, both findings sustained
+
+1. *"The code does not resolve or pass a subject identity. It merely adds instructions telling the model to resolve one … the measured mechanism is still `examples-outvote-the-instruction`."* DEF-198 added prose, DEF-199 added the title join, and **neither took the candidates away**. A page of other items with real counts and real timestamps out-argues any sentence.
+2. *"`NoiseSummary` also contains `unattributed` and `floods`."* A push repeated without any identity never reaches `s.subjects`, so it was absent from the list while the block still authorised "your record shows at most one push". I wrote "four ways to be short" and missed the two carrying no ⚠ of their own.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — `selectSubjectsForConversation()` matches the dialogue against the subjects' real titles; the renderer shows only what matched, and when nothing matches it prints **no subject lines** and says the record holds nothing about the item under discussion. `absenceIsInformative()` additionally requires `unattributed` and `floods` empty.
+- `server/src/services/knowledge/brainComposer.ts` — one shared `conversationTextForPushHistory(question, history)`, used by both composer call sites.
+- `server/tests/def197PushHistoryBlock.test.ts` — 10 tests added (40 total).
+
+### Rollback considered and rejected
+
+Reverting restores a block that offers the model confident counts for items the owner never mentioned — the mechanism that produced three fabricated referents in three runs. The change is subtractive on the prompt and additive on the tests; every prior assertion still passes.
+
+### Tests added / verification (measured after the last code edit, at `f50e1cf`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,502 tests — **2,473 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone with the working-tree files copied in (`server/dist` is `chattr +i`, left untouched; resolver, no-match branch and both scoped call sites confirmed in the emitted JS) · `git diff --check` clean.
+
+Six mutants applied and RUN, all six die: render `allRepeats` ignoring the resolver, drop `unattributed`, drop `floods`, drop the distinctive-title floor, let unnameable subjects match, stop passing the conversation on the legacy path. The DEF-165 both-paths guard was **tightened** to require the conversation on both call sites.
+
+### Known issues deliberately not fixed
+
+**Codex asked for a test running both composers and asserting the final owner-visible answer; I did not write one.** The final sentence is an LLM's, and such a test goes green on a lucky sample — failure in the direction that matters. What is asserted instead is deterministic: the wrong candidate is ABSENT from the prompt the composer receives, on the exact Fujairah-versus-ShireMe collision. An end-to-end assertion needs a recorded-response harness, named here as a separate build rather than treated as closed.
+
+B12's conversation item is fictional and can never appear in a production push record, so the now-correct answer is "I have no repeat-push record for that one" — correct, and it may still score low on C6, which wants the question answered.
