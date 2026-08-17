@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client';
 import { currentTenant } from './tenantContext';
-import { observeRawQuery } from './rawQueryObservability';
+import {
+  observeRawQuery,
+  captureCallerStack,
+  OBSERVED_RAW_OPERATIONS,
+} from './rawQueryObservability';
 
 const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -235,34 +239,39 @@ const prisma = base.$extends({
       },
     },
   },
-}).$extends({
-  /**
-   * DEF-085 / Self-Healing rung 1 — raw-query failures get a call site.
-   *
-   * A raw query has failed on this box every ~90 seconds since 2026-08-07
-   * (77,123 occurrences, SQLSTATE 22021) and DEF-085 stayed OPEN with "cause
-   * unknown" the whole time, because Prisma's `prisma:error` line names no call
-   * site, no SQL and no tenant, and Postgres discards the statement here
-   * (`logging_collector` off, no journal unit). This extension is the ONE place
-   * that failure can be attributed: 450 raw call sites cannot each be trusted
-   * to wrap themselves, and a hand-wrapped subset is the
-   * `protection-with-two-implementations` shape recorded eight times in this
-   * codebase.
-   *
-   * It rethrows unchanged — see `observeRawQuery`. Nothing about the success
-   * path or the error contract changes; the only difference is that a failure
-   * now says where it came from, and a failure that REPEATS becomes a health
-   * finding without anyone asking, which is rung 1's definition in
-   * capability_contract.md:214.
-   */
-  name: 'rawQueryObservability',
-  query: {
-    $queryRaw: ({ args, query }) => observeRawQuery('$queryRaw', sqlTextOf(args), () => query(args)),
-    $executeRaw: ({ args, query }) => observeRawQuery('$executeRaw', sqlTextOf(args), () => query(args)),
-    $queryRawUnsafe: ({ args, query }) => observeRawQuery('$queryRawUnsafe', sqlTextOf(args), () => query(args)),
-    $executeRawUnsafe: ({ args, query }) => observeRawQuery('$executeRawUnsafe', sqlTextOf(args), () => query(args)),
-  },
 });
+
+/**
+ * DEF-085 / Self-Healing rung 1 — raw-query failures get a call site.
+ *
+ * A raw query has failed on this box every ~90 seconds since 2026-08-07 (77,123
+ * occurrences, SQLSTATE 22021) and DEF-085 stayed OPEN with "cause unknown" the
+ * whole time, because Prisma's `prisma:error` line names no call site, no SQL
+ * and no tenant, and Postgres discards the statement here
+ * (`logging_collector` off, no journal unit). This is the ONE place that failure
+ * can be attributed: ~450 raw call sites cannot each be trusted to wrap
+ * themselves, and a hand-wrapped subset is the
+ * `protection-with-two-implementations` shape recorded eight times here.
+ *
+ * WHY A METHOD WRAPPER AND NOT A `query` EXTENSION. The extension form was
+ * tried first and is wrong for this purpose: measured on @prisma/client 6.19.2,
+ * a `query` hook runs from `PrismaPromise.then`, so by then the application
+ * caller has left the stack and the call site reads `unknown` — the one fact
+ * DEF-085 lacked. Wrapping the method captures the stack synchronously, on the
+ * caller's own frames, before any await. Verified against the live database.
+ *
+ * Behaviour is otherwise untouched: `observeRawQuery` rethrows the original
+ * error by identity and returns success values unchanged. What changes is that a
+ * failure says where it came from, and a REPEATING failure becomes a health
+ * finding without anyone asking — rung 1's definition, capability_contract.md:214.
+ */
+for (const op of OBSERVED_RAW_OPERATIONS) {
+  const original = (prisma as any)[op].bind(prisma);
+  (prisma as any)[op] = (...args: unknown[]) => {
+    const callerStack = captureCallerStack();
+    return observeRawQuery(op, sqlTextOf(args), callerStack, () => original(...args));
+  };
+}
 
 /**
  * The statement text out of whichever arg shape the operation uses: the

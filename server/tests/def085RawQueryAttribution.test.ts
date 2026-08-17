@@ -25,9 +25,12 @@ import {
   callSiteFrom,
   signatureOf,
   __resetRawQueryObservability,
+  captureCallerStack,
   FINDING_THRESHOLD,
   FINDING_WINDOW_MS,
   RAW_QUERY_FAILED_KIND,
+  OBSERVED_RAW_OPERATIONS,
+  CALLER_STACK_FRAMES,
 } from '../src/db/rawQueryObservability';
 import { reportRawQueryFailureAsFinding } from '../src/services/selfheal/rawQueryFindingReporter';
 
@@ -263,7 +266,7 @@ describe('DEF-085 — repetition becomes a finding, once', () => {
 describe('DEF-085 — the query path is unchanged', () => {
   it('passes a successful result through untouched', async () => {
     const rows = [{ id: 1 }];
-    await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1', async () => rows)).resolves.toBe(rows);
+    await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1', undefined, async () => rows)).resolves.toBe(rows);
     expect(recordFinding).not.toHaveBeenCalled();
   });
 
@@ -272,14 +275,14 @@ describe('DEF-085 — the query path is unchanged', () => {
     // `.catch(() => [])` in brainCognitiveWorker is how a failing query became
     // an empty user list for a month.
     const original = new Error(REAL_22021);
-    await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1', async () => { throw original; }))
+    await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1', undefined, async () => { throw original; }))
       .rejects.toBe(original);          // identity, not just shape
   });
 
   it('still rethrows when the failure is the one that crosses the threshold', async () => {
     const boom = new Error(REAL_22021);
     for (let i = 0; i < FINDING_THRESHOLD; i += 1) {
-      await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1 FROM t', async () => { throw boom; }))
+      await expect(observeRawQuery('$queryRawUnsafe', 'SELECT 1 FROM t', undefined, async () => { throw boom; }))
         .rejects.toBe(boom);
     }
   });
@@ -299,19 +302,44 @@ describe('DEF-085 — the interception has ONE implementation and no bypass', ()
   );
 
   it('observes ALL FOUR raw operations the client exposes', () => {
-    for (const op of ['$queryRaw', '$executeRaw', '$queryRawUnsafe', '$executeRawUnsafe']) {
-      // Mutation: dropping any one line leaves that operation unattributed,
-      // which is exactly the state DEF-085 lived in.
-      expect(prismaSrc).toMatch(
-        new RegExp(`\\${op}:\\s*\\(\\{[^}]*\\}\\)\\s*=>\\s*observeRawQuery\\('\\${op}'`),
-      );
-    }
+    // Mutation: dropping an entry leaves that operation unattributed, which is
+    // exactly the state DEF-085 lived in.
+    expect([...OBSERVED_RAW_OPERATIONS].sort()).toEqual(
+      ['$executeRaw', '$executeRawUnsafe', '$queryRaw', '$queryRawUnsafe'],
+    );
   });
 
   it('routes them through the shared observer rather than a second copy', () => {
-    expect(prismaSrc).toContain("from './rawQueryObservability'");
-    const observed = prismaSrc.match(/observeRawQuery\(/g) ?? [];
-    expect(observed.length).toBe(4);
+    const code = stripComments(prismaSrc);
+    expect(code).toContain("from './rawQueryObservability'");
+    // ONE wrapper over the shared list, not four hand-written copies.
+    expect(code).toMatch(/for \(const op of OBSERVED_RAW_OPERATIONS\)/);
+    expect((code.match(/observeRawQuery\(/g) ?? []).length).toBe(1);
+  });
+
+  it('captures the caller stack SYNCHRONOUSLY, outside the awaited callback', () => {
+    // THE BUG THIS GUARDS. The first version captured inside observeRawQuery,
+    // which a `query` extension runs from PrismaPromise.then — a microtask — so
+    // the application frames were already gone and the live client reported
+    // `callSite: "unknown"`. Capture must happen on the caller's own stack,
+    // before the observer is entered.
+    const code = stripComments(prismaSrc);
+    const capture = code.indexOf('captureCallerStack()');
+    const observe = code.indexOf('observeRawQuery(');
+    expect(capture).toBeGreaterThan(-1);
+    expect(capture).toBeLessThan(observe);
+    // And the observer must take it as a parameter rather than making its own.
+    const observerCode = stripComments(fs.readFileSync(
+      path.resolve(__dirname, '../src/db/rawQueryObservability.ts'), 'utf8',
+    ));
+    expect(observerCode).toMatch(/export async function observeRawQuery<T>\(\s*operation: string,\s*sql: string,\s*callerStack: string \| undefined,/);
+  });
+
+  it('raises the stack-frame limit, since Prisma runtime frames crowd out the caller', () => {
+    // Node's default of 10 truncated the frame we are after.
+    expect(CALLER_STACK_FRAMES).toBeGreaterThanOrEqual(30);
+    const stack = captureCallerStack();
+    expect(stack).toContain('def085RawQueryAttribution');
   });
 
   it('keeps the findings WRITE out of prisma.ts own import closure', () => {

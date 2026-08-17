@@ -252,20 +252,51 @@ export async function reportRawQueryFinding(report: RawFailureReport): Promise<v
   }
 }
 
+/** The raw operations wrapped in `db/prisma.ts`. ONE list, read by both the
+ *  wiring and its guard test, so a fifth raw operation on the client cannot be
+ *  left unobserved without the test going red. */
+export const OBSERVED_RAW_OPERATIONS = [
+  '$queryRaw', '$queryRawUnsafe', '$executeRaw', '$executeRawUnsafe',
+] as const;
+
+/** Node's default is 10 frames, and Prisma's own runtime consumes several. Too
+ *  small a limit truncates exactly the application frame we are after. */
+export const CALLER_STACK_FRAMES = 40;
+
+/** Capture the caller's stack. MUST be called synchronously by the wrapper,
+ *  on the caller's own stack — see `observeRawQuery`. */
+export function captureCallerStack(): string | undefined {
+  const previous = Error.stackTraceLimit;
+  Error.stackTraceLimit = CALLER_STACK_FRAMES;
+  try {
+    return new Error().stack;
+  } finally {
+    Error.stackTraceLimit = previous;
+  }
+}
+
 /**
  * The single interception point, applied in `db/prisma.ts`.
  *
- * Shape kept dependency-free (it takes and returns plain functions) so it can
- * be unit-tested without a live database or a generated client.
+ * `callerStack` is passed IN rather than captured here, and that is the whole
+ * design rather than a style choice. Measured against the real client on
+ * @prisma/client 6.19.2: a `query`-component extension hook runs from
+ * `PrismaPromise.then` — a microtask — so a stack taken inside it holds only
+ * Prisma's runtime frames and the application caller is already gone. The first
+ * version of this module did exactly that and produced `callSite: "unknown"`
+ * against the live database, which would have shipped the ONE field DEF-085
+ * needed as a constant. The wrapper therefore captures synchronously at the
+ * call, before any await, and hands the stack here.
+ *
+ * Kept dependency-free (plain functions in, promise out) so it is unit-testable
+ * without a live database or a generated client.
  */
 export async function observeRawQuery<T>(
   operation: string,
   sql: string,
+  callerStack: string | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  // Captured BEFORE awaiting: an async stack taken in the catch block has
-  // already lost the caller's frames.
-  const callerStack = new Error().stack;
   try {
     return await run();
   } catch (err) {
