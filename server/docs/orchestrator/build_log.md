@@ -1315,3 +1315,151 @@ must not touch `scripts/orchestrator/**`): the brief's capability table renders
 Accurate Communication with the SMALLEST gap (18) and Simple & Smart the widest (59). I aimed
 at Accurate Communication, matching the stated target, and note the contradiction rather than
 silently picking one.
+
+---
+
+## Iteration 3 — rules cannot fix an unjoinable key (DEF-199)
+
+**Mode: structural · CONTINUATION 1 of 3 on Accurate Communication · campaign C-3 · deployed=no**
+
+### 0. What I now believe was wrong with the last attempt — the continuation question
+
+DEF-198 added rules telling the composer to resolve the referent from the conversation and
+never substitute a listed subject. The measurement afterwards:
+
+| | before DEF-198 | after |
+|---|---|---|
+| B12 C1 / C2 / C3 / C6 | 60 | **40** |
+| B12 named | "ShireMe Recruiting Portal Application Testing" | **"Vision Metric's service sales package video"** |
+
+I do **not** claim my change caused the drop — the benchmark is stochastic and both runs are
+the same failure mode — but it plainly did not fix it. I wrote in that commit that a
+prompt-contract change *"steers a stochastic model rather than forcing an outcome"*. That
+was true, and it was insufficient as a defence.
+
+**The reason it could not work was visible in the renderer and I missed it.** `subjectLine`
+emitted `- item:cmqauv4xx — 2 pushes delivered, …`. **No title, ever.** So DEF-198 instructed
+the model to name the item the owner meant, out of a block in which no item can be named.
+The nearest available titles live in the open-items block, so it took one from there and
+fused it with this block's counts. **Two different wrong titles across two runs is the
+signature of that fusion** — the wrong item is simply whichever title was nearby.
+
+DEF-198 was an instruction added to a missing join. That is the honest diagnosis, and it is
+also the general lesson: a rule cannot repair information that is absent from the context it
+governs.
+
+### 1. The fix queue entry I targeted, quoted
+
+> `B12-reminder-referent`, C1 40: *"Brain misidentified the task it sent reminders for."*
+> C2 40: *"…is not grounded in the provided conversation."*
+
+Still the worst case in the report (overall 61; C1/C2/C3/C6 at 40).
+
+### 2. Circling or progressing — the verdict out loud
+
+**Circling on `fabricated-status` (6 in chart §3), so a structural change was mandatory and a
+second wording patch was forbidden.** I did not touch the rules' referent paragraph again and
+I changed no benchmark string. What changed is the DATA the rules operate on: the block now
+performs the join it was asking the model to guess.
+
+### 3. What changed, by file:line, and why that is the mechanism
+
+`server/src/services/selfpruning/pushHistoryBlock.ts`
+
+- **`:59-96` — `resolveSubjectTitles()`.** `openItem.findMany` by id, scoped by
+  `clientNumber` AND `userId`, because a title is owner data on a user-owned model. This is
+  the join that did not exist.
+- **`:144-157` — `subjectLine(g, titles)`.** A subject is now either `"Real title"
+  (item:<id>)` or `item:<id> [TITLE UNRESOLVED — never name this item]`. The bare key was the
+  third state and the one that produced the defect: nameless, but answerable-looking.
+- **`:155-166` — the naming rule.** Forbids the observed fusion explicitly: name an item only
+  from a title printed here, never from another block, *"that is how a true count becomes a
+  false statement"*.
+- **`:274-300` — the builder performs the join,** and a FAILED title read loses the NAMES and
+  keeps the COUNTS. It never degrades to a guess, and deliberately not to whole-block
+  UNAVAILABLE either: the count is still true and still worth stating.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  198 passed | 1 skipped (199)
+                    Tests  2463 passed | 7 expected fail | 21 skipped | 1 todo (2492)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+`npm run build` ran in a **clean clone with the working-tree files copied in**, never in this
+tree: `server/dist` is `chattr +i` and IS the deployed artifact (CLAUDE.md). Both behaviours
+confirmed present in the clone's emitted JS.
+
+**Five mutants applied and RUN — all five die:** restore the bare key · drop `userId` from the
+join · drop `clientNumber` from the join · accept an empty title as a name · stop deduping ids.
+
+A test caught a **real bug in my own first draft**: `.filter(Boolean)` was applied to the
+`[key, title]` pair rather than the title, so an empty title mangled the entry. Rewritten as an
+explicit loop; an empty title now falls through to TITLE UNRESOLVED instead of rendering an
+item called `""`.
+
+### 5. THE ESCALATION — my answer, plainly: **(a) accept as a known limitation with a DEF row. Do NOT revert.**
+
+The brief asks whether Iteration 2's remaining finding is an accepted limitation or grounds
+for reverting. My answer, with the reasons Codex can check:
+
+1. **Several of the numbered findings are already closed by commits that landed after the
+   reviewed SHA, and I verified this at HEAD rather than from memory.** The newest review is of
+   `9adbe2e`. Its CRITICAL #1 says the cleanup job's enumerations are tenant-blind. At HEAD the
+   entry point is `runOpenItemsBacklogCleanup(clientNumber)`, the candidate read is
+   `where: { clientNumber, userId, …OWED_WHERE }`, and the owed enumeration at
+   `openItemsBacklogCleanupJob.ts:493` is `where: { clientNumber, …OWED_WHERE }`. That finding
+   is stale against HEAD, not open.
+2. **What genuinely remains is confined to the announce path, and that path is OFF by
+   default.** `selfpruning.withdrawal_notice_enabled` defaults to 0, so the dispatcher findings
+   (non-atomic revalidate-then-enqueue, immortal batch membership, no DB ownership constraint)
+   are **dormant, not live**. Nothing is announced until an owner opts in.
+3. **Reverting would be strictly worse for the owner.** The same range carries the
+   confirmed-write gating, the row-carried notice debt, the compare-and-set and the tenant
+   scoping — all of which make the branch safer than what production runs today. Reverting to
+   remove dormant findings would restore live ones.
+
+So: a DEF row, the gate left at 0, and the event-token redesign named as the work that must
+land before that gate is opened. I am not asking to close the findings — I am saying they
+should not block the range, and that is a judgement Codex is entitled to overrule.
+
+### 6. What I did NOT do, and what I am unsure about
+
+- **I did not re-touch DEF-198's referent rules.** Structural mode forbids another wording
+  patch, and the diagnosis above says wording was never the binding constraint.
+- **I did not build the C-3 dispatcher's event-token redesign** (still the campaign's real
+  blocker, still designed and unbuilt). Continuation status ordered depth on Accurate
+  Communication and forbade new work; that is a Self-Pruning increment.
+- **Unsure, and it matters:** B12's conversation item is *fictional*, so it can never appear in
+  a production push record. The correct answer there is now "I have no repeat-push record for
+  that item" — which is **honest but not the answer the judge is looking for**. This removes the
+  fusion mechanism; it may not raise the score, and I would rather say that in advance than
+  explain it afterwards.
+
+### 7. Prediction, and what would prove me wrong
+
+**C1 and C2 on B12 should rise**, because the block can no longer supply a name it did not
+read. **C6 may not** — a truthful "no record for that item" is still an incomplete answer to
+"why twice?". **C4 (86.9, the weakest) I predict will not move**: B12's C4 is already 85 and its
+complaint is formality, which I did not touch.
+
+**Proved wrong by:** a reply naming an item whose title is not printed in this block; a
+TITLE UNRESOLVED subject being named anyway; or C1/C2 staying at 40. A 1–2 point overall move is
+noise and I will not claim it either way.
+
+### 8. Deployability and directives
+
+**Deployed=no — the Builder does not deploy.** The matrix is fully green including a real
+`npm run build`, so no required evidence blocks a deploy; the decision is the orchestrator's
+under `DEPLOY_ON=sound`.
+
+No `operator_directives.md` item was consumed. **Harness defects, reported not fixed** (I must
+not touch `scripts/orchestrator/**`): the capability table still renders
+`Simple @@CAPGAPS@@ Smart`, and the brief again calls Accurate Communication *"the widest gap"*
+while its own table shows it smallest at 18. Also: the brief's "Full report" path
+(`scores/iter-02-post-build.json`) is the file I read, but it is labelled iteration 2 while this
+is iteration 3 — the reviewer should know the report I worked from is that file.

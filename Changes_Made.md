@@ -3019,3 +3019,34 @@ This is a **prompt-contract** change: it steers a stochastic model, it does not 
 The C-3 dispatcher (increment 3) remains gated off behind `selfpruning.withdrawal_notice_enabled = 0` with three open Codex findings — non-atomic revalidate-then-enqueue, immortal batch membership, no DB ownership constraint. Designed but not built this turn: move ownership onto the row as a claim token so the database enforces it. Named as the next turn's strongest candidate.
 
 **Ledger gap noted, not silently filled:** DEF-197 has no entry in this file. It is the twin's turn to record, and inventing an entry for work I did not do would be worse than naming the gap — this is the same omission Codex charged against DEF-186.
+
+## 50. DEF-199 — the push record names its own items (2026-08-17, BUILDER: Claude — orchestrator iteration 3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+`B12-reminder-referent` after DEF-198: C1/C2/C3/C6 fell **60 → 40**, overall 61. Brain answered *"I sent you two reminders about the \"Vision Metric's service sales package video\", one at 6:01 AM and another at 10:11 AM UTC"* — where the previous run had said *"ShireMe Recruiting Portal Application Testing"*. The count, the times and the producer were **true**; the item they were attached to was **invented**.
+
+### Root cause — DEF-198 was an instruction added to a missing join
+
+`subjectLine` emitted `- item:cmqauv4xx — 2 pushes delivered, …`. No title, ever. DEF-198 told the composer to name the item the owner meant, out of a block in which no item can be named. The nearest available titles live in the open-items block, so the model took one from there and fused it with this block's counts. Two different wrong titles across two runs is the signature of that fusion: the wrong item is whichever title happened to be nearby. A bare key is the worst of the three possible states — nameless, but answerable-looking.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — `resolveSubjectTitles()` joins `item:<id>` to the owner's own title via `openItem.findMany`, scoped by `clientNumber` AND `userId`. Subjects render as `"Real title" (item:<id>)` or `item:<id> [TITLE UNRESOLVED — never name this item]`. The standing rules gain the clause forbidding the observed fusion by name. A failed title read loses the names, never the counts, and never degrades to a guess.
+- `server/tests/def197PushHistoryBlock.test.ts` — 8 tests added (30 total).
+
+### Rollback considered and rejected
+
+Reverting restores a block that hands the model true counts under an unnameable key, which is the mechanism that produced two different fabricated referents in two runs. The change is additive and every prior assertion still passes.
+
+### Tests added / verification (measured after the last code edit, at `22934b0`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,492 tests — **2,463 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone with the working-tree files copied in (`server/dist` is `chattr +i` and is the deployed artifact; left untouched) · `git diff --check` clean.
+
+Five mutants applied and RUN, all five die: restore the bare key, drop `userId` from the join, drop `clientNumber` from the join, accept an empty title as a name, stop deduping ids. A test also caught a real bug in the first draft — `.filter(Boolean)` applied to the `[key, title]` pair rather than the title — now an explicit loop.
+
+### Known issues deliberately not fixed
+
+B12's conversation item is **fictional** and can never appear in a production push record, so the correct answer there is now "I have no repeat-push record for that item" — honest, but possibly not what the judge rewards. This removes the fusion mechanism; it may not raise the score, and that is stated in advance rather than explained afterwards.
+
+The C-3 dispatcher's event-token redesign remains unbuilt and increment 3 stays gated off at `selfpruning.withdrawal_notice_enabled = 0`. On the escalated Iteration 2 finding, the recorded position is **(a) accept as a known limitation with a DEF row, do not revert**: the tenant-blindness CRITICAL is stale against HEAD (verified — the entry point takes `clientNumber` and `openItemsBacklogCleanupJob.ts:493` is tenant-scoped), and what remains is confined to an announce path that is off by default, while reverting would remove live safety work.
