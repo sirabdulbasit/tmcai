@@ -3331,3 +3331,42 @@ Five mutants applied and RUN, all five die: drop `status:'open'` · read only wh
 **Escalation answered: (a) accept iteration-4 CRITICAL 1 as a known limitation with a DEF row — NOT grounds for reverting.** The non-atomic revalidate-then-enqueue is dormant behind `selfpruning.withdrawal_notice_enabled = 0`; reverting would strip event-token identity, confirmed-write gating, row-carried debt, the CAS and tenant scoping — all live and verified — to remove a race in a path that cannot execute.
 
 **THE OBSTACLE, attempt 6, unchanged because the evidence is.** Not delivery: `deployed-sha` equals HEAD with zero undeployed commits. **Arithmetic** — the campaign states repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. This turn attacked the widest gap (Self-Healing, 57) rather than another Accurate Communication repair, but rung 1 already existed: I completed an existing rung, not created an absent capability. **The move that would matter is rungs 2 and 3** — a tenant-less fault Brain recovers from and repairs unasked. **Seventh report** of the harness defect driving the misaim: the brief's table still names the widest gap as `Simple @@CAPGAPS@@ Smart`, an unsubstituted placeholder.
+
+## 59. DEF-208 — the announcement and the fact it asserts commit together (2026-08-17, BUILDER: Claude — orchestrator iteration 4, remediation 1/3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Not owner-observed — the path is gated off. Codex raised it as iteration-3 CRITICAL 1 and again as iteration-4 CRITICAL 1, after two of my fixes: *"the pre-send check is another guard above an asynchronous gap … item A is CANCELLED at the fresh read, the owner restores A while `brainPromptQueue.findFirst` or the imports are pending, then enqueue runs; result = Brain tells the owner A withdrew although it is active."*
+
+### Root cause — my own two non-answers
+
+Iteration 3 revalidated; iteration 4 revalidated harder and moved the read closer to the send. **The flaw was never the freshness of the read.** Reading and announcing were two commits with an unbounded await between them (a queue lookup and two dynamic imports). A guard above an asynchronous gap is a guess about what will still be true; only the database can make it a fact. Last turn I proposed accepting this as a known limitation — that was wrong on the merits and this entry withdraws it.
+
+### Files changed
+
+- `server/src/services/brainPrompts/brainPromptQueueService.ts` — `EnqueueInput.tx`: the dedup probe and the insert run on the caller's transaction. Two behaviours are withheld on that path by design — **immediate dispatch** (a WhatsApp message cannot be rolled back; a send inside a transaction that aborts is a message the database says was never queued) and **digesting** (it writes on the ambient client and would escape the boundary). `top` criticality is rejected, not downgraded.
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — `settleBatch` is one `prisma.$transaction` holding: the final revalidation filtered to the batch's own events; the **claim**, a per-row CAS on (tenant, user, id, status, `updatedAt`) stamping `announcedAt`, so a restore committing first matches nothing and the row is dropped from the notice while a later restore serialises behind it; the queue insert on the same `tx`; and the batch sent-mark, whose failure throws and rolls back all three. Both dynamic imports hoisted out of the boundary. This is the first interactive transaction in `src/`.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — 48 tests (6 new), including the barrier Codex specified: a restore fired **inside** the transaction, after the final revalidation and before the queue insertion, must yield no queued withdrawal fact. The prisma mock's `$transaction` **models rollback**, because rollback is the property under test.
+- `server/tests/def208TransactionalEnqueue.test.ts` — 7 tests on the queue service: insert and probe on `tx`, no dispatch, no digest policy, `top` rejected, and the ordinary path still dispatching.
+
+### Rollback considered and rejected
+
+Reverting restores a guard above an asynchronous gap that Codex has now named twice.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 204 files — 203 passed, 1 skipped; 2,570 tests — **2,541 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (`$transaction` and the top-criticality rejection confirmed in the emitted JS; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+**Eight mutants applied and RUN, seven die:** announce from the read instead of the claim · claim without the status predicate · claim without the version token · sent-mark count-0 not thrown · enqueue on the ambient client · tx caller dispatches anyway · dedup probe escapes the transaction. **The eighth (cancel-mark count-0 not thrown) SURVIVES and is reported rather than hidden — it is an equivalent mutant:** `claimed` is empty on that branch, nothing has been written, so rollback and early return are observationally identical.
+
+**Mutation testing caught a real hole again:** the sent-mark mutant first survived because the mock's only failure mode threw, and a throw rolls back by itself — the count-mismatch branch was untested. **Two DEF-190 assertions were updated, not silenced:** "the retry finds the queue holding the identity" is superseded by "there is nothing to find", the same owner guarantee reached by making the bad state unrepresentable.
+
+### Known issues deliberately not fixed
+
+**No symptom tag closed, and none invented.** The nearest is `fabricated-status`; claiming it would strike an item off the owner's deck while the members he actually reported (email "sent", timezone "updated") stay broken.
+
+**This produces no owner-visible change even if deployed.** `selfpruning.withdrawal_notice_enabled` defaults to **0**, so the live check cannot be performed on this turn. What ships is the removal of the reason not to turn that gate on.
+
+**Unsure: transaction duration under load.** The boundary holds up to `OWED_ROWS_PER_NOTICE` (200) per-row updates plus one insert, against Prisma's 5s default interactive-transaction timeout. Not measured against production row counts.
+
+**Still open from Codex's iteration-4 list:** HIGH 4 (the 200-row cap starving unclaimed debt behind claimed rows) and directive 5 (`delegationFollowUpJob` settings authority and tenant scope). Named, not dropped.

@@ -2373,3 +2373,141 @@ refute my obstacle analysis and be welcome.
 including a real `npm run build` in a clean clone; nothing in the required evidence blocks a
 deploy. The change is additive: one new reader, one constant, one log line, and no existing
 caller's behaviour is altered.
+
+## Iteration 4 (seventh entry under this number) — you cannot re-read your way out of two commits (DEF-208)
+
+**Mode: structural · REMEDIATION attempt 1/3 · regression guard CLEAN · deployed=no**
+
+### 0. The finding I am closing, and why it took three attempts
+
+Codex's iteration-3 CRITICAL 1 and iteration-4 CRITICAL 1 are the same finding stated twice,
+after two of my fixes:
+
+> "the pre-send check is another guard above an asynchronous gap … item A is CANCELLED at the
+> fresh read, the owner restores A while `brainPromptQueue.findFirst` or the imports are
+> pending, then enqueue runs; result = Brain tells the owner A withdrew although it is active."
+
+Iteration 3 I revalidated. Iteration 4 I revalidated harder and moved the read closer to the
+send. **Both were the same non-answer**, and naming why is the useful part of this turn: the
+flaw was never the FRESHNESS of the read. It was that reading and announcing were two commits
+with an unbounded await between them — a queue lookup and two dynamic imports. A guard above an
+asynchronous gap is a guess about what will still be true. Only the database can make it a fact.
+
+Last turn I recorded my position as *"accept as a known limitation with a DEF row."* That was
+wrong on the merits, and this turn withdraws it. The finding was closable; I had answered it
+twice with the wrong shape of fix and then proposed accepting the third failure.
+
+### 1. Circling or progressing
+
+**Circling — third turn on one finding — so a patch on the reported instance was forbidden and
+the mechanism had to change.** No symptom tag from chart §3 is closed, and I am not attaching
+one. The nearest is `fabricated-status`, and claiming it would strike an item off the owner's
+deck while the members he actually reported (email "sent", timezone "updated") stay broken. This
+member has never reached him: `selfpruning.withdrawal_notice_enabled` defaults to **0**.
+
+### 2. What changed, and why that is the mechanism
+
+**`src/services/brainPrompts/brainPromptQueueService.ts`** — `EnqueueInput.tx`. When supplied,
+the dedup probe and the insert run on the CALLER'S transaction, so the queue row commits with
+whatever else the caller wrote. Two behaviours are withheld on that path, and the withholdings
+are the design rather than a limitation:
+
+- **immediate dispatch** — `sendNextPrompt` sends a WhatsApp message, and a message cannot be
+  rolled back. Sending from inside a transaction that then aborts leaves the owner holding a
+  message the database says was never queued: the same lie from the opposite direction. The row
+  stays `queued` for the dispatcher's next tick.
+- **digesting** — the digest policy enqueues a second prompt and files the first on the ambient
+  client, which would escape the boundary. A transactional caller is announcing a decision it
+  has already made, not offering a push for suppression.
+- `top` criticality is **rejected**, not silently downgraded: it places a voice call before any
+  row exists.
+
+**`src/jobs/openItemsBacklogCleanupJob.ts` `settleBatch`** — one `prisma.$transaction` holding
+the four steps that must agree:
+
+1. the final revalidation, filtered to the events this batch owns;
+2. **the CLAIM** — a per-row compare-and-set on (tenant, user, id, status, `updatedAt`) stamping
+   `announcedAt`. A restore that commits first makes it match nothing, so the row is **dropped
+   from the notice** instead of announced; a restore arriving later serialises BEHIND the claim
+   and is a genuinely later event;
+3. the queue insert, on the same `tx`, so the owner-visible fact cannot exist unless the claim
+   did;
+4. the batch sent-mark — a failure **throws**, rolling back 1-3: no queue row, no stamps,
+   identity intact, retried next tick under the same dedup key.
+
+Both dynamic imports were hoisted OUT of the transaction; awaiting a module loader inside one
+holds it open for as long as the loader takes, and the whole point of this boundary is that it
+is short. This is the first interactive transaction in `src/` — there were none before.
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  203 passed | 1 skipped (204)
+                    Tests  2541 passed | 7 expected fail | 21 skipped | 1 todo (2570)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; `$transaction` and the top-criticality
+                                   rejection both confirmed in the emitted JS)
+git diff --check    clean
+```
+
+**48 tests in the notice suite (6 new) + 7 in a new queue suite. 8 mutants applied and RUN:**
+
+| mutant | result |
+|---|---|
+| announce from the read instead of the claim | DIED (2 failed) |
+| claim without the status predicate — a guard, not a CAS | DIED (5 failed) |
+| claim without the `updatedAt` version token | DIED (1 failed) |
+| sent-mark count-0 logged instead of thrown | DIED (1 failed) |
+| enqueue on the ambient client, outside the boundary | DIED (1 failed) |
+| tx caller dispatches immediately after all | DIED (2 failed) |
+| dedup probe escapes the transaction | DIED (2 failed) |
+| cancel-mark count-0 logged instead of thrown | **SURVIVES — equivalent mutant** |
+
+The survivor is reported rather than hidden, with the argument: on that branch `claimed` is
+empty, nothing has been written, so rolling back and returning early are observationally
+identical. I added a test for the branch anyway; it does not kill the mutant and I am not
+claiming it does.
+
+**MUTATION TESTING CAUGHT A REAL HOLE IN MY OWN TESTS AGAIN.** The sent-mark mutant survived the
+first pass because the mock's only sent-mark failure THREW — and a throw rolls back on its own,
+so the `count !== 1` branch was never exercised. A count-0 knob and its test kill it now.
+
+**Two DEF-190 assertions were UPDATED, not silenced.** *"The retry finds the queue holding the
+identity"* is superseded by *"there is nothing to find"*: the enqueue now rolls back with the
+mark. Same owner guarantee — exactly one message across both attempts — reached by making the
+bad state unrepresentable instead of detecting it afterwards.
+
+### 4. What I dropped, and what I am unsure about
+
+- **Dropped: the campaign's next increment**, and the re-scope note's instinct to start something
+  smaller. Remediation wins on scope, and this finding had been open across three turns. I would
+  rather close a reviewer's CRITICAL than open a fourth front.
+- **`clearOwedFlags` deliberately stays OUTSIDE the transaction.** It is bookkeeping after an
+  accepted announcement, where a race costs a retry, never a false statement. Folding it in would
+  have rewritten a path with 40 passing tests for no truth gain.
+- **Unsure: transaction duration under real load.** The boundary now holds N per-row updates plus
+  one insert; N is capped at 200 by `OWED_ROWS_PER_NOTICE`. That is bounded but not small, and
+  Prisma's default interactive-transaction timeout is 5s. I have NOT measured it against
+  production row counts, and it is the first interactive transaction in this codebase.
+- **Codex's remaining iteration-4 findings are NOT all closed by this turn**: HIGH 4 (the 200-row
+  cap starving unclaimed debt behind claimed rows) and directive 5 (`delegationFollowUpJob`
+  settings authority and tenant scope) are untouched. Named, not silently dropped.
+
+### 5. Deployability, predicted explicitly
+
+**Deployed=no** — the orchestrator owns the deploy phase. The matrix is fully green including a
+real `npm run build` in a clean clone, so nothing in the required evidence blocks a deploy of
+this artifact. **But I predict this turn produces NO owner-visible change even if deployed**, and
+say so rather than let the deploy imply otherwise: the withdrawal-notice path is gated OFF by
+default (`selfpruning.withdrawal_notice_enabled = 0`), so the live check the re-scope note asks
+for cannot be performed by me on this turn. What ships is the removal of the reason NOT to turn
+that gate on.
+
+### 6. Prediction, and what would prove me wrong
+
+**CAPABILITY: Self-Pruning · PREDICTED: +0 until deployed, then +1 to +2** (a reliability repair
+on an existing capability, not a new one). **MECHANISM:** the announcement and the fact it
+asserts commit together. **FALSIFIER:** a `[selfpruning_withdrawn]` message names an item whose
+status is not CANCELLED as of the queue row's `created_at` — or the transaction times out under
+production row counts, which would show as `errors` climbing with `noticesEnqueued` at zero.
