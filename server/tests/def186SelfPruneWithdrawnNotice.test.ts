@@ -112,6 +112,9 @@ const mocks = vi.hoisted(() => {
         return true;
       });
     }
+    // DEF-209 — `skip` is honoured, so a paging bug cannot pass by re-reading
+    // page 0 forever. Applied BEFORE take, as Prisma does.
+    if (args?.skip) rows = rows.slice(args.skip);
     if (args?.take) rows = rows.slice(0, args.take);
     const out = rows.map((r) => ({ ...r }));
     // The concurrent editor: mutates the STORE between this read and the
@@ -1132,6 +1135,46 @@ describe('DEF-208 — a restore during the send window yields no withdrawal noti
     expect(mocks.state.prompts).toHaveLength(0);
     expect(stats.errors, 'a cancel nobody applied must not read as success').toBeGreaterThan(0);
     expect(mocks.state.batches[0].state, 'still pending — the next tick decides again').toBe('pending');
+  });
+
+  it('pages PAST claimed rows: a permanently failing clear in the first page cannot starve row 201', async () => {
+    // Codex iteration-4 MEDIUM 4, reproduced at the size it needs: 200 owed rows
+    // already claimed by a SENT batch whose clears keep failing, and one newer
+    // unclaimed row behind them.
+    const stuck = Array.from({ length: 200 }, (_, i) =>
+      archivedOwedItem({
+        id: `s${i}`, title: `Stuck ${i}`, sourceRef: `sr${i}`,
+        createdAt: new Date(2020, 0, 1 + i),
+        metadata: {
+          archivedReason: 'stale_no_engagement',
+          selfPruneNotice: { owed: true, reason: 'stale_no_engagement', eventToken: `tok-${i}` },
+        },
+      }));
+    const newer = archivedOwedItem({
+      id: 'new1', title: 'Newer debt', sourceRef: 'srN',
+      createdAt: new Date(2026, 0, 1),
+      metadata: {
+        archivedReason: 'stale_no_engagement',
+        selfPruneNotice: { owed: true, reason: 'stale_no_engagement', eventToken: 'tok-new' },
+      },
+    });
+    mocks.state.items = [...stuck, newer];
+    mocks.state.batches = [{
+      id: 'b-old', clientNumber: 'tenant-1', userId: stuck[0].userId,
+      batchId: 'old-batch', dedupKey: 'selfpruning_withdrawn:old',
+      itemIds: stuck.map((s: any) => s.id),
+      eventTokens: stuck.map((_: any, i: number) => `tok-${i}`),
+      titles: [], count: 200, state: 'sent', createdAt: new Date(2020, 0, 1),
+    }];
+    // Their clears never succeed, so they stay owed at the head of the query.
+    for (const s of stuck) mocks.state.failOwedMarkIds.add(s.id);
+
+    await runOpenItemsBacklogCleanup('tenant-1');
+
+    const created = mocks.state.batches.find((b: any) => b.batchId !== 'old-batch');
+    expect(created, 'the newer debt never got a batch — starved behind claimed rows').toBeDefined();
+    expect(created.itemIds).toEqual(['new1']);
+    expect(mocks.state.prompts).toHaveLength(1);
   });
 
   it('module resolution happens BEFORE the transaction opens — a dynamic import must not hold it', () => {

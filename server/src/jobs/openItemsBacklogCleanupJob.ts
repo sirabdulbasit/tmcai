@@ -72,6 +72,10 @@ const log = createLogger('open-items-backlog-cleanup');
 
 const HARD_LIMIT_PER_RUN = 500;          // per (tenant, user) partition
 const OWED_ROWS_PER_NOTICE = 200;        // batch size cap; remainder rides the next tick
+/** DEF-209 — how many pages of owed rows one tick will scan past claimed debt
+ *  before giving up and saying so. Bounded: a starving backlog must not become
+ *  an unbounded scan on every tick. */
+const OWED_SCAN_PAGES = 10;
 
 const CANDIDATE_WHERE = {
   status: { in: ['NEW', 'TRIAGED', 'open'] as any },
@@ -591,22 +595,54 @@ async function processUserNotices(
   // 3. Owed rows claimed by NO batch form one new batch — a single atomic
   //    INSERT with the immutable member snapshot and dedup identity, so a
   //    partial claim cannot exist (Codex iteration-3 HIGH 2).
-  const candidates = await prisma.openItem.findMany({
-    where: { clientNumber, userId, ...(OWED_WHERE as any) },
-    select: { id: true, title: true, metadata: true },
-    orderBy: { createdAt: 'asc' },
-    take: OWED_ROWS_PER_NOTICE,
-  });
-  const withToken = candidates.map((c) => ({
-    id: c.id,
-    title: c.title,
-    token: eventTokenOf(c.metadata),
-  }));
-  // A row with no token predates DEF-202; it keeps the old item-id identity so
-  // existing debt is neither lost nor double-announced during the changeover.
-  const fresh = withToken.filter((c) => !claimed.has(c.token ?? `legacy:${c.id}`));
+  // DEF-209 / Codex iteration-4 MEDIUM 4 — PAGE PAST THE CLAIMED ROWS.
+  //
+  // "the oldest 200 owed rows are already claimed by sent batches and their
+  // clears keep failing, while row 201 is unclaimed; `take: 200` selects only
+  // claimed rows, `fresh` is empty, and row 201 never receives a batch."
+  //
+  // A row stays owed inside its SENT batch until its clear succeeds, so a
+  // permanently failing clear parks a claimed row at the head of this query
+  // forever. The cap then stops being a batch-size limit and becomes a starvation
+  // point: newer debt is never announced, and nothing says so. Reading one page
+  // and hoping is what made that possible; the fix is to keep reading until the
+  // page yields unclaimed rows, bounded so a pathological backlog cannot turn one
+  // tick into an unbounded scan.
+  const fresh: Array<{ id: string; title: string; token: string | null }> = [];
+  let scanned = 0;
+  let pages = 0;
+  let exhausted = false;
+  while (fresh.length < OWED_ROWS_PER_NOTICE && pages < OWED_SCAN_PAGES) {
+    const page = await prisma.openItem.findMany({
+      where: { clientNumber, userId, ...(OWED_WHERE as any) },
+      select: { id: true, title: true, metadata: true },
+      orderBy: { createdAt: 'asc' },
+      skip: pages * OWED_ROWS_PER_NOTICE,
+      take: OWED_ROWS_PER_NOTICE,
+    });
+    pages += 1;
+    scanned += page.length;
+    for (const c of page) {
+      // A row with no token predates DEF-202; it keeps the old item-id identity
+      // so existing debt is neither lost nor double-announced during the
+      // changeover.
+      const token = eventTokenOf(c.metadata);
+      if (claimed.has(token ?? `legacy:${c.id}`)) continue;
+      fresh.push({ id: c.id, title: c.title, token });
+      if (fresh.length >= OWED_ROWS_PER_NOTICE) break;
+    }
+    if (page.length < OWED_ROWS_PER_NOTICE) { exhausted = true; break; }
+  }
+  if (!exhausted && fresh.length < OWED_ROWS_PER_NOTICE) {
+    // Every page was claimed and we stopped early. Said out loud, because a
+    // silent stop here is indistinguishable from "no debt" — which is the
+    // starvation reading itself the wrong way round.
+    log.warn('owed-notice scan hit its page bound with debt still unread', {
+      clientNumber, userId, pages, scanned, unclaimedFound: fresh.length,
+    });
+  }
   if (fresh.length === 0) return;
-  if (candidates.length === OWED_ROWS_PER_NOTICE) {
+  if (fresh.length === OWED_ROWS_PER_NOTICE) {
     log.warn('owed-notice batch at cap — remainder rides the next tick', {
       clientNumber, userId, cap: OWED_ROWS_PER_NOTICE,
     });

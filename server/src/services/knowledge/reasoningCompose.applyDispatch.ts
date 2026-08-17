@@ -18,6 +18,7 @@ import type { ComposedAction, ComposeResult } from './brainComposer';
 import { dispatchAction } from './genericActionDispatcher';
 import { recordResolution, findResolution } from './clarificationMemoryService';
 import { validateReasoningAction } from './reasoningCompose';
+import { actionReceiptMarker, lastBrainQuestion } from './actionReceipt';
 
 /**
  * DEF-206 — wrap a decline reason as a bracketed system marker.
@@ -41,6 +42,12 @@ export async function applyReasoningDecision(args: {
   clientNumber: string;
   channel: 'web' | 'whatsapp';
   question: string; // user's original message — for clarification memory record
+  /**
+   * DEF-209 — the conversation, so the receipt can see what BRAIN asked for last
+   * turn. Without it this function cannot tell a fully-answered question from a
+   * half-answered one, which is exactly how B04 dropped the deadline.
+   */
+  history?: Array<{ role?: string; content?: string }>;
 }): Promise<ComposeResult> {
   const { result, userId, clientNumber, channel, question } = args;
 
@@ -151,8 +158,19 @@ export async function applyReasoningDecision(args: {
       // we pass the action back to the legacy compose flow and let
       // it apply the gate. The action is wrapped as a ComposedAction.
       const composedAction = { type: action.type, ...action.payload } as ComposedAction;
+      // DEF-209 — the model's prose WINS, and the fallback is a marker rather
+      // than hardcoded English. `Proceeding with ${type}.` was both halves of
+      // the defect at once: a deterministic receipt standing in for the reply
+      // (`guard-destroys-the-answer`), and a sentence that could not mention the
+      // half of Brain's own question the owner had not answered. The marker
+      // carries the outstanding slots to the ONE curated renderer, which states
+      // them as fact and lets Brain's voice do the asking.
       return {
-        answer: result.answerText || `Proceeding with ${action.type.replace(/_/g, ' ')}.`,
+        answer: result.answerText?.trim() || actionReceiptMarker({
+          actionType: action.type,
+          payload: action.payload as Record<string, unknown>,
+          priorQuestion: lastBrainQuestion(args.history),
+        }),
         citedPageIds: [],
         gaps: [],
         sources: [],

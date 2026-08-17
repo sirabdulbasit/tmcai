@@ -24,6 +24,9 @@
 import {
   isSystemMarker, isLegacyActionMarker, stripMarkerEnvelope, NEUTRAL_MARKER_FALLBACK,
 } from './systemMarker';
+// DEF-209 — the receipt's vocabulary lives with its constructor, so the parser
+// and the marker builder cannot drift into two implementations of one label.
+import { RECEIPT_SLOTS, actionPhrase } from './actionReceipt';
 
 interface MarkerRule {
   match: RegExp;
@@ -252,6 +255,56 @@ function withdrawnMarkerMeaning(answer: string): string | null {
 }
 
 /**
+ * DEF-209 — the action receipt's curated meaning.
+ *
+ * Same contract as `digestMarkerMeaning` and `withdrawnMarkerMeaning`: the body
+ * is JSON, this parser REJECTS anything the constructor cannot have produced,
+ * and an unparseable payload is null rather than a guess.
+ *
+ * Two facts and no more, because the caller only knows two things at this point:
+ *
+ *   - the action is BEING dispatched, not finished. The judge's C1 note on
+ *     B04 was "'Proceeding with update open item' implies that an action is
+ *     being taken, but it's unclear if this action has actually been initiated",
+ *     and the honest answer is that it is under way and not yet confirmed. It
+ *     must not read as completion — that is the `fabricated-status` class.
+ *   - which parts of BRAIN'S OWN earlier question are still unanswered, named,
+ *     so the next sentence chases them instead of dropping them.
+ *
+ * `sanitizeAnswerInBrainVoice` takes this as the FACT and lets the model choose
+ * the words, which is what stops the reply reading as a template.
+ */
+function proceedingMarkerMeaning(answer: string): string | null {
+  const m = /^\s*\[proceeding:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (typeof p?.action !== 'string' || !p.action.trim()) return null;
+    if (!Array.isArray(p?.outstanding) || p.outstanding.length > 4) return null;
+    if (p.outstanding.some((k: unknown) => typeof k !== 'string')) return null;
+    const labels = (p.outstanding as string[])
+      .map((k) => RECEIPT_SLOTS.find((s) => s.key === k)?.label)
+      .filter((l): l is string => Boolean(l));
+    // A key the constructor's own vocabulary does not contain is not a receipt.
+    if (labels.length !== p.outstanding.length) return null;
+
+    const phrase = actionPhrase(p.action);
+    const base = `${phrase} is going ahead now; it has not been confirmed yet`;
+    if (labels.length === 0) return `${base}.`;
+    const named = labels.length === 1
+      ? labels[0]
+      : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+    // "still unanswered from the earlier question" — not "missing": the owner
+    // did answer, just not all of it, and saying otherwise would be wrong about
+    // what he did.
+    return `${base}. ${named} ${labels.length === 1 ? 'is' : 'are'} still unanswered `
+      + `from the earlier question and should be asked for.`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The curated meaning of a whole-answer marker, when we have one.
  *
  * These 25 replacements are not throwaway strings — several were reworded
@@ -271,6 +324,8 @@ export function curatedMarkerMeaning(answer: string): string | null {
   if (digest) return digest;
   const withdrawn = withdrawnMarkerMeaning(answer);
   if (withdrawn) return withdrawn;
+  const proceeding = proceedingMarkerMeaning(answer);
+  if (proceeding) return proceeding;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }

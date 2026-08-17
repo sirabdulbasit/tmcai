@@ -29,6 +29,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // C-3 — Brain's own push record. Statically imported because it is needed on
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
+import { actionReceiptMarker, lastBrainQuestion } from './actionReceipt';
 
 export interface OpenedPage {
   id: string;
@@ -2632,6 +2633,7 @@ export async function compose(
           result, userId, clientNumber,
           channel: opts.channel ?? 'web',
           question,
+          history,   // DEF-209 — the receipt needs Brain's own last question
         });
         // For ask / answer / decline, return reasoning's envelope as-is
         // (these surfaces never needed the legacy LLM). Mark source so
@@ -3349,12 +3351,23 @@ ${calLines.join('\n')}`;
     });
     if (decision) {
       if (decision.action) {
-        // Decider committed to an action. Use it — replace whatever
-        // confused prose the main compose produced with a neutral
-        // descriptive line; the dispatch path below (or the gate)
-        // will overwrite with the actionResult message anyway.
+        // DEF-209 — the decider commits to the action; it does NOT get to
+        // delete the reply. The old comment here said the quiet part out loud —
+        // "replace whatever confused prose the main compose produced with a
+        // neutral descriptive line" — and that is `guard-destroys-the-answer`
+        // written as policy: prose the owner could have used was overwritten
+        // unconditionally, sight unseen, by a template. Surviving prose now
+        // stands; only an EMPTY answer falls back, and the fallback is the same
+        // structured marker the reasoning path uses, carrying whatever part of
+        // Brain's earlier question is still unanswered.
         parsed.action = decision.action;
-        parsed.answer = `Proceeding with ${decision.action.type.replace(/_/g, ' ')} based on your message.`;
+        if (!String(parsed.answer ?? '').trim()) {
+          parsed.answer = actionReceiptMarker({
+            actionType: decision.action.type,
+            payload: decision.action as unknown as Record<string, unknown>,
+            priorQuestion: lastBrainQuestion(history),
+          });
+        }
       } else if (decision.missingSlot) {
         // Decider couldn't ground the action because a specific slot
         // is missing. Ask the user for THAT slot, not a generic
