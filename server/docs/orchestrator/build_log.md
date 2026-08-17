@@ -879,3 +879,44 @@ matrix green, tsc clean). **But the live tree is RED from another turn's
 uncommitted work**, so the deploy gate will re-verify at the deploy commit and
 abort unless that work is committed green or set aside. That is the orchestrator's
 call, not mine, and I am flagging it rather than letting the gate discover it.
+
+#### Addendum, measured after committing — the deploy prediction above is now WRONG, upgraded
+
+The section above says the live tree is RED from another turn's *uncommitted*
+DEF-085 work and that the gate would abort. That was true when I measured it and
+is no longer true, so I am correcting it rather than leaving a stale claim the
+deploy phase would act on.
+
+That work landed as `a0c2c3b` ("DEF-085: a failing raw query now says WHO it is,
+and a repeating one becomes a finding"), immediately below my `25e4793`, and it
+fixed its own two failures before committing — including the
+`prisma.ts`-import-closure violation that had made `smokeTenantIsolation` measure
+as write-reachable. Branch order is `2fed760 → a0c2c3b → 25e4793 → 6a6e85f`.
+
+**Full matrix at HEAD `6a6e85f`, the actual deploy commit, re-run after my last edit:**
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      199 files: 198 passed | 1 skipped
+                    2,470 tests: 2,441 passed | 0 failed
+                                 7 expected fail | 21 skipped | 1 todo
+git diff --check    clean
+```
+
+So the isolated-worktree measurement (2,418 passed at HEAD-with-only-my-change)
+and this one agree that this change is green, and **the gate should not abort.**
+`npm run build` still deliberately not run in this tree, for the `chattr +i`
+reason given above.
+
+Two things this changes in my own account, said plainly:
+
+1. **The DEF-085 attribution I diagnosed earlier but did not build now exists**, by
+   another turn. Its extension wraps `$queryRaw*` in ONE place so a failing raw
+   query names its call site, and a repeating one becomes a health finding without
+   anyone asking — which is Self-Healing **rung 1** as `capability_contract.md:214`
+   defines it. My reachability work and that attribution work are independent and
+   do not touch the same files.
+2. **My "unsure (2)" is now partly answerable.** With that extension live, the
+   `brain_prompt_queue` read this change adds to every composer turn is itself
+   attributable if it ever fails — so the cost of my own read is observable rather
+   than assumed. I still have not measured it under load.
