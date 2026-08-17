@@ -3152,3 +3152,43 @@ Five mutants applied and RUN, all five die: claim by item id again, random dedup
 **Iteration-4 CRITICAL 1 stays open:** revalidation is not atomic with the enqueue, so a restore during the queue lookup or dynamic imports can still produce a false notice. Closing it needs `enqueueBrainPrompt` to accept a transaction — a change to the system-wide prompt queue, not a remediation-turn edit. A second pre-send re-read was deliberately **not** added, because that is another guard above the same asynchronous gap, the exact shape Codex named. The announce path stays gated at `selfpruning.withdrawal_notice_enabled = 0`, which keeps this dormant rather than live. MEDIUM 4 (cap starvation) also not attempted.
 
 **Two production-touching side effects, disclosed:** the migration was applied to production and proven idempotent (additive, nullable, referenced by no deployed code) — arguably not the Builder's to do, and flagged for Codex to rule on; and the build-proof clone symlinks `node_modules`, so `prisma generate` regenerated the shared client, after which the full matrix was re-run green.
+
+## 54. DEF-203 — a block that answers one question must not be present for all of them (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+The orchestrator's **regression guard fired**. `B03-pronoun-followup` fell from a mean of **98.1 to 68.8** — C3 90 → 30, C6 100 → 50, C7 100 → 60, C5 95 → 60. Asked *"And what about the second one?"* about a Q3 headcount plan **Brain had itself named one turn earlier**, Brain answered:
+
+> "I'm not finding anything under "Q3 headcount plan". Could you give me a different name for it?"
+
+A flat denial of a real item, and an invitation to rename it.
+
+### Root cause — my own DEF-200 change, and not its wording
+
+DEF-200's no-match branch was correct for B12 and catastrophic here, because **a block answering ONE question was injected on EVERY turn**. B03 is not about pushes at all. A page reading "I have no record of that", sitting in front of a model that was asked something else, is eventually repeated as a denial.
+
+This is `guard-destroys-the-answer` — 8 occurrences in chart §3 — and I built the ninth while fixing a different member of the same class. Three turns of narrowing what the block *says* never touched how often it *speaks*.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — `questionIsAboutPushes()` gates the builder, which returns `''` before any read when the turn is not about pushes; an absent block cannot deny anything. Gated on the **question**, never the conversation, because history mentions reminders constantly. The no-match text now states its scope first: push counts only, not evidence the item does not exist, and never a basis for "I cannot find that item".
+- `server/src/services/knowledge/brainComposer.ts` — both call sites pass the question; the DEF-165 both-paths guard tightened to require it.
+- `server/tests/def197PushHistoryBlock.test.ts` — 6 tests added (51 total); 4 earlier tests updated to the new wording deliberately.
+
+### Rollback considered and rejected
+
+Reverting restores a block that denies items Brain itself named, on every turn that is not about pushes. The change is subtractive on the prompt.
+
+### Tests added / verification (measured after the last code edit, at `313040f`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,520 tests — **2,491 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (`server/dist` is `chattr +i`, untouched; gate, prohibition and both scoped call sites confirmed in the emitted JS) · `git diff --check` clean.
+
+**Mutation testing caught a real hole in my own tests:** "gate on the conversation instead of the question" **survived** the first pass, because the B03 fixture had no push words on either side and the two gates behaved identically. It is now killed by a test whose history says "reminded" and "pushed it twice" while the question does not. Four mutants, all dying.
+
+### Known issues deliberately not fixed
+
+**No C-3 campaign progress this turn — stated plainly.** The regression guard fired on a case my own Accurate Communication work broke, and a case that got worse comes first.
+
+**Escalation answer, recorded:** iteration-4 CRITICAL 1 (non-atomic revalidate-then-enqueue) should be **(a) accepted as a known limitation with a DEF row, not grounds for reverting** — it is dormant behind `selfpruning.withdrawal_notice_enabled = 0`, while reverting the range would remove the event-token identity, confirmed-write gating, row-carried debt, CAS and tenant scoping that make the branch safer than what production runs. Closing it needs `enqueueBrainPrompt` to accept a transaction, which is its own build.
+
+**Unsure:** the keyword gate is a heuristic over the question, and a phrasing like *"did that go out more than once?"* would miss it. Chosen over an LLM relevance call because it is deterministic and testable; a miss leaves the block absent when it was wanted, which is a far cheaper failure than the one it replaces.

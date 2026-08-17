@@ -1789,3 +1789,120 @@ No `operator_directives.md` item consumed. **Harness defects, reported not fixed
 Accurate Communication "the widest gap" while its table shows it smallest at 16 — this turn's
 work is Self-Pruning, declared as such, because the remediation instruction governs scope and
 it pointed at the cleanup lineage.
+
+---
+
+## Iteration 4 (second entry under this number) — the regression guard fired, and it was mine (DEF-203)
+
+**Mode: structural · deployed=no · regression guard FIRED — fixed before anything else**
+
+### 0. The regression, and whose it was
+
+`B03-pronoun-followup`, mean **98.1 → 68.8**: C3 90 → 30, C6 100 → 50, C7 100 → 60, C5 95 → 60.
+Asked *"And what about the second one?"* about a Q3 headcount plan **Brain had itself named one
+turn earlier**, it answered:
+
+> "I'm not finding anything under "Q3 headcount plan". Could you give me a different name for it?"
+
+**My DEF-200 no-match branch caused it**, and the cause is not its wording. That branch was
+correct for B12 and catastrophic here because **a block answering ONE question was injected on
+EVERY turn**. B03 is not about pushes at all. A page reading "I have no record of that" sitting
+in front of a model asked something else is eventually repeated as a denial.
+
+This is **`guard-destroys-the-answer`** — 8 occurrences in chart §3 — and **I built the ninth
+while fixing a different member of the same class.** Worth saying plainly: three turns of
+narrowing what the block *says* never touched how often it *speaks*.
+
+### 1. Circling or progressing — the verdict out loud
+
+**Circling, and I am now part of the pattern.** Structural mode therefore forbade another
+wording patch. The change is to the block's *presence*, not its prose.
+
+### 2. What changed, by file:line, and why that is the mechanism
+
+- **`pushHistoryBlock.ts` — `questionIsAboutPushes()` gates the builder**, which returns `''`
+  before any read when the turn is not about pushes. **An absent block cannot deny anything**,
+  and it also saves a summariser query on nearly every turn. Relevance is decided where the
+  information is: in the question.
+- **Gated on the QUESTION, never the conversation.** History mentions reminders constantly;
+  gating on it would re-inject the block everywhere — the same failure through another door.
+- **The no-match text states its own scope first:** a statement about push COUNTS only, *not*
+  evidence the item does not exist, and Brain may never answer "I cannot find that item" or ask
+  him to rename it on the strength of this block. If he asked about the item, answer from the
+  blocks that hold items and ignore this one.
+- **`brainComposer.ts` — both call sites pass the question**, and the DEF-165 both-paths guard
+  was tightened again to require it, because a path wired without it silently returns to
+  injecting on every turn.
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  198 passed | 1 skipped (199)
+                    Tests  2491 passed | 7 expected fail | 21 skipped | 1 todo (2520)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+Build in a clean clone with the working-tree files copied in; `server/dist` is `chattr +i` and
+untouched. Gate, denial prohibition and both scoped call sites confirmed in the emitted JS —
+the single residual match for the old wording is this file's own doc comment quoting the
+history, not live code.
+
+**MUTATION TESTING CAUGHT A REAL HOLE IN MY OWN TESTS.** "Gate on the conversation instead of
+the question" **survived** the first pass: my B03 fixture had no push words on either side, so
+both gates behaved identically and the test could not tell them apart. It is now killed by a
+test whose history says "reminded" and "pushed it twice" while the question does not. Four
+mutants, all dying: remove the gate · drop the item-denial prohibition · gate on conversation ·
+stop passing the question on the legacy path.
+
+Four earlier tests were **updated to the new wording deliberately, not silenced** — the
+no-match contract genuinely changed.
+
+### 4. THE ESCALATION — my answer: **(a) accept as a known limitation with a DEF row. Do not revert.**
+
+Iteration 3's remaining finding is iteration-4 CRITICAL 1: revalidation is not atomic with the
+enqueue, so a restore during the queue lookup can still produce a false withdrawal notice.
+
+- **Not grounds for reverting.** The same range carries the event-token identity (DEF-202), the
+  confirmed-write gating, row-carried debt, compare-and-set and tenant scoping. Reverting to
+  remove one dormant finding would restore several live ones, and production is currently
+  running code that is strictly worse.
+- **It is dormant, not live.** `selfpruning.withdrawal_notice_enabled` defaults to 0, so nothing
+  is announced at all until an owner opts in. DEF-202's row records it.
+- **What would actually close it** is a transactional boundary: `enqueueBrainPrompt` accepting a
+  Prisma transaction so revalidation and queue insertion commit together. That is a change to a
+  queue used across the system and should be scheduled as its own build, not attempted inside a
+  remediation turn. A second pre-send re-read would be another guard above the same asynchronous
+  gap — the exact shape Codex already named.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not touch C4 (88.3, the gate).** Register is a separate mechanism and Codex has said so
+  three times; fixing a fired regression outranked it this turn.
+- **I did not advance the C-3 campaign.** Stated plainly: this turn produced **nothing toward
+  Self-Pruning**. The regression guard fired on a case my own Accurate Communication work broke,
+  and the brief is explicit that a case which got worse comes first.
+- **Unsure:** whether the keyword gate is the right long-term shape. It is a heuristic over the
+  question, and a phrasing like *"did that go out more than once?"* would miss it. I chose it
+  over an LLM relevance call because it is deterministic and testable, but a miss means the block
+  is absent when it was wanted — which is a much cheaper failure than the one it replaces.
+
+### 6. Prediction, and what would prove me wrong
+
+**B03 should return to roughly its previous mean (~98)**, because the block that produced the
+denial is no longer in its context at all. **B12 should be unaffected** — its question still
+matches the gate. **C4 will not move.**
+
+**Proved wrong by:** B03 still denying an item Brain named; the block appearing on a turn whose
+question is not about pushes; or B12 losing its push evidence.
+
+### 7. Deployability and directives
+
+**Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
+evidence blocks a deploy, and this fixes a regression currently live in the benchmark.
+
+No `operator_directives.md` item consumed. **Harness defects, reported not fixed:**
+`Simple @@CAPGAPS@@ Smart` remains unsubstituted, and the brief again calls Accurate
+Communication "the widest gap" while its own table shows it smallest at 16.
