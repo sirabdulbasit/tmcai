@@ -169,6 +169,45 @@ export async function noteHealAttempt(id: string): Promise<number> {
  * What is wrong right now, worst first. The self-heal pass's primary read, and
  * the basis of the notify summary.
  */
+/**
+ * DEF-207 — the scope a finding gets when it belongs to NO tenant.
+ *
+ * A background timer has no tenant context, so `rawQueryFindingReporter` writes
+ * its finding under this bucket rather than guessing an owner (which would be a
+ * fabricated attribution). That was the right call and it left a hole Codex
+ * named in the iteration-2 review of DEF-085: *"tenant-less raw-query findings
+ * remain operationally orphaned under GLOBAL and null user … it prevents the
+ * claimed detection from feeding the next decision/notification path."*
+ *
+ * He was right, and the evidence is arithmetic rather than arguable:
+ * `runFindingNotifyPass` enumerates `prisma.tenant` rows, `GLOBAL` is not one,
+ * and `openFindings`/`unnotifiedFindings` both REQUIRE a clientNumber. So the
+ * bucket had a writer and no reader — detection happened and nothing consumed
+ * it, which is rung 1 of the Self-Healing ladder (capability_contract.md:214)
+ * stopping one step short of its own definition: "a health finding written
+ * without a human asking" is only a capability if something then READS it.
+ *
+ * Named as a constant because it was previously a magic string invented at the
+ * writer, which is how a bucket ends up with nobody looking in it.
+ */
+export const SYSTEM_SCOPE = 'GLOBAL';
+
+/**
+ * DEF-207 — the reader that bucket never had.
+ *
+ * Deliberately NOT folded into `openFindings(clientNumber)`: a tenant read must
+ * never silently include system rows, or one tenant's health page starts
+ * showing infrastructure faults that are not theirs. Separate scope, separate
+ * reader, same table.
+ */
+export async function systemFindings(limit = 50) {
+  return prisma.brainHealthFinding.findMany({
+    where: { clientNumber: SYSTEM_SCOPE, status: 'open' },
+    orderBy: [{ severity: 'desc' }, { lastSeenAt: 'desc' }],
+    take: limit,
+  });
+}
+
 export async function openFindings(clientNumber: string, limit = 50) {
   return prisma.brainHealthFinding.findMany({
     where: { clientNumber, status: 'open' },

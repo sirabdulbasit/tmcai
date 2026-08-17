@@ -13,7 +13,7 @@
  * the long-running server injects this writer at boot. A one-shot script gets
  * the call site in its output and writes nothing.
  */
-import { recordFinding } from './healthFindingService';
+import { recordFinding, SYSTEM_SCOPE } from './healthFindingService';
 import { currentTenant } from '../../db/tenantContext';
 import {
   setRawQueryFindingReporter,
@@ -24,7 +24,7 @@ import {
 export async function reportRawQueryFailureAsFinding(report: RawFailureReport): Promise<void> {
   const scope = currentTenant();
   await recordFinding({
-    clientNumber: scope?.clientNumber ?? 'GLOBAL',
+    clientNumber: scope?.clientNumber ?? SYSTEM_SCOPE,
     kind: RAW_QUERY_FAILED_KIND,
     severity: 'error',
     source: 'raw-query',

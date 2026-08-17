@@ -365,8 +365,12 @@ const server = app.listen(env.port, async () => {
       const { getBehaviorValue } = await import('./services/behaviorConfig');
       const hour = await getBehaviorValue('notify.digest_hour_local', {}).catch(() => 8);
       const r = await runFindingNotifyPass(hour);
-      if (r.alerts || r.digests) {
-        console.log(`[findingNotify] alerts=${r.alerts} digests=${r.digests}`);
+      // DEF-207 — systemOpen is in the condition, not just the message. A
+      // tenant-less fault has no owner to notify, so this line is the only place
+      // it becomes visible; gating it behind alerts/digests would have left the
+      // bucket unread in practice while the code claimed to consume it.
+      if (r.alerts || r.digests || r.systemOpen) {
+        console.log(`[findingNotify] alerts=${r.alerts} digests=${r.digests} systemOpen=${r.systemOpen}`);
       }
     });
     notifyPass();

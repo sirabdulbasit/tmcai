@@ -171,7 +171,9 @@ export async function sendDailyDigest(clientNumber: string, userId: number): Pro
  * One pass across active tenants. Registered on the job runner's lease so it
  * runs once per cluster, not once per replica.
  */
-export async function runFindingNotifyPass(digestHourPkt: number): Promise<{ alerts: number; digests: number }> {
+export async function runFindingNotifyPass(
+  digestHourPkt: number,
+): Promise<{ alerts: number; digests: number; systemOpen: number }> {
   const tenants = await prisma.tenant.findMany({
     where: { isActive: true } as any,
     select: { clientNumber: true },
@@ -208,5 +210,42 @@ export async function runFindingNotifyPass(digestHourPkt: number): Promise<{ ale
       }
     }
   }
-  return { alerts, digests };
+
+  // DEF-207 — the system bucket finally gets read.
+  //
+  // A tenant-less failure (a background timer has no tenant context) is filed
+  // under SYSTEM_SCOPE so no owner is guessed. That was correct, and it left the
+  // hole Codex named: `tenants` above comes from `prisma.tenant`, SYSTEM_SCOPE is
+  // not a tenant row, so nothing in this pass ever opened that bucket. Detection
+  // without consumption is not rung 1 — "a health finding written without a human
+  // asking" only counts as a capability if something then reads it.
+  //
+  // It is NOT notified to anyone, and that is deliberate: there is no owner for a
+  // system fault and inventing one would be the fabricated attribution the
+  // reporter refuses to make. What it does is become VISIBLE and COUNTED — one
+  // line per kind with its occurrence total, and the count returned so the pass's
+  // own result records that detection reached a consumer. The caller logs that
+  // result with systemOpen IN THE CONDITION (server.ts), not only in the message —
+  // gated behind alerts/digests it would have stayed invisible on a quiet box,
+  // which is the same unread bucket one layer up. A raw-query failure repeating in
+  // a background job now surfaces on every pass instead of accumulating unread.
+  let systemOpen = 0;
+  try {
+    const { systemFindings } = await import('./healthFindingService');
+    const rows = await systemFindings(50);
+    systemOpen = rows.length;
+    if (rows.length > 0) {
+      const byKind = new Map<string, number>();
+      for (const r of rows) byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + (r.occurrences ?? 1));
+      log.warn('open SYSTEM-scope health findings — no owner to notify, reported here', {
+        open: rows.length,
+        kinds: [...byKind.entries()].map(([kind, occurrences]) => ({ kind, occurrences })),
+      });
+    }
+  } catch (err: any) {
+    // A monitor that breaks the pass it monitors is worse than no monitor.
+    log.warn('system-scope finding read failed', { err: err?.message });
+  }
+
+  return { alerts, digests, systemOpen };
 }
