@@ -697,14 +697,23 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
     .replace(/\n{3,}/g, '\n\n')           // Max 2 consecutive newlines
     .trim();
 
-  // Ensure complete sentences — never cut mid-sentence
-  if (clean.length > 4000) {
-    clean = clean.slice(0, 3900);
-    const lastPeriod = clean.lastIndexOf('.');
-    const lastNewline = clean.lastIndexOf('\n');
-    const cutAt = Math.max(lastPeriod, lastNewline);
-    if (cutAt > 3000) clean = clean.slice(0, cutAt + 1);
-    else clean += '...';
+  // DEF-194 (Codex iteration-1 carried HIGH) — ONE transport policy.
+  //
+  // This is the chokepoint (see the comment above: every reply to a human comes
+  // through here), and it used to carry its OWN truncator: a blind
+  // `slice(0, 3900)` that could append a bare `...`, with no list semantics at
+  // all. `channelRenderer` had a second, different implementation — so a fix to
+  // either was silently irrelevant to half the owner's traffic, which is
+  // `protection-with-two-implementations` on the live messaging path.
+  //
+  // Both now call `fitToTransport`: whole semantic blocks are dropped rather
+  // than characters, wrapped bullets keep their continuation lines, and no
+  // English is added here (`omittedItems` is returned as structured data for a
+  // caller that owns a sanctioned owner-facing boundary — this layer says
+  // nothing in Brain's voice, AGENTS.md §2.4).
+  {
+    const { fitToTransport } = await import('../knowledge/transportBudget');
+    clean = fitToTransport(clean).body;
   }
 
   // Resolve the audit owner before sending. The row itself is written only

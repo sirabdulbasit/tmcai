@@ -32,39 +32,26 @@ import type { ComposeResult, ComposedAction } from './brainComposer';
 // DEF-145: the ONE definition of receipt-versus-prose, in a dependency-free
 // module so this renderer does not pull the composer in at runtime.
 import { receiptWins } from './answerReceiptPolicy';
+import { fitToTransport, WA_TRANSPORT_MAX_CHARS } from './transportBudget';
 
 export type Channel = 'web' | 'whatsapp';
 
 /**
- * DEF-193 — TWO DIFFERENT DECISIONS used to live in this one number, and that
- * is why raising it never worked.
+ * DEF-193/DEF-194 — the renderer enforces TRANSPORT, not brevity, and it does
+ * not own the algorithm.
  *
- * The history is in the file: the cap was 600, it "truncated mid-content on
- * the day brief (calendar + 2 emails, then '...')", Basit reported the brief
- * arriving with sections missing, and it was raised to 1000. **It recurred at
- * 1000** — benchmark B10 ("What have you sent on my behalf today?") answered
- * with "Here is the full list:" followed by nine bullets and a bare "…",
- * scoring C6 80: *"starts by promising a 'full list' and then ends with an
- * ellipsis"*. Raising the number a third time is a patch on the reported
- * instance, which CLAUDE.md rule 5 forbids for a recurring class.
+ * Two decisions used to live in one number, which is why raising it never
+ * worked: the cap was 600, severed the day brief mid-section, Basit reported
+ * it, it was raised to 1000, and it recurred at 1000 (benchmark B10 promised
+ * "the full list" and ended in an ellipsis). BREVITY is a composition
+ * decision — it needs to know which sentence matters. The TRANSPORT limit is a
+ * channel fact, and the only one this layer can know.
  *
- * The two decisions, separated:
- *
- *   1. **BREVITY is a composition decision.** How much to say belongs where
- *      the meaning is known — the composer and its format rules (Day Brief
- *      still asks for ≤ 800). The renderer has no idea which sentence matters,
- *      so a renderer that shortens for taste is guessing with a knife.
- *   2. **The TRANSPORT limit is a channel decision**, and it is the only limit
- *      the renderer actually knows: Meta rejects a body over 4096 characters
- *      (`whatsappService.ts:363`, `whatsappNotifierService.ts:99` both clamp
- *      there). That is what this constant now is, with headroom for anything
- *      appended downstream.
- *
- * So the renderer stops cutting answers for style and only guarantees the
- * message is transportable — and when it must shorten, `fitToChannel` does it
- * without falsifying the answer (see below).
+ * DEF-194 (Codex iteration-1 review): the algorithm itself now lives in
+ * `transportBudget`, shared with `WhatsAppInbound.sendReply` — the actual
+ * chokepoint, which had its own blind character slicer. One policy, two
+ * callers, parity asserted by test.
  */
-const WA_TRANSPORT_MAX_CHARS = 3900;
 
 /** Compress markdown to plain text suitable for WhatsApp.
  *  Removes: backtick-fenced code blocks, inline code, bold/italic
@@ -105,89 +92,6 @@ function stripMarkdown(s: string): string {
   return out;
 }
 
-/** A rendered list item — `stripMarkdown` has already normalised every
- *  bullet form to "• ", so this is the one shape to recognise. */
-function isItemLine(line: string): boolean {
-  return /^\s*•/.test(line);
-}
-
-function lastItemIndex(lines: readonly string[]): number {
-  for (let i = lines.length - 1; i >= 0; i--) if (isItemLine(lines[i])) return i;
-  return -1;
-}
-
-/**
- * Prose fallback: cut at a sentence end, else a word boundary, never
- * mid-word. An ellipsis after a COMPLETE sentence is a conventional
- * "there was more" and states nothing false, which is why it survives here
- * and does not survive inside a list (see `fitToChannel`).
- */
-function trimProse(s: string, max: number): string {
-  // The ellipsis is part of the message, so its room is reserved BEFORE the
-  // cut. The previous version appended it after slicing to `max` and could
-  // return max+1 characters — harmless against the old 1000 but not against a
-  // real transport limit, where one character over is a rejected send.
-  const SUFFIX = ' …';
-  const budget = Math.max(1, max - SUFFIX.length);
-  const head = s.slice(0, budget);
-  const lastSentence = Math.max(
-    head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '),
-    head.lastIndexOf('.\n'), head.lastIndexOf('!\n'), head.lastIndexOf('?\n'),
-  );
-  if (lastSentence > budget * 0.5) return head.slice(0, lastSentence + 1).trim() + SUFFIX;
-  const lastSpace = head.lastIndexOf(' ');
-  if (lastSpace > budget * 0.5) return head.slice(0, lastSpace).trim() + SUFFIX;
-  return head.trim() + SUFFIX;
-}
-
-/**
- * DEF-193 — fit a body to the channel WITHOUT falsifying it.
- *
- * The defect this replaces was not "the cap was too small". It was that a
- * character-counting cut severed a LIST mid-item, leaving the prose above it
- * ("Here is the full list:") asserting a completeness the body no longer had.
- * A protection turned a true answer into a false one — the
- * `guard-destroys-the-answer` shape at the render boundary.
- *
- * So shortening is now structural, and it is honest about itself:
- *
- *   - **whole items only.** Trailing "• " lines are dropped entire. The owner
- *     never reads half a fact, and never reads half an item's name.
- *   - **the omission is counted, not implied.** A dropped-item body carries
- *     `(+N more not shown)` — a true statement of exactly what happened, in
- *     place of a bare "…" that silently contradicted the sentence above it.
- *     It asks nothing of the owner and promises no follow-up (invariant #5),
- *     and it is a rendering artifact in the same category as the "…" it
- *     replaces, not new Brain prose. **Flagged for the reviewer** as the one
- *     judgement call in this change: if Codex reads a parenthetical count as
- *     owner-facing deterministic prose under invariant #4, the alternative is
- *     the sanctioned marker path, which today only carries WHOLE-answer
- *     markers and would need extending.
- *   - **prose keeps the old behaviour**, because a sentence-boundary ellipsis
- *     asserts nothing untrue.
- *   - the head prose is never dropped: it is what answers the question.
- */
-function fitToChannel(s: string, max: number): string {
-  if (!s || s.length <= max) return s;
-
-  const lines = s.split('\n');
-  // One bullet cannot be "a list that lost items" in any meaningful sense, so
-  // the structural path needs at least two.
-  if (lines.filter(isItemLine).length >= 2) {
-    const kept = [...lines];
-    let dropped = 0;
-    for (;;) {
-      const notice = dropped > 0 ? `\n(+${dropped} more not shown)` : '';
-      const candidate = kept.join('\n').trim() + notice;
-      if (candidate.length <= max) return candidate;
-      const li = lastItemIndex(kept);
-      if (li < 0) break;            // no items left to drop — fall to prose
-      kept.splice(li, 1);
-      dropped++;
-    }
-  }
-  return trimProse(s, max);
-}
 
 export interface RenderedForChannel {
   /** The body to display on the channel. WhatsApp gets plain text;
@@ -269,9 +173,10 @@ export function renderForChannel(
   const sourceText = receiptWins(result.actionResult, result.answer)
     ? (result.actionResult!.message as string)
     : stripped;
-  // DEF-193 — the renderer guarantees transportability, not brevity. Brevity
-  // is the composer's decision, made where the meaning is known.
-  const body = fitToChannel(sourceText, WA_TRANSPORT_MAX_CHARS);
+  // DEF-194 — ONE transport policy, shared with the sendReply chokepoint. The
+  // omission count comes back as structured data; this layer adds no words.
+  const fitted = fitToTransport(sourceText, WA_TRANSPORT_MAX_CHARS);
+  const body = fitted.body;
   return {
     body,
     action: result.action ?? null,
