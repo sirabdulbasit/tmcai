@@ -3225,3 +3225,39 @@ Five mutants applied and RUN, all five die: drop the calendar declaration, hardc
 Compounding it, and now reported four times: the brief's table shows Accurate Communication with the smallest gap (16) while its prose calls it "the widest gap", and the genuinely widest capability renders as the unsubstituted placeholder `Simple @@CAPGAPS@@ Smart` (33 vs 92). Target selection has aimed three consecutive turns at the one capability where movement is capped. I cannot change the target and must not touch `scripts/orchestrator/**`.
 
 **No symptom tag claimed** — no tag on the owner's deck matches this, and inventing one would put a false strike-through on his list. **No C-3 campaign progress** — a fired regression comes first. **Unsure:** whether B05 C6 recovers; the block can now be reported truthfully, but the judge grades the sentence and the model still has to use the fact.
+
+## 56. DEF-205 — one field is owner-facing, and it is the same one on every decision (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Regression guard fired: `B11-capability-limit` C8 **100 → 80**. The reply opened *"The user asked to place a WhatsApp call, which is a capability I do not have. I am offering valid alternatives…"* The judge: *"makes it sound like Brain is describing the interaction to a third party or logging an event, rather than directly conversing with the user."*
+
+### Root cause
+
+`reasoningCompose.applyDispatch.ts:53` was `answer: result.declineReason || …`, so on **every** decline the owner received `decline_reason` verbatim — a field the contract describes as *"one-line honest reason"*, an internal note about the turn. Only `answer_text` is described as *"the user-visible reply"*. Two fields could each become his reply and only one was ever specified as his — the output contract's own `protection-with-two-implementations` — and the model wrote the one it had been told was a note. The decline intent description was itself third-person, which is the register that got copied out.
+
+### Files changed
+
+- `server/src/services/knowledge/reasoningCompose.applyDispatch.ts` — the decline reply prefers `answerText`, making the owner-facing surface single. `declineReason` is kept as the fallback so a decider that filled only the old field still says something true; the bracketed system marker remains the last resort (AGENTS.md §2.4).
+- `server/src/services/knowledge/reasoningCompose.ts` — `answer_text` marked THE ONLY OWNER-FACING FIELD and required for decline; `decline_reason` marked INTERNAL ("he never sees this"); no longer listed as an alternative to `answer_text`; decline intent rewritten in second person with the wrong voice shown beside the right one.
+- `server/tests/def205OwnerFacingField.test.ts` — 8 tests.
+
+### Rollback considered and rejected
+
+Reverting hands the owner an internal note as his reply on every decline — the exact defect the judge caught, and a member of `guard-destroys-the-answer` (8 occurrences).
+
+### Tests added / verification (measured after the last code edit, at `2f92225`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 201 files — 200 passed, 1 skipped; 2,535 tests — **2,506 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (owner-facing preference and contract text confirmed in the emitted JS; old form confirmed gone; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+Five mutants applied and RUN, all five die: revert to `declineReason` as the reply, drop the `declineReason` fallback, hardcode English instead of the bracketed marker, restore the old `decline_reason` description, restore the third-person decline intent.
+
+### Known issues deliberately not fixed
+
+**Capability divergence declared:** the brief targeted Self-Healing; the regression guard fired on an Accurate Communication case and its own rule outranks.
+
+**THE OBSTACLE, unchanged because the evidence is.** Not delivery — `dist` was verified last turn carrying DEF-202/203 with `deployed-sha` equal to HEAD and zero undeployed commits. It is **arithmetic**: Accurate Communication is 78/94 (gap 16), and the campaign states that repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. Four turns of correct, deployed work on existing capabilities cannot move BRAIN's 48.1.
+
+**Fifth report of the harness defect causing the misaim:** the brief's table names the widest gap as `Simple @@CAPGAPS@@ Smart` — an unsubstituted placeholder — and its prose has named a different capability as "the widest gap" in every brief received. I cannot change the target and must not touch `scripts/orchestrator/**`.
+
+**Unsure:** whether B11 C8 recovers. The owner-facing field is now correct and the contract contrasts the two voices, but the judge grades the sentence; this removes the licensed cause, it does not compel the voice.

@@ -2015,3 +2015,114 @@ which would refute my obstacle analysis and would be very welcome.
 
 **Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
 evidence blocks a deploy, and this repairs a regression currently live in the benchmark.
+
+---
+
+## Iteration 4 (fourth entry under this number) — one owner-facing field (DEF-205)
+
+**Mode: structural · regression guard FIRED, fixed first · deployed=no**
+
+### 0. The fired regression, and what it actually was
+
+`B11-capability-limit` C8 **100 → 80**. The reply opened:
+
+> "The user asked to place a WhatsApp call, which is a capability I do not have. I am offering
+> valid alternatives: sending a message or providing the contact number."
+
+The judge: *"makes it sound like Brain is describing the interaction to a third party or logging
+an event, rather than directly conversing with the user."*
+
+**The content was correct. The voice was wrong, and not by accident.**
+`reasoningCompose.applyDispatch.ts:53` read `answer: result.declineReason || …`, so on every
+decline the owner received `decline_reason` **verbatim** — a field the contract describes as
+*"one-line honest reason"*, an internal note ABOUT the turn. Only `answer_text` is described as
+*"the user-visible reply"*.
+
+**Two fields could each become his reply, and only one was ever specified as his.** That is the
+output contract's own `protection-with-two-implementations`, and the model wrote the one it had
+been told was a note. The decline intent description was itself third-person — *"the user asked
+for something genuinely impossible"* — which is precisely the register that got copied out.
+
+### 1. Circling or progressing
+
+**Circling on `guard-destroys-the-answer` (8 in chart §3).** Structural mode therefore forbade
+rewording the note. The change makes the owner-facing surface **single** instead.
+
+### 2. What changed, by file:line, and why that is the mechanism
+
+- **`reasoningCompose.applyDispatch.ts` decline case** — `result.answerText || result.declineReason
+  || <marker>`. The reply now comes from the only field ever specified as owner-facing.
+  `declineReason` is **kept** as the fallback: a decider that filled only the old field must still
+  say something true rather than drop to the marker, and a mutant proves removing it is a
+  regression in honesty. The bracketed system marker remains the last resort (AGENTS.md §2.4).
+- **`reasoningCompose.ts` contract** — `answer_text` is marked **THE ONLY OWNER-FACING FIELD** and
+  required for `decline` as well as `answer`; `decline_reason` is marked **INTERNAL** with "he
+  never sees this"; it is no longer listed as an alternative to `answer_text`; and the decline
+  intent now reads "he asked", showing the wrong voice beside the right one rather than stating
+  the rule abstractly.
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  200 passed | 1 skipped (201)
+                    Tests  2506 passed | 7 expected fail | 21 skipped | 1 todo (2535)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+Clean-clone build; the owner-facing preference and the contract text confirmed in the emitted
+JS, and the old `answer: result.declineReason ||` form confirmed **gone**. This tree's `dist` is
+`chattr +i` and untouched.
+
+**Five mutants applied and RUN — all five die:** revert to `declineReason` as the reply · drop
+the `declineReason` fallback · hardcode English instead of the bracketed marker · restore the old
+`decline_reason` description · restore the third-person decline intent.
+
+### 4. THE REAL OBSTACLE — attempt 4, and my answer has not changed because the evidence has not
+
+It is **not** that the work fails to reach production. Last turn I verified `dist` carrying
+DEF-202's event token and DEF-203's gate, `deployed-sha` equal to HEAD, zero undeployed commits.
+
+**It is arithmetic, and the card states it.** Accurate Communication is 78/94 — gap **16**.
+Self-Healing is 32/89 — gap 57 — but the campaign says plainly: *"Repairing an existing
+capability moves +1 to +2 (+0.1 overall); making an absent one EXIST moves +20 to +30."* Four
+turns of correct, deployed, mutation-verified repairs on existing capabilities cannot move
+BRAIN's 48.1. The loop is asking for a number that the work it authorises cannot produce.
+
+**Fifth report of the harness defect that is causing the misaim**, and it is not cosmetic: the
+brief's table names the widest gap as **`Simple @@CAPGAPS@@ Smart`** — an unsubstituted
+placeholder — and its prose has named a *different* capability as "the widest gap" in every brief
+I have received. Target selection has been driven by a broken template for five turns. I cannot
+change the target and must not touch `scripts/orchestrator/**`.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **Capability divergence, declared:** the brief targets Self-Healing; this is Accurate
+  Communication. The regression guard's own rule outranks — "a case that got worse is a regression
+  whatever else the turn achieved" — and the fired case is an Accurate Communication defect.
+- **Remediation:** `review_log.md` has not grown (692 lines, one `## Iteration 3`). Its surviving
+  findings were closed in DEF-202 (`417b4a2`); iteration-4 CRITICAL 1 remains recorded on that row
+  as an accepted limitation behind a gate defaulting to 0. Codex has not reviewed DEF-202..205, so
+  there is no newer finding to close.
+- **No C-3 campaign progress**, stated plainly: a fired regression comes first.
+- **Unsure:** whether B11 C8 recovers. The owner-facing field is now correct and the contract
+  contrasts the two voices, but the judge grades the sentence and the model must still write it
+  in second person. This removes the licensed cause; it does not compel the voice.
+
+### 6. Prediction, and what would prove me wrong
+
+**B11 C8 should recover toward 100**, and C4 (70 on that case) may ease slightly since the
+third-person framing was also the stiffest part of it. **No other case should move.**
+**BRAIN overall will not move** — the same prediction as last turn, and the one I most want on
+the record, because it is a claim about the loop rather than this diff.
+
+**Proved wrong by:** a decline still reaching him written about him while `answer_text` was
+populated; the fallback no longer surfacing a decider's reason; or BRAIN moving materially from
+an existing-capability turn, which would refute my obstacle analysis and be very welcome.
+
+### 7. Deployability
+
+**Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
+evidence blocks a deploy, and this repairs a regression currently live in the benchmark.
