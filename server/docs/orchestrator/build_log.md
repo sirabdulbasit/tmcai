@@ -1906,3 +1906,112 @@ evidence blocks a deploy, and this fixes a regression currently live in the benc
 No `operator_directives.md` item consumed. **Harness defects, reported not fixed:**
 `Simple @@CAPGAPS@@ Smart` remains unsubstituted, and the brief again calls Accurate
 Communication "the widest gap" while its own table shows it smallest at 16.
+
+---
+
+## Iteration 4 (third entry under this number) — the completeness fact, and the real obstacle (DEF-204)
+
+**Mode: structural · regression guard FIRED, fixed first · deployed=no**
+
+### 0. THE REAL OBSTACLE — the brief asks, and the convenient answer is wrong
+
+The brief invites me to say the work is not reaching production. **I checked, and it is
+reaching production**, so I am not going to claim otherwise:
+
+| evidence | value |
+|---|---|
+| `dist/services/selfpruning/pushHistoryBlock.js` rebuilt | 20:07:59 — carries DEF-203's gate (3 hits) |
+| `dist/jobs/openItemsBacklogCleanupJob.js` | carries DEF-202's `eventToken` (11 hits) |
+| process restart | 20:08:06 |
+| `deployed-sha` vs HEAD | equal; **zero** undeployed commits |
+
+**The obstacle is arithmetic, and the campaign text states it outright:** *"Repairing an
+existing capability moves a score +1 to +2 (+0.1 overall); making an absent one EXIST moves it
++20 to +30."* Accurate Communication is scored **78 against 94 — 16 points of headroom, the
+SMALLEST gap on the card.** Three turns of correct, deployed, mutation-verified repairs there
+can yield at most **+0.2 overall**, which is indistinguishable from noise in BRAIN's 48.1.
+**The number cannot move from this capability however good the work is.**
+
+This is compounded by a harness defect I have now reported four times, and it is not cosmetic:
+the brief's own table shows Accurate Communication with the **smallest** gap (16) while its
+prose calls it *"the widest gap"*, and the widest-gap capability renders as the unsubstituted
+placeholder **`Simple @@CAPGAPS@@ Smart`** (33 vs 92 — 59 points). **Target selection has aimed
+three consecutive turns at the one capability where movement is capped.** I cannot change the
+target (continuation status forbids it) and must not touch `scripts/orchestrator/**`, so I am
+recording it where the orchestrator and the owner will see it. That is the finding.
+
+### 1. The remediation — Iteration 3, and why nothing is left in it
+
+`review_log.md` has not grown since last turn (692 lines, one `## Iteration 3`). That section
+reviews `321f0fe` in the cleanup-job lineage; its directive 1 was built by DEF-190, iteration 4
+reviewed the result, and **I closed both of its surviving HIGHs last turn in DEF-202
+(`417b4a2`)** — event-token membership and a dedup identity derived from that membership.
+Iteration-4 CRITICAL 1 remains open and is recorded on DEF-202's row as an accepted limitation
+behind a gate that defaults to 0. Codex has not yet reviewed DEF-202/203, so there is no newer
+finding to close.
+
+### 2. The fired regression, which I fixed first
+
+`B05-warmth` C6 **100 → 85**. The judge: *"If there truly was only one calendar item, it should
+have stated that explicitly."* The entry **was** the whole day — `buildTodayCalendarBlock` does
+not truncate — but nothing said so, so a **complete** answer was marked down as incomplete.
+
+The blocks beside it have the same hole reversed: emails and WhatsApp `LIMIT` to `max` and print
+"N of last max", which reads as complete even when `N === max` and more exist.
+
+### 3. What changed, by file:line, and why that is the mechanism
+
+- **`brainComposer.ts:5018` — `completenessLine(shown, hitCap, noun)`, ONE helper.** Both
+  directions are the same missing fact, so a fourth block added tomorrow has a function to call
+  instead of a precedent to copy. Three inlined sentences would have been
+  `protection-with-two-implementations` on a truthfulness property.
+- **`:5049` calendar → `completenessLine(events.length, false, 'event')`** — never capped, so it
+  can always vouch for the list, which is exactly what B05 was marked down for omitting.
+- **emails and WhatsApp → `completenessLine(rows.length, rows.length >= max, …)`** — the honest
+  predicate: "3 of last 10" stays complete, "10 of last 10" becomes capped.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  199 passed | 1 skipped (200)
+                    Tests  2498 passed | 7 expected fail | 21 skipped | 1 todo (2527)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+Build in a clean clone; helper, both branches and all four call sites confirmed in the emitted
+JS. This tree's `dist` is `chattr +i` and untouched.
+
+**Five mutants applied and RUN — all five die:** drop the calendar declaration (the B05 cause) ·
+hardcode `capped=true` on emails · drop the WhatsApp call site · drop the singularisation ·
+weaken the CAPPED branch.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No symptom tag claimed.** This is the completeness half of `guard-destroys-the-answer` on the
+  READ side, but no tag on the owner's deck matches it, and claiming one would put a false
+  strike-through on his list.
+- **No C-3 campaign progress.** Stated plainly: a fired regression comes first.
+- **I did not touch C4 (87.1).** Codex has said four times that register needs its own turn.
+- **Unsure:** whether B05's C6 actually recovers. The block can now be reported truthfully, but
+  the judge grades the *sentence*, and the model still has to use the fact. This is a
+  prerequisite for the right answer, not a guarantee of it — and I would rather say that now
+  than explain it next turn.
+
+### 6. Prediction, and what would prove me wrong
+
+**B05 C6 should recover toward 100**, and C1's "not the full truth either" should ease, because
+the block now carries the fact the judge said was missing. **No other case should move.**
+**BRAIN overall will not move meaningfully** — see §0; that is the prediction I most want on the
+record, because it is a claim about the loop rather than about this diff.
+
+**Proved wrong by:** B05 C6 staying at 85 with the fact present; any capped block still
+presenting itself as complete; or BRAIN moving materially from an Accurate Communication turn,
+which would refute my obstacle analysis and would be very welcome.
+
+### 7. Deployability
+
+**Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
+evidence blocks a deploy, and this repairs a regression currently live in the benchmark.

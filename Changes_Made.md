@@ -3192,3 +3192,36 @@ Reverting restores a block that denies items Brain itself named, on every turn t
 **Escalation answer, recorded:** iteration-4 CRITICAL 1 (non-atomic revalidate-then-enqueue) should be **(a) accepted as a known limitation with a DEF row, not grounds for reverting** — it is dormant behind `selfpruning.withdrawal_notice_enabled = 0`, while reverting the range would remove the event-token identity, confirmed-write gating, row-carried debt, CAS and tenant scoping that make the branch safer than what production runs. Closing it needs `enqueueBrainPrompt` to accept a transaction, which is its own build.
 
 **Unsure:** the keyword gate is a heuristic over the question, and a phrasing like *"did that go out more than once?"* would miss it. Chosen over an LLM relevance call because it is deterministic and testable; a miss leaves the block absent when it was wanted, which is a far cheaper failure than the one it replaces.
+
+## 55. DEF-204 — every read block states whether what it shows is ALL of it (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+The regression guard fired: `B05-warmth` C6 **100 → 85**. Brain showed a one-entry calendar and the judge marked it incomplete — *"If there truly was only one calendar item, it should have stated that explicitly … If there were more, it should have listed them or explained why it only listed one."* The entry **was** the whole day. A complete answer was marked down as incomplete.
+
+### Root cause
+
+A block that never declares its own completeness cannot be reported truthfully in **either** direction. `buildTodayCalendarBlock` does not truncate but never says so, so a whole list reads as partial. `buildRecentEmailsBlock` and `buildRecentWhatsAppBlock` `LIMIT` to `max` and print "N of last max", which reads as complete even when `N === max` and more exist — DEF-193/194's truncation lesson on a different surface.
+
+### Files changed
+
+- `server/src/services/knowledge/brainComposer.ts` — one shared `completenessLine(shown, hitCap, noun)` used by all three read blocks. The COMPLETE branch authorises a plain yes rather than hedging; the CAPPED branch forbids presenting a cut list as the whole one. Capped-ness is `rows.length >= max`, so "3 of last 10" stays complete and "10 of last 10" becomes capped.
+- `server/tests/def204BlockCompleteness.test.ts` — 7 tests, comment-stripped.
+
+### Rollback considered and rejected
+
+Reverting restores blocks that cannot state their own completeness, which produced a marked-down answer that was actually correct, and lets a capped list keep presenting itself as whole.
+
+### Tests added / verification (measured after the last code edit, at `2c978fe`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 200 files — 199 passed, 1 skipped; 2,527 tests — **2,498 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (helper, both branches and all four call sites confirmed in the emitted JS; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+Five mutants applied and RUN, all five die: drop the calendar declaration, hardcode capped=true on emails, drop the WhatsApp call site, drop the singularisation, weaken the CAPPED branch.
+
+### Known issues deliberately not fixed
+
+**THE REAL OBSTACLE, checked rather than assumed.** The work IS reaching production: `dist` was rebuilt 20:07:59 carrying DEF-203's gate and DEF-202's event token, the process restarted 20:08:06, and `deployed-sha` equals HEAD with zero undeployed commits. The obstacle is **arithmetic** — Accurate Communication is 78/94, the **smallest** gap on the card, and the campaign text itself says repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. BRAIN's 48.1 cannot move from this capability however good the work is.
+
+Compounding it, and now reported four times: the brief's table shows Accurate Communication with the smallest gap (16) while its prose calls it "the widest gap", and the genuinely widest capability renders as the unsubstituted placeholder `Simple @@CAPGAPS@@ Smart` (33 vs 92). Target selection has aimed three consecutive turns at the one capability where movement is capped. I cannot change the target and must not touch `scripts/orchestrator/**`.
+
+**No symptom tag claimed** — no tag on the owner's deck matches this, and inventing one would put a false strike-through on his list. **No C-3 campaign progress** — a fired regression comes first. **Unsure:** whether B05 C6 recovers; the block can now be reported truthfully, but the judge grades the sentence and the model still has to use the fact.
