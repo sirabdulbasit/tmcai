@@ -327,9 +327,23 @@ export async function composeChaseEmail(input: ComposeInput): Promise<ComposeOut
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-export async function getUserNameAndEmail(userId: number): Promise<{ name: string; email: string } | null> {
-  const u = await prisma.user.findUnique({
-    where: { id: userId },
+/**
+ * DEF-192 (Codex iteration-4 carried CRITICAL) — the tenant is REQUIRED and
+ * CONSTRAINS the query, the DEF-179 pattern.
+ *
+ * This identity becomes the From-name and the disclosure footer of an email
+ * that leaves the owner's Gmail, so resolving it from a bare userId made an
+ * integer an authorization: any caller holding one could compose in that
+ * person's name whatever tenant it was working in. A pair that does not exist
+ * in the declared tenant now resolves to NO row — unread — and the caller
+ * gets null, which the follow-up job treats as "do not chase".
+ */
+export async function getUserNameAndEmail(
+  userId: number,
+  clientNumber: string,
+): Promise<{ name: string; email: string } | null> {
+  const u = await prisma.user.findFirst({
+    where: { id: userId, clientNumber },
     select: { name: true, email: true },
   });
   if (!u || !u.email) return null;
