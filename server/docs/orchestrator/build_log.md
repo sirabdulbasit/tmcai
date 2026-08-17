@@ -689,3 +689,193 @@ read-shaped cases — and C4 at 87.9 with B12 at 80 is a register problem, which
 Codex has now flagged twice as the real gate. What would prove me wrong: a
 consumer I missed that still reads a pre-fit body, or a case where fitting the
 inbound reply changes a quoted-reply identity I have not considered.
+
+---
+
+## Iteration 2 — the capability was built, reviewed, deployed, and reaches nobody
+
+**Verdict on the three governing docs, said out loud as CLAUDE.md rule 5 requires:
+CIRCLING**, and not on the tag I ended up working on. `fabricated-status` sits in
+chart §3 at 6 occurrences and `guard-destroys-the-answer` at 8; the minimum
+criterion has not moved for 6 iterations. So a patch on the reported instance is
+forbidden and I did not write one.
+
+### The fix-queue entry I targeted, quoted
+
+The worst-scoring case in `scores/iter-02-baseline.json`, `B12-reminder-referent`.
+The owner asks **"Why did you remind me about that one twice?"** and Brain replies:
+
+> "My apologies, Sir. It looks like my reminder job ran twice for that item,
+> causing the duplicate message. I don't have a specific reason recorded for the
+> duplication."
+
+Three judge entries, one defect:
+
+- **C4 80** — *"'My apologies, Sir' is a bit overly formal and slightly canned"*
+- **C1 85** — *"presented as a fact… might indicate a slight fabrication or assumption"*
+- **C2 85** — *"doesn't ground this in actual system logs or events it can access"*
+
+The reply contradicts itself in two sentences: it asserts the job ran twice AND
+that it has no record of the duplication. Both cannot be true. Brain guessed.
+
+### THE FINDING — and it is the answer to "attempt 6 moved nothing"
+
+The brief asks me to say what I believe the REAL obstacle is, and to say plainly
+if it is that the work is not reaching production. **It is, and I can show it.**
+
+C-3 has three increments. All three are built, all three were reviewed, all three
+are in the deployed artifact as of `90587e0`. **Not one of them changes anything
+the owner receives:**
+
+| increment | state | why it reaches nobody |
+|---|---|---|
+| 1 · noise counter | deployed | its ONLY consumer is `src/scripts/nexeoInboundNoiseReport.ts` — a CLI script the owner cannot run |
+| 2 · per-item digest | deployed, wired at `enqueueBrainPrompt` | `selfpruning.digest_enabled` is `def: 0` (`behaviorConfig.ts:196`) |
+| 3 · withdrawal notice | deployed | `selfpruning.withdrawal_notice_enabled` is `def: 0` (`behaviorConfig.ts:200`) |
+
+That is the capability contract's own `+0` exclusion, verbatim: *"the change is
+on a path that never fires in production."* **Grok is scoring correctly.** Self-Pruning
+sits at 40 because, from production's point of view, nothing was built. Six
+attempts did not fail to code; they failed to arrive.
+
+I did **not** flip those switches. `digest_enabled`'s registered description says
+turning it on *"IS blanket consent for per-item digesting across the tenant"* —
+consent to suppress the owner's messages is his to give, and a builder
+manufacturing it would be a worse defect than the one it fixes. **That is the one
+thing on this campaign only the owner can unblock, and it should go to him.**
+
+So I took the reachability half, which needs no consent from anyone.
+
+### What I changed, by file:line, and why that is the mechanism
+
+- **`src/services/selfpruning/pushHistoryBlock.ts`** (new) — calls
+  `summariseInboundNoise`, never re-implements it. `protection-with-two-implementations`
+  stands at 11 occurrences and a second push-counting rule would be the 12th.
+  Renders repeat-pushed subjects with per-producer counts and timestamps.
+- **`brainComposer.ts:2486`** (reasoning path) and **`brainComposer.ts:3121`**
+  (legacy path) — build the block. **Two call sites in one edit, deliberately:**
+  DEF-165 is the row recording that this block's own sibling `dispatchLedger`
+  reached the reasoning path only, and reasoning being default-ON hid it.
+  Wiring one path would have rebuilt DEF-165 under a new name.
+- **`brainComposer.ts:1620`** — `assembleSystemPrompt` emits it beside the
+  dispatch ledger, because "why did you push me twice?" is the same class of
+  question as "did you send it?" and both were answered by invention.
+- **`reasoningCompose.ts:131,329`** — declares `dataBlocks.pushHistory` and emits it.
+
+**Why this is the mechanism and not a patch:** the reply was wrong because the
+data was absent from the prompt, not because the wording was bad. Fixing the
+wording is what four iterations of C4 work already did. The rows existed the whole
+time; nothing read them. This is the DEF-037 repair applied to a second question.
+
+**Fail-closed in the direction that matters:** a failed read renders an explicit
+`UNAVAILABLE` block, never a zero. DEF-085's row says *a read that failed is not
+"no noise"* — and a false zero is worse than silence here, because it would make
+Brain deny a push that really happened. The block also tells Brain to CONTRADICT a
+false repeat premise, and forbids inventing a cause: *"I don't know" is correct
+here; a plausible mechanism you cannot read is a fabrication.*
+
+### Verification — the exact numbers, and why they are from a worktree
+
+**The live tree is not clean and the dirt is not mine.** Another turn's
+uncommitted DEF-085 raw-query-attribution work is present (`src/db/prisma.ts`,
+`src/server.ts`, `src/db/rawQueryObservability.ts`,
+`src/services/selfheal/rawQueryFindingReporter.ts`,
+`tests/def085RawQueryAttribution.test.ts`). In the live tree the suite is
+**2 failed | 2,439 passed**, and **both failures are that work, provably not mine:**
+
+- `def085RawQueryAttribution.test.ts > keeps the findings WRITE out of prisma.ts own import closure` — its own invariant, currently violated by its own change.
+- `operatorScriptParity.test.ts > tier 4/5 membership is COMPUTED from the import closure` — `smokeTenantIsolation` newly measures as write-reachable. That script imports **only** `../db/prisma` and `../db/tenantContext` (`smokeTenantIsolation.ts:8-9`) — it never reaches brainComposer or my module, so my import cannot have moved it. The uncommitted `prisma.ts` now imports `rawQueryObservability`, which reaches the findings write.
+
+So I measured this change **alone**, in an isolated worktree at HEAD carrying only
+my four files:
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      198 files: 197 passed | 1 skipped
+                    2,447 tests: 2,418 passed | 0 failed
+                                 7 expected fail | 21 skipped | 1 todo
+git diff --check    clean
+```
+
+`npm run build` **deliberately NOT run.** CLAUDE.md: `server/dist` is `chattr +i`,
+is the deployed artifact, and a build in this tree silently replaces what
+production executes — that happened at 19:15 on 2026-08-16. `--noEmit` is the
+build check. The brief's step 5 asks for it; I am naming the refusal rather than
+skipping it silently.
+
+**13 tests in `tests/def197PushHistoryBlock.test.ts`. 3 mutants, all die:**
+
+| mutation | dies as |
+|---|---|
+| legacy path unwired (`legacyPushHistoryBlock = ''`) | `builds the block at TWO call sites` fails — the DEF-165 guard |
+| failed read returns `''` instead of UNAVAILABLE | `returns the UNAVAILABLE block when the summariser throws` fails |
+| `assembleSystemPrompt` accepts the block and drops it | `the legacy path passes it into assembleSystemPrompt` fails |
+
+The source guards **strip comments before matching**, because DEF-195's invariant
+went green by reading its own prose about the code it had replaced.
+
+### LIVE CHECK — read-only, production, 2026-08-17 16:22 UTC
+
+The block rendered from real rows:
+
+```
+Window: last 36h. 7 pushes delivered, 4 answered by him.
+- item:cmsernb0o000mrto983hvi22t — 2 pushes delivered, 0 answered, spanning 250 min;
+  first 06:01, last 10:11 UTC; producers: preactive_due_nudge 2×
+- item:cmsernsi1000orto96r3kcmsk — 3 pushes delivered, 2 answered, spanning 495 min;
+  producers: preactive_due_nudge 2×, action_lifecycle_governor 1×
+```
+
+The first row **is the answer B12 invented**: twice, both from the same producer,
+250 minutes apart, neither answered. Brain can now say that and then say honestly
+that it does not know why that producer repeated. The second row is the
+cross-producer drip C-3 was created for — one item, three pushes, two producers —
+observed live for the first time rather than computed by hand in a build entry.
+
+### What I did NOT do, and what I am unsure about
+
+- **I did not enable any switch.** Increment 2 and 3 stay inert. This turn does
+  not advance C-3's *goal* (junk withdrawing itself) and I am not claiming it does.
+- **I did not claim Self-Pruning.** Nothing is pruned; he still receives all seven
+  pushes. I declared **Accurate Communication**, which is what actually changes.
+  This diverges from the brief's three different stated targets — "TARGET THIS
+  ITERATION: Authorized Action", "WIDEST GAP: Simple & Smart", and campaign
+  Self-Pruning — which cannot all be satisfied; I picked the one the change
+  honestly serves and am flagging the divergence rather than hiding it.
+- **I did not touch the benchmark**, the judge, or `scripts/orchestrator/**`.
+- **I did not fix DEF-139**, the actual CL-033 row, which is still OPEN.
+- **Unsure (1):** whether the model will USE the block. The data is now in the
+  prompt on both paths; obeying it is probabilistic. B12 could still score 80 on
+  register even with a perfectly grounded answer, because "My apologies, Sir" is a
+  separate C4 complaint I did not touch.
+- **Unsure (2):** the block adds a `brain_prompt_queue` read to every composer
+  turn on both paths. It is indexed, paginated and capped at 5,000 rows, and the
+  live render returned in well under the turn budget — but I have not measured it
+  under load.
+- **Unsure (3):** whether Codex rules this **MISATTRIBUTED**. It may argue the
+  honest capability is Self-Pruning (the instrument reaching the owner) or that a
+  grounded-but-unread block is `+0`. I would accept either reading; I would not
+  accept relabelling it Self-Pruning to look campaign-aligned.
+
+### Prediction, and what would prove me wrong
+
+**C1 and C2 on `B12-reminder-referent` should rise** (85 → 90+), because the
+specific complaint was "not grounded in actual system logs or events it can
+access" and those events are now in the prompt with timestamps. **C4 I predict
+stays near 80** on that case — the canned "My apologies, Sir" is register, and I
+deliberately did not patch register strings.
+
+**What would prove me wrong:** B12's answer still asserting an unreadable cause
+("my reminder job ran twice") with the block present; or C1/C2 flat, which would
+mean grounding data in the prompt does not change a fabrication and the defect is
+in the composer's instructions rather than its inputs. **Escalation answer the
+brief demands:** the remaining iteration-1 finding should be **(a) accepted as a
+known limitation with a DEF row** — DEF-196 already records it, the revert would
+restore blind character slicing that severs text mid-digit, and that is strictly
+worse for the owner than the recorded limitation.
+
+**Deployable at the end of this turn:** yes on my change's own evidence (isolated
+matrix green, tsc clean). **But the live tree is RED from another turn's
+uncommitted work**, so the deploy gate will re-verify at the deploy commit and
+abort unless that work is committed green or set aside. That is the orchestrator's
+call, not mine, and I am flagging it rather than letting the gate discover it.

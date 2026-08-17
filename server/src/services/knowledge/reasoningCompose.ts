@@ -128,6 +128,13 @@ export interface ReasoningInput {
     // filter over the trimmed history window. This block cannot be
     // fabricated: every line is a row with an id and a timestamp.
     dispatchLedger?: string;
+    // C-3 — Brain's OWN push history, read from brain_prompt_queue. Same repair
+    // as dispatchLedger one slot up, for a different question: "why did you
+    // remind me about that one twice?" was answered with an invented mechanism
+    // ("it looks like my reminder job ran twice") because the push rows were
+    // never in front of the model. Counting is not re-implemented here — the
+    // block comes from C-3 increment 1's summariser.
+    pushHistory?: string;
   };
 }
 
@@ -323,6 +330,11 @@ function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset
   // "(no actions dispatched)" is a fact and must reach the model. Omitting the
   // block on empty would leave it inferring, which is the entire defect.
   if (input.dataBlocks.dispatchLedger) parts.push(input.dataBlocks.dispatchLedger);
+  // C-3: pushed whenever present, INCLUDING when it reports zero repeats or
+  // reports itself UNAVAILABLE — for the DEF-037 reason one line up. Omitting
+  // the block on "no repeats" would leave the model inferring a duplicate it
+  // cannot see, which is the whole defect.
+  if (input.dataBlocks.pushHistory) parts.push(input.dataBlocks.pushHistory);
   if (input.dataBlocks.contactProvenance) parts.push(input.dataBlocks.contactProvenance);
   if (input.dataBlocks.artifacts) parts.push(input.dataBlocks.artifacts);
   if (input.dataBlocks.replyContext) parts.push(input.dataBlocks.replyContext);

@@ -26,6 +26,9 @@ import { getLatestForUser as getLatestRiskFlagDoc } from '../brain/riskRadarServ
 import { TENANT_SHARED_PAGE_TYPES } from './tenantIndexService';
 import { searchWikiByVector } from './wikiEmbeddingService';
 import type { RetrievalPlan } from './brainRetrievalPlanner';
+// C-3 — Brain's own push record. Statically imported because it is needed on
+// both composer paths; the module is read-only and cheap to load.
+import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 
 export interface OpenedPage {
   id: string;
@@ -1530,12 +1533,25 @@ async function assembleSystemPrompt(args: {
    * 9-occurrence tag and two ledger renderers would be the tenth.
    */
   dispatchLedgerBlock?: string;
+  /**
+   * C-3 — Brain's own push history, on THIS path too.
+   *
+   * Wired to both composers deliberately and from a scar: DEF-165 is the row
+   * recording that `dispatchLedgerBlock` reached the reasoning path only, so
+   * "did you send that?" on the legacy path still had no record to read.
+   * Reasoning is default-ON, which is exactly why that went unnoticed —
+   * `BRAIN_USE_REASONING=never` and `useReasoning:false` both still arrive here.
+   * Wiring one path would rebuild DEF-165 under a new name.
+   *
+   * Same builder, not a second copy.
+   */
+  pushHistoryBlock?: string;
 }): Promise<string> {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
     attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
-    dispatchLedgerBlock,
+    dispatchLedgerBlock, pushHistoryBlock,
   } = args;
 
   const todayBlock = `# Today
@@ -1603,6 +1619,11 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // in it. Placed high: it is the answer to "did you…?" and "why did you…?", and
   // both are among the questions most likely to be answered by invention.
   if (dispatchLedgerBlock) parts.push(dispatchLedgerBlock);
+  // C-3 — sits beside the dispatch ledger for the same reason it exists: "why
+  // did you push me twice?" is the same class of question as "did you send it?",
+  // and both were being answered by invention. Pushed even when it reports no
+  // repeats or reports itself UNAVAILABLE.
+  if (pushHistoryBlock) parts.push(pushHistoryBlock);
 
   // Schema — only for introspective questions (about Brain/Nexeo/tenant)
   // and for factual queries that might need to reason about the data model.
@@ -2483,6 +2504,12 @@ export async function compose(
           return await buildDispatchLedgerBlock(userId, clientNumber);
         } catch { return ''; }
       })();
+      // C-3 — the push record, for "why did you remind me about that one twice?"
+      // The builder already converts its own read failure into an explicit
+      // UNAVAILABLE block, so there is deliberately no `catch → ''` here: an
+      // empty string would let the model infer a duplicate it cannot see, and a
+      // silent zero is the DEF-085 shape ("a read that failed is not no noise").
+      const pushHistoryBlock = await buildPushHistoryBlock(userId, clientNumber);
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -2499,6 +2526,7 @@ export async function compose(
           dayBrief: dayBriefBlock || undefined,
           artifacts: artifactsBlockForReasoning || undefined,
           dispatchLedger: dispatchLedgerBlock || undefined,
+          pushHistory: pushHistoryBlock || undefined,
         },
       });
       if (result) {
@@ -3118,6 +3146,10 @@ ${calLines.join('\n')}`;
       return await buildDispatchLedgerBlock(userId, clientNumber);
     } catch { return ''; }
   })();
+  // C-3 — the SAME builder the reasoning path uses. DEF-165's row exists
+  // because its sibling block was wired to one path only; this is the second
+  // call site added in the same edit so that cannot recur here.
+  const legacyPushHistoryBlock = await buildPushHistoryBlock(userId, clientNumber);
 
   const systemPrompt = await assembleSystemPrompt({
     intent: effectiveIntent,
@@ -3125,6 +3157,7 @@ ${calLines.join('\n')}`;
     persona,
     schema,
     dispatchLedgerBlock: legacyDispatchLedgerBlock,
+    pushHistoryBlock: legacyPushHistoryBlock,
     capsBlock,
     overlayBlock,
     delegationMatrixBlock,
