@@ -32,6 +32,51 @@ CAMPAIGN below; the benchmark's job is to catch a case that got WORSE.
 
 @@RESCOPE@@
 
+## NAME THE SYMPTOM TAG YOU CLOSED — required
+
+If your change closes, or partly closes, one of the symptom tags from the chat
+analysis below, put the tag **verbatim and in backticks** in your commit message and
+in the DEF row — e.g. `` `whatsapp-lid-activity-rejected` ``.
+
+This is not bookkeeping. The owner's deck strikes an item off "Chat log · reported"
+when a fix that names it has SHIPPED, and nothing else can make that link: the archive
+is keyed by symptom tag, the change log by DEF id, and they share no key — six tags on
+his deck match one change-log row between them. If you do not name the tag, the item
+stays on his list forever even after you fix it, and he goes on seeing a defect he no
+longer has. If you are not closing one of these tags, say so and name what you did
+instead — do not invent a tag to look productive.
+
+## Continuation status — read this before anything else
+
+@@HOLD@@
+
+## What has actually failed for the owner — Codex's root-cause analysis
+
+This is Codex's ranked reading of the 18 real conversations in
+`brain_chat_archive.md` plus the §3 recurrence table. It is the owner's EXPERIENCE of
+Brain, where the capability gaps below are a reading of the CODE. When the two
+disagree, this one describes something that already happened to him.
+
+@@CHATROOTS@@
+
+## The capability gaps — THIS IS YOUR AIM
+
+**TARGET THIS ITERATION: @@TARGETCAP@@** — the widest gap, computed from Grok's card,
+not chosen by anyone. Your `CAPABILITY:` declaration is compared against it, and a
+mismatch is recorded and passed to Codex. Targeting something else is allowed when
+the CAMPAIGN below names it — say so explicitly, because unexplained divergence is
+what the comparison exists to catch.
+
+Grok scored these minutes ago, before you started, reading the codebase. They are the
+reason this iteration exists. Aim at the widest gap unless the CAMPAIGN below names
+something else, and say in your capability declaration which of these you moved.
+
+@@CAPGAPS@@
+
+A score does not move because you declared it. It moves when the OWNER RECEIVES
+something different — so prefer a change that reaches a live surface over one that
+improves an unreachable path, however elegant.
+
 ## Capability cap
 
 @@CAP@@

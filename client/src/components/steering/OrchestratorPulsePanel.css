@@ -110,7 +110,6 @@
     grid-template-areas:
       "stage  caps"
       "phases caps"
-      "bench  caps"
       "brain  caps";
   }
   .orch-stage { grid-area: stage; }
@@ -121,8 +120,7 @@
   .orch-deck-caps { align-self: stretch; min-height: 0; }
   .orch-deck-phases { grid-area: phases; }
   .orch-deck-caps   { grid-area: caps; }
-  .orch-deck-bench  { grid-area: bench; }
-  .orch-deck-brain  { grid-area: brain; }
+  .orch-deck-brain  { grid-area: brain; min-height: 0; }
 
   /* FIT TO ONE PAGE AGAIN — owner, 2026-08-14: "make it fit to one page without
      scroll". Two columns make this possible where one could not: the left stack
@@ -250,7 +248,7 @@
    Current" wrapped "Current" onto its own line and "claude-opus-5" broke in half.
    A timer that reflows as it counts is a timer that can't be read at a glance. */
 .orch-phase {
-  display: grid; grid-template-columns: 64px 1fr 150px 150px; align-items: center;
+  display: grid; grid-template-columns: 140px 1fr 150px 150px; align-items: center;
   gap: var(--s-2); padding: 3px 0;
 }
 .orch-phase-name { font-size: var(--fs-xs); color: var(--text); }
@@ -467,7 +465,15 @@
    two fixed rows and lets each card size to its content, with the page still
    pinned — the cards that overflow scroll inside themselves. */
 @media (max-height: 760px) and (min-width: 1100px) {
-  .orch-deck { grid-template-rows: minmax(0, 1.05fr) minmax(0, 0.95fr); }
+  /* FOUR tracks. grid-template-areas declares four rows — stage / phases /
+     bench / brain — and this declared two. The two fractional tracks took the
+     whole height, so rows three and four had none and were laid over the rows
+     above: the BRAIN card drew on top of PHASES and the phase rows vanished
+     with no scrollbar and no gap to hint at it.
+     Only fires below 760px of viewport height — a laptop with a dock and a
+     browser bar — which is why taller windows never showed it and it survived
+     this long. Track count must match the area map; that is the whole fix. */
+  .orch-deck { grid-template-rows: auto auto minmax(0, 1fr); }
   .orch-stage-timer { font-size: var(--fs-lg); }
   .orch-stage { padding: 8px 12px; }
 }
@@ -648,8 +654,10 @@
    width instead of drifting with the card. */
 .orch-capmap-total {
   position: absolute; left: 50%; top: 92.5%; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center; gap: 1px;
-  padding: 7px 20px 8px; border-radius: 14px;
+  /* ROW, not column: one short line is narrow enough to sit between the two bottom
+     labels instead of across them. */
+  display: flex; flex-direction: row; align-items: baseline; gap: 8px;
+  padding: 5px 14px 6px; border-radius: 12px;
   background: rgba(8, 12, 20, 0.62);
   border: 1px solid rgba(150, 200, 245, 0.42);
   backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
@@ -661,10 +669,37 @@
   color: rgba(200, 225, 250, 0.82); text-transform: uppercase;
 }
 .orch-capmap-total-num {
-  font-size: clamp(20px, 2.6vw, 34px); font-weight: 700; color: #fff;
+  font-size: clamp(17px, 2.1vw, 27px); font-weight: 700; color: #fff;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
 }
-.orch-capmap-total-pro {
-  font-size: clamp(8px, 0.95vw, 11px); color: rgba(210, 230, 250, 0.72);
-}
+/* .orch-capmap-total-pro removed with the "of N professional" line. */
+
+/* Observed gaps — two columns, deliberately not merged: code-read vs owner-reported.
+   Owner allowed a scrollbar here specifically, so this card may scroll where the rest
+   of the deck may not. */
+.orch-observed { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3);
+  min-height: 0; overflow-y: auto; }
+.orch-observed-h { font-size: var(--fs-xs); color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+.orch-observed-list { margin: 0; padding-left: 14px; }
+.orch-observed-list li { font-size: var(--fs-xs); line-height: 1.5; }
+
+/* Upgrade news feed — ship state is the point, so it is the coloured column. */
+.orch-feed { list-style: none; margin: 0; padding: 0; min-height: 0; overflow-y: auto; }
+.orch-feed li { display: grid;
+  grid-template-columns: 62px 30px 46px 40px minmax(0, 1fr);
+  gap: 6px; align-items: baseline; font-size: var(--fs-xs); padding: 2px 0;
+  border-bottom: 1px solid var(--border); }
+.orch-feed-id { font-weight: var(--fw-semibold); }
+.orch-feed-it, .orch-feed-v { color: var(--text-dim); }
+.orch-feed-ship { font-weight: var(--fw-semibold); }
+.orch-feed li.is-live  .orch-feed-ship { color: var(--ok, #4ade80); }
+.orch-feed li.is-held  .orch-feed-ship { color: var(--warn, #fbbf24); }
+.orch-feed-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-dim); }
+
+/* Chat-log items: struck only once the fix is LIVE. */
+.orch-observed-list li.is-shipped { text-decoration: line-through; opacity: 0.45; }
+.orch-observed-list li.is-built   { opacity: 0.75; }
+.orch-tag-state { color: var(--warn, #fbbf24); font-size: 0.9em; }

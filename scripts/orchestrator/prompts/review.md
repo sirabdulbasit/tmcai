@@ -143,8 +143,32 @@ Required content, in this order:
    Write "none" if there are none. **Do not pad this list to look thorough** — a
    carried finding that is not real still costs a turn when someone acts on it.
 
-4. **Attribution judgement:** did this change target the criterion that is
-   actually gating (@@WEAKEST@@)? If not, say what it targeted instead.
+4. **AIM — did this reach the capability the iteration was aimed at?**
+
+   **TARGET THIS ITERATION: @@TARGETCAP@@** — the widest gap, derived from Grok's
+   card before the build started. The full table:
+
+@@CAPGAPS@@
+
+   Judge this from the DIFF, not from the build log's `CAPABILITY:` line. That line
+   reads `RELIABILITY-ONLY` on most turns and a previous mechanism built on it never
+   fired once. Ask instead: does this change plausibly move **@@TARGETCAP@@**, on a
+   path that actually runs and that the owner reaches?
+
+   Report one of:
+   - `AIM: ON_TARGET` — the diff plausibly moves the target capability
+   - `AIM: MISAIMED` — sound work, but it moves a different capability (say which)
+   - `AIM: UNVERIFIABLE` — the diff cannot be tied to any capability from the code
+
+   **AIM IS NOT PART OF YOUR VERDICT.** Do not let it make a change WEAK or WRONG.
+   A WEAK verdict forces the next turn to be a remediation turn on this same change,
+   capped at three attempts at roughly $20 each — so ruling a *sound* change WEAK for
+   aiming elsewhere would burn up to $60 rebuilding work that was never defective,
+   and block new work while it did. Aim is a planning error; it is corrected by
+   aiming the NEXT iteration, not by redoing this one. Report it and move on.
+
+   You also cannot see whether the number will move — only Grok's next evaluation
+   settles that. Say what the code supports and leave the outcome to the measurement.
 5. **CAPABILITY ATTRIBUTION** — per the standing contract in
    `server/docs/orchestrator/capability_contract.md` (read it). The build log
    declares a capability impact; judge it as you judge any other claim:
@@ -175,3 +199,27 @@ Required content, in this order:
 
 Work now. End your turn once `@@REVIEWDOC@@` has its `## Iteration @@ITER@@`
 section.
+
+# YOU ARE REVIEWING CODE THAT IS ALREADY LIVE
+
+Owner's ruling, 2026-08-17: the build deploys BEFORE you see it. `tsc --noEmit` and
+`vitest` passed, the artifact was built with a verified manifest, pm2 restarted, and an
+HTTP probe confirmed the process is serving. Then you were called.
+
+This changes what your findings are FOR. You are not deciding whether to ship — that
+already happened. You are telling the owner what is now running on his production
+WhatsApp path, and a CRITICAL finding from you is an INCIDENT, not a veto.
+
+So:
+
+- **Lead with anything that is dangerous while live.** Data loss, cross-tenant
+  exposure, an unguarded external send. Say it first and say it plainly, because the
+  remedy is a rollback or an urgent fix, not a discussion.
+- **Say whether it should be rolled back.** State `ROLLBACK: yes` or `ROLLBACK: no`
+  with one sentence. Nothing automates this yet; the owner reads it.
+- Everything else — claims unsupported by the diff, AIM, regression risks — keeps its
+  existing form and feeds the next iteration.
+
+You still cannot confirm a capability MOVED. You read a diff; only the next Capability
+Evaluation, which now scores the deployed system, settles that. Say what the code
+supports and leave the measurement to the measurement.

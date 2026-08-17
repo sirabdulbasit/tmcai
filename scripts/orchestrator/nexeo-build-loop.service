@@ -1,0 +1,38 @@
+# nexeo-build-loop.service — the supervisor nexeo-loop.sh never had.
+#
+# Owner, 2026-08-17: "as orch manager you need to keep an eye [on] this type [of]
+# issue without my intervention or pointing to you."
+#
+# THE FAILURE THIS ENDS. The loop wrote "STOP file present — ending cleanly" at
+# 15:47:31 and exited. Nothing noticed. The owner asked twice why iteration 2 had been
+# running 1h35m while it had in fact been dead for most of it, and the answer each time
+# came from him prompting a check rather than from anything watching. That is the same
+# failure SD-001 §7 records as the most consequential in this system's history — an
+# agent reporting a build as running after the process had died.
+#
+# Restart=always, and no start-rate limit: a loop that gives up is a loop that is
+# stopped, which the owner has ruled out. A STOP file is honoured for one exit and then
+# the supervisor brings it straight back — deliberate: STOP is for a human stopping
+# this unit, not for the loop to retire itself.
+
+[Unit]
+Description=Nexeo build loop (build, deploy, review, score)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/tmcai
+Environment=NEXEO_DEPLOY=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash /var/www/tmcai/scripts/orchestrator/nexeo-loop.sh
+StandardOutput=append:/var/www/tmcai/server/docs/orchestrator/loop.out
+StandardError=append:/var/www/tmcai/server/docs/orchestrator/loop.out
+Restart=always
+RestartSec=20s
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

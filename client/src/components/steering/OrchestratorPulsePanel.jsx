@@ -42,11 +42,24 @@ const STAGE_COLOR = {
   IDLE: 'var(--op-idle)',
 };
 const PHASE_COLOR = {
-  Build: 'var(--op-build)',
-  Checks: 'var(--op-checks)',
-  Measure: 'var(--op-measure)',
-  Review: 'var(--op-review)',
-  Score: 'var(--op-score)',
+  // Owner, 2026-08-17: scoring moved to the front and renamed. It runs BEFORE the
+  // build so the build knows which capability is weakest — the score is an input,
+  // not a postscript. Key must match PHASE_ORDER in pulse.py exactly.
+  'Capability Evaluation': 'var(--op-score)',
+  // Codex reads the 18 real conversations before the build, so the builder is
+  // aimed by the owner's experience and not only by the code's opinion.
+  // Same colour as Review — it is the same seat, doing the same kind of work
+  // at the other end of the iteration.
+  'Chat Analysis': 'var(--op-review)',
+  'Build & Deploy': 'var(--op-build)',
+  // Checks and Measure merged, 2026-08-17: they are one stretch of wall-clock —
+  // tsc and vitest, then the benchmark immediately after — and two rows implied
+  // two waits. Keeps the checks colour; the row is still gated by tsc.
+  'Check & Measure': 'var(--op-checks)',
+  'Review Capabilities': 'var(--op-review)',
+  // Shipping is the last stage of every iteration, and the owner could not see
+  // it because it had no row. Deploy IS the Self-Healing capability (rung 4),
+  // so it gets the score colour rather than a neutral one.
 };
 const VERDICT_COLOR = {
   SOUND: 'var(--op-score)',
@@ -119,7 +132,7 @@ function PhaseTimeline({ data, liveNow }) {
       {data.phases.map((p) => {
         const dur = durOf(p);
         const pct = dur ? Math.max(2, (dur / max) * 100) : 0;
-        const word = p.state === 'running' ? (p.name === 'Build' ? 'Building' : 'Running') : null;
+        const word = p.state === 'running' ? (p.name === 'Build & Deploy' ? 'Building' : 'Running') : null;
         const title = [
           p.start ? `start ${pkt(p.start, data.pkt_offset)}` : null,
           p.end ? `end ${pkt(p.end, data.pkt_offset)}` : null,
@@ -338,9 +351,14 @@ function CapabilityMap({ data }) {
         {data.brain && (
           <div className="orch-capmap-total"
                title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap}`}>
-            <span className="orch-capmap-total-lbl">TOTAL BRAIN CAPABILITY</span>
+            {/* Owner, 2026-08-17: the box overlapped SIMPLE & SMART and SELF
+                PRUNING. It was two stacked lines — "TOTAL BRAIN CAPABILITY" over
+                "of 91.9 professional" — and that width, centred in the bottom band,
+                ran straight through the labels either side of it. One short line
+                instead; the benchmark and the gap stay in the hover title, which is
+                where a detail belongs when the space is contested. */}
+            <span className="orch-capmap-total-lbl">TOTAL</span>
             <span className="orch-capmap-total-num">{data.brain.nexeo}%</span>
-            <span className="orch-capmap-total-pro">of {data.brain.professional} professional</span>
           </div>
         )}
       </div>
@@ -730,6 +748,73 @@ function PulseTable({ data }) {
   );
 }
 
+function StageTimings({ data }) {
+  // Owner, 2026-08-17: "total time of iteration and also time of each stage."
+  // Same columnar shape as the trend directly above it — iterations across the top —
+  // so the two tables read as one picture: what moved, and what it cost in time.
+  const rows = data.iteration_timings || [];
+  if (!rows.length) return null;
+  const fmt = (v) => v == null ? '—' : (v >= 60 ? `${Math.floor(v / 60)}m${String(v % 60).padStart(2, '0')}s` : `${v}s`);
+  const stages = Object.keys(rows[rows.length - 1].stages || {});
+  return (
+    <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
+      <thead>
+        <tr>
+          <th>Time by iteration</th>
+          {rows.map((r) => (
+            <th key={r.iteration} style={{ textAlign: 'right' }}>#{r.iteration}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {stages.map((name) => (
+          <tr key={name}>
+            <td>{name}</td>
+            {rows.map((r) => (
+              <td className="num" key={r.iteration}>{fmt(r.stages[name])}</td>
+            ))}
+          </tr>
+        ))}
+        <tr>
+          {/* Wall-clock first-start to last-end, NOT the sum of the stages: stages can
+              overlap and summing them would report more time than actually passed. */}
+          <td><b>Total</b></td>
+          {rows.map((r) => (
+            <td className="num" key={r.iteration}><b>{fmt(r.total)}</b></td>
+          ))}
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function CapabilityTrend({ data }) {
+  const it = data.trend.iterations;
+  if (!data.trend.rows.length) return null;
+  return (
+    <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
+      <thead>
+        <tr>
+          <th>Trend by iteration</th>
+          {it.map((i) => (
+            <th key={i} style={{ textAlign: 'right' }}>#{i}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {data.trend.rows.map((r) => (
+          <tr key={r.name}>
+            <td>{r.name}</td>
+            {r.series.map((v, idx) => (
+              <td className="num" key={idx}>{v == null ? '—' : v}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export default function OrchestratorPulsePanel() {
   // A frame is the payload PLUS the client instant it arrived, which is what lets
   // the timers advance locally without trusting the browser's clock to agree with
@@ -742,8 +827,10 @@ export default function OrchestratorPulsePanel() {
      lives INSIDE the capability card rather than becoming a fourth row. It leads,
      since it is the view he asked for; bars and table stay one click away. */
   const [capView, setCapView] = useState('map');
-  const CAP_VIEWS = ['map', 'bars', 'table'];
-  const CAP_VIEW_HINT = { map: 'show bars', bars: 'show table', table: 'show diagram' };
+  const CAP_VIEWS = ['bars', 'table', 'trend', 'map'];
+  const CAP_VIEW_HINT = {
+    bars: 'show table', table: 'show trend', trend: 'show diagram', map: 'show bars',
+  };
   /* The owner's deck is 2x2 — four cards, no scroll ("health deck should look like
      this", twice). Brain integrity and the ten-iteration trend both want the
      top-right slot, so they share it and the card's hint swaps them. That keeps his
@@ -953,7 +1040,27 @@ export default function OrchestratorPulsePanel() {
           <PulseCard
             className="orch-deck-phases"
             title={`Iteration #${data.iteration} · phases`}
-            hint={`bar = time spent · ${data.iterations_built} recorded`}
+            /* Owner, 2026-08-17: "i want to see total time of iteration". This is
+               wall-clock from the iteration banner to the last stage that ended,
+               or to now while one is still running — NOT the sum of the bars,
+               which overlap and would overstate it. */
+            /* Owner, 2026-08-17: an iteration should complete end-to-end WITH an
+               improvement in 30-40 minutes, and none should circle. So the header
+               carries the budget and the attempt count, and goes amber past it —
+               circling should be visible on the panel, not something he works out
+               from a total with nothing to compare it to. */
+            hint={(() => {
+              const t = data.iteration_total, b = data.iteration_budget_s || 2400;
+              const a = data.iteration_attempts || 1;
+              const over = t && t > b;
+              return (
+                <span style={over ? { color: 'var(--warn, #fbbf24)' } : undefined}>
+                  {t ? fmtDur(t) : '—'} of {Math.round(b / 60)}m
+                  {a > 1 ? ` · attempt ${a}` : ''}
+                  {over ? ' · OVER' : ''}
+                </span>
+              );
+            })()}
           >
             <PhaseTimeline data={data} liveNow={liveNow} />
             {/* The Progress line is gone — owner, 2026-08-13: "remove this", of a
@@ -985,7 +1092,16 @@ export default function OrchestratorPulsePanel() {
             >
               {capView === 'table' ? <PulseTable data={data} />
                 : capView === 'bars' ? <CapabilityBars data={data} />
+                : capView === 'trend' ? (
+                  <>
+                    <CapabilityTrend data={data} />
+                    <StageTimings data={data} />
+                  </>
+                )
                 : <CapabilityMap data={data} />}
+              {/* UNDER the graph, not above it — owner, 2026-08-17. The table view
+                  already renders the trend inside PulseTable, so it is excluded here
+                  to avoid drawing it twice. */}
             </PulseCard>
           )}
 
@@ -993,253 +1109,68 @@ export default function OrchestratorPulsePanel() {
           {/* interpretation comes from the collector, not recomputed here: the same
               arithmetic in two places is how a dashboard starts disagreeing with the
               terminal it mirrors. */}
-          {overall && (
-            <PulseCard
-              className="orch-deck-brain"
-              /* Owner, 2026-08-13: "this should show last 10 iterations". It spanned
-                 1→18, which averages away the recent turns — the only ones a decision
-                 can still affect. */
-              title={`BRAIN overall · last 10 iterations${winIters.length ? ` (#${winIters[0]}→#${winIters[winIters.length - 1]})` : ''}`}
-            >
-              {/* THE SCALE, STATED. Owner, 2026-08-13: "I couldnt understand this
-                  make it meaningfull for me". The chart auto-scales to the series'
-                  own range — deliberately, since the movement is fractions of a
-                  point and a 0→100 axis would draw ten iterations as a flat line —
-                  but that means +0.6 fills the full height and reads as a climb.
-                  The caption is what makes the shape honest: it names the y-range
-                  and states the share of the journey actually covered. Without it
-                  the panel flatters the work, which removes the reason to change
-                  approach. */}
-              {interp && (
-                <div className="orch-section-note" style={{ marginBottom: 4 }}>
-                  {interp.movement > 0 ? '+' : ''}{interp.movement} of{' '}
-                  {interp.remaining + interp.movement} needed ·{' '}
-                  <b>{interp.journey_complete_pct}% of the way</b> to {axisObjective}
-                  {' '}· the line below spans only {overall.first}–{overall.last}, so its
-                  steepness is an artefact of a {Math.round((overall.last - overall.first) * 10) / 10}-point range
+          {/* BRAIN OVERALL GRAPH REMOVED — owner, 2026-08-17: "remove graph BRAIN
+              overall … show a very short bullet form of capability gap observed and
+              chat log gaps/bugs/issue observed".
+              The graph drew a flat line: nothing had moved in 7 iterations, so it was
+              a picture of an unchanged number taking a whole card. These two lists say
+              what is wrong instead. They are kept APART on purpose — the left is Grok
+              READING CODE, the right is what actually happened to the owner, and they
+              disagree. Merging them into one ranking would hide that disagreement,
+              which is the most useful thing on the card. Scrolling is allowed here
+              (owner) because the lists grow with the archive. */}
+          {/* UPGRADE NEWS FEED REMOVED — owner, 2026-08-17: "totally not usable
+              for me". It listed DEF ids and commit subjects, which say what the loop
+              did, not what changed for him — and every row read "held" because nothing
+              had shipped, so it was a list of work he had not received. The ship state
+              it carried now belongs on the chat-log items, where it answers "can I
+              still hit this". */}
+          {data.observed && (
+            <PulseCard className="orch-deck-brain" title="Observed gaps">
+              <div className="orch-observed">
+                <div>
+                  <div className="orch-observed-h">Capability · code-read</div>
+                  <ul className="orch-observed-list">
+                    {(data.observed.capability || []).map((c) => (
+                      <li key={c.name} title={`${c.nexeo} vs professional · basis ${c.basis}`}>
+                        <b>{c.name}</b> {c.nexeo} · gap {c.gap}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              )}
-              <TrendLine iterations={winIters} series={winSeries} height={104} />
-              {/* THE JOURNEY BAR — the picture that carries the truth.
-                  Owner, 2026-08-13: the caption alone did not land, and he was right.
-                  A sentence under a steep line loses to the line: the chart above is
-                  auto-scaled (deliberately — the movement is fractions of a point) so
-                  it will always LOOK like a climb. This draws the same number on the
-                  scale that matters, 0 → professional, with the objective marked. The
-                  eye then gets both facts at once: real movement in the shape above,
-                  and how little of the distance it covers here. */}
-              {interp && axisObjective && (
-                <div className="orch-journey" title={`Brain ${overall.last} · objective ${axisObjective} · professional ${data.brain?.professional}`}>
-                  <div className="orch-journey-track">
-                    <div className="orch-journey-done" style={{ width: `${Math.max(0.5, (overall.last / 100) * 100)}%` }} />
-                    <div className="orch-journey-start" style={{ left: `${(overall.first / 100) * 100}%` }} />
-                    <div className="orch-journey-obj" style={{ left: `${(axisObjective / 100) * 100}%` }} />
-                  </div>
-                  <div className="orch-journey-lab">
-                    <span>0</span>
-                    <span style={{ marginLeft: 'auto' }}>
-                      <b>{overall.last}</b> now · objective <b>{axisObjective}</b> · {interp.journey_complete_pct}% covered
-                    </span>
-                  </div>
+                <div>
+                  <div className="orch-observed-h">Chat log · reported</div>
+                  <ul className="orch-observed-list">
+                    {(data.observed.chat || []).map((c) => (
+                      /* Struck through only when a fix naming this tag has SHIPPED.
+                         "built" is dimmed but NOT struck — the owner can still hit a
+                         defect whose fix sits on the branch, and striking it would
+                         tell him it is gone when it is not. */
+                      <li key={c.tag} className={`is-${c.state || 'open'}`}
+                          title={c.state === 'shipped' ? 'fixed and shipped'
+                                 : c.state === 'built' ? 'fixed, not shipped — you can still hit this'
+                                 : 'open'}>
+                        <b>{c.tag}</b> ×{c.times}
+                        {c.state === 'built' && <span className="orch-tag-state"> built</span>}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              )}
-              {/* The per-iteration outcome strip — see IterationOutcomes. This is the
-                  part that answers "make it more meaningful": movement, the reviewer's
-                  ruling, and whether it reached production, per iteration. */}
-              <IterationOutcomes data={data} window={10} />
-              {interp && (
-                <div className="orch-section-note" style={{ marginTop: 2 }}>
-                  {interp.capabilities_moved} of{' '}
-                  {interp.capabilities_moved + interp.capabilities_flat} capabilities have
-                  ever moved · at {interp.rate_per_iteration}/iteration that is{' '}
-                  {interp.iterations_at_this_rate} more iterations
-                </div>
-              )}
-              {moved.length > 0 && (
-                <div className="orch-deck-sparks">
-                  {moved.map((r) => (
-                    <div className="orch-spark" key={r.name} title={r.series.map((v, i) => `#${trend.iterations[i]} ${v ?? '—'}`).join(' · ')}>
-                      <div className="orch-cap-name">{r.name}</div>
-                      <div className="orch-cap-pro" style={{ textAlign: 'right' }}>{r.first}</div>
-                      <div className="orch-spark-svg"><Sparkline series={r.series} /></div>
-                      <div className="orch-cap-val">{r.last}</div>
-                      <DeltaChip value={r.delta} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {trend.unmoved.length > 0 && (
-                // Named, not hidden — that most capabilities have never moved is the
-                // most important fact about this loop's progress.
-                <div className="orch-section-note orch-unmoved">
-                  never moved: {trend.unmoved.join(', ')}
-                </div>
-              )}
+              </div>
             </PulseCard>
           )}
 
           {/* aspect 4 — the measurement itself, and what the reviewer made of it */}
-          {bench && (
-            <PulseCard
-              className="orch-deck-bench"
-              /* Owner, 2026-08-13: the panel read "Benchmark · iteration 18" while
-                 the loop was building iteration 20, which looks like a stalled loop
-                 rather than a figure older than the current turn. The benchmark is
-                 only re-measured when server/src or server/prisma changed, so it is
-                 routinely a turn or two behind — say so instead of implying it is
-                 current. */
-              title={bench.stale
-                ? `Benchmark · measured at #${bench.measured_at_iteration} · loop on #${data.iteration}`
-                : `Benchmark · iteration ${bench.iteration}`}
-              hint="weakest criterion vs target"
-            >
-            <div className="orch-bench">
-              <span>
-                {bench.criterion} <span className="orch-bench-num">{bench.score}</span> →{' '}
-                <span className="orch-bench-num">{bench.target}</span>
-              </span>
-              <span style={{ color: bench.gap > 0 ? 'var(--op-stalled)' : 'var(--op-score)' }} className="orch-bench-num">
-                {bench.gap} to go
-              </span>
-              <span>
-                codex{' '}
-                <b style={{ color: VERDICT_COLOR[bench.verdict] || 'var(--text-muted)' }}>{bench.verdict}</b>
-              </span>
-              {bench.overall != null && (
-                <span className="orch-section-note">overall {bench.overall}</span>
-              )}
-              {/* WHOSE NUMBER THIS IS. Owner, 2026-08-14, wants the dashboard's
-                  information to come from Grok. This card's figures do NOT: they
-                  are the 12-case compose benchmark scored by an LLM judge, which
-                  is why this can read 94.9 while Grok's capability picture reads
-                  50.3. Two different questions — "did the answers read well" and
-                  "is Brain capable" — and labelling them is what stops the larger,
-                  friendlier number being mistaken for the state of the product. */}
-              <span className="orch-section-note orch-bench-src">
-                source: 12-case compose benchmark, LLM judge — not Grok's capability score
-              </span>
-              {bench.cases_failed > 0 && (
-                <span style={{ color: 'var(--op-stalled)' }}>
-                  {bench.cases_failed} case(s) failed to score — incomplete, not low
-                </span>
-              )}
-              {bench.mutated && (
-                <span style={{ color: 'var(--op-measure)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  <Icon name="warning" size={13} /> last run wrote to live data
-                </span>
-              )}
-            </div>
-            {data.history.length > 0 && (
-              <div className="orch-scroll orch-hist">
-                <table className="orch-table">
-                  <thead>
-                    <tr>
-                      <th>Iter</th>
-                      <th>Run</th>
-                      <th style={{ textAlign: 'right' }}>Overall</th>
-                      <th style={{ textAlign: 'right' }}>Weakest</th>
-                      <th>Crit</th>
-                      {/* Owner, 2026-08-13: "i want to see iteration wise progress
-                          here". Six absolute values per row gave no direction, so
-                          95.5 / 96.2 / 95.5 read as unrelated numbers. */}
-                      <th style={{ textAlign: 'right' }}>Δ</th>
-                      {/* Owner, 2026-08-13: "provide me information iteration wise
-                          brain improvement". Everything left of here is the BENCHMARK
-                          — twelve conversational replies scored by the judge — which
-                          is not Brain's capability and cannot see seven of the nine.
-                          These two columns are the capability itself, per iteration,
-                          so the panel stops implying that 95.2 is how good Brain is. */}
-                      {/* Owner, 2026-08-13: "which iteration took how much time and
-                          how much it improved brain" — the two questions side by side,
-                          which is the only way the cost of an iteration is legible. */}
-                      <th style={{ textAlign: 'right' }}>Took</th>
-                      <th style={{ textAlign: 'right' }}>Brain</th>
-                      <th style={{ textAlign: 'right' }}>Δ Brain</th>
-                      <th>Codex</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.history.map((h) => {
-                      /* `progress` is computed by the collector against the previous
-                         iteration THAT HAS A BENCHMARK, and names it — iterations
-                         9-11 have no capability card and one measured nothing, so
-                         differencing against a missing row would invent movement. */
-                      const p = (data.iterations || []).find(
-                        (r) => r.iteration === h.iteration && r.progress)?.progress;
-                      const d = p?.overall_delta;
-                      /* NOT green-for-up. C4 has read 90.0, 87.9, 88.3 and 87.3 on
-                         barely-changed code, so a +0.9 coloured as improvement would
-                         manufacture a trend the instrument cannot support. Anything
-                         the collector calls flat is drawn as dim, whatever its sign. */
-                      const noisy = (p?.direction || '').startsWith('flat');
-                      /* The capability point for the SAME iteration, from the scorer.
-                         Absent for iterations 9-11 (the scoring seat was stopped during
-                         the restructure) and for any iteration not yet scored — shown as
-                         "not scored" rather than blank or interpolated, because a missing
-                         capability reading is a fact about the loop, not a gap to fill. */
-                      const rec = (data.iterations || []).find((r) => r.iteration === h.iteration);
-                      const cap = (data.capability_series?.points || [])
-                        .find((q) => q.iteration === h.iteration);
-                      const capMove = cap?.movement;
-                      const dColor = d == null || noisy
-                        ? 'var(--text-dim)'
-                        : d > 0 ? 'var(--op-score)' : 'var(--op-stalled)';
-                      return (
-                      /* An iteration with no benchmark of its own is dimmed whole,
-                         so "aborted" and "in flight" cannot be misread as a measured
-                         run that happened to score nothing. Owner, 2026-08-13:
-                         "this should show me last 6 iterations data" — they are now
-                         all present, which means the unmeasured ones have to be
-                         unmistakable rather than merely blank. */
-                      <tr key={`${h.iteration}-${h.label}`}
-                          style={h.measured === false ? { opacity: 0.55 } : undefined}>
-                        <td>#{h.iteration}</td>
-                        <td>{h.label}</td>
-                        <td className="num">{h.overall ?? '—'}</td>
-                        <td className="num">{h.weakest ?? '—'}</td>
-                        <td>{h.criterion ?? '—'}</td>
-                        <td className="num" style={{ color: dColor }}
-                            title={p ? `${p.direction}${p.since ? ` · vs #${p.since}` : ''}` : ''}>
-                          {d == null ? '—' : (d > 0 ? `+${d}` : d)}
-                          {noisy && d != null && (
-                            <span className="orch-section-note" style={{ marginLeft: 4 }}>noise</span>
-                          )}
-                        </td>
-                        <td className="num" style={{ color: 'var(--text-dim)' }}
-                            title={rec?.cost_usd ? `build turn cost $${rec.cost_usd}${rec.agent_turns ? ` · ${rec.agent_turns} agent turns` : ''}` : ''}>
-                          {rec?.duration_seconds
-                            ? (rec.duration_seconds >= 3600
-                                ? `${Math.floor(rec.duration_seconds / 3600)}h${String(Math.round((rec.duration_seconds % 3600) / 60)).padStart(2, '0')}m`
-                                : `${Math.floor(rec.duration_seconds / 60)}m${String(rec.duration_seconds % 60).padStart(2, '0')}s`)
-                            : '—'}
-                        </td>
-                        <td className="num" style={{ color: cap ? 'var(--text)' : 'var(--text-dim)' }}
-                            title={cap ? `scored by ${cap.scored_by}${cap.what_moved ? ` · ${cap.what_moved}` : ''}` : 'not scored — no capability card for this iteration'}>
-                          {cap ? cap.overall : '—'}
-                        </td>
-                        <td className="num"
-                            title={cap?.disputed ? 'DISPUTED — the scorer raised a capability in an iteration the reviewer ruled WEAK or WRONG' : (cap?.what_moved || '')}>
-                          {capMove == null ? (
-                            <span style={{ color: 'var(--text-dim)' }}>—</span>
-                          ) : capMove === 0 ? (
-                            <span style={{ color: 'var(--text-dim)' }}>0</span>
-                          ) : (
-                            <span style={{ color: capMove > 0 ? 'var(--op-score)' : 'var(--op-stalled)' }}>
-                              {capMove > 0 ? `+${capMove}` : capMove}
-                              {cap?.disputed && <span className="orch-section-note" style={{ marginLeft: 3 }}>disputed</span>}
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ color: VERDICT_COLOR[h.verdict] || 'var(--text-dim)' }}>{h.verdict}</td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            </PulseCard>
-          )}
+          {/* BENCHMARK CARD REMOVED — owner, 2026-08-17.
+              It showed the 12-case compose benchmark scored by an LLM judge (~95)
+              beside Grok's capability picture (47.7). Two different questions, and the
+              larger friendlier number was the one the eye landed on. Grok is told in
+              bold to ignore it, its phase row went earlier the same day, and the
+              benchmark writes to the live database when it runs.
+              Its "bench" grid row is removed from grid-template-areas in the same
+              change: a card dropped from one but not the other is auto-placed and
+              shoves the named cards aside — how BRAIN came to be drawn over PHASES
+              earlier today. BRAIN OVERALL takes the freed row. */}
         </div>
       </div>
     </Card>

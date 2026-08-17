@@ -64,7 +64,7 @@ n="$(printf '%02d' "$ITER")"
 LOG="$LOGS/iter-$n-deploy.log"
 mkdir -p "$LOGS" "$STATE"
 
-say() { printf '%s  DEPLOY %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*" \
+say() { printf '%s  DEPLOY iter=%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "${ITER:-0}" "$*" \
           | tee -a "$LOG" | tee -a "$ORCH/loop.log"; }
 die() { say "ABORT: $*"; exit "${2:-1}"; }
 
@@ -153,12 +153,48 @@ $DIRTY"
 say "re-verifying at the deploy commit"
 ( cd "$SRV" && npx tsc --noEmit ) >> "$LOG" 2>&1 || die "tsc RED at deploy commit"
 ( cd "$SRV" && npx vitest run --reporter=dot ) >> "$LOG" 2>&1 || die "tests RED at deploy commit"
-( cd "$SRV" && npm run build ) >> "$LOG" 2>&1 || die "npm run build FAILED"
-say "rails: tsc clean · tests green · build ok"
-
-# Snapshot dist for rollback BEFORE anything touches production.
+# SNAPSHOT FIRST. This used to run AFTER the build, so the "rollback snapshot" was a
+# copy of the NEW dist — restoring it would have restored the very build you were
+# rolling back from. The comment said "BEFORE anything touches production"; the build
+# three lines above had already rewritten dist. Taken before the build, it is the last
+# known-good artifact, which is what a rollback needs.
 BACKUP="/tmp/nexeo-dist-backup-$(date -u +%Y%m%d-%H%M%S)"
-cp -a "$SRV/dist" "$BACKUP" 2>/dev/null && say "dist snapshot: $BACKUP"
+cp -a "$SRV/dist" "$BACKUP" 2>/dev/null && say "dist snapshot (pre-build, last known good): $BACKUP"
+
+# ── THE UNLOCK, THE BUILD, THE MANIFEST, THE RELOCK ──────────────────────────
+#
+# server/dist is chattr +i. CLAUDE.md: "the unlock IS the authorization moment", set
+# after an unauthorised build replaced production at 19:15 on 2026-08-16. Running the
+# loop with NEXEO_DEPLOY=1 is that authorization, given deliberately and once — but it
+# only holds if the window closes again every time, including on failure.
+#
+# The trap is the whole point. die() exits, tsc can fail, the migration can abort — and
+# any exit that skipped the relock would leave production writable indefinitely, which
+# is strictly worse than never having locked it, because it looks locked in the runbook.
+relock() {
+  if command -v chattr >/dev/null 2>&1; then
+    chattr -R +i "$SRV/dist" 2>/dev/null \
+      && say "dist relocked (immutable)" \
+      || say "WARNING dist could NOT be relocked — production is writable, fix by hand"
+  fi
+}
+trap relock EXIT
+
+chattr -R -i "$SRV/dist" 2>/dev/null || die "could not unlock server/dist for the build"
+say "dist unlocked for the build (relock is trapped on every exit path)"
+
+( cd "$SRV" && npm run build ) >> "$LOG" 2>&1 || die "npm run build FAILED"
+
+# The manifest command is canonical and copied EXACTLY from CLAUDE.md. It is sensitive
+# to BOTH path rendering and sort locale — the same directory yields four different
+# digests across ./path vs %P and ambient vs LC_ALL=C — so a digest computed any other
+# way is not comparable to the recorded one and is not evidence.
+MANIFEST="$(cd "$SRV/dist" && find . -name '*.js' -type f -printf '%P\n' \
+  | LC_ALL=C sort | xargs sha256sum | sha256sum | awk '{print $1}')"
+say "dist manifest: $MANIFEST"
+printf '%s  %s\n' "$MANIFEST" "$(git rev-parse --short HEAD)" >> "$ORCH/state/deploy-manifests"
+
+say "rails: tsc clean · tests green · build ok · manifest recorded"
 
 if [ "${NEXEO_DEPLOY_DRYRUN:-0}" = "1" ]; then
   say "DRY RUN — stopping before migration and restart"

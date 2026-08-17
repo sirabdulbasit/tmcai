@@ -450,6 +450,21 @@ run_claude() {
 # codex-cli 0.147.0 — it errors "unexpected argument '-C' found"). So the resume
 # path takes its working directory from the shell, and every invocation is
 # wrapped in a subshell that cd's to $ROOT rather than relying on the caller.
+
+run_chat_analyst() {
+  local iter="$1" prompt="$2"
+  local n; n="$(printf '%02d' "$iter")"
+  local last="$LOGS/iter-$n-chat-last.txt"
+  local raw="$LOGS/iter-$n-chat.jsonl"
+  # NO resume. This is a different question from the diff review, and sharing a thread
+  # is how the reviewer's context leaked into it.
+  "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check -C "$ROOT" -o "$last" "$prompt" > "$raw" 2>&1
+  local rc=$?
+  say "CHAT   iter=$iter codex exit=$rc ($(basename "$last"))"
+  return $rc
+}
+
 run_codex() {
   local iter="$1" prompt="$2"
   local n; n="$(printf '%02d' "$iter")"
@@ -582,10 +597,19 @@ say "deploy=$DEPLOY skip_tests=$SKIP_TESTS stall_limit=$STALL_LIMIT"
 ITER=0
 [ -s "$STATE/iteration" ] && ITER="$(cat "$STATE/iteration")"
 
-# Build once so the benchmark runs the CURRENT source, not a stale dist.
-say "PREP   building dist so the benchmark measures current source"
-( cd "$SRV" && npm run build ) > "$LOGS/prep-build.log" 2>&1 \
-  || die "initial npm run build failed — see logs/prep-build.log"
+# NO PREP BUILD. Removed 2026-08-17.
+#
+# This ran `npm run build` into server/dist before iteration 1 — and `server/dist` is
+# the DEPLOYED ARTIFACT, chattr +i since 2026-08-16 precisely because a build in this
+# tree silently replaces what production is executing and any later restart activates
+# code nobody authorised. That happened once already, at 19:15 on 2026-08-16.
+#
+# It existed only so the benchmark measured current source rather than a stale dist.
+# The benchmark was removed from the pipeline on 2026-08-17 (owner: "ok remove
+# measure"), so this step now serves nothing while doing the one thing the repo
+# forbids. `npx tsc --noEmit` — already run by tsc_status — IS the build check.
+#
+# To build without deploying: clone (git clone --no-local) and build the clone.
 
 # Owner, 2026-08-12, on the 6-minute startup wait: *"why not immediately?"*
 #
@@ -665,10 +689,80 @@ while :; do
     break
   fi
 
-  ITER=$((ITER + 1))
+  # THE COUNTER ADVANCES ONLY ON IMPROVEMENT.
+  #
+  # Owner, 2026-08-17, said this several times and I implemented it too weakly twice:
+  # "if iteration couldn't get improvement in brain capability then don't move to next
+  # iteration, first make it improved." My earlier version advanced the number and held
+  # only the WORK, so the deck read "iteration 2" after a turn that moved nothing —
+  # which is exactly the thing he has been objecting to since the 58-iteration run.
+  #
+  # So the number now MEANS an improvement, not an attempt. It advances when BRAIN
+  # overall rose since the last completed turn; otherwise the same iteration is
+  # attempted again and its logs append to that iteration's record. A counter that
+  # counts attempts is what let 58 iterations look like progress while two of nine
+  # capabilities ever moved.
+  # Read the last two cards directly rather than through a state file. The first
+  # version compared $STATE/overall-last against a file nothing ever wrote, so ADVANCE
+  # was always 1 and the counter would have kept climbing exactly as before — the
+  # rule would have existed in the script and not in the behaviour.
+  ADVANCE="$(python3 - "$STATE/capability_scorecard.json" <<'PYADV'
+import json, sys
+try:
+    h = [r for r in json.load(open(sys.argv[1])).get("history", []) if r.get("overall") is not None]
+except Exception:
+    print(1); raise SystemExit
+# Fewer than two cards: nothing to compare, so let the loop move.
+if len(h) < 2:
+    print(1)
+else:
+    print(1 if h[-1]["overall"] > h[-2]["overall"] else 0)
+PYADV
+)"
+  if [ "$ADVANCE" = "1" ]; then
+    ITER=$((ITER + 1))
+  else
+    say "ITERATION $ITER REPEATS — BRAIN overall did not rise; the number advances on improvement, not on attempts"
+  fi
   printf '%s' "$ITER" > "$STATE/iteration"
   BASE_HEAD="$(git rev-parse HEAD)"
   say "──────── iteration $ITER ────────"
+
+  # ── CAPABILITY EVALUATION (Grok) — FIRST, before anything is built ────────
+  #
+  # Owner, 2026-08-17: "it will first score the brain using grok and then start
+  # iterations … build will read capability evaluation and see where the gap is."
+  #
+  # WHY IT MOVED. This ran LAST, after Review, as "Post-Build". So every iteration
+  # chose what to build BEFORE the only numbers that say which capability is weakest
+  # existed for that turn — the build read the previous turn's card at best, and on a
+  # fresh start read nothing. 58 iterations moved 2 of 9 capabilities; work aimed
+  # without the scores is the most plausible reason, and this is the change that
+  # tests it.
+  #
+  # Two consequences of running first, both deliberate:
+  #   • label is Pre-Build, not Post-Build — it scores the tree the build is ABOUT
+  #     to start from, which is what the builder needs to aim.
+  #   • head is BASE_HEAD, the commit actually scored. Using HEAD would attribute
+  #     the reading to a commit that did not exist when Grok read the code.
+  if [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
+    say "SCORE  iter=$ITER asking Grok (reads the codebase; nobody edits its numbers)"
+    if "$ROOT/scripts/orchestrator/run-score.sh" "$ITER" >/dev/null 2>&1; then
+      CAPJSON="$SCORES/iter-$(printf '%02d' "$ITER")-capability.json"
+      if python3 "$ROOT/scripts/orchestrator/scorecard.py" --ingest "$CAPJSON" \
+           --iteration "$ITER" --head "$(git rev-parse --short "$BASE_HEAD")" \
+           --commit --append --label "Pre-Build" >> "$ORCH/score.log" 2>&1; then
+        say "SCORE  iter=$ITER card appended — the build aims at these numbers"
+      else
+        # Rejected means unevidenced or malformed — the file is removed so the
+        # iteration is retried rather than silently skipped.
+        say "SCORE  iter=$ITER INGEST REJECTED (see score.log) — capability file removed for retry"
+        rm -f "$CAPJSON"
+      fi
+    else
+      say "SCORE  iter=$ITER grok FAILED — see logs/iter-$(printf '%02d' "$ITER")-score.log"
+    fi
+  fi
 
   TSC_BEFORE="$(tsc_status)"
   MODE="incremental"
@@ -982,6 +1076,223 @@ with evidence — 'I disagree' does not clear a release blocker."
   FORBIDDEN_ALERT="none"
   [ -s "$STATE/forbidden-alert" ] && FORBIDDEN_ALERT="$(cat "$STATE/forbidden-alert")"
 
+  # THE TARGET COMES FROM THE OWNER'S CHATS FIRST, THE CODE-READ GAP SECOND.
+  #
+  # Owner, 2026-08-17: "analyzing chat log is very essential because i am communicating
+  # to brain and found serious issues with it that should be analyzed by loop and fixed
+  # by building capabilities."
+  #
+  # The widest arithmetic gap is a reading of the CODE. The analyst's top item is a
+  # reading of what actually happened to him — ranked by recurrence x reached-the-owner
+  # x still-open. When they disagree the chats win, because a defect he has hit four
+  # times is a fact and a code-read gap is an inference. On the first analysis they DID
+  # disagree: the gap said Simple & Smart, the chats said the @lid identity class, and
+  # the loop spent the iteration on Simple & Smart.
+  #
+  # It is still derived, not chosen by a model mid-turn: the analyst writes a ranked
+  # file, and this reads the top entry. Falls back to the widest gap when there is no
+  # analysis, so the loop can never be left with no aim.
+  ATTEMPTS="$(grep -c "──────── iteration $ITER ────────" "$ORCH/loop.log" 2>/dev/null || echo 1)"
+  TARGET_CAP="$(python3 - "$STATE/capability_scorecard.json" "$STATE/chat-root-causes.md" "$ATTEMPTS" <<'PYTGT'
+import json, re, sys
+p = sys.argv[1]
+try:
+    roots = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+    caps = re.findall(r"\*\*Capability:\*\*\s*\d+\.\s*([A-Za-z &-]+)", roots)
+    if caps:
+        # Rotate one place down the ranked list per 3 failed attempts. The list is
+        # Codex's ranking of the owner's own reported failures, so every entry is
+        # real work — rotating changes the attack, not the goal.
+        try:
+            attempts = int(sys.argv[3])
+        except Exception:
+            attempts = 1
+        print(caps[min((max(attempts, 1) - 1) // 3, len(caps) - 1)].strip())
+        raise SystemExit
+except SystemExit:
+    raise
+except Exception:
+    pass
+try:
+    caps = json.load(open(p))["capabilities"]
+    w = max(caps, key=lambda c: (c.get("professional") or 0) - (c.get("nexeo") or 0))
+    print(w["name"])
+except Exception:
+    print("UNKNOWN")
+PYTGT
+)"
+  say "TARGET iter=$ITER widest capability gap: $TARGET_CAP"
+
+  # ── HOLD UNTIL THE NUMBER MOVES ───────────────────────────────────────────
+  #
+  # Owner, 2026-08-17: "we should not move to next iteration until we get some
+  # improvement in brain overall."
+  #
+  # Implemented as a HOLD ON THE WORK, not on the counter: the iteration number still
+  # advances so every turn keeps its own log, card and review, but the turn is told it
+  # is a continuation — same capability, no new scope — until BRAIN overall rises.
+  #
+  # CAPPED, and the cap is not negotiable. This file already records the failure mode:
+  # "Without a cap this becomes an infinite loop on one stubborn finding, burning $20 a
+  # turn — the failure mode of every retry-until-green mechanism this project has
+  # recorded." A capability can also be genuinely immovable this month; holding forever
+  # would spend the budget proving that. At the cap the loop moves to the next-widest
+  # gap and SAYS SO, rather than quietly giving up or quietly continuing.
+  HOLD_LIMIT="${NEXEO_HOLD_LIMIT:-3}"
+  HOLD_NOTE="Not applicable — this is not a continuation turn."
+  HOLD_COUNT=0
+  [ -s "$STATE/hold-count" ] && HOLD_COUNT="$(cat "$STATE/hold-count")"
+  OVERALL_NOW="$(python3 - "$STATE/capability_scorecard.json" <<'PYOV'
+import json, sys
+try:
+    h = json.load(open(sys.argv[1]))["history"]
+    print(h[-1].get("overall", ""))
+except Exception:
+    print("")
+PYOV
+)"
+  OVERALL_PREV="$(cat "$STATE/overall-last" 2>/dev/null || echo "")"
+  if [ -n "$OVERALL_NOW" ] && [ -n "$OVERALL_PREV" ]; then
+    if awk "BEGIN{exit !($OVERALL_NOW > $OVERALL_PREV)}"; then
+      say "HOLD   iter=$ITER BRAIN overall $OVERALL_PREV -> $OVERALL_NOW — it MOVED; new work is allowed"
+      HOLD_COUNT=0
+    else
+      HOLD_COUNT=$((HOLD_COUNT + 1))
+      if [ "$HOLD_COUNT" -ge "$HOLD_LIMIT" ]; then
+        # NO ESCAPE HATCH. Owner, 2026-08-17, after seven iterations with no movement:
+        # "you will only move to next iteration once we have improved it."
+        #
+        # The earlier version moved to the next-widest gap at the cap. That is what
+        # produced 58 iterations across nine capabilities with two of them ever moving:
+        # each capability got a few attempts, none got finished, and the counter went up
+        # regardless. The hold now persists and the instruction ESCALATES instead.
+        #
+        # The money bound is no longer this cap; it is MAX_ITER (40) and the owner
+        # watching. That is a deliberate trade he made explicitly, twice.
+        say "HOLD   iter=$ITER no movement after $HOLD_COUNT turns on $TARGET_CAP — HOLDING, not moving on"
+        HOLD_NOTE="ATTEMPT $HOLD_COUNT ON $TARGET_CAP, AND IT HAS NOT MOVED. BRAIN overall is still $OVERALL_NOW. You do NOT change capability and you do NOT start new work — the owner has ruled that the loop does not advance until this number rises. Everything you have tried on $TARGET_CAP so far has failed to reach him, so do not repeat that approach: state in your build entry what you now believe the REAL obstacle is, and attack that instead. If you believe the obstacle is that the work is not reaching production, say so plainly — that is a finding, not a failure."
+      else
+        say "HOLD   iter=$ITER BRAIN overall flat at $OVERALL_NOW — continuation turn $HOLD_COUNT/$HOLD_LIMIT on $TARGET_CAP"
+        HOLD_NOTE="CONTINUATION TURN $HOLD_COUNT of $HOLD_LIMIT. BRAIN overall did NOT move last turn (still $OVERALL_NOW). Do NOT start new work and do NOT change capability. Go deeper on $TARGET_CAP: the previous turn's change was insufficient or did not reach a live surface. Say in your build entry what you now believe was wrong about the last attempt."
+      fi
+    fi
+  fi
+  printf '%s' "$HOLD_COUNT" > "$STATE/hold-count"
+  [ -n "$OVERALL_NOW" ] && printf '%s' "$OVERALL_NOW" > "$STATE/overall-last"
+
+  # ── CHAT ANALYSIS (Codex) — the owner's experience, before anything is built ─
+  #
+  # Owner, 2026-08-17: "someone should review chat log … at which stage? before
+  # building so builder can incorporate it."
+  #
+  # CACHED ON THE ARCHIVE'S CONTENT. The 18 chats change only when the owner reports a
+  # new one, so re-analysing them every ~30 minutes would spend ~$20 a turn re-reading
+  # static text — while the same owner asked for SHORTER iterations. The hash makes
+  # this a real stage that costs nothing on the iterations where nothing changed.
+  CHATROOTS_FILE="$STATE/chat-root-causes.md"
+  CHAT_SRC="$ROOT/server/docs/brain_chat_archive.md"
+  CHAT_HASH_FILE="$STATE/chat-archive-hash"
+  if [ -f "$CHAT_SRC" ]; then
+    CHAT_HASH_NOW="$(sha256sum "$CHAT_SRC" "$ROOT/server/docs/brain_evaluation_chart.md" 2>/dev/null | sha256sum | awk '{print $1}')"
+    CHAT_HASH_WAS="$(cat "$CHAT_HASH_FILE" 2>/dev/null || echo "")"
+    if [ "$CHAT_HASH_NOW" != "$CHAT_HASH_WAS" ] || [ ! -s "$CHATROOTS_FILE" ]; then
+      CHAT_SEEN="$(cat "$STATE/chat-chats-analysed" 2>/dev/null || echo 0)"
+      CHAT_TOTAL="$(grep -c '^## Chat ' "$CHAT_SRC" 2>/dev/null || echo 0)"
+      say "CHAT   iter=$ITER archive changed — $CHAT_SEEN of $CHAT_TOTAL chats already analysed; sending the new ones"
+      CHAT_PROMPT="$(cat "$PROMPTS/chat-analysis.md")
+## Your previous ranking — carry it forward
+$(cat "$CHATROOTS_FILE" 2>/dev/null || echo '(none — this is the first analysis, read the whole archive)')
+
+## What is new since that ranking
+$CHAT_SEEN of $CHAT_TOTAL chats in brain_chat_archive.md were covered by the ranking
+above. Read only the chats AFTER that point, plus the recurrence table, and UPDATE the
+ranking: move an item up when a new chat is another occurrence of it, add what is
+genuinely new, and drop nothing silently — if you remove an item, say why.
+Do NOT re-derive the whole archive from scratch. Rescoring history each time produces
+noise that looks like new findings, which is the same failure the scoring seat was
+told to avoid."
+      if run_chat_analyst "$ITER" "$CHAT_PROMPT"; then
+        cp "$LOGS/iter-$(printf '%02d' "$ITER")-chat-last.txt" "$CHATROOTS_FILE" 2>/dev/null \
+          && printf '%s' "$CHAT_HASH_NOW" > "$CHAT_HASH_FILE" \
+          && printf '%s' "$CHAT_TOTAL" > "$STATE/chat-chats-analysed" \
+          && say "CHAT   iter=$ITER root causes written to chat-root-causes.md" \
+          || say "CHAT   iter=$ITER analysis produced no output — the builder gets the previous list"
+      else
+        say "CHAT   iter=$ITER codex returned non-zero — the builder gets the previous list"
+      fi
+    else
+      say "CHAT   iter=$ITER archive unchanged — reusing the cached root causes (no paid call)"
+    fi
+  fi
+  CHATROOTS="$(cat "$CHATROOTS_FILE" 2>/dev/null || echo "Not yet analysed — no chat root causes available this iteration.")"
+
+  # ── THE CAPABILITY GAPS, for the builder to aim at ────────────────────────
+  # Owner, 2026-08-17: "build will read capability evaluation and see how we can
+  # improve further, where is the gap." Rendered from the card the evaluation stage
+  # wrote MINUTES ago, sorted widest gap first. Without this the builder had the cap
+  # rule (@@CAP@@) but never the scores themselves — it was told not to repeat a
+  # capability claim, and never told which capability was weakest.
+  # Path passed as argv, NOT through the environment. $STATE is a shell variable the
+  # loop never exports, so os.environ.get("STATE") was "" and this printed UNKNOWN on
+  # every iteration — the builder was handed "TARGET THIS ITERATION: UNKNOWN" four
+  # times running and aimed blind. Every other heredoc here passes paths as argv.
+
+  # ── HANDSHAKE: did the LAST iteration's target actually move? ─────────────
+  if [ -s "$STATE/target-capability" ]; then
+    PREV_TARGET="$(cat "$STATE/target-capability")"
+    python3 - "$STATE/capability_scorecard.json" "$PREV_TARGET" "$STATE/aim-history" <<'PYAIM' \
+      | while read -r line; do say "$line"; done
+import json, sys
+card_p, target, hist_p = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    card = json.load(open(card_p))
+    hist = card.get("history") or []
+    if len(hist) < 2:
+        print(f"AIM    baseline only — no prior card to compare {target} against")
+        raise SystemExit
+    def snap(h):
+        return {c["name"]: c["nexeo"] for c in (h.get("snapshot") or [])}
+    before, after = snap(hist[-2]), snap(hist[-1])
+    b, a = before.get(target), after.get(target)
+    if b is None or a is None:
+        print(f"AIM    {target} not present in both cards — cannot compare")
+        raise SystemExit
+    delta = a - b
+    hit = "HIT" if delta > 0 else "MISS"
+    with open(hist_p, "a") as fh:
+        fh.write(f"{target}\t{b}\t{a}\t{delta}\t{hit}\n")
+    rows = [l.split("\t") for l in open(hist_p).read().splitlines() if l.strip()]
+    hits = sum(1 for r in rows if r[-1] == "HIT")
+    print(f"AIM    {hit}: {target} {b} -> {a} ({delta:+d}) · hit rate {hits}/{len(rows)}")
+except Exception as e:
+    print(f"AIM    could not evaluate the handshake: {e}")
+PYAIM
+  fi
+  printf '%s' "$TARGET_CAP" > "$STATE/target-capability"
+
+
+  CAPGAPS="$(python3 - "$STATE/capability_scorecard.json" <<'PYGAP'
+import json, sys
+p = sys.argv[1]
+try:
+    caps = json.load(open(p))["capabilities"]
+except Exception as e:
+    print(f"(no capability card readable: {e})")
+else:
+    rows = sorted(caps, key=lambda c: (c.get("professional") or 0) - (c.get("nexeo") or 0),
+                  reverse=True)
+    print("| capability | nexeo | professional | gap |")
+    print("|---|---|---|---|")
+    for c in rows:
+        gap = (c.get("professional") or 0) - (c.get("nexeo") or 0)
+        print(f"| {c['name']} | {c.get('nexeo')} | {c.get('professional')} | {gap} |")
+    w = rows[0]
+    print()
+    print(f"WIDEST GAP: **{w['name']}** at {w.get('nexeo')} against "
+          f"{w.get('professional')} — {(w.get('professional') or 0) - (w.get('nexeo') or 0)} points.")
+PYGAP
+)"
+
   # ── BUILD ────────────────────────────────────────────────────────────────
   BUILD_PROMPT="$(render "$PROMPTS/build.md" \
     ITER "$ITER" TARGET "$TARGET" \
@@ -992,7 +1303,8 @@ with evidence — 'I disagree' does not clear a release blocker."
     FORBIDDEN "$FORBIDDEN_ALERT" CAMPAIGN "$CAMPAIGN_TXT" REMEDIATION "$REMEDIATION_NOTE" \
     RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" CAP "$CAP_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
-    BASELINE "$BASELINE_OVERALL")"
+    BASELINE "$BASELINE_OVERALL" CAPGAPS "$CAPGAPS" TARGETCAP "$TARGET_CAP" \
+    HOLD "$HOLD_NOTE" CHATROOTS "$CHATROOTS")"
   # Save what the Builder was actually told. I could not verify that iteration 20's
   # remediation note reached the prompt, because the rendered text only ever lived
   # in this variable — so "the rail fired" and "the Builder was instructed" were
@@ -1034,10 +1346,20 @@ with evidence — 'I disagree' does not clear a release blocker."
     # api_error is often transient and the session's context is worth keeping.
     if [ "$DEAD_BUILDS" -ge 2 ]; then
       OLD_SID="$(cat "$STATE/builder-session-id" 2>/dev/null)"
-      NEW_SID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
-      printf '%s' "$NEW_SID" > "$STATE/builder-session-id"
-      printf '0' > "$STATE/dead-builds"
-      say "DEAD   rotating the Builder seat $OLD_SID -> $NEW_SID (a fresh seat opens next iteration)"
+      # A PINNED session is the owner's, not the loop's, and is never rotated away.
+      # Owner, 2026-08-17, created a session for build and deploy and pointed the
+      # builder at it; two dead builds would otherwise have replaced it with a random
+      # uuid and said so only in a log line he was not reading. Rotating a seat the
+      # loop opened is cheap; discarding one he opened is not the loop's call.
+      if [ -f "$STATE/builder-session-pinned" ]; then
+        printf '0' > "$STATE/dead-builds"
+        say "DEAD   builder seat $OLD_SID is PINNED by the owner — not rotating; the dead-build count is cleared and the same seat is retried"
+      else
+        NEW_SID="$(python3 -c 'import uuid;print(uuid.uuid4())')"
+        printf '%s' "$NEW_SID" > "$STATE/builder-session-id"
+        printf '0' > "$STATE/dead-builds"
+        say "DEAD   rotating the Builder seat $OLD_SID -> $NEW_SID (a fresh seat opens next iteration)"
+      fi
     fi
 
     say "SHIP   iter=$ITER deployed=no capability_moved=no (dead build — no work product)"
@@ -1062,9 +1384,12 @@ with evidence — 'I disagree' does not clear a release blocker."
   say "RAILS  iter=$ITER tsc=$TSC_AFTER"
   MEASURE_STARTED=0
   if [ "$TSC_AFTER" = "clean" ]; then
-    ( cd "$SRV" && npm run build ) > "$LOGS/iter-$(printf '%02d' "$ITER")-npmbuild.log" 2>&1 \
-      && say "RAILS  iter=$ITER npm run build ok" \
-      || say "RAILS  iter=$ITER npm run build FAILED"
+    # NO BUILD HERE EITHER. This emitted into the deployed server/dist once per
+    # iteration — the same forbidden write as the old PREP step, forty times over,
+    # and it only logged FAILED so it would have gone on doing it silently.
+    # tsc_status above already ran `npx tsc --noEmit`, which AGENTS.md §5 names as
+    # the check; an emitting build adds no verification, only risk.
+    say "RAILS  iter=$ITER build check = tsc --noEmit (no emit into the deployed dist)"
     TESTS_AFTER="$(test_status)"
     say "RAILS  iter=$ITER tests=$TESTS_AFTER"
     # G4 — MEASURE is blocking again, and runs BEFORE the review. The owner ruled
@@ -1095,6 +1420,27 @@ with evidence — 'I disagree' does not clear a release blocker."
   else
     SCORE_STATE="No measurement ran this iteration (tsc was RED, so build/tests/measure were skipped). The numbers below are the last successful measurement's."
   fi
+  # ── DEPLOY — BEFORE the review. Owner's ruling, 2026-08-17 ────────────────
+  #
+  # "since we are on live server … considering self healing (where no testing is
+  # involved by any human) so it should be deployed what is built, and codex will
+  # review what is built or deployed and grok will analyse what is built or deployed."
+  #
+  # WHAT THIS BUYS: Codex and Grok both then judge the RUNNING system rather than a
+  # branch nobody is executing. That was the whole reason the capability score sat at
+  # 47.7 for a day — the scorer credits only what reaches the owner, and nothing did.
+  #
+  # WHAT IT COSTS, stated plainly because nothing else in this file will say it: with
+  # the review moved after the ship, NO MODEL LOOKS AT THE DIFF BEFORE IT REACHES
+  # PRODUCTION. The gate is now `tsc --noEmit` + `vitest` above, and after the ship the
+  # HTTP probe with rollback inside deploy.sh. Codex becomes a detector, not a gate —
+  # a CRITICAL finding is now something the owner learns about from a deployed system.
+  # NEXEO_DEPLOY_ON=always because there is no review verdict yet to read.
+  if [ "$DEPLOY" = "1" ]; then
+    NEXEO_DEPLOY_ON=always "$ROOT/scripts/orchestrator/deploy.sh" "$ITER" \
+      || say "DEPLOY iter=$ITER did not ship (see the deploy log)"
+  fi
+
   REVIEW_PROMPT="$(render "$PROMPTS/review.md" \
     ITER "$ITER" TARGET "$TARGET" \
     OVERALL "$BENCH_OVERALL" MINSCORE "$BENCH_MIN" WEAKEST "$BENCH_WEAKEST" \
@@ -1102,35 +1448,11 @@ with evidence — 'I disagree' does not clear a release blocker."
     TSC "$TSC_AFTER" TESTS "$TESTS_AFTER" \
     BASEHEAD "$(git rev-parse --short "$BASE_HEAD")" HEAD "$(git rev-parse --short HEAD)" \
     DIFFSTAT "$DIFF_STAT" \
-    BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC")"
+    BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" \
+    TARGETCAP "$TARGET_CAP" CAPGAPS "$CAPGAPS")"
   run_codex "$ITER" "$REVIEW_PROMPT" || say "REVIEW iter=$ITER codex returned non-zero — continuing"
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
-
-  # ── SCORE (Grok) — G3: in the sequence, not a parallel daemon ─────────────
-  if [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
-    say "SCORE  iter=$ITER asking Grok (reads the codebase; nobody edits its numbers)"
-    if "$ROOT/scripts/orchestrator/run-score.sh" "$ITER" >/dev/null 2>&1; then
-      CAPJSON="$SCORES/iter-$(printf '%02d' "$ITER")-capability.json"
-      if python3 "$ROOT/scripts/orchestrator/scorecard.py" --ingest "$CAPJSON" \
-           --iteration "$ITER" --head "$(git rev-parse --short HEAD)" \
-           --commit --append --label "Post-Build" >> "$ORCH/score.log" 2>&1; then
-        say "SCORE  iter=$ITER card appended"
-      else
-        # Rejected means unevidenced or malformed — the file is removed so the
-        # iteration is retried rather than silently skipped.
-        say "SCORE  iter=$ITER INGEST REJECTED (see score.log) — capability file removed for retry"
-        rm -f "$CAPJSON"
-      fi
-    else
-      say "SCORE  iter=$ITER grok FAILED — see logs/iter-$(printf '%02d' "$ITER")-score.log"
-    fi
-  fi
-
-  # ── DEPLOY — last phase, gated on a SOUND review ──────────────────────────
-  if [ "$DEPLOY" = "1" ]; then
-    "$ROOT/scripts/orchestrator/deploy.sh" "$ITER" || say "DEPLOY iter=$ITER did not ship (see the deploy log)"
-  fi
 
   # ── stall accounting on the MINIMUM, which is what the gate reads ─────────
   CUR_MIN="${BENCH_MIN%%.*}"; [ -n "$CUR_MIN" ] || CUR_MIN=0
