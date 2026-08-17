@@ -42,15 +42,28 @@ export async function applyReasoningDecision(args: {
       };
 
     case 'decline':
-      // If the decider didn't fill in declineReason, emit a bracketed
-      // system marker instead of a hardcoded English fallback. Per
-      // memory rule feedback_no_hardcoded_brain_replies: every
-      // Brain-surface reply must be LLM-generated OR a bracketed
-      // system marker; hardcoded English pretending to be Brain is
-      // forbidden. The answerSanitizer rewrites the marker to
-      // human-readable text on the way out.
+      // DEF-205 — ONE field is owner-facing, and it is the same one on every
+      // decision. `answer_text` is the only field the contract describes as
+      // "the user-visible reply"; `decline_reason` is described as "one-line
+      // honest reason" — an internal justification about the turn. Handing the
+      // reason straight to him is how `B11-capability-limit` opened with "The
+      // user asked to place a WhatsApp call… I am offering valid alternatives"
+      // (C8 100 -> 80): correct content, written ABOUT the owner rather than TO
+      // him, because the field it came from was never specified as his.
+      //
+      // Two fields that can each become the reply is the output contract's own
+      // `protection-with-two-implementations`. Preferring `answerText` makes the
+      // owner-facing surface single; `declineReason` stays as the fallback so a
+      // decider that only filled the old field still says something true.
+      //
+      // If the decider filled NEITHER, emit a bracketed system marker rather
+      // than hardcoded English. Per memory rule feedback_no_hardcoded_brain_
+      // replies: every Brain-surface reply must be LLM-generated OR a bracketed
+      // system marker; hardcoded English pretending to be Brain is forbidden.
+      // The answerSanitizer rewrites the marker to human-readable text on the
+      // way out.
       return {
-        answer: result.declineReason || `[declined: no reason captured from decider]`,
+        answer: result.answerText || result.declineReason || `[declined: no reason captured from decider]`,
         citedPageIds: [],
         gaps: [],
         sources: [],
