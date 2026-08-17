@@ -2792,3 +2792,29 @@ A snapshot is not the present, per-row best effort is not a batch, and absence o
 ### Known issues deliberately not fixed
 
 The two pulse-contract failures (orchestrator-owned WIP). The same-millisecond `updatedAt` CAS residual (bounded by the status predicate; recorded in DEF-190). A migration IS included: `20260817_self_prune_notice_outbox` — additive, idempotent, no data backfill. C4 register work stays queued for the next fresh turn per Codex directive 6.
+
+## 42. DEF-191 — escalation ruling: the contested dispatcher goes behind the owner's gate; delegation holds without authority (2026-08-17, BUILDER: Claude — orchestrator iteration 5, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex's iteration-4 review (WRONG, the fourth against the notice path) held three findings all confined to the announce dispatcher — a restore inside the revalidate→enqueue async gap, immortal batch membership erasing a later re-withdrawal, no database ownership constraint for concurrent dispatchers — plus cap starvation, and one live hole outside it: the mutating delegation follow-up job could inherit fabricated default settings for a pair with no user row. The remediation rail escalated after three attempts.
+
+### Decision (stated for the owner)
+
+**(a) Known limitation for a now-disabled path — not (b) full revert.** The dispatcher runs only when the owner switches `selfpruning.withdrawal_notice_enabled` on (behaviorConfig, default 0, tenant scope — the same owner-gate shape Codex required for the digest). While off, withdrawals still archive reversibly with tenant-scoped CAS-guarded writes and each debt is still recorded durably; nothing is announced, and an unreachable config reads as off. Closing the findings properly needs Codex's own directives 1–3 (event tokens, batch-member uniqueness, transactional outbox→queue transfer) — a scoped redesign turn, not a fifth patch. Full revert was rejected because it would also revert the DEF-188/189 tenant-scoping and resurrect the live production tenant-blind cleanup CRITICAL.
+
+### Files changed (complete list, commit `bb0cf57`)
+
+- `server/src/services/behaviorConfig.ts` — registers `selfpruning.withdrawal_notice_enabled` (def 0, tenant scope) with the decision documented in the registry.
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — `dispatchOwedNotices` gates on the key; unknown-key registration bugs still throw; unreachable config = 0.
+- `server/src/jobs/delegationFollowUpJob.ts` — resolves settings via `resolveOpenItemsSettings`; a `no_user` pair is HELD (counted, logged), never chased under defaults.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — dispatcher tests run with the gate on; new tests: default-off archives with durable debt and zero announcements; unreachable config announces nothing.
+- `server/tests/def191DelegationAuthorityHold.test.ts` — no_user → held with no verdict asked and nothing sent; found → proceeds with the real followUpDays under the item's tenant; thrown read → error, not a chase.
+
+### Tests added / verification (measured after the last code edit, at `bb0cf57`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 195 files — 193 passed, 1 failed, 1 skipped; 2,398 tests — 2,367 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo (both `orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted `pulse.py`; the committed script passes the contract — §39). `git diff --check` clean. Actual `npm run build` at `bb0cf57` in the fully isolated clean clone (own `npm ci` deps): generate + emit OK.
+
+### Known issues deliberately not fixed
+
+Iteration-4 findings 1–4: recorded limitations of the now-disabled dispatcher, owed to the event-token redesign before the gate opens. The delegation job's global enumeration and bare-id owner lookup: pre-existing live carried CRITICAL, recorded OPEN in DEF-191 for its own scoped turn. The two pulse failures: orchestrator-owned WIP. The benchmark regression-guard hits on B05 C1 / B12 C2 are composer sampling variance — the range `e356d42..HEAD` touches no compose path (the only message-path file is `answerSanitizer.ts`, whose addition matches only the `selfpruning_withdrawn:` prefix, which neither answer contains); the unverifiable-send-claim CLASS the judge flagged belongs to the deferred C4 register turn (Codex directive 6).

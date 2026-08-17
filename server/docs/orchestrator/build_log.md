@@ -592,3 +592,134 @@ atomic insert and the revalidating read in a way that survives both the
 status filter and the queue-identity check, judges the delegate cast
 unacceptable before the deploy-time generate, or requires the interactive
 transaction for clearing.
+
+## Iteration 5 — the escalation ruling: withdraw the contested mechanism from the live surface
+
+**Commit `bb0cf57`** on `release/cmp-2026-08-16`. DEF-191 row added;
+`Changes_Made.md` §42 added. This turn answers three instructions at once and
+says how: the ESCALATION asks for a ruling on the remaining findings, the
+RE-SCOPE demands something that can ship, and STRUCTURAL MODE forbids a fifth
+patch on the same class. The ruling below satisfies all three; what I dropped
+is the fifth remediation attempt itself, deliberately.
+
+### The ruling, plainly
+
+**(a) Known limitation — for a path now DISABLED BY DEFAULT — not (b) full
+revert.** Codex's four open findings (revalidate→enqueue async window,
+immortal batch membership erasing a re-withdrawal, no DB ownership
+constraint, cap starvation) are ALL confined to the announce dispatcher.
+Closing them honestly requires Codex's own directives 1–3 — withdrawal-EVENT
+tokens, batch-member rows unique on (tenant, user, item, event), and a
+transactional outbox→queue transfer — which is a redesign of the delivery
+boundary, not a patch. Four consecutive remediation turns have each closed
+the previous turn's mechanism and exposed the next hole one level deeper,
+because notice delivery spans two systems with no shared transaction. A
+fifth attempt inside an escalated turn is the exact shape D-21 recorded as
+"a turn too large to hold every invariant in view".
+
+So the dispatcher now runs ONLY when the owner switches
+`selfpruning.withdrawal_notice_enabled` on (`behaviorConfig.ts` — def 0,
+tenant scope; `dispatchOwedNotices` gates first, unreachable config reads as
+0, unknown-key bugs still throw). This is the same owner-controlled-gate
+shape Codex REQUIRED for `selfpruning.digest_enabled`. While 0 — the shipped
+state — no outbox row is minted and nothing is announced; the four findings
+are dormant limitations of a disabled path, recorded in the DEF-191 row, and
+the gate must not open before the event-token redesign lands.
+
+**Why not full revert:** reverting f9f5ebf..8576274 would also revert
+DEF-188/189's tenant-scoping of the cleanup path — putting the LIVE
+tenant-blind cleanup CRITICAL back into the deployable artifact — and would
+discard the quarantine lifecycle, the fail-closed settings, and the CAS
+writes, all progressively reviewed clean, to remove one feature that is now
+off. The gate is the minimal revert: the contested BEHAVIOUR leaves the live
+surface; the reviewed code and the durable debt recording stay.
+
+### What still changed in code, and why it is small on purpose
+
+- **The gate** (above): `behaviorConfig.ts` registry entry +
+  `openItemsBacklogCleanupJob.ts` (`dispatchOwedNotices` head). Tests: the
+  registry default announces nothing while archives and debts continue; an
+  unreachable config announces nothing; all dispatcher tests now run with
+  the gate explicitly on.
+- **Claim 3's LIVE half** (Codex directive 5, the part that fits this turn):
+  `delegationFollowUpJob.ts` resolves settings under EXPLICIT authority —
+  a `no_user` pair is HELD (`summary.held`, logged), never chased under
+  fabricated defaults; a thrown read is an error, not a chase. Tested in
+  `def191DelegationAuthorityHold.test.ts` (no verdict asked, nothing sent;
+  the found-authority control proceeds with the real followUpDays under the
+  item's tenant).
+- **NOT done, named per the directive rule:** directives 1–3 (the event-token
+  redesign — the next scoped Self-Pruning turn, before the gate opens);
+  directive 4 (cap starvation — dormant behind the gate, recorded);
+  directive 5's other half — the delegation job's GLOBAL enumeration and
+  bare-id owner lookup are the pre-existing carried CRITICAL, live at
+  `e356d42`, recorded OPEN in DEF-191: it needs its own scoped turn, and
+  bolting it onto an escalation turn is the three-deaths-by-added-surface
+  pattern this brief warns about. Directive 6's C4 register turn stays next.
+
+### The regression guard, analyzed rather than waved off
+
+B05 C1 100→85 and B12 C2 100→85. The flagged sentences ("I've sent you a
+notification about it", "The dispatch record doesn't show a reason") do NOT
+appear in iteration 3's answers for the same cases — the reply text changed
+between runs. But the range `e356d42..HEAD` touches no compose path: the
+only message-path file in the diff is `answerSanitizer.ts`, whose addition
+is a parser matching only the `selfpruning_withdrawn:` prefix, which neither
+answer contains; the composer, persona, and register files are untouched.
+The variation is composer sampling. The CLASS the judge flagged —
+send-claims resting on artifacts the owner cannot verify — is real and is
+exactly the unverifiable-claim family this loop fights; it belongs to the
+C4/C1 register turn Codex's directive 6 already queues, where it can be
+fixed at the composition mechanism rather than per case.
+
+### Governing-docs verdict (rule 5)
+
+**Circling on the notice-delivery class — and this turn's structural answer
+is withdrawal of the mechanism, not another instance patch.** Removing the
+weaker implementation from the live surface until the correct one exists is
+the same move D-20 prescribed for the marker path ("delete, do not repair a
+seventh time"), applied at the feature boundary.
+
+### Verification (measured AFTER the last edit)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **195 files: 193 passed / 1 failed / 1 skipped · 2,398
+  tests: 2,367 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 remain `orchestratorPulseRoute.test.ts` against the orchestrator's
+  uncommitted `pulse.py` (committed script passes the contract — proven in
+  Iteration 2's entry). The orchestrator still owes that reconciliation.
+- **`npm run build`** — the actual script at `bb0cf57` in the fully isolated
+  clean clone (own `npm ci` dependencies): generate + emit OK,
+  `dist/jobs/openItemsBacklogCleanupJob.js` and
+  `dist/jobs/delegationFollowUpJob.js` produced in the clone. Production's
+  immutable dist untouched.
+- `git diff --check` — clean.
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 — the announce half is now explicitly owner-gated OFF. What
+            ships live: the reversible quarantine lifecycle and the
+            tenant-scoped cleanup (closing the deployed tenant-blind
+            CRITICAL), with withdrawal debts accumulating durably and
+            silently. Divergence from the brief's UNKNOWN target: the
+            escalation ruling is this turn's mandated scope.
+MECHANISM:  the contested mechanism is withdrawn from the live surface
+            instead of patched a fifth time; the reviewed-clean mechanism
+            ships.
+FALSIFIER:  with the gate at 0 — any outbox row minted, any withdrawal
+            notice reaching the owner, a cleanup run that stops archiving or
+            stops recording owed debt; a delegation chase composed for a
+            pair with no user row.
+```
+
+### Honest prediction
+
+Deployable if reviewed SOUND, and this is the artifact's honest shape: what
+is live is what survived four reviews; what did not survive is off, recorded,
+and waiting for its redesign. The benchmark should be flat (no compose path
+changed). Wrong if: Codex finds a path that reaches `dispatchOwedNotices`'s
+announce logic with the gate at 0, judges the gate itself an evasion rather
+than the digest-precedent containment, or shows the delegation authority
+hold to be incomplete in a way its tests miss.
