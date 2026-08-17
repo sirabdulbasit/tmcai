@@ -211,6 +211,47 @@ function digestMarkerMeaning(answer: string): string | null {
 }
 
 /**
+ * DEF-186 — the withdrawal notice's curated meaning (C-3 increment 3).
+ *
+ * Same contract as `digestMarkerMeaning`, same reasons: the marker body is
+ * JSON so a title cannot cross its field boundary, and this parser REJECTS
+ * anything the constructor (`renderSelfPruneNotice`) cannot have produced —
+ * a zero or impossible count, more named titles than withdrawn items, a
+ * non-string member — rather than repairing it into a fact nobody asserted.
+ * Constructor and parser are held in sync by def186SelfPruneWithdrawnNotice.test.ts.
+ *
+ * The wording keeps the vetted rules: facts only, no promise, no vocative, no
+ * first-person future. "Can be restored" is a standing property of the archive
+ * (CANCELLED -> TRIAGED exists in the transition matrix and nothing is
+ * deleted), not a promised future action.
+ */
+function withdrawnMarkerMeaning(answer: string): string | null {
+  const m = /^\s*\[selfpruning_withdrawn:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (!Number.isInteger(p?.count) || p.count < 1 || p.count > 10_000) return null;
+    if (!Array.isArray(p?.titles) || p.titles.length > 3 || p.titles.length > p.count) return null;
+    if (p.titles.some((t: unknown) => typeof t !== 'string')) return null;
+    const titles = (p.titles as string[])
+      .map((t) => t.replace(/\s+/g, ' ').trim().slice(0, 80))
+      .filter((t) => t.length > 0);
+    const named = titles.map((t) => `"${t}"`).join(', ');
+    const more = p.count - titles.length;
+    // "open items", not "inactive open items": the run also withdraws
+    // duplicates, smoke residue and gate-rejected junk, and the meaning must
+    // be true of every reason, not just the stale one.
+    const noun = p.count === 1 ? 'open item' : 'open items';
+    return `${p.count} ${noun} withdrew from the backlog`
+      + `${named ? `: ${named}` : ''}`
+      + `${named && more > 0 ? ` and ${more} more` : ''}. `
+      + `Each one is kept in full and can be restored.`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The curated meaning of a whole-answer marker, when we have one.
  *
  * These 25 replacements are not throwaway strings — several were reworded
@@ -228,6 +269,8 @@ export function curatedMarkerMeaning(answer: string): string | null {
   // regex-substituted — an unparseable payload is null, not a guess.
   const digest = digestMarkerMeaning(answer);
   if (digest) return digest;
+  const withdrawn = withdrawnMarkerMeaning(answer);
+  if (withdrawn) return withdrawn;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }

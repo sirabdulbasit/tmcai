@@ -180,3 +180,39 @@ export function renderItemDigest(args: {
   };
   return systemMarker(`selfpruning_digest: ${JSON.stringify(payload)}`);
 }
+
+/**
+ * DEF-186 — the withdrawal notice (C-3 increment 3).
+ *
+ * The backlog cleanup archives junk reversibly and used to do it in silence;
+ * the campaign's own wording is *"the owner is told once what was withdrawn"*.
+ * This is that one message, in the same sanctioned form as the digest above
+ * and for the same reviewed reasons: a provenance-stamped marker carrying only
+ * FACTS as JSON (the field boundary), whose single vetted meaning lives in
+ * `answerSanitizer` and is spoken through the `markerVoice` boundary. Same
+ * constructor-clamps / parser-rejects split as `renderItemDigest`.
+ *
+ * "Once" is the caller's property, not this function's: an item is archived
+ * exactly once, and the notice covers only the items archived in that run.
+ */
+export function renderSelfPruneNotice(args: {
+  /** How many items this run withdrew for this owner. */
+  count: number;
+  /** Up to three of their titles, verbatim; the rest ride as arithmetic. */
+  titles: readonly string[];
+}): string {
+  const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
+  const int = (n: number, lo: number, hi: number) =>
+    (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : lo);
+  const titles = (Array.isArray(args.titles) ? args.titles : [])
+    .slice(0, 3)
+    .map((t) => clean(String(t)).slice(0, 80))
+    .filter((t) => t.length > 0);
+  const payload = {
+    // A notice about nothing is a caller bug; clamp keeps count >= titles
+    // named, so the parser's consistency check cannot be tripped from here.
+    count: Math.max(int(args.count, 1, 10_000), titles.length, 1),
+    titles,
+  };
+  return systemMarker(`selfpruning_withdrawn: ${JSON.stringify(payload)}`);
+}

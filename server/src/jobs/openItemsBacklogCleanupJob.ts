@@ -3,9 +3,13 @@
  *
  * Runs the SAME quality gate that gates auto-creates against every
  * still-open item. If a row would be rejected at create time today,
- * it gets archived now. Plus an aggressive stale-item sweep:
- *   - Items > 30 days old, never opened, never delegated, never replied,
- *     non-critical → archived as "stale_no_engagement".
+ * it gets archived now. Plus the stale sweep:
+ *   - Items past the user's stale window (default 30 days), never delegated,
+ *     never replied, non-critical → QUARANTINED first (proactive messages
+ *     suppressed), then soft-closed as "stale_no_engagement" after the grace
+ *     period — the same reversible lifecycle as malformed residue, decided by
+ *     the ONE policy in `zombieItemPolicy` (DEF-186; the job previously held
+ *     its own weaker engagement definition and archived with no grace).
  *   - Exact duplicates of (sourceFeed, sourceRef) within the same user
  *     → kept the oldest, archive the rest as "duplicate_collapsed".
  *
@@ -13,9 +17,15 @@
  * gate would reject them today, they may have been rated critical for
  * a reason the gate doesn't see (e.g. a delegation was already assigned).
  *
+ * DEF-186 (C-3 increment 3): a run that withdrew anything tells the owner
+ * ONCE what withdrew — one queued notice per (user, tenant), in the sanctioned
+ * marker form, covering exactly the items archived in that run. An item is
+ * archived exactly once, so nothing is ever announced twice.
+ *
  * Idempotent. Safe to run repeatedly. Uses a 60s lock per tenant so
  * multiple cron ticks can't race.
  */
+import { createHash } from 'crypto';
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
 import { planZombieLifecycle } from '../services/openItems/zombieItemPolicy';
@@ -36,8 +46,10 @@ interface CleanupStats {
   archivedDuplicate: number;
   archivedSmoke: number;
   quarantinedZombie: number;
+  quarantinedStale: number;
   archivedZombie: number;
   recoveredZombie: number;
+  noticesEnqueued: number;
   errors: number;
 }
 
@@ -53,7 +65,24 @@ function normalizeTitle(s: string): string {
 export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
   const stats: CleanupStats = {
     scanned: 0, archivedByGate: 0, archivedStale: 0, archivedDuplicate: 0, archivedSmoke: 0,
-    quarantinedZombie: 0, archivedZombie: 0, recoveredZombie: 0, errors: 0,
+    quarantinedZombie: 0, quarantinedStale: 0, archivedZombie: 0, recoveredZombie: 0,
+    noticesEnqueued: 0, errors: 0,
+  };
+
+  // DEF-186 — everything this run withdraws, grouped per (user, tenant), so
+  // the owner can be told once at the end. Only items ARCHIVED in this run
+  // enter; quarantines and recoveries are silent by design.
+  const withdrawnByOwner = new Map<string, {
+    userId: number; clientNumber: string; itemIds: string[]; titles: string[];
+  }>();
+  const recordWithdrawal = (it: { id: string; title: string; userId: number; clientNumber: string | null }) => {
+    if (!it.clientNumber) return; // an untenanted row cannot be announced — enqueue requires the tenant
+    const key = `${it.userId}|${it.clientNumber}`;
+    const group = withdrawnByOwner.get(key)
+      ?? { userId: it.userId, clientNumber: it.clientNumber, itemIds: [], titles: [] };
+    group.itemIds.push(it.id);
+    group.titles.push(it.title);
+    withdrawnByOwner.set(key, group);
   };
 
   // Per-user stale window resolved inside the loop. The candidate
@@ -93,20 +122,39 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
     try {
       const meta = (it.metadata as Record<string, unknown> | null) ?? {};
 
-      // Quarantine malformed passive items before any cleanup or follow-up
-      // path can act on them. This is a soft, auditable lifecycle: no delete.
-      const prunePlan = planZombieLifecycle(it);
+      // Per-user stale window, resolved BEFORE the lifecycle plan because the
+      // policy needs it: staleness is now one of the policy's reasons, not a
+      // separate archive path with its own weaker engagement definition
+      // (DEF-186 — that duplicate definition was the
+      // protection-with-two-implementations shape).
+      let staleDays = userStaleCache.get(it.userId);
+      if (staleDays === undefined) {
+        try {
+          const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+          const s = await getOpenItemsSettings(it.userId);
+          staleDays = s.staleThresholdDays > 0 ? s.staleThresholdDays : DEFAULT_STALE_DAYS;
+        } catch {
+          staleDays = DEFAULT_STALE_DAYS;
+        }
+        userStaleCache.set(it.userId, staleDays);
+      }
+
+      // Quarantine junk (malformed OR stale-with-no-engagement) before any
+      // cleanup or follow-up path can act on it. Soft, auditable, no delete.
+      const prunePlan = planZombieLifecycle(it, new Date(), undefined, { staleAfterDays: staleDays });
       if (prunePlan.action === 'quarantine') {
         await prisma.openItem.update({
           where: { id: it.id },
           data: { metadata: { ...meta, selfPrune: prunePlan.selfPrune } as any },
         });
-        stats.quarantinedZombie++;
+        if (prunePlan.reason === 'stale_no_engagement') stats.quarantinedStale++;
+        else stats.quarantinedZombie++;
         continue;
       }
       if (prunePlan.action === 'hold') continue;
       if (prunePlan.action === 'archive') {
         const archivedAt = new Date().toISOString();
+        const stale = prunePlan.reason === 'stale_no_engagement';
         await prisma.openItem.update({
           where: { id: it.id },
           data: {
@@ -127,13 +175,18 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
             metadata: {
               ...meta,
               selfPrune: prunePlan.selfPrune,
-              archivedReason: `zombie:${prunePlan.reason}`,
+              // 'stale_no_engagement' keeps its historical label — pre-DEF-186
+              // rows archived under it with no quarantine phase, and one name
+              // per class beats two.
+              archivedReason: stale ? 'stale_no_engagement' : `zombie:${prunePlan.reason}`,
               archivedAt,
               inactivationReason: `Self-pruned after quarantine (${prunePlan.reason})`,
             } as any,
           },
         });
-        stats.archivedZombie++;
+        if (stale) stats.archivedStale++;
+        else stats.archivedZombie++;
+        recordWithdrawal(it);
         continue;
       }
       if (prunePlan.action === 'recover') {
@@ -154,6 +207,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
           },
         }).catch(() => {});
         stats.archivedSmoke++;
+        recordWithdrawal(it);
         continue;
       }
 
@@ -187,38 +241,14 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
           },
         }).catch(() => {});
         stats.archivedByGate++;
+        recordWithdrawal(it);
         continue;
       }
 
-      // 1c. Stale: created > N days ago (per-user staleThresholdDays;
-      // default 30; 0 disables), no delegation, no notes.
-      // Even if `updatedAt` shifted (Brain re-scoring), we treat it as
-      // stale unless the user has actually engaged.
-      let staleDays = userStaleCache.get(it.userId);
-      if (staleDays === undefined) {
-        try {
-          const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
-          const s = await getOpenItemsSettings(it.userId);
-          staleDays = s.staleThresholdDays > 0 ? s.staleThresholdDays : DEFAULT_STALE_DAYS;
-        } catch {
-          staleDays = DEFAULT_STALE_DAYS;
-        }
-        userStaleCache.set(it.userId, staleDays);
-      }
-      const userCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
-      const hasNotes = Array.isArray(it.notes) && it.notes.length > 0;
-      const hasDelegation = !!it.delegateeId || !!it.delegateeEmail || !!it.delegateeName;
-      if (staleDays > 0 && it.createdAt < userCutoff && !hasNotes && !hasDelegation) {
-        await prisma.openItem.update({
-          where: { id: it.id },
-          data: {
-            status: 'CANCELLED' as any,
-            metadata: { ...(meta as any), archivedReason: 'stale_no_engagement', archivedAt: new Date().toISOString() } as any,
-          },
-        }).catch(() => {});
-        stats.archivedStale++;
-        continue;
-      }
+      // 1c. Stale-with-no-engagement now lives inside the lifecycle plan
+      // above (DEF-186): quarantine first, archive after the grace period,
+      // one engagement definition — `hasEngagementEvidence` — instead of
+      // this job's former private one (notes+delegation only).
 
       // 1d. Exact duplicates by (sourceFeed, sourceRef) per user
       if (it.sourceRef && it.sourceFeed) {
@@ -233,6 +263,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
             },
           }).catch(() => {});
           stats.archivedDuplicate++;
+          recordWithdrawal(it);
           continue;
         }
         seenRefs.set(key, it.id);
@@ -255,6 +286,7 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
             },
           }).catch(() => {});
           stats.archivedDuplicate++;
+          recordWithdrawal(it);
           continue;
         }
         seenTitles.set(titleKey, it.id);
@@ -265,8 +297,46 @@ export async function runOpenItemsBacklogCleanup(): Promise<CleanupStats> {
     }
   }
 
+  // DEF-186 — tell the owner ONCE what withdrew, per (user, tenant). The
+  // notice rides the ordinary prompt queue (quiet hours, caps, dedup and the
+  // owner-address boundary all apply through the one existing implementation)
+  // as a non-blocking notice: `expectsReply: false`, because it asks nothing.
+  // A notice failure never fails the cleanup — the withdrawals themselves are
+  // already durable and auditable in each row's metadata.
+  for (const group of withdrawnByOwner.values()) {
+    try {
+      const { enqueueBrainPrompt } = await import('../services/brainPrompts/brainPromptQueueService');
+      const { renderSelfPruneNotice } = await import('../services/notifications/proactiveMessageText');
+      const idHash = createHash('sha256')
+        .update([...group.itemIds].sort().join(','))
+        .digest('hex')
+        .slice(0, 16);
+      await enqueueBrainPrompt({
+        userId: group.userId,
+        clientNumber: group.clientNumber,
+        question: renderSelfPruneNotice({ count: group.itemIds.length, titles: group.titles }),
+        criticality: 'routine',
+        expectsReply: false,
+        provenance: 'system_marker',
+        dedupKey: `selfpruning_withdrawn:${idHash}`,
+        metadata: {
+          source: 'open_items_backlog_cleanup',
+          selfPruneNotice: { itemIds: group.itemIds, count: group.itemIds.length },
+        },
+      });
+      stats.noticesEnqueued++;
+    } catch (err: any) {
+      stats.errors++;
+      log.warn('withdrawal notice enqueue failed', {
+        userId: group.userId, clientNumber: group.clientNumber,
+        count: group.itemIds.length, err: err?.message,
+      });
+    }
+  }
+
   if (stats.archivedByGate + stats.archivedStale + stats.archivedDuplicate
-      + stats.quarantinedZombie + stats.archivedZombie + stats.recoveredZombie > 0) {
+      + stats.quarantinedZombie + stats.quarantinedStale + stats.archivedZombie
+      + stats.recoveredZombie + stats.noticesEnqueued > 0) {
     log.info('cleanup tick', { ...stats });
   }
   return stats;

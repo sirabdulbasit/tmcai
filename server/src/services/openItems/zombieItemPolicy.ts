@@ -1,5 +1,7 @@
 /**
- * Deterministic, reversible policy for malformed open-item residue.
+ * Deterministic, reversible policy for open-item junk: malformed residue and
+ * (DEF-186, C-3 increment 3) well-formed items with no engagement past the
+ * user's stale window.
  *
  * This module deliberately does not use an LLM. A candidate is first
  * quarantined (proactive messages suppressed), then soft-closed only after a
@@ -12,7 +14,12 @@ export const DEFAULT_ZOMBIE_QUARANTINE_DAYS = 7;
 export type ZombieReason =
   | 'empty_title'
   | 'placeholder_title'
-  | 'dangling_fragment';
+  | 'dangling_fragment'
+  // C-3 increment 3 — a well-formed item nobody has touched for the user's
+  // stale window. Same reversible lifecycle as the malformed reasons; the
+  // difference is only how it is detected (age + no engagement, not title
+  // shape), so the detection needs the caller to supply the window.
+  | 'stale_no_engagement';
 
 export interface ZombiePolicyItem {
   title: string;
@@ -25,6 +32,23 @@ export interface ZombiePolicyItem {
   delegateeEmail?: string | null;
   notes?: unknown;
   metadata?: unknown;
+  createdAt?: Date | string | null;
+}
+
+export interface StalePruneOptions {
+  /**
+   * The user's no-engagement window in days.
+   *
+   * `undefined` — this caller did not resolve the user's setting and cannot
+   * judge staleness: stale detection is off AND an existing stale quarantine
+   * is HELD, never recovered, so a caller that cannot see the window cannot
+   * release what another caller quarantined.
+   * `<= 0` — the user disabled the stale sweep: no stale detection, and an
+   * existing stale quarantine is released (recover).
+   * `> 0` — an item created longer ago than this, with no engagement
+   * evidence, is 'stale_no_engagement'.
+   */
+  staleAfterDays?: number | null;
 }
 
 export interface SelfPruneMetadata {
@@ -89,7 +113,11 @@ function hasEngagementEvidence(item: ZombiePolicyItem): boolean {
 }
 
 /** Return a high-confidence reason, or null when the item must be preserved. */
-export function classifyZombieOpenItem(item: ZombiePolicyItem): ZombieReason | null {
+export function classifyZombieOpenItem(
+  item: ZombiePolicyItem,
+  now = new Date(),
+  opts?: StalePruneOptions,
+): ZombieReason | null {
   const status = String(item.status ?? '').toUpperCase();
   if (!['DRAFT', 'NEW', 'TRIAGED', 'OPEN'].includes(status)) return null;
   if (String(item.priority ?? '').toLowerCase() === 'critical') return null;
@@ -108,6 +136,19 @@ export function classifyZombieOpenItem(item: ZombiePolicyItem): ZombieReason | n
     return 'dangling_fragment';
   }
 
+  // Stale last: the malformed reasons are more specific and keep their
+  // identity for items that are both malformed and old. A well-formed title
+  // does not rescue an item nobody has engaged with for the whole window —
+  // engagement evidence (checked above) is the rescue.
+  const staleAfterDays = opts?.staleAfterDays;
+  if (typeof staleAfterDays === 'number' && staleAfterDays > 0 && item.createdAt != null) {
+    const created = new Date(item.createdAt as any);
+    if (Number.isFinite(created.getTime())
+      && now.getTime() - created.getTime() >= Math.round(staleAfterDays) * 86_400_000) {
+      return 'stale_no_engagement';
+    }
+  }
+
   return null;
 }
 
@@ -115,7 +156,7 @@ function existingSelfPrune(metadata: unknown): SelfPruneMetadata | null {
   const value = asRecord(asRecord(metadata).selfPrune);
   if (value.version !== SELF_PRUNE_POLICY_VERSION) return null;
   if (!['quarantined', 'recovered', 'archived'].includes(value.state)) return null;
-  if (!['empty_title', 'placeholder_title', 'dangling_fragment'].includes(value.reason)) return null;
+  if (!['empty_title', 'placeholder_title', 'dangling_fragment', 'stale_no_engagement'].includes(value.reason)) return null;
   if (typeof value.detectedAt !== 'string') return null;
   return value as SelfPruneMetadata;
 }
@@ -130,13 +171,22 @@ export function planZombieLifecycle(
   item: ZombiePolicyItem,
   now = new Date(),
   quarantineDays = DEFAULT_ZOMBIE_QUARANTINE_DAYS,
+  opts?: StalePruneOptions,
 ): ZombieLifecyclePlan {
-  const reason = classifyZombieOpenItem(item);
+  const reason = classifyZombieOpenItem(item, now, opts);
   const existing = existingSelfPrune(item.metadata);
   const nowIso = now.toISOString();
 
   if (!reason) {
     if (existing?.state !== 'quarantined') return { action: 'none' };
+    // A stale quarantine can only be released by a caller that resolved the
+    // user's window. To every other caller a stale-quarantined item looks
+    // healthy by construction (its title is fine) — recovering it here would
+    // let a caller that never evaluated staleness undo a decision it cannot
+    // re-make, so it holds instead.
+    if (existing.reason === 'stale_no_engagement' && opts?.staleAfterDays === undefined) {
+      return { action: 'none' };
+    }
     return {
       action: 'recover',
       previous: existing,

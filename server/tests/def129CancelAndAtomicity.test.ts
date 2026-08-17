@@ -407,12 +407,16 @@ describe('DEF-129 — no writer mints a status the matrix cannot move', () => {
   });
 
   it('the backlog pruner records withdrawal, not completion', () => {
-    // Five of its writes used the legacy lowercase 'closed'. All six prune paths
-    // now record CANCELLED — junk was never work that got completed.
+    // Five of its writes used the legacy lowercase 'closed'. Every prune path
+    // now records CANCELLED — junk was never work that got completed.
+    // DEF-186 merged the stale-item write into the zombie-archive write (stale
+    // items take the quarantine lifecycle now), so the job has FIVE status
+    // write sites: zombie/stale archive, smoke, gate, and the two duplicate
+    // collapses.
     const src = stripComments(readFileSync(
       join(__dirname, '..', 'src', 'jobs', 'openItemsBacklogCleanupJob.ts'), 'utf-8'));
     expect(src).not.toMatch(/status: 'closed'/);
-    expect((src.match(/status: 'CANCELLED' as any/g) ?? []).length).toBeGreaterThanOrEqual(6);
+    expect((src.match(/status: 'CANCELLED' as any/g) ?? []).length).toBeGreaterThanOrEqual(5);
   });
 
   it('the archive handler goes through the matrix, and its preview says so', () => {
