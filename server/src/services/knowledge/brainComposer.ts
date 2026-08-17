@@ -4994,6 +4994,37 @@ async function buildAttentionBlockForDayBrief(clientNumber: string, userId: numb
  *  to today (local-day window in UTC, so a 23:30 event still counts
  *  as today). Returns '' when nothing's scheduled — Brain's digest
  *  will simply skip the calendar section. */
+/**
+ * DEF-204 — every read block states whether what it shows is ALL of it.
+ *
+ * THE FIRED REGRESSION. `B05-warmth` C6 fell 100 -> 85 on a calendar section
+ * holding a single entry. The judge: *"If there truly was only one calendar
+ * item, it should have stated that explicitly … If there were more, it should
+ * have listed them or explained why it only listed one."* The entry WAS the
+ * whole day — `buildTodayCalendarBlock` does not truncate — but nothing in the
+ * block said so, so a complete answer read as a partial one and was marked down
+ * for incompleteness.
+ *
+ * The same hole runs the other way in the blocks beside it: `buildRecentEmails
+ * Block` and `buildRecentWhatsAppBlock` both `LIMIT` to `max` and say nothing
+ * when they hit it, so a genuinely partial list reads as complete. That is the
+ * DEF-193/194 truncation lesson on a different surface: a list that was cut must
+ * say it was cut.
+ *
+ * Both directions are the same missing fact — the block never declares its own
+ * completeness — so this is ONE helper used by all three, not three sentences.
+ * A fourth block added tomorrow has a function to call.
+ */
+function completenessLine(shown: number, hitCap: boolean, noun: string): string {
+  const plural = shown === 1 ? noun : `${noun}s`;
+  if (hitCap) {
+    return `⚠ CAPPED AT ${shown} — MORE MAY EXIST that are not shown here.`
+      + ` Never present this as the complete list; say you are showing the most recent ${shown}.`;
+  }
+  return `(${shown} ${plural} — this is the COMPLETE list for this window.`
+    + ` If he asks whether that is all, the answer is yes; say so plainly rather than hedging.)`;
+}
+
 async function buildTodayCalendarBlock(clientNumber: string, userId: number): Promise<string> {
   // CANONICAL VIEW: getTodayCalendar is the SOLE entry point for "what
   // meetings does this user have today". Web UI's Day Brief calendar
@@ -5013,7 +5044,9 @@ async function buildTodayCalendarBlock(clientNumber: string, userId: number): Pr
       : '';
     return `- ${e.localTime} ${e.title}${att}`;
   });
-  return `# Today's calendar (times in ${tz})\n${lines.join('\n')}`;
+  // Not capped — `getTodayCalendar` returns the whole day, so this block can
+  // always say so, which is exactly what B05 was marked down for omitting.
+  return `# Today's calendar (times in ${tz})\n${lines.join('\n')}\n${completenessLine(events.length, false, 'event')}`;
 }
 
 /** Recent inbound emails (last 24h) — ground truth for "any email
@@ -5048,7 +5081,10 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
     const when = new Date(r.created_at).toISOString().slice(11, 16) + ' UTC';
     return `- [${when}] From: ${fromName ? `${fromName} <${fromEmail}>` : fromEmail} · Subject: ${subj}${snippet ? `\n    ${snippet}` : ''}`;
   });
-  return `# Recent emails (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
+  // DEF-204 — "10 of last 10" reads as complete but is the CAP. The block now
+  // says which of the two it is.
+  return `# Recent emails (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`
+    + `\n${completenessLine(rows.length, rows.length >= max, 'email')}`;
 }
 
 /** Recent WhatsApp messages (last 24h) the user actually received.
@@ -5124,7 +5160,8 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     const knownTag = known.has(phone) ? '' : ' [not in your contacts]';
     return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
   });
-  return `${degradedHeader}# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`;
+  return `${degradedHeader}# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`
+    + `\n${completenessLine(rows.length, rows.length >= max, 'message')}`;
 }
 
 /** Contact provenance block — ONLY built when the user's question
