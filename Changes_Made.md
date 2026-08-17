@@ -2740,3 +2740,29 @@ Two implementations of one decision (the job's private notes+delegation engageme
 ### Known issues deliberately not fixed
 
 The two pulse-contract failures (orchestrator-owned working-tree WIP; Builder is forbidden from `scripts/orchestrator/**`). Smoke/gate/duplicate archives do not quarantine — deliberate: quarantine protects fallible classifications; a smoke tag, a hard gate code and an exact duplicate carry their own evidence, and their archives remain reversible, audited and announced. Historical rows archived before this change carry no `selfPruneNotice` and are not announced retroactively (backfilling would fabricate audit data). No migration is included; no schema change.
+
+## 40. DEF-189 — the remediation's own guarantees moved to the level that enforces them (2026-08-17, BUILDER: Claude — orchestrator iteration 3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex's iteration-2 review (WRONG) showed the DEF-187/188 remediation claiming guarantees one level above their implementation: both enumeration queries were tenant-blind; a settings database error silently became the 14-day default (making "unreadable → hold" unreachable); the notice batch's dedup hash changed with the retry subset, so a partial mark failure could double the owner's notice; the "guarded" update had no expected-state predicate, so a concurrent user edit could still be cancelled over; and unordered `take: 100` owed-pair selection could starve later owners.
+
+### Confirmed root cause
+
+Scope is not compare-and-set, absence is not error, and a set-derived identity is not an identity — each guarantee was asserted in a caller while its dependency failed open.
+
+### Files changed (complete list, commit `e441723`)
+
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — per-tenant entry `runOpenItemsBacklogCleanup(clientNumber)`; the only cross-tenant read is the tenant-registry enumeration in `runOpenItemsBacklogCleanupForAllTenants` (the `runContactPruneForAllTenants` pattern); every openItem query carries `clientNumber`; `guardedItemUpdate(target, expected, data)` is a real compare-and-set (read status + `@updatedAt` token; `status: 'CANCELLED'` for post-archive writes); fired guards count as `raced`, never as withdrawals; owed notices are stamped with a persistent `batchId` before enqueue, the dedupKey derives from the batchId alone, and `settleBatch` checks the queue for that identity in any state before sending; owed dispatch is deterministic (userId asc, oldest rows first), with no unordered cap over owners; `OWED_WHERE` requires `status: 'CANCELLED'`, so a restored row can never be announced as withdrawn.
+- `server/src/jobs/centralCleanupGovernor.ts` — calls the all-tenants wrapper.
+- `server/src/services/openItems/openItemsSettings.ts` — a database error THROWS; defaults only on a confirmed no-row or block-less read; errors never cached.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — mock now honours scalar status, `updatedAt`, and dedupKey predicates, simulates the queue table and a concurrent editor; named tests for every finding: query-shape sweep (no unscoped openItem read), CAS race (user edit survives, `raced` counted), partial-mark retry with original batch identity (owner gets exactly one message), transient enqueue failure (exactly once across ticks), disable and unreadable-settings holds, cross-tenant isolation via the registry-driven sweep.
+- `server/tests/def189OpenItemsSettingsFailClosed.test.ts` — the REAL settings module against a rejecting Prisma: error throws, error not cached, confirmed absence → defaults, healthy read cached per (tenant, user).
+
+### Tests added / verification (measured after the last code edit, at `e441723`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 194 files — 192 passed, 1 failed, 1 skipped; 2,386 tests — 2,355 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py` (the committed script passes the contract's exact assertions — proven in §39/DEF-187). `git diff --check` clean. **Build:** the actual `npm run build` (`prisma generate && tsc -p tsconfig.build.json`) executed in a fully isolated clean clone at `e441723` with its own `npm ci`-installed dependencies — output recorded in the build log; the production `server/dist` (immutable, `chattr +i`) was not touched.
+
+### Known issues deliberately not fixed
+
+The two pulse-contract failures (orchestrator-owned WIP in a path the Builder is forbidden to touch). The C4 register work (B11/B12/B10/B08) is Codex directive 6's NEXT fresh turn. No migration; no schema change.

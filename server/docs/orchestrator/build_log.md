@@ -315,3 +315,138 @@ explicitly attributed to orchestrator WIP outside the range. Wrong if: Codex
 shows a write path that still claims success without a count, a notice
 scenario that loses the debt (not merely delays it), or a cleanup query I
 missed that reads across tenants.
+
+## Iteration 3 — remediation of the iteration-2 WRONG, finding by finding
+
+**Commit `e441723`** (code) on `release/cmp-2026-08-16`. DEF-189 row added;
+`Changes_Made.md` §40 added. No fixQueue entry targeted — remediation wins on
+scope; the C4 register cases (B11/B12/B10/B08) are Codex's own directive 6
+for the next FRESH turn, and the re-scope instruction's "pick work that can
+ship" is answered by finishing this range rather than opening new surface.
+
+### The findings, in severity order, and what closed each
+
+**CRITICAL — tenant-blind enumeration (one pre-existing read, one my own).**
+Accepted without reservation: partitioning after a global read was not the
+invariant, and the owed-pair enumeration was my own addition. Closed by
+moving the boundary to the entry point: `runOpenItemsBacklogCleanup` now
+TAKES `clientNumber`, and every openItem query in the file — both
+enumerations included — carries it (`openItemsBacklogCleanupJob.ts:186-194,
+216-231, 384-391, 419-425`). The one legitimately cross-tenant read left is
+the tenant REGISTRY enumeration (distinct clientNumber over active users) in
+`runOpenItemsBacklogCleanupForAllTenants:158-167` — the same sanctioned
+pattern `runContactPruneForAllTenants` uses — and the governor now calls that
+wrapper (`centralCleanupGovernor.ts:56-63`). The query-shape sweep test
+(directive 2) asserts across a full two-tenant run that no openItem read
+anywhere lacks its tenant.
+
+**HIGH — settings failed open to defaults.** Codex was right that my
+"unreadable → hold" claim was unreachable: the catch lived one level below
+me. `getOpenItemsSettings` now THROWS on a database error
+(`openItemsSettings.ts` — the absence policy stays narrow and deliberate: a
+CONFIRMED no-row read or block-less row coerces to defaults; errors are never
+cached). The REAL module is tested against a rejecting Prisma
+(`def189OpenItemsSettingsFailClosed.test.ts`), per directive 1 — not a mock
+of the exported function. Every consumer's fail direction on throw is "do
+less": the cleanup holds (undefined window), the gate falls through to
+CREATING visibly (`openItemGate.ts:167` catch — suppression is the dangerous
+direction, DEF-156), the follow-up job skips the item for a tick.
+
+**HIGH — a partial mark failure could double the notice.** Codex's scenario
+was exact: the hash covered the retry subset, not the batch. The identity is
+now PERSISTED: unannounced rows are stamped with a `batchId` in a confirmed
+guarded write BEFORE anything is enqueued; the dedupKey derives from the
+batchId alone; and `settleBatch` first asks the queue whether that identity
+exists IN ANY STATE (`prisma.brainPromptQueue.findFirst` scoped tenant+user+
+dedupKey) — if it does, the notice was accepted once and the debt clears with
+no second message. This also survives the prompt going TERMINAL, which mere
+enqueue-dedup (non-terminal only) would not. Named test: A+B announced once,
+B's mark fails, tick 2 retries {B} under the original identity, finds the
+prompt, sends nothing — `state.prompts` length stays 1.
+
+**HIGH — the "guarded" update was scope, not compare-and-set.** Also exact.
+`guardedItemUpdate(target, expected, data)` now carries the EXPECTED state:
+the status the planner read plus the `@updatedAt` version token (the column
+is `@updatedAt`, so any user edit bumps it) for all lifecycle writes;
+`status: 'CANCELLED'` for post-archive notice writes — which, with
+`OWED_WHERE` requiring CANCELLED, also makes a concurrently-RESTORED row
+unmarkable and unannounceable: a restored item can never be told to the owner
+as withdrawn. A fired guard increments `raced`, never a stat or debt. Named
+test: the concurrent editor adds a due date after the read — count 0, the
+edit survives, no cancellation, no debt, no notice, `errors` 0.
+
+**MEDIUM — owed-pair starvation.** Closed by determinism rather than a
+cursor: within a tenant, owed USERS are enumerated with no cap, userId asc;
+rows per batch oldest-first, capped 200 with the cap logged. Every owed owner
+is attempted every tick and one owner's failure cannot displace the next —
+the starvation shape (unordered take re-returning the same failing head) is
+gone. If tenant counts ever make "no cap over users" wrong, that is a scale
+problem to raise, not silently re-cap.
+
+**MEDIUM — C4 unaddressed.** Correct, and deliberately so per directive 6:
+the register mechanism is the next fresh turn. The 89.2 → 88.6 move is inside
+the noise band and I claim nothing about it.
+
+### Verification (measured AFTER the last code edit, commit `e441723`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **194 files: 192 passed / 1 failed / 1 skipped · 2,386
+  tests: 2,355 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 are `orchestratorPulseRoute.test.ts` executing the orchestrator's
+  uncommitted live `pulse.py`; the COMMITTED script passes the contract's
+  exact assertions (proven and recorded in Iteration 2's entry). Still owed
+  by the orchestrator: reconcile the pulse rename as one control-plane change.
+- **`npm run build` — the ACTUAL script, this time** (directive 6 rejected
+  the tsc-only proof): fully isolated clean clone at `e441723`,
+  `npm ci` (848 packages, own node_modules, no symlink), then
+  `npm run build` = `prisma generate && tsc -p tsconfig.build.json` →
+  Prisma Client v6.19.2 generated, emit succeeded, `dist/server.js` and
+  `dist/jobs/openItemsBacklogCleanupJob.js` produced IN THE CLONE. The
+  production `server/dist` (immutable, `chattr +i`, CLAUDE.md 2026-08-16) was
+  not touched — an in-tree build is a deploy action and remains the deploy
+  phase's, under its own unlock and manifest.
+- `git diff --check` — clean.
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 until deployed — third pass making DEF-186's increment honest.
+            Divergence from the brief's UNKNOWN target is the remediation
+            rule: the reviewed change is the scope.
+MECHANISM:  every guarantee now lives at the level that enforces it — the
+            query carries the tenant, the error carries the failure, the
+            batch carries its identity, the write carries its expectation.
+FALSIFIER:  any openItem query in the job without clientNumber; a DB-error
+            settings read returning values; a partial-mark retry producing a
+            second owner message; a concurrent user edit still cancelled
+            over; an owed owner never attempted while an earlier one fails.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- Did not touch `scripts/orchestrator/**`, the benchmark, or the C4 register
+  path (directive 6: next fresh turn).
+- Did not paginate owed USERS within a tenant — deliberate: determinism plus
+  per-owner isolation removes the starvation mechanism Codex named; a cursor
+  adds state for a set that is small per tenant. Said here so it is judged.
+- Unsure: the CAS `updatedAt` equality predicate is millisecond-granular; a
+  same-millisecond concurrent write could in principle slip it. The status
+  predicate still bounds the damage class (an active row can only be
+  cancelled FROM the status that was read), and `@updatedAt` is the
+  strongest version token the schema carries today.
+- Governing-docs verdict (rule 5): **circling** — `query-without-tenant-scope`
+  (this closes members at the enumeration level after DEF-178/179/188 closed
+  other members) and the fail-open/fabricated-status family. Closed at class
+  level per the structural requirement: the tenant now enters at the entry
+  point, and the settings module can no longer manufacture a preference.
+
+### Honest prediction
+
+Deployable if reviewed SOUND: every iteration-2 finding is closed at the
+level Codex named, the full matrix is green except the two
+orchestrator-owned pulse failures, and the actual build passes in isolation.
+Wrong if: Codex finds an openItem read I missed outside the job (the sweep
+asserts the job's own calls only), a notice path that still changes identity
+across retries, or judges the registry enumeration itself insufficient as
+the one cross-tenant read.
