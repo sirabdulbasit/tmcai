@@ -129,7 +129,60 @@ function absenceIsInformative(s: NoiseSummary, shown: number, repeatsTotal: numb
   return !s.truncated
     && !s.canonicalisationFailed
     && s.unresolvedSubjects.length === 0
+    // DEF-200, Codex iteration-2 finding 2 — and he was right. `NoiseSummary`
+    // ALSO carries `unattributed` (pushes with no item/thread/event identity at
+    // all) and `floods`. The repeat list is derived only from `s.subjects`, so a
+    // subject can have been pushed five times, land in `unattributed` because it
+    // never resolved to an identity, and be absent from the list below while the
+    // block cheerfully authorised "your record shows at most one push". I listed
+    // "four ways to be short" and missed the two that need no ⚠ of their own.
+    && s.unattributed.length === 0
+    && s.floods.length === 0
     && shown === repeatsTotal;
+}
+
+/**
+ * DEF-200 — resolve the SUBJECT from the conversation, in code, before the
+ * model sees any candidates.
+ *
+ * Codex, reviewing DEF-198: *"The code does not resolve or pass a subject
+ * identity. It merely adds instructions telling the model to resolve one … The
+ * measured mechanism is still `examples-outvote-the-instruction`: evidence
+ * candidates and their exact times are concrete, while the conversation-first
+ * rule is prose."* That is correct, and it is the whole reason two turns of
+ * rules failed: as long as a page of other people's items sits in the context
+ * with real counts and real timestamps, the model will answer from it.
+ *
+ * So the fix is not another sentence. It is to stop supplying the candidates.
+ * This matches the owner's conversation against the subjects' REAL TITLES — the
+ * join DEF-199 added, without which this could not be written — and the renderer
+ * then shows ONLY what matched. When nothing matches, the block shows no subject
+ * lines at all: there is then nothing to outvote the dialogue with.
+ *
+ * Conservative by construction. A title must be distinctive (>= 8 normalised
+ * characters) to match, because a short title like "Call" would match half the
+ * conversations in the world and a false match is worse than none: it would
+ * re-create exactly the defect this closes.
+ */
+export function normaliseForMatch(s: string): string {
+  return String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+const MIN_DISTINCTIVE_TITLE = 8;
+
+export function selectSubjectsForConversation(
+  subjects: SubjectGroup[],
+  titles: Map<string, string>,
+  conversationText: string,
+): SubjectGroup[] {
+  const hay = normaliseForMatch(conversationText);
+  if (!hay) return [];
+  return subjects.filter((g) => {
+    const title = titles.get(g.subjectKey);
+    if (!title) return false;              // an unnameable subject can never be "the one he means"
+    const needle = normaliseForMatch(title);
+    return needle.length >= MIN_DISTINCTIVE_TITLE && hay.includes(needle);
+  });
 }
 
 /**
@@ -213,18 +266,49 @@ function subjectLine(g: SubjectGroup, titles: Map<string, string>): string {
 
 /** Render a summary that was successfully READ. Exported for tests so the
  *  rendering is asserted without a database. */
-export function renderPushHistoryBlock(s: NoiseSummary, titles: Map<string, string> = new Map()): string {
-  const repeats = s.subjects.filter((g) => g.reached >= REPEAT_THRESHOLD);
+export function renderPushHistoryBlock(
+  s: NoiseSummary,
+  titles: Map<string, string> = new Map(),
+  conversationText?: string,
+): string {
+  const allRepeats = s.subjects.filter((g) => g.reached >= REPEAT_THRESHOLD);
+
+  // DEF-200 — the resolver runs BEFORE anything is rendered. When the caller
+  // supplies the conversation, only subjects the conversation actually names
+  // survive into the prompt. Codex's directive, verbatim: the block "may supply
+  // counts/timestamps only for the resolved subject; it must not let a different
+  // repeated subject outvote recent dialogue."
+  const scoped = conversationText !== undefined;
+  const matched = scoped ? selectSubjectsForConversation(allRepeats, titles, conversationText!) : allRepeats;
+  const repeats = matched;
   const shown = repeats.slice(0, MAX_SUBJECT_LINES);
-  const singles = s.subjects.length - repeats.length;
+  const singles = s.subjects.length - allRepeats.length;
 
   const lines: string[] = [HEADING, ''];
   lines.push(`Window: last ${s.windowHours}h (to ${shortTime(s.until)} UTC).`
     + ` ${s.totalReached} pushes delivered, ${s.totalActed} answered by him.`);
   lines.push('');
 
+  // The no-match case is the one that mattered: B12 had a real push record and
+  // none of it was about the item under discussion. Showing that record anyway
+  // is what produced two different fabricated referents in two runs.
+  if (scoped && shown.length === 0) {
+    lines.push('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION.');
+    lines.push('');
+    lines.push('Your record for THIS item is therefore empty in this window. Say that you have no');
+    lines.push('repeat-push record for it. The other subjects in your record are deliberately NOT');
+    lines.push('listed here, because they are not what he asked about — do not name one, and do not');
+    lines.push('take a title from another block. "I have no record of pushing that one twice" is a');
+    lines.push('complete and correct answer.');
+    lines.push('');
+    lines.push(rulesFor(false));
+    return lines.join('\n');
+  }
+
   if (shown.length > 0) {
-    lines.push(`Subjects he was pushed about more than once (${repeats.length} of ${s.subjects.length}):`);
+    lines.push(scoped
+      ? `The subject(s) from THIS conversation that appear in your push record (${repeats.length}):`
+      : `Subjects he was pushed about more than once (${repeats.length} of ${s.subjects.length}):`);
     for (const g of shown) lines.push(subjectLine(g, titles));
     if (repeats.length > shown.length) {
       lines.push(`- …and ${repeats.length - shown.length} more repeat-pushed subject(s) not listed.`);
@@ -256,7 +340,7 @@ export function renderPushHistoryBlock(s: NoiseSummary, titles: Map<string, stri
   }
 
   lines.push('');
-  lines.push(rulesFor(absenceIsInformative(s, shown.length, repeats.length)));
+  lines.push(rulesFor(absenceIsInformative(s, shown.length, allRepeats.length)));
   return lines.join('\n');
 }
 
@@ -278,7 +362,17 @@ export function renderPushHistoryUnavailable(reason: string): string {
  * throws — but never silent about a failure either, for the reason in the
  * header.
  */
-export async function buildPushHistoryBlock(userId: number, clientNumber: string): Promise<string> {
+export async function buildPushHistoryBlock(
+  userId: number,
+  clientNumber: string,
+  /**
+   * DEF-200 — the conversation, so the SUBJECT can be resolved in code rather
+   * than delegated to the model as an instruction. Optional so a caller with no
+   * dialogue (a digest, a script) still gets the unscoped record; every live
+   * composer path supplies it.
+   */
+  conversationText?: string,
+): Promise<string> {
   try {
     const summary = await summariseInboundNoise({ clientNumber, userId });
     // DEF-199 — perform the join the model was previously left to guess. A
@@ -294,7 +388,7 @@ export async function buildPushHistoryBlock(userId: number, clientNumber: string
       });
       return new Map<string, string>();
     });
-    return renderPushHistoryBlock(summary, titles);
+    return renderPushHistoryBlock(summary, titles, conversationText);
   } catch (e: any) {
     log.warn('push history read failed; emitting UNAVAILABLE rather than a false zero', {
       clientNumber, userId, error: e?.message,

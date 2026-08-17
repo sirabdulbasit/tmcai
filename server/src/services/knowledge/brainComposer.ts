@@ -670,6 +670,17 @@ export interface ComposerHistoryTurn {
   text: string;
 }
 
+/**
+ * DEF-200 — the text the push-history resolver matches the owner's subject
+ * against: this turn's question plus the recent dialogue, which is where "that
+ * one" actually points. Built once and used by BOTH composer paths, because
+ * DEF-165 exists precisely because a sibling block was wired to one path only.
+ */
+function conversationTextForPushHistory(question: string, history: ComposerHistoryTurn[]): string {
+  const recent = history.slice(-8).map((t) => t.text ?? '').join('\n');
+  return `${recent}\n${question}`;
+}
+
 /** Structured payload for role='artifact' history turns. Stored as
  *  JSON-stringified text on the ComposerHistoryTurn so it travels
  *  through existing persistence (conversation_history JSONB) without
@@ -2509,7 +2520,9 @@ export async function compose(
       // UNAVAILABLE block, so there is deliberately no `catch → ''` here: an
       // empty string would let the model infer a duplicate it cannot see, and a
       // silent zero is the DEF-085 shape ("a read that failed is not no noise").
-      const pushHistoryBlock = await buildPushHistoryBlock(userId, clientNumber);
+      const pushHistoryBlock = await buildPushHistoryBlock(
+        userId, clientNumber, conversationTextForPushHistory(question, history),
+      );
       const result = await reasoningCompose({
         userId, clientNumber,
         question, history,
@@ -3149,7 +3162,9 @@ ${calLines.join('\n')}`;
   // C-3 — the SAME builder the reasoning path uses. DEF-165's row exists
   // because its sibling block was wired to one path only; this is the second
   // call site added in the same edit so that cannot recur here.
-  const legacyPushHistoryBlock = await buildPushHistoryBlock(userId, clientNumber);
+  const legacyPushHistoryBlock = await buildPushHistoryBlock(
+    userId, clientNumber, conversationTextForPushHistory(question, history),
+  );
 
   const systemPrompt = await assembleSystemPrompt({
     intent: effectiveIntent,

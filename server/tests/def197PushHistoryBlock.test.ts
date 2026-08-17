@@ -29,6 +29,7 @@ import path from 'path';
 import {
   renderPushHistoryBlock,
   renderPushHistoryUnavailable,
+  selectSubjectsForConversation,
 } from '../src/services/selfpruning/pushHistoryBlock';
 import type { NoiseSummary, SubjectGroup } from '../src/services/selfpruning/inboundNoiseLedger';
 
@@ -171,9 +172,14 @@ describe('DEF-197 — BOTH composer paths receive the block (the DEF-165 guard)'
 
   it('brainComposer builds the block at TWO call sites, one per path', () => {
     const code = codeOf('src/services/knowledge/brainComposer.ts');
-    const calls = code.match(/buildPushHistoryBlock\(\s*userId\s*,\s*clientNumber\s*\)/g) ?? [];
+    const calls = code.match(/buildPushHistoryBlock\(\s*userId\s*,\s*clientNumber\s*,/g) ?? [];
     // Reasoning path + legacy path. One is DEF-165 rebuilt under a new name.
     expect(calls.length).toBe(2);
+    // DEF-200 — and BOTH must pass the conversation, or the resolver is off on
+    // that path and the block reverts to offering candidates. A path wired
+    // without it is the DEF-165 shape again, one argument deeper.
+    const scoped = code.match(/buildPushHistoryBlock\(\s*userId\s*,\s*clientNumber\s*,\s*conversationTextForPushHistory\(question,\s*history\)/g) ?? [];
+    expect(scoped.length).toBe(2);
   });
 
   it('the reasoning path passes it as dataBlocks.pushHistory', () => {
@@ -410,5 +416,122 @@ describe('DEF-199 — the title join is tenant AND user scoped, and read-only', 
     expect(out).toContain('TITLE UNRESOLVED');
     expect(out).toContain('2 pushes delivered');      // the count survives
     expect(out).not.toContain('UNAVAILABLE');         // not the whole-block failure
+  });
+});
+
+/**
+ * DEF-200 — Codex's iteration-2 findings on DEF-198, both of which were correct.
+ *
+ * 1. *"The code does not resolve or pass a subject identity. It merely adds
+ *    instructions telling the model to resolve one."* — the mechanism was still
+ *    `examples-outvote-the-instruction`.
+ * 2. *"`NoiseSummary` also contains `unattributed` and `floods` … A repeated
+ *    unattributed push can therefore exist while the block authorizes 'your
+ *    record shows at most one push.'"*
+ *
+ * The collision below is the one the directive named: the conversation is about
+ * the Fujairah pricing task, the push record contains ShireMe.
+ */
+describe('DEF-200 — the resolver runs in code, and the collision is the test', () => {
+  const FUJAIRAH = 'Send the revised Fujairah pricing to Latif';
+  const SHIREME = 'ShireMe Recruiting Portal Application Testing';
+  const collision = () => summary({
+    totalReached: 2,
+    subjects: [subject({ subjectKey: 'item:shireme', reached: 2 })],
+  });
+  const titles = new Map([['item:shireme', SHIREME]]);
+
+  it('THE MEASURED CASE — conversation names Fujairah, record holds ShireMe: the record is withheld', () => {
+    const conversation = `Remind me to ${FUJAIRAH}\nWhy did you remind me about that one twice?`;
+    const out = renderPushHistoryBlock(collision(), titles, conversation);
+
+    // The candidate is GONE from the prompt. It cannot outvote the dialogue if
+    // it is not there — this is the structural half DEF-198 lacked.
+    expect(out).not.toContain(SHIREME);
+    expect(out).not.toContain('item:shireme');
+    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION');
+    expect(out).toMatch(/no\s+repeat-push record for it/);
+  });
+
+  it('renders ONLY the matched subject when the conversation does name it', () => {
+    const conversation = `About "${SHIREME}" — why did you remind me twice?`;
+    const out = renderPushHistoryBlock(collision(), titles, conversation);
+    expect(out).toContain(SHIREME);
+    expect(out).toContain('2 pushes delivered');
+    expect(out).toContain('The subject(s) from THIS conversation');
+    expect(out).not.toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+  });
+
+  it('withholds a NON-matching subject even while another one matches', () => {
+    const s = summary({
+      totalReached: 4,
+      subjects: [
+        subject({ subjectKey: 'item:shireme', reached: 2 }),
+        subject({ subjectKey: 'item:other', reached: 2 }),
+      ],
+    });
+    const t = new Map([['item:shireme', SHIREME], ['item:other', 'Quarterly board pack for Dubai']]);
+    const out = renderPushHistoryBlock(s, t, `About "${SHIREME}" — why twice?`);
+    expect(out).toContain(SHIREME);
+    // Mutation: rendering allRepeats instead of the matched set dies here.
+    expect(out).not.toContain('Quarterly board pack for Dubai');
+  });
+
+  it('an UNNAMEABLE subject can never be "the one he means"', () => {
+    // No title -> no way to match it to his words -> it must not be offered.
+    const out = renderPushHistoryBlock(collision(), new Map(), 'why did you remind me twice?');
+    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+    expect(out).not.toContain('item:shireme');
+  });
+
+  it('refuses a short, non-distinctive title rather than matching it loosely', () => {
+    // A false match re-creates the very defect this closes, so the bar is
+    // distinctiveness. Mutation: dropping MIN_DISTINCTIVE_TITLE dies here.
+    const s = summary({ subjects: [subject({ subjectKey: 'item:c', reached: 2 })] });
+    const out = renderPushHistoryBlock(s, new Map([['item:c', 'Call']]), 'call him about the call');
+    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+  });
+
+  it('matches across punctuation and case, because his words are not the stored string', () => {
+    expect(selectSubjectsForConversation(
+      [subject({ subjectKey: 'item:x', reached: 2 })],
+      new Map([['item:x', 'Fujairah  pricing—REVISED']]),
+      'about the fujairah pricing revised item, why twice?',
+    )).toHaveLength(1);
+  });
+
+  it('leaves the unscoped record intact when no conversation is supplied', () => {
+    // Scripts and digests have no dialogue; they must still get the record.
+    const out = renderPushHistoryBlock(collision(), titles);
+    expect(out).toContain(SHIREME);
+    expect(out).not.toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES');
+  });
+});
+
+describe('DEF-200 — absence is not evidence when identity-less pushes exist', () => {
+  const withRepeat = (over: Partial<NoiseSummary> = {}) => summary({
+    subjects: [subject({ subjectKey: 'item:a', reached: 3 })], ...over,
+  });
+
+  it('REFUSES the "at most one push" read when unattributed pushes exist', () => {
+    // Codex's finding 2, verbatim: a repeated push with no identity lands in
+    // `unattributed`, never reaches `s.subjects`, and so is absent from the list
+    // while the block used to authorise a count nobody read.
+    const out = renderPushHistoryBlock(withRepeat({
+      unattributed: [{ senderKey: 'unknown:+92300', subjectClass: 'nudge' }] as any,
+    }));
+    expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
+    expect(out).not.toMatch(/your record shows at most one push/);
+  });
+
+  it('REFUSES it when floods exist', () => {
+    const out = renderPushHistoryBlock(withRepeat({ floods: [{ senderKey: 'x' }] as any }));
+    expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
+    expect(out).not.toMatch(/your record shows at most one push/);
+  });
+
+  it('still authorises it when the record is genuinely complete', () => {
+    const out = renderPushHistoryBlock(withRepeat());
+    expect(out).toMatch(/absent below, your record shows at most one push/);
   });
 });
