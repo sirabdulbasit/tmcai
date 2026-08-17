@@ -1426,7 +1426,24 @@ export async function sendReply(
   // the log so any unexpected value (or future bug) is immediately
   // visible in operational logs. We can grep for SEND_AUDIT in pm2
   // logs and verify only the whitelisted values appear.
-  log.info('SEND_AUDIT', { userId, toChatId, provenance, textLen: text.length });
+  // DEF-196 (Codex iteration-2 CRITICAL, LIVE INCIDENT) — fit ONCE, here, and
+  // let this be the only body that exists downstream.
+  //
+  // DEF-195 fitted the text INSIDE the `client.sendMessage(...)` call and left
+  // every consumer reading the original `text`. That split one message into two
+  // representations, and the consequence was not cosmetic: a promise sitting in
+  // a dropped tail item was never sent to the recipient, yet
+  // `extractAndFileCommitments` still received it and Nexeo would file and
+  // chase a commitment the owner never made. Unsent text became a real
+  // obligation — the no-fabricated-action invariant, on the owner's live
+  // WhatsApp path. The audit length also described a message that never existed.
+  const wireBody = fitToTransport(text).body;
+  log.info('SEND_AUDIT', {
+    userId, toChatId, provenance,
+    textLen: wireBody.length,
+    // Recorded so a shortened send is visible in the logs rather than implied.
+    ...(wireBody.length !== text.length ? { composedLen: text.length, fitted: true } : {}),
+  });
   const client = clients.get(userId);
   if (!client) {
     return { success: false, error: 'WhatsApp session not active — open Connectors and re-scan the QR to re-pair.' };
@@ -1436,7 +1453,7 @@ export async function sendReply(
     // is a wire path too: the approved Day Brief draft (`briefRoutes` →
     // `sendReply`) and self-dictation both arrive here without passing
     // `channelRenderer` or `WhatsAppInbound`. Fit at the send.
-    const msg = await client.sendMessage(toChatId, fitToTransport(text).body);
+    const msg = await client.sendMessage(toChatId, wireBody);
     const messageId = msg?.id?._serialized || msg?.id?.id;
 
     // Fire-and-forget commitment extraction on every outbound message.
@@ -1453,7 +1470,10 @@ export async function sendReply(
         await extractAndFileCommitments({
           clientNumber: u.clientNumber, userId,
           channel: 'whatsapp', sourceRef: messageId,
-          recipient, subject: null, body: text,
+          // DEF-196 — the body that WENT, never the body that was composed. A
+          // commitment can only be extracted from a sentence the recipient
+          // actually received.
+          recipient, subject: null, body: wireBody,
           sentAt: new Date(),
         });
       } catch { /* best effort */ }

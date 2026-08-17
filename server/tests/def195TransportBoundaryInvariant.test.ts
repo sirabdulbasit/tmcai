@@ -41,48 +41,105 @@ const FILES = walk(SRC);
 const rel = (p: string) => path.relative(SRC, p);
 
 /**
+ * Read a file as CODE. These files document the raw sends they replaced, and a
+ * guard that reads prose about the code instead of the code reports its own
+ * explanation as a violation — which is exactly what the first run of the
+ * broadened scan did.
+ */
+const code = (f: string) => fs.readFileSync(f, 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+/**
  * Sites that send something OTHER than owner/counterpart prose, with the reason
  * recorded. Anything not listed here must be fitted at the call.
  */
 const NON_PROSE_SENDS: Array<{ file: string; argStartsWith: string; why: string }> = [
   { file: 'services/whatsapp/WebjsProvider.ts', argStartsWith: 'buildProbeMarker', why: 'internal self-probe nonce, never read by a human' },
-  { file: 'services/whatsapp/WebjsProvider.ts', argStartsWith: 'media', why: 'media payload, not text' },
 ];
 
-describe('DEF-195 — every WhatsApp text send in the tree is fitted at the boundary', () => {
-  it('finds the send primitive by scanning src/, not by naming files', () => {
-    // If this ever finds zero, the scan has broken and every assertion below
-    // would pass vacuously.
-    const hits = FILES.filter((f) => /\.sendMessage\(/.test(fs.readFileSync(f, 'utf8')));
+/**
+ * DEF-196 (Codex iteration-2 MEDIUM) — the guard is RECEIVER-AGNOSTIC.
+ *
+ * My DEF-195 version matched the literal `client.sendMessage(a, b)` and the
+ * Meta body shape. It therefore could not see `message.reply(text)` or
+ * `chat.sendMessage(text)` in `inboundReplyTransport.ts` — a real wire path
+ * that was passing a raw body to the library while this suite stayed green.
+ * A guard that depends on the receiver variable being named `client` is a
+ * guard that a rename defeats.
+ *
+ * So the scan now finds `.reply(` and `.sendMessage(` on ANY receiver,
+ * distinguishes a text send from a structured provider call by whether the
+ * first argument is an object literal, and requires the text argument to be
+ * fitted or explicitly excused with a reason.
+ */
+function textSendOffenders(): string[] {
+  const offenders: string[] = [];
+  for (const file of FILES) {
+    const text = code(file);
+    const re = /\.(reply|sendMessage)\(([^\n]*)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const method = m[1];
+      const argsRaw = m[2].trim();
+      // `provider.sendMessage({ … })` / `sendMessage({` — a structured payload,
+      // fitted inside the provider, not a raw text send.
+      if (argsRaw.startsWith('{')) continue;
+      // Interface/type declarations and re-exports carry no argument.
+      if (argsRaw.startsWith(')') || argsRaw === '') continue;
+
+      const args = argsRaw.replace(/\);?\s*$/, '');
+      const parts = args.split(',');
+      // A MessageMedia payload is not prose, in either the
+      // `client.sendMessage(chatId, media, opts)` or the
+      // `chat.sendMessage(media, opts)` shape. Recognised by ARGUMENT rather
+      // than by position, because the positional guess read the options object
+      // of the second form as the message text.
+      if (parts.some((a) => a.trim() === 'media')) continue;
+      // Two-arg form is (target, text); one-arg form is (text).
+      const textArg = (parts.length >= 2 ? parts[1] : parts[0]).trim();
+      if (!textArg) continue;
+      if (textArg.includes('fitToTransport') || /wireBody|wireMessage/.test(textArg)) continue;
+      const excused = NON_PROSE_SENDS.some(
+        (x) => rel(file) === x.file && textArg.startsWith(x.argStartsWith),
+      );
+      if (!excused) offenders.push(`${rel(file)} → .${method}(…, ${textArg})`);
+    }
+  }
+  return offenders;
+}
+
+describe('DEF-195/196 — every WhatsApp text send in the tree is fitted at the boundary', () => {
+  it('finds the send primitives by scanning src/, not by naming files', () => {
+    const hits = FILES.filter((f) => /\.(?:reply|sendMessage)\(/.test(code(f)));
     expect(hits.length, 'the scan located no send sites at all').toBeGreaterThan(0);
   });
 
-  it('no raw client.sendMessage passes unfitted text', () => {
-    const offenders: string[] = [];
-    for (const file of FILES) {
-      const text = fs.readFileSync(file, 'utf8');
-      // `client.sendMessage(target, ARG` — capture the second argument.
-      const re = /\bclient\.sendMessage\(\s*[^,]+,\s*([^,)]+)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) !== null) {
-        const arg = m[1].trim();
-        if (arg.includes('fitToTransport')) continue;
-        const excused = NON_PROSE_SENDS.some((x) => rel(file) === x.file && arg.startsWith(x.argStartsWith));
-        if (!excused) offenders.push(`${rel(file)} → sendMessage(…, ${arg})`);
-      }
-    }
-    expect(offenders, 'unfitted WhatsApp text send').toEqual([]);
+  it('no text send on ANY receiver passes an unfitted body', () => {
+    expect(textSendOffenders(), 'unfitted WhatsApp text send').toEqual([]);
+  });
+
+  it('the guard would CATCH a raw send — proven against a fixture, not asserted', () => {
+    // The guard's own falsifier: the same predicate applied to a raw
+    // `message.reply(text)` must report it. Without this, a regex that matches
+    // nothing would pass every assertion above.
+    const raw = 'const sent = await message.reply(text);';
+    const re = /\.(reply|sendMessage)\(([^\n]*)/g;
+    const m = re.exec(raw)!;
+    const textArg = m[2].replace(/\);?\s*$/, '').split(',')[0].trim();
+    expect(textArg).toBe('text');
+    expect(textArg.includes('fitToTransport')).toBe(false);
   });
 
   it('no Meta text body is assembled from unfitted text', () => {
     const offenders: string[] = [];
     for (const file of FILES) {
-      const text = fs.readFileSync(file, 'utf8');
+      const text = code(file);
       const re = /text:\s*\{\s*body:\s*([^}]+)\}/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {
         const arg = m[1].trim();
-        if (arg.includes('fitToTransport') || arg.includes('wireBody')) continue;
+        if (arg.includes('fitToTransport') || /wireBody|wireMessage/.test(arg)) continue;
         offenders.push(`${rel(file)} → text: { body: ${arg} }`);
       }
     }
@@ -90,23 +147,15 @@ describe('DEF-195 — every WhatsApp text send in the tree is fitted at the boun
   });
 
   it('no send argument is itself a character slice', () => {
-    // Argument-level, because file-level was the wrong instrument: it flagged
-    // `UserWebjsProvider` for truncating INBOUND `message.body` to 4000 before
-    // storage, which is a different concern entirely. What matters is that the
-    // text handed to the wire was not produced by cutting characters.
     const offenders: string[] = [];
-    const SEND_ARG = [
-      /\bclient\.sendMessage\(\s*[^,]+,\s*([^,)]+)/g,
-      /text:\s*\{\s*body:\s*([^}]+)\}/g,
-    ];
     for (const file of FILES) {
-      const text = fs.readFileSync(file, 'utf8');
-      for (const re of SEND_ARG) {
-        re.lastIndex = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text)) !== null) {
-          const arg = m[1].trim();
-          if (/\.(?:slice|substring)\(/.test(arg)) offenders.push(`${rel(file)} → ${arg}`);
+      const text = code(file);
+      const re = /\.(?:reply|sendMessage)\(([^\n]*)|text:\s*\{\s*body:\s*([^}]+)\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        const arg = (m[1] ?? m[2] ?? '').trim();
+        if (/\.(?:slice|substring)\(\s*0\s*,\s*(?:3900|4000|4096)/.test(arg)) {
+          offenders.push(`${rel(file)} → ${arg}`);
         }
       }
     }

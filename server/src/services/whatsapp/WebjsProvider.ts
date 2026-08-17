@@ -1530,7 +1530,15 @@ export class WebjsProvider implements IWhatsAppProvider {
       // path that reaches whatsapp-web.js goes through this call, so fitting
       // here dominates agent sends, scheduler sends, and anything added later
       // that never heard of `channelRenderer`.
-      const msg = await client.sendMessage(chatId, fitToTransport(params.message).body);
+      // DEF-196 (Codex iteration-2 HIGH) — fit ONCE into a local, because the
+      // receipt recovery below has to look for the body that was actually
+      // delivered. DEF-195 fitted inline and left `recoverSentMessageId`
+      // searching chat history for the UNFITTED text, so recovery failed
+      // precisely in the case where fitting had happened — leaving the send
+      // with no provider receipt and pushing delegation matching back onto
+      // inference, which is rule ONE of the matching order.
+      const wireBody = fitToTransport(params.message).body;
+      const msg = await client.sendMessage(chatId, wireBody);
       // A resolved send without an id is transport-accepted but unconfirmed.
       // Never retry it: production proved those sends can arrive, and retrying
       // from a false failure creates duplicate user-visible messages.
@@ -1549,7 +1557,7 @@ export class WebjsProvider implements IWhatsAppProvider {
         try {
           const chat = await client.getChatById(chatId);
           const { recoverSentMessageId } = await import('./sendReceipt');
-          const recovered = await recoverSentMessageId(chat, params.message);
+          const recovered = await recoverSentMessageId(chat, wireBody);
           if (recovered) {
             log.info('recovered outbound message id from chat', { chatId, recovered });
             return { ...classified, messageId: recovered, confirmation: 'provider_receipt' };

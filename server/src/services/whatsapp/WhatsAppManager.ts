@@ -186,10 +186,22 @@ export async function sendWhatsAppMessage(params: {
   // Send
   try {
     const provider = await getProvider(params.clientNumber);
+    // DEF-196 (Codex iteration-2 HIGH) — fit ONCE here so the provider, the
+    // ledger row and any later "what did you send?" all describe the same
+    // message. DEF-195 fitted inside the provider and then stored
+    // `params.message` in `whatsapp_messages.content`, so the ledger asserted
+    // that omitted sentences had been delivered — a fresh `fabricated-status`
+    // instance in the one table that is supposed to settle such questions.
+    // The provider's own fit stays (it is the boundary for callers that do not
+    // come through here) and is idempotent on an already-fitted body.
+    const { fitToTransport } = await import('../knowledge/transportBudget');
+    const wireMessage = params.messageType === 'template'
+      ? params.message                       // templates are structured, not prose
+      : fitToTransport(params.message).body;
     const result = await provider.sendMessage({
       clientNumber: params.clientNumber,
       to: params.to,
-      message: params.message,
+      message: wireMessage,
       messageType: params.messageType || 'text',
       templateName: params.templateName,
       templateParams: params.templateParams,
@@ -200,7 +212,8 @@ export async function sendWhatsAppMessage(params: {
       `INSERT INTO whatsapp_messages (client_number, user_id, direction, from_number, to_number, content, wa_message_id, status, agent_id, created_at)
        VALUES ($1, $2, 'outbound', $3, $4, $5, $6, $7, $8, NOW())`,
       params.clientNumber, logUserId, config.connected_number || '', params.to,
-      params.message, result.messageId || null, whatsappMessageLogStatus(result), params.agentId || null,
+      // DEF-196 — the ledger records the body that went to the wire.
+      wireMessage, result.messageId || null, whatsappMessageLogStatus(result), params.agentId || null,
     );
 
     // Refund the claim if the actual send failed — the slot was
