@@ -77,12 +77,15 @@ export async function runDelegationFollowUp(): Promise<FollowUpRunSummary> {
 
   const { decideChaseVerdict, composeChaseEmail, getUserNameAndEmail } =
     await import('../services/delegation/smartChaseService');
-  const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+  const { resolveOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
   const { sendUserEmail } = await import('../services/gmailService');
 
   // Per-(tenant, user) setting cache for this run (DEF-188 — a bare userId
-  // key could serve one tenant another tenant's preferences).
-  const settingsCache = new Map<string, { followUpDays: number }>();
+  // key could serve one tenant another tenant's preferences). `null` caches
+  // a pair with NO settings authority behind it (DEF-191, Codex iteration-4:
+  // this job MUTATES and sends in the owner's name, so a missing/foreign
+  // user row must hold the item, never inherit fabricated defaults).
+  const settingsCache = new Map<string, { followUpDays: number } | null>();
   const ownerCache = new Map<number, { name: string; email: string } | null>();
 
   for (const item of items) {
@@ -101,13 +104,22 @@ export async function runDelegationFollowUp(): Promise<FollowUpRunSummary> {
         continue;
       }
 
-      // Per-user followUpDays baseline.
+      // Per-user followUpDays baseline, under explicit authority (DEF-191).
       const settingsKey = `${item.clientNumber}|${item.userId}`;
       let s = settingsCache.get(settingsKey);
-      if (!s) {
-        const oi = await getOpenItemsSettings(item.userId, item.clientNumber);
-        s = { followUpDays: oi.followUpDays };
+      if (s === undefined) {
+        const resolved = await resolveOpenItemsSettings(item.userId, item.clientNumber);
+        s = resolved.authority === 'no_user' ? null : { followUpDays: resolved.value!.followUpDays };
         settingsCache.set(settingsKey, s);
+        if (s === null) {
+          log.warn('no authorized user row behind this pair — follow-up held', {
+            clientNumber: item.clientNumber, userId: item.userId,
+          });
+        }
+      }
+      if (s === null) {
+        summary.held += 1;
+        continue;
       }
 
       // Owner identity for compose + disclosure footer.

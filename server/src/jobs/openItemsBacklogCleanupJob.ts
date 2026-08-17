@@ -457,8 +457,32 @@ async function cleanupUserBacklog(
 /**
  * DEF-190 — the outbox dispatcher. Deterministic order (userId asc, batches
  * oldest-first); one owner's failure never blocks the next.
+ *
+ * DEF-191 (escalation decision after three remediation rounds) — the
+ * dispatcher runs ONLY when the owner has switched
+ * `selfpruning.withdrawal_notice_enabled` on. Codex's iteration-4 findings
+ * (a restore inside the revalidate→enqueue window, immortal batch
+ * membership suppressing a re-withdrawal, no DB ownership constraint for
+ * concurrent dispatchers, cap starvation behind uncleared sent members) are
+ * ALL confined to this announce path; while the gate is 0 they are dormant
+ * limitations of a disabled path, not live risks. The archive side is
+ * unaffected: withdrawals stay reversible and every debt is still recorded
+ * durably in the archiving write, so notices flow — from the accumulated
+ * debt — once the event-token redesign (DEF-191) lands and the gate opens.
+ * An unreachable config reads as 0: when we cannot know the owner opted in,
+ * nothing is announced.
  */
 async function dispatchOwedNotices(clientNumber: string, stats: CleanupStats): Promise<void> {
+  let enabled = 0;
+  try {
+    const { getBehaviorValue } = await import('../services/behaviorConfig');
+    enabled = await getBehaviorValue('selfpruning.withdrawal_notice_enabled', { clientNumber });
+  } catch (e: any) {
+    if (/unknown behavior key/i.test(e?.message ?? '')) throw e;
+    enabled = 0;
+  }
+  if (enabled !== 1) return;
+
   if (!noticeBatchDelegate()) {
     stats.errors++;
     log.warn('notice outbox unavailable in this client — debts persist, nothing announced', { clientNumber });

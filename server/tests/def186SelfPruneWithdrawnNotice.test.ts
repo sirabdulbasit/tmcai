@@ -196,6 +196,7 @@ const mocks = vi.hoisted(() => {
     promptFindFirst,
     enqueueBrainPrompt,
     resolveOpenItemsSettings: vi.fn(),
+    getBehaviorValue: vi.fn(),
   };
 });
 
@@ -223,6 +224,10 @@ vi.mock('../src/services/openItems/openItemsSettings', () => ({
 
 vi.mock('../src/services/brainPrompts/brainPromptQueueService', () => ({
   enqueueBrainPrompt: mocks.enqueueBrainPrompt,
+}));
+
+vi.mock('../src/services/behaviorConfig', () => ({
+  getBehaviorValue: mocks.getBehaviorValue,
 }));
 
 vi.mock('../src/utils/logger', () => ({
@@ -346,6 +351,9 @@ beforeEach(() => {
     authority: 'found',
     value: { staleThresholdDays: 30 },
   });
+  // DEF-191 — the dispatcher tests below exercise the announce path, so the
+  // owner gate is ON here; the default-off contract has its own tests.
+  mocks.getBehaviorValue.mockResolvedValue(1);
 });
 
 describe('DEF-186 — the withdrawal notice is the sanctioned form, constructor and parser in sync', () => {
@@ -804,6 +812,33 @@ describe('DEF-187/188/189/190 — the cleanup job: CAS writes, atomic outbox bat
     expect(tenants).toContainEqual([7, 'tenant-1']);
     expect(tenants).toContainEqual([9, 'tenant-2']);
     assertAllWritesGuarded();
+  });
+
+  it('DEF-191 — the dispatcher is OFF by default: withdrawals archive with their debt recorded, and NOTHING is announced', async () => {
+    mocks.getBehaviorValue.mockResolvedValue(0); // the registry default
+    mocks.state.items = [staleItem({ metadata: quarantinedStaleMeta(8) })];
+
+    const stats = await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(stats.archivedStale, 'the archive side is untouched by the gate').toBe(1);
+    const row = mocks.state.items[0];
+    expect(row.status).toBe('CANCELLED');
+    expect(row.metadata.selfPruneNotice.owed, 'the debt is durable, waiting for the gate').toBe(true);
+    expect(mocks.state.batches, 'no outbox batch while the owner has not opted in').toHaveLength(0);
+    expect(mocks.enqueueBrainPrompt).not.toHaveBeenCalled();
+    expect(mocks.getBehaviorValue).toHaveBeenCalledWith(
+      'selfpruning.withdrawal_notice_enabled', { clientNumber: 'tenant-1' });
+  });
+
+  it('DEF-191 — an unreachable behavior config reads as OFF: when opt-in cannot be known, nothing is announced', async () => {
+    mocks.getBehaviorValue.mockRejectedValue(new Error('config db down'));
+    mocks.state.items = [archivedOwedItem()];
+
+    const stats = await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(stats.noticesEnqueued).toBe(0);
+    expect(mocks.state.batches).toHaveLength(0);
+    expect(mocks.enqueueBrainPrompt).not.toHaveBeenCalled();
   });
 
   it('a run that withdraws nothing enqueues nothing and mints no batch', async () => {
