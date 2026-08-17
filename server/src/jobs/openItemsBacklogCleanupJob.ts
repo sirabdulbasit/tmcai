@@ -649,82 +649,167 @@ async function processUserNotices(
 }
 
 /**
- * Deliver one batch. Revalidation is a FRESH read immediately before enqueue
- * (Codex iteration-3 CRITICAL): only members still CANCELLED are rendered; a
- * batch with no live members is cancelled, never sent. The queue is asked
- * for the batch identity in ANY state first, so a retry after a sent-mark
- * failure clears the debt without a second owner-visible message.
+ * DEF-208 — deliver one batch, with the decision and the record of it in ONE
+ * database boundary.
+ *
+ * Codex iteration-3 CRITICAL 1 and iteration-4 CRITICAL 1 are the same finding
+ * stated twice, and my two previous attempts answered it with a fresher read:
+ *
+ *   "the pre-send check is another guard above an asynchronous gap … item A is
+ *   CANCELLED at the fresh read, the owner restores A while
+ *   `brainPromptQueue.findFirst` or the imports are pending, then enqueue runs;
+ *   result = Brain tells the owner A withdrew although it is active."
+ *
+ * He is right, and no amount of re-reading fixes it, because the flaw is not the
+ * freshness of the read — it is that reading and announcing were two commits with
+ * an unbounded await between them. A guard above an asynchronous gap is a guess
+ * about what will still be true; only the database can make it a fact.
+ *
+ * So the transaction below holds all four steps that must agree:
+ *
+ *   1. the FINAL revalidation, filtered to the events this batch owns;
+ *   2. the CLAIM — a compare-and-set per row on (tenant, user, id, status,
+ *      updatedAt) that stamps `announcedAt`. A restore that commits first makes
+ *      this match nothing, so the row is dropped from the notice rather than
+ *      announced; a restore that arrives later serialises BEHIND this write and
+ *      is a genuinely later event;
+ *   3. the queue insert, on the SAME transaction (`tx`), so the owner-visible
+ *      fact cannot exist unless the claim did;
+ *   4. the batch sent-mark. A failure here throws and rolls back 1-3 — no queue
+ *      row, no stamps, identity intact, retried next tick under the same dedup
+ *      key.
+ *
+ * Dispatch is deliberately NOT inside it: `enqueueBrainPrompt` normally tries to
+ * send immediately, and a WhatsApp message cannot be rolled back. The `tx` path
+ * leaves the row queued for the dispatcher's next tick — a few seconds later, and
+ * true.
  */
+interface SettleOutcome { enqueued: boolean; claimedIds: string[]; dropped: number }
+
 async function settleBatch(
   clientNumber: string,
   userId: number,
   batch: NoticeBatchRow,
   stats: CleanupStats,
 ): Promise<void> {
-  const nb = noticeBatchDelegate()!;
   const ids = itemIdsOf(batch);
+  const owned = new Set(eventTokensOf(batch));
 
-  const live = await prisma.openItem.findMany({
-    where: { id: { in: ids }, clientNumber, userId, status: 'CANCELLED' as any },
-    select: { id: true, title: true },
-    orderBy: { createdAt: 'asc' },
-  });
+  // Module resolution happens BEFORE the transaction opens. Awaiting a dynamic
+  // import inside one holds it open for as long as the loader takes, and the
+  // whole point of this boundary is that it is short.
+  const { enqueueBrainPrompt } = await import('../services/brainPrompts/brainPromptQueueService');
+  const { renderSelfPruneNotice } = await import('../services/notifications/proactiveMessageText');
 
-  if (live.length === 0) {
-    const cancelled = await nb.updateMany({
-      where: { id: batch.id, clientNumber, userId, state: 'pending' },
-      data: { state: 'cancelled', cancelledReason: 'every member was restored before send' },
-    } as any);
-    if (cancelled.count !== 1) { stats.errors++; }
+  let outcome: SettleOutcome | null = null;
+  try {
+    outcome = await prisma.$transaction(async (tx: any): Promise<SettleOutcome | null> => {
+      const nbx = tx.selfPruneNoticeBatch as NoticeBatchDelegate;
+
+      const live = await tx.openItem.findMany({
+        where: { id: { in: ids }, clientNumber, userId, status: 'CANCELLED', ...(OWED_WHERE as any) },
+        select: { id: true, title: true, metadata: true, updatedAt: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const claimed: Array<{ id: string; title: string }> = [];
+      for (const row of live) {
+        // DEF-202 — the debt in front of us must be THE EVENT THIS BATCH CLAIMED.
+        const key = eventTokenOf(row.metadata) ?? `legacy:${row.id}`;
+        if (owned.size > 0 && !owned.has(key)) continue;
+        const meta = (row.metadata as Record<string, unknown> | null) ?? {};
+        const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
+        const res = await tx.openItem.updateMany({
+          where: {
+            id: row.id, clientNumber, userId,
+            status: 'CANCELLED' as any,
+            updatedAt: row.updatedAt as any,
+          },
+          data: {
+            metadata: {
+              ...meta,
+              selfPruneNotice: { ...notice, announcedAt: new Date().toISOString(), announcedBatchId: batch.batchId },
+            } as any,
+          },
+        });
+        if (res.count === 1) claimed.push({ id: row.id, title: row.title });
+      }
+
+      if (claimed.length === 0) {
+        // Nothing survived the claim. Cancelling inside the same transaction
+        // means there is no state in which the batch is both cancelled and
+        // announced.
+        const cancelled = await nbx.updateMany({
+          where: { id: batch.id, clientNumber, userId, state: 'pending' },
+          data: { state: 'cancelled', cancelledReason: 'every member was restored or reclaimed before send' },
+        } as any);
+        if (cancelled.count !== 1) throw new Error('batch cancel-mark did not match exactly one pending row');
+        return null;
+      }
+
+      // A queue row already carrying this identity means a previous attempt got
+      // further than its bookkeeping. Never announce twice for one identity.
+      const existing = await tx.brainPromptQueue.findFirst({
+        where: { clientNumber, userId, dedupKey: batch.dedupKey },
+        select: { id: true },
+      });
+
+      let promptId: string | null = existing ? String(existing.id) : null;
+      if (!existing) {
+        const res = await enqueueBrainPrompt({
+          userId,
+          clientNumber,
+          question: renderSelfPruneNotice({
+            count: claimed.length,
+            titles: claimed.slice(0, 3).map((r) => r.title),
+          }),
+          criticality: 'routine',
+          expectsReply: false,          // a notice never holds the conversation lock (DEF-063)
+          provenance: 'system_marker',
+          dedupKey: batch.dedupKey,
+          metadata: {
+            source: 'open_items_backlog_cleanup',
+            selfPruneNotice: {
+              batchId: batch.batchId,
+              itemIds: claimed.map((r) => r.id).sort(),
+              count: claimed.length,
+            },
+          },
+          tx,
+        });
+        promptId = res.promptId ?? null;
+      }
+
+      const marked = await nbx.updateMany({
+        where: { id: batch.id, clientNumber, userId, state: 'pending' },
+        data: { state: 'sent', sentAt: new Date(), promptId },
+      } as any);
+      // Rolls back the claim AND the queue row. The alternative — committing an
+      // announcement the outbox does not know it made — is the double-send this
+      // outbox exists to prevent.
+      if (marked.count !== 1) throw new Error('batch sent-mark did not match exactly one pending row');
+
+      return { enqueued: !existing, claimedIds: claimed.map((r) => r.id), dropped: ids.length - claimed.length };
+    });
+  } catch (err: any) {
+    stats.errors++;
+    log.warn('withdrawal notice transaction rolled back — identity intact, retried next tick', {
+      clientNumber, userId, batchId: batch.batchId, err: err?.message,
+    });
     return;
   }
-  if (live.length < ids.length) {
+
+  if (!outcome) return;                        // every member was restored
+  if (outcome.enqueued) stats.noticesEnqueued++;
+  if (outcome.dropped > 0) {
     log.info('restored members dropped from withdrawal notice', {
-      clientNumber, userId, batchId: batch.batchId, dropped: ids.length - live.length,
+      clientNumber, userId, batchId: batch.batchId, dropped: outcome.dropped,
     });
   }
 
-  const existing = await prisma.brainPromptQueue.findFirst({
-    where: { clientNumber, userId, dedupKey: batch.dedupKey },
-    select: { id: true },
-  });
-
-  let promptId: string | null = null;
-  if (!existing) {
-    const { enqueueBrainPrompt } = await import('../services/brainPrompts/brainPromptQueueService');
-    const { renderSelfPruneNotice } = await import('../services/notifications/proactiveMessageText');
-    const res = await enqueueBrainPrompt({
-      userId,
-      clientNumber,
-      question: renderSelfPruneNotice({
-        count: live.length,
-        titles: live.slice(0, 3).map((r) => r.title),
-      }),
-      criticality: 'routine',
-      expectsReply: false,          // a notice never holds the conversation lock (DEF-063)
-      provenance: 'system_marker',
-      dedupKey: batch.dedupKey,
-      metadata: {
-        source: 'open_items_backlog_cleanup',
-        selfPruneNotice: { batchId: batch.batchId, itemIds: live.map((r) => r.id).sort(), count: live.length },
-      },
-    });
-    promptId = res.promptId ?? null;
-    stats.noticesEnqueued++;
-  }
-
-  const marked = await nb.updateMany({
-    where: { id: batch.id, clientNumber, userId, state: 'pending' },
-    data: { state: 'sent', sentAt: new Date(), promptId },
-  } as any);
-  if (marked.count !== 1) {
-    stats.errors++;
-    log.warn('batch sent-mark failed — identity persists, the retry cannot re-send', {
-      clientNumber, userId, batchId: batch.batchId,
-    });
-  }
-
-  await clearOwedFlags(clientNumber, userId, live.map((r) => r.id), batch.batchId, stats, eventTokensOf(batch));
+  // Debt clearing stays OUTSIDE: it is bookkeeping after an accepted
+  // announcement, and a raced clear costs a retry, never a false statement.
+  await clearOwedFlags(clientNumber, userId, outcome.claimedIds, batch.batchId, stats, eventTokensOf(batch));
 }
 
 /**

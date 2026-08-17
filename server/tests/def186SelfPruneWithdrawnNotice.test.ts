@@ -47,12 +47,31 @@ const mocks = vi.hoisted(() => {
     batchCreateFailNext: 0,
     /** Fail the next N outbox sent-marks (state -> 'sent'). */
     batchMarkFailNext: 0,
+    /**
+     * DEF-208 — the OTHER sent-mark failure: the update raises nothing and
+     * matches NOTHING, because a concurrent writer moved the batch out of
+     * 'pending'. A throw rolls back on its own; a count of 0 only rolls back if
+     * the code turns it into one, which is exactly the branch worth pinning.
+     */
+    batchMarkZeroNext: 0,
+    /** Same, for the cancel-mark taken when every member was restored. */
+    batchCancelZeroNext: 0,
     /** Fail the next N enqueues (transient queue outage). */
     enqueueFailNext: 0,
     /** One-shot: mutate the store after a full-item read (concurrent editor). */
     afterItemRead: null as null | ((s: any) => void),
     /** One-shot: mutate the store before the clear's findFirst evaluates. */
     onClearRead: null as null | ((s: any) => void),
+    /** True only while the $transaction callback is running. */
+    inTx: false,
+    /**
+     * DEF-208 — THE BARRIER. One-shot, fires on a full-item read made INSIDE
+     * the transaction, i.e. exactly between the final revalidation and the
+     * claim/enqueue. Codex iteration-4 directive 2: "add a barrier precisely
+     * after final revalidation and before queue insertion; restoration must
+     * yield no queued withdrawal fact."
+     */
+    afterTxItemRead: null as null | ((s: any) => void),
   };
 
   function matches(row: any, where: any): boolean {
@@ -100,6 +119,11 @@ const mocks = vi.hoisted(() => {
     if (state.afterItemRead && args?.select?.title) {
       const hook = state.afterItemRead;
       state.afterItemRead = null;
+      hook(state);
+    }
+    if (state.inTx && state.afterTxItemRead && args?.select?.title) {
+      const hook = state.afterTxItemRead;
+      state.afterTxItemRead = null;
       hook(state);
     }
     return out;
@@ -163,6 +187,14 @@ const mocks = vi.hoisted(() => {
       state.batchMarkFailNext--;
       throw new Error('outbox sent-mark rejected (test)');
     }
+    if (args?.data?.state === 'sent' && state.batchMarkZeroNext > 0) {
+      state.batchMarkZeroNext--;
+      return { count: 0 };
+    }
+    if (args?.data?.state === 'cancelled' && state.batchCancelZeroNext > 0) {
+      state.batchCancelZeroNext--;
+      return { count: 0 };
+    }
     for (const t of targets) Object.assign(t, args.data);
     return { count: targets.length };
   });
@@ -186,8 +218,31 @@ const mocks = vi.hoisted(() => {
     return { status: 'queued', promptId: `p${state.prompts.length}` };
   });
 
+  /** Snapshot / restore the in-memory tables around the callback. */
+  const runInTransaction = (client: any) => vi.fn(async (fn: any) => {
+    const snap = {
+      items: state.items.map((r: any) => ({
+        ...r, metadata: r.metadata ? JSON.parse(JSON.stringify(r.metadata)) : r.metadata,
+      })),
+      batches: state.batches.map((b: any) => ({ ...b })),
+      prompts: state.prompts.map((p: any) => ({ ...p })),
+    };
+    state.inTx = true;
+    try {
+      return await fn(client);
+    } catch (err) {
+      state.items = snap.items;
+      state.batches = snap.batches;
+      state.prompts = snap.prompts;
+      throw err;
+    } finally {
+      state.inTx = false;
+    }
+  });
+
   return {
     state,
+    runInTransaction,
     findMany,
     findFirst,
     updateMany,
@@ -202,8 +257,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/db/prisma', () => ({
-  default: {
+vi.mock('../src/db/prisma', () => {
+  const client: any = {
     openItem: {
       findMany: mocks.findMany,
       findFirst: mocks.findFirst,
@@ -216,8 +271,14 @@ vi.mock('../src/db/prisma', () => ({
     },
     user: { findMany: mocks.userFindMany },
     brainPromptQueue: { findFirst: mocks.promptFindFirst },
-  },
-}));
+  };
+  // DEF-208 — the transaction MOCKS ROLLBACK, because rollback is the property
+  // under test: the whole point of the boundary is that a failed sent-mark
+  // leaves no queue row and no claim stamp. A `$transaction` that merely ran the
+  // callback would let a broken implementation pass.
+  client.$transaction = mocks.runInTransaction(client);
+  return { default: client };
+});
 
 vi.mock('../src/services/openItems/openItemsSettings', () => ({
   resolveOpenItemsSettings: mocks.resolveOpenItemsSettings,
@@ -346,9 +407,13 @@ beforeEach(() => {
   mocks.state.failOwedMarkIds.clear();
   mocks.state.batchCreateFailNext = 0;
   mocks.state.batchMarkFailNext = 0;
+  mocks.state.batchMarkZeroNext = 0;
+  mocks.state.batchCancelZeroNext = 0;
   mocks.state.enqueueFailNext = 0;
   mocks.state.afterItemRead = null;
   mocks.state.onClearRead = null;
+  mocks.state.afterTxItemRead = null;
+  mocks.state.inTx = false;
   mocks.resolveOpenItemsSettings.mockResolvedValue({
     authority: 'found',
     value: { staleThresholdDays: 30 },
@@ -657,17 +722,26 @@ describe('DEF-187/188/189/190 — the cleanup job: CAS writes, atomic outbox bat
     expect(mocks.state.prompts).toHaveLength(1);
   });
 
-  it('a sent-mark failure after acceptance can NEVER re-send: the retry finds the queue holding the identity (iteration-2 HIGH 3, outbox form)', async () => {
+  // DEF-208 UPDATED THIS TEST DELIBERATELY, and the property got STRONGER.
+  // It used to prove "the retry finds the queue holding the identity" — the
+  // enqueue had committed and only the sent-mark failed, so re-sending was
+  // prevented by a lookup. Now the enqueue is INSIDE the same transaction as
+  // the sent-mark, so a failed mark rolls the queue row back and there is
+  // nothing to look up. Same owner-visible guarantee — exactly one message
+  // across both attempts — reached by making the bad state unrepresentable
+  // instead of detecting it afterwards.
+  it('a sent-mark failure rolls the whole announcement back: no queue row, identity intact, exactly one message after the retry', async () => {
     mocks.state.items = [archivedOwedItem()];
     mocks.state.batchMarkFailNext = 1;
 
     const first = await runOpenItemsBacklogCleanup('tenant-1');
-    expect(first.noticesEnqueued).toBe(1);
-    expect(mocks.state.prompts).toHaveLength(1);
-    expect(mocks.state.batches[0].state, 'mark failed — still pending').toBe('pending');
+    expect(first.noticesEnqueued, 'nothing was announced').toBe(0);
+    expect(mocks.state.prompts, 'the queue row rolled back with the mark').toHaveLength(0);
+    expect(mocks.state.batches[0].state, 'mark failed — still pending under the same identity').toBe('pending');
+    expect(first.errors, 'the failure is counted, not swallowed').toBeGreaterThan(0);
 
     const second = await runOpenItemsBacklogCleanup('tenant-1');
-    expect(second.noticesEnqueued, 'debt settled without re-sending').toBe(0);
+    expect(second.noticesEnqueued, 'the retry announces it once').toBe(1);
     expect(mocks.state.batches[0].state).toBe('sent');
     expect(mocks.state.prompts, 'the owner received exactly one message').toHaveLength(1);
   });
@@ -907,8 +981,11 @@ describe('DEF-202 — identity belongs to the withdrawal EVENT, not to the item'
   it('clears ONLY the event the batch claimed, so a later withdrawal survives', () => {
     expect(code).toMatch(/if \(owned\.size > 0 && !owned\.has\(key\)\)/);
     expect(code).toMatch(/eventTokenOf\(fresh\.metadata\)/);
-    // Both call sites hand the batch's own tokens down.
-    expect((code.match(/eventTokensOf\(batch\)/g) ?? []).length).toBe(2);
+    // Every path that CLAIMS or CLEARS hands the batch's own tokens down.
+    // DEF-208 added the third: settleBatch now derives its owned-event set
+    // inside the transaction, so the in-transaction claim filters on the same
+    // identity the clear does.
+    expect((code.match(/eventTokensOf\(batch\)/g) ?? []).length).toBe(3);
   });
 
   it('a pre-DEF-202 batch claims no event, so existing debt is not stranded', () => {
@@ -929,5 +1006,142 @@ describe('DEF-202 — identity belongs to the withdrawal EVENT, not to the item'
   it('the schema field is nullable, matching the migration', () => {
     const schema = fs.readFileSync(path.resolve(__dirname, '..', 'prisma/schema.prisma'), 'utf8');
     expect(schema).toMatch(/eventTokens\s+Json\?\s+@map\("event_tokens"\)/);
+  });
+});
+
+/**
+ * DEF-208 — the announcement and the fact it asserts commit together.
+ *
+ * Codex said the same thing about iteration 3 and iteration 4, and he was right
+ * both times: "the pre-send check is another guard above an asynchronous gap …
+ * the owner restores the item while `brainPromptQueue.findFirst` or the imports
+ * are pending, then enqueue runs; result = Brain tells the owner A withdrew
+ * although it is active."
+ *
+ * The barrier below is placed where he asked for it — after the FINAL
+ * revalidation and before the queue insertion — and it is inside the
+ * transaction, which is the only place that window exists any more.
+ */
+describe('DEF-208 — a restore during the send window yields no withdrawal notice', () => {
+  it('the item restored AFTER the final revalidation is never announced', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1', title: 'Old vendor digest' })];
+    // THE BARRIER: the owner restores it in the gap the old code awaited across.
+    mocks.state.afterTxItemRead = (st: any) => {
+      st.items[0].status = 'TRIAGED';
+    };
+
+    const stats = await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(mocks.state.prompts, 'no queued withdrawal fact').toHaveLength(0);
+    expect(stats.noticesEnqueued).toBe(0);
+    expect(mocks.state.batches[0].state, 'the batch cancels rather than sends').toBe('cancelled');
+    expect(mocks.state.items[0].metadata.selfPruneNotice.announcedAt).toBeUndefined();
+    // The debt survives: a restored item owes nothing NOW, but the flag is not
+    // silently cleared by a notice that never went out.
+    expect(mocks.state.items[0].metadata.selfPruneNotice.owed).toBe(true);
+  });
+
+  it('one member restored in the window is dropped; the others are still announced with the corrected count', async () => {
+    mocks.state.items = [
+      archivedOwedItem({ id: 'a1', title: 'Old vendor digest', sourceRef: 'r1' }),
+      archivedOwedItem({ id: 'b1', title: 'Old newsletter sweep', sourceRef: 'r2' }),
+    ];
+    mocks.state.afterTxItemRead = (st: any) => {
+      st.items.find((i: any) => i.id === 'b1').status = 'TRIAGED';
+    };
+
+    const stats = await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(stats.noticesEnqueued).toBe(1);
+    expect(mocks.state.prompts).toHaveLength(1);
+    // The count the owner reads is the count that survived the claim, not the
+    // count the batch was formed with.
+    const q = String(mocks.state.prompts[0].question);
+    expect(q).toContain('"Old vendor digest"');
+    expect(q).not.toContain('Old newsletter sweep');
+    expect(mocks.state.prompts[0].metadata.selfPruneNotice.count).toBe(1);
+    expect(mocks.state.prompts[0].metadata.selfPruneNotice.itemIds).toEqual(['a1']);
+    // The restored row keeps its debt — it was never part of what was said.
+    const b1 = mocks.state.items.find((i: any) => i.id === 'b1');
+    expect(b1.metadata.selfPruneNotice.owed).toBe(true);
+  });
+
+  it('the claim is a compare-and-set on the item, not a read: it carries tenant, user, id, status AND the version token', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    await runOpenItemsBacklogCleanup('tenant-1');
+
+    const claim = mocks.updateMany.mock.calls
+      .map(([a]: any[]) => a)
+      .find((a: any) => a.data?.metadata?.selfPruneNotice?.announcedAt);
+    expect(claim, 'no claim write was issued').toBeDefined();
+    expect(claim.where.clientNumber).toBe('tenant-1');
+    expect(claim.where.userId).toBeDefined();
+    expect(claim.where.id).toBe('a1');
+    expect(claim.where.status).toBe('CANCELLED');
+    expect(claim.where.updatedAt, 'without the version token this is a guard, not a CAS').toBeDefined();
+  });
+
+  it('the queue insert runs on the caller transaction, so it cannot commit without the claim', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(mocks.enqueueBrainPrompt).toHaveBeenCalledTimes(1);
+    const input = mocks.enqueueBrainPrompt.mock.calls[0][0];
+    expect(input.tx, 'the enqueue was not handed the transaction').toBeDefined();
+    expect(input.dedupKey).toMatch(/^selfpruning_withdrawn:/);
+  });
+
+  it('a failing enqueue announces nothing and leaves the identity to the retry', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    mocks.state.enqueueFailNext = 1;
+
+    const first = await runOpenItemsBacklogCleanup('tenant-1');
+    expect(first.noticesEnqueued).toBe(0);
+    expect(mocks.state.batches[0].state, 'still pending under the same dedup key').toBe('pending');
+    expect(mocks.state.items[0].metadata.selfPruneNotice.announcedAt,
+      'the claim rolled back with the failed insert').toBeUndefined();
+
+    const second = await runOpenItemsBacklogCleanup('tenant-1');
+    expect(second.noticesEnqueued).toBe(1);
+    expect(mocks.state.prompts, 'exactly one message across both attempts').toHaveLength(1);
+  });
+
+  it('a sent-mark that matches NOTHING rolls back too — a count of 0 is a failure, not a note', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    mocks.state.batchMarkZeroNext = 1;
+
+    const first = await runOpenItemsBacklogCleanup('tenant-1');
+
+    // Someone else moved the batch out of pending. Committing the announcement
+    // anyway would leave an owner-visible message the outbox has no record of
+    // making — the exact split-brain the outbox exists to prevent.
+    expect(mocks.state.prompts, 'nothing announced').toHaveLength(0);
+    expect(first.noticesEnqueued).toBe(0);
+    expect(first.errors, 'counted, not swallowed').toBeGreaterThan(0);
+    expect(mocks.state.items[0].metadata.selfPruneNotice.announcedAt).toBeUndefined();
+    expect(mocks.state.items[0].metadata.selfPruneNotice.owed).toBe(true);
+  });
+
+  it('a cancel-mark that matches nothing is a failure too — the batch is never left silently settled', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    mocks.state.afterTxItemRead = (st: any) => { st.items[0].status = 'TRIAGED'; };
+    mocks.state.batchCancelZeroNext = 1;
+
+    const stats = await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(mocks.state.prompts).toHaveLength(0);
+    expect(stats.errors, 'a cancel nobody applied must not read as success').toBeGreaterThan(0);
+    expect(mocks.state.batches[0].state, 'still pending — the next tick decides again').toBe('pending');
+  });
+
+  it('module resolution happens BEFORE the transaction opens — a dynamic import must not hold it', () => {
+    const raw = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/jobs/openItemsBacklogCleanupJob.ts'), 'utf8');
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const body = code.slice(code.indexOf('async function settleBatch'));
+    const txAt = body.indexOf('prisma.$transaction');
+    expect(txAt).toBeGreaterThan(0);
+    expect(body.slice(0, txAt), 'both imports resolve first').toContain('enqueueBrainPrompt }');
+    expect(body.slice(txAt), 'no await import() inside the boundary').not.toMatch(/await import\(/);
   });
 });

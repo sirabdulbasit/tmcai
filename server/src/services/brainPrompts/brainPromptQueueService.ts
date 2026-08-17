@@ -31,6 +31,22 @@ const log = createLogger('brain-prompt-queue');
 
 export type Criticality = 'routine' | 'high' | 'top';
 
+/**
+ * DEF-208 — the minimum Prisma surface a transactional enqueue uses.
+ *
+ * Structural, not a convenience: a caller whose decision to announce something
+ * and whose record OF that announcement must commit together has no way to say
+ * so today, so it commits the decision, awaits, and then writes the record from
+ * a snapshot that may already be false. Accepting the caller's transaction is
+ * how that stops being two boundaries.
+ */
+export interface EnqueueTxClient {
+  brainPromptQueue: {
+    findFirst(args: unknown): Promise<{ id: bigint | number } | null>;
+    create(args: unknown): Promise<{ id: bigint | number }>;
+  };
+}
+
 export interface SideEffect {
   /** What to do with the user's answer. */
   kind: 'set_due_date' | 'assign_owner' | 'free_form_note' | 'action_status_update'
@@ -44,6 +60,28 @@ export interface SideEffect {
 export interface EnqueueInput {
   userId: number;
   clientNumber: string;
+  /**
+   * DEF-208 — create the row inside the CALLER'S transaction.
+   *
+   * When set, the dedup probe and the insert run on this client, so the queue
+   * row commits with whatever else the caller wrote — nothing can change
+   * underneath between the caller's last check and the row existing. Two
+   * behaviours are deliberately withheld on this path, because neither belongs
+   * inside a transaction:
+   *
+   *   - IMMEDIATE DISPATCH. `sendNextPrompt` sends a WhatsApp message; an
+   *     outbound message cannot be rolled back, so a send inside a transaction
+   *     that later aborts is a message the database says was never queued. The
+   *     row is left `queued` and the dispatcher takes it on its next tick.
+   *   - DIGESTING. The digest policy enqueues a second prompt and files the
+   *     first, on the ambient client, which would escape the caller's
+   *     transaction. A caller who needs atomicity is announcing a decision it
+   *     already made, not offering a push for suppression.
+   *
+   * `top` criticality is REJECTED rather than silently downgraded: it places a
+   * voice call before any row exists, which is the same unrollbackable send.
+   */
+  tx?: EnqueueTxClient;
   /** What Brain is asking the user. Plain text rendered as the WhatsApp message. */
   question: string;
   /** Optional related open item — used by reply side-effects. */
@@ -109,12 +147,19 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
   const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS;
   const expiresAt = new Date(Date.now() + ttlMs);
 
+  // DEF-208 — the ONE place the client is chosen. Everything below reads and
+  // writes `db`, so a transactional caller cannot half-escape its own boundary.
+  const db = (input.tx ?? prisma) as EnqueueTxClient;
+  if (input.tx && criticality === 'top') {
+    throw new Error('enqueueBrainPrompt: top criticality places a voice call and cannot run inside a transaction');
+  }
+
   // ── Dedup ──────────────────────────────────────────────────────
   // Soft dedup by (user_id, dedup_key) on any non-terminal row. Avoids
   // the same producer asking the same question twice when a poll fires
   // back-to-back.
   if (input.dedupKey) {
-    const existing = await prisma.brainPromptQueue.findFirst({
+    const existing = await db.brainPromptQueue.findFirst({
       where: {
         // DEF-175 (Codex iteration-41 CRITICAL): every read is tenant-scoped,
         // invariant #1. userId being a global PK is an accident of the current
@@ -204,7 +249,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
   // `metadata.digest`. The one digest message per item per window rides THIS
   // same queue, so quiet/office hours apply via the existing dispatch path
   // rather than a second implementation here.
-  if (criticality === 'routine') {
+  if (criticality === 'routine' && !input.tx) {
     const decision = await import('../selfpruning/digestPolicy')
       .then(({ decideDigest }) => decideDigest({
         clientNumber: input.clientNumber,
@@ -306,7 +351,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
   // HIGH #3: two concurrent producers, two digest messages, "two voices").
   let row: { id: bigint | number };
   try {
-    row = await prisma.brainPromptQueue.create({
+    row = await db.brainPromptQueue.create({
       data: {
       clientNumber: input.clientNumber,
       userId: input.userId,
@@ -346,7 +391,7 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
       const named = Array.isArray(target) ? target.join(',')
         : typeof target === 'string' ? target : '';
       if (named === '' || /dedup/i.test(named)) {
-        const survivor = await prisma.brainPromptQueue.findFirst({
+        const survivor = await db.brainPromptQueue.findFirst({
           where: {
             // DEF-175 (Codex iteration-41 CRITICAL): the survivor proof must
             // not read outside the tenant — a cross-tenant row must never
@@ -369,6 +414,11 @@ export async function enqueueBrainPrompt(input: EnqueueInput): Promise<EnqueueRe
     }
     throw e;
   }
+
+  // DEF-208 — a transactional caller stops here. The row is durable when ITS
+  // transaction commits; dispatch is the tick's job, because a WhatsApp message
+  // sent from inside a transaction survives that transaction being rolled back.
+  if (input.tx) return { status: 'queued', promptId: String(row.id) };
 
   // Try to dispatch immediately. If another prompt is already
   // awaiting_reply, this one stays queued.
