@@ -2766,3 +2766,29 @@ Scope is not compare-and-set, absence is not error, and a set-derived identity i
 ### Known issues deliberately not fixed
 
 The two pulse-contract failures (orchestrator-owned WIP in a path the Builder is forbidden to touch). The C4 register work (B11/B12/B10/B08) is Codex directive 6's NEXT fresh turn. No migration; no schema change.
+
+## 41. DEF-190 — the withdrawal notice becomes an atomic outbox batch (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex's iteration-3 review (WRONG) showed the notice path could still announce a restored item (enqueue from a stale selection), split one owed set into two notices (per-row stamping is not atomic), erase concurrent metadata (clearing rebuilt from a stale snapshot under a status-only guard), and prune an orphaned item under defaults nobody holds (a no-row settings read was indistinguishable from an absent preference block).
+
+### Confirmed root cause
+
+A snapshot is not the present, per-row best effort is not a batch, and absence of a user is not absence of a preference — each hole was a guarantee asserted one step above the operation that had to carry it.
+
+### Files changed (complete list, commit `8576274`)
+
+- `server/prisma/schema.prisma` + `server/prisma/migrations/20260817_self_prune_notice_outbox/migration.sql` — the `self_prune_notice_batches` outbox: one row is one notice batch, created by a single atomic INSERT with an immutable member snapshot (item ids, titles, count) and a unique dedup identity; states pending → sent | cancelled. Migration is hand-written and idempotent (`CREATE TABLE IF NOT EXISTS`, guarded indexes); applied by the deploy runner, never `prisma migrate dev`.
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — the dispatcher works on the outbox: pending batches settle under their original identity; members are REVALIDATED with a fresh read immediately before enqueue (restored members drop; an empty batch cancels); the queue is asked for the batch identity in ANY state before sending; owed flags clear from a fresh per-row re-read under a status+updatedAt CAS merging the FRESH metadata; sent batches retry clearing without re-announcing; the stale sweep holds with the visible `heldNoAuthority` metric when no user row backs the pair. All iteration-3 structural repairs retained (per-tenant entry, tenant-scoped queries, lifecycle CAS, deterministic traversal). The outbox delegate is reached through a narrow typed cast because the local Prisma client regenerates only inside a deploy's build (`npx prisma` never runs on prod); if absent at runtime the dispatcher degrades visibly (debts persist, errors count).
+- `server/src/services/openItems/openItemsSettings.ts` — `resolveOpenItemsSettings` with explicit authority: `found` / `absent_preferences` / `no_user` (null value; mutating callers hold); DB errors still throw and are never cached; `getOpenItemsSettings` remains the read-side convenience for authenticated contexts.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — 24 tests; the mock now simulates the outbox table, honours state/dedupKey/id-set predicates, and adds failure knobs for batch insert and sent-mark plus a concurrent-editor and a pre-clear mutation hook. Named scenarios per finding: restored-before-enqueue (no notice, batch cancelled), restored member dropped while live member announced, rejected insert → one batch next tick for the whole set, sent-mark failure → retry finds the queue holding the identity, concurrent metadata survives the clear, orphaned pair holds with visible metric.
+- `server/tests/def189OpenItemsSettingsFailClosed.test.ts` — the real settings module: throw-on-error (uncached) plus the three authority states.
+
+### Tests added / verification (measured after the last code edit, at `8576274`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 194 files — 192 passed, 1 failed, 1 skipped; 2,393 tests — 2,362 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py` (the committed script passes the contract's exact assertions — §39). `git diff --check` clean. **Build:** the actual `npm run build` at `8576274` in the fully isolated clean clone (own `npm ci` dependencies): Prisma Client generated from the NEW schema — the `selfPruneNoticeBatch` delegate confirmed present on the generated client — and the emit succeeded. The immutable production `server/dist` was not touched.
+
+### Known issues deliberately not fixed
+
+The two pulse-contract failures (orchestrator-owned WIP). The same-millisecond `updatedAt` CAS residual (bounded by the status predicate; recorded in DEF-190). A migration IS included: `20260817_self_prune_notice_outbox` — additive, idempotent, no data backfill. C4 register work stays queued for the next fresh turn per Codex directive 6.

@@ -450,3 +450,145 @@ Wrong if: Codex finds an openItem read I missed outside the job (the sweep
 asserts the job's own calls only), a notice path that still changes identity
 across retries, or judges the registry enumeration itself insufficient as
 the one cross-tenant read.
+
+## Iteration 4 — remediation of the iteration-3 WRONG, finding by finding
+
+**Commit `8576274`** (code + migration) on `release/cmp-2026-08-16`. DEF-190
+row added; `Changes_Made.md` §41 added. No fixQueue entry targeted —
+remediation wins on scope (attempt 3 of 3); the C4 cases (B06/B08) stay
+Codex's own directive 6 for the next fresh turn. The re-scope instruction's
+"pick work that can ship" is answered by finishing this range: this turn
+follows Codex's directives 1–5 exactly rather than opening new surface.
+
+### The findings, in severity order, and what closed each
+
+**CRITICAL — a restored item could still be announced.** Accepted: my
+iteration-3 claim confused "unmarkable" with "unannounceable" — the enqueue
+read stale rows. Closed per directive 2: `settleBatch` REVALIDATES with a
+fresh read immediately before enqueue (`openItemsBacklogCleanupJob.ts`,
+`settleBatch`): only members still CANCELLED are rendered; restored members
+drop out; a batch with no live members flips to `cancelled` and nothing is
+sent. Named tests: the restore lands between owed selection and enqueue —
+no prompt, batch cancelled, the restore survives; and the two-member variant
+where the live member is announced while the restored one is absent from the
+vetted meaning. The residual window (a restore after the fresh read, inside
+the same millisecond as the send) is the irreducible one — no second phase
+exists between our database and WhatsApp — and it is stated, not hidden.
+
+**HIGH — per-row stamping split one owed set into two notices.** Accepted.
+Closed per directive 1: the outbox (`self_prune_notice_batches`, migration
+`20260817_self_prune_notice_outbox`, idempotent) makes batch creation ONE
+atomic INSERT carrying the immutable member snapshot and the unique dedup
+identity — there is no per-row claim step left to partially fail. Named
+test: the insert is rejected → nothing sendable exists, no notice; next tick
+forms ONE batch over the whole owed set → exactly one notice saying "2 open
+items withdrew". The sent-mark failure case keeps exactly-once the other
+way: the retry finds the queue already holding the batch identity (asked IN
+ANY STATE, so a terminal prompt still counts) and settles without re-sending.
+
+**HIGH — clearing erased concurrent metadata.** Accepted. Closed per
+directive 3: `clearOwedFlags` re-reads each row FRESH and writes through the
+status+updatedAt CAS, merging the FRESH metadata — never the dispatch-time
+snapshot. Named test: another worker writes `followUpAudit` between
+acceptance and clearing; the field survives and the debt still clears. A
+raced clear stays owed INSIDE its sent batch — which excludes it from ever
+joining a new batch — and is retried next tick; that is the loop that makes
+row flags eventually consistent without a second notice. I did not adopt an
+interactive transaction for this: the CAS on the fresh read's version token
+gives merge-or-nothing without holding a transaction open across row loops;
+if Codex judges a transaction stronger, it is a contained change.
+
+**HIGH — a missing user became a pruning policy.** Accepted — the reviewer
+is right that my "confirmed no-row → defaults" absence policy conflated WHO
+holds the preference with WHAT it is. Closed per directive 4:
+`resolveOpenItemsSettings` returns explicit authority — `found`,
+`absent_preferences` (confirmed user row without the block: defaults are his,
+authorized), `no_user` (null value) — and the cleanup HOLDS on `no_user`,
+counting the visible `heldNoAuthority` metric and logging the pair. End-to-end
+orphan test: no quarantine, no release, metric at 1. Database errors still
+throw (DEF-189) and the real module is tested for all three states plus the
+throw. `getOpenItemsSettings` survives as the read-side convenience for
+authenticated-context callers (gate, follow-up, profile), where the pair
+exists by construction and a read-only default is the safe direction.
+
+**MEDIUM — same-millisecond CAS residual.** Acknowledged again, not fixed:
+`@updatedAt` is the strongest version token the schema carries; the status
+predicate bounds the damage class. Recorded in the DEF-190 row as a known
+residual rather than dressed as closed.
+
+**MEDIUM — C4 untouched.** Deliberate, per directive 6: next fresh turn.
+
+**Directive 5 (retain iteration-3's repairs) — done by construction:** the
+tenant registry → per-tenant entry point, every openItem query tenant-scoped
+(the sweep test now also covers outbox reads), thrown settings errors,
+deterministic owed traversal, and the lifecycle status+updatedAt CAS are all
+unchanged and still under their named tests. No parallel implementation was
+added: the outbox REPLACED the per-row stamping path rather than joining it.
+
+### Verification (measured AFTER the last code edit, commit `8576274`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **194 files: 192 passed / 1 failed / 1 skipped · 2,393
+  tests: 2,362 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 are `orchestratorPulseRoute.test.ts` executing the orchestrator's
+  uncommitted live `pulse.py` (the COMMITTED script passes the contract's
+  exact assertions — proven in Iteration 2's entry). Directive 6's "do not
+  release on the red matrix" is the orchestrator's to satisfy by reconciling
+  its own pulse WIP; the Builder cannot touch `scripts/orchestrator/**`.
+- **`npm run build` — the ACTUAL script at `8576274`, in the fully isolated
+  clean clone** (own `npm ci` dependencies): `prisma generate` ran against
+  the NEW schema — the `selfPruneNoticeBatch` delegate is confirmed present
+  on the generated client (`typeof p.selfPruneNoticeBatch === 'object'`) —
+  and the emit succeeded, `dist/jobs/openItemsBacklogCleanupJob.js` produced
+  in the clone. The immutable production `server/dist` was not touched.
+- `git diff --check` — clean.
+- Migration: `20260817_self_prune_notice_outbox` — additive, idempotent
+  (`IF NOT EXISTS` on table and both indexes), no data backfill, applied by
+  the deploy runner at deploy time.
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Self-Pruning
+PREDICTED:  +0 until deployed — fourth pass making DEF-186's increment
+            honest. Divergence from the brief's UNKNOWN target is the
+            remediation rule: the reviewed change is the scope.
+MECHANISM:  the notice's lifecycle now lives in a first-class record whose
+            creation is atomic, whose identity is immutable, and whose
+            members are re-proven live at the moment of speaking.
+FALSIFIER:  a restored item named in any notice; two notices covering one
+            owed set; a concurrent metadata field lost to a clear; an
+            orphaned item quarantined under default settings; a batch whose
+            retry carries a different dedupKey.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- Did not touch `scripts/orchestrator/**`, the benchmark, or the C4 register
+  path. Did not use an interactive transaction for owed-flag clearing
+  (argued above — CAS on the fresh version token; contained change if Codex
+  prefers the transaction).
+- The working tree reaches the outbox through a narrow typed cast, because
+  the local Prisma client regenerates only inside a deploy's build and
+  `npx prisma` never runs on prod (CLAUDE.md). The clone build proves the
+  generated client carries the delegate; at runtime the dispatcher degrades
+  VISIBLY if it is ever absent (debts persist, `errors` counts, nothing
+  announced). Stated so the reviewer judges the trade rather than finds it.
+- Unsure: cancelled batches are terminal — an item restored and later
+  RE-archived forms a NEW batch and is announced again, which I judge
+  correct (it withdrew twice); an item whose owed flag lives in a SENT batch
+  and which is re-archived after restore would have its second withdrawal
+  cleared without a second announcement — a miss, never a double. Both
+  stated in the row.
+
+### Honest prediction
+
+Deployable if reviewed SOUND: all four iteration-3 findings are closed with
+the exact mechanisms the directive named (outbox, pre-send revalidation,
+fresh-read merge, explicit authority), the two MEDIUMs are recorded
+honestly, and the actual build passes against the new schema in isolation.
+Wrong if: Codex finds a path where a batch's members can change between the
+atomic insert and the revalidating read in a way that survives both the
+status filter and the queue-identity check, judges the delegate cast
+unacceptable before the deploy-time generate, or requires the interactive
+transaction for clearing.
