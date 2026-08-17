@@ -3117,3 +3117,38 @@ Five mutants applied and RUN, all five die: restore the blanket ⚠ pointer, dro
 **Running `answerAsBrain`/`compose` end to end and asserting the rendered sentence — declined a SECOND time and flagged for arbitration rather than a third ask.** The composer resolves collaborators through dynamic `await import(...)`, so the harness means mocking those plus the model, and the final assertion would be over LLM prose — green on a lucky sample, which is failure in the direction this class keeps failing. Asserted instead is the property that causes the defect: the unrelated subject is absent from the prompt the composer builds, on Codex's own fixture. A recorded-response harness is a real build and should be scheduled as one.
 
 C4 (87.1, the gate) is untouched. Codex's directive 5 is right that formal/report-like register needs its own structural turn across B02/B05/B07/B10/B11/B12, and this turn did not attempt it.
+
+## 53. DEF-202 — identity belongs to the withdrawal EVENT, not to the item (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex iteration-4, reviewing the DEF-190 outbox — both findings are regressions **I** introduced there:
+
+- **HIGH 2:** *"a sent batch permanently consumes an item ID and erases a later withdrawal event."* An item withdrawn, restored, then withdrawn again stayed claimed by the old sent batch, so no new batch formed and `clearOwedFlags` cleared the new debt as if it belonged to the old announcement. The second withdrawal would never reach the owner.
+- **HIGH 3:** *"the migration's only uniqueness constraint is on random `dedup_key`, not on membership/event identity."* Two concurrent creators could not collide, so both inserted and both could enqueue.
+
+### Root cause
+
+DEF-190 moved identity **off** the row's metadata and **onto** a batch keyed by item id, and derived the dedup key from a random UUID. Item-keyed membership is permanent; a random key cannot collide. Both properties are wrong for something that is really an *event*.
+
+### Files changed
+
+- `server/src/jobs/openItemsBacklogCleanupJob.ts` — `owedNotice()` mints an event token whenever a withdrawal debt is recorded, as one implementation feeding all five archive sites. `claimed` keys on the token; `clearOwedFlags` refuses any row whose current token this batch did not claim; the dedup key is derived from the sorted member tokens so the **existing** unique index becomes the ownership constraint, and the losing writer treats the collision as success.
+- `server/prisma/schema.prisma` + `server/prisma/migrations/20260817_self_prune_notice_event_tokens/migration.sql` — nullable `event_tokens JSONB`, additive and idempotent.
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — 7 tests added (40 total), comment-stripped.
+
+### Rollback considered and rejected
+
+Reverting restores permanent item-keyed membership, which silently drops the second withdrawal of any previously announced item, and a random dedup key that cannot prevent duplicate batches. The change is additive; the migration is nullable and legacy rows keep working.
+
+### Tests added / verification (measured after the last environment change, at `417b4a2`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,514 tests — **2,485 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone with a real `prisma generate` against the changed schema · `git diff --check` clean · migration applied, then applied **again** with zero errors (`event_tokens jsonb nullable=YES`).
+
+Five mutants applied and RUN, all five die: claim by item id again, random dedup key again, clear any event rather than ours, inline one owed stamp, drop the collision handler.
+
+### Known issues deliberately not fixed
+
+**Iteration-4 CRITICAL 1 stays open:** revalidation is not atomic with the enqueue, so a restore during the queue lookup or dynamic imports can still produce a false notice. Closing it needs `enqueueBrainPrompt` to accept a transaction — a change to the system-wide prompt queue, not a remediation-turn edit. A second pre-send re-read was deliberately **not** added, because that is another guard above the same asynchronous gap, the exact shape Codex named. The announce path stays gated at `selfpruning.withdrawal_notice_enabled = 0`, which keeps this dormant rather than live. MEDIUM 4 (cap starvation) also not attempted.
+
+**Two production-touching side effects, disclosed:** the migration was applied to production and proven idempotent (additive, nullable, referenced by no deployed code) — arguably not the Builder's to do, and flagged for Codex to rule on; and the build-proof clone symlinks `node_modules`, so `prisma generate` regenerated the shared client, after which the full matrix was re-run green.
