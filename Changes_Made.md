@@ -2921,3 +2921,28 @@ Codex's HIGH #3 — an oversized list headed "here is the full list" is still sh
 ### Known issues deliberately not fixed
 
 HIGH #3 (completeness claim), MEDIUM #4 (no shared brevity enforcement for WhatsApp — only composer format rules), MEDIUM #5 (the C4 register gate behind B10/B12/B02/B06). All three recorded in DEF-194 and all three needing composition-side work. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
+
+## 47. DEF-195 — the fit happens at the provider wire, and every list section is protected (2026-08-17, BUILDER: Claude — orchestrator iteration 2, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex's iteration-2 review (WRONG) found that §46's "all four truncators" claim was a list of files I remembered. Four more live wire paths never heard of the policy: `WhatsAppManager` → `WebjsProvider.sendMessage` / `MetaProvider.sendMessage` (every tenant agent and scheduler send) and `UserWebjsProvider.sendReply` — the owner's own session, where the approved Day Brief draft arrives from `briefRoutes`. Separately, `parseBlocks` stopped at the first blank line, so a Day Brief with Calendar / Email / WhatsApp / Open Items sections had only its first list protected; later lists were opaque tail and earlier items were dropped merely for coming first.
+
+### Confirmed root cause
+
+The same error as the previous turn, one level up: enforcement where I had been looking rather than where text leaves the process. `protection-with-two-implementations` is not closed by fixing the implementations you can name — only by making the boundary the sole way through. And a parser written against one example shape silently failed the shape that dominates real traffic.
+
+### Files changed (complete list, commit `56c66da`)
+
+- `server/src/services/knowledge/transportBudget.ts` — a body is now a sequence of `prose`/`item` segments across blank lines (`parseSegments`, `renderSegments`); items drop from the end, prose never drops, sub-bullets travel with their parent, and a heading with nothing beneath it is shed. `isHeadingLike` strips emphasis markers (the rendered heading is `*Calendar:*`).
+- `server/src/services/whatsapp/WebjsProvider.ts`, `MetaProvider.ts`, `UserWebjsProvider.ts`, `server/src/services/whatsappService.ts` — the fit happens at each provider send site.
+- `server/tests/def195TransportBoundaryInvariant.test.ts` (new, 11 tests) — walks all of `src/`, asserts every `client.sendMessage` text argument and every Meta `text: { body: … }` is fitted at the site (two documented non-prose exceptions: self-probe nonce, media), asserts no wire send is fed a character slice, and covers the real four-section Day Brief shape.
+- `server/tests/def194OneTransportBudget.test.ts` — unchanged assertions, still green (17).
+
+### Tests added / verification (measured after the last code edit, at `56c66da`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 197 files — 195 passed, 1 failed, 1 skipped; 2,433 tests — 2,402 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted `pulse.py`. `git diff --check` clean. Actual `npm run build` at `56c66da` in the isolated clean clone: generate + emit OK.
+
+### Known issues deliberately not fixed
+
+The completeness claim (composition must know the budget before promising), `omittedItems` still discarded by callers, no shared WhatsApp brevity budget, and the C4 register gate — all four are composition-side and recorded in DEF-195. Eleven files carry `.slice(0, 4000|4096)` for non-transport reasons (inbound bodies, doc excerpts, DB columns); named in the DEF row so they are not mistaken for drift, and deliberately not touched in a remediation turn. Symptom tag `protection-with-two-implementations` is **partly** closed — the WhatsApp transport boundary only; the contact-address and preferred-title duplicates in its lineage remain open. No migration; no schema change.

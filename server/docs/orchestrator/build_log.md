@@ -403,3 +403,137 @@ predict a benchmark move: B10 already fits under the transport limit, so this
 turn changes nothing the twelve read-shaped cases exercise — it changes the
 proactive path they do not measure. If the benchmark moves, treat it as noise,
 not as this working.
+
+## Iteration 2 (second entry under this number — the DEF-195 remediation)
+
+**Commit `56c66da`.** DEF-195 row added; `Changes_Made.md` §47 added.
+
+### THE REAL OBSTACLE — the continuation rail asked, and this is the finding
+
+**The obstacle is not the code. It is that nothing has reached production.**
+Stated plainly because the rail says that is a finding, not a failure:
+
+- **NINE commits** now stand between the deployed SHA `e356d42c` and HEAD.
+- Grok scores **production**. The capability contract says so explicitly:
+  *"it has not been deployed — a fix sitting in the branch has changed nothing
+  for him, however good it is."*
+- Therefore **Simple & Smart cannot move, and neither can any other capability,
+  no matter what I build this turn or next.** Three attempts have been spent
+  "going deeper" on a number that is structurally frozen until a deploy occurs.
+  Attempt 4 would be spent the same way.
+- The deploy is blocked by two things, and **only one of them is mine**:
+  1. reviewer findings — which is what this turn closes;
+  2. the red matrix, whose only two failures are
+     `orchestratorPulseRoute.test.ts` executing the orchestrator's own
+     **uncommitted** `pulse.py`. I am forbidden from touching
+     `scripts/orchestrator/**`, so I cannot clear it. It has been named in
+     every build entry since the earlier Iteration 2 and remains open.
+
+So: the honest read is that the Builder seat has been asked to raise a
+production-scored number while the pipeline to production is closed. **The
+highest-value action available to the orchestrator this turn is not another
+Builder iteration — it is reconciling the pulse WIP and deploying the nine
+commits.** Until then every capability report will read 47.7 and every
+iteration will look like it failed.
+
+### What I did instead, and why it is in scope
+
+Remediation, which the rail ranks above everything: Codex's iteration-2 review
+closed **WRONG** with two HIGHs. Both are now closed at the class level.
+
+**HIGH #1 — enforcement was a list of filenames.** He was right and the
+correction is uncomfortable: last turn I wrote "ALL FOUR truncators" and it was
+four files I happened to know. He found four more live wire paths — including
+**the owner's own WhatsApp session** (`UserWebjsProvider.sendReply`), which is
+where an approved Day Brief draft actually goes. The fit now happens **at the
+provider contract**: `WebjsProvider.sendMessage`, `MetaProvider.sendMessage`,
+`UserWebjsProvider.sendReply`, `whatsappService.callMetaAPI`. And the guard is
+no longer a list: `def195TransportBoundaryInvariant.test.ts` walks all of
+`src/`, finds every `client.sendMessage(` text argument and every Meta
+`text: { body: … }`, and fails unless each is fitted at the site — two
+documented non-prose exceptions (self-probe nonce, media). A fifth provider
+added tomorrow is caught because the scan is over the tree.
+
+**HIGH #2 — only the first list was protected.** `parseBlocks` stopped at the
+first blank line, so the shape the owner receives most often — Calendar, Email,
+WhatsApp, Open Items — had three of four sections as opaque tail. A body is now
+a SEQUENCE of `prose` and `item` segments across blank lines: items drop from
+the END (positional, never "whichever section came first"), prose never drops,
+a sub-bullet travels with its parent, and a heading left with nothing beneath
+it is shed instead of announcing an empty section. Tested on the real
+four-section brief.
+
+**Two bugs of my own the new tests caught**, recorded because a
+green-on-first-run report would read worse: `isHeadingLike` tested
+`endsWith(':')` on the raw line and therefore matched **no real heading** (the
+rendered form is `*Calendar:*`); and the first slice guard flagged
+`UserWebjsProvider` for truncating **inbound** `message.body`, so that
+assertion is now argument-level rather than file-level.
+
+### Symptom tag — as the brief now requires
+
+**`protection-with-two-implementations`** — **partly** closed, at the WhatsApp
+transport boundary only. I am not claiming the whole tag: its lineage also
+covers the contact-address and preferred-title duplicates, which this diff does
+not touch. Named verbatim in the commit message and the DEF row so the owner's
+deck can strike the transport half.
+
+### Verification (measured AFTER the last edit, at `56c66da`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **197 files: 195 passed / 1 failed / 1 skipped · 2,433
+  tests: 2,402 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 are the orchestrator-owned pulse contract, unchanged by this diff.
+- **`npm run build`** — the actual script at `56c66da` in the isolated clean
+  clone: generate + emit OK.
+- `git diff --check` — clean. New tests: 11 (def194's 17 still green).
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Accurate Communication
+PREDICTED:  +0 until deployed, and I want that on the record as a prediction
+            about the PIPELINE, not a hedge about the code: nine commits are
+            undeployed and Grok scores production, so nothing I build moves a
+            number this turn.
+            DIVERGENCE from the brief's target: it reads `Simple @@TARGETCAP@@
+            Smart` (an unexpanded placeholder for the fourth turn running).
+            Remediation scope governs, and the reviewed change is an Accurate
+            Communication defect.
+MECHANISM:  no WhatsApp body on any path can be cut by character count, and
+            multi-section bodies keep whole-block integrity.
+FALSIFIER:  any `client.sendMessage` text argument or Meta `text:{body:}` in
+            src/ not fitted at the site; a severed line in any section; a
+            heading delivered with nothing under it; a body over 3900 chars
+            from any send path.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- Did not touch `scripts/orchestrator/**` (including the pulse WIP that is the
+  sole cause of the red matrix), the benchmark, or the C4 register path.
+- Did not close the completeness claim, `omittedItems` consumption, or the
+  shared brevity budget. All three are composition-side, all three are recorded
+  in DEF-195, and all three are the *next* turn's work if the reviewer agrees
+  the transport class is now shut.
+- **Found and deliberately left alone:** eleven files carry
+  `.slice(0, 4000|4096)` for non-transport reasons — inbound message bodies,
+  doc excerpts, DB columns. Widening the guard to the whole tree would have
+  dragged them into a remediation turn. Named in the DEF row so a future reader
+  does not mistake them for drift.
+- Unsure whether the argument-level regex guard is strong enough for Codex: it
+  reads source text, so a send routed through a local alias
+  (`const s = client.sendMessage; s(chatId, raw)`) would evade it. A branded
+  `FittedText` type would be stronger, but TypeScript cannot force it at a
+  third-party signature that takes `string`. If he wants stronger, the honest
+  answer is a lint rule or a wrapper module that is the only importer of the
+  provider client.
+
+### Honest prediction
+
+The transport class should now read as closed: enforcement is at the wire, the
+guard scans the tree, and multi-section bodies are covered by tests on the real
+brief shape. I predict **no benchmark movement and no capability movement**,
+for the pipeline reason above — and if the score does move, that is noise, not
+this diff working. What would prove me wrong about the mechanism: Codex finding
+a WhatsApp text send in `src/` that my scan does not reach.
