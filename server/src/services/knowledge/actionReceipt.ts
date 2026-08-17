@@ -178,3 +178,40 @@ export function actionReceiptMarker(args: {
   const payload = { action: String(args.actionType ?? ''), outstanding };
   return systemMarker(`proceeding: ${JSON.stringify(payload)}`);
 }
+
+/**
+ * DEF-211 — a clarifying question must not DELETE the answer.
+ *
+ * `B03-pronoun-followup` C5 95 -> 75. The whole reply was:
+ *
+ *     "When you say 'what about it', are you asking for more details, or do you
+ *      want me to take an action regarding the Q3 headcount plan?"
+ *
+ * Judge: *"Brain asks for clarification, which is appropriate for a vague query.
+ * However, it could have made an intelligent guess and OFFERED INFORMATION
+ * FIRST."* And it could have — the subject was resolved well enough to name it
+ * in the question.
+ *
+ * This is the same class as DEF-205/206 (decline) and DEF-209 (act), on the two
+ * branches I left behind: `applyReasoningDecision`'s `ask` case returned
+ * `question.text` and ignored `answerText` COMPLETELY, and the legacy decider's
+ * `missingSlot` arm — three lines below the arm DEF-209 repaired — overwrote the
+ * composed prose with a slot prompt. Substance the owner could have used was
+ * discarded because a question also needed asking. Those are not alternatives.
+ *
+ * The order is deliberate: what is known FIRST, the open question after. A reply
+ * that opens with a question makes the owner answer before he learns anything;
+ * the same two sentences the other way round answer him and then ask.
+ */
+export function answerThenAsk(
+  answer: string | null | undefined,
+  question: string | null | undefined,
+): string {
+  const a = String(answer ?? '').trim();
+  const q = String(question ?? '').trim();
+  if (!a) return q;
+  if (!q) return a;
+  // Already ends with that exact question — do not say it twice.
+  if (a.includes(q)) return a;
+  return `${a}\n\n${q}`;
+}

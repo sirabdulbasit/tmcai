@@ -29,7 +29,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // C-3 — Brain's own push record. Statically imported because it is needed on
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
-import { actionReceiptMarker, lastBrainQuestion } from './actionReceipt';
+import { actionReceiptMarker, lastBrainQuestion, answerThenAsk } from './actionReceipt';
 
 export interface OpenedPage {
   id: string;
@@ -3372,7 +3372,14 @@ ${calLines.join('\n')}`;
         // Decider couldn't ground the action because a specific slot
         // is missing. Ask the user for THAT slot, not a generic
         // "what did you want?" question.
-        parsed.answer = renderMissingSlotPrompt(null, decision.missingSlot);
+        //
+        // DEF-211 — but ASKING is not a reason to DELETE. This assignment was
+        // unconditional, three lines below the arm DEF-209 repaired for exactly
+        // the same reason, and it is the same defect: whatever the composer had
+        // already worked out was overwritten by the slot prompt, so the owner
+        // got a question instead of an answer AND a question. The prose now
+        // survives and the question follows it.
+        parsed.answer = answerThenAsk(parsed.answer, renderMissingSlotPrompt(null, decision.missingSlot));
         parsed.action = null;
       } else {
         // Structural safety net (Basit 2026-07-08 fix pass; re-gated

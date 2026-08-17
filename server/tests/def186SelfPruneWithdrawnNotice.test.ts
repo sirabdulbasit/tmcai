@@ -172,6 +172,15 @@ const mocks = vi.hoisted(() => {
       state.batchCreateFailNext--;
       throw new Error('outbox insert rejected (test)');
     }
+    // DEF-210 — the DATABASE constraint, modelled. `self_prune_notice_batches_dedup_uq`
+    // is a UNIQUE INDEX on `dedup_key` (20260817_self_prune_notice_outbox
+    // migration.sql:25), and it is the whole of Codex iteration-4 HIGH 3's answer:
+    // two concurrent creators that select the same owed events derive the SAME
+    // key, so the second one collides here instead of announcing a second time.
+    // A mock that accepted the duplicate would let that guarantee rot untested.
+    if (state.batches.some((b: any) => b.dedupKey === args?.data?.dedupKey)) {
+      throw new Error('duplicate key value violates unique constraint "self_prune_notice_batches_dedup_uq"');
+    }
     const row = {
       id: `nb-${++batchSeq}`,
       state: 'pending',
@@ -1186,5 +1195,90 @@ describe('DEF-208 — a restore during the send window yields no withdrawal noti
     expect(txAt).toBeGreaterThan(0);
     expect(body.slice(0, txAt), 'both imports resolve first').toContain('enqueueBrainPrompt }');
     expect(body.slice(txAt), 'no await import() inside the boundary').not.toMatch(/await import\(/);
+  });
+});
+
+/**
+ * DEF-210 — Codex iteration-4 HIGH 3, closed with the test he named.
+ *
+ * His finding: *"overlapping cleanup invocations select the same unclaimed owed
+ * row before either insert commits; result = two batches with different
+ * UUID-derived dedup keys both satisfy the database constraints and both
+ * enqueue. The migration's only uniqueness constraint is on random `dedup_key`,
+ * not on membership/event identity."*
+ *
+ * His directive: *"Test two simultaneous dispatchers with the same owed event and
+ * prove exactly one batch/dedup identity and one queue row."*
+ *
+ * That was true of the FIRST outbox, whose dedup key was a fresh `randomUUID()`
+ * — two creators, two keys, no collision, two notices. DEF-202 replaced it with
+ * a key DERIVED from the sorted member event tokens
+ * (`sha256(tokens.join('|'))`), which turns the existing unique index into the
+ * ownership constraint Codex asked for: same membership, same key, second writer
+ * collides. The claim was made in DEF-202's row and never demonstrated. It is
+ * demonstrated here, against a mock that enforces the real index.
+ */
+describe('DEF-210 — two dispatchers, one owed event', () => {
+  it('produces exactly ONE batch, ONE dedup identity and ONE queue row', async () => {
+    mocks.state.items = [
+      archivedOwedItem({ id: 'a1', title: 'Old vendor digest', sourceRef: 'r1' }),
+      archivedOwedItem({ id: 'b1', title: 'Old newsletter sweep', sourceRef: 'r2' }),
+    ];
+
+    // Genuinely overlapping: both start before either has created anything, so
+    // both see the same rows as unclaimed. This is Codex's exact input.
+    const [, ] = await Promise.all([
+      runOpenItemsBacklogCleanup('tenant-1'),
+      runOpenItemsBacklogCleanup('tenant-1'),
+    ]);
+
+    expect(mocks.state.batches, 'the loser collided on the unique index').toHaveLength(1);
+    expect(mocks.state.prompts, 'the owner was told once').toHaveLength(1);
+  });
+
+  it('the dedup key is DERIVED from the member events, so both creators compute the same one', async () => {
+    // Two separate runs over the SAME membership must agree on the identity —
+    // that is the property a random UUID could never have. The first run creates
+    // it; the second recomputes the identical key and is refused by the index.
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    await runOpenItemsBacklogCleanup('tenant-1');
+    const firstKey = mocks.state.batches[0].dedupKey;
+    expect(firstKey).toMatch(/^selfpruning_withdrawn:[0-9a-f]{32}$/);
+
+    // Re-arm the same debt under the same event token and run again.
+    mocks.state.batches = [];
+    mocks.state.items[0].metadata.selfPruneNotice.owed = true;
+    delete mocks.state.items[0].metadata.selfPruneNotice.announcedAt;
+    await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(mocks.state.batches[0].dedupKey, 'same membership, same identity').toBe(firstKey);
+  });
+
+  it('a DIFFERENT withdrawal event gets a different identity — the constraint must not block real work', async () => {
+    mocks.state.items = [archivedOwedItem({ id: 'a1' })];
+    await runOpenItemsBacklogCleanup('tenant-1');
+    const firstKey = mocks.state.batches[0].dedupKey;
+
+    // The item is restored and later withdrawn again: a NEW event token, so a
+    // new identity (DEF-202). If the key were membership-by-item-id, this second
+    // withdrawal would collide and never be announced.
+    mocks.state.batches = [];
+    mocks.state.items[0].metadata.selfPruneNotice = {
+      owed: true, reason: 'stale_no_engagement', eventToken: 'a-second-event',
+    };
+    await runOpenItemsBacklogCleanup('tenant-1');
+
+    expect(mocks.state.batches).toHaveLength(1);
+    expect(mocks.state.batches[0].dedupKey).not.toBe(firstKey);
+  });
+
+  it('the key is computed from the SORTED tokens, so member ordering cannot split one event in two', () => {
+    const raw = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/jobs/openItemsBacklogCleanupJob.ts'), 'utf8');
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    expect(code).toMatch(/const tokens = fresh\.map\([\s\S]{0,80}?\)\.sort\(\)/);
+    expect(code).toMatch(/createHash\('sha256'\)\.update\(tokens\.join\('\|'\)\)/);
+    expect(code, 'a random identity would give two creators two keys')
+      .not.toMatch(/dedupKey = `selfpruning_withdrawn:\$\{randomUUID/);
   });
 });

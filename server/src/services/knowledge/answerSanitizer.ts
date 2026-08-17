@@ -120,6 +120,14 @@ const MARKERS: MarkerRule[] = [
     whole: true,
   },
   {
+    // DEF-211 — the ask branch's last-resort marker. A decider that chose to ask
+    // and then supplied no question text has produced nothing sayable; the honest
+    // reply is to admit the turn is unfinished rather than to type English here.
+    match: /^\s*\[clarification needed:\s*([^\]]+)\]\s*$/i,
+    replace: "I need one more detail before I can go on, and I've lost track of what it was — could you say again what you'd like me to do?",
+    whole: true,
+  },
+  {
     match: /^\s*\[declined:\s*([^\]]+)\]\s*$/i,
     replace: "I can't do that: $1",
     whole: true,

@@ -18,7 +18,7 @@ import type { ComposedAction, ComposeResult } from './brainComposer';
 import { dispatchAction } from './genericActionDispatcher';
 import { recordResolution, findResolution } from './clarificationMemoryService';
 import { validateReasoningAction } from './reasoningCompose';
-import { actionReceiptMarker, lastBrainQuestion } from './actionReceipt';
+import { actionReceiptMarker, lastBrainQuestion, answerThenAsk } from './actionReceipt';
 
 /**
  * DEF-206 — wrap a decline reason as a bracketed system marker.
@@ -125,8 +125,21 @@ export async function applyReasoningDecision(args: {
           // captures it when the user actually answers.
         } catch { /* non-fatal */ }
       }
+      // DEF-211 — the answer and the question are not alternatives.
+      //
+      // This branch returned `q.text` and ignored `result.answerText` outright,
+      // so a decider that answered AND asked had its answer thrown away — the
+      // third branch of this same function to destroy prose (DEF-205/206 fixed
+      // decline, DEF-209 fixed act). `B03-pronoun-followup` C5 95 -> 75 is what
+      // that looks like from the owner's side: a question and nothing else, when
+      // the subject was resolved well enough to be named IN the question.
+      //
+      // The hardcoded English fallback goes too, for the standing reason: a
+      // Brain-surface reply is LLM-generated or a bracketed marker, never
+      // English typed here (feedback_no_hardcoded_brain_replies).
       return {
-        answer: q?.text || `I need one more detail before I can proceed.`,
+        answer: answerThenAsk(result.answerText, q?.text)
+          || '[clarification needed: the decider asked for a detail but supplied no question text]',
         citedPageIds: [],
         gaps: [],
         sources: [],

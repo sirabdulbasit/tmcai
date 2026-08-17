@@ -77,8 +77,17 @@ describe('DEF-205 — the contract tells the model which field he reads', () => 
 
   it('stops listing decline_reason as one of the mutually-exclusive OUTPUT fields', () => {
     // It is no longer an alternative to answer_text — it accompanies it.
-    expect(contractRaw).toMatch(/Exactly ONE of \{action, action_plan, question, answer_text\} is non-null/);
-    expect(contractRaw).not.toMatch(/Exactly ONE of \{action, action_plan, question, answer_text, decline_reason\}/);
+    //
+    // DEF-211 UPDATED THIS ASSERTION DELIBERATELY, and the property got
+    // stronger. It used to pin the exclusion list as
+    // `{action, action_plan, question, answer_text}`; DEF-211 removed
+    // answer_text from that list too, because an exclusion containing the
+    // owner-facing field made "answer what you know, then ask" unrepresentable.
+    // The property this test defends — decline_reason is NOT one of the
+    // mutually-exclusive alternatives — is untouched, and now so is answer_text.
+    expect(contractRaw).toMatch(/Exactly ONE of \{action, action_plan, question\} is non-null/);
+    expect(contractRaw).not.toMatch(/Exactly ONE of \{[^}]*decline_reason[^}]*\}/);
+    expect(contractRaw).not.toMatch(/Exactly ONE of \{[^}]*answer_text[^}]*\}/);
   });
 
   it('describes the decline intent in second person, not about him', () => {
