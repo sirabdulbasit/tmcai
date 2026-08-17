@@ -300,3 +300,115 @@ describe('DEF-198 — absence is evidence only when the page is complete', () =>
     }
   });
 });
+
+/**
+ * DEF-199 — the subject key is JOINED to a title, or it is explicitly unnameable.
+ *
+ * Why DEF-198 could not work: the block printed `item:cmqauv4xx` — a real count,
+ * a real timestamp, and a name the model cannot pronounce. Asked for a human
+ * sentence it took a TITLE from another block and attached these counts to it,
+ * which is how B12 answered about "ShireMe Recruiting Portal Application
+ * Testing" and then, next run, "Vision Metric's service sales package video".
+ * Rules about choosing the right subject cannot fix a join that is absent.
+ */
+describe('DEF-199 — a subject is named from the record, or not named at all', () => {
+  const oneSubject = () => summary({
+    totalReached: 2,
+    subjects: [subject({ subjectKey: 'item:abc123', reached: 2 })],
+  });
+
+  it('prints the owner\'s own title next to the key when the join resolves', () => {
+    const out = renderPushHistoryBlock(oneSubject(),
+      new Map([['item:abc123', 'Send the revised Fujairah pricing to Latif']]));
+    expect(out).toContain('"Send the revised Fujairah pricing to Latif" (item:abc123)');
+    // The key stays, so the row remains traceable to the record.
+    expect(out).toContain('2 pushes delivered');
+    // The marker must not appear on the SUBJECT LINE (it legitimately appears
+    // in the standing rules, which explain what an unresolved subject means).
+    const line = out.split('\n').find((l) => l.startsWith('- ')) ?? '';
+    expect(line).not.toContain('TITLE UNRESOLVED');
+  });
+
+  it('marks a subject the join could NOT resolve as unnameable, rather than leaving a bare key', () => {
+    // The bare key was the third state that produced the defect: nameless but
+    // answerable-looking. Mutation: dropping the marker restores it.
+    const out = renderPushHistoryBlock(oneSubject(), new Map());
+    expect(out).toContain('item:abc123 [TITLE UNRESOLVED — never name this item]');
+    expect(out).toContain('2 pushes delivered');   // the count is still true
+  });
+
+  it('forbids borrowing a title from another block — the exact observed fusion', () => {
+    const out = renderPushHistoryBlock(oneSubject(), new Map([['item:abc123', 'A real item']]));
+    expect(out).toMatch(/NAME AN ITEM ONLY FROM A TITLE PRINTED IN THIS LIST/);
+    expect(out).toMatch(/do NOT take a title from another block/);
+    expect(out).toMatch(/a true count becomes a false statement/);
+    expect(out).toMatch(/TITLE UNRESOLVED has no name you may use/);
+  });
+});
+
+describe('DEF-199 — the title join is tenant AND user scoped, and read-only', () => {
+  const findMany = vi.fn(async () => [{ id: 'abc123', title: 'Real title' }]);
+  beforeEach(() => { vi.resetModules(); findMany.mockClear(); });
+
+  async function load() {
+    vi.doMock('../src/db/prisma', () => ({
+      default: { openItem: { findMany: (...a: any[]) => findMany(...(a as [])) } },
+    }));
+    return import('../src/services/selfpruning/pushHistoryBlock');
+  }
+
+  it('constrains the read by id AND clientNumber AND userId', async () => {
+    const { resolveSubjectTitles } = await load();
+    await resolveSubjectTitles(['item:abc123'], 'TMC-0001', 2);
+    const where = (findMany.mock.calls[0][0] as any).where;
+    // A title is owner data and openItem is a user-owned model. Mutation:
+    // dropping either scope key dies here.
+    expect(where.clientNumber).toBe('TMC-0001');
+    expect(where.userId).toBe(2);
+    expect(where.id).toEqual({ in: ['abc123'] });
+  });
+
+  it('ignores non-item subject keys and never queries for them', async () => {
+    const { resolveSubjectTitles } = await load();
+    const out = await resolveSubjectTitles(['thread:t1', 'event:e1'], 'TMC-0001', 2);
+    expect(out.size).toBe(0);
+    expect(findMany).not.toHaveBeenCalled();   // no pointless query
+  });
+
+  it('de-duplicates ids so one subject repeated is one lookup', async () => {
+    const { resolveSubjectTitles } = await load();
+    await resolveSubjectTitles(['item:a', 'item:a', 'item:b'], 'TMC-0001', 2);
+    expect((findMany.mock.calls[0][0] as any).where.id).toEqual({ in: ['a', 'b'] });
+  });
+
+  it('drops a row with an empty title rather than mapping the key to nothing', async () => {
+    findMany.mockImplementationOnce(async () => [{ id: 'abc123', title: '' }] as any);
+    const { resolveSubjectTitles } = await load();
+    const out = await resolveSubjectTitles(['item:abc123'], 'TMC-0001', 2);
+    // An empty title must render as UNRESOLVED, not as `""`.
+    expect(out.has('item:abc123')).toBe(false);
+  });
+
+  it('a FAILED title read degrades to unnameable subjects, never to a guess or a lost count', async () => {
+    findMany.mockImplementationOnce(async () => { throw new Error('db down'); });
+    vi.doMock('../src/services/selfpruning/inboundNoiseLedger', () => ({
+      summariseInboundNoise: async () => ({
+        clientNumber: 'TMC-0001', userId: 2, windowHours: 36,
+        since: new Date('2026-08-16T00:00:00Z'), until: new Date('2026-08-17T12:00:00Z'),
+        totalReached: 2, totalActed: 0, totalIgnored: 2,
+        truncated: false, canonicalisationFailed: false, unresolvedSubjects: [],
+        burstMaxSpanMinutes: 1440, bursts: [], unattributed: [], floods: [],
+        subjects: [{
+          subjectKey: 'item:abc123', producers: [], reached: 2, acted: 0, ignored: 2,
+          ignoredShare: 1, firstAt: new Date('2026-08-17T09:00:00Z'),
+          lastAt: new Date('2026-08-17T10:48:00Z'), spanMinutes: 108, burst: false, samples: [],
+        }],
+      }),
+    }));
+    const { buildPushHistoryBlock } = await load();
+    const out = await buildPushHistoryBlock(2, 'TMC-0001');
+    expect(out).toContain('TITLE UNRESOLVED');
+    expect(out).toContain('2 pushes delivered');      // the count survives
+    expect(out).not.toContain('UNAVAILABLE');         // not the whole-block failure
+  });
+});

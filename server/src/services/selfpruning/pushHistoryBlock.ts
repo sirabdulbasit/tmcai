@@ -51,9 +51,56 @@
  * Read-only. Enforced by test: this module performs no writes.
  */
 import { summariseInboundNoise, type NoiseSummary, type SubjectGroup } from './inboundNoiseLedger';
+import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('push-history-block');
+
+/**
+ * DEF-199 — `item:<id>` → the owner's own title for it.
+ *
+ * WHY THIS EXISTS, and why DEF-198 could not work without it. The block used to
+ * print a subject as the bare key `item:cmqauv4xx`: a real count, a real
+ * timestamp, a real producer, and a name the model cannot pronounce. Asked
+ * *"why did you remind me about that one twice?"* it still had to produce a
+ * human sentence, so it took a TITLE from a different block (open items) and
+ * attached THIS block's counts to it. That is how `B12-reminder-referent`
+ * answered about "ShireMe Recruiting Portal Application Testing", then about
+ * "Vision Metric's service sales package video" on the next run — two different
+ * wrong items, same mechanism, because the wrong item is whatever title
+ * happened to be nearby.
+ *
+ * DEF-198 responded by adding rules about choosing the right subject. Rules
+ * cannot fix an unjoinable key: the join simply did not exist in the model's
+ * context. This performs it — scoped by tenant AND user, because a title is
+ * owner data and `openItem` is a user-owned model.
+ *
+ * READ-ONLY, and asserted as such by test.
+ */
+export async function resolveSubjectTitles(
+  subjectKeys: string[],
+  clientNumber: string,
+  userId: number,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(subjectKeys
+    .filter((k) => k.startsWith('item:'))
+    .map((k) => k.slice('item:'.length))
+    .filter(Boolean))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.openItem.findMany({
+    where: { id: { in: ids }, clientNumber, userId },
+    select: { id: true, title: true },
+  });
+  const resolved = new Map<string, string>();
+  for (const r of rows) {
+    // An empty/whitespace title is NOT a name. It must fall through to
+    // "TITLE UNRESOLVED" rather than render as `""`, which would read to the
+    // model as an item legitimately called nothing.
+    const title = String(r.title ?? '').trim();
+    if (title) resolved.set(`item:${r.id}`, title);
+  }
+  return resolved;
+}
 
 /** A prompt is a budget. Repeat-pushed subjects, worst first, capped. */
 const MAX_SUBJECT_LINES = 12;
@@ -113,6 +160,14 @@ function rulesFor(absenceInformative: boolean): string {
   const read = [
     'These are rows with timestamps, not recollection. For the subject he means, name the producers',
     'and the times, and say the count.',
+    '',
+    'NAME AN ITEM ONLY FROM A TITLE PRINTED IN THIS LIST. Every subject below carries the owner\'s own',
+    'title for it, in quotes. If the item he means is not listed below, say your record shows no repeat',
+    'push for that item — do NOT take a title from another block (open items, the day brief, the',
+    'transcript) and attach these counts to it. That is how a true count becomes a false statement:',
+    'the number and the time stay correct while the thing they describe is something he never asked',
+    'about, and he cannot tell from the reply that the join was guessed. A subject marked',
+    'TITLE UNRESOLVED has no name you may use — report it as an item you cannot identify.',
   ];
   // The only branch in this block, and it exists because absence is evidence in
   // one state and a guess in the other.
@@ -141,17 +196,24 @@ function shortTime(d: Date | null): string {
   return d ? d.toISOString().slice(0, 16).replace('T', ' ') : '?';
 }
 
-function subjectLine(g: SubjectGroup): string {
+function subjectLine(g: SubjectGroup, titles: Map<string, string>): string {
   const producers = g.producers.map((p) => `${p.producer} ${p.reached}×`).join(', ');
   const span = g.spanMinutes != null ? `, spanning ${g.spanMinutes} min` : '';
-  return `- ${g.subjectKey} — ${g.reached} pushes delivered, ${g.acted} answered${span}`
+  const title = titles.get(g.subjectKey);
+  // DEF-199 — a subject is either NAMED here or explicitly unnameable. The old
+  // bare key was the third option that produced the defect: nameless but
+  // answerable-looking, so the model supplied a name from elsewhere.
+  const subject = title
+    ? `"${title}" (${g.subjectKey})`
+    : `${g.subjectKey} [TITLE UNRESOLVED — never name this item]`;
+  return `- ${subject} — ${g.reached} pushes delivered, ${g.acted} answered${span}`
     + `; first ${shortTime(g.firstAt)}, last ${shortTime(g.lastAt)} UTC`
     + `; producers: ${producers}`;
 }
 
 /** Render a summary that was successfully READ. Exported for tests so the
  *  rendering is asserted without a database. */
-export function renderPushHistoryBlock(s: NoiseSummary): string {
+export function renderPushHistoryBlock(s: NoiseSummary, titles: Map<string, string> = new Map()): string {
   const repeats = s.subjects.filter((g) => g.reached >= REPEAT_THRESHOLD);
   const shown = repeats.slice(0, MAX_SUBJECT_LINES);
   const singles = s.subjects.length - repeats.length;
@@ -163,7 +225,7 @@ export function renderPushHistoryBlock(s: NoiseSummary): string {
 
   if (shown.length > 0) {
     lines.push(`Subjects he was pushed about more than once (${repeats.length} of ${s.subjects.length}):`);
-    for (const g of shown) lines.push(subjectLine(g));
+    for (const g of shown) lines.push(subjectLine(g, titles));
     if (repeats.length > shown.length) {
       lines.push(`- …and ${repeats.length - shown.length} more repeat-pushed subject(s) not listed.`);
     }
@@ -219,7 +281,20 @@ export function renderPushHistoryUnavailable(reason: string): string {
 export async function buildPushHistoryBlock(userId: number, clientNumber: string): Promise<string> {
   try {
     const summary = await summariseInboundNoise({ clientNumber, userId });
-    return renderPushHistoryBlock(summary);
+    // DEF-199 — perform the join the model was previously left to guess. A
+    // FAILED title read degrades to unnamed subjects (which the block then
+    // forbids naming), never to a guess and never to losing the counts: the
+    // count is still true and still worth stating, it just cannot be attached
+    // to an item until the join succeeds.
+    const titles = await resolveSubjectTitles(
+      summary.subjects.map((g) => g.subjectKey), clientNumber, userId,
+    ).catch((e: any) => {
+      log.warn('subject title join failed; subjects render as unnameable rather than guessed', {
+        clientNumber, userId, error: e?.message,
+      });
+      return new Map<string, string>();
+    });
+    return renderPushHistoryBlock(summary, titles);
   } catch (e: any) {
     log.warn('push history read failed; emitting UNAVAILABLE rather than a false zero', {
       clientNumber, userId, error: e?.message,
