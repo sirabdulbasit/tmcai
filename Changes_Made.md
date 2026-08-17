@@ -3293,3 +3293,41 @@ Four mutants applied and RUN, all four die. **Mutation testing caught a real hol
 **The residual is the reason TEXT.** The frame is fixed in code; the wording inside it is still the decider's, so "The user requested…" survives inside the sentence on the synchronous path. C1 should recover; C4/C5 may only partly. **C6's "offers no alternative" is not addressed** — supplying one requires knowing what Brain *can* do for that request, a capability-registry question and a separate build.
 
 **THE OBSTACLE, attempt 5, unchanged because the evidence is.** Not delivery: `deployed-sha` equals HEAD with zero undeployed commits. It is **arithmetic** — Accurate Communication is 78/94 (gap 16), and the campaign states repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. Five turns of correct, deployed work on existing capabilities cannot move BRAIN's 48.1. **Sixth report** of the harness defect driving the misaim: the brief's table names the widest gap as `Simple @@CAPGAPS@@ Smart`, an unsubstituted placeholder.
+
+## 58. DEF-207 — the SYSTEM findings bucket had a writer and no reader (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Not an owner-visible reply defect. Codex's iteration-2 review of DEF-085, never closed: *"tenant-less raw-query findings remain operationally orphaned under GLOBAL and null user … it prevents the claimed detection from feeding the next decision/notification path."* The regression guard was **CLEAN** this turn; this is a detection that nothing consumed.
+
+### Root cause
+
+`runFindingNotifyPass` enumerates `prisma.tenant.findMany({ where: { isActive: true } })`; `GLOBAL` is not a tenant row; `openFindings` and `unnotifiedFindings` both **require** a `clientNumber`. A background timer has no tenant context, so DEF-085 filed its raw-query failures into a bucket no reader, notifier or health decision ever opened. **Rung 1 of the Self-Healing ladder (`capability_contract.md:214`) stopped one step short of its own definition** — "a health finding written without a human asking" is only a capability if something then READS it. The scope was also a magic string invented at the writer, which is how a bucket ends up with nobody looking in it.
+
+### Files changed
+
+- `server/src/services/selfheal/healthFindingService.ts` — `SYSTEM_SCOPE` exported as a constant; `systemFindings(limit)` added as the reader, **deliberately not folded into `openFindings(clientNumber)`** so a tenant read never silently includes another party's infrastructure faults.
+- `server/src/services/selfheal/rawQueryFindingReporter.ts` — writer imports the constant instead of re-typing the literal, so writer and reader cannot drift apart silently.
+- `server/src/services/selfheal/findingNotifier.ts` — the pass reads the bucket, sums occurrences per kind, logs one operator line and returns `systemOpen`. The read sits **outside the tenant loop and outside the digest window** (a quiet box is exactly when an unread bucket stays unread) and is wrapped in try/catch, because a monitor that breaks the pass it monitors is worse than no monitor.
+- `server/src/server.ts` — `systemOpen` is **in the condition**, not only in the message. Gated behind `alerts || digests` the count would be invisible on a quiet box — the same unread bucket one layer up.
+- `server/tests/def207SystemFindingsConsumed.test.ts` — 11 tests; the structural assertions strip comments before matching (DEF-195: a guard must read code, not prose about it).
+
+**Nobody is notified, on purpose.** There is no owner for a system fault, and inventing one would be the fabricated attribution the reporter refuses to make.
+
+### Rollback considered and rejected
+
+Reverting restores a detection path that writes into a bucket nothing reads — DEF-085's claim without DEF-085's consequence.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 203 files — 202 passed, 1 skipped; 2,555 tests — **2,526 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (`server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+Five mutants applied and RUN, all five die: drop `status:'open'` · read only when the digest is due · count rows instead of summing occurrences · gate the operator line behind `alerts/digests` · re-type the magic string at the writer.
+
+### Known issues deliberately not fixed
+
+**The consumer is an operator log line, not a repair.** Rungs 2 (recover) and 3 (repair) for tenant-less faults are **not built**; nothing here decides or acts on the finding. Rung 1 is complete end to end — that is the whole claim.
+
+**Escalation answered: (a) accept iteration-4 CRITICAL 1 as a known limitation with a DEF row — NOT grounds for reverting.** The non-atomic revalidate-then-enqueue is dormant behind `selfpruning.withdrawal_notice_enabled = 0`; reverting would strip event-token identity, confirmed-write gating, row-carried debt, the CAS and tenant scoping — all live and verified — to remove a race in a path that cannot execute.
+
+**THE OBSTACLE, attempt 6, unchanged because the evidence is.** Not delivery: `deployed-sha` equals HEAD with zero undeployed commits. **Arithmetic** — the campaign states repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. This turn attacked the widest gap (Self-Healing, 57) rather than another Accurate Communication repair, but rung 1 already existed: I completed an existing rung, not created an absent capability. **The move that would matter is rungs 2 and 3** — a tenant-less fault Brain recovers from and repairs unasked. **Seventh report** of the harness defect driving the misaim: the brief's table still names the widest gap as `Simple @@CAPGAPS@@ Smart`, an unsubstituted placeholder.
