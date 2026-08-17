@@ -125,6 +125,22 @@ const HEADING = '# Your own push history — what YOU sent this owner (read from
  * been pushed ten times, so asserting "at most one" is a count nobody read —
  * the `fabricated-status` shape, wearing this block as its evidence.
  */
+function incompletenessReasons(s: NoiseSummary, shown: number, repeatsTotal: number): string[] {
+  const why: string[] = [];
+  // DEF-201, Codex iteration-2 MEDIUM 3 — each reason NAMES ITSELF. The previous
+  // text said "see the ⚠ flags above", which is a lie in the one case that has
+  // no ⚠ of its own: a line-cap slice renders only "…and N more". Telling the
+  // model to consult a warning that is not there weakens the instruction exactly
+  // when the list was shortened.
+  if (shown < repeatsTotal) why.push(`the list was cut to ${MAX_SUBJECT_LINES} lines and ${repeatsTotal - shown} repeat-pushed subject(s) are not shown`);
+  if (s.truncated) why.push('rows were truncated before they were read (⚠ above)');
+  if (s.canonicalisationFailed) why.push('a subject may be split across two keys (⚠ above)');
+  if (s.unresolvedSubjects.length) why.push(`${s.unresolvedSubjects.length} thread(s) never resolved to an item (⚠ above)`);
+  if (s.unattributed.length) why.push(`${s.unattributed.length} push group(s) carry no item/thread identity at all and are NOT in the list below`);
+  if (s.floods.length) why.push(`${s.floods.length} flood group(s) are counted separately and are NOT in the list below`);
+  return why;
+}
+
 function absenceIsInformative(s: NoiseSummary, shown: number, repeatsTotal: number): boolean {
   return !s.truncated
     && !s.canonicalisationFailed
@@ -201,7 +217,7 @@ export function selectSubjectsForConversation(
  * answer; this block supplies counts for the subject he means, and never
  * chooses the subject.
  */
-function rulesFor(absenceInformative: boolean): string {
+function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHours?: number): string {
   const referent = [
     'THE SUBJECT IS HIS, NOT THIS BLOCK\'S — resolve it BEFORE you read the list. He usually names',
     'it by pronoun ("that one", "it"), meaning the item under discussion in the conversation you are',
@@ -229,12 +245,22 @@ function rulesFor(absenceInformative: boolean): string {
       'A subject pushed only once is NOT listed here individually — so if he asks about a repeat and',
       'the subject is absent below, your record shows at most one push and you should say exactly that',
       'rather than agreeing that it went twice.',
+      '',
+      // DEF-201, Codex iteration-2 directive 4 — this record is a WINDOW, not a
+      // lifetime. "I only pushed that once" is a claim about all time; the rows
+      // only support a claim about the last N hours, and the difference is the
+      // whole `fabricated-status` class in miniature.
+      `BOUND THAT CLAIM TO THE WINDOW. This record covers the last ${windowHours ?? '?'}h only, so the`,
+      'honest sentence is "I have no record of pushing that more than once IN THE LAST'
+      + ` ${windowHours ?? '?'} HOURS" — never an unqualified "I only sent it once". If his reminder`,
+      'could predate the window, say the window is what you can see.',
     ]
     : [
-      'THIS LIST IS INCOMPLETE — see the ⚠ flags above. Absence proves NOTHING here: a subject can be',
-      'missing below and still have been pushed many times. You may NOT say "at most one push" for a',
-      'subject you cannot find. Say your record for that subject is incomplete for this window, and',
-      'never agree to a count you did not read.',
+      'THIS LIST IS INCOMPLETE, for a reason that is stated rather than implied:',
+      ...reasons.map((r) => `  • ${r}`),
+      'Absence proves NOTHING here: a subject can be missing below and still have been pushed many',
+      'times. You may NOT say "at most one push" for a subject you cannot find. Say your record for',
+      'that subject is incomplete for this window, and never agree to a count you did not read.',
     ];
   const cause = [
     'Never invent a cause for a duplicate: if the rows show',
@@ -301,7 +327,7 @@ export function renderPushHistoryBlock(
     lines.push('take a title from another block. "I have no record of pushing that one twice" is a');
     lines.push('complete and correct answer.');
     lines.push('');
-    lines.push(rulesFor(false));
+    lines.push(rulesFor(false, incompletenessReasons(s, 0, allRepeats.length), s.windowHours));
     return lines.join('\n');
   }
 
@@ -340,7 +366,11 @@ export function renderPushHistoryBlock(
   }
 
   lines.push('');
-  lines.push(rulesFor(absenceIsInformative(s, shown.length, allRepeats.length)));
+  lines.push(rulesFor(
+    absenceIsInformative(s, shown.length, allRepeats.length),
+    incompletenessReasons(s, shown.length, allRepeats.length),
+    s.windowHours,
+  ));
   return lines.join('\n');
 }
 

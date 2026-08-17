@@ -535,3 +535,113 @@ describe('DEF-200 — absence is not evidence when identity-less pushes exist', 
     expect(out).toMatch(/absent below, your record shows at most one push/);
   });
 });
+
+/**
+ * DEF-201 — remediation attempt 2 of Codex's iteration-2 review.
+ *
+ * Three items were still open against HEAD after DEF-200, because my previous
+ * read of that review was truncated before its numbered risks:
+ *   MEDIUM 3   — the degraded-page rule said "see the ⚠ flags above" in the one
+ *                case that renders no ⚠ (a line-cap slice).
+ *   directive 4 — "at most one push" was authorised without binding the claim to
+ *                the 36-hour window it actually came from.
+ *   directive 2 — the fixture below is Codex's, verbatim: "conversation says
+ *                Fujairah, push history also contains ShireMe and Vision Metric
+ *                repeats", now driven through the REAL builder and title join
+ *                rather than a hand-built map.
+ */
+describe('DEF-201 — Codex\'s exact fixture, through the real builder', () => {
+  const FUJAIRAH = 'Send the revised Fujairah pricing to Latif';
+  const SHIREME = 'ShireMe Recruiting Portal Application Testing';
+  const VISION = "Vision Metric's service sales package video";
+
+  const findMany = vi.fn(async () => [
+    { id: 'shireme', title: SHIREME },
+    { id: 'vision', title: VISION },
+  ]);
+  beforeEach(() => { vi.resetModules(); findMany.mockClear(); });
+
+  async function build(conversation: string) {
+    vi.doMock('../src/db/prisma', () => ({
+      default: { openItem: { findMany: (...a: any[]) => findMany(...(a as [])) } },
+    }));
+    vi.doMock('../src/services/selfpruning/inboundNoiseLedger', () => ({
+      summariseInboundNoise: async () => ({
+        clientNumber: 'TMC-0001', userId: 2, windowHours: 36,
+        since: new Date('2026-08-16T00:00:00Z'), until: new Date('2026-08-17T12:00:00Z'),
+        totalReached: 4, totalActed: 0, totalIgnored: 4,
+        truncated: false, canonicalisationFailed: false, unresolvedSubjects: [],
+        burstMaxSpanMinutes: 1440, bursts: [], unattributed: [], floods: [],
+        subjects: [
+          { subjectKey: 'item:shireme', producers: [{ producer: 'preactive_due_nudge', reached: 2, acted: 0 }],
+            reached: 2, acted: 0, ignored: 2, ignoredShare: 1,
+            firstAt: new Date('2026-08-17T06:01:00Z'), lastAt: new Date('2026-08-17T10:11:00Z'),
+            spanMinutes: 250, burst: false, samples: [] },
+          { subjectKey: 'item:vision', producers: [{ producer: 'preactive_due_nudge', reached: 2, acted: 0 }],
+            reached: 2, acted: 0, ignored: 2, ignoredShare: 1,
+            firstAt: new Date('2026-08-17T06:01:00Z'), lastAt: new Date('2026-08-17T10:11:00Z'),
+            spanMinutes: 250, burst: false, samples: [] },
+        ],
+      }),
+    }));
+    const { buildPushHistoryBlock } = await import('../src/services/selfpruning/pushHistoryBlock');
+    return buildPushHistoryBlock(2, 'TMC-0001', conversation);
+  }
+
+  it('THE ACCEPTANCE CASE — neither unrelated title nor its counts reach the prompt', async () => {
+    const out = await build(
+      `Remind me to ${FUJAIRAH}\nWhy did you remind me about that one twice?`,
+    );
+    // Codex's assertion, verbatim: neither unrelated title/count appears.
+    expect(out).not.toContain(SHIREME);
+    expect(out).not.toContain(VISION);
+    expect(out).not.toContain('item:shireme');
+    expect(out).not.toContain('item:vision');
+    expect(out).not.toContain('2 pushes delivered');   // no count to misattach
+    expect(out).not.toContain('06:01');
+    expect(out).toContain('NO SUBJECT IN YOUR PUSH RECORD MATCHES THE ITEM UNDER DISCUSSION');
+  });
+
+  it('still answers correctly when the conversation DOES name a held subject', async () => {
+    const out = await build(`About "${VISION}" — why did you remind me twice?`);
+    expect(out).toContain(VISION);
+    expect(out).toContain('2 pushes delivered');
+    expect(out).not.toContain(SHIREME);          // the other one stays withheld
+  });
+});
+
+describe('DEF-201 — the incompleteness reason names itself, and the claim is window-bound', () => {
+  it('does NOT point at ⚠ flags when the only degradation is the line cap', () => {
+    // Codex MEDIUM 3: a slice renders no ⚠, so "see the ⚠ flags above" sent the
+    // model to a warning that is not there — weakest exactly when the list was cut.
+    const many = summary({
+      subjects: Array.from({ length: 20 }, (_, i) => subject({ subjectKey: `item:s${i}`, reached: 3 })),
+    });
+    const out = renderPushHistoryBlock(many);
+    expect(out).toMatch(/THIS LIST IS INCOMPLETE, for a reason that is stated rather than implied/);
+    expect(out).toMatch(/the list was cut to 12 lines and 8 repeat-pushed subject\(s\) are not shown/);
+    // Mutation: restoring the blanket "see the ⚠ flags above" dies here.
+    expect(out).not.toMatch(/INCOMPLETE — see the ⚠ flags above/);
+  });
+
+  it('names the identity-less collections explicitly when they are the reason', () => {
+    const out = renderPushHistoryBlock(summary({
+      subjects: [subject({ subjectKey: 'item:a', reached: 3 })],
+      unattributed: [{ senderKey: 'unknown:+92300', subjectClass: 'nudge' }] as any,
+    }));
+    expect(out).toMatch(/1 push group\(s\) carry no item\/thread identity at all/);
+  });
+
+  it('BINDS the "at most one" claim to the window it came from', () => {
+    // Codex directive 4: the rows support a claim about the last N hours. An
+    // unqualified "I only sent it once" is a lifetime claim the record cannot make.
+    const out = renderPushHistoryBlock(summary({
+      windowHours: 36, subjects: [subject({ subjectKey: 'item:a', reached: 3 })],
+    }));
+    expect(out).toMatch(/BOUND THAT CLAIM TO THE WINDOW/);
+    expect(out).toMatch(/covers the last 36h only/);
+    expect(out).toMatch(/IN THE LAST 36 HOURS/);
+    // Mutation: dropping the window qualification dies here.
+    expect(out).toMatch(/never an unqualified "I only sent it once"/);
+  });
+});
