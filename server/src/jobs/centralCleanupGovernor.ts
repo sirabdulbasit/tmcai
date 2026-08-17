@@ -54,8 +54,11 @@ const TASKS: CleanupTaskDefinition[] = [
     id: 'open_items_backlog', cadenceMs: HOUR, initialDelayMs: 0,
     description: 'Quarantine zombies and archive stale, duplicate, smoke, or rejected items',
     run: async () => {
-      const { runOpenItemsBacklogCleanup } = await import('./openItemsBacklogCleanupJob');
-      return runOpenItemsBacklogCleanup();
+      // DEF-189 — the job takes a tenant; the all-tenants wrapper owns the
+      // one registry enumeration (Codex iteration-2 CRITICAL: the job's own
+      // enumerations were tenant-blind).
+      const { runOpenItemsBacklogCleanupForAllTenants } = await import('./openItemsBacklogCleanupJob');
+      return runOpenItemsBacklogCleanupForAllTenants();
     },
   },
   {

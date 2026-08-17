@@ -74,10 +74,20 @@ export async function getOpenItemsSettings(userId: number, clientNumber: string)
 
   // The tenant declaration constrains the query (DEF-188): a pair that does
   // not exist in this tenant reads nothing and falls to defaults.
+  //
+  // DEF-189 (Codex iteration-2 HIGH) — a DATABASE ERROR is not an absence and
+  // must THROW. The old `.catch(() => null)` converted "could not read his
+  // preference" into "he holds the default preference", and the cleanup job
+  // then quarantined items for an owner whose stale sweep may be disabled —
+  // fail-open authorization from a failed read. The absence policy stays
+  // deliberate and narrow: a CONFIRMED no-row read (foreign or nonexistent
+  // pair) gets pure defaults; an error reaches the caller, and every consumer
+  // sits in a try/catch whose fail direction is "do less" (cleanup holds, the
+  // gate falls through to creating visibly, the follow-up job skips a tick).
   const u = await prisma.user.findFirst({
     where: { id: userId, clientNumber },
     select: { notificationPreferences: true },
-  }).catch(() => null);
+  });
 
   const raw = (u?.notificationPreferences as any)?.open_items;
   const value = coerce(raw);
