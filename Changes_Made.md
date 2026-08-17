@@ -3083,3 +3083,37 @@ Six mutants applied and RUN, all six die: render `allRepeats` ignoring the resol
 **Codex asked for a test running both composers and asserting the final owner-visible answer; I did not write one.** The final sentence is an LLM's, and such a test goes green on a lucky sample — failure in the direction that matters. What is asserted instead is deterministic: the wrong candidate is ABSENT from the prompt the composer receives, on the exact Fujairah-versus-ShireMe collision. An end-to-end assertion needs a recorded-response harness, named here as a separate build rather than treated as closed.
 
 B12's conversation item is fictional and can never appear in a production push record, so the now-correct answer is "I have no repeat-push record for that one" — correct, and it may still score low on C6, which wants the question answered.
+
+## 52. DEF-201 — the incompleteness reason names itself, and "at most one" is bound to its window (2026-08-17, BUILDER: Claude — orchestrator iteration 3, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Two instructions in the push-history block described the block inaccurately:
+
+- On a **line-cap slice** the block said *"THIS LIST IS INCOMPLETE — see the ⚠ flags above"*, but a slice renders only *"…and N more"* and **no ⚠ at all**. The instruction pointed at nothing, precisely in the state where the list was shortest.
+- The complete-page rule authorised *"your record shows at most one push"* with **no window qualification**, from a record covering the last **36 hours**.
+
+### Root cause
+
+**I reported the previous remediation complete on a truncated read of the review.** DEF-200 closed Codex's findings 1–3; §3's numbered risks and directives 2/4 were still open against HEAD and I had not seen them, because I summarised the section and then trusted my summary. An unqualified *"I only sent it once"* drawn from a bounded window is a claim about all time that the rows cannot support — `fabricated-status` in miniature, and invisible to the owner.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — `incompletenessReasons()` makes each reason name itself (line-cap slice, identity-less collections, or the ⚠-backed cases), so the instruction always points at something real. The complete-page rule binds the claim to `windowHours` and forbids the unqualified form.
+- `server/tests/def197PushHistoryBlock.test.ts` — 5 tests added (45 total), including Codex's directive-2 fixture driven through the **real** builder.
+
+### Rollback considered and rejected
+
+Reverting restores an instruction that sends the model to a non-existent warning, and an absence rule that turns a 36-hour record into a lifetime claim. Both are truthfulness regressions; the change is additive.
+
+### Tests added / verification (measured after the last code edit, at `6dcc5c2`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 199 files — 198 passed, 1 skipped; 2,507 tests — **2,478 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone with the working-tree files copied in (`server/dist` is `chattr +i`, untouched; reasons function and window binding confirmed in the emitted JS, blanket ⚠ pointer confirmed gone) · `git diff --check` clean.
+
+Five mutants applied and RUN, all five die: restore the blanket ⚠ pointer, drop the line-cap reason, drop the window qualification, drop the unattributed reason, unscope the builder (fails Codex's own fixture twice).
+
+### Known issues deliberately not fixed
+
+**Running `answerAsBrain`/`compose` end to end and asserting the rendered sentence — declined a SECOND time and flagged for arbitration rather than a third ask.** The composer resolves collaborators through dynamic `await import(...)`, so the harness means mocking those plus the model, and the final assertion would be over LLM prose — green on a lucky sample, which is failure in the direction this class keeps failing. Asserted instead is the property that causes the defect: the unrelated subject is absent from the prompt the composer builds, on Codex's own fixture. A recorded-response harness is a real build and should be scheduled as one.
+
+C4 (87.1, the gate) is untouched. Codex's directive 5 is right that formal/report-like register needs its own structural turn across B02/B05/B07/B10/B11/B12, and this turn did not attempt it.

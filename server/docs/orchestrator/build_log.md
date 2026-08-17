@@ -1575,3 +1575,101 @@ the brief calls Accurate Communication "the widest gap" while its own table show
 at 18; and `review_log.md` now holds **four separate `## Iteration 2` sections** from restarts,
 so "read `## Iteration 2`" is ambiguous — I remediated the newest, which is the one reviewing
 DEF-198 (`3a2b112`).
+
+---
+
+## Iteration 3 (third entry under this number — remediation attempt 2) — DEF-201
+
+**Mode: structural · REMEDIATION 2 of 3 · deployed=no**
+
+### 0. Why there was anything left to remediate — the honest part first
+
+Last turn I closed Codex's findings 1–3 and reported the remediation complete. **It was not,
+and the reason is mine: my read of that review was truncated before §3's numbered risks.** I
+summarised the section and then trusted my summary. Reading it to the end this turn found
+three items still open against HEAD.
+
+| Item | Status before this turn | Closed by |
+|---|---|---|
+| §3 risk 1 CRITICAL — live cross-subject fabrication | closed by DEF-200 (`f50e1cf`) — the resolver withholds unmatched subjects | — |
+| §3 risk 2 HIGH — absence asserted from an incomplete identity partition | closed by DEF-200 — `unattributed`/`floods` in `absenceIsInformative` | — |
+| **§3 risk 3 MEDIUM — "see the ⚠ flags above" is false for a line-cap slice** | **OPEN** | `incompletenessReasons()` |
+| **directive 4 — "at most one" unqualified from a 36h window** | **OPEN** | window-bound rule |
+| **directive 2 — Codex's exact Fujairah/ShireMe/Vision fixture** | **partially open** — DEF-200 tested a hand-built map, not the real builder | fixture through `buildPushHistoryBlock` |
+
+### 1. What changed, by file:line, and why that is the mechanism
+
+- **`pushHistoryBlock.ts:128-142` — `incompletenessReasons()`.** Each reason NAMES ITSELF. A
+  slice renders only "…and N more" and no ⚠, so the old blanket pointer sent the model to a
+  warning that does not exist — weakest precisely when the list was shortest. The instruction
+  now always points at something real.
+- **`pushHistoryBlock.ts:228-244` — the complete-page rule is window-bound.** The rows support
+  a claim about the last `windowHours`; *"I only sent it once"* is a claim about all time. That
+  gap is `fabricated-status` in miniature and invisible to the owner, so the unqualified form
+  is now forbidden by name.
+- **`def197PushHistoryBlock.test.ts` — Codex's fixture, through the REAL builder.** Conversation
+  says Fujairah; the push record holds ShireMe **and** Vision Metric repeats. Asserts neither
+  title, neither key, no count and no timestamp reaches the prompt. Removing the scoping fails
+  it — mutation M5, two tests, exactly the mutation the directive demanded.
+
+### 2. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  198 passed | 1 skipped (199)
+                    Tests  2478 passed | 7 expected fail | 21 skipped | 1 todo (2507)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+`npm run build` in a clean clone with the working-tree files copied in — `server/dist` is
+`chattr +i` and IS the deployed artifact. Reasons function and window binding confirmed in the
+emitted JS; the blanket ⚠ pointer confirmed **gone**; this tree's `dist` untouched.
+
+**Five mutants applied and RUN — all five die:** restore the blanket ⚠ pointer · drop the
+line-cap reason · drop the window qualification · drop the unattributed reason · unscope the
+builder (fails Codex's own fixture, twice).
+
+### 3. Circling or progressing
+
+**Circling on `fabricated-status`, and this turn adds a member I had not noticed:** an
+unqualified count drawn from a bounded window. Structural mode satisfied — the fix is
+computed reasons and a bound claim, not a reworded instruction; no benchmark string touched.
+
+### 4. What I did NOT do — declined a SECOND time, and flagged for arbitration
+
+**I have not run `answerAsBrain`/`compose` end to end and asserted the rendered sentence.**
+The composer resolves most collaborators through dynamic `await import(...)`, so a harness
+means mocking those plus the model, and the final assertion would be over LLM prose — green
+on a lucky sample, which is failure in the exact direction this class keeps failing. What is
+asserted instead is the property that *causes* the defect: the unrelated subject is ABSENT
+from the prompt the composer builds, on Codex's own fixture, with a source guard that fails
+if either path stops passing the conversation.
+
+This is the second decline. **It should be arbitrated rather than asked a third time** — a
+recorded-response harness is a real build and should be scheduled as one, not smuggled into a
+remediation turn. If Codex rules against me, that harness is the next turn's whole job.
+
+### 5. Prediction, and what would prove me wrong
+
+**No benchmark movement is predicted from this turn.** These are truthfulness properties on a
+degraded/absent-record path that B12 does not exercise — B12 hits the no-match branch, which
+DEF-200 already built. **C4 (87.1, the gate) will not move**; register is untouched, and
+Codex's directive 5 correctly says that needs its own structural turn.
+
+**Proved wrong by:** a sliced page still emitting "see the ⚠ flags above"; a complete page
+authorising "at most one push" without naming the window; or Codex's fixture passing with the
+scoping removed.
+
+### 6. Deployability and directives
+
+**Deployed=no — the Builder does not deploy.** Matrix fully green including a real
+`npm run build`; nothing in the required evidence blocks a deploy.
+
+No `operator_directives.md` item consumed. **Harness defects, reported not fixed** (I must not
+touch `scripts/orchestrator/**`): `Simple @@CAPGAPS@@ Smart` is still an unsubstituted
+placeholder; the brief still calls Accurate Communication "the widest gap" while its table
+shows it smallest (16); and `review_log.md` now carries **three** `## Iteration 2` sections,
+of which the newest at line 627 is the one I remediated — the ambiguity is what caused me to
+read a truncated section last turn, so it has now cost a real defect.
