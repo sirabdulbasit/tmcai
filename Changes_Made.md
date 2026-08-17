@@ -2946,3 +2946,38 @@ The same error as the previous turn, one level up: enforcement where I had been 
 ### Known issues deliberately not fixed
 
 The completeness claim (composition must know the budget before promising), `omittedItems` still discarded by callers, no shared WhatsApp brevity budget, and the C4 register gate — all four are composition-side and recorded in DEF-195. Eleven files carry `.slice(0, 4000|4096)` for non-transport reasons (inbound bodies, doc excerpts, DB columns); named in the DEF row so they are not mistaken for drift, and deliberately not touched in a remediation turn. Symptom tag `protection-with-two-implementations` is **partly** closed — the WhatsApp transport boundary only; the contact-address and preferred-title duplicates in its lineage remain open. No migration; no schema change.
+
+## 48. DEF-196 — incident fix: one fitted body per send (2026-08-17, BUILDER: Claude — orchestrator iteration 2, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Codex reviewed my DEF-195 change (already deployed) and declared a **live incident**, recommending rollback. He was right. DEF-195 fitted the body inside each send call and left every downstream consumer reading the original text:
+
+- **CRITICAL** — `UserWebjsProvider.sendReply` sent the fitted body but handed the composed `text` to `extractAndFileCommitments`. A promise in a dropped tail item was never delivered, yet Nexeo would file and chase it: unsent text becoming a real obligation.
+- **HIGH** — `WhatsAppManager` sent the fitted body and stored `params.message` in `whatsapp_messages.content`, so the table that answers "what did you send?" asserted omitted sentences were delivered.
+- **HIGH** — `recoverSentMessageId` searched chat history for the unfitted text, so receipt recovery failed precisely when fitting had happened.
+- **MEDIUM** — my invariant matched literal `client.sendMessage`, so `message.reply(text)` / `chat.sendMessage(text)` in `inboundReplyTransport.ts` passed a raw body while the suite stayed green.
+
+### Confirmed root cause
+
+I fixed a boundary and forgot a boundary has two sides. Fitting inline made the fitted body invisible to sibling statements — `protection-with-two-implementations` one level in: not two files disagreeing, but two *values* of one message disagreeing inside a single function.
+
+### Files changed (complete list, commit `a42e186`)
+
+- `server/src/services/whatsapp/UserWebjsProvider.ts` — `wireBody` computed before the audit line; sent, length-logged (with `composedLen`/`fitted` when they differ), and passed to commitment extraction.
+- `server/src/services/whatsapp/WhatsAppManager.ts` — fits once before the provider call; the ledger stores that body; templates pass through unfitted (structured, not prose).
+- `server/src/services/whatsapp/WebjsProvider.ts` — `wireBody` local; `recoverSentMessageId` searches it.
+- `server/src/services/whatsapp/inboundReplyTransport.ts` — fits once; both `message.reply` and `chat.sendMessage` send it.
+- `server/tests/def195TransportBoundaryInvariant.test.ts` — receiver-agnostic scan over `.reply(`/`.sendMessage(`; distinguishes text sends from structured payloads; excuses `MessageMedia` by argument not position; strips comments before scanning; carries a falsifier fixture.
+
+### Rollback considered and rejected
+
+Reverting would restore the blind character slicers (severing words, bullets, phone numbers mid-digit) and would *not* clear the class — the pre-DEF-195 ledger also stored a body different from the truncated one the wire received. The hotfix is smaller than the revert and removes the fabrication outright. If Codex judges otherwise the revert is one command.
+
+### Tests added / verification (measured after the last code edit, at `a42e186`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 197 files — 195 passed, 1 failed, 1 skipped; 2,434 tests — 2,403 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo (both `orchestratorPulseRoute.test.ts` against the orchestrator's uncommitted `pulse.py`). `git diff --check` clean. Actual `npm run build` at `a42e186` in the isolated clean clone: generate + emit OK.
+
+### Known issues deliberately not fixed
+
+Truncation metadata (`omittedItems`) is still discarded by callers and the completeness-claim problem stays open — both need the composition boundary. The pre-approval queued row keeps the composed draft deliberately (status `queued`, nothing sent, re-fitted on approval). The two pulse failures remain orchestrator-owned WIP.

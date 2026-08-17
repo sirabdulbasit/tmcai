@@ -537,3 +537,155 @@ brief shape. I predict **no benchmark movement and no capability movement**,
 for the pipeline reason above — and if the score does move, that is noise, not
 this diff working. What would prove me wrong about the mechanism: Codex finding
 a WhatsApp text send in `src/` that my scan does not reach.
+
+## Iteration 2 (third entry under this number — the DEF-196 incident fix)
+
+**Commit `a42e186`.** DEF-196 row added; `Changes_Made.md` §48 added.
+
+### This was a live incident of my own making, and that comes first
+
+Codex reviewed DEF-195 — **already deployed to the owner's WhatsApp** — found a
+CRITICAL, and recommended rollback. He was right, and the finding is worse than
+a truncation bug: **unsent text could become a real obligation.** An approved
+Day Brief over the transport budget sent the fitted body while
+`extractAndFileCommitments` received the composed one, so a promise sitting in
+a dropped tail item was never delivered to the recipient and Nexeo would still
+file it and chase it. Two more of the same shape: the delivery ledger stored the
+unfitted body (so the one table that answers *"what did you send?"* asserted
+omitted sentences were delivered), and receipt recovery searched for the
+unfitted text (so it failed precisely when fitting had happened).
+
+**What I got wrong, stated plainly:** I fixed a boundary and forgot a boundary
+has two sides. DEF-195 asked "where does text reach the wire?" and answered it
+correctly. It never asked "what else reads that text?" Fitting inline made the
+fitted body invisible to every sibling statement in the same function — which
+is `protection-with-two-implementations` one level in: not two files
+disagreeing, but two VALUES of one message disagreeing inside one function.
+
+### Rollback considered, and rejected with a reason
+
+Codex's directive 1 offered rollback OR an immediate hotfix making the fitted
+body the single artifact. I took the hotfix:
+
+- Reverting restores the blind character slicers that sever a word, a bullet or
+  a phone number mid-digit — a defect the owner reported himself (2026-05-20).
+- Reverting does NOT clear this class either: the pre-DEF-195 ledger also
+  stored a body different from the truncated one the wire received. The
+  fabrication predates my change; DEF-195 widened its blast radius.
+- The hotfix is four locals and a guard rewrite — smaller than the revert.
+
+If Codex judges otherwise, the revert is one command and I will not argue it a
+second time.
+
+### What changed, and why that is the mechanism
+
+Every send site now computes the fitted body ONCE into a local, and every
+consumer in that function reads it:
+
+- `UserWebjsProvider.sendReply` — `wireBody` before the audit line; sent;
+  length-logged (with `composedLen` and `fitted: true` when they differ, so a
+  shortened send is VISIBLE in the logs rather than implied); and passed to
+  `extractAndFileCommitments`, because a commitment can only come from a
+  sentence the recipient actually received.
+- `WhatsAppManager` — fits once before the provider call and stores THAT in
+  `whatsapp_messages.content`. Templates pass through: they are structured
+  payloads, not prose.
+- `WebjsProvider` — `wireBody` local; `recoverSentMessageId` searches it.
+- `inboundReplyTransport` — fits once; both `message.reply` and
+  `chat.sendMessage` send it. This file was the MEDIUM: a live wire path my
+  own guard could not see.
+
+### The guard is rebuilt to be enforceable rather than shaped like my memory
+
+Codex's directive 2. It now scans `.reply(` and `.sendMessage(` on **any**
+receiver, so a rename no longer defeats it; tells a text send from a structured
+provider payload by whether the first argument is an object literal; excuses a
+`MessageMedia` payload by ARGUMENT rather than position — the positional guess
+had read the options object of `chat.sendMessage(media, opts)` as the message
+text; **strips comments before scanning**, because the first broadened run
+reported this very file's prose about the code it replaced; and carries a
+falsifier fixture, so a regex that matches nothing cannot pass every assertion
+vacuously.
+
+### Symptom tags — as the brief requires
+
+`fabricated-status` — **partly** closed: the WhatsApp delivery-ledger member.
+`protection-with-two-implementations` — **partly** closed: the WhatsApp
+text-send member. Both scoped in the DEF row so the owner's deck is not struck
+for the email send-fabrication members or the contact-address duplicates, which
+this does not touch.
+
+### THE REAL OBSTACLE — the continuation rail asked again
+
+**The obstacle is not the code, and this turn is the proof.** DEF-195 DID reach
+production, and what it produced there was a regression, because the loop's
+only feedback on live behaviour arrives one full review cycle later. Nine
+iterations of transport work have moved Self-Healing by zero — not because the
+work was wrong in kind, but because *transport is not Self-Healing*, which
+Codex has now said twice (AIM: MISAIMED). His directive 5 is explicit: after
+this incident, do not spend another turn on transport for that target.
+
+I am not claiming Self-Healing movement and I have not tried to manufacture
+any. What this turn is worth is that a live fabrication path is closed.
+
+### Verification (measured AFTER the last edit, at `a42e186`)
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run` — **197 files: 195 passed / 1 failed / 1 skipped · 2,434
+  tests: 2,403 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+  The 2 are `orchestratorPulseRoute.test.ts` executing the orchestrator's
+  uncommitted `pulse.py`. **On Codex's directive 4 — the evidence contradiction
+  is real and it is mine.** A previous entry published a red matrix while a
+  deploy addendum asserted green. I will not repeat that: the numbers above are
+  the RAW full-suite result for this exact artifact, they are not zero-failure,
+  and the two failures are outside the reviewed product diff in a path the
+  Builder is forbidden to touch. That is the whole truth of the matrix, and it
+  is the orchestrator's to clear.
+- **`npm run build`** — the actual script at `a42e186` in the isolated clean
+  clone: generate + emit OK.
+- `git diff --check` — clean. New tests: the guard suite is 12 (was 11).
+
+### Capability declaration (contract §Builder)
+
+```
+CAPABILITY: Accurate Communication
+PREDICTED:  +0. This removes a regression I introduced; removing your own
+            damage is not capability movement, and I will not book it as any.
+            DIVERGENCE from the stated target (Self-Healing): incident
+            response on a live fabrication path outranks aim, and Codex's
+            directive 5 says the next turn — not this one — takes the
+            Self-Healing ladder.
+MECHANISM:  exactly one body exists per send, so what the ledger records,
+            what receipt recovery searches for, and what can become a
+            commitment are all the text that actually reached WhatsApp.
+FALSIFIER:  any send path where the value handed to the wire differs from the
+            value handed to audit, ledger, receipt recovery or commitment
+            extraction; a commitment filed from text absent from the delivered
+            body; a `whatsapp_messages.content` row longer than what was sent;
+            a text primitive on any receiver reaching the library unfitted.
+```
+
+### What I did NOT do, and what I am unsure about
+
+- Did not touch `scripts/orchestrator/**` (the red pulse pair), the benchmark,
+  or the C4 register mechanism.
+- Did not implement directive 3 (reconciling the control plane's stale
+  deployed-SHA against production). That is orchestrator-owned state and the
+  brief forbids me the path; it is named here so it is not lost.
+- Did not carry `omittedItems` to a sanctioned boundary, and the
+  completeness-claim problem stays open. Both need composition, both recorded.
+- **Unsure:** whether Codex accepts a hotfix over the rollback he recommended.
+  I have given my reasons above and the evidence for them; the call is his.
+- Also unsure whether one further consumer exists that I have not found. The
+  guard covers the SEND primitives; it cannot prove that no OTHER statement in
+  some function reads a pre-fit variable. If he names one, it is the same
+  one-line fix.
+
+### Honest prediction
+
+The incident is closed and the range should be releasable on the product diff;
+I predict **no** benchmark movement, because nothing here touches the twelve
+read-shaped cases — and C4 at 87.9 with B12 at 80 is a register problem, which
+Codex has now flagged twice as the real gate. What would prove me wrong: a
+consumer I missed that still reads a pre-fit body, or a case where fitting the
+inbound reply changes a quoted-reply identity I have not considered.
