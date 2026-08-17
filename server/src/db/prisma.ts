@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { currentTenant } from './tenantContext';
+import { observeRawQuery } from './rawQueryObservability';
 
 const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -234,7 +235,54 @@ const prisma = base.$extends({
       },
     },
   },
+}).$extends({
+  /**
+   * DEF-085 / Self-Healing rung 1 — raw-query failures get a call site.
+   *
+   * A raw query has failed on this box every ~90 seconds since 2026-08-07
+   * (77,123 occurrences, SQLSTATE 22021) and DEF-085 stayed OPEN with "cause
+   * unknown" the whole time, because Prisma's `prisma:error` line names no call
+   * site, no SQL and no tenant, and Postgres discards the statement here
+   * (`logging_collector` off, no journal unit). This extension is the ONE place
+   * that failure can be attributed: 450 raw call sites cannot each be trusted
+   * to wrap themselves, and a hand-wrapped subset is the
+   * `protection-with-two-implementations` shape recorded eight times in this
+   * codebase.
+   *
+   * It rethrows unchanged — see `observeRawQuery`. Nothing about the success
+   * path or the error contract changes; the only difference is that a failure
+   * now says where it came from, and a failure that REPEATS becomes a health
+   * finding without anyone asking, which is rung 1's definition in
+   * capability_contract.md:214.
+   */
+  name: 'rawQueryObservability',
+  query: {
+    $queryRaw: ({ args, query }) => observeRawQuery('$queryRaw', sqlTextOf(args), () => query(args)),
+    $executeRaw: ({ args, query }) => observeRawQuery('$executeRaw', sqlTextOf(args), () => query(args)),
+    $queryRawUnsafe: ({ args, query }) => observeRawQuery('$queryRawUnsafe', sqlTextOf(args), () => query(args)),
+    $executeRawUnsafe: ({ args, query }) => observeRawQuery('$executeRawUnsafe', sqlTextOf(args), () => query(args)),
+  },
 });
+
+/**
+ * The statement text out of whichever arg shape the operation uses: the
+ * `Unsafe` variants pass `[sql, ...params]`, the tagged-template variants pass
+ * a `Sql` object carrying `strings`/`sql`/`text`. Only the TEXT is read —
+ * parameters are never touched here, because they carry the owner's message
+ * bodies and contact details and this value reaches a log line.
+ */
+function sqlTextOf(args: unknown): string {
+  if (typeof args === 'string') return args;
+  if (Array.isArray(args)) return typeof args[0] === 'string' ? args[0] : sqlTextOf(args[0]);
+  const a = args as any;
+  if (a && typeof a === 'object') {
+    if (typeof a.sql === 'string') return a.sql;
+    if (typeof a.text === 'string') return a.text;
+    if (Array.isArray(a.strings)) return a.strings.join('?');
+    if (Array.isArray(a.values) && typeof a.query === 'string') return a.query;
+  }
+  return '';
+}
 
 /** Recursively check if a where-clause has userId at any nesting depth. */
 function hasUserIdAnywhere(where: any): boolean {

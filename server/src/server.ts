@@ -106,6 +106,17 @@ const protectedJob = (name: string, jobClass: 'maintenance' | 'important' | 'cri
 
 const server = app.listen(env.port, async () => {
   console.log(`TMCAI Server listening on port ${env.port}`);
+  // DEF-085 / Self-Healing rung 1 — let a repeating raw-query failure become a
+  // finding. Installed FIRST, before any job or scheduler can issue a query, so
+  // a failure during boot is attributed too. The observer itself is always
+  // active (it logs the call site unconditionally); this only grants it the
+  // findings WRITE, which is why one-shot scripts stay read-only.
+  try {
+    const { installRawQueryFindingReporter } = await import('./services/selfheal/rawQueryFindingReporter');
+    installRawQueryFindingReporter();
+  } catch (err) {
+    console.warn('[rawQuery] finding reporter not installed', (err as Error)?.message);
+  }
   startAutoRefresh(env.indexRefreshIntervalMs);
   // Tier 1 #7 — install/update canonical system gate rules. Idempotent,
   // safe on every boot. Runs before the scheduler so any cron that hits
