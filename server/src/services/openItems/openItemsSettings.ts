@@ -45,7 +45,31 @@ export const DEFAULTS: OpenItemsSettings = {
   defaultSort: 'priority',
 };
 
-const cache = new Map<string, { value: OpenItemsSettings; expiresAt: number }>();
+/**
+ * DEF-190 (Codex iteration-3 HIGH 4 / directive 4) — WHO holds the
+ * preference is part of the answer, not an implementation detail:
+ *
+ *   'found'               a confirmed user row in this tenant, with an
+ *                         open_items block — `value` is his real preference.
+ *   'absent_preferences'  a confirmed user row, no open_items block — the
+ *                         defined absence: defaults are AUTHORIZED because
+ *                         the user exists and simply never set them.
+ *   'no_user'             the (tenant, user) pair reads as NO row — foreign,
+ *                         deleted, or inactive. There is no authority here
+ *                         and `value` is null: a caller mutating data on the
+ *                         strength of settings must HOLD, not default.
+ *
+ * A DATABASE ERROR is none of these — it THROWS (DEF-189).
+ */
+export type OpenItemsSettingsAuthority = 'found' | 'absent_preferences' | 'no_user';
+
+export interface ResolvedOpenItemsSettings {
+  authority: OpenItemsSettingsAuthority;
+  /** Coerced settings for 'found'/'absent_preferences'; null for 'no_user'. */
+  value: OpenItemsSettings | null;
+}
+
+const cache = new Map<string, { value: ResolvedOpenItemsSettings; expiresAt: number }>();
 const TTL_MS = 60 * 1000;
 const cacheKey = (userId: number, clientNumber: string) => `${clientNumber}|${userId}`;
 
@@ -66,33 +90,51 @@ function coerce(raw: any): OpenItemsSettings {
   return out;
 }
 
-export async function getOpenItemsSettings(userId: number, clientNumber: string): Promise<OpenItemsSettings> {
+export async function resolveOpenItemsSettings(
+  userId: number,
+  clientNumber: string,
+): Promise<ResolvedOpenItemsSettings> {
   const now = Date.now();
   const key = cacheKey(userId, clientNumber);
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now) return hit.value;
 
   // The tenant declaration constrains the query (DEF-188): a pair that does
-  // not exist in this tenant reads nothing and falls to defaults.
+  // not exist in this tenant reads nothing.
   //
   // DEF-189 (Codex iteration-2 HIGH) — a DATABASE ERROR is not an absence and
-  // must THROW. The old `.catch(() => null)` converted "could not read his
-  // preference" into "he holds the default preference", and the cleanup job
-  // then quarantined items for an owner whose stale sweep may be disabled —
-  // fail-open authorization from a failed read. The absence policy stays
-  // deliberate and narrow: a CONFIRMED no-row read (foreign or nonexistent
-  // pair) gets pure defaults; an error reaches the caller, and every consumer
-  // sits in a try/catch whose fail direction is "do less" (cleanup holds, the
-  // gate falls through to creating visibly, the follow-up job skips a tick).
+  // must THROW. Nothing is cached on the error path; every consumer sits in a
+  // try/catch whose fail direction is "do less" (cleanup holds, the gate
+  // falls through to creating visibly, the follow-up job skips a tick).
   const u = await prisma.user.findFirst({
     where: { id: userId, clientNumber },
     select: { notificationPreferences: true },
   });
 
-  const raw = (u?.notificationPreferences as any)?.open_items;
-  const value = coerce(raw);
-  cache.set(key, { value, expiresAt: now + TTL_MS });
-  return value;
+  let resolved: ResolvedOpenItemsSettings;
+  if (!u) {
+    resolved = { authority: 'no_user', value: null };
+  } else {
+    const raw = (u.notificationPreferences as any)?.open_items;
+    resolved = {
+      authority: raw && typeof raw === 'object' ? 'found' : 'absent_preferences',
+      value: coerce(raw),
+    };
+  }
+  cache.set(key, { value: resolved, expiresAt: now + TTL_MS });
+  return resolved;
+}
+
+/**
+ * Convenience for callers whose userId comes from an AUTHENTICATED context
+ * (the gate, the follow-up job, the profile route): the pair is known to
+ * exist, so 'no_user' is a not-in-practice branch and defaults are a safe
+ * read-side answer. Callers that MUTATE on the strength of settings must use
+ * `resolveOpenItemsSettings` and hold on 'no_user' (DEF-190).
+ */
+export async function getOpenItemsSettings(userId: number, clientNumber: string): Promise<OpenItemsSettings> {
+  const resolved = await resolveOpenItemsSettings(userId, clientNumber);
+  return resolved.value ?? DEFAULTS;
 }
 
 /** Clear cache for a user — call this from the PUT /profile/open-items

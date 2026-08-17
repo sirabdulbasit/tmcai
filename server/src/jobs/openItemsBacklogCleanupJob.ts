@@ -9,10 +9,13 @@
  *     soft-closed as "stale_no_engagement" after the grace period — the same
  *     reversible lifecycle as malformed residue, decided by the ONE policy in
  *     `zombieItemPolicy` (DEF-186). `staleThresholdDays = 0` is the owner's
- *     DISABLE and passes through unchanged (DEF-187); an UNREADABLE setting
- *     (the read threw — `getOpenItemsSettings` no longer converts errors to
- *     defaults, DEF-189) passes `undefined`, under which the policy neither
- *     detects staleness nor releases an existing quarantine.
+ *     DISABLE and passes through unchanged (DEF-187). The stale sweep runs
+ *     only under CONFIRMED settings authority (DEF-190): a real user row's
+ *     preference, or defaults for a real user row with no preference block.
+ *     A pair with NO user row (orphaned/foreign item) HOLDS and increments
+ *     the visible `heldNoAuthority` metric; an UNREADABLE setting (the read
+ *     threw, DEF-189) holds the same way — under `undefined` the policy
+ *     neither detects staleness nor releases an existing quarantine.
  *   - Exact duplicates of (sourceFeed, sourceRef) within the same tenant+user
  *     → kept the oldest, archive the rest as "duplicate_collapsed".
  *
@@ -22,40 +25,41 @@
  *
  * ── TENANT BOUNDARY (DEF-188/DEF-189) ───────────────────────────────────────
  * The entry point takes the tenant: `runOpenItemsBacklogCleanup(clientNumber)`.
- * EVERY openItem query in this file carries that clientNumber in `where` —
- * including both enumerations, which Codex's iteration-2 CRITICAL found
- * global. Cross-tenant enumeration happens exactly once, in
+ * EVERY openItem query in this file carries that clientNumber in `where`.
+ * Cross-tenant enumeration happens exactly once, in
  * `runOpenItemsBacklogCleanupForAllTenants`, and it reads the TENANT REGISTRY
  * (distinct clientNumber over active users — the same sanctioned enumeration
  * `runContactPruneForAllTenants` uses), never tenant data.
  *
- * ── COMPARE-AND-SET (DEF-189, Codex iteration-2 HIGH) ───────────────────────
- * Every mutation goes through `guardedItemUpdate`, whose predicate carries
- * the EXPECTED state read by the planner — status plus the `@updatedAt`
- * version token for lifecycle writes, status for post-archive notice writes.
- * A row the user touched between read and write no longer matches: count 0,
- * no cancellation, no stat, no debt — the `raced` counter records that the
- * guard fired. id+tenant+user alone was a scope, not a compare-and-set.
+ * ── COMPARE-AND-SET (DEF-189) ───────────────────────────────────────────────
+ * Every item mutation goes through `guardedItemUpdate`, whose predicate
+ * carries the EXPECTED state read by the planner — status plus the
+ * `@updatedAt` version token. A row the user touched between read and write
+ * matches nothing: count 0, no cancellation, no stat, no debt — `raced`
+ * records that the guard fired.
  *
- * ── TRUTHFULNESS (DEF-187) ──────────────────────────────────────────────────
- * Nothing is counted, and nothing is announced, that the database did not
- * confirm. A failed or zero-row write is an error (or a raced guard), never
- * a withdrawal.
+ * ── THE NOTICE IS AN OUTBOX BATCH (DEF-190, Codex iteration-3 directives 1-3)
+ * The archiving write records `selfPruneNotice.owed = true` in the same
+ * confirmed row write — the durable debt. Announcement then runs on a
+ * NORMALIZED OUTBOX (`self_prune_notice_batches`), replacing iteration 3's
+ * per-row best-effort stamping, which Codex showed could split one owed set
+ * into two notices and could overwrite concurrent metadata from a stale
+ * snapshot:
  *
- * ── THE NOTICE IS DURABLE AND ITS IDENTITY IS STABLE (DEF-187/DEF-189) ──────
- * The archiving write records `selfPruneNotice.owed = true` in the same row
- * write. The dispatcher then works in BATCHES with persistent identity:
- * unannounced rows are STAMPED with a `batchId` (a confirmed write) BEFORE
- * anything is enqueued; the dedupKey is derived from the batchId, so a retry
- * after ANY partial failure carries the same identity whatever subset of rows
- * still owes. Before enqueueing, the dispatcher asks the queue whether a
- * prompt with this batch identity already exists IN ANY STATE — if it does,
- * the notice was accepted once, and the debt is cleared without a second
- * owner-visible message. That is what closes Codex's duplicate-notice case:
- * A+B announced, B's mark fails, next tick retries {B} under the ORIGINAL
- * batch identity and finds the existing prompt instead of re-sending.
- * Announcement is only ever attempted for rows still CANCELLED — a restored
- * row keeps its inert flag but can never be announced as withdrawn.
+ *   - ONE atomic INSERT creates a batch with its immutable member snapshot
+ *     and unique dedup identity. A partially-created batch cannot exist, and
+ *     a retry after any failure reuses the same identity.
+ *   - Immediately before enqueue the batch is REVALIDATED with a fresh read:
+ *     only members still CANCELLED are rendered; restored rows drop out; a
+ *     batch with no live members is CANCELLED, not sent. A restored item is
+ *     never announced as withdrawn.
+ *   - The queue is asked for the batch identity IN ANY STATE before sending —
+ *     if it already holds it (a prior tick's sent-mark failed), the batch is
+ *     marked sent with no second owner-visible message.
+ *   - Row `owed` flags are cleared AFTER acceptance via a fresh re-read and a
+ *     status+updatedAt CAS that merges the FRESH metadata — a concurrent
+ *     metadata write survives; a raced clear stays owed inside a SENT batch,
+ *     which excludes it from ever joining a new batch, and is retried.
  *
  * Idempotent. Safe to run repeatedly.
  */
@@ -67,7 +71,7 @@ import { planZombieLifecycle } from '../services/openItems/zombieItemPolicy';
 const log = createLogger('open-items-backlog-cleanup');
 
 const HARD_LIMIT_PER_RUN = 500;          // per (tenant, user) partition
-const OWED_ROWS_PER_NOTICE = 200;        // dispatcher depth per batch per tick
+const OWED_ROWS_PER_NOTICE = 200;        // batch size cap; remainder rides the next tick
 
 const CANDIDATE_WHERE = {
   status: { in: ['NEW', 'TRIAGED', 'open'] as any },
@@ -77,8 +81,7 @@ const CANDIDATE_WHERE = {
 /**
  * Rows whose archive write recorded an owed, not-yet-announced notice.
  * `status: 'CANCELLED'` is part of the identity: a row someone restored
- * (CANCELLED -> TRIAGED) drops out of this set, so a restored item can never
- * be announced as withdrawn — its leftover flag is inert.
+ * (CANCELLED -> TRIAGED) drops out of this set.
  */
 const OWED_WHERE = {
   status: 'CANCELLED',
@@ -98,6 +101,8 @@ interface CleanupStats {
   noticesEnqueued: number;
   /** Compare-and-set guards that fired: the row changed between read and write. */
   raced: number;
+  /** Stale sweeps held because no authorized user row backs the pair (DEF-190). */
+  heldNoAuthority: number;
   errors: number;
 }
 
@@ -105,7 +110,7 @@ function emptyStats(): CleanupStats {
   return {
     scanned: 0, archivedByGate: 0, archivedStale: 0, archivedDuplicate: 0, archivedSmoke: 0,
     quarantinedZombie: 0, quarantinedStale: 0, archivedZombie: 0, recoveredZombie: 0,
-    noticesEnqueued: 0, raced: 0, errors: 0,
+    noticesEnqueued: 0, raced: 0, heldNoAuthority: 0, errors: 0,
   };
 }
 
@@ -118,12 +123,51 @@ function normalizeTitle(s: string): string {
     .trim();
 }
 
+/** The outbox row shape this job reads and writes (see schema + migration). */
+interface NoticeBatchRow {
+  id: string;
+  clientNumber: string;
+  userId: number;
+  batchId: string;
+  dedupKey: string;
+  itemIds: unknown;
+  titles: unknown;
+  count: number;
+  state: string;
+  createdAt: Date;
+}
+
+interface NoticeBatchDelegate {
+  findMany(args: unknown): Promise<NoticeBatchRow[]>;
+  create(args: unknown): Promise<NoticeBatchRow>;
+  updateMany(args: unknown): Promise<{ count: number }>;
+}
+
 /**
- * DEF-187/188/189 — the ONE mutation path this job has. Tenant + user + id
- * SCOPE the write; `expected` is the COMPARE-AND-SET: the status (and, for
- * lifecycle writes, the `@updatedAt` version token) the planner read. A row
- * that changed since the read matches nothing — count 0 — and the caller
- * must treat the action as not having happened.
+ * The Prisma client on THIS box is regenerated only inside a deploy's
+ * `npm run build` (`npx prisma` never runs on prod, CLAUDE.md), so the
+ * `SelfPruneNoticeBatch` model exists in schema.prisma and the migration but
+ * not yet in the locally generated client's types. This narrow cast lets the
+ * working tree typecheck before that generate; the clean-clone build proof
+ * runs the real generate against the same schema. If the delegate is absent
+ * at runtime (client older than code), dispatch degrades VISIBLY: debts stay
+ * owed, `errors` counts, nothing is announced.
+ */
+function noticeBatchDelegate(): NoticeBatchDelegate | null {
+  const d = (prisma as any).selfPruneNoticeBatch;
+  return d && typeof d.findMany === 'function' ? (d as NoticeBatchDelegate) : null;
+}
+
+function itemIdsOf(batch: NoticeBatchRow): string[] {
+  return Array.isArray(batch.itemIds) ? (batch.itemIds as unknown[]).map(String) : [];
+}
+
+/**
+ * DEF-187/188/189 — the ONE item-mutation path this job has. Tenant + user +
+ * id SCOPE the write; `expected` is the COMPARE-AND-SET: the status (and,
+ * where the caller read one, the `@updatedAt` version token). A row that
+ * changed since the read matches nothing — count 0 — and the caller must
+ * treat the action as not having happened.
  */
 async function guardedItemUpdate(
   target: { id: string; userId: number; clientNumber: string },
@@ -203,7 +247,8 @@ export async function runOpenItemsBacklogCleanup(clientNumber: string): Promise<
 
   if (stats.archivedByGate + stats.archivedStale + stats.archivedDuplicate + stats.archivedSmoke
       + stats.quarantinedZombie + stats.quarantinedStale + stats.archivedZombie
-      + stats.recoveredZombie + stats.noticesEnqueued + stats.raced + stats.errors > 0) {
+      + stats.recoveredZombie + stats.noticesEnqueued + stats.raced
+      + stats.heldNoAuthority + stats.errors > 0) {
     log.info('cleanup tick', { clientNumber, ...stats });
   }
   return stats;
@@ -232,15 +277,22 @@ async function cleanupUserBacklog(
   const { qualifyAutoOpenItem } = await import('../services/openItems/qualityGate');
 
   // The user's stale window, resolved ONCE for this partition, under this
-  // tenant's authority. Zero passes through — it is the owner's disable
-  // (DEF-187). An UNREADABLE setting throws out of `getOpenItemsSettings`
-  // (DEF-189 — errors are no longer converted to defaults there) and becomes
-  // `undefined` here, under which the policy holds: no new stale quarantine,
-  // no release of an existing one, because this pass cannot judge either.
+  // tenant's authority (DEF-190): 'found' applies his real preference (zero
+  // included — the disable, DEF-187); 'absent_preferences' applies defaults —
+  // a CONFIRMED user row that never set them; 'no_user' means the pair has NO
+  // authority behind it (orphaned/foreign item) and the sweep HOLDS, counted
+  // visibly. A thrown read (DEF-189) holds the same way.
   let staleAfterDays: number | undefined;
   try {
-    const { getOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
-    staleAfterDays = (await getOpenItemsSettings(userId, clientNumber)).staleThresholdDays;
+    const { resolveOpenItemsSettings } = await import('../services/openItems/openItemsSettings');
+    const resolved = await resolveOpenItemsSettings(userId, clientNumber);
+    if (resolved.authority === 'no_user') {
+      staleAfterDays = undefined;
+      stats.heldNoAuthority++;
+      log.warn('no authorized user row behind this pair — stale sweep held', { clientNumber, userId });
+    } else {
+      staleAfterDays = resolved.value!.staleThresholdDays;
+    }
   } catch {
     staleAfterDays = undefined;
   }
@@ -403,14 +455,16 @@ async function cleanupUserBacklog(
 }
 
 /**
- * DEF-187/189 — announce every owed withdrawal, one notice per batch per
- * (tenant, user), and clear the debt only when the queue is KNOWN to hold the
- * batch's identity. Deterministic order (userId asc, oldest rows first), no
- * unordered cap over owners — within a tenant every owed user is attempted
- * every tick, and one owner's failure never blocks the next (Codex
- * iteration-2 MEDIUM 5).
+ * DEF-190 — the outbox dispatcher. Deterministic order (userId asc, batches
+ * oldest-first); one owner's failure never blocks the next.
  */
 async function dispatchOwedNotices(clientNumber: string, stats: CleanupStats): Promise<void> {
+  if (!noticeBatchDelegate()) {
+    stats.errors++;
+    log.warn('notice outbox unavailable in this client — debts persist, nothing announced', { clientNumber });
+    return;
+  }
+
   const owedUsers = await prisma.openItem.findMany({
     where: { clientNumber, ...(OWED_WHERE as any) },
     select: { userId: true },
@@ -422,143 +476,206 @@ async function dispatchOwedNotices(clientNumber: string, stats: CleanupStats): P
     return [] as Array<{ userId: number }>;
   });
 
-  for (const u of owedUsers) {
+  // A batch can outlive its rows' owed flags only until clearing succeeds, so
+  // also visit users who have open batches but no longer enumerable owed rows.
+  const nb = noticeBatchDelegate()!;
+  const batchUsers = await nb.findMany({
+    where: { clientNumber, state: 'pending' },
+    orderBy: { createdAt: 'asc' },
+  } as any).catch(() => [] as NoticeBatchRow[]);
+
+  const userIds = [...new Set([
+    ...owedUsers.map((u) => u.userId),
+    ...batchUsers.map((b) => b.userId),
+  ])].sort((a, b) => a - b);
+
+  for (const userId of userIds) {
     try {
-      await announceOwedForUser(clientNumber, u.userId, stats);
+      await processUserNotices(clientNumber, userId, stats);
     } catch (err: any) {
       stats.errors++;
-      log.warn('withdrawal notice pass failed — owed state kept for retry', {
-        clientNumber, userId: u.userId, err: err?.message,
+      log.warn('withdrawal notice pass failed — outbox state kept for retry', {
+        clientNumber, userId, err: err?.message,
       });
     }
   }
 }
 
-async function announceOwedForUser(
+async function processUserNotices(
   clientNumber: string,
   userId: number,
   stats: CleanupStats,
 ): Promise<void> {
-  const rows = await prisma.openItem.findMany({
+  const nb = noticeBatchDelegate()!;
+
+  const batches = await nb.findMany({
+    where: { clientNumber, userId, state: { in: ['pending', 'sent'] } },
+    orderBy: { createdAt: 'asc' },
+  } as any);
+  const claimed = new Set(batches.flatMap((b) => itemIdsOf(b)));
+
+  // 1. Settle pending batches under their ORIGINAL identity.
+  for (const batch of batches.filter((b) => b.state === 'pending')) {
+    await settleBatch(clientNumber, userId, batch, stats);
+  }
+
+  // 2. Sent batches whose members still carry the owed flag: a prior clear
+  //    raced or failed. Retry clearing — never re-announce.
+  for (const batch of batches.filter((b) => b.state === 'sent')) {
+    await clearOwedFlags(clientNumber, userId, itemIdsOf(batch), batch.batchId, stats);
+  }
+
+  // 3. Owed rows claimed by NO batch form one new batch — a single atomic
+  //    INSERT with the immutable member snapshot and dedup identity, so a
+  //    partial claim cannot exist (Codex iteration-3 HIGH 2).
+  const candidates = await prisma.openItem.findMany({
     where: { clientNumber, userId, ...(OWED_WHERE as any) },
-    select: { id: true, title: true, metadata: true, updatedAt: true },
+    select: { id: true, title: true },
     orderBy: { createdAt: 'asc' },
     take: OWED_ROWS_PER_NOTICE,
   });
-  if (rows.length === 0) return;
-  if (rows.length === OWED_ROWS_PER_NOTICE) {
+  const fresh = candidates.filter((c) => !claimed.has(c.id));
+  if (fresh.length === 0) return;
+  if (candidates.length === OWED_ROWS_PER_NOTICE) {
     log.warn('owed-notice batch at cap — remainder rides the next tick', {
       clientNumber, userId, cap: OWED_ROWS_PER_NOTICE,
     });
   }
 
-  // Group by persistent batch identity. Rows stamped by an earlier tick keep
-  // their batch — a retry after ANY partial failure reuses the original
-  // identity, whatever subset still owes (Codex iteration-2 HIGH 3). Rows
-  // never stamped form one new batch.
-  const byBatch = new Map<string, typeof rows>();
-  const unstamped: typeof rows = [];
-  for (const row of rows) {
-    const batchId = (row.metadata as any)?.selfPruneNotice?.batchId;
-    if (typeof batchId === 'string' && batchId.length > 0) {
-      const g = byBatch.get(batchId) ?? [];
-      g.push(row);
-      byBatch.set(batchId, g);
-    } else {
-      unstamped.push(row);
-    }
-  }
+  const batchId = randomUUID();
+  const created = await nb.create({
+    data: {
+      clientNumber,
+      userId,
+      batchId,
+      dedupKey: `selfpruning_withdrawn:${createHash('sha256').update(batchId).digest('hex').slice(0, 16)}`,
+      itemIds: fresh.map((f) => f.id),
+      titles: fresh.slice(0, 3).map((f) => f.title),
+      count: fresh.length,
+      state: 'pending',
+    },
+  } as any);
 
-  for (const [batchId, batchRows] of byBatch) {
-    await settleBatch(clientNumber, userId, batchId, batchRows, stats);
-  }
-
-  if (unstamped.length > 0) {
-    // Persist the identity BEFORE anything is enqueued. A row whose stamp
-    // write fails (or races a restore) simply stays owed-unstamped and forms
-    // a batch on a later tick — nothing is announced without a durable
-    // identity behind it.
-    const batchId = randomUUID();
-    const stamped: typeof rows = [];
-    for (const row of unstamped) {
-      const meta = (row.metadata as Record<string, unknown> | null) ?? {};
-      const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
-      const newMeta = { ...meta, selfPruneNotice: { ...notice, batchId } };
-      const ok = await guardedItemUpdate(
-        { id: row.id, userId, clientNumber },
-        { status: 'CANCELLED', updatedAt: row.updatedAt as Date },
-        { metadata: newMeta as any },
-      ).catch(() => false);
-      if (ok) stamped.push({ ...row, metadata: newMeta as any });
-      else stats.raced++;
-    }
-    if (stamped.length > 0) {
-      await settleBatch(clientNumber, userId, batchId, stamped, stats);
-    }
-  }
+  await settleBatch(clientNumber, userId, created, stats);
 }
 
 /**
- * Deliver one batch: enqueue unless the queue already holds this batch's
- * identity in ANY state (then the notice was accepted once — clear the debt
- * with no second owner-visible message), and mark each row's debt cleared.
- * Marks are guarded on `status: 'CANCELLED'`: a concurrently restored row is
- * neither markable nor announceable.
+ * Deliver one batch. Revalidation is a FRESH read immediately before enqueue
+ * (Codex iteration-3 CRITICAL): only members still CANCELLED are rendered; a
+ * batch with no live members is cancelled, never sent. The queue is asked
+ * for the batch identity in ANY state first, so a retry after a sent-mark
+ * failure clears the debt without a second owner-visible message.
  */
 async function settleBatch(
   clientNumber: string,
   userId: number,
-  batchId: string,
-  rows: Array<{ id: string; title: string; metadata: unknown; updatedAt: Date | unknown }>,
+  batch: NoticeBatchRow,
   stats: CleanupStats,
 ): Promise<void> {
-  const dedupKey = `selfpruning_withdrawn:${createHash('sha256').update(batchId).digest('hex').slice(0, 16)}`;
+  const nb = noticeBatchDelegate()!;
+  const ids = itemIdsOf(batch);
+
+  const live = await prisma.openItem.findMany({
+    where: { id: { in: ids }, clientNumber, userId, status: 'CANCELLED' as any },
+    select: { id: true, title: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (live.length === 0) {
+    const cancelled = await nb.updateMany({
+      where: { id: batch.id, clientNumber, userId, state: 'pending' },
+      data: { state: 'cancelled', cancelledReason: 'every member was restored before send' },
+    } as any);
+    if (cancelled.count !== 1) { stats.errors++; }
+    return;
+  }
+  if (live.length < ids.length) {
+    log.info('restored members dropped from withdrawal notice', {
+      clientNumber, userId, batchId: batch.batchId, dropped: ids.length - live.length,
+    });
+  }
 
   const existing = await prisma.brainPromptQueue.findFirst({
-    where: { clientNumber, userId, dedupKey },
+    where: { clientNumber, userId, dedupKey: batch.dedupKey },
     select: { id: true },
   });
 
+  let promptId: string | null = null;
   if (!existing) {
     const { enqueueBrainPrompt } = await import('../services/brainPrompts/brainPromptQueueService');
     const { renderSelfPruneNotice } = await import('../services/notifications/proactiveMessageText');
-    await enqueueBrainPrompt({
+    const res = await enqueueBrainPrompt({
       userId,
       clientNumber,
       question: renderSelfPruneNotice({
-        count: rows.length,
-        titles: rows.slice(0, 3).map((r) => r.title),
+        count: live.length,
+        titles: live.slice(0, 3).map((r) => r.title),
       }),
       criticality: 'routine',
       expectsReply: false,          // a notice never holds the conversation lock (DEF-063)
       provenance: 'system_marker',
-      dedupKey,
+      dedupKey: batch.dedupKey,
       metadata: {
         source: 'open_items_backlog_cleanup',
-        selfPruneNotice: { batchId, itemIds: rows.map((r) => r.id).sort(), count: rows.length },
+        selfPruneNotice: { batchId: batch.batchId, itemIds: live.map((r) => r.id).sort(), count: live.length },
       },
     });
+    promptId = res.promptId ?? null;
     stats.noticesEnqueued++;
   }
 
-  const enqueuedAt = new Date().toISOString();
-  for (const row of rows) {
-    const meta = (row.metadata as Record<string, unknown> | null) ?? {};
-    const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
-    const ok = await guardedItemUpdate(
-      { id: row.id, userId, clientNumber },
-      { status: 'CANCELLED' },
-      {
-        metadata: {
-          ...meta,
-          selfPruneNotice: { ...notice, batchId, owed: false, enqueuedAt },
-        } as any,
-      },
-    ).catch(() => false);
-    if (!ok) {
+  const marked = await nb.updateMany({
+    where: { id: batch.id, clientNumber, userId, state: 'pending' },
+    data: { state: 'sent', sentAt: new Date(), promptId },
+  } as any);
+  if (marked.count !== 1) {
+    stats.errors++;
+    log.warn('batch sent-mark failed — identity persists, the retry cannot re-send', {
+      clientNumber, userId, batchId: batch.batchId,
+    });
+  }
+
+  await clearOwedFlags(clientNumber, userId, live.map((r) => r.id), batch.batchId, stats);
+}
+
+/**
+ * Clear each row's owed flag AFTER acceptance: a FRESH per-row read, then a
+ * status+updatedAt compare-and-set that merges the FRESH metadata — never a
+ * stale snapshot, so a concurrent metadata write survives (Codex iteration-3
+ * HIGH 3). A raced clear stays owed inside its SENT batch — excluded from
+ * ever joining a new batch — and is retried next tick.
+ */
+async function clearOwedFlags(
+  clientNumber: string,
+  userId: number,
+  ids: string[],
+  batchId: string,
+  stats: CleanupStats,
+): Promise<void> {
+  for (const id of ids) {
+    try {
+      const fresh = await prisma.openItem.findFirst({
+        where: { id, clientNumber, userId, ...(OWED_WHERE as any) },
+        select: { metadata: true, updatedAt: true },
+      });
+      if (!fresh) continue; // already cleared, or restored — either way not ours to touch
+      const meta = (fresh.metadata as Record<string, unknown> | null) ?? {};
+      const notice = (meta.selfPruneNotice as Record<string, unknown> | null) ?? {};
+      const ok = await guardedItemUpdate(
+        { id, userId, clientNumber },
+        { status: 'CANCELLED', updatedAt: fresh.updatedAt as Date },
+        {
+          metadata: {
+            ...meta,
+            selfPruneNotice: { ...notice, owed: false, batchId, clearedAt: new Date().toISOString() },
+          } as any,
+        },
+      );
+      if (!ok) stats.raced++;
+    } catch (err: any) {
       stats.errors++;
-      log.warn('owed-notice mark failed — the batch identity persists, the retry cannot re-send', {
-        itemId: row.id, clientNumber, userId, batchId,
+      log.warn('owed-flag clear failed — retried from the sent batch next tick', {
+        itemId: id, clientNumber, userId, err: err?.message,
       });
     }
   }

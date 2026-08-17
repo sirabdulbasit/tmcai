@@ -2930,3 +2930,28 @@ model BrainMaturitySnapshot {
   @@index([clientNumber, snapshotDate(sort: Desc)], map: "brain_maturity_snapshots_recent_ix")
   @@map("brain_maturity_snapshots")
 }
+
+// DEF-190 (Codex iteration-3 directive 1) — the withdrawal-notice OUTBOX.
+// One row IS one notice batch: created in a single atomic insert with its
+// immutable member snapshot and unique dedup identity, so a partial claim
+// cannot exist and a retry can never change identity. States: pending
+// (created, not yet accepted by the queue) → sent (queue holds it) or
+// cancelled (every member was restored before send — nothing to announce).
+model SelfPruneNoticeBatch {
+  id              String    @id @default(cuid())
+  clientNumber    String    @map("client_number") @db.VarChar(20)
+  userId          Int       @map("user_id")
+  batchId         String    @map("batch_id")
+  dedupKey        String    @unique(map: "self_prune_notice_batches_dedup_uq") @map("dedup_key") @db.VarChar(120)
+  itemIds         Json      @map("item_ids")
+  titles          Json
+  count           Int
+  state           String    @default("pending") @db.VarChar(20)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  sentAt          DateTime? @map("sent_at")
+  cancelledReason String?   @map("cancelled_reason")
+  promptId        String?   @map("prompt_id")
+
+  @@index([clientNumber, userId, state, createdAt], map: "self_prune_notice_batches_tenant_state_ix")
+  @@map("self_prune_notice_batches")
+}
