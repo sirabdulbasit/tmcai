@@ -64,19 +64,78 @@ const REPEAT_THRESHOLD = 2;
 
 const HEADING = '# Your own push history — what YOU sent this owner (read from brain_prompt_queue)';
 
-/** The standing instruction. Without it the block is just more context the
- *  model may narrate loosely; with it, the block is the only permitted source
- *  for a repeat-push claim. */
-const RULES = [
-  'These are rows with timestamps, not recollection. When he asks why something reached him',
-  'more than once, answer from THIS block: name the producers and the times, and say the count.',
-  'A subject pushed only once is NOT listed here individually — so if he asks about a repeat and',
-  'the subject is absent below, your record shows at most one push and you should say exactly that',
-  'rather than agreeing that it went twice. Never invent a cause for a duplicate: if the rows show',
-  'two producers, the cause is two producers; if they show one producer twice, say that and say you',
-  'do not know why it repeated. "I don\'t know" is correct here; a plausible mechanism you cannot',
-  'read is a fabrication.',
-].join('\n');
+/**
+ * Absence from the list below is only evidence when the list is COMPLETE.
+ *
+ * DEF-198. The rule "if the subject is absent, your record shows at most one
+ * push" is a sound READ when every repeat-pushed subject is on the page. It
+ * becomes a FABRICATION the moment the page is short of the truth — and this
+ * renderer has four ways to be short: `repeats` is sliced to
+ * `MAX_SUBJECT_LINES`, `truncated` means rows were never read at all,
+ * `canonicalisationFailed` means one subject may be split across two keys, and
+ * `unresolvedSubjects` means a thread never resolved to the item it belongs to.
+ * In any of those states a subject can be missing from the list while having
+ * been pushed ten times, so asserting "at most one" is a count nobody read —
+ * the `fabricated-status` shape, wearing this block as its evidence.
+ */
+function absenceIsInformative(s: NoiseSummary, shown: number, repeatsTotal: number): boolean {
+  return !s.truncated
+    && !s.canonicalisationFailed
+    && s.unresolvedSubjects.length === 0
+    && shown === repeatsTotal;
+}
+
+/**
+ * The standing instruction.
+ *
+ * DEF-198 — THE SUBJECT IS RESOLVED FROM THE CONVERSATION, NOT FROM THIS PAGE.
+ * The first version said "answer from THIS block" and said nothing about WHICH
+ * subject, so on *"why did you remind me about that one twice?"* the composer
+ * narrated the block's listed subject instead of the item under discussion.
+ * That is the measured `B12-reminder-referent` failure: the judge scored C1/C2/
+ * C3/C6 at 60 with *"It claimed to send reminders for 'ShireMe Recruiting
+ * Portal Application Testing' but the conversation clearly shows the reminder
+ * was for 'Send the revised Fujairah pricing to Latif'"* and, on C3,
+ * *"It essentially ignored the immediate context."* A context block that
+ * outranks the conversation for the REFERENT is a guard destroying a correct
+ * answer; this block supplies counts for the subject he means, and never
+ * chooses the subject.
+ */
+function rulesFor(absenceInformative: boolean): string {
+  const referent = [
+    'THE SUBJECT IS HIS, NOT THIS BLOCK\'S — resolve it BEFORE you read the list. He usually names',
+    'it by pronoun ("that one", "it"), meaning the item under discussion in the conversation you are',
+    'already in. Resolve that referent from the conversation FIRST, then look THAT subject up below',
+    'and answer about it. NEVER answer about a different subject because it is the one listed here:',
+    'switching subjects is worse than admitting you cannot find his, because the count and the times',
+    'will look authoritative while describing something he never asked about.',
+  ];
+  const read = [
+    'These are rows with timestamps, not recollection. For the subject he means, name the producers',
+    'and the times, and say the count.',
+  ];
+  // The only branch in this block, and it exists because absence is evidence in
+  // one state and a guess in the other.
+  const absence = absenceInformative
+    ? [
+      'A subject pushed only once is NOT listed here individually — so if he asks about a repeat and',
+      'the subject is absent below, your record shows at most one push and you should say exactly that',
+      'rather than agreeing that it went twice.',
+    ]
+    : [
+      'THIS LIST IS INCOMPLETE — see the ⚠ flags above. Absence proves NOTHING here: a subject can be',
+      'missing below and still have been pushed many times. You may NOT say "at most one push" for a',
+      'subject you cannot find. Say your record for that subject is incomplete for this window, and',
+      'never agree to a count you did not read.',
+    ];
+  const cause = [
+    'Never invent a cause for a duplicate: if the rows show',
+    'two producers, the cause is two producers; if they show one producer twice, say that and say you',
+    'do not know why it repeated. "I don\'t know" is correct here; a plausible mechanism you cannot',
+    'read is a fabrication.',
+  ];
+  return [...referent, '', ...read, '', ...absence, ...cause].join('\n');
+}
 
 function shortTime(d: Date | null): string {
   return d ? d.toISOString().slice(0, 16).replace('T', ' ') : '?';
@@ -135,7 +194,7 @@ export function renderPushHistoryBlock(s: NoiseSummary): string {
   }
 
   lines.push('');
-  lines.push(RULES);
+  lines.push(rulesFor(absenceIsInformative(s, shown.length, repeats.length)));
   return lines.join('\n');
 }
 

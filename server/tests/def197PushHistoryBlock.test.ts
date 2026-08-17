@@ -206,3 +206,97 @@ describe('DEF-197 — read-only', () => {
     }
   });
 });
+
+/**
+ * DEF-198 — the block supplies counts for the subject HE means, and absence is
+ * only evidence when the page is complete.
+ *
+ * Both properties are pinned against the same measured failure: benchmark case
+ * `B12-reminder-referent`, which after DEF-197 still scored C1/C2/C3/C6 = 60
+ * because the answer named the wrong item. DEF-197 closed the invented-cause
+ * member of that case; these close the referent member and the unsound-absence
+ * member.
+ */
+describe('DEF-198 — the conversation chooses the subject, not this block', () => {
+  const twoRepeats = () => summary({
+    subjects: [
+      subject({ subjectKey: 'item:shireme-portal', reached: 4 }),
+      subject({ subjectKey: 'item:fujairah-pricing', reached: 2 }),
+    ],
+  });
+
+  it('tells Brain to resolve the referent from the conversation BEFORE reading the list', () => {
+    const out = renderPushHistoryBlock(twoRepeats());
+    expect(out).toMatch(/resolve it BEFORE you read the list/i);
+    expect(out).toMatch(/Resolve that referent from the conversation FIRST/);
+    // Mutation: deleting the referent paragraph dies here.
+    expect(out).toMatch(/look THAT subject up below/);
+  });
+
+  it('FORBIDS answering about a different subject just because it is the one listed', () => {
+    // This is the B12 mechanism in one sentence: two subjects are listed, he
+    // asks about "that one", and the block must not let the composer pick.
+    const out = renderPushHistoryBlock(twoRepeats());
+    expect(out).toMatch(/NEVER answer about a different subject because it is the one listed here/);
+    expect(out).toMatch(/switching subjects is worse than admitting you cannot find his/);
+  });
+
+  it('puts the referent rule BEFORE the "answer from the rows" instruction', () => {
+    // Order is the mechanism, not decoration: the first version led with
+    // "answer from THIS block", which is what outranked the conversation.
+    const out = renderPushHistoryBlock(twoRepeats());
+    const referentAt = out.indexOf('THE SUBJECT IS HIS');
+    const rowsAt = out.indexOf('These are rows with timestamps');
+    expect(referentAt).toBeGreaterThan(-1);
+    expect(rowsAt).toBeGreaterThan(-1);
+    // Mutation: swapping the two paragraphs dies here.
+    expect(referentAt).toBeLessThan(rowsAt);
+  });
+});
+
+describe('DEF-198 — absence is evidence only when the page is complete', () => {
+  const withSubjects = (over: Partial<NoiseSummary> = {}, n = 2) => summary({
+    subjects: Array.from({ length: n }, (_, i) =>
+      subject({ subjectKey: `item:s${i}`, reached: 3 })),
+    ...over,
+  });
+
+  it('authorises the "at most one push" read when nothing degraded the list', () => {
+    const out = renderPushHistoryBlock(withSubjects());
+    expect(out).toMatch(/absent below, your record shows at most one push/);
+    expect(out).not.toMatch(/THIS LIST IS INCOMPLETE/);
+  });
+
+  for (const [label, over] of [
+    ['rows were truncated', { truncated: true }],
+    ['a subject key failed to canonicalise', { canonicalisationFailed: true }],
+    ['a thread never resolved to an item', { unresolvedSubjects: ['thread:t1'] }],
+  ] as Array<[string, Partial<NoiseSummary>]>) {
+    it(`REFUSES that read when ${label}`, () => {
+      const out = renderPushHistoryBlock(withSubjects(over));
+      // Mutation: making the rules unconditional again dies on every one of
+      // these three — the block would assert a count nobody read.
+      expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
+      expect(out).toMatch(/Absence proves NOTHING here/);
+      expect(out).toMatch(/You may NOT say "at most one push"/);
+      expect(out).not.toMatch(/your record shows at most one push/);
+    });
+  }
+
+  it('REFUSES that read when the list itself was sliced to the line cap', () => {
+    // The fourth way to be short, and the one with no ⚠ flag of its own: more
+    // repeat-pushed subjects exist than the renderer prints.
+    const out = renderPushHistoryBlock(withSubjects({}, 40));
+    expect(out).toMatch(/more repeat-pushed subject\(s\) not listed/);
+    expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
+    expect(out).not.toMatch(/your record shows at most one push/);
+  });
+
+  it('still forbids inventing a cause in BOTH states', () => {
+    for (const out of [renderPushHistoryBlock(withSubjects()),
+      renderPushHistoryBlock(withSubjects({ truncated: true }))]) {
+      expect(out).toMatch(/Never invent a cause for a duplicate/);
+      expect(out).toMatch(/a plausible mechanism you cannot\s+read is a fabrication/);
+    }
+  });
+});
