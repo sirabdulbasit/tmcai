@@ -8,147 +8,143 @@ Required per iteration: what the fix queue said, what was changed and why, the
 verification numbers (tsc / vitest, exact figures), what was NOT done, and the
 honest expectation of which criterion should move.
 
-## Iteration 1 (loop-numbering restart; the sixth build turn of this branch)
+## Iteration 1 (loop-numbering restart; the seventh build turn of this branch)
 
-**Commit `9cb7720`** on `release/cmp-2026-08-16`. DEF-192 row added;
-`Changes_Made.md` §43 added.
+**Commit `e413758`** on `release/cmp-2026-08-16`. DEF-193 row added;
+`Changes_Made.md` §44 added.
 
-### Two harness glitches, reported not worked around
+### The fix queue entry I targeted, quoted
 
-1. **The brief's capability table contains unexpanded placeholders** —
-   `Simple @@TARGETCAP@@ Smart`, `Simple @@CAPGAPS@@ Smart`. The intended
-   capability is plainly `Simple & Smart` (the contract's #1), so the target
-   is readable, but the substitution is broken in the orchestrator's prompt
-   builder. I did not touch `scripts/orchestrator/**`; the orchestrator fixes it.
-2. **The brief numbered this "Iteration 1" and said "not a continuation turn"**,
-   while the branch already carries Iterations 1–5 and my previous turn had
-   begun work mid-flight. I have appended under a disambiguated heading rather
-   than a second `## Iteration 1`, so the log stays readable.
+> **C6 80 · B10-what-did-you-send** — *"The response starts by promising a
+> 'full list' and then ends with an ellipsis, indicating that the list is not
+> actually complete. This is a failure to [complete the answer]."*
 
-### What governed this turn, and what I dropped
+The worst entry in the baseline fixQueue, and its C1 90 carries the same
+complaint. **I expect C6 to move on B10, and C1 on B10.** Nothing else should
+move, because nothing else changed.
 
-No remediation was open: the newest review section is `## Iteration 4`, and
-Iteration 5 already ruled on its findings (the escalation gate, `bb0cf57`).
-The campaign block's standing order is the operative one — *make HEAD
-deployable, close what the reviewer says blocks release, no opportunistic
-work* — and exactly one Builder-actionable release blocker remained: Codex's
-iteration-4 **carried CRITICAL**, which DEF-191 recorded OPEN and deferred to
-"its own scoped turn". This is that turn.
+### Why this and not the brief's stated target
 
-**Dropped, deliberately:** the DEF-192 event-token table I had started at the
-end of the previous turn (a `self_prune_notice_members` model + migration,
-aimed at Codex's directives 1+3 for the notice outbox). It was reverted
-uncommitted — `git checkout server/prisma/schema.prisma` plus removing the
-unwired migration directory — for two reasons: the announce path it serves is
-now gated OFF by default (DEF-191), so it is no longer on the release path;
-and shipping an unwired table would be exactly the "new surface for the
-reviewer to block on" this brief forbids. The redesign remains owed BEFORE
-the gate is opened, and stays recorded in DEF-191's row.
+The brief's target reads `Simple @@TARGETCAP@@ Smart` — an unexpanded
+placeholder for the second turn running (also `@@CAPGAPS@@`, `@@CHATROOTS@@`).
+Reported, not worked around; I did not touch `scripts/orchestrator/**`.
 
-### Governing-docs verdict (rule 5)
+More substantively: the campaign block orders *make HEAD deployable, close
+what the reviewer says blocks release*. **There is no open reviewer finding
+left to close.** The newest review section is `## Iteration 4`; Iteration 5
+ruled on its findings (the owner gate, `bb0cf57`) and last turn closed its
+carried CRITICAL (`9cb7720`, DEF-192). So the "only job" is discharged, and
+the re-scope instruction governs what to do with the turn: *one owner-visible
+behaviour made correct, with a test, small enough to ship*. That is what this
+is — and it is on the live compose path the owner meets on every long
+WhatsApp answer, not an unreachable one.
 
-**Circling — `query-without-tenant-scope`, member 6**, the same class DEF-178
-/179/188/189 closed on other surfaces. So the fix is structural by
-requirement, and it is the same structural move that worked there: **the
-tenant enters at the entry point** rather than being added as a filter to
-each query, which is what makes the next query on this path scoped by
-construction instead of by review.
+**Dropped, and why:** Codex's chat root-cause analysis ranks `@lid` identity
+(#1, Self-Healing) first. I did not take it: its owner-visible requirement is
+*"text, voice, typing presence, counterpart replies and outbound confirmation
+must all pass together in one live @lid conversation"*, which is a live-WhatsApp
+verification exercise, not a code change I can complete and prove in one turn.
+Taking it would have produced another unshippable turn, which is exactly the
+pattern the re-scope exists to break. It stays first in the queue.
 
-### What changed, and why that is the mechanism
+### Governing-docs verdict (rule 5): CIRCLING — and the file says so itself
 
-- `delegationFollowUpJob.ts` — `runDelegationFollowUpForTenant(clientNumber)`
-  is the new per-tenant entry and carries the tenant into every query.
-  `runDelegationFollowUp` keeps its exported name and becomes the sweep: the
-  ONLY cross-tenant read is the tenant-REGISTRY enumeration (distinct
-  clientNumber over active users, deterministic order), it reads no tenant
-  data, and one tenant's failure never blocks the next.
-- Owner identity is cached per `(tenant, user)` and resolved under the item's
-  tenant. This is the one that matters most for the owner: that identity
-  becomes the From-name and the disclosure footer of an email that leaves his
-  Gmail.
-- `smartChaseService.getUserNameAndEmail(userId, clientNumber)` — the tenant
-  is REQUIRED and CONSTRAINS the query (`findFirst id + clientNumber`, the
-  DEF-179 pattern). A pair absent from that tenant reads nothing, returns
-  null, and the item is never chased for. It had exactly one caller, so the
-  signature change is total rather than optional.
-- One `scopedItemUpdate` replaces all four `update({where:{id}})` calls and
-  their `.catch(() => {})`: `updateMany` on (id, clientNumber, userId) with
-  the affected-row count checked. `mark_stale` and `escalate` now record
-  nothing and count nothing when the write matches nothing.
+The cap's own comment records the previous round: it was **600**, it
+"truncated mid-content on the day brief (calendar + 2 emails, then '...')",
+Basit reported the brief arriving with sections missing, and it was raised to
+**1000**. It has now recurred at 1000. Raising the number a third time is the
+forbidden patch on the reported instance.
 
-### The one asymmetry I did NOT paper over
+### What changed, by file, and why that is the mechanism
 
-The post-send bookkeeping write runs AFTER the email has left. A zero-row
-result there does not mean the chase did not happen, so `sent` still counts —
-that is the truthful fact — while `errors` counts and the log says plainly
-that the bookkeeping did not land. The pre-existing consequence is that with
-no `lastSentAt` persisted the next tick may chase the same item again; the
-old `.catch(() => {})` had the identical hole and hid it. Making it visible
-is this turn's scope; closing it needs a pre-send intent record, which I did
-not attempt and which is stated in the DEF row rather than implied.
+`server/src/services/knowledge/channelRenderer.ts`:
 
-### Verification (measured AFTER the last code edit, commit `9cb7720`)
+- **The cap was two decisions in one number, which is why raising it never
+  worked.** *Brevity* is a content judgement — it needs to know which
+  sentence matters. The *transport limit* is a channel fact. The renderer had
+  only the second and was making the first, with a knife. Separated:
+  `WA_TRANSPORT_MAX_CHARS = 3900` (headroom under Meta's 4096 — the same limit
+  `whatsappService.ts:363` and `whatsappNotifierService.ts:99` already clamp
+  to), and brevity stays with the composer's format rules, which already ask
+  for it and are untouched here.
+- **`trimToLimit` → `fitToChannel`.** When a body genuinely exceeds transport
+  it drops **whole trailing `• ` items** — never half an item — and appends
+  `(+N more not shown)`, a true statement of what happened, replacing the bare
+  ellipsis that silently contradicted the sentence above it. The head prose,
+  which is what answers the question, is never dropped. Long PROSE keeps the
+  sentence-boundary ellipsis on purpose: after a complete sentence it means
+  "there was more" and asserts nothing false.
+- **A pre-existing off-by-one, found by writing the test:** `trimProse`
+  appended its ellipsis AFTER slicing to `max`, returning **max+1**
+  characters. Harmless against a self-imposed 1000; a rejected send against a
+  real transport limit. The suffix's room is now reserved before the cut.
+
+Three of my first eight test runs failed on my own code and fixture — the two
+off-by-ones above and a fixture that was 889 chars while claiming to exceed
+1000. Recorded because a green-first-run claim would have been the more
+suspicious report.
+
+### Verification (measured AFTER the last code edit, commit `e413758`)
 
 - `npx tsc --noEmit` — clean.
-- `npx vitest run` — **195 files: 193 passed / 1 failed / 1 skipped · 2,405
-  tests: 2,374 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
+- `npx vitest run` — **196 files: 194 passed / 1 failed / 1 skipped · 2,413
+  tests: 2,382 passed / 2 failed / 7 expected fail / 21 skipped / 1 todo.**
   The 2 are `orchestratorPulseRoute.test.ts` executing the orchestrator's
   uncommitted live `pulse.py`; the COMMITTED script passes the contract's
-  exact assertions (proven in Iteration 2's entry). Still owed by the
-  orchestrator, and it is the one thing standing between this branch and a
-  zero-failure matrix.
-- **`npm run build`** — the actual script at `9cb7720` in the fully isolated
+  exact assertions (proven in Iteration 2's entry). Unchanged by this diff,
+  and still the only thing between this branch and a zero-failure matrix.
+- **`npm run build`** — the actual script at `e413758` in the fully isolated
   clean clone (own `npm ci` dependencies): generate + emit OK,
-  `dist/jobs/delegationFollowUpJob.js` and
-  `dist/services/delegation/smartChaseService.js` produced in the clone.
+  `dist/services/knowledge/channelRenderer.js` produced in the clone.
   Production's immutable `server/dist` untouched.
 - `git diff --check` — clean.
-- New tests: 10 in `def191DelegationAuthorityHold.test.ts` (was 3).
+- New tests: 8. Adjacent renderer suites re-run green (def072, def145,
+  def146, def147, def078 — 69 tests).
 
 ### Capability declaration (contract §Builder)
 
 ```
-CAPABILITY: Authorized Action
-PREDICTED:  +0 until deployed. Production is single-tenant today, so this
-            closes exposure rather than changing what the owner receives.
-            DIVERGENCE FROM THE BRIEF'S TARGET, stated as required: the
-            target reads `Simple @@TARGETCAP@@ Smart`, and I am not aiming
-            there — the campaign block's standing order (make HEAD
-            deployable; close the reviewer's release blocker; no
-            opportunistic work) governs this turn, and the blocker is a
-            tenant-authorization defect.
-MECHANISM:  the tenant enters at the job's entry point and constrains every
-            read, the identity query and every write, so no path in this job
-            can act on, or speak for, a pair it is not authorized to read.
-FALSIFIER:  any openItem read or write in this job without clientNumber; a
-            chase composed for an item whose owner does not resolve inside
-            the item's tenant; a marked_stale or escalated count for a write
-            that changed zero rows.
+CAPABILITY: Accurate Communication
+PREDICTED:  +1 to +2 once deployed. This is a live compose-path change the
+            owner meets on every long WhatsApp answer, and B10 is the
+            measured instance. DIVERGENCE from the brief's target, stated as
+            required: the target is an unexpanded placeholder, no reviewer
+            finding remains open, and the re-scope rule asks for one
+            owner-visible behaviour made correct — so I took the worst
+            measured fixQueue entry instead.
+MECHANISM:  the answer he receives is no longer contradicted by its own
+            truncation — a list is shortened by whole items with the omission
+            counted, or not shortened at all — and 3.9× more of every long
+            answer now arrives.
+FALSIFIER:  a rendered WhatsApp body containing a severed `• ` item, a bare
+            `…` inside a list, or more than 3900 characters; or B10 scoring
+            C6 ≤ 80 again with the ellipsis contradiction in the judge's
+            reason.
 ```
 
 ### What I did NOT do, and what I am unsure about
 
-- No campaign increment, no benchmark work, no C4 register work (still
-  Codex's directive 6, still owed a fresh turn once this range is SOUND).
-- Did not touch `scripts/orchestrator/**` — including the pulse WIP that is
-  the sole cause of the red matrix.
-- `sendUserEmail(userId, …)` still resolves Gmail credentials by bare userId.
-  That is a separate surface (the credential store, not this job) and pulling
-  it in would have widened a release-blocker turn. Named here rather than
-  silently left.
-- Unsure: whether Codex counts the post-send `sent`-plus-`error` accounting
-  as honest or as a half-measure. I argue it is the only truthful option —
-  denying a send that happened would be a worse lie than reporting a lost
-  write — but the judgement is his.
+- Did not touch the benchmark, the judge, or `scripts/orchestrator/**`.
+- Did not make the COMPOSER budget-aware. It can still write "the full list"
+  for a list the renderer then shortens; what changed is that the shortening
+  no longer leaves the claim contradicted. Moving the budget into composition
+  is the larger version of this fix and is not attempted here.
+- **The one judgement call, flagged rather than buried:** `(+N more not
+  shown)` is deterministic text in an owner-facing body. I argue it is a
+  rendering artifact in the same category as the `…` it replaces — no
+  vocative, no promise, no first-person future, and a named test asserts that
+  — but if Codex reads it as invariant #4 deterministic prose, the alternative
+  is extending the sanctioned marker path, which today carries only
+  whole-answer markers. His call, and I would rather be told than assume.
+- Unsure whether 3900 is the right headroom: the route appends nothing today,
+  but a future footer could. The test pins ≤ 3900 so a regression is loud.
 
 ### Honest prediction
 
-**Deployable at the end of this turn if reviewed SOUND**, and that is a real
-prediction rather than a hope: this closes the last Builder-actionable
-release blocker Codex named across five reviews, the announce path that
-attracted four WRONG verdicts is gated off, and everything else in the range
-has been through review. The benchmark should be flat — no compose path
-changed. Wrong if: Codex finds a query in this job I left unscoped, judges
-the registry enumeration insufficient as the single cross-tenant read, or
-rules that `sendUserEmail`'s bare-userId credential resolution belongs inside
-this finding rather than beside it.
+**Deployable at the end of this turn.** The diff is one file plus a test, adds
+no migration, touches no tenant or messaging-authorization surface, and every
+reviewer-named release blocker on this branch is already closed. C6 should
+move on B10; if the benchmark shows C6 unchanged AND a fresh run still ends
+B10 with an ellipsis, I was wrong about the mechanism and the cut is happening
+somewhere I have not found. If C6 moves but other criteria move too, treat
+that as sampling noise, not as this change working better than claimed.

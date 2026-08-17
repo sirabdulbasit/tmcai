@@ -2842,3 +2842,26 @@ The job that emails the owner's team in his name worked from a global read: one 
 ### Known issues deliberately not fixed
 
 The post-send bookkeeping write happens after the email has left: a zero-row result still counts `sent` (the send is a fact) while counting an error and logging loudly. The pre-existing consequence — no `lastSentAt` persisted, so the next tick may chase again — is now visible where `.catch(() => {})` hid it; closing it needs a pre-send intent record and was not attempted. `sendUserEmail(userId, …)` still resolves Gmail credentials by userId — a separate surface, not in this turn's scope. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
+
+## 44. DEF-193 — the channel cap stops falsifying the answer (2026-08-17, BUILDER: Claude — orchestrator iteration 7, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Benchmark B10, "What have you sent on my behalf today?", replied "Here is the full list:", listed nine sent messages, and ended with a bare "…" — the promise of completeness was false by the time the owner read it. Judge: C6 80, *"starts by promising a 'full list' and then ends with an ellipsis"*; C1 90 for the same contradiction. The same defect is recorded in the code's own comment as an owner report from Basit on 2026-05-20 (the day brief arriving with sections missing).
+
+### Confirmed root cause
+
+`guard-destroys-the-answer` at the render boundary, and CIRCLING: `WA_MAX_CHARS` was 600, severed the day brief, and was raised to 1000 — then recurred at 1000. One number carried two different decisions: *brevity*, which is a content judgement requiring knowledge of what the sentences mean, and the *transport limit*, which is a channel fact. The renderer held only the second kind of information and was making the first kind of decision.
+
+### Files changed (complete list, commit `e413758`)
+
+- `server/src/services/knowledge/channelRenderer.ts` — `WA_MAX_CHARS = 1000` becomes `WA_TRANSPORT_MAX_CHARS = 3900` (headroom under Meta's 4096, the limit `whatsappService.ts:363` and `whatsappNotifierService.ts:99` already clamp to); brevity stays with the composer's format rules, untouched. `trimToLimit` is replaced by `fitToChannel`, which drops **whole** trailing `• ` items and appends `(+N more not shown)` instead of a bare ellipsis; the answering head prose is never dropped; long prose keeps the sentence-boundary ellipsis (it asserts nothing false). `trimProse` also fixed: it appended the ellipsis after slicing to `max` and could return max+1 characters — harmless against 1000, a rejected send against a real transport limit.
+- `server/tests/def193ListSurvivesTheChannelCap.test.ts` — 8 behavioural tests through the real `renderForChannel`.
+
+### Tests added / verification (measured after the last code edit, at `e413758`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 196 files — 194 passed, 1 failed, 1 skipped; 2,413 tests — 2,382 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py` (the committed script passes the contract — §39). `git diff --check` clean. Actual `npm run build` at `e413758` in the fully isolated clean clone: generate + emit OK; production's immutable `server/dist` untouched.
+
+### Known issues deliberately not fixed
+
+`(+N more not shown)` is deterministic text in an owner-facing body — flagged in DEF-193 for the reviewer to arbitrate against invariant #4. I argue it is a rendering artifact in the same category as the `…` it replaces (no vocative, no promise, no first-person future — asserted by a named test); if Codex disagrees, the alternative is extending the sanctioned marker path, which today carries only whole-answer markers. The composer is still free to write "the full list" for a list it does not fully render — the renderer now prevents the contradiction rather than the composer avoiding the phrase; making the composer budget-aware is the larger change and was not attempted. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
