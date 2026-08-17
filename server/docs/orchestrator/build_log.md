@@ -2641,3 +2641,130 @@ half-answered question gets chased.
 still reaching him as `Proceeding with <type>`; or Brain proceeding after a two-part question with
 one part answered and never naming the other; or B04 failing to recover materially, which would
 mean the low score came from the decider's choice to dispatch rather than from the sentence.
+
+## Iteration 6 — asking is not a reason to delete (DEF-211), and HIGH 3 turned into evidence (DEF-210)
+
+**Mode: structural · ESCALATED · continuation 1/3 on Accurate Communication · regression guard FIRED · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer` — its third and fourth sites**
+
+### 0. First, the thing worth knowing: DEF-209 landed
+
+B04's reply in `iter-05-post-build.json` is now:
+
+> "Got it. I've set the priority to high. Does it need a due date?"
+
+It was `"Proceeding with update open item."` The template is gone from the owner's surface and the
+unanswered half of Brain's own question is chased. B04 is not in this turn's regression list.
+
+### 1. The escalation, answered plainly
+
+**(a) Accept as a known limitation with a DEF row. NOT grounds for reverting.** Taking iteration
+4's numbered risks in order, on the record:
+
+| finding | status |
+|---|---|
+| CRITICAL 1 — restored item can still be announced | closed, DEF-208 (`2acb272`): revalidation, claim-CAS, queue insert and sent-mark in one transaction |
+| HIGH 2 — a sent batch erases a later withdrawal event | closed, DEF-202 event tokens |
+| HIGH 3 — concurrent dispatch, two sendable batches | **closed this turn, DEF-210**, with the test he asked for |
+| MEDIUM 4 — the 200-row cap starves later debt | closed, DEF-209 paging + a 201-row test |
+| MEDIUM 5 — release evidence red | matrix green, this turn included |
+| MEDIUM 6 — C4 untouched | DEF-209 and DEF-211 both change the register mechanism |
+
+What remains from that section is **CARRIED FINDING 1** — `delegationFollowUpJob` enumerating
+globally and resolving identity by bare user id — which Codex himself labelled *"pre-existing, not
+this diff"*. Reverting DEF-190/202/208/209 would not touch it by a single line, so a revert buys
+nothing and costs the transaction boundary, the event identity and the paging. It deserves its own
+DEF and its own turn.
+
+### 2. HIGH 3: I had asserted it, not shown it (DEF-210)
+
+Codex: *"two workers pass the read before either creates; both see the same rows as unclaimed,
+create different random dedup keys, and can enqueue two notices."* True of the FIRST outbox, whose
+key was a fresh `randomUUID()`. DEF-202 derived the key from the sorted member event tokens, which
+makes the existing unique index the ownership constraint — and I wrote that in a row and never
+tested it. **An untested guarantee is a claim.** Now: the mock enforces the real index
+(`self_prune_notice_batches_dedup_uq`), two genuinely overlapping dispatchers produce **one batch
+and one queue row**, and three mutants die. No production code changed.
+
+### 3. The regression, and what was wrong with my last attempt
+
+`B03-pronoun-followup` C5 **95 → 75**. The whole reply:
+
+> "When you say 'what about it', are you asking for more details, or do you want me to take an
+> action regarding the Q3 headcount plan?"
+
+> judge: "it could have made an intelligent guess and offered information first"
+
+**Circling — `guard-destroys-the-answer`, 8 in chart §3.** Same class, two more sites:
+
+1. `applyReasoningDecision`'s **`ask`** case returned `question.text` and ignored `answerText`
+   entirely. That function has four branches that produce owner-facing text; DEF-205/206 fixed
+   `decline`, DEF-209 fixed `act`, and I never read the third.
+2. The legacy decider's **`missingSlot`** arm sat THREE LINES BELOW the arm DEF-209 repaired and
+   did the identical unconditional overwrite. **I fixed one arm of an if/else and left its
+   sibling.** That is the honest answer to "what was wrong with the last attempt".
+
+**And the part that makes this more than a third patch:** the reasoning contract said *"Exactly
+ONE of {action, action_plan, question, answer_text} is non-null"*. With the owner-facing field
+inside that exclusion, **answering-and-then-asking was unrepresentable** — a decider obeying the
+contract could never fill both, so repairing the renderers alone would have been a guaranteed
+no-op. The mechanism was in the schema, not the renderer.
+
+### 4. What changed
+
+- **`actionReceipt.ts`** — `answerThenAsk()`: what is known first, the open question after; the
+  identity when only one side exists; never the question twice. ONE implementation, imported by
+  both sites.
+- **`reasoningCompose.ts`** — `answer_text` removed from the mutual-exclusion set; `ask` guidance
+  now tells the decider to say what it already knows; the field description marks it optional and
+  encouraged on `ask`.
+- **`reasoningCompose.applyDispatch.ts`** — the `ask` branch composes both, and its hardcoded
+  English fallback becomes `[clarification needed: …]`.
+- **`answerSanitizer.ts`** — a curated meaning for that marker, so it is never published raw.
+- **`brainComposer.ts`** — the `missingSlot` arm appends instead of overwriting.
+
+### 5. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  205 passed | 1 skipped (206)
+                    Tests  2578 passed | 7 expected fail | 21 skipped | 1 todo (2607)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; `answerThenAsk)(result.answerText, q?.text)` and
+                                   `answerThenAsk)(parsed.answer, renderMissingSlotPrompt(...)`
+                                   both confirmed in the emitted JS, old fallback confirmed gone)
+git diff --check    clean
+```
+
+**15 new tests. 9 mutants applied and RUN, all 9 die** — DEF-211: question first · answer dropped ·
+ask returns the question alone · missingSlot overwrites again · contract re-adds `answer_text` to
+the exclusion · marker loses its curated meaning. DEF-210: random dedup identity · unsorted tokens ·
+collision swallowed as a generic error.
+
+**One DEF-205 assertion was UPDATED, not silenced.** It pinned the old exclusion list verbatim; the
+property it defends — `decline_reason` is not an exclusive alternative — is unchanged, and now
+covers `answer_text` too.
+
+### 6. What I did NOT do, and what I am unsure about
+
+- **`B08-bad-news` C3 100 → 85 is NOT fixed.** The judge's note is *"it reframes it slightly as
+  'things that might need attention'"* against a reply that is otherwise detailed and correct. I
+  can find no mechanism there to change, and inventing one to look responsive is worse than saying
+  so. Named, not silently dropped.
+- **No C-3 campaign progress**, plainly: the guard fired and the escalation had to be answered.
+- **The contract half is a request to a model**, and DEF-206's lesson is that a request is not a
+  guarantee. The CODE now preserves whatever arrives; if the decider still fills only `question`,
+  B03 will not move. That is the specific way this turn can fail, and I would rather predict it.
+
+### 7. Deployability, predicted explicitly
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** no feature gate
+stands between this and a live reply, and DEF-209 shipping at 22:58 is the evidence that this path
+reaches him.
+
+### 8. Falsifier
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a clarifying
+turn still reaching him as a bare question when the decider filled `answer_text`; or B03 C5 not
+recovering, which would mean the decider ignores the relaxed contract and the remaining fix has to
+be in code.

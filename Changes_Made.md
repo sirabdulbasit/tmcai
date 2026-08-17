@@ -3413,3 +3413,68 @@ Reverting restores a template as the owner's reply and re-drops the unanswered h
 **Unsure whether C5 fully recovers:** the judge wanted Brain to ask *before* proceeding; this proceeds *and* asks. If the case demands withholding the dispatch, that is a decider change.
 
 **Unlike DEF-208, this is owner-visible if deployed** — no feature gate stands between it and a live reply.
+
+## 61. DEF-210 — the concurrency guarantee turned into evidence (2026-08-17, BUILDER: Claude — orchestrator iteration 6, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Reviewer finding, not owner-visible. Codex iteration-4 HIGH 3, open across three remediations: *"overlapping cleanup invocations select the same unclaimed owed row before either insert commits; result = two batches with different UUID-derived dedup keys both satisfy the database constraints and both enqueue."*
+
+### Root cause
+
+His finding was true of the FIRST outbox, whose dedup key was a fresh `randomUUID()` — two creators, two keys, no collision, two notices. DEF-202 replaced it with a key derived from the sorted member event tokens, which turns the existing unique index into the ownership constraint he asked for. **That was asserted in a change-log row and never tested, and an untested guarantee is a claim.**
+
+### Files changed
+
+- `server/tests/def186SelfPruneWithdrawnNotice.test.ts` — the prisma mock now enforces the real unique index (`self_prune_notice_batches_dedup_uq`, `20260817_self_prune_notice_outbox/migration.sql:24-25`), and four tests: two genuinely overlapping dispatchers over one owed event produce exactly one batch and one queue row; the same membership recomputes the same identity; a different withdrawal event still gets its own identity so the constraint cannot block real work; and the key is computed from SORTED tokens so member ordering cannot split one event in two.
+
+**No production code changed.**
+
+### Tests added / verification
+
+Three mutants applied and RUN, all three die: restore the random dedup identity · leave the tokens unsorted · swallow the unique-index collision as a generic error.
+
+### Known issues deliberately not fixed
+
+**CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0** — the guarantee already existed; this demonstrates it.
+
+## 62. DEF-211 — asking is not a reason to delete (2026-08-17, BUILDER: Claude — orchestrator iteration 6, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Regression guard fired on `B03-pronoun-followup` C5 **95 → 75**. The whole reply was *"When you say 'what about it', are you asking for more details, or do you want me to take an action regarding the Q3 headcount plan?"* Judge: *"it could have made an intelligent guess and offered information first."* It could have — the subject was resolved well enough to be named in the question.
+
+### Root cause — three defects, and the middle one is why a renderer-only fix would have been a no-op
+
+1. `applyReasoningDecision`'s **`ask`** case returned `question.text` and ignored `answerText` completely — the third branch of that one function to destroy prose, after decline (DEF-205/206) and act (DEF-209).
+2. **The reasoning contract said *"Exactly ONE of {action, action_plan, question, answer_text} is non-null"***. With the owner-facing field inside that exclusion, answering-and-then-asking was **unrepresentable**: a decider obeying the contract could never fill both, so repairing the renderer alone could not fire once.
+3. The legacy decider's **`missingSlot`** arm — three lines below the arm DEF-209 repaired — overwrote the composed prose with a slot prompt. **I fixed one arm of an if/else last turn and left its sibling.**
+
+### Files changed
+
+- `server/src/services/knowledge/actionReceipt.ts` — `answerThenAsk()`: known first, open question after; the identity when only one side exists; never the question twice. One implementation, imported by both sites.
+- `server/src/services/knowledge/reasoningCompose.ts` — `answer_text` removed from the mutual-exclusion set; `ask` guidance tells the decider to say what it already knows; the field description marks it optional and encouraged on `ask`.
+- `server/src/services/knowledge/reasoningCompose.applyDispatch.ts` — the `ask` branch composes both; its hardcoded English fallback becomes `[clarification needed: …]`.
+- `server/src/services/knowledge/answerSanitizer.ts` — a curated meaning for that marker, so it is never published raw.
+- `server/src/services/knowledge/brainComposer.ts` — the `missingSlot` arm appends instead of overwriting.
+- `server/tests/def211AnswerThenAsk.test.ts` — 11 tests; `server/tests/def205OwnerFacingField.test.ts` — one assertion updated, not silenced.
+
+### Rollback considered and rejected
+
+Reverting restores a reply that is a question and nothing else, on a path where Brain already knew enough to name the subject.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 206 files — 205 passed, 1 skipped; 2,607 tests — **2,578 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (both `answerThenAsk` call sites confirmed in the emitted JS, old fallback confirmed gone; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+**Six mutants applied and RUN, all six die:** question first · answer dropped · ask returns the question alone · missingSlot overwrites again · contract re-adds `answer_text` to the exclusion · the marker loses its curated meaning.
+
+### Known issues deliberately not fixed
+
+**`B08-bad-news` C3 100 → 85 is not fixed.** The judge's note is that the reply "reframes it slightly as 'things that might need attention'" against an otherwise detailed and correct answer. No mechanism to change was found, and inventing one would be worse than saying so.
+
+**The contract half is a request to a model**, and DEF-206's lesson is that a request is not a guarantee. The code preserves whatever arrives; if the decider still fills only `question`, B03 will not move.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** asking is no longer a reason to delete, and the output contract can now express both. **FALSIFIER:** a clarifying turn still reaching him as a bare question when `answer_text` was filled.
+
+**DEF-209 landed:** B04's reply in `iter-05-post-build.json` is now *"Got it. I've set the priority to high. Does it need a due date?"*
