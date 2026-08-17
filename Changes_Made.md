@@ -3261,3 +3261,35 @@ Five mutants applied and RUN, all five die: revert to `declineReason` as the rep
 **Fifth report of the harness defect causing the misaim:** the brief's table names the widest gap as `Simple @@CAPGAPS@@ Smart` — an unsubstituted placeholder — and its prose has named a different capability as "the widest gap" in every brief received. I cannot change the target and must not touch `scripts/orchestrator/**`.
 
 **Unsure:** whether B11 C8 recovers. The owner-facing field is now correct and the contract contrasts the two voices, but the judge grades the sentence; this removes the licensed cause, it does not compel the voice.
+
+## 57. DEF-206 — the decline note reaches him wrapped, or not at all (2026-08-17, BUILDER: Claude — orchestrator iteration 4, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Regression guard fired on `B11-capability-limit` a **second** time, one turn after DEF-205 touched that exact path: C6 90 → 70, C5 85 → 70, C1 100 → 85, C4 50, mean 94.4 → 83.1. Brain replied *"The user requested an action (initiating a WhatsApp call) that is not supported by the available tools or actions."* — still `decline_reason` verbatim.
+
+### Root cause — my own DEF-205 assumption
+
+DEF-205 preferred `answerText` and told the contract it was **required** on decline. The decider ignored it, so the fallback landed on the raw note. **Asking a model to fill a field is not a guarantee.** This is the fifth prompt-contract change this session that failed to produce the behaviour it described (DEF-198 rules, DEF-201 window wording, DEF-205 required field): the fix has to be in code, or it is a wish.
+
+### Files changed
+
+- `server/src/services/knowledge/reasoningCompose.applyDispatch.ts` — the reason is no longer eligible to be the reply. `declineMarker()` wraps it as `[declined: <reason>]`, cleaned of `[`/`]` (an inner bracket terminates the curated regex early and leaks the tail) and of newlines (the whole-marker shape test would otherwise never render it). The framing is then chosen in ONE place: `answerSanitizer`'s curated rule renders it as *"I can't do that: <reason>"* on the owner-facing route, and `sanitizeAnswerInBrainVoice` rewrites the whole marker in Brain's voice on WhatsApp.
+- `server/tests/def206DeclineNeverRawNote.test.ts` — 9 tests, including end-to-end rendering through the **real** sanitizer.
+- `server/tests/def205OwnerFacingField.test.ts` — two assertions updated (not silenced): DEF-206 supersedes the expression they pinned; the property is unchanged and stronger.
+
+### Rollback considered and rejected
+
+Reverting hands the owner an internal third-person note as his reply on every decline — the defect the guard has now caught twice.
+
+### Tests added / verification (measured after the last code edit, at `d1314a5`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 202 files — 201 passed, 1 skipped; 2,544 tests — **2,515 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (`declineMarker` confirmed in the emitted JS, raw-reason form confirmed gone; `server/dist` is `chattr +i`, untouched) · `git diff --check` clean.
+
+Four mutants applied and RUN, all four die. **Mutation testing caught a real hole in my own tests again:** *"prefer the raw reason over the marker"* survived the first pass because every assertion exercised `declineMarker` directly and nothing pinned the dispatch site — a guard on the expression now kills it.
+
+### Known issues deliberately not fixed
+
+**The residual is the reason TEXT.** The frame is fixed in code; the wording inside it is still the decider's, so "The user requested…" survives inside the sentence on the synchronous path. C1 should recover; C4/C5 may only partly. **C6's "offers no alternative" is not addressed** — supplying one requires knowing what Brain *can* do for that request, a capability-registry question and a separate build.
+
+**THE OBSTACLE, attempt 5, unchanged because the evidence is.** Not delivery: `deployed-sha` equals HEAD with zero undeployed commits. It is **arithmetic** — Accurate Communication is 78/94 (gap 16), and the campaign states repairing an existing capability yields +1–2 (+0.1 overall) while making an absent one exist yields +20–30. Five turns of correct, deployed work on existing capabilities cannot move BRAIN's 48.1. **Sixth report** of the harness defect driving the misaim: the brief's table names the widest gap as `Simple @@CAPGAPS@@ Smart`, an unsubstituted placeholder.

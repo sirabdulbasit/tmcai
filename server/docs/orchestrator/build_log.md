@@ -2126,3 +2126,122 @@ an existing-capability turn, which would refute my obstacle analysis and be very
 
 **Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
 evidence blocks a deploy, and this repairs a regression currently live in the benchmark.
+
+---
+
+## Iteration 4 (fifth entry under this number) — a wish is not a mechanism (DEF-206)
+
+**Mode: structural · regression guard FIRED on B11 a SECOND time · deployed=no**
+
+### 0. Why my own fix did not hold — the useful part
+
+Last turn (DEF-205) I preferred `answerText` on decline and told the contract it was
+**required**. The decider ignored it, so the fallback landed on `decline_reason` and B11 came
+back as:
+
+> "The user requested an action (initiating a WhatsApp call) that is not supported by the
+> available tools or actions."
+
+C6 90 → 70, C5 85 → 70, C1 100 → 85, C4 50. The judge: *"could be clearer by stating 'I
+can't'"*, *"a bit clunky and technical"*, *"offers no alternative"*.
+
+**Asking a model to fill a field is not a guarantee.** That is now the **fifth** prompt-contract
+change this session that failed to produce the behaviour it described — DEF-198 (rules),
+DEF-201 (window wording), DEF-205 (required field) all *steered* rather than *enforced*. The
+pattern is worth naming because it explains several of my turns: **the fix has to be in code, or
+it is a wish.**
+
+### 1. Circling or progressing
+
+**Circling on `guard-destroys-the-answer` (8 in chart §3), and this is the second turn on the
+same member.** Structural mode therefore forbade another wording change; this one removes the
+raw note's *eligibility* to be the reply.
+
+### 2. What changed, by file:line, and why that is the mechanism
+
+- **`reasoningCompose.applyDispatch.ts` decline case** — `result.answerText?.trim() ||
+  declineMarker(result.declineReason)`. The reason is no longer eligible to be the reply.
+- **`declineMarker()`** wraps it as `[declined: <reason>]`, cleaned of `[`/`]` (an inner bracket
+  terminates the curated regex early and leaks the tail as bare prose) and of newlines (the
+  whole-marker shape test would otherwise never render it), capped at 300 chars.
+- **The framing is then chosen in ONE place**: `answerSanitizer`'s curated rule
+  (`answerSanitizer.ts:119-123`) renders `[declined: X]` as **"I can't do that: X"** — verbatim
+  the judge's C1 ask — and `brainAskRoutes.ts:356` is the owner-facing path that applies it.
+  WhatsApp instead gets `sanitizeAnswerInBrainVoice`, which rewrites the whole marker in Brain's
+  voice. **Nothing is lost**: the reason still travels, it just stops choosing its own framing.
+
+**Verified end to end against the REAL sanitizer, not a copy of the rule:**
+
+```
+[declined: The user requested an action …]
+  -> "I can't do that: The user requested an action (initiating a WhatsApp call) that is not
+      supported by the available tools or actions."
+```
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_CLEAN
+npx vitest run      Test Files  201 passed | 1 skipped (202)
+                    Tests  2515 passed | 7 expected fail | 21 skipped | 1 todo (2544)
+                    0 failed
+npm run build       NPM_RUN_BUILD_OK
+git diff --check    clean
+```
+
+Clean-clone build; `declineMarker` confirmed in the emitted JS and the raw-reason form confirmed
+**gone**. This tree's `dist` is `chattr +i` and untouched.
+
+**MUTATION TESTING CAUGHT A REAL HOLE IN MY OWN TESTS, again.** *"Prefer the raw reason over the
+marker"* **survived** the first pass: every assertion exercised `declineMarker` directly and
+nothing pinned the dispatch **site**, so reintroducing `result.declineReason ||` would have
+restored the defect with the whole suite green. A guard on the expression now kills it. Four
+mutants, all dying: return the bare reason · stop stripping brackets · stop collapsing newlines ·
+prefer the raw reason at the call site.
+
+**DEF-205's two assertions were UPDATED, not silenced.** DEF-206 supersedes the exact expression
+they pinned; the property they protect — `answerText` wins, the raw reason is never the reply —
+is unchanged and now stronger.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **The residual is the reason TEXT.** The frame is now fixed in code; the wording inside it is
+  still the decider's, so "The user requested…" survives inside the sentence on the synchronous
+  path. **C1 should recover; C4/C5 may only partly.** I would rather predict that than discover
+  it next turn.
+- **C6's "offers no alternative" is not addressed.** Supplying an alternative requires knowing
+  what Brain *can* do for that request, which is a capability-registry question and a separate
+  build. Named, not silently dropped.
+- **Remediation:** `review_log.md` has not grown (692 lines, one `## Iteration 3`). Its surviving
+  findings were closed in DEF-202 (`417b4a2`); iteration-4 CRITICAL 1 stays recorded there as an
+  accepted limitation behind a gate defaulting to 0. Codex has not reviewed DEF-202..206.
+- **No C-3 campaign progress**, plainly: a twice-fired regression came first.
+
+### 5. THE REAL OBSTACLE — attempt 5, unchanged, because the evidence is unchanged
+
+**Not delivery.** `deployed-sha` equals HEAD with zero undeployed commits, and two turns ago I
+verified `dist` carrying DEF-202's event token and DEF-203's gate.
+
+**Arithmetic.** Accurate Communication is 78/94 — gap **16**. The campaign states plainly that
+repairing an existing capability yields **+1 to +2 (+0.1 overall)** while making an absent one
+exist yields **+20 to +30**. Five turns of correct, deployed, mutation-verified work on existing
+capabilities cannot move BRAIN's 48.1.
+
+**Sixth report of the harness defect driving the misaim:** the brief's table still names the
+widest gap as **`Simple @@CAPGAPS@@ Smart`** — an unsubstituted placeholder. I cannot change the
+target and must not touch `scripts/orchestrator/**`.
+
+### 6. Prediction, and what would prove me wrong
+
+**B11 C1 should recover toward 100** — the reply now opens "I can't do that". **C4/C5 partly.**
+**C6 will not fully recover**, because it asks for an alternative this change does not supply.
+**BRAIN overall will not move.**
+
+**Proved wrong by:** a decline still reaching him as bare `decline_reason` prose; a rendered
+reply not opening "I can't do that" when `answer_text` was absent; or BRAIN moving materially
+from an existing-capability turn, which would refute my obstacle analysis and be welcome.
+
+### 7. Deployability
+
+**Deployed=no.** Matrix fully green including a real `npm run build`; nothing in the required
+evidence blocks a deploy, and this repairs a regression that has now fired twice.
