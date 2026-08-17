@@ -2818,3 +2818,27 @@ Codex's iteration-4 review (WRONG, the fourth against the notice path) held thre
 ### Known issues deliberately not fixed
 
 Iteration-4 findings 1–4: recorded limitations of the now-disabled dispatcher, owed to the event-token redesign before the gate opens. The delegation job's global enumeration and bare-id owner lookup: pre-existing live carried CRITICAL, recorded OPEN in DEF-191 for its own scoped turn. The two pulse failures: orchestrator-owned WIP. The benchmark regression-guard hits on B05 C1 / B12 C2 are composer sampling variance — the range `e356d42..HEAD` touches no compose path (the only message-path file is `answerSanitizer.ts`, whose addition matches only the `selfpruning_withdrawn:` prefix, which neither answer contains); the unverifiable-send-claim CLASS the judge flagged belongs to the deferred C4 register turn (Codex directive 6).
+
+## 43. DEF-192 — the delegation chase decides, composes and writes inside the tenant (2026-08-17, BUILDER: Claude — orchestrator iteration 6, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+The job that emails the owner's team in his name worked from a global read: one `findMany` over every tenant's delegated items with no `clientNumber`, an owner identity (the From-name and disclosure footer of an outbound chase) resolved from a bare `userId`, and four mutations matched on bare `id` under `.catch(() => {})` — so a write that changed nothing still counted as an escalation or a stale marking. Codex named this a carried CRITICAL, pre-existing and LIVE at the deployed `e356d42`, and a release blocker.
+
+### Confirmed root cause
+
+`query-without-tenant-scope`, member 6 — the same shape DEF-188/189 closed one job over. Nothing enforced a tenant declaration: the scan, the identity read and the writes each independently treated a userId as authorization; the swallowed write errors are the `fabricated-status` half of the same family.
+
+### Files changed (complete list, commit `9cb7720`)
+
+- `server/src/jobs/delegationFollowUpJob.ts` — `runDelegationFollowUpForTenant(clientNumber)` is the new per-tenant entry; `runDelegationFollowUp` keeps its name and now only reads the tenant registry (distinct clientNumber over active users, deterministic order, one tenant's failure isolated) and aggregates. Owner identity is cached per (tenant, user) and resolved under the item's tenant. One `scopedItemUpdate` helper replaces all four bare-id updates: `updateMany` on (id, clientNumber, userId) with the affected-row count checked; mark_stale and escalate record and count nothing when it matches nothing.
+- `server/src/services/delegation/smartChaseService.ts` — `getUserNameAndEmail(userId, clientNumber)`: the tenant is required and constrains the query (`findFirst id + clientNumber`, DEF-179 pattern); a pair absent from that tenant reads nothing and returns null.
+- `server/tests/def191DelegationAuthorityHold.test.ts` — extended to 10 tests with an in-memory store honouring every stated filter, plus a query-shape sweep asserting no item read or write lacks its tenant.
+
+### Tests added / verification (measured after the last code edit, at `9cb7720`)
+
+`npx tsc --noEmit` clean · `npx vitest run`: 195 files — 193 passed, 1 failed, 1 skipped; 2,405 tests — 2,374 passed, **2 failed**, 7 expected fail, 21 skipped, 1 todo. Both failures remain `tests/orchestratorPulseRoute.test.ts` executing the orchestrator's uncommitted live `pulse.py` (the committed script passes the contract's exact assertions — §39). `git diff --check` clean. Actual `npm run build` at `9cb7720` in the fully isolated clean clone (own `npm ci` deps): generate + emit OK; production's immutable `server/dist` untouched.
+
+### Known issues deliberately not fixed
+
+The post-send bookkeeping write happens after the email has left: a zero-row result still counts `sent` (the send is a fact) while counting an error and logging loudly. The pre-existing consequence — no `lastSentAt` persisted, so the next tick may chase again — is now visible where `.catch(() => {})` hid it; closing it needs a pre-send intent record and was not attempted. `sendUserEmail(userId, …)` still resolves Gmail credentials by userId — a separate surface, not in this turn's scope. The two pulse failures remain orchestrator-owned WIP. No migration; no schema change.
