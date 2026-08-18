@@ -271,7 +271,7 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
     'and the times, and say the count.',
     '',
     'NAME AN ITEM ONLY FROM A TITLE PRINTED IN THIS LIST. Every subject below carries the owner\'s own',
-    'title for it, in quotes. If the item he means is not listed below, say your record shows no repeat',
+    'title for it, in quotes. If the item he means is not listed below, say it was not pushed more than once',
     'push for that item — do NOT take a title from another block (open items, the day brief, the',
     'transcript) and attach these counts to it. That is how a true count becomes a false statement:',
     'the number and the time stay correct while the thing they describe is something he never asked',
@@ -283,14 +283,14 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
   const absence = absenceInformative
     ? [
       'A subject pushed only once is NOT listed here individually — so if he asks about a repeat and',
-      'the subject is absent below, your record shows at most one push and you should say exactly that',
+      'the subject is absent below, it was pushed at most once and you should say exactly that',
       'rather than agreeing that it went twice.',
       '',
       // DEF-201, Codex iteration-2 directive 4 — this record is a WINDOW, not a
       // lifetime. "I only pushed that once" is a claim about all time; the rows
       // only support a claim about the last N hours, and the difference is the
       // whole `fabricated-status` class in miniature.
-      `BOUND THAT CLAIM TO THE WINDOW. This record covers the last ${windowHours ?? '?'}h only, so the`,
+      `BOUND THAT CLAIM TO THE WINDOW. What is visible here covers the last ${windowHours ?? '?'}h only, so the`,
       'honest sentence is "I have no record of pushing that more than once IN THE LAST'
       + ` ${windowHours ?? '?'} HOURS" — never an unqualified "I only sent it once". If his reminder`,
       'could predate the window, say the window is what you can see.',
@@ -299,16 +299,40 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
       'THIS LIST IS INCOMPLETE, for a reason that is stated rather than implied:',
       ...reasons.map((r) => `  • ${r}`),
       'Absence proves NOTHING here: a subject can be missing below and still have been pushed many',
-      'times. You may NOT say "at most one push" for a subject you cannot find. Say your record for',
+      'times. You may NOT say "at most one push" for a subject you cannot find. Say that for',
       'that subject is incomplete for this window, and never agree to a count you did not read.',
     ];
+  // DEF-213 — STATE THE FACT, NOT THE BOOKKEEPING.
+  //
+  // `B12-reminder-referent` C4 80 and C1 85, on one sentence: *"my own dispatch
+  // log doesn't have a record of why that happened."* The judge called it "too
+  // mechanical … explaining its internal workings" and, worse, said it "implies a
+  // dispatch log exists and was checked, which isn't explicitly confirmed as an
+  // actual action."
+  //
+  // He is echoing THIS BLOCK. It said "your record shows", "this record covers",
+  // "say your own record is unavailable" — first-person machine vocabulary,
+  // supplied by me, in the one place the model is told how to talk about this
+  // subject. That is not a wish about behaviour it must choose to perform; it is
+  // the source string it was copying, and removing the source removes the echo.
+  //
+  // The rule below is the general form, because deleting seven phrases without
+  // it just invites the next one.
+  const voice = [
+    'SAY WHAT IS TRUE, NOT HOW YOU KNOW IT. Give him the fact and, where you do not have one, say',
+    'plainly that you do not know. Do NOT narrate your own bookkeeping — no "my dispatch log", no',
+    '"my records show", no "I checked my logs". Two reasons, and the second is the serious one:',
+    'it reads like a machine describing its inside, and it ASSERTS a lookup he cannot verify and you',
+    'may not have made. "I don\'t know why it went twice" is honest and complete; "my dispatch log has',
+    'no record of why" claims a log, claims you read it, and says the same thing.',
+  ];
   const cause = [
     'Never invent a cause for a duplicate: if the rows show',
     'two producers, the cause is two producers; if they show one producer twice, say that and say you',
     'do not know why it repeated. "I don\'t know" is correct here; a plausible mechanism you cannot',
     'read is a fabrication.',
   ];
-  return [...referent, '', ...read, '', ...absence, ...cause].join('\n');
+  return [...referent, '', ...read, '', ...absence, ...cause, '', ...voice].join('\n');
 }
 
 function shortTime(d: Date | null): string {
@@ -373,7 +397,7 @@ export function renderPushHistoryBlock(
     lines.push('');
     lines.push('If he asked why something was pushed more than once, say you have no repeat-push');
     lines.push('record for it. If he asked about the item itself, answer from the blocks that hold');
-    lines.push('items and ignore this one entirely. The other subjects in your record are deliberately');
+    lines.push('items and ignore this one entirely. The other subjects listed here are deliberately');
     lines.push('NOT listed here because they are not what he asked about — do not name one, and do not');
     lines.push('take a title from another block.');
     lines.push('');
@@ -432,7 +456,7 @@ export function renderPushHistoryUnavailable(reason: string): string {
     `UNAVAILABLE — your push record could not be read (${reason}).`,
     '',
     'This is NOT the same as "nothing was sent". You do not know how many times he was',
-    'pushed. If he asks, say your own record is unavailable for this window rather than',
+    'pushed. If he asks, say you cannot tell for this window rather than',
     'denying a push or guessing a cause.',
   ].join('\n');
 }

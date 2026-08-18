@@ -94,7 +94,11 @@ describe('DEF-197 — the push-history block answers "why twice?" from rows', ()
     // record shows at most one push, and agreeing that it went twice would be a
     // new fabrication wearing this block as evidence.
     const out = renderPushHistoryBlock(summary());
-    expect(out).toMatch(/absent below, your record shows at most one push/);
+    // DEF-213 REWORDED THIS DELIBERATELY: the block no longer says "your record
+    // shows", because that first-person machine vocabulary is what B12 echoed back
+    // as "my own dispatch log". The PROPERTY these assertions defend — absence
+    // authorises the at-most-once read only when the page is complete — is unchanged.
+    expect(out).toMatch(/absent below, it was pushed at most once/);
     expect(out).toMatch(/rather than agreeing that it went twice/);
   });
 
@@ -272,7 +276,7 @@ describe('DEF-198 — absence is evidence only when the page is complete', () =>
 
   it('authorises the "at most one push" read when nothing degraded the list', () => {
     const out = renderPushHistoryBlock(withSubjects());
-    expect(out).toMatch(/absent below, your record shows at most one push/);
+    expect(out).toMatch(/absent below, it was pushed at most once/);
     expect(out).not.toMatch(/THIS LIST IS INCOMPLETE/);
   });
 
@@ -288,7 +292,7 @@ describe('DEF-198 — absence is evidence only when the page is complete', () =>
       expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
       expect(out).toMatch(/Absence proves NOTHING here/);
       expect(out).toMatch(/You may NOT say "at most one push"/);
-      expect(out).not.toMatch(/your record shows at most one push/);
+      expect(out).not.toMatch(/it was pushed at most once/);
     });
   }
 
@@ -298,7 +302,7 @@ describe('DEF-198 — absence is evidence only when the page is complete', () =>
     const out = renderPushHistoryBlock(withSubjects({}, 40));
     expect(out).toMatch(/more repeat-pushed subject\(s\) not listed/);
     expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
-    expect(out).not.toMatch(/your record shows at most one push/);
+    expect(out).not.toMatch(/it was pushed at most once/);
   });
 
   it('still forbids inventing a cause in BOTH states', () => {
@@ -524,18 +528,18 @@ describe('DEF-200 — absence is not evidence when identity-less pushes exist', 
       unattributed: [{ senderKey: 'unknown:+92300', subjectClass: 'nudge' }] as any,
     }));
     expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
-    expect(out).not.toMatch(/your record shows at most one push/);
+    expect(out).not.toMatch(/it was pushed at most once/);
   });
 
   it('REFUSES it when floods exist', () => {
     const out = renderPushHistoryBlock(withRepeat({ floods: [{ senderKey: 'x' }] as any }));
     expect(out).toMatch(/THIS LIST IS INCOMPLETE/);
-    expect(out).not.toMatch(/your record shows at most one push/);
+    expect(out).not.toMatch(/it was pushed at most once/);
   });
 
   it('still authorises it when the record is genuinely complete', () => {
     const out = renderPushHistoryBlock(withRepeat());
-    expect(out).toMatch(/absent below, your record shows at most one push/);
+    expect(out).toMatch(/absent below, it was pushed at most once/);
   });
 });
 
