@@ -726,7 +726,7 @@ function PulseTable({ data }) {
         <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
           <thead>
             <tr>
-              <th>Trend by iteration</th>
+              <th>Trend by pulse</th>
               {it.map((i) => (
                 <th key={i} style={{ textAlign: 'right' }}>#{i}</th>
               ))}
@@ -805,7 +805,7 @@ function StageTimings({ data }) {
     <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
       <thead>
         <tr>
-          <th>Time by iteration</th>
+          <th>Time by pulse</th>
           {rows.map((r) => (
             <th key={r.iteration} style={{ textAlign: 'right' }}>#{r.iteration}</th>
           ))}
@@ -840,7 +840,7 @@ function CapabilityTrend({ data }) {
     <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
       <thead>
         <tr>
-          <th>Trend by iteration</th>
+          <th>Trend by pulse</th>
           {it.map((i) => (
             <th key={i} style={{ textAlign: 'right' }}>#{i}</th>
           ))}
@@ -1099,7 +1099,7 @@ export default function OrchestratorPulsePanel() {
             </div>
             <div className="orch-stage-side">
               <div style={{ fontSize: 'var(--fs-md)', fontWeight: 'var(--fw-semibold)' }}>
-                Iteration #{data.iteration}
+                Healing Pulse #{data.iteration}
               </div>
               <div className="orch-pulse-meta" style={{ justifyContent: 'flex-end' }}>
                 started {pkt(data.iteration_started, data.pkt_offset, true)}
@@ -1113,7 +1113,7 @@ export default function OrchestratorPulsePanel() {
           {/* aspect 1 — what is happening right now, and for how long */}
           <PulseCard
             className="orch-deck-phases"
-            title={`Iteration #${data.iteration} · phases`}
+            title={'Healing Pulse · phases'}
             /* Owner, 2026-08-17: "i want to see total time of iteration". This is
                wall-clock from the iteration banner to the last stage that ended,
                or to now while one is still running — NOT the sum of the bars,
@@ -1123,15 +1123,19 @@ export default function OrchestratorPulsePanel() {
                carries the budget and the attempt count, and goes amber past it —
                circling should be visible on the panel, not something he works out
                from a total with nothing to compare it to. */
+            /* One pulse, one duration. The old header read "4h29m of 40m · attempt 41
+               · OVER" — every part of that was an artefact of the continuous loop's
+               hold, which repeated a single iteration 41 times and summed its clock.
+               A cron-fired pulse runs once, so its own elapsed time is the whole
+               story and there is no attempt to count. */
             hint={(() => {
-              const t = data.iteration_total, b = data.iteration_budget_s || 2400;
-              const a = data.iteration_attempts || 1;
+              const t = data.pulse_elapsed;
+              const b = data.iteration_budget_s || 2400;
               const over = t && t > b;
               return (
                 <span style={over ? { color: 'var(--warn, #fbbf24)' } : undefined}>
-                  {t ? fmtDur(t) : '—'} of {Math.round(b / 60)}m
-                  {a > 1 ? ` · attempt ${a}` : ''}
-                  {over ? ' · OVER' : ''}
+                  {t ? fmtDur(t) : 'idle'}{t ? ` of ${Math.round(b / 60)}m` : ''}
+                  {over ? ' · over budget' : ''}
                 </span>
               );
             })()}

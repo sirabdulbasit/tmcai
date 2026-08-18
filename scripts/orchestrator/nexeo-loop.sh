@@ -1351,6 +1351,28 @@ told to avoid."
   fi
   CHATROOTS="$(cat "$CHATROOTS_FILE" 2>/dev/null || echo "Not yet analysed — no chat root causes available this iteration.")"
 
+  # THE OWNER'S OPEN SYMPTOM LIST, and on a conversational run it IS the objective.
+  #
+  # Owner, 2026-08-18: "Conversational Cron (10m) should clear Chat Log gaps like
+  # whatsapp-lid-activity-rejected x4, capability-fabrication x3 ..."
+  #
+  # These are the symptoms he reported that no SHIPPED fix has yet named. Two of the six
+  # are already struck (capability-fabrication via `fabricated-status`, stale-contact-data
+  # via `protection-with-two-implementations`), which is what makes the rest a finite
+  # worklist rather than a mood. Read from pulse.py --open-symptoms so the builder is
+  # aimed at exactly the list the owner is looking at — one implementation, two readers.
+  OPEN_SYMPTOMS="$(timeout 90 python3 "$ROOT/scripts/orchestrator/pulse.py" --open-symptoms 2>/dev/null \
+    | awk -F'\t' '{printf "  - `%s` — reported in %s of his conversations, still not shipped\n", $1, $2}')"
+  [ -n "$OPEN_SYMPTOMS" ] || OPEN_SYMPTOMS="  (none open — every reported symptom has a shipped fix naming it)"
+  if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+    say "CHAT   iter=$ITER conversational run — clearing the owner's open symptom list"
+    OPEN_SYMPTOMS="THIS RUN'S OBJECTIVE IS TO CLEAR ONE OF THESE. Pick the top one you can
+actually close, fix it at the root, and NAME ITS TAG VERBATIM in your commit — the tag is
+what strikes it off his deck. Do not work anything else this run.
+
+$OPEN_SYMPTOMS"
+  fi
+
   # ── THE CAPABILITY GAPS, for the builder to aim at ────────────────────────
   # Owner, 2026-08-17: "build will read capability evaluation and see how we can
   # improve further, where is the gap." Rendered from the card the evaluation stage
@@ -1429,7 +1451,7 @@ PYGAP
     RESCOPE "$RESCOPE_NOTE" GUARD "$GUARD_TXT" CAP "$CAP_NOTE" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" DIRECTIVES "$DIRECTIVES_DOC" \
     BASELINE "$BASELINE_OVERALL" CAPGAPS "$CAPGAPS" TARGETCAP "$TARGET_CAP" \
-    HOLD "$HOLD_NOTE" CHATROOTS "$CHATROOTS")"
+    HOLD "$HOLD_NOTE" CHATROOTS "$CHATROOTS" OPENSYMPTOMS "$OPEN_SYMPTOMS")"
   # Save what the Builder was actually told. I could not verify that iteration 20's
   # remediation note reached the prompt, because the rendered text only ever lived
   # in this variable — so "the rail fired" and "the Builder was instructed" were

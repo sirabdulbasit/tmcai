@@ -50,6 +50,14 @@ instead — do not invent a tag to look productive.
 
 @@HOLD@@
 
+## The owner's OPEN symptoms — the ones still on his deck
+
+Each of these is a defect he reported in his own conversations, for which **no shipped fix
+has yet named the tag**. They are struck off his deck the moment a shipped commit names
+them, so this list is the scoreboard he is actually watching.
+
+@@OPENSYMPTOMS@@
+
 ## What has actually failed for the owner — Codex's root-cause analysis
 
 This is Codex's ranked reading of the 18 real conversations in

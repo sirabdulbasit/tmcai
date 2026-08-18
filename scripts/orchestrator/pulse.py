@@ -1331,6 +1331,12 @@ def collect():
         # per attempt made each turn readable but hid the cost of the whole iteration,
         # which is the number that says what the hold is actually spending.
         "iteration_attempts": attempts_this_iteration(cur_it),
+        "pulse_elapsed": (
+            None if not started or not loop_alive else
+            ((now if any(isinstance(p, dict) and p.get("start") and not p.get("end")
+                         for p in phases.values())
+              else max([p["end"] for p in phases.values()
+                        if isinstance(p, dict) and p.get("end")] or [now])) - started)),
         # Owner, 2026-08-17: "the ideal time of an iteration should be 30min-40min to
         # complete end to end with improvement … no iteration should stuck in any loop
         # or move around the circle." The budget is shown so circling is VISIBLE rather
@@ -1825,6 +1831,19 @@ def main():
         # can never disagree about the stage, the timers or the scores.
         json.dump(collect(), sys.stdout, allow_nan=False)
         sys.stdout.write("\n")
+        return 0
+    if "--open-symptoms" in args:
+        # The owner's still-unfixed chat-log symptoms, worst first.
+        #
+        # Owner, 2026-08-18: "Conversational Cron (10m) should clear Chat Log gaps."
+        # That makes the conversational run's job finite — work the list until it is
+        # empty — and this is the SAME observed_gaps() the deck renders, exposed rather
+        # than reimplemented. A second copy of the open/shipped/alias logic would be an
+        # 11th `protection-with-two-implementations`, and the two would disagree the
+        # first time either changed.
+        for c in (observed_gaps().get("chat") or []):
+            if c.get("state") != "shipped":
+                print(f"{c['tag']}\t{c['times']}\t{c.get('state')}")
         return 0
     if "--plain" in args:
         plain()

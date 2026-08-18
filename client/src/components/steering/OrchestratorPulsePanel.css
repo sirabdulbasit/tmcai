@@ -105,7 +105,11 @@
      column in the order he set earlier — phases, benchmark, then the trend. */
   .orch-deck {
     grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-    grid-template-rows: none;
+    /* Owner, 2026-08-18: "design is not fully fit to page (bottom is blank)".
+       Content-sized rows ended the grid wherever the cards ended. The last row takes
+       the remaining height so the deck reaches the bottom of the page and Observed
+       Gaps has somewhere to grow into instead of scrolling inside a short box. */
+    grid-template-rows: auto auto minmax(0, 1fr);
     grid-auto-rows: minmax(0, auto);
     grid-template-areas:
       "stage  caps"
@@ -134,7 +138,11 @@
      scales to its box rather than being cut off. */
   .orch-pulse { overflow: hidden; }
   .orch-deck  { flex: 1; min-height: 0; }
-  .orch-deck  { grid-template-rows: minmax(0, auto) minmax(0, auto) minmax(0, 1fr) minmax(0, 1fr); }
+  /* THREE tracks for three areas: stage / phases / brain. This declared four, left
+     over from the benchmark and news-feed cards that were removed — and a track count
+     that disagrees with grid-template-areas is what drew one card over another
+     earlier today. */
+  .orch-deck  { grid-template-rows: minmax(0, auto) minmax(0, auto) minmax(0, 1fr); }
 }
 .orch-card {
   min-height: 0; min-width: 0;
@@ -679,7 +687,12 @@
    Owner allowed a scrollbar here specifically, so this card may scroll where the rest
    of the deck may not. */
 .orch-observed { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3);
-  min-height: 0; overflow-y: auto; }
+  min-height: 0; align-content: start;
+  /* Scroll only if the lists genuinely outgrow a full-height card. Before the brain row
+     took 1fr this scrolled at six items, which read as "there is more" when there was
+     simply no room. */
+  overflow-y: auto; }
+.orch-deck-brain .orch-card-body { flex: 1; min-height: 0; }
 .orch-observed-h { font-size: var(--fs-xs); color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
 .orch-observed-list { margin: 0; padding-left: 14px; }
