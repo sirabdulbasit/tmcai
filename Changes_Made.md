@@ -3559,3 +3559,48 @@ Reverting puts back the phrases the reply was quoting.
 **No C-3 campaign progress.** Increment 1 is still the first undone item; three consecutive turns have gone to Accurate Communication regressions instead.
 
 **CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the block no longer supplies the machine vocabulary the reply was copying, and forbids the first-person form. **FALSIFIER:** a reply still says "my dispatch log"/"my records show", or B12 C1/C4 do not move — which would mean the vocabulary came from elsewhere and I diagnosed the wrong source.
+
+## 65. DEF-214 — a local clock wearing a UTC label (2026-08-18, BUILDER: Claude — orchestrator iteration 8, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Owner-derived, not a benchmark case. `time-of-day-drift`, **5 occurrences** (DEF-026 ×4, DEF-148, both OPEN), recorded in Codex's analysis as *"Not diagnosed from code this turn."*
+
+> Brain: "My current time is 12:07 PM in your timezone (Asia/Karachi)."
+> Owner: "Are u traveling back to time?"      (his local time was 17:07)
+
+### Root cause — the arithmetic is the diagnosis
+
+**12:07 and 17:07 differ by exactly five hours, which is Asia/Karachi's offset from UTC.** He was handed a UTC clock wearing a PKT label. Two defects, in two prompt builders:
+
+1. `brainComposer.ts:1570` said `` `Today is ${todayDate} (UTC)` `` — but `getUserLocalDate` has returned the user's **LOCAL** date since Sprint 4A. The value was right and the label was a lie, so the anchor the model reasons from was declared to be in a zone it was not in; a model told "this is UTC" converts it when asked the time.
+2. **No HOUR was supplied at all**, so "what time is it" could only be answered by inventing one and labelling it with his zone — `fabricated-status` wearing a clock face.
+3. `brainComposer.ts:6215`, the `decideAction` prompt, carried the identical line — `protection-with-two-implementations` on the date label itself.
+
+### Files changed
+
+- `server/src/services/userTimezoneService.ts` — `OwnerClock {timezone, date, time, offset}`, `formatLocalTime`, `ownerClockFor`, `getOwnerClock`, and `renderOwnerClockLine` as the **single** builder. All four parts are returned together because they are one fact, and splitting them is how the label came adrift from the value.
+- `server/src/services/knowledge/brainComposer.ts` — both prompts now state the local date, the local HH:MM, the zone NAME and the offset; forbid stating a clock not given; forbid attaching his timezone to an inferred hour. A failed resolution yields `null` and the prompt **says** the clock is unknown rather than falling back to a mislabelled date.
+- `server/tests/def214OwnerClock.test.ts` — 13 tests, including the reported instant as a fixture.
+
+### Rollback considered and rejected
+
+Reverting restores an anchor labelled with a zone it is not in, on a class with five owner occurrences.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 209 files — 208 passed, 1 skipped; 2,645 tests — **2,616 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (the UTC mislabel confirmed gone from the emitted code with comments stripped; two reachable renderer sites) · `git diff --check` clean.
+
+**Nine mutants applied and RUN, all nine die.** Mutation caught two real holes, both mine and both the shape DEF-213 hit: `toContain('17:07')` passed with the clock removed, because the rule's own lesson quotes "12:07 when it was 17:07" — the guard matched its own prose; and `/say so plainly rather/` already existed elsewhere in the file, making the fallback assertion vacuous. A third: presence is not reachability — `${false ? renderOwnerClockLine(...)}` keeps the call text, so both sites are now pinned as gated.
+
+### Known issues deliberately not fixed
+
+**DEF-213 partly worked and is honestly scored:** B12 C1 85→90 and C4 80→85, but the reply still says "my internal dispatch record" — a synonym my falsifier did not name. That is the failure mode of a prompt-side fix.
+
+**I did not chase the fix queue.** All five top entries are C4 at 85 register complaints, and the standing instruction is not to chase C4 to 95.
+
+**No C-3 campaign progress** — four consecutive turns on Accurate Communication.
+
+**This is prompt-side.** It removes a false premise and supplies a true fact; nothing in code forbids the model from inventing an hour anyway. **No benchmark case asks the time**, so the score may not move — the evidence here is the owner's chat and the arithmetic, not the harness.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the anchor is no longer labelled with a zone it is not in, and the hour is supplied as a fact instead of inferred. **FALSIFIER:** Brain states a clock time differing from his real local time, or labels an hour with his timezone when `getOwnerClock` returned null.

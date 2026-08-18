@@ -3015,3 +3015,125 @@ the live composer path, no gate in front of it.
 voice compelled. **Proved wrong by:** a reply still saying "my dispatch log" or "my records show";
 or B12 C1/C4 not moving, which would mean the vocabulary came from somewhere other than this block
 and I diagnosed the wrong source.
+
+## Iteration 8 — a local clock wearing a UTC label (DEF-214)
+
+**Mode: structural · CONTINUATION 1/3 on Accurate Communication · guard CLEAN · deployed=no**
+**SYMPTOM TAG CLOSED: `time-of-day-drift`**
+
+### 0. What was wrong with the last attempt, and what actually landed
+
+DEF-213 was NOT a no-op, and I want the numbers on the record rather than a verdict:
+
+| B12 | before | after |
+|---|---|---|
+| C1 | 85 | **90** |
+| C4 | 80 | **85** |
+
+The judge's objection also changed character — C1 now reads *"truthfully states … that the
+internal dispatch record doesn't show why"*, where before it was *"implies a dispatch log exists
+and was checked"*. **But the reply still narrates its bookkeeping:** *"my internal dispatch record
+doesn't show why it was repeated."* My literal falsifier named `"my dispatch log"` and `"my records
+show"`; the model reached for a synonym I had not listed. **That is the honest failure mode of a
+prompt-side fix, and it is exactly the residual I predicted in that entry.** Removing a licensed
+cause reduced the objection; it did not compel the voice.
+
+**And B04 finished landing.** `iter-07-post-build.json`:
+
+> "OK, I've set the priority to high. When is it due?"
+
+C1/C2/C5/C7/C8 = 100, C6 95. That is DEF-209 and DEF-212 arriving on the owner's surface.
+
+### 1. Why I did NOT take the fix queue this turn
+
+Every one of the top five entries is **C4 at 85**, across five different cases, with the same
+complaint shape — *"slightly generic"*, *"feels slightly formal"*, *"'Sir' feels a little too
+formal"*, *"the bulleted list … feels slightly"*. C4 averages 87.1; every other criterion is
+95.8-98.8. The brief's standing instruction is **"C4 @ 87.1 — do not chase this to 95"**, and that
+it "produced twenty iterations on the smallest remaining capability."
+
+So the queue offers me nothing I am permitted to chase, and the guard is clean. I went to the
+owner-derived list instead — still Accurate Communication, as the continuation requires.
+
+### 2. The entry I targeted, quoted from the owner
+
+`time-of-day-drift`, **5 occurrences**, DEF-026 ×4 and DEF-148 both OPEN, and Codex's own analysis
+says **"Not diagnosed from code this turn."**
+
+> Brain: "My current time is 12:07 PM in your timezone (Asia/Karachi)."
+> Owner: "Are u traveling back to time?"      (his local time was 17:07)
+
+**The arithmetic is the diagnosis: 12:07 and 17:07 differ by exactly five hours, which is
+Asia/Karachi's offset from UTC.** He was handed a UTC clock wearing a PKT label.
+
+**Circling or progressing: PROGRESSING** — the tag is in chart §3, but no prior DEF diagnosed the
+mechanism; both rows are OPEN and Codex records the class as undiagnosed. This is the first
+root-cause reading of it.
+
+### 3. What changed, and why that is the mechanism
+
+Two defects, in **two** prompt builders:
+
+- **`brainComposer.ts:1570`** said `` `Today is ${todayDate} (UTC)` `` — but `getUserLocalDate` has
+  returned the user's **LOCAL** date since Sprint 4A. The value was right and the label was a lie,
+  so the anchor the model reasons from was declared to be in a zone it was not in. A model told
+  "this is UTC" converts it when asked the time.
+- **No HOUR was supplied at all.** "What time is it" could only be answered by inventing one and
+  then labelling it with his zone — `fabricated-status` wearing a clock face.
+- **`brainComposer.ts:6215`**, the `decideAction` prompt, carried the identical line.
+  `protection-with-two-implementations` on the date label itself.
+
+`userTimezoneService` now resolves the clock **once** and names every part — `OwnerClock
+{timezone, date, time, offset}` — with `renderOwnerClockLine` as the single builder, because a
+value and a label that live apart are precisely what came adrift here. Both prompts use it. A
+failed resolution yields `null` and the prompt **says** the clock is unknown rather than falling
+back to a mislabelled date.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  208 passed | 1 skipped (209)
+                    Tests  2616 passed | 7 expected fail | 21 skipped | 1 todo (2645)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the UTC mislabel confirmed GONE from the emitted
+                                   code with comments stripped, 2 reachable renderer sites,
+                                   getOwnerClock and formatLocalTime confirmed present)
+git diff --check    clean
+```
+
+**13 tests. 9 mutants applied and RUN, all 9 die:** clock taken in UTC · date taken in UTC · the
+line drops the time · drops the zone name · stops forbidding an invented clock · either prompt site
+restored to the UTC label · either site dead-coded · unresolved clock falls back silently.
+
+**MUTATION CAUGHT TWO REAL HOLES, both mine, both the same shape as DEF-213's:**
+
+1. `toContain('17:07')` passed with the clock **removed entirely** — the rule's own lesson quotes
+   *"12:07 when it was 17:07"*, so the guard was matching its own prose. Now pinned to the exact
+   opening sentence.
+2. `/say so plainly rather/` already existed elsewhere in the file (line ~5099, unrelated), so the
+   unresolved-clock assertion was **vacuous**. Now pinned to a phrase only my fallback has.
+
+A third: **presence is not reachability.** `${false ? renderOwnerClockLine(...)}` keeps the call
+text and dead-codes the site, so both sites are now asserted as GATED on the clock.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign progress**, plainly. Four consecutive turns on Accurate Communication. The
+  campaign's increment 1 is untouched and I am not pretending otherwise.
+- **I did not chase C4**, on instruction, and said why in §1.
+- **This is prompt-side.** It removes a false premise and supplies a true fact, but nothing in code
+  forbids the model from inventing an hour anyway. By my own DEF-206 rule that is weaker than a
+  guarantee, and I would rather label it than oversell it.
+- **No benchmark case asks the time**, so the score may not move at all. The evidence for this fix
+  is the owner's chat and the arithmetic, not the harness.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** the block is on
+the live composer path with no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** Brain stating a
+clock time that differs from his real local time; or labelling an hour with his timezone on a turn
+where `getOwnerClock` returned null; or a fifth occurrence of the tag after this ships, which would
+mean the drift enters somewhere other than these two prompt lines.
