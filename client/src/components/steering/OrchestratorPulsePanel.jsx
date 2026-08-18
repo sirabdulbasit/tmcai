@@ -1213,6 +1213,52 @@ export default function OrchestratorPulsePanel() {
               had shipped, so it was a list of work he had not received. The ship state
               it carried now belongs on the chat-log items, where it answers "can I
               still hit this". */}
+          {/* PROGRESS OF BOTH KINDS — owner, 2026-08-18. Measured differently on purpose:
+              conversational exists to clear the symptoms he reported, nightly to lift the
+              nine capabilities. Showing a capability delta for a conversational pulse
+              would borrow a nightly run's work and label it as its own. "0 pulses · 4
+              open" is the honest reading when the machinery exists and has not yet run. */}
+          {data.pulse_progress && (
+            <div className="orch-progress">
+              <div className="orch-progress-cell">
+                <div className="orch-observed-h">Conversational healing</div>
+                <div className="orch-progress-big">
+                  {data.pulse_progress.conversational.symptoms_cleared}
+                  <span className="orch-progress-of">
+                    /{data.pulse_progress.conversational.symptoms_total} symptoms cleared
+                  </span>
+                </div>
+                <div className="orch-section-note">
+                  {data.pulse_progress.conversational.pulses} pulse
+                  {data.pulse_progress.conversational.pulses === 1 ? '' : 's'} run ·{' '}
+                  {data.pulse_progress.conversational.symptoms_open} still open
+                </div>
+              </div>
+              <div className="orch-progress-cell">
+                <div className="orch-observed-h">Nightly evaluation</div>
+                <div className="orch-progress-big">
+                  {data.pulse_progress.nightly.overall_last != null
+                    ? data.pulse_progress.nightly.overall_last
+                    : '—'}
+                  {data.pulse_progress.nightly.overall_delta != null
+                    && data.pulse_progress.nightly.overall_delta !== 0 && (
+                    <span className="orch-progress-of" style={{
+                      color: data.pulse_progress.nightly.overall_delta > 0
+                        ? 'var(--ok, #4ade80)' : 'var(--danger, #f87171)' }}>
+                      {data.pulse_progress.nightly.overall_delta > 0 ? ' ▲ +' : ' ▼ '}
+                      {Math.abs(data.pulse_progress.nightly.overall_delta)}
+                    </span>
+                  )}
+                  <span className="orch-progress-of"> BRAIN overall</span>
+                </div>
+                <div className="orch-section-note">
+                  {data.pulse_progress.nightly.pulses} pulse
+                  {data.pulse_progress.nightly.pulses === 1 ? '' : 's'} run
+                  {data.pulse_progress.nightly.pulses === 0 ? ' — no capability card yet' : ''}
+                </div>
+              </div>
+            </div>
+          )}
           {data.observed && (
             <PulseCard className="orch-deck-brain" title="Observed gaps">
               <div className="orch-observed">

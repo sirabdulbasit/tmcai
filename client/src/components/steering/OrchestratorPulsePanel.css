@@ -727,3 +727,13 @@
 .orch-table tr.is-flat td { opacity: 0.6; }
 .orch-table td.cell-up   { color: var(--ok, #4ade80); font-weight: var(--fw-semibold); }
 .orch-table td.cell-down { color: var(--danger, #f87171); font-weight: var(--fw-semibold); }
+
+/* Progress of the two pulse kinds, side by side and measured differently. */
+.orch-progress { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3);
+  margin-bottom: var(--s-3); }
+.orch-progress-cell { padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 10px; background: rgba(255,255,255,0.02); }
+.orch-progress-big { font-size: var(--fs-lg); font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums; margin: 2px 0 2px; }
+.orch-progress-of { font-size: var(--fs-xs); font-weight: var(--fw-regular);
+  color: var(--text-dim); }

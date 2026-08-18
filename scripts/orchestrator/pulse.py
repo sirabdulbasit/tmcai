@@ -1055,6 +1055,74 @@ def next_pulses(now_ts):
     return out
 
 
+
+def pulse_progress():
+    """Progress for EACH pulse kind, measured by what that kind is actually for.
+
+    Owner, 2026-08-18: "we will have 2 type of iterations — conversational and nightly —
+    and i want to see progress of both."
+
+    They are not measured the same way and pretending otherwise would flatter one of them:
+
+      CONVERSATIONAL exists to clear the symptoms he reported. Its progress is
+      symptoms struck off, out of the total the archive records. It produces no
+      capability card at all, so a capability delta for it would be borrowed from a
+      nightly run and read as its own work.
+
+      NIGHTLY exists to lift the nine capabilities. Its progress is BRAIN overall
+      movement across the cards it wrote.
+
+    `pulses` counts what has actually run, from the ledger — so "0 conversational pulses,
+    4 symptoms open" says plainly that the machinery has not yet done the job, rather
+    than letting an unchanged list imply it tried and failed.
+    """
+    ledger = os.path.join(STATE, "pulse-ledger.jsonl")
+    counts = {"conversational": 0, "evaluation": 0}
+    if os.path.exists(ledger):
+        try:
+            for line in open(ledger, errors="replace"):
+                if not line.strip():
+                    continue
+                try:
+                    k = json.loads(line).get("kind")
+                except Exception:
+                    continue
+                if k in counts:
+                    counts[k] += 1
+        except Exception:
+            pass
+
+    obs = observed_gaps()
+    chat = obs.get("chat") or []
+    shipped = sum(1 for c in chat if c.get("state") == "shipped")
+
+    overall_first = overall_last = None
+    try:
+        h = [r for r in json.load(open(os.path.join(STATE, "capability_scorecard.json")))
+             .get("history", []) if r.get("overall") is not None]
+        if h:
+            overall_first, overall_last = h[0]["overall"], h[-1]["overall"]
+    except Exception:
+        pass
+
+    return {
+        "conversational": {
+            "pulses": counts["conversational"],
+            "symptoms_total": len(chat),
+            "symptoms_cleared": shipped,
+            "symptoms_open": len(chat) - shipped,
+        },
+        "nightly": {
+            "pulses": counts["evaluation"],
+            "overall_first": overall_first,
+            "overall_last": overall_last,
+            "overall_delta": (round(overall_last - overall_first, 1)
+                              if overall_first is not None and overall_last is not None
+                              else None),
+        },
+    }
+
+
 # ── collect, then render ─────────────────────────────────────────────────────
 #
 # Owner, 2026-08-12: *"what if we build live dashboard in ?tab=health which shows
@@ -1473,6 +1541,7 @@ def collect():
         # than inferred from a total nobody is comparing against anything.
         "iteration_budget_s": 2400,
         "pulse_mode": pulse_mode(),
+        "pulse_progress": pulse_progress(),
         "stage_tokens": stage_tokens(cur_it),
         "iteration_elapsed_all": (first_attempt_start(cur_it) and
                                   now - first_attempt_start(cur_it)) or None,
