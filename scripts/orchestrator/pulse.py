@@ -565,7 +565,10 @@ def capability_trend():
         snap = h.get("snapshot")
         if snap:
             per_iter[h["iteration"]] = snap
-    iters = sorted(per_iter)
+    # Owner, 2026-08-18: "show last 10 iterations data in this graph". Thirteen
+    # columns already overflowed the card, and the older ones are the ones a decision
+    # can no longer affect.
+    iters = sorted(per_iter)[-10:]
     if len(iters) < 2:
         return [], [], []
     names = [c["name"] for c in d["capabilities"]]
@@ -678,6 +681,44 @@ def observed_gaps(top=6):
                 deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
             except Exception:
                 deployed_at = 0
+            # TWO VOCABULARIES, ONE CONCEPT. The archive says `capability-fabrication`;
+            # the recurrence table and every commit say `fabricated-status`. Same
+            # defect, different string — so the deck showed all six as open while the
+            # builder had shipped 16 fixes naming `fabricated-status`, 14 naming
+            # `protection-with-two-implementations` and 13 naming
+            # `guard-destroys-the-answer`. The chat log was never ignored; the match
+            # was.
+            #
+            # The alias map is not hand-written. Codex's analysis lists BOTH names
+            # inside the same root-cause item — "`stale-contact-data` lineage … related
+            # to `protection-with-two-implementations`" — so every tag mentioned in one
+            # item is treated as an alias of the others. Using the analyst's own output
+            # means the map updates itself when it re-analyses, rather than rotting in
+            # a constant here.
+            # ONE SEED PAIR, and only one, because it is the only equivalence the
+            # ARCHIVE itself evidences: the chats tagged `capability-fabrication` are
+            # the same events the recurrence table tracks as `fabricated-status`, and
+            # the archive lists `send-fabrication:email` inside those very chats. The
+            # builder has shipped 16 fixes naming `fabricated-status`.
+            # Everything else is left to the analyst. Inventing equivalences here would
+            # strike defects off the owner's list on my guess about what two words mean,
+            # which is exactly the kind of quiet false "fixed" this deck must not print.
+            aliases = {
+                "capability-fabrication": {"capability-fabrication", "fabricated-status",
+                                           "send-fabrication"},
+                "fabricated-status": {"fabricated-status", "capability-fabrication"},
+            }
+            try:
+                roots = open(os.path.join(STATE, "chat-root-causes.md"),
+                             errors="replace").read()
+                # Split on the numbered root causes, then group tags within each item.
+                for item in re.split(r"\n(?=\d+\.\s+\*\*)", roots):
+                    group = set(re.findall(r"`([a-z][a-z0-9:-]{6,})`", item))
+                    for t in group:
+                        aliases.setdefault(t, set()).update(group)
+                        aliases[t].add(t)
+            except Exception:
+                pass
             shipped_tags = set()
             built_tags = set()
             for chunk in log.split("\n"):
@@ -687,7 +728,9 @@ def observed_gaps(top=6):
                 if not ts.strip().isdigit():
                     continue
                 for t in counts:
-                    if t in msg:
+                    # The tag itself OR any alias the analyst grouped with it.
+                    names = aliases.get(t, {t}) | {t}
+                    if any(a in msg for a in names):
                         built_tags.add(t)
                         if deployed_at and int(ts) <= deployed_at:
                             shipped_tags.add(t)
@@ -809,6 +852,85 @@ def attempts_this_iteration(it):
 def first_attempt_start(it):
     ts = _iteration_banner_times(it)
     return ts[0] if ts else None
+
+
+
+# Which raw event stream belongs to which phase row. The scorer writes a .log rather
+# than a .jsonl, so both extensions are tried.
+_STAGE_STREAMS = {
+    "Capability Evaluation": ["iter-{n}-score.log", "iter-{n}-score-read.log"],
+    "Chat Analysis":         ["iter-{n}-chat.jsonl"],
+    "Build & Deploy":        ["iter-{n}-build.jsonl"],
+    "Review Capabilities":   ["iter-{n}-review.jsonl"],
+}
+
+
+def _usage_from(path):
+    """Tokens for one stage, from the LAST usage object in its stream.
+
+    Owner, 2026-08-18: "record input and output tokens of each stage and total tokens
+    of each iteration."
+
+    The LAST object, not a sum of all of them: each assistant message reports the
+    running total for the turn, so adding them counts the same prompt once per message
+    and inflates a 25k-output turn into millions. Verified against iter-20-build.jsonl,
+    where the final object reads input 49 / cache_read 18,828,571 / output 25,085.
+
+    cache_read is reported separately and deliberately kept separate — it is the cheap
+    part, and folding it into `input` would hide the fact that nearly all input on this
+    loop is cache hits rather than fresh prompt.
+    """
+    out = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    if not os.path.exists(path):
+        return None
+    # THE `result` EVENT, not the last usage object. Each assistant message reports its
+    # own usage, and the final message is often tiny — reading "the last one" gave
+    # input 2 / output 1 for a turn that actually cost 25,085 output tokens and $17.54.
+    # The result event is the turn's own total and carries total_cost_usd with it.
+    last, cost = None, None
+    try:
+        for line in reversed(open(path, errors="replace").read().splitlines()):
+            if '"type":"result"' in line:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                u = d.get("usage") or {}
+                if u:
+                    last = u
+                    cost = d.get("total_cost_usd")
+                    break
+    except Exception:
+        return None
+    if not last:
+        return None
+    def g(key):
+        v = last.get(key)
+        return int(v) if isinstance(v, (int, float)) else 0
+    out["input"] = g("input_tokens")
+    out["output"] = g("output_tokens")
+    out["cache_read"] = g("cache_read_input_tokens")
+    out["cache_write"] = g("cache_creation_input_tokens")
+    out["cost_usd"] = round(cost, 2) if isinstance(cost, (int, float)) else None
+    return out
+
+
+def stage_tokens(it):
+    """{phase: {input, output, cache_read, cache_write}} plus a `_total` row."""
+    n = f"{it:02d}"
+    rows, total = {}, {"input": 0, "output": 0, "cache_read": 0,
+                      "cache_write": 0, "cost_usd": 0.0}
+    for phase, names in _STAGE_STREAMS.items():
+        for nm in names:
+            u = _usage_from(os.path.join(LOGS, nm.format(n=n)))
+            if u:
+                rows[phase] = u
+                for k in total:
+                    v = u.get(k) or 0
+                    total[k] = round(total[k] + v, 2) if k == "cost_usd" else total[k] + v
+                break
+    rows["_total"] = total
+    return rows
 
 
 # ── collect, then render ─────────────────────────────────────────────────────
@@ -1214,6 +1336,7 @@ def collect():
         # or move around the circle." The budget is shown so circling is VISIBLE rather
         # than inferred from a total nobody is comparing against anything.
         "iteration_budget_s": 2400,
+        "stage_tokens": stage_tokens(cur_it),
         "iteration_elapsed_all": (first_attempt_start(cur_it) and
                                   now - first_attempt_start(cur_it)) or None,
         "iterations_built": built, "iteration_in_flight": in_flight,

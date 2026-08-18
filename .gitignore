@@ -106,3 +106,6 @@ server/dist.bak-*/
 
 # Editor settings are per-machine, not per-project.
 .vscode/
+
+# Harvested production conversations — real message bodies, never committed.
+server/docs/orchestrator/state/recent-chats.md

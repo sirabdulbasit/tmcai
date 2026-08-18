@@ -49,7 +49,10 @@ LOGS="$ORCH/logs"
 PROMPTS="$ROOT/scripts/orchestrator/prompts"
 SCHEMA="$ROOT/scripts/orchestrator/score-schema.json"
 GROK_BIN="${GROK_BIN:-/usr/local/bin/grok}"
-SESSION_FILE="$STATE/grok-session-id"
+CLAUDE_BIN="${CLAUDE_BIN:-/root/.local/bin/claude}"
+# opus, not the builder's fable — see the conflict note above.
+SCORE_MODEL="${NEXEO_SCORE_MODEL:-claude-opus-4-8}"
+SESSION_FILE="$STATE/scorer-session-id"
 SCORECARD="$STATE/capability_scorecard.json"
 
 ITER="${1:?usage: run-score.sh <iteration> [--dry-run]}"
@@ -153,7 +156,7 @@ if [ "$DRY" -eq 1 ]; then
   exit 0
 fi
 
-[ -x "$GROK_BIN" ] || { echo "run-score: grok not executable at $GROK_BIN" >&2; exit 3; }
+[ -x "$CLAUDE_BIN" ] || { echo "run-score: claude not executable at $CLAUDE_BIN" >&2; exit 3; }
 
 # Session continuity, same principle as the other two seats: the scorer should
 # remember what it scored three iterations ago. `--session-id` opens a named
@@ -184,30 +187,35 @@ fi
 # that session and formats the analysis into the schema. The scorer's judgement is
 # formed in phase 1; phase 2 is only transcription of its own findings.
 run_grok_read() {
-  ( cd "$ROOT" && "$GROK_BIN" -p "$1" \
+  # Phase 1 READS with tools and returns prose; phase 2 transcribes it into the schema.
+  # Structured output and agentic reading cannot happen in one call — a model given a
+  # schema emits JSON immediately and never opens a file.
+  ( cd "$ROOT" && "$CLAUDE_BIN" -p "$1" \
     "${@:2}" \
-    --cwd "$ROOT" \
-    --output-format plain \
+    --model "$SCORE_MODEL" \
+    --fallback-model claude-opus-4-8 \
+    --output-format text \
     --permission-mode dontAsk \
-    --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
-    --disallowed-tools 'Write,Edit,MultiEdit' \
+    --disallowed-tools 'Write,Edit,NotebookEdit' \
     --max-turns 80 2>&1 ) \
     | tee "$READ_LOG" \
     | sed -u 's/^/SCORE  │ /'
-  # grok's status, not tee's or sed's — a formatter exiting 0 must never launder a
+  # codex's status, not tee's or sed's — a formatter exiting 0 must never launder a
   # failed scoring pass into a success.
   return "${PIPESTATUS[0]}"
 }
 
 run_grok_format() {
-  ( cd "$ROOT" && "$GROK_BIN" -p "$FORMAT_PROMPT" \
+  # Phase 2: resume the thread that did the reading and transcribe ITS OWN findings
+  # into the schema. --output-schema takes a FILE, where grok took the schema inline.
+  ( cd "$ROOT" && "$CLAUDE_BIN" -p "$FORMAT_PROMPT" \
     --resume "$1" \
-    --cwd "$ROOT" \
+    --model "$SCORE_MODEL" \
+    --fallback-model claude-opus-4-8 \
     --json-schema "$(cat "$SCHEMA")" \
     --output-format json \
     --permission-mode dontAsk \
-    --deny 'Write' --deny 'Edit' --deny 'MultiEdit' \
-    --disallowed-tools 'Write,Edit,MultiEdit' \
+    --disallowed-tools 'Write,Edit,NotebookEdit' \
     --max-turns 4 2>&1 ) \
     | tee "$LOG" \
     | sed -u 's/^/SCORE  │ [json] /' >/dev/null
@@ -242,13 +250,7 @@ An unevidenced entry is rejected and the whole scoring pass is retried, so write
 the real citation."
 
 # Phase 1 — read.
-if [ -s "$SESSION_FILE" ]; then
-  run_grok_read "$READ_PROMPT" --resume "$(cat "$SESSION_FILE")"
-else
-  sid="$(cat /proc/sys/kernel/random/uuid)"
-  printf '%s' "$sid" > "$SESSION_FILE"
-  run_grok_read "$READ_PROMPT" --session-id "$sid"
-fi
+run_grok_read "$READ_PROMPT" "${session_args[@]}"
 rc=$?
 
 # A recorded session id that was never actually created makes every resume 404.
@@ -258,14 +260,14 @@ if [ "$rc" -ne 0 ] && grep -qiE "not found locally|404 Not Found|Failed to resto
   echo "run-score: recorded session does not exist — opening a NEW one and retrying once" >&2
   sid="$(cat /proc/sys/kernel/random/uuid)"
   printf '%s' "$sid" > "$SESSION_FILE"
-  run_grok_read "$READ_PROMPT" --session-id "$sid"
+  run_grok_read "$READ_PROMPT" --session-id "$sid" --session-id "$sid"
   rc=$?
 fi
 
 # The session id grok actually used, read back from its own output rather than
 # assumed — if it forked or renamed, resuming the wrong id would format a session
 # that never did the reading.
-ACTUAL_SID="$(grep -oE '"sessionId":"[0-9a-f-]{36}"' "$READ_LOG" | head -1 | grep -oE '[0-9a-f-]{36}' || true)"
+ACTUAL_SID="$(grep -oE '"session_?[Ii]d":"[0-9a-f-]{36}"' "$READ_LOG" | head -1 | grep -oE '[0-9a-f-]{36}' || true)"
 [ -z "$ACTUAL_SID" ] && ACTUAL_SID="$(cat "$SESSION_FILE")"
 printf '%s' "$ACTUAL_SID" > "$SESSION_FILE"
 

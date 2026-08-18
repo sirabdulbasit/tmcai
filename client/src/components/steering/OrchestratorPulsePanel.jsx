@@ -748,6 +748,51 @@ function PulseTable({ data }) {
   );
 }
 
+function StageTokens({ data }) {
+  // Owner, 2026-08-18: "record input and output tokens of each stage and total tokens
+  // of each iteration." cache-read is its own column rather than folded into input,
+  // because on this loop it is ~99% of all input — 18.8M against 49 fresh tokens on a
+  // single build — and hiding that would make the prompt look cheap when the real
+  // levers are output tokens and cache WRITES.
+  const t = data.stage_tokens;
+  if (!t) return null;
+  const k = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0);
+  const rows = Object.entries(t).filter(([n]) => n !== '_total');
+  if (!rows.length) return null;
+  const tot = t._total || {};
+  return (
+    <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
+      <thead>
+        <tr>
+          <th>Tokens this iteration</th>
+          <th style={{ textAlign: 'right' }}>in</th>
+          <th style={{ textAlign: 'right' }}>out</th>
+          <th style={{ textAlign: 'right' }}>cache rd</th>
+          <th style={{ textAlign: 'right' }}>cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([name, u]) => (
+          <tr key={name}>
+            <td>{name}</td>
+            <td className="num">{k(u.input)}</td>
+            <td className="num">{k(u.output)}</td>
+            <td className="num">{k(u.cache_read)}</td>
+            <td className="num">{u.cost_usd != null ? `$${u.cost_usd}` : '—'}</td>
+          </tr>
+        ))}
+        <tr>
+          <td><b>Total</b></td>
+          <td className="num"><b>{k(tot.input)}</b></td>
+          <td className="num"><b>{k(tot.output)}</b></td>
+          <td className="num"><b>{k(tot.cache_read)}</b></td>
+          <td className="num"><b>{tot.cost_usd ? `$${tot.cost_usd}` : '—'}</b></td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
 function StageTimings({ data }) {
   // Owner, 2026-08-17: "total time of iteration and also time of each stage."
   // Same columnar shape as the trend directly above it — iterations across the top —
@@ -802,14 +847,43 @@ function CapabilityTrend({ data }) {
         </tr>
       </thead>
       <tbody>
-        {data.trend.rows.map((r) => (
-          <tr key={r.name}>
-            <td>{r.name}</td>
-            {r.series.map((v, idx) => (
-              <td className="num" key={idx}>{v == null ? '—' : v}</td>
-            ))}
-          </tr>
-        ))}
+        {data.trend.rows.map((r) => {
+          // Owner, 2026-08-18: "show a sign or color which tells which capabilities are
+          // being improved." Two signals, because they answer different questions:
+          //   • the row delta says WHETHER this capability is moving at all — the thing
+          //     six of nine have never done;
+          //   • the cell highlight says WHEN it moved, so a single step at #10 does not
+          //     read as steady progress across the window.
+          // A flat row is left deliberately plain rather than marked "no change": nine
+          // rows of red would bury the two that are actually moving.
+          const real = r.series.filter((v) => v != null);
+          const delta = real.length > 1 ? real[real.length - 1] - real[0] : 0;
+          const cls = delta > 0 ? 'is-up' : delta < 0 ? 'is-down' : 'is-flat';
+          return (
+            <tr key={r.name} className={cls}>
+              <td>
+                {r.name}
+                {delta !== 0 && (
+                  <span className="orch-cap-delta">
+                    {delta > 0 ? `▲ +${delta.toFixed(1).replace(/\.0$/, '')}`
+                               : `▼ ${delta.toFixed(1).replace(/\.0$/, '')}`}
+                  </span>
+                )}
+              </td>
+              {r.series.map((v, idx) => {
+                const prev = idx > 0 ? r.series[idx - 1] : null;
+                const moved = v != null && prev != null && v !== prev;
+                return (
+                  <td className={`num${moved ? (v > prev ? ' cell-up' : ' cell-down') : ''}`}
+                      key={idx}
+                      title={moved ? `${prev} → ${v}` : undefined}>
+                    {v == null ? '—' : v}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -1096,6 +1170,7 @@ export default function OrchestratorPulsePanel() {
                   <>
                     <CapabilityTrend data={data} />
                     <StageTimings data={data} />
+                    <StageTokens data={data} />
                   </>
                 )
                 : <CapabilityMap data={data} />}

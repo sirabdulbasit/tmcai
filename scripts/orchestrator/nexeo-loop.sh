@@ -127,7 +127,11 @@ say() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$ORCH/loop.log"; }
 die() { say "FATAL: $*"; exit 1; }
 
 [ -x "$CLAUDE_BIN" ] || die "claude CLI not executable at $CLAUDE_BIN"
-[ -x "$CODEX_BIN" ]  || die "codex CLI not executable at $CODEX_BIN"
+# codex is no longer a REQUIREMENT: all three seats moved to Claude on 2026-08-18 when
+# grok returned 402 and codex hit its usage limit. Kept as a warning rather than a fatal
+# check so the loop still starts on a box without codex installed — and so that when
+# credit returns, restoring the independent seats is a config change, not a rescue.
+[ -x "$CODEX_BIN" ]  || say "note: codex CLI not present at $CODEX_BIN — no seat currently uses it"
 [ -d "$PROMPTS" ]    || die "prompt directory missing: $PROMPTS"
 
 # ── forbidden paths (AGENTS.md / CLAUDE.md "Never touch/commit") ────────────
@@ -400,6 +404,7 @@ run_claude() {
     --model "$BUILD_MODEL" \
     --output-format stream-json --verbose \
     --dangerously-skip-permissions \
+    --max-turns "${NEXEO_BUILD_MAX_TURNS:-40}" \
     --add-dir "$ROOT" 2>&1 \
     | tee "$raw" \
     | python3 "$FORMATTER" --prefix \
@@ -456,12 +461,26 @@ run_chat_analyst() {
   local n; n="$(printf '%02d' "$iter")"
   local last="$LOGS/iter-$n-chat-last.txt"
   local raw="$LOGS/iter-$n-chat.jsonl"
-  # NO resume. This is a different question from the diff review, and sharing a thread
-  # is how the reviewer's context leaked into it.
-  "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox \
-    --skip-git-repo-check -C "$ROOT" -o "$last" "$prompt" > "$raw" 2>&1
+  # CLAUDE, not codex. Scoring and Review moved to Claude on 2026-08-18 when both other
+  # vendors ran dry, and this seat was left pointed at codex — so every Chat Analysis
+  # since has exited 1 ("You've hit your usage limit"), the builder silently fell back to
+  # the previous ranking, and the stage the owner cares most about has been dead while
+  # reporting itself as a completed phase.
+  #
+  # NO resume, deliberately: this is a different question from the diff review, and
+  # sharing a thread is how the reviewer's context leaked into it once already.
+  # Write tools denied — the analyst establishes what is wrong, it does not edit.
+  "$CLAUDE_BIN" -p "$prompt" \
+    --model "${NEXEO_CHAT_MODEL:-claude-opus-4-8}" \
+    --fallback-model claude-opus-4-8 \
+    --output-format text \
+    --permission-mode dontAsk \
+    --disallowed-tools 'Write,Edit,NotebookEdit' \
+    --add-dir "$ROOT" \
+    --max-turns 40 > "$last" 2>&1
   local rc=$?
-  say "CHAT   iter=$iter codex exit=$rc ($(basename "$last"))"
+  cp "$last" "$raw" 2>/dev/null || true
+  say "CHAT   iter=$iter claude exit=$rc ($(basename "$last"))"
   return $rc
 }
 
@@ -478,20 +497,20 @@ run_codex() {
 
   # Built once, run once. The three branches used to duplicate the invocation,
   # which is how a flag gets fixed on two paths and forgotten on the third.
+  local REVIEW_MODEL="${NEXEO_REVIEW_MODEL:-claude-opus-4-8}"
+  local -a common=(--model "$REVIEW_MODEL" --fallback-model claude-opus-4-8
+                   --output-format stream-json --verbose
+                   --permission-mode dontAsk
+                   --disallowed-tools 'Write,Edit,NotebookEdit'
+                   --max-turns 60)
   if [ -z "$stored" ]; then
-    say "REVIEW iter=$iter codex opening a new thread"
-    cmd=("$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox
-         --skip-git-repo-check -C "$ROOT" -o "$last" "$prompt")
-  elif [ "$stored" = "--last" ]; then
-    say "REVIEW iter=$iter codex resuming --last (thread id was never captured)"
-    cmd=("$CODEX_BIN" exec resume --last --json
-         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
-         -o "$last" "$prompt")
+    stored="$(cat /proc/sys/kernel/random/uuid)"
+    printf '%s' "$stored" > "$CODEX_SESSION_FILE"
+    say "REVIEW iter=$iter claude opening a new session $stored on $REVIEW_MODEL"
+    cmd=("$CLAUDE_BIN" -p "$prompt" --session-id "$stored" "${common[@]}")
   else
-    say "REVIEW iter=$iter codex resuming thread $stored"
-    cmd=("$CODEX_BIN" exec resume "$stored" --json
-         --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check
-         -o "$last" "$prompt")
+    say "REVIEW iter=$iter claude resuming session $stored on $REVIEW_MODEL"
+    cmd=("$CLAUDE_BIN" -p "$prompt" --resume "$stored" "${common[@]}")
   fi
 
   # Owner, 2026-08-11: *"i want to see both's activities in-session"*. The
@@ -503,7 +522,7 @@ run_codex() {
     | python3 "$FORMATTER" --prefix \
     | tee -a "$log" \
     | sed -u 's/^/REVIEW │ /'
-  # codex's status, NOT tee's or the formatter's.
+  # the reviewer's status, NOT tee's or the formatter's.
   rc=${PIPESTATUS[0]}
 
   # Capture the thread id from the first run so later iterations resume THIS
@@ -1093,12 +1112,92 @@ with evidence — 'I disagree' does not clear a release blocker."
   # file, and this reads the top entry. Falls back to the widest gap when there is no
   # analysis, so the loop can never be left with no aim.
   ATTEMPTS="$(grep -c "──────── iteration $ITER ────────" "$ORCH/loop.log" 2>/dev/null || echo 1)"
-  TARGET_CAP="$(python3 - "$STATE/capability_scorecard.json" "$STATE/chat-root-causes.md" "$ATTEMPTS" <<'PYTGT'
-import json, re, sys
+  TARGET_CAP="$(python3 - "$STATE/capability_scorecard.json" "$STATE/chat-root-causes.md" "$ATTEMPTS" "${NEXEO_TARGET_CAPABILITY:-}" "$STATE/capability-priority" <<'PYTGT'
+import json, os, re, sys
 p = sys.argv[1]
+
+# OWNER PRIORITY WINS — owner, 2026-08-18: "there should be option where i can select
+# priority of capability that has to be improved through manual call or overnight run."
+#
+# Two ways in, checked before anything the loop would choose for itself:
+#   NEXEO_TARGET_CAPABILITY="Simple & Smart"   — one manual run
+#   state/capability-priority                  — persists across runs, and is the file a
+#                                                UI button would write, so the button can
+#                                                be added later without touching the loop
+#
+# VALIDATED against the nine, never trusted as typed. An unrecognised name FALLS THROUGH
+# to the loop's own choice and says so on stderr — silently accepting "Self Healing" for
+# "Self-Healing" would aim a whole overnight run at nothing while the deck showed a
+# target the scorer has never heard of.
+def _valid_names():
+    try:
+        return [c["name"] for c in json.load(open(p))["capabilities"]]
+    except Exception:
+        return []
+
+_names = _valid_names()
+for _src, _want in (("NEXEO_TARGET_CAPABILITY", sys.argv[4] if len(sys.argv) > 4 else ""),
+                    ("capability-priority file",
+                     (open(sys.argv[5]).read().strip()
+                      if len(sys.argv) > 5 and os.path.exists(sys.argv[5]) else ""))):
+    if not _want:
+        continue
+    _hit = next((n for n in _names if n.lower() == _want.strip().lower()), None)
+    if _hit:
+        print(_hit)
+        raise SystemExit
+    print(f"run-loop: {_src} names '{_want}', which is not one of "
+          f"{_names!r} — ignoring it and choosing by headroom", file=sys.stderr)
 try:
     roots = open(sys.argv[2], encoding="utf-8", errors="replace").read()
     caps = re.findall(r"\*\*Capability:\*\*\s*\d+\.\s*([A-Za-z &-]+)", roots)
+    # TWO MODES — owner, 2026-08-18.
+    #
+    #   CONVERSATIONAL (NEXEO_TARGET_SOURCE=chat, the 10-minute watcher): "fix only those
+    #   capabilities which observed through conversation." The target is whatever the
+    #   analysis of the NEW turns put first. Headroom is irrelevant here: if he just hit
+    #   a fabrication, the fix is fabrication, not whichever capability happens to be
+    #   furthest from its benchmark.
+    #
+    #   EVALUATION (default, the nightly run): "run entire brain evaluation and analyze
+    #   the gaps and fix it." Rotates by headroom so all nine get worked over time
+    #   instead of ten iterations landing on Accurate Communication.
+    if os.environ.get("NEXEO_TARGET_SOURCE") == "chat" and caps:
+        print(caps[0].strip())
+        raise SystemExit
+
+    # ROTATE BY HEADROOM, DO NOT REPEAT THE WINNER.
+    #
+    # Owner, 2026-08-18: "iterations are only focusing on accurate communications
+    # where each iteration should see improvement in each capability."
+    #
+    # Measured cause: three of nine chat root causes map to Accurate Communication and
+    # NONE map to Simple & Smart, so taking the analysis's top item every turn spent ten
+    # iterations lifting 79->89 on a capability with 5 points of headroom while Simple &
+    # Smart sat at 33 with 59.
+    #
+    # So the capability is chosen by HEADROOM, cycling one place per iteration, and any
+    # capability within 8 points of its professional benchmark is skipped — polishing a
+    # nearly-finished capability is the trap that produced this. The chat log still
+    # decides WHAT to fix inside that capability; it no longer decides WHICH capability,
+    # because it cannot: it has no evidence at all for three of the nine.
+    try:
+        caps_card = json.load(open(p))["capabilities"]
+        ranked = [c["name"] for c in sorted(
+            caps_card, key=lambda c: (c.get("professional") or 0) - (c.get("nexeo") or 0),
+            reverse=True)
+            if (c.get("professional") or 0) - (c.get("nexeo") or 0) > 8]
+        if ranked:
+            try:
+                attempts = int(sys.argv[3])
+            except Exception:
+                attempts = 1
+            print(ranked[(max(attempts, 1) - 1) % len(ranked)])
+            raise SystemExit
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     if caps:
         # Rotate one place down the ranked list per 3 failed attempts. The list is
         # Codex's ranking of the owner's own reported failures, so every entry is
@@ -1189,8 +1288,34 @@ PYOV
   # new one, so re-analysing them every ~30 minutes would spend ~$20 a turn re-reading
   # static text — while the same owner asked for SHORTER iterations. The hash makes
   # this a real stage that costs nothing on the iterations where nothing changed.
+  # HARVEST THE OWNER'S LIVE CONVERSATIONS FIRST.
+  #
+  # Owner, 2026-08-18: "i don't want to paste the conversation, i want you to read it by
+  # yourself and analyze it and fix it — this is the capability of Self Healing."
+  #
+  # brain_chat_archive.md is hand-written and stopped at Chat 17 on 2026-08-04. The
+  # database held 424 turns the loop had never read, the newest 13 minutes old, including
+  # "Delete all actionable items" -> "no dispatcher for this action in a confirmed plan".
+  # Every target the loop chose for two weeks was computed from stale evidence.
+  #
+  # Every tenant and every user, deliberately unfiltered — see harvest-chats.js.
+  if [ -f "$ROOT/scripts/orchestrator/harvest-chats.js" ]; then
+    if ( cd "$ROOT/server" && node -r dotenv/config \
+           "$ROOT/scripts/orchestrator/harvest-chats.js" --days 14 ) >> "$ORCH/harvest.log" 2>&1; then
+      say "CHAT   iter=$ITER harvested the live conversations from the database"
+    else
+      # Never fatal. A failed harvest means the analyst reads the hand-written archive,
+      # which is worse but not nothing — and stopping the iteration over it would trade
+      # a stale input for no iteration at all.
+      say "CHAT   iter=$ITER harvest FAILED (see harvest.log) — falling back to the written archive"
+    fi
+  fi
+
   CHATROOTS_FILE="$STATE/chat-root-causes.md"
-  CHAT_SRC="$ROOT/server/docs/brain_chat_archive.md"
+  # The harvested transcript is the primary evidence; the curated archive is the fallback
+  # and still carries the symptom-tag vocabulary the deck matches against.
+  CHAT_SRC="$STATE/recent-chats.md"
+  [ -s "$CHAT_SRC" ] || CHAT_SRC="$ROOT/server/docs/brain_chat_archive.md"
   CHAT_HASH_FILE="$STATE/chat-archive-hash"
   if [ -f "$CHAT_SRC" ]; then
     CHAT_HASH_NOW="$(sha256sum "$CHAT_SRC" "$ROOT/server/docs/brain_evaluation_chart.md" 2>/dev/null | sha256sum | awk '{print $1}')"

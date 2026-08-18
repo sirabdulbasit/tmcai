@@ -703,3 +703,14 @@
 .orch-observed-list li.is-shipped { text-decoration: line-through; opacity: 0.45; }
 .orch-observed-list li.is-built   { opacity: 0.75; }
 .orch-tag-state { color: var(--warn, #fbbf24); font-size: 0.9em; }
+
+/* Capability movement: the row says whether it moves, the cell says when. */
+.orch-cap-delta { margin-left: 6px; font-size: 0.85em; font-weight: var(--fw-semibold); }
+.orch-table tr.is-up   .orch-cap-delta { color: var(--ok, #4ade80); }
+.orch-table tr.is-down .orch-cap-delta { color: var(--danger, #f87171); }
+.orch-table tr.is-up   td:first-child  { color: var(--text); }
+/* Flat rows recede rather than being flagged — nine warnings would bury the two
+   capabilities that are actually moving. */
+.orch-table tr.is-flat td { opacity: 0.6; }
+.orch-table td.cell-up   { color: var(--ok, #4ade80); font-weight: var(--fw-semibold); }
+.orch-table td.cell-down { color: var(--danger, #f87171); font-weight: var(--fw-semibold); }

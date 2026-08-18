@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#
+# watch-conversations.sh — every 10 minutes: has the owner said anything new to Brain,
+# and if so, is it worth spending a build on?
+#
+# Owner, 2026-08-18: "would it be possible if you set cron of 10mins and everytime it
+# will see if new conversation to brain has made then evaluate it and fix it?"
+#
+# THE SHAPE, and why it is not simply "run an iteration when a message arrives".
+# Detection is free — one indexed query. Analysis is one Codex call. A BUILD is $7 to
+# $21. At ~30 turns a day, triggering a build per conversation would spend more in a
+# week than the whole continuous loop did ($1,144 across 162 builds), most of it on
+# turns where Brain behaved correctly and there was nothing to fix.
+#
+# So the three stages are separated by cost:
+#   1. WATERMARK   (free)   new turns since we last looked? if not, exit in milliseconds
+#   2. HARVEST + ANALYSE (~1 Codex call) refresh the transcript, re-rank the root causes
+#   3. BUILD       ($7-21)  only when the analysis found something NEW, and only inside
+#                           a daily budget and a minimum interval
+#
+# Stage 3's guards are the whole point. Without them this is a machine that turns the
+# owner's typing into money.
+set -uo pipefail
+
+ROOT="/var/www/tmcai"
+ORCH="$ROOT/server/docs/orchestrator"
+STATE="$ORCH/state"
+LOG="$ORCH/watch.log"
+
+WATERMARK="$STATE/conversation-watermark"
+ROOTS_HASH="$STATE/chat-roots-hash"
+BUILD_STAMP="$STATE/last-auto-build"
+BUILD_COUNT="$STATE/auto-builds-today"
+
+# Guards, all overridable but all present by default.
+MIN_GAP_MIN="${NEXEO_WATCH_MIN_GAP_MIN:-60}"      # never two auto-builds inside an hour
+MAX_BUILDS_DAY="${NEXEO_WATCH_MAX_BUILDS:-4}"     # ~$30-80/day worst case, not unbounded
+
+say() { printf '%s  WATCH %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*" >> "$LOG"; }
+
+# ── 1. WATERMARK. Free, and exits immediately on the common case of nothing new. ─────
+NEWEST="$(cd "$ROOT/server" && timeout 60 node -r dotenv/config -e '
+const {PrismaClient}=require("/var/www/tmcai/server/node_modules/@prisma/client");
+const p=new PrismaClient();
+(async()=>{const m=await p.message.findFirst({orderBy:{createdAt:"desc"},select:{createdAt:true}});
+process.stdout.write(m?String(m.createdAt.getTime()):"0");await p.$disconnect();})()
+  .catch(()=>{process.stdout.write("ERR")});' 2>/dev/null)"
+
+case "$NEWEST" in
+  ''|ERR) say "could not read the newest message — leaving the watermark untouched and retrying next tick"; exit 0 ;;
+esac
+SEEN="$(cat "$WATERMARK" 2>/dev/null || echo 0)"
+if [ "$NEWEST" = "$SEEN" ]; then
+  exit 0                      # nothing new; silent, because this is the 10-minute norm
+fi
+say "new conversation activity (newest $NEWEST, last seen $SEEN)"
+
+# ── 2. HARVEST + ANALYSE. Cheap, and it is what the owner actually asked to happen ──
+#     on every new conversation: read it and work out what it says.
+if ! ( cd "$ROOT/server" && timeout 300 node -r dotenv/config \
+        "$ROOT/scripts/orchestrator/harvest-chats.js" --since "$SEEN" ) >> "$ORCH/harvest.log" 2>&1; then
+  say "harvest failed — see harvest.log; watermark NOT advanced so the next tick retries"
+  exit 0
+fi
+# The watermark advances only after a SUCCESSFUL harvest. Advancing it earlier would
+# silently skip the conversation that failed to harvest.
+printf '%s' "$NEWEST" > "$WATERMARK"
+
+PREV_HASH="$(cat "$ROOTS_HASH" 2>/dev/null || echo none)"
+if ! timeout 900 bash "$ROOT/scripts/orchestrator/run-chat-analysis.sh" >> "$LOG" 2>&1; then
+  say "analysis failed — the previous ranking stands"
+  exit 0
+fi
+NEW_HASH="$(sha256sum "$STATE/chat-root-causes.md" 2>/dev/null | awk '{print $1}')"
+printf '%s' "$NEW_HASH" > "$ROOTS_HASH"
+
+if [ "$NEW_HASH" = "$PREV_HASH" ]; then
+  say "conversation was new but the root causes did not change — analysed, no build"
+  exit 0
+fi
+say "root causes CHANGED — a build may be warranted"
+
+# ── 3. BUILD. Guarded, because this is the expensive stage. ──────────────────────────
+TODAY="$(date -u +%F)"
+STAMP_DAY="$(cut -d' ' -f1 "$BUILD_COUNT" 2>/dev/null || echo '')"
+COUNT="$(cut -d' ' -f2 "$BUILD_COUNT" 2>/dev/null || echo 0)"
+[ "$STAMP_DAY" = "$TODAY" ] || COUNT=0
+
+if [ "$COUNT" -ge "$MAX_BUILDS_DAY" ]; then
+  say "daily auto-build cap reached ($COUNT/$MAX_BUILDS_DAY) — analysis recorded, build deferred to the nightly run"
+  exit 0
+fi
+
+LAST="$(cat "$BUILD_STAMP" 2>/dev/null || echo 0)"
+NOW="$(date -u +%s)"
+if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
+  say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
+  exit 0
+fi
+
+# One builder in one tree, ever. Two would produce commits nobody can attribute.
+#
+# Matched on an argv ELEMENT via /proc, not with pgrep. `pgrep -af nexeo-loop.sh` matches
+# its own pattern and any shell that merely mentions the script, and the `grep -v grep`
+# dance around it is exactly the check that gave three false "it is running" readings in
+# one afternoon. A subshell whose parent is also a match is not a second builder.
+if python3 - <<'PYRUN'
+import os, sys
+hits = []
+for pid in os.listdir('/proc'):
+    if not pid.isdigit():
+        continue
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as fh:
+            argv = [a.decode('utf-8', 'replace') for a in fh.read().split(b'\0') if a]
+        ppid = [l.split()[1] for l in open(f'/proc/{pid}/status') if l.startswith('PPid')][0]
+    except Exception:
+        continue
+    if any(a.endswith('nexeo-loop.sh') for a in argv):
+        hits.append((pid, ppid))
+tops = [p for p, q in hits if q not in [x for x, _ in hits]]
+sys.exit(0 if tops else 1)
+PYRUN
+then
+  say "an iteration is already running — not starting a second"
+  exit 0
+fi
+
+printf '%s' "$NOW" > "$BUILD_STAMP"
+printf '%s %s' "$TODAY" "$((COUNT + 1))" > "$BUILD_COUNT"
+say "starting ONE bounded iteration (auto-build $((COUNT + 1))/$MAX_BUILDS_DAY today)"
+cd "$ROOT" || exit 1
+NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 NEXEO_TARGET_SOURCE=chat \
+  bash "$ROOT/scripts/orchestrator/nexeo-loop.sh" >> "$ORCH/loop.out" 2>&1
+say "iteration finished rc=$?"

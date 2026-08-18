@@ -6,8 +6,22 @@ log credits Codex 45 times against Grok's 3.
 
 # What you are analysing, and why it has never been read
 
-`server/docs/brain_chat_archive.md` holds 18 real conversations between the owner and
-Brain. **No agent in this loop has ever read it.** The scorer reads code, the builder
+**PRIMARY EVIDENCE: `server/docs/orchestrator/state/recent-chats.md`** — the owner's
+ACTUAL conversations with Brain, harvested straight from the production `messages` table
+minutes before you were called. Every tenant, every user, newest last, with Brain's
+verbatim replies and its response times. Read this FIRST and read it closely: it is the
+only place that shows what he received rather than what someone remembered to write down.
+
+He said it plainly on 2026-08-18: *"you should analyze deeply the conversation that can
+give you the exact picture where brain stands, because i am also analyzing brain through
+that conversation."* He is reading the same transcript you are. If you skim it, he will
+know, because he already knows what is in it.
+
+Note the party labels (`TENANT/uN`). A defect that appears for EVERY party is a Brain
+capability gap; one that appears for a single party may be that party's data or
+configuration. Say which — do not merge them silently.
+
+`server/docs/brain_chat_archive.md` is the older curated archive. **No agent in this loop has ever read it.** The scorer reads code, the builder
 reads the change log, and you have until now reviewed diffs with no Brain defect
 history at all. So the loop has been aimed at the CODE's opinion of Brain rather than
 at the owner's experience of it — and the two disagree. Grok's widest code-read gaps
@@ -77,3 +91,20 @@ because you could not find its row.
   `guard-destroys-the-answer` at 8 precisely because instances were patched and
   classes were not. Say plainly which of the two a regression is, and what a
   structural fix would have to change so it cannot recur.
+
+# NAME BOTH TAG VOCABULARIES IN EVERY ITEM — required
+
+This project has two names for every defect class and they do not match. The chat
+archive tags `capability-fabrication`; the recurrence table and every commit say
+`fabricated-status`. Same defect, different string.
+
+That cost real accuracy on 2026-08-18: the owner's deck showed all six of his reported
+symptoms as OPEN while the builder had shipped 16 fixes naming `fabricated-status`, 14
+naming `protection-with-two-implementations` and 13 naming `guard-destroys-the-answer`.
+He reasonably concluded the chat log was being ignored. It was not — the MATCH was.
+
+So in every root-cause item, name **both**: the archive tag from
+`brain_chat_archive.md` AND the recurrence tag from the evaluation chart §3, in
+backticks, in the same item. The deck treats tags co-mentioned in one item as aliases,
+so this is what lets a shipped fix strike the owner's symptom off his list. If a class
+genuinely has only one name, say that explicitly rather than leaving it ambiguous.
