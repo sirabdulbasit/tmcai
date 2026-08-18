@@ -168,16 +168,25 @@ describe('pulse.py --json contract (what the dashboard reads by name)', () => {
       .toContain(d.stage.basis);
     expect(typeof d.loop_alive).toBe('boolean');
 
-    // Five phases, in loop order, each in one of four states. The panel draws a
-    // different thing for each — done and abandoned in particular must never
-    // collapse into one another.
-    expect(d.phases.map((p: any) => p.name)).toEqual([
-      'Capability Evaluation',
-      'Chat Analysis',
-      'Build & Deploy',
-      'Check & Measure',
-      'Review Capabilities',
-    ]);
+    // Two pulse kinds, two phase lists (pulse.py, owner 2026-08-18): a
+    // conversational pulse reads the new turns and ships a fix — it does not
+    // score, measure or review, so those rows would read as a stalled pulse.
+    // The kind comes from state/pulse-mode, so the contract is pinned against
+    // the mode the collector itself reports rather than whichever mode this
+    // box is in when the suite runs. Phases stay in loop order, each in one of
+    // four states — done and abandoned must never collapse into one another.
+    expect(['conversational', 'evaluation']).toContain(d.pulse_mode);
+    expect(d.phases.map((p: any) => p.name)).toEqual(
+      d.pulse_mode === 'conversational'
+        ? ['Chat Analysis', 'Build & Deploy']
+        : [
+          'Capability Evaluation',
+          'Chat Analysis',
+          'Build & Deploy',
+          'Check & Measure',
+          'Review Capabilities',
+        ],
+    );
     for (const p of d.phases) {
       expect(['running', 'done', 'abandoned', 'pending']).toContain(p.state);
       expect(typeof p.seat).toBe('string');
