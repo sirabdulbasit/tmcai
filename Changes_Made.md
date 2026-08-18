@@ -3728,3 +3728,37 @@ Reverting returns the count to a script nobody runs.
 **Unsure whether Grok scores it.** The card gives Self-Pruning *basis: absent*; this makes one third of the increment list exist and reach the owner, hence a deliberately wide prediction band.
 
 **CAPABILITY: Self-Pruning · PREDICTED: +5 to +15 · MECHANISM:** the count that proves the problem now reaches the owner on a schedule instead of living in a script nobody runs. **FALSIFIER:** a morning burst passes with no message; a message names a sender or count production data does not support; or Grok leaves Self-Pruning at *basis: absent* after this ships.
+
+## 69. DEF-218 — the increment-1 job, tested where it actually risks something (2026-08-18, BUILDER: Claude — orchestrator iteration 10, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Not a reply defect — a gap in my own DEF-217, found by asking what a deploy of it actually depends on. DEF-217 shipped C-3 increment 1 with 12 tests, **all of them on `worstOffender` and the marker**. The job itself had none: nothing exercised tenant scoping, the master switch, the once-per-day guarantee, or a user whose read throws.
+
+**Self-Pruning moved 40 → 48 (+8)** on Grok's card this turn — the first capability movement across thirty iterations, arriving the turn after increment 1 existed as code. Two qualifications kept on the record: Grok scores by reading the codebase, so it plausibly scored the code rather than an owner-visible effect; and **increment 1's Done-when is still not met**, because it requires the count quoted back from production data and nothing is deployed. It does clear the campaign's abort condition (+5 required).
+
+### Root cause
+
+The wrong gap to leave open on this file specifically, and the reason is this session's record rather than general caution: **every review finding Codex has raised against a background job here landed in exactly four places** — tenant boundary (iteration-3 CRITICAL, iteration-4 CARRIED), gating (DEF-191), idempotency (iteration-3 HIGH 2, iteration-4 HIGH 3), and failure isolation. A new job with well-covered selection logic and uncovered orchestration is the finding waiting to happen.
+
+### Files changed
+
+- `server/tests/def218NoiseReportJob.test.ts` — 13 tests on the four properties a deploy depends on: every user and ledger read carries the tenant and the registry read is asserted to be the only one that does not; the flag at 0 reports nothing *and costs no query*; an unreadable flag fails open because the increment exists to be seen; the floor comes from the flag; the dedup key carries user AND date; a `duplicate` verdict from the queue counts as quiet, never reported; a user failure is counted and the next user still reports; a tenant failure does not stop the next; a failed registry read reports nothing rather than throwing.
+
+**No production code changed.**
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 213 files — 212 passed, 1 skipped; 2,690 tests — **2,661 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone · `git diff --check` clean.
+
+**Seven mutants applied and RUN, all seven die:** user read loses the tenant · ledger read loses the tenant · master switch ignored · dedup key drops the date · a queue duplicate counted as reported · a user failure aborts the pass · the floor ignores the flag.
+
+### Known issues deliberately not fixed
+
+**Increments 2 and 3 were not built, because they largely exist.** `decideDigest` is wired into `enqueueBrainPrompt` — the one chokepoint — gated by `selfpruning.digest_enabled`=0; the quarantine → grace → soft-close lifecycle and the withdrawal outbox are DEF-186..209, gated by `selfpruning.withdrawal_notice_enabled`=0. **The campaign's blocker is uniformly deployment and live observation, not missing code.**
+
+**A defect I suspected in DEF-217 does not exist.** I thought the noise report could itself be digested by increment 2's policy; `decideDigest` requires an exact item identity and the report has none, so it returns "no exact item identity — uncertain subjects are never digested". Reported rather than "fixed" — a phantom fix is worse than none.
+
+**The fix queue was not taken**, and the reason is on the record: its three worst entries are all B12, one is C4 register (forbidden to chase) and one asks for *"what steps it will take"* — the sentence `FABRICATED_PROCESS_RE` exists to block (DEF-163). B12's answer no longer contains the invented cause the fixQueue text quotes.
+
+**CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0 · MECHANISM:** none; the guarantees already held and are now demonstrated. **FALSIFIER:** a deploy of DEF-217 spams a user, crosses a tenant, or silently never runs.

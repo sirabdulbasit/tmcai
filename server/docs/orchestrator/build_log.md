@@ -3462,3 +3462,122 @@ for making an absent capability exist, and this is increment 1 of 3, read-only, 
 fraction of it. **Proved wrong by:** a morning burst passing with no message; or a message naming a
 sender or count that production data does not support; or Grok leaving Self-Pruning at *basis:
 absent* after this ships, which would mean the surface is not what it was scoring.
+
+## Iteration 10 — the increment-1 job, tested where it actually risks something (DEF-218)
+
+**Mode: structural · REMEDIATION 3/3 · guard CLEAN · deployed=no**
+**SYMPTOM TAG CLOSED: none — and I am not inventing one**
+
+### 0. Self-Pruning moved. First capability movement in this loop.
+
+Grok's card this turn: **Self-Pruning 40 → 48 (+8)**, and it is no longer the second-widest gap.
+That is the first capability number to move across all thirty iterations, and it arrived in the
+turn immediately after DEF-217 made increment 1 exist as code.
+
+Two honest qualifications, because this is exactly where a claim gets overstated:
+
+- Grok scores **by reading the codebase**, so it plausibly scored DEF-217's code rather than any
+  owner-visible effect. The campaign's own exit condition says the live observation is the exit
+  condition and the score alone is not.
+- **Increment 1's Done-when is still NOT met.** It requires the count quoted back from production
+  data. Nothing is deployed. An unshipped increment is not delivered, and +8 on a card does not
+  change that.
+
+It does clear the campaign's abort condition — *"if after 3 iterations Grok has not moved
+Self-Pruning by at least +5, stop and report"* — with +8.
+
+### 1. Remediation 3/3, with commits, and I am not re-doing it
+
+Every numbered risk in iteration 4's review is closed: CRITICAL 1 → DEF-208 `2acb272` · HIGH 2 →
+DEF-202 · HIGH 3 → DEF-210 `b095875` · MEDIUM 4 → DEF-209 `41358ab` · MEDIUM 5 → matrix green ·
+MEDIUM 6 → DEF-209/211/212 · CARRIED 1 → DEF-191 `bb0cf57` / DEF-192 `9cb7720`.
+`review_log.md` is unchanged at 692 lines and 10 sections — Codex has not re-read the change since
+iteration 4, so the verdict on record predates all seven of those commits.
+
+### 2. Why not the fix queue this turn — with the entries quoted
+
+The three worst entries are all `B12-reminder-referent`:
+
+> **C4 80** — "'My apologies, Sir.' is a bit formal and sounds slightly template-like."
+> **C1 85** — "a more truthful answer would acknowledge that it *should* have a record"
+> **C6 85** — "a more complete response would ideally include what steps it will take"
+
+The first is C4 register, which the brief forbids chasing. The third is worse than unhelpful:
+**following it would reintroduce DEF-163.** `FABRICATED_PROCESS_RE` exists precisely to block
+*"I have flagged the error to prevent it from happening again"* — a claimed internal remediation
+that never happened, which the codebase calls its worst failure mode. The judge is asking for the
+sentence a guard was built to stop.
+
+Worth recording plainly: **B12's answer no longer contains the invented cause.** It now reads
+*"I can see that in our conversation history, but I don't have a record of why it repeated."* The
+"system glitch" the fixQueue text quotes is from an older run. I checked before proposing to fix
+it, and `responseValidator.ts:187` documents that the invented CAUSE is *"NOT covered on purpose"*
+— a word list of plausible causes being an enumeration that file has already learned it cannot win.
+I am not overriding a considered prior decision to chase a criterion I am told not to chase.
+
+### 3. What I built, and why this file specifically
+
+DEF-217 shipped increment 1 with 12 tests — **all on `worstOffender` and the marker.** The job had
+none. Nothing exercised tenant scoping, the master switch, the once-per-day guarantee, or a user
+whose read throws.
+
+That is the wrong gap on this file, and the reason is this session's record rather than general
+caution: **every review finding Codex has raised against a background job here landed in exactly
+those four places** — tenant boundary (iteration-3 CRITICAL, iteration-4 CARRIED), gating
+(DEF-191), idempotency (iteration-3 HIGH 2, iteration-4 HIGH 3), failure isolation. A new job with
+well-covered selection logic and uncovered orchestration is the finding waiting to happen.
+
+13 tests, on the four properties a deploy depends on:
+
+- **tenant** — every user and ledger read carries it; the registry read is asserted to be the ONLY
+  one that does not, and everything after it is scoped;
+- **gate** — 0 reports nothing *and costs no query*; an unreadable flag FAILS OPEN, because the
+  increment exists to be seen; the floor comes from the flag, not a constant;
+- **once per day** — the dedup key carries user AND date, and a `duplicate` verdict from the queue
+  counts as quiet, never as reported;
+- **isolation** — a user failure is counted and the next user still reports; a tenant failure does
+  not stop the next tenant; a failed registry read reports nothing rather than throwing.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  212 passed | 1 skipped (213)
+                    Tests  2661 passed | 7 expected fail | 21 skipped | 1 todo (2690)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone)
+git diff --check    clean
+```
+
+**7 mutants applied and RUN, all 7 die:** user read loses the tenant · ledger read loses the
+tenant · master switch ignored · dedup key drops the date · a queue duplicate counted as reported ·
+a user failure aborts the pass · the floor ignores the flag.
+
+**NO PRODUCTION CODE CHANGED.** The job behaved correctly under every one of these. This converts
+that from an assumption into evidence — the same thing DEF-210 did for DEF-202's concurrency claim,
+and the reason I am claiming **RELIABILITY-ONLY, PREDICTED +0** rather than borrowing DEF-217's
+capability number.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not build increment 2 or 3.** Both are substantially built already — `decideDigest` is
+  wired into `enqueueBrainPrompt`, the one chokepoint, gated by `selfpruning.digest_enabled`=0;
+  the quarantine → grace → soft-close lifecycle and the withdrawal outbox are DEF-186..209, gated
+  by `selfpruning.withdrawal_notice_enabled`=0. **The campaign's blocker is uniformly deployment
+  and live observation, not missing code**, and stacking a third unshipped increment would not
+  change that.
+- **I checked a defect I suspected in my own DEF-217 and it does not exist:** I thought the noise
+  report could itself be digested by increment 2's policy. `decideDigest` requires an exact item
+  identity and the report has none, so it returns "no exact item identity — uncertain subjects are
+  never digested". Reported rather than "fixed", because a phantom fix is worse than none.
+- **Unsure whether +8 survives.** One card is one sample, and I would rather flag that than treat a
+  single reading as the campaign's result.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **This adds no runtime behaviour**, so it cannot
+break a deploy; what it does is make DEF-217's deploy reviewable.
+
+**CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0.** **Proved wrong by:** a deploy of DEF-217 spamming
+a user, crossing a tenant, or silently never running — any of which these tests should have caught
+first.
