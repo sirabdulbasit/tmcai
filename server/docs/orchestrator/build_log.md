@@ -5340,3 +5340,25 @@ prior blocker was the exit-134 OOM, and it is gone deterministically.
 and everything after them — can ship.
 **FALSIFIER (observable):** `npx tsc --noEmit` exits non-zero on this box again, or the
 deploy phase still reports tsc RED at this HEAD.
+
+### Iteration 23 — addendum on the re-fired brief
+
+The Iteration 23 brief re-fired after my commits landed, carrying pre-commit state (it
+lists only `6057c9d` as undeployed and says "tsc RED" in the campaign section while its own
+score table already reads tsc clean). The turn's job — make HEAD deployable — was completed
+at `7fc1a12`/`ec8ed31` and is not repeated. What this re-fire was used for instead is the
+one residual my own Iteration 22 entry named:
+
+**The clean-clone build now stands at exactly HEAD, not at piecemeal file copies.** The
+clone at `scratchpad/bp198` was fetched and checked out to `ec8ed31` (its drifted working
+copy stashed), and `npm run build` exits **0**. The DEF-230 changes are verified present in
+the emitted artifact, comments stripped: the rank-by-ignored sort, `producers` in the
+selection's return, the ≥2 gate in the notice constructor, and the parser's
+producers validation. That closes the "clean-clone build NOT re-run this turn" gap from
+Iteration 22 §6.
+
+State re-verified this re-fire: `review_log.md` still 692 lines (no findings to close;
+escalation answer unchanged — (a) accept with a DEF row), tree clean, matrix green at
+HEAD per the Iteration 23 numbers above. **HEAD `ec8ed31` remains, in my judgement,
+deployable; the four undeployed commits are DEF-230 (code+docs) and DEF-231 (fix+docs).**
+Nothing new was built, per the brief's own prohibition.
