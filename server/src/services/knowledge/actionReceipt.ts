@@ -203,6 +203,21 @@ export function actionReceiptMarker(args: {
  * that opens with a question makes the owner answer before he learns anything;
  * the same two sentences the other way round answer him and then ask.
  */
+/** Lowercased, punctuation-flattened, whitespace-collapsed. Two sentences that
+ *  differ only in capitalisation, spacing or a trailing full stop are the same
+ *  sentence for the purpose of "have we already said this?". */
+function sameSentenceKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** Split on sentence enders, keeping the ender so a question stays a question. */
+function sentencesOf(text: string): string[] {
+  return String(text ?? '')
+    .split(/(?<=[.!?])\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 export function answerThenAsk(
   answer: string | null | undefined,
   question: string | null | undefined,
@@ -211,9 +226,30 @@ export function answerThenAsk(
   const q = String(question ?? '').trim();
   if (!a) return q;
   if (!q) return a;
-  // Already ends with that exact question — do not say it twice.
-  if (a.includes(q)) return a;
-  return `${a}\n\n${q}`;
+
+  // DEF-216 — SENTENCE BY SENTENCE, not whole-string.
+  //
+  // `if (a.includes(q)) return a` only caught a byte-identical repeat, and
+  // `B02-unknown-fact` showed what that misses. The prose already ended with
+  // *"Shall I create a new contact for her?"*; the decider's question was
+  // *"I can't seem to find Hamna Latif Bhutta in your contacts list to get her
+  // number. Shall I create a new contact for her?"* — a longer string whose TAIL
+  // duplicates the prose and whose HEAD restates the prose's opening. Neither
+  // was a substring of the answer, so both shipped and he read the question
+  // twice (C5 95 -> 60, C3 95 -> 75, C4 90 -> 70).
+  //
+  // So each sentence of the question is kept only if the answer does not already
+  // say it. That drops the duplicated ask AND the restated finding, which is the
+  // half a simple "don't repeat the question" check would still have got wrong.
+  const said = new Set(sentencesOf(a).map(sameSentenceKey));
+  const fresh = sentencesOf(q).filter((sentence) => !said.has(sameSentenceKey(sentence)));
+
+  // Every sentence was already said — the answer asked it itself. Nothing to add.
+  if (fresh.length === 0) return a;
+  // Nothing was said before: keep the question whole rather than reassembled, so
+  // a question the splitter mis-cut is never reworded on its way to him.
+  if (fresh.length === sentencesOf(q).length) return `${a}\n\n${q}`;
+  return `${a}\n\n${fresh.join(' ')}`;
 }
 
 /**
