@@ -3581,3 +3581,110 @@ break a deploy; what it does is make DEF-217's deploy reviewable.
 **CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0.** **Proved wrong by:** a deploy of DEF-217 spamming
 a user, crossing a tenant, or silently never running — any of which these tests should have caught
 first.
+
+## Iteration 11 — one field name killed three consecutive fixes (DEF-219)
+
+**Mode: structural · ESCALATED · CONTINUATION 1/3 on Accurate Communication · guard CLEAN · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer`**
+
+### 0. The escalation, answered plainly
+
+**(a) Accept as a known limitation with a DEF row. NOT grounds for reverting.**
+
+Every numbered risk in iteration 4's review is closed with a commit: CRITICAL 1 → DEF-208
+`2acb272` · HIGH 2 → DEF-202 · HIGH 3 → DEF-210 `b095875` · MEDIUM 4 → DEF-209 `41358ab` ·
+MEDIUM 5 → matrix green · MEDIUM 6 → DEF-209/211/212 · CARRIED 1 → DEF-191 `bb0cf57` /
+DEF-192 `9cb7720`. `review_log.md` is unchanged at **692 lines, 10 sections** — Codex has not
+re-read the change since iteration 4, so the standing verdict predates all seven commits.
+Reverting would strip the transaction boundary, event-token identity, membership-derived
+ownership and the paging fix to remove findings that are no longer in the tree.
+
+### 1. What was wrong with the last attempt — and with the two before it
+
+Last turn (DEF-218) was RELIABILITY-ONLY test coverage on the Self-Pruning job. It changed no
+behaviour, so it could not have moved Accurate Communication and I did not claim it would.
+
+But the continuation's real question has a much better answer this turn, and it indicts three of
+my own turns:
+
+**`lastBrainQuestion` read the wrong field, so DEF-209, DEF-212 and DEF-215 were dead on arrival.**
+
+The composer's history turn is `ComposerHistoryTurn = { role: 'user' | 'brain' | 'artifact'; text:
+string }`. The function read `t.content` — `undefined` on every real call. `String(undefined)` is
+the string `"undefined"`, `isQuestionTurn` said no, and it returned **null in production, always.**
+
+Mechanically, downstream:
+
+| consequence | effect |
+|---|---|
+| `requestedSlots(null)` | `[]` |
+| `outstandingSlots(...)` | `[]` on every turn |
+| DEF-209's proceeding marker | names no slot, ever |
+| DEF-212's applied marker | takes its **no-slots branch, which returns the receipt VERBATIM** |
+| DEF-215's "ASK FOR IT IN THIS REPLY" | can never fire |
+
+That last row is why the worst fixQueue entry this turn is B04 at **C6 70** with the reply
+`Updated "Define rules…": priority=high.` — **the exact field-name string DEF-212 was written to
+eliminate.** I had been rewording the fact for three turns while the fact was never computed.
+
+**Why my tests missed it, which matters more than the typo.** Every fixture in def209, def211 and
+def215 was a hand-built `{ role, content }` object. **A fixture I invent cannot disagree with me.**
+The new tests import the composer's real exported `ComposerHistoryTurn`, so a future rename breaks
+the build instead of the behaviour.
+
+### 2. The fix-queue entry, quoted
+
+> **B04-outstanding-question-ignored C6 70** — "The response only addresses the 'priority' part of
+> Brain's previous question, leaving the 'deadline' outstanding without mentioning that it's still
+> needed."
+
+**Criteria I expect to move: B04 C6 and C3.** **Circling** on `guard-destroys-the-answer` (8 in
+chart §3) — so this is not another wording change; it repairs the input the whole mechanism reads.
+
+### 3. What changed
+
+`lastBrainQuestion` reads `text ?? content` and is **typed** (`HistoryTurnLike`), so a reader that
+understands only one shape can no longer be written silently. Both keys are accepted because other
+producers hold either, and a reader that knew only one is exactly how this happened.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  213 passed | 1 skipped (214)
+                    Tests  2668 passed | 7 expected fail | 21 skipped | 1 todo (2697)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the `content`-only read confirmed GONE from the
+                                   emitted code with comments stripped)
+git diff --check    clean
+```
+
+**7 tests. 4 mutants applied and RUN, all 4 die:** back to `content`-only (the shipped defect) ·
+`text`-only, dropping other producers · an absent field becomes `'undefined'` again · stops walking
+back past the user turn.
+
+One test **pins the old behaviour explicitly**: with `content` undefined, every downstream value is
+empty and the applied marker returns the receipt verbatim — which is what B04 actually read. That
+is the regression captured as a fact rather than as a story about it.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **DEF-212's no-slots branch still renders the bare receipt** when nothing genuinely is
+  outstanding. That path goes from universal to rare, but it is the same field-name English.
+  Fixing it needs the marker to carry applied fields as DATA rather than as a rendered string —
+  a separate build, and I would rather name it than half-do it here.
+- **No C-3 campaign progress**, and the continuation forbade it this turn.
+- **The other fixQueue entries are C4 register** (B12 80, B05 85, B08 85), which the brief forbids
+  chasing.
+- **Unsure how much recovers.** This makes three mechanisms reachable at once, which is unusually
+  large for one line; if B04 does not move, my whole causal chain is wrong and I would want that
+  said rather than explained away.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, on the live
+composer path with no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +2 to +4** — not a new mechanism, three existing
+ones becoming reachable. **Proved wrong by:** B04 C6/C3 not recovering, or a dispatch reply still
+arriving as `Updated "…": field=value.`

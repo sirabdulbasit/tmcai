@@ -3762,3 +3762,46 @@ The wrong gap to leave open on this file specifically, and the reason is this se
 **The fix queue was not taken**, and the reason is on the record: its three worst entries are all B12, one is C4 register (forbidden to chase) and one asks for *"what steps it will take"* — the sentence `FABRICATED_PROCESS_RE` exists to block (DEF-163). B12's answer no longer contains the invented cause the fixQueue text quotes.
 
 **CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0 · MECHANISM:** none; the guarantees already held and are now demonstrated. **FALSIFIER:** a deploy of DEF-217 spams a user, crosses a tenant, or silently never runs.
+
+## 70. DEF-219 — one field name killed three consecutive fixes (2026-08-18, BUILDER: Claude — orchestrator iteration 11, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Worst fixQueue entry in `iter-10-post-build.json`: **B04-outstanding-question-ignored C6 70**, C3 85. The reply is the exact string DEF-212 was written to eliminate:
+
+    Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.
+
+> "The response only addresses the 'priority' part of Brain's previous question, leaving the 'deadline' outstanding without mentioning that it's still needed."
+
+### Root cause
+
+The composer's history turn is `ComposerHistoryTurn = { role: 'user' | 'brain' | 'artifact'; text: string }`. `lastBrainQuestion` read `t.content` — **undefined on every real call**. `String(undefined)` became the string `"undefined"`, `isQuestionTurn` said no, and the function returned **null in production, always**.
+
+Downstream, mechanically: `requestedSlots(null)` → `[]` → `outstandingSlots` → `[]`; DEF-209's proceeding marker names no slot; **DEF-212's applied marker takes its no-slots branch, which returns the receipt verbatim**; DEF-215's "ASK FOR IT IN THIS REPLY" can never fire. **Three consecutive DEFs were dead on arrival on one key**, and I spent those turns rewording a fact that was never computed.
+
+**Why the tests missed it, which matters more than the typo:** every fixture in def209, def211 and def215 was a hand-built `{ role, content }` object. A fixture I invent cannot disagree with me.
+
+### Files changed
+
+- `server/src/services/knowledge/actionReceipt.ts` — `lastBrainQuestion` reads `text ?? content` and is typed (`HistoryTurnLike`), so a reader that understands only one shape cannot be written silently. Both keys are accepted because other producers hold either, and a reader that knew only one is how this happened.
+- `server/tests/def219HistoryFieldName.test.ts` — 7 tests that import the composer's **real exported `ComposerHistoryTurn`**, so a future rename breaks the build rather than the behaviour. One test pins the old behaviour explicitly: with `content` undefined, every downstream value is empty and the applied marker returns the receipt verbatim — the regression captured as a fact.
+
+### Rollback considered and rejected
+
+Reverting restores a reader that returns null on every real call.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 214 files — 213 passed, 1 skipped; 2,697 tests — **2,668 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (the `content`-only read confirmed gone from the emitted code) · `git diff --check` clean.
+
+**Four mutants applied and RUN, all four die:** back to `content`-only (the shipped defect) · `text`-only, dropping other producers · an absent field becomes `'undefined'` again · stops walking back past the user turn.
+
+### Known issues deliberately not fixed
+
+**DEF-212's no-slots branch still renders the bare receipt** when nothing genuinely is outstanding — that path goes from universal to rare, but it is the same field-name English. Fixing it needs the marker to carry applied fields as data rather than as a rendered string; named rather than half-done here.
+
+**The escalation is answered (a): accept as a known limitation with a DEF row, do NOT revert.** Every numbered risk from iteration 4 is closed with commits and `review_log.md` is unchanged at 692 lines — the standing verdict predates all seven of them.
+
+**No C-3 progress** (the continuation forbade it), and the other fixQueue entries are C4 register, which the brief forbids chasing.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +2 to +4 · MECHANISM:** the outstanding-slot computation now receives Brain's actual last question instead of `null` on every turn — three existing mechanisms becoming reachable, not a new one. **FALSIFIER:** B04 C6/C3 do not recover, or a dispatch reply still arrives as `Updated "…": field=value.` — either would mean the causal chain above is wrong.
