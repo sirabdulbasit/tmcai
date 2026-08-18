@@ -114,7 +114,12 @@ describe('DEF-226 — it is a NEW boundary, not a reword of DEF-165', () => {
     const header = headerOf(await buildDispatchLedgerBlock(2, 'TMC-0001'));
     expect(header).toContain('WHY something happened is NOT in THIS record');
     expect(header).toContain('the cause is not recorded');
-    expect(header).toMatch(/"A system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are\nGUESSES/);
+    // DEF-228 SUPERSEDED the third assertion. It pinned the four-item menu of
+    // example causes — and `iter-18` measured the model taking "a stutter on my
+    // end" straight off it. The PROHIBITION is what this test defends, and it is
+    // stronger now: any named mechanism, not four named ones.
+    expect(header).toContain('Naming ANY mechanism is a fabricated finding');
+    expect(header, 'the menu is gone').not.toContain('a stutter on my end');
   });
 
   it('the AGENT rule comes BEFORE the cause rule — who, then why', async () => {

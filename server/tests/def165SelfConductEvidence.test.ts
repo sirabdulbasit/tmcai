@@ -73,17 +73,28 @@ describe('DEF-165 — the evidence block states what it cannot tell you', () => 
       .toMatch(/cause is not recorded/i);
   });
 
-  it('names the euphemisms as guesses rather than banning words', async () => {
-    // Codex: "Do not chase glitch/stutter/sync/job synonyms with regex." These
-    // appear as EXAMPLES OF GUESSING inside the evidence block, which is a
-    // different mechanism from a validator pattern — the model is told why they
-    // are wrong, not merely that a string is forbidden. The one it actually
-    // produced is among them.
+  it('rules out guessing by TEST rather than by naming euphemisms', async () => {
+    // DEF-228 SUPERSEDED the original assertions here, and this test's own
+    // comment was the clue read backwards. It said the four euphemisms "appear
+    // as EXAMPLES OF GUESSING inside the evidence block" and noted, approvingly,
+    // that "the one it actually produced is among them."
+    //
+    // `iter-18-post-build.json` measured the other reading: B12 said "It looks
+    // like A STUTTER ON MY END caused the duplicate reminder" (C1 85), and
+    // `iter-14` said it too. **The block printed the phrase and the model took
+    // it.** That is `examples-outvote-the-instruction` (DEF-138) in the
+    // production prompt.
+    //
+    // Codex's rule that synonyms must not be chased with a regex is UNCHANGED
+    // and is why the replacement is a test rather than a longer list: "does my
+    // sentence explain HOW?" cannot be evaded by picking a fifth word.
     const block = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(block).toContain('stutter on my end');
-    expect(block).toMatch(/GUESSES/);
+    expect(block, 'the menu that supplied the phrase').not.toContain('stutter on my end');
+    expect(block).toContain('Naming ANY mechanism is a fabricated finding');
     expect(block, 'the point is that sounding technical is not evidence')
-      .toMatch(/fabricated finding/i);
+      .toMatch(/however technical or modest/i);
+    expect(block, 'and the test the model can apply to its own sentence')
+      .toContain('if your sentence explains HOW it happened, you invented the how');
   });
 
   it('carries the boundary when the ledger is NOT empty', async () => {

@@ -198,10 +198,35 @@ export async function buildDispatchLedgerBlock(
     + 'check whether any OTHER block above carries a recorded cause (a health finding, a\n'
     + 'scheduler or job record). If one does, use it and cite it. If none does, say plainly\n'
     + 'that the cause is not recorded.\n'
-    + '"A system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are\n'
-    + 'GUESSES; naming one as the cause is a fabricated finding even when it sounds\n'
-    + 'technical and modest. "I sent it twice — I can see that, but I do not have a record\n'
-    + 'of why" is the complete and correct answer.\n';
+    // ── DEF-228 — THE MENU WAS THE SOURCE ───────────────────────────────────
+    //
+    // This paragraph used to enumerate four candidate causes — "a system
+    // glitch", "a sync issue", "a duplicate job", "a stutter on my end" — as
+    // examples of what NOT to say. `iter-18-post-build.json` measured the
+    // result: *"It looks like **a stutter on my end** caused the duplicate
+    // reminder. I can see I sent it twice, but I don't have a record of why it
+    // repeated."* C1 85, the judge calling it "a slight contradiction". The
+    // model took a phrase off the list this block printed. `iter-14` produced
+    // the same phrase.
+    //
+    // That is `examples-outvote-the-instruction` (DEF-138) in the production
+    // prompt, and I have fixed the identical mistake in my own GUARDS three
+    // times (DEF-213's list, DEF-214's `17:07`, DEF-226's whole-block regex)
+    // without once fixing it here.
+    //
+    // IT DOES NOT REVERSE DEF-213 OR DEF-226, and the distinction is the whole
+    // finding: those two named a phrase THE OWNER HAD ALREADY RECEIVED ("my
+    // dispatch log", "the system sent it"), which removes ambiguity about a
+    // sentence that exists. This one enumerated HYPOTHETICALS for a cause the
+    // model has to invent, which is a menu. Name what he got; never list what
+    // he might get.
+    //
+    // So the prohibition stays and the menu goes, replaced by the TEST — any
+    // sentence naming a mechanism is invented, whatever the mechanism is.
+    + 'Naming ANY mechanism is a fabricated finding, however technical or modest it\n'
+    + 'sounds — if your sentence explains HOW it happened, you invented the how, because\n'
+    + 'this record does not contain one. "I sent it twice — I can see that, but I do not\n'
+    + 'have a record of why" is the complete and correct answer.\n';
 
   if (entries.length === 0) {
     return `${header}(no actions dispatched in the last ${hrs} hours)`;
