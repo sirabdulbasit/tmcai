@@ -4261,3 +4261,155 @@ not one** — the rule text is byte-identical; what changed is which prompt gets
 the example beside it says. **If B11 still says "her" after this, the honest conclusion is
 that the pronoun is not fixable by instruction, and the claim should be dropped rather than
 attempted a fourth time.** I would write that as the DEF row.
+
+---
+
+## Iteration 15 — the score is one iteration stale, and a summary that omits a category (DEF-224)
+
+### 0. Remediation — Iteration 4. `review_log.md` is STILL 692 lines
+
+This is the fourth consecutive brief re-issuing Iteration 4 as attempt 1 of 3, and the
+review log has not gained a line since. There is no reviewer to be unsatisfied. The
+closure table with commits and lines is in `6ea9dcf`, restated in `1ead102`, `70c2715` and
+`d83a0dc`. My answer to the escalation is unchanged and on the record: **(a) accept as a
+known limitation with a DEF row; (b) revert is wrong**, because reverting removes the
+transaction boundary, event tokens, the per-row CAS and the paging fix in order to answer
+findings that named their absence.
+
+### 1. THE FINDING OF THIS TURN — I have been reading every falsifier one iteration early
+
+The benchmark runs from the **deployed artifact**, not from source:
+
+```
+scripts/orchestrator/nexeo-loop.sh:183
+  ( cd "$SRV" && node -r dotenv/config dist/scripts/nexeoCapabilityBenchmark.js … )
+```
+
+And `state/deploy-history` shows each iteration's deploy landing **after** that
+iteration's measurement:
+
+| score | started (UTC) | deploy that followed it |
+|---|---|---|
+| `iter-12-post-build` | 03:53:31 | 03:59:26 → `1ead102` (DEF-221) |
+| `iter-13-post-build` | 04:21:36 | 04:27:45 → `70c2715` (DEF-222) |
+| `iter-14-post-build` | 04:44:01 | 04:50:37 → `d83a0dc` (DEF-223) |
+
+**So `iter-N-post-build.json` measures iteration N−1's deploy.** Consequences, stated
+plainly because two of them are my own errors:
+
+- **DEF-221's "falsifier fired" was wrong.** I read it in iteration 13 off `iter-12`,
+  which measured DEF-220 — DEF-221 was not in that artifact. I declared a fix failed
+  before it had ever run.
+- **DEF-222's failure stands.** Iteration 14 read `iter-13`… which measured **DEF-221**.
+  So that reading was *also* mis-attributed. What does hold is `iter-14`, read this turn:
+  it measured DEF-222, and B11 still says "her" twice. DEF-222 genuinely failed.
+- **DEF-223 has never been measured.** Its artifact was built at 04:50:37, six minutes
+  after the run I was given. The next score is its first test.
+
+**This is why I am not making a fourth pronoun attempt.** I committed last turn to dropping
+the claim if it recurred a third time — but the trigger I named has not actually occurred:
+the third recurrence measured DEF-222, not DEF-223. Piling another fix on top of an
+unmeasured one is how the last two iterations went wrong. The honest move is to let
+DEF-223 be measured and to spend this turn on a defect the evidence does support.
+
+**One correction I can make from code alone:** DEF-222's comment in
+`buildOpenItemsBlockForReasoning` claimed that block "is gated on
+`isActionTurn || day_brief || factual`". That gate is on `assembleSystemPrompt`'s
+`openItemsBlock` — a different variable. The reasoning path passes THIS block **ungated**
+(`brainComposer.ts:2591`). The comment is corrected in this diff.
+
+### 2. The fix queue entry I targeted
+
+The queue is C4 register — *"'Sir' makes it sound a little less natural"* (B09 75, B12 75,
+B05 85) — which the brief forbids chasing. The one substantive non-C4 entry, and it is now
+its third appearance:
+
+> **C6 80, `B06-just-do-it`** — *"The response provides a summary by priority as requested.
+> However, it only lists 'High Priority' and 'Medium Priority' items. It's unclear if there
+> are 'Low Priority' or 'No Priority' items that were omitted, or if these are the only
+> items."*
+
+**I expect C6 on B06 to move.** Capability unchanged: **Accurate Communication**, as the
+continuation requires.
+
+**Verdict per CLAUDE.md rule 5: PROGRESSING — new root cause.** No tag in chart §3 covers
+it, and I am not stretching one. **No listed symptom tag closed.**
+
+### 3. The mechanism
+
+The model could not have got this right. The block handed it thirty rows ordered
+`createdAt desc` and stated **neither** whether thirty was all of them **nor** which
+priorities exist. An empty heading is unreadable: *"you have none"* or *"I did not show
+you those"*? That is DEF-197's `absenceIsInformative` principle — absence is evidence only
+when the record is complete — applied to the surface the owner reads most.
+
+- `openItemsCompleteness.ts` (new) — `renderOpenItemsHeader` states the count in **every**
+  bucket including the zeros (`critical=0 high=2 medium=2 low=0 unset=0`), then whether the
+  page is the whole set. A truncated page says `INCOMPLETE: M active items exist and only
+  the newest N are listed` and forbids calling a category empty. **A failed tally says the
+  counts could not be read** — never "0 of 0", which would be a fabricated completeness
+  claim pointing the other way. `null` priority is `unset`, not folded into `low`: DRAFT
+  rows carry null, and calling that "low" would be a small lie in the one line whose whole
+  job is to be exact.
+- `brainComposer.ts:2047` — one `ACTIVE_WHERE`, shared by the page and the tally, so a
+  tally over a different set is impossible. `take: OPEN_ITEMS_PAGE` from the shared
+  constant.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            218 files (217 passed, 1 skipped)
+                          2757 tests — 2728 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check: two `where: ACTIVE_WHERE` in `brainComposer.js`, the deferred
+`Promise.resolve().then(() => prisma_1.default.openItem.groupBy…)`, the
+`openItemsCompleteness_1.renderOpenItemsHeader` call, and the bucket rendering in
+`openItemsCompleteness.js`.
+
+**13 tests. 6 mutants applied and RUN, all 6 die** — zero buckets omitted · a failed tally
+reported as "every item" · a truncated page claiming completeness · `null` folded into
+`low` · the tally losing the shared where-clause · **the sync-throw guard removed.**
+
+**The sixth is not hypothetical, and it was a real defect in my own first draft.** A Prisma
+client without `groupBy` throws **synchronously**; `.catch` never runs; the outer
+`try/catch` returns `''` — **the entire open-items block vanishes because a COUNT failed.**
+That is `guard-destroys-the-answer` inside a completeness fix. The existing
+`openItemsOwnerRouting` suite mocks exactly such a client and went red; the fix defers the
+call into a promise chain so both shapes are caught, and that mutant kills five real
+behavioural assertions, not just a code guard.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No fourth pronoun attempt**, for the reason in §1: DEF-223 is unmeasured and building
+  on it would repeat the error this turn uncovered.
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability, and increments 1–3 remain built and deployed
+  but unobserved live, which is the campaign's own exit condition and not mine to satisfy.
+- **No C4 register work**, per the brief.
+- **I did not touch the benchmark or the loop.** The staleness in §1 is a property of the
+  orchestrator's sequencing (`nexeo-loop.sh` is forbidden to me), so I am reporting it, not
+  fixing it. **If the orchestrator measured after deploying, every falsifier in this log
+  would mean what it says.**
+- **`state/eval-isolation-proof` reads `NOT_PROVEN`.** I noticed it, I have not
+  investigated it, and I mention it only so it is not lost.
+- **Unsure whether C6 moves.** B06's complaint is partly about a summary the judge finds
+  ambiguous rather than false, and 80 → 95 is a large ask from one header line. What I am
+  confident of is that the ambiguity is now answerable from the prompt, which it was not.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes; this
+block feeds the reasoning composer ungated, so it is on every turn including the day brief.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.**
+**MECHANISM:** the open-items block states its own completeness and the count in every
+bucket, so an empty category is a fact Brain was given rather than an absence it must
+interpret.
+**FALSIFIER (observable):** B06 still summarises without accounting for the categories it
+did not list, or a reply claims a category is empty on a page whose header said INCOMPLETE.

@@ -4072,3 +4072,71 @@ is not one — the rule text is byte-identical; what changed is which prompt get
 the example beside it says. **If B11 still says "her" after this, the honest conclusion is
 that the pronoun is not fixable by instruction and the claim should be dropped rather than
 attempted a fourth time.**
+
+---
+
+## 75. DEF-224 — the score is one iteration stale, and a summary that omits a category (2026-08-18, BUILDER: Claude — orchestrator iteration 15, branch `release/cmp-2026-08-16`)
+
+**NO LISTED SYMPTOM TAG CLOSED** — said plainly rather than invented.
+
+**The finding that matters most is about the evidence, not the code.** The benchmark runs
+from the deployed artifact (`nexeo-loop.sh:183` → `dist/scripts/nexeoCapabilityBenchmark.js`),
+and `state/deploy-history` shows each iteration's deploy landing *after* that iteration's
+measurement:
+
+| score | started (UTC) | deploy that followed |
+|---|---|---|
+| `iter-12-post-build` | 03:53:31 | 03:59:26 → DEF-221 |
+| `iter-13-post-build` | 04:21:36 | 04:27:45 → DEF-222 |
+| `iter-14-post-build` | 04:44:01 | 04:50:37 → DEF-223 |
+
+**So `iter-N-post-build.json` measures iteration N−1's deploy.** Two of my own claims were
+therefore wrong: DEF-221's "falsifier fired" was read off a run that contained DEF-220, and
+iteration 14's reading was mis-attributed the same way. What survives is `iter-14`, read
+this turn: it did contain DEF-222, and B11 still says "her" — DEF-222 genuinely failed.
+**DEF-223 has never been measured**; its artifact was built six minutes after the run I was
+given.
+
+That is why there is **no fourth pronoun attempt** here. I committed to dropping the claim
+if it recurred a third time, but the trigger did not actually occur — the third recurrence
+measured DEF-222. Building on an unmeasured fix is the error this turn uncovered.
+
+**The defect I did fix.** `B06-just-do-it`, C6 80, third consecutive run: *"it only lists
+'High Priority' and 'Medium Priority' items. It's unclear if there are 'Low Priority' or
+'No Priority' items that were omitted, or if these are the only items."* The block handed
+the model thirty rows and stated neither whether thirty was all of them nor which
+priorities exist, so an empty heading was unreadable — "you have none" or "I did not show
+you"? DEF-197's `absenceIsInformative` principle, on the surface he reads most.
+
+- new `openItemsCompleteness.ts` — the header states the count in **every** bucket
+  including the zeros, then whether the page is the whole set. A truncated page says
+  `INCOMPLETE` and forbids calling a category empty; **a failed tally says the counts could
+  not be read**, never "0 of 0" — that would be a fabricated completeness claim pointing
+  the other way. `null` priority is `unset`, not folded into `low`.
+- one `ACTIVE_WHERE` shared by the page and the tally, so a tally over a different set is
+  impossible.
+- **corrects DEF-222's comment** in that function, which claimed the block is gated; that
+  gate is on a different variable, and the reasoning path passes this block ungated.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+218 files (217 passed, 1 skipped), **2757 tests, 2728 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **13 tests, 6 mutants
+applied and RUN, all 6 die.**
+
+**One of those mutants was a real defect in my own first draft.** A Prisma client without
+`groupBy` throws *synchronously*, `.catch` never runs, the outer try/catch returns `''` —
+**the entire open-items block would vanish because a COUNT failed.** That is
+`guard-destroys-the-answer` inside a completeness fix. The existing `openItemsOwnerRouting`
+suite caught it live; the call is now deferred into a promise chain so both shapes are
+caught.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the open-items
+block states its own completeness and the count in every bucket, so an empty category is a
+fact Brain was given rather than an absence it must interpret. **FALSIFIER:** B06 still
+summarises without accounting for the categories it did not list, or a reply claims a
+category is empty on a page whose header said INCOMPLETE.
+
+**Reported, not fixed:** the measurement ordering above is a property of
+`scripts/orchestrator/nexeo-loop.sh`, which the Builder is forbidden to touch. If the
+orchestrator measured after deploying, every falsifier in the build log would mean what it
+says. `state/eval-isolation-proof` also reads `NOT_PROVEN`; noted so it is not lost.
