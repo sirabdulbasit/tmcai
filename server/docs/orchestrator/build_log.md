@@ -2894,3 +2894,124 @@ between this and a live reply, and it is on the WhatsApp render path the owner a
 **CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a successful
 update still reaching him as `Updated "…": field=value.`; or a rendered reply asserting something
 the receipt does not contain, which would mean the verbatim-quoting rule leaked.
+
+## Iteration 7 — state the fact, not the bookkeeping (DEF-213)
+
+**Mode: structural · REMEDIATION attempt 2/3 · regression guard FIRED on B06 · deployed=no**
+**SYMPTOM TAG CLOSED: none — said plainly, not invented**
+
+### 0. The regression guard's B06 is measurement noise, and the judge's own reasons say so
+
+> B06-just-do-it MEAN across criteria: 98.1 → 92.5 (down 5.6)
+
+No per-criterion complaint was supplied, so I read them. **Every one is positive:**
+
+| | score | the judge's reason |
+|---|---|---|
+| C1 | 90 | "All information presented appears truthful" |
+| C2 | 90 | "no indication of fabricated facts" |
+| C3 | 100 | "Not applicable, this is a new request" |
+| C4 | 90 | "reads as natural and human-like. No machine markers or canned phrases" |
+| C5 | 90 | "directly fulfilled the request … without asking for clarification" |
+| C6 | 90 | "provides a summary, grouped by priority, and includes relevant details" |
+| C7 | 90 | "provides the true state … It doesn't hide information" |
+| C8 | 100 | "speaks as itself" |
+
+The reply is a clean grouped summary. **A 5.6 move on a mean of nines whose every reason is
+praise is the judge landing on 90 instead of 100, not a defect.** The brief's own rule is that a
+1-2 point move is noise; I am applying it rather than manufacturing a fix, and I have quoted the
+evidence so Codex can overrule me if he disagrees.
+
+### 1. Remediation status: iteration 4 is closed, and I am not re-doing it
+
+Every numbered risk was closed with a commit last turn, and `review_log.md` has not grown since
+(692 lines, 10 sections) — Codex has not re-reviewed. CRITICAL 1 → DEF-208 `2acb272` · HIGH 2 →
+DEF-202 · HIGH 3 → DEF-210 `b095875` · MEDIUM 4 → DEF-209 `41358ab` · MEDIUM 5 → matrix green ·
+MEDIUM 6 → DEF-209/211/212 · CARRIED 1 (`delegationFollowUpJob`) → DEF-191 `bb0cf57` /
+DEF-192 `9cb7720`. Repeating that work would be motion, not progress.
+
+### 2. The fix-queue entry I targeted, quoted
+
+**Worst pair in the queue, and both halves are ONE sentence of B12's reply:**
+
+> "…my own dispatch log doesn't have a record of why that happened."
+
+> **C4 80** — "feels a little too mechanical and like it's explaining its internal workings rather
+> than just stating a simple 'I don't know why it happened'."
+> **C1 85** — "it implies a dispatch log exists and was checked, which isn't explicitly confirmed
+> as an actual action."
+
+**Criteria I expect to move: B12 C1 and C4.** (Note what has already been won: B12's REFERENT is
+now correct — the reply names Fujairah, the case the DEF-197..204 lineage existed for.)
+
+### 3. Circling or progressing, and the mechanism
+
+**Progressing on a new root cause — Brain was echoing MY OWN BLOCK.** `pushHistoryBlock` supplied
+the vocabulary in the one place the model is told how to talk about this subject:
+
+```
+"your record shows at most one push"        "this record covers the last 36h"
+"say your own record is unavailable"        "the other subjects in your record"
+```
+
+Second person in the prompt, first person in the reply. And the C1 half is the serious one: the
+sentence asserts a lookup the owner cannot verify and Brain may not have performed.
+
+Every instruction is now fact-shaped — *"it was pushed at most once"*, *"what is visible here
+covers the last 36h only"*, *"say you cannot tell for this window"* — and one rule was added,
+**SAY WHAT IS TRUE, NOT HOW YOU KNOW IT**, which names the first-person forms it forbids and gives
+both reasons, the verifiability one explicitly.
+
+**Why this is not a sixth prompt wish, stated so it can be judged rather than trusted.** DEF-206's
+lesson was that ASKING a model to fill a field is not a guarantee — that is behaviour the model
+must CHOOSE to perform. This is the opposite direction: removing the source string it was copying.
+The tests assert the **absence** of the vocabulary from every rendered surface, which is the half
+that cannot be ignored, and only secondarily the presence of the rule.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  207 passed | 1 skipped (208)
+                    Tests  2603 passed | 7 expected fail | 21 skipped | 1 todo (2632)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; all four phrases confirmed gone from the emitted
+                                   CODE with comments stripped, the rule confirmed present)
+git diff --check    clean
+```
+
+**10 new tests. 6 mutants applied and RUN, all 6 die:** the rule is never appended · each of the
+three removed phrases restored · the rule drops the unverifiable-lookup reason · the rule stops
+naming what it forbids.
+
+**MUTATION CAUGHT A REAL HOLE IN MY OWN GUARD.** My forbidden-phrase list matched the NEW RULE —
+which has to name `"my dispatch log"` in order to forbid it — so a mutant that deleted the
+prohibition would have been *rewarded*. The list now covers only the second-person forms the block
+actually supplied, with a separate assertion that the rule names the first-person ones.
+
+**Seven DEF-197/198/200 assertions were REPHRASED, not silenced.** They pinned the old wording
+verbatim; the property they defend — absence authorises the at-most-once read only on a complete
+page — is unchanged, and the degraded-page refusal is still asserted.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **I did not fix B06**, because the judge named no fault in it. Evidence in §0.
+- **No C-3 campaign progress**, plainly. The campaign's increment 1 is still the first undone item
+  and I have now spent three turns on Accurate Communication regressions instead. If the
+  orchestrator wants the campaign, the next turn has to be protected from the guard.
+- **The wording inside the reply is still the model's.** By my own DEF-206 rule this is prompt-side
+  and therefore weaker evidence than a code guarantee. I would rather label it that way than
+  present it as structural closure.
+- **Unsure whether C1 recovers.** Removing the licensed cause does not compel a voice; if B12 still
+  says "my dispatch log", the remaining fix has to be a post-render check, which is a different
+  and heavier build.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** the block is on
+the live composer path, no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1** — a licensed cause removed, not a
+voice compelled. **Proved wrong by:** a reply still saying "my dispatch log" or "my records show";
+or B12 C1/C4 not moving, which would mean the vocabulary came from somewhere other than this block
+and I diagnosed the wrong source.

@@ -3516,3 +3516,46 @@ Reverting restores a reply written in field names that also drops the owner's op
 **The two composer paths still disagree.** B04 was prose in iteration 5 and the receipt in iteration 6 from the same code; this repairs the branch that produced the bad one but does not converge the reasoning and legacy paths. That is a bigger build.
 
 **Iteration 4's remediation is complete**, with commits: CRITICAL 1 → DEF-208 `2acb272`, HIGH 2 → DEF-202, HIGH 3 → DEF-210 `b095875`, MEDIUM 4 → DEF-209 `41358ab`, MEDIUM 5 → matrix green, MEDIUM 6 → DEF-209/211/212, and CARRIED 1 (`delegationFollowUpJob`) → **DEF-191 `bb0cf57` / DEF-192 `9cb7720`**, which already tenant-scoped the enumeration, the identity lookup and the settings authority.
+
+## 64. DEF-213 — state the fact, not the bookkeeping (2026-08-18, BUILDER: Claude — orchestrator iteration 7, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Worst pair in the `iter-06-post-build.json` fixQueue, both halves on one sentence of B12's reply — *"…my own dispatch log doesn't have a record of why that happened."*
+
+- **C4 80** — "feels a little too mechanical and like it's explaining its internal workings rather than just stating a simple 'I don't know why it happened'."
+- **C1 85** — "it implies a dispatch log exists and was checked, which isn't explicitly confirmed as an actual action."
+
+The regression guard fired on `B06-just-do-it` (mean 98.1 → 92.5) instead, and that one is **measurement noise**: every criterion reason is praise — "appears truthful", "no indication of fabricated facts", "reads as natural and human-like. No machine markers or canned phrases", "doesn't hide information" — on a clean grouped summary. A 5.6 move on a mean of nines with no named fault is the judge landing on 90 rather than 100.
+
+### Root cause
+
+**Brain was echoing the block.** `pushHistoryBlock` supplied the vocabulary in the one place the model is told how to talk about this subject: "your record shows", "this record covers", "say your own record is unavailable", "the other subjects in your record". Second person in the prompt, first person in the reply. The C1 half is the serious one — the sentence asserts a lookup the owner cannot verify and Brain may not have performed.
+
+### Files changed
+
+- `server/src/services/selfpruning/pushHistoryBlock.ts` — every instruction is now fact-shaped ("it was pushed at most once", "what is visible here covers the last 36h only", "say you cannot tell for this window"), plus one rule, **SAY WHAT IS TRUE, NOT HOW YOU KNOW IT**, which names the first-person forms it forbids and gives both reasons, the verifiability one explicitly.
+- `server/tests/def213StateTheFact.test.ts` — 10 tests, asserting the **absence** of the supplied vocabulary from every rendered surface (complete page, degraded page, unavailable block).
+- `server/tests/def197PushHistoryBlock.test.ts` — seven assertions rephrased, not silenced.
+
+**Why this is not a sixth prompt wish:** DEF-206's lesson was that *asking* a model to fill a field is not a guarantee, because that is behaviour it must choose to perform. This is the opposite direction — removing the source string it was copying — and the tests assert absence, which is the half that cannot be ignored.
+
+### Rollback considered and rejected
+
+Reverting puts back the phrases the reply was quoting.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 208 files — 207 passed, 1 skipped; 2,632 tests — **2,603 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (all four phrases confirmed gone from the emitted code with comments stripped; the rule confirmed present) · `git diff --check` clean.
+
+**Six mutants applied and RUN, all six die.** Mutation caught a real hole in my own guard: the forbidden-phrase list matched the NEW RULE — which must name `"my dispatch log"` in order to forbid it — so a mutant deleting the prohibition would have been rewarded. The list now covers only the second-person forms the block supplied, with a separate assertion that the rule names the first-person ones.
+
+### Known issues deliberately not fixed
+
+**No symptom tag closed, and none invented.** The nearest is `fabricated-status` for the C1 half; claiming it would strike an item off the owner's deck while the members he reported stay broken.
+
+**The wording inside the reply is still the model's.** By my own DEF-206 rule this is prompt-side and weaker evidence than a code guarantee, and it is labelled that way rather than presented as structural closure.
+
+**No C-3 campaign progress.** Increment 1 is still the first undone item; three consecutive turns have gone to Accurate Communication regressions instead.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the block no longer supplies the machine vocabulary the reply was copying, and forbids the first-person form. **FALSIFIER:** a reply still says "my dispatch log"/"my records show", or B12 C1/C4 do not move — which would mean the vocabulary came from elsewhere and I diagnosed the wrong source.
