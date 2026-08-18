@@ -4563,3 +4563,134 @@ delivery and wording become assessable and the audit stops claiming a property i
 checked.
 **FALSIFIER (observable):** the next production pack still reports "bodies not stored" for
 the chase path, or a chase audit row records a disclosure footer on a body that has none.
+
+---
+
+## Iteration 17 — "the system sent you a duplicate" (DEF-226)
+
+### 0. The regression guard, which comes first
+
+**`B12-reminder-referent` C8 100 → 80, mean 93.1 → 85.0.** The judge:
+
+> "Brain speaks as itself, but the reference to **'the system'** creating the duplicate
+> feels like it's trying to distance itself from the action, rather than owning it as the
+> user's assistant."
+
+The reply: *"It looks like **the system** sent you a duplicate reminder for 'Send the
+revised Fujairah pricing to Latif'."* The three runs before it, on the same case:
+
+| run | what B12 said | C8 |
+|---|---|---|
+| iter-13 | "I sent that reminder twice" | 100 |
+| iter-14 | "I did send the reminder … twice" | 100 |
+| iter-15 | "That was a mistake on my part. I sent the reminder … twice" | 100 |
+| iter-16 | **"the system sent you a duplicate reminder"** | **80** |
+
+**Cause not established, and I am not going to imply one.** By the deploy-history lag
+documented in DEF-224, `iter-16` measured DEF-224 (deploy 05:13:55, run started 05:28:53).
+But B12's wording has changed in *all four* runs and its C4 has sat at 75–85 throughout, so
+the wording is visibly unstable independent of my changes. **I did not revert DEF-224 on
+suspicion** — that would remove a completeness fix to chase a sentence that drifts every
+run. What I did instead is fix the defect the judge actually named, which is real whatever
+caused this instance of it.
+
+### 1. Attempt 4 on Accurate Communication — what I now believe the obstacle is
+
+Unchanged from last turn, and last turn's answer was the scorer's own: *"0 provider
+receipts; **worker send bodies not stored** — wording/delivery quality unconfirmed on chase
+path."* DEF-225 addressed that and is **unmeasured** — `iter-16` predates its deploy
+(05:34:34). Its first test is the next run.
+
+**What I can add this turn is that the obstacle is not one thing but two, and they
+compound.** The score cannot move for prose nobody kept (DEF-225); and the loop has been
+aiming at a 7-point gap while the card in the same brief shows Simple & Smart at 59. Both
+are reported; neither is mine to resolve — `scripts/orchestrator/**` is forbidden.
+
+### 2. The mechanism, and why it is not a reword of DEF-165
+
+**The dispatch record has no subject.** Its rows are subjectless event lines —
+`- 08-17 12:04 ✓ WhatsApped: …` — so a model reading a log of events can narrate them in
+the third person **without ever making a false statement**. Nothing in the block says who
+performed them.
+
+DEF-165 put the CAUSE boundary in this block rather than in the rulebook, on the finding
+that *"a constraint placed next to the data outranks one placed in a rulebook"*. That
+paragraph forbids naming *"a system glitch"* as the CAUSE — and says nothing about **who
+did it**. Which is exactly why the block could carry it and still ship this reply. Same
+place, different question.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING.** `fabricated-status` is in chart §3 with six
+occurrences; this is its agent half, and the fix is structural — the record names its
+actor rather than the rule being reworded somewhere else.
+
+- `src/services/knowledge/dispatchLedgerService.ts:145` — *"EVERY LINE BELOW IS SOMETHING
+  **YOU** DID. There is no other actor in this record: 'the system', 'an automated
+  process', 'a background job' and 'the platform' are you, described from outside. Say 'I
+  sent it', never 'the system sent it' — the second disowns your own action and he has to
+  work out that you mean yourself. Owning a mistake plainly ('I sent it twice, and I don't
+  know why') is the whole of what is wanted here; distancing yourself from it is not
+  modesty, it is inaccuracy."*
+- Placed **before** the cause paragraph — who, then why.
+- Attached to the **header**, not the rows, so it ships on an empty record: *"did you send
+  it?"* on a quiet day is precisely when a vague third-party phrasing gets reached for.
+
+**This lands on the live path.** The ledger block reaches both composers —
+`brainComposer.ts:1678` (legacy) and `:2627` (`reasoningCompose`, which is the default).
+That check is the DEF-223 lesson applied rather than assumed.
+
+### 3. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            220 files (219 passed, 1 skipped)
+                          2778 tests — 2749 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check, comments stripped first: the ownership rule present, the DEF-165 cause
+rule still present, and the agent rule ordered before the cause rule.
+
+**9 tests. 5 mutants applied and RUN, all 5 die** — the rule removed · the four named
+phrases dropped for an abstract rule · the replacement sentence dropped leaving only the
+prohibition · the rule moved below the cause paragraph · the rule attached to the rows so
+an empty record loses it.
+
+**Every assertion reads the block's own prose deliberately.** The header quotes the phrases
+it forbids, so a whole-block regex for "the system" would match the prohibition and pass
+with the rule deleted — DEF-213's list and DEF-214's `toContain('17:07')`, twice learned,
+and I wrote the guards that way from the start this time.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **I did not revert DEF-224**, for the reason in §0: the guard's own evidence does not
+  attribute the wording to it, and B12 has never repeated a sentence.
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability, and the guard fired, which takes precedence.
+- **No C4 register work**, per the brief.
+- **Remediation:** `review_log.md` is **still 692 lines** — a sixth consecutive re-issue of
+  Iteration 4 with no reviewer having posted since it was written. Closure table with
+  commits and lines is in `6ea9dcf` and restated in four later commits. Answer unchanged:
+  **(a) accept as a known limitation with a DEF row; (b) revert is wrong.**
+- **This is a prompt-contract fix and I am not pretending otherwise.** DEF-206's lesson
+  holds: asking a model to do something is not a guarantee. What makes it more than a wish
+  is placement — beside the evidence, in the block the model already honours for "did
+  you…?", which is the one intervention in this lineage with a measured precedent (DEF-165).
+- **Unsure whether C8 returns to 100.** It sat at 100 for three runs and fell once; a
+  single sample either way proves little, and the honest read after the next run is the
+  median, not the point.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, on
+the live reasoning composer, on any turn where he asks what Brain did.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1** — this restores a case that
+regressed rather than adding reach, and claiming more for a guard repair would be the
+overstatement the capability contract exists to stop.
+**MECHANISM:** the dispatch record names its actor, so narrating it in the third person is
+no longer the reading of least resistance.
+**FALSIFIER (observable):** B12 C8 does not return to its 100 median, or any reply still
+attributes Brain's own dispatch to "the system".

@@ -4210,3 +4210,66 @@ gap, computed from Grok's card"* while the card in the same brief shows it at **
 narrowest of nine** (Simple & Smart is 59). Perfecting it moves BRAIN overall by at most
 0.8. Six iterations were spent there. `scripts/orchestrator/**` is forbidden to the
 Builder, so this is a report rather than a change.
+
+---
+
+## 77. DEF-226 — "the system sent you a duplicate" (2026-08-18, BUILDER: Claude — orchestrator iteration 17, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `fabricated-status`** — partly closed, the AGENT half.
+
+**The regression guard fired.** `B12-reminder-referent` C8 **100 → 80**, mean 93.1 → 85.0.
+The judge: *"Brain speaks as itself, but the reference to **'the system'** creating the
+duplicate feels like it's trying to distance itself from the action, rather than owning it
+as the user's assistant."* The three runs before it all said, in the first person, *"I sent
+the reminder twice."*
+
+**The mechanism is in the block, not the model.** The dispatch record renders subjectless
+event lines — `- 08-17 12:04 ✓ WhatsApped: …` — so a model reading a log of events can
+narrate them in the third person **without ever making a false statement**. Nothing said
+who performed them.
+
+DEF-165 put the CAUSE boundary in this block rather than in the rulebook, on the finding
+that *"a constraint placed next to the data outranks one placed in a rulebook"*. That
+paragraph forbids naming *"a system glitch"* as the CAUSE and says nothing about who did
+it — which is exactly why the block could carry it and still ship this reply. Same place,
+different question.
+
+**The fix — the agent boundary, beside the evidence.** *"EVERY LINE BELOW IS SOMETHING
+**YOU** DID. There is no other actor in this record: 'the system', 'an automated process',
+'a background job' and 'the platform' are you, described from outside. Say 'I sent it',
+never 'the system sent it'… Owning a mistake plainly ('I sent it twice, and I don't know
+why') is the whole of what is wanted here; distancing yourself from it is not modesty, it
+is inaccuracy."* Placed **before** the cause paragraph — who, then why — and attached to
+the header rather than the rows, so it ships on an empty record too: *"did you send it?"*
+on a quiet day is precisely when a vague third-party phrasing gets reached for.
+
+Verified to land on the live path: the ledger block reaches both composers
+(`brainComposer.ts:1678` legacy, `:2627` `reasoningCompose`, the default) — the DEF-223
+lesson applied rather than assumed.
+
+**Cause not established, and not implied.** By the deploy lag documented in DEF-224,
+`iter-16` measured DEF-224. But B12's wording has changed in all four runs and its C4 has
+sat at 75–85 throughout, so the wording is visibly unstable independent of my changes. **I
+did not revert DEF-224 on suspicion** — that would remove a completeness fix to chase a
+sentence that drifts every run.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+220 files (219 passed, 1 skipped), **2778 tests, 2749 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **9 tests, 5 mutants
+applied and RUN, all 5 die.**
+
+**Every assertion reads the block's own prose deliberately:** the header quotes the phrases
+it forbids, so a whole-block regex for "the system" would match the prohibition and pass
+with the rule deleted — DEF-213's list and DEF-214's `toContain('17:07')`, twice learned,
+and written correctly from the start this time.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the dispatch
+record names its actor, so narrating it in the third person is no longer the reading of
+least resistance. **FALSIFIER:** B12 C8 does not return to its 100 median, or any reply
+still attributes Brain's own dispatch to "the system".
+
+**Stated plainly:** this is a prompt-contract fix and DEF-206's lesson holds — asking a
+model to do something is not a guarantee. What makes it more than a wish is placement,
+beside the evidence, in the block the model already honours for "did you…?" — the one
+intervention in this lineage with a measured precedent (DEF-165). Also: DEF-225 remains
+**unmeasured**; `iter-16` predates its deploy by six minutes.
