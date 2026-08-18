@@ -4342,3 +4342,69 @@ written for recovered without it — said plainly rather than claimed.
 **Named, not swept:** the other confirmed action kinds (`create_contact`,
 `delegate_open_item`, …) each return their own `message` through the same conflated
 contract. That is where this class lives next.
+
+---
+
+## 79. DEF-228 — the prohibition was the menu (2026-08-18, BUILDER: Claude — orchestrator iteration 19, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `fabricated-status`** — partly closed.
+
+**What he read.** `iter-18-post-build.json`, `B12-reminder-referent`, C1 85:
+
+> "My apologies, Sir. It looks like **a stutter on my end** caused the duplicate reminder.
+> I can see I sent it twice, but I don't have a record of why it repeated."
+
+Judge: *"implies a specific mechanism, but then says 'I don't have a record of why it
+repeated'. This is a slight contradiction."*
+
+**The block printed the phrase.** DEF-165's cause paragraph enumerated four candidate causes
+as examples of what NOT to say — *"A system glitch", "a sync issue", "a duplicate job",
+**"a stutter on my end"** are GUESSES* — and the model took one off the list. `iter-14`
+produced the same phrase. That is `examples-outvote-the-instruction` (DEF-138) **in the
+production prompt**, and I have fixed the identical mistake in my own guards three times
+(DEF-213's list, DEF-214's `toContain('17:07')`, DEF-226's whole-block regex) without once
+fixing it in the prompt those guards protect.
+
+**DEF-165's own test recorded the evidence and read it backwards:** its comment approved of
+the list because *"the one it actually produced is among them."*
+
+**The fix — name what he got; never list what he might get.** The menu is deleted and the
+prohibition is stronger: *"Naming ANY mechanism is a fabricated finding, however technical or
+modest it sounds — if your sentence explains HOW it happened, you invented the how, because
+this record does not contain one."* A list can be evaded by picking a fifth phrase; a test
+the model applies to its own sentence cannot, and it keeps Codex's ruling that synonyms must
+not be chased with a regex.
+
+**This does not reverse DEF-213 or DEF-226, and the distinction is the finding:** those two
+named a phrase **the owner had already received** ("my dispatch log", "the system sent it"),
+which removes ambiguity about a sentence that exists. DEF-165 enumerated **hypotheticals**
+for a cause the model must invent. DEF-226's agent boundary is untouched and still names
+"the system" — asserted in the tests, not merely argued.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+222 files (221 passed, 1 skipped), **2797 tests, 2768 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **8 new tests, 4
+mutants applied and RUN, all 4 die.**
+
+**PROCESS NOTE, recorded because it nearly became a false claim.** My first attempt at two of
+those mutants used `perl` substitutions that silently failed to match, and both came back
+green. I was one sentence from writing "two mutants survived". **A mutant that does not apply
+is not a surviving mutant — it is a broken experiment.** Both were redone in Python with an
+`assert` on the anchor, and both then died.
+
+**Superseded assertions updated with the reasoning inline, never silenced:**
+`def165SelfConductEvidence` ×1 (it asserted the block *contains* "stutter on my end"),
+`def226OwnTheAction` ×1.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the block no longer
+supplies the vocabulary of the defect it forbids, so the cheapest completion stops being a
+fabricated mechanism. **FALSIFIER:** B12 still names a mechanism for the duplicate, or its C1
+does not recover from 85.
+
+**Also measured this turn, with the deploy lag applied so every fix now has a run that
+contained it:** DEF-224 → B06 C6 85→100 (*"You have no items with Critical or Low
+priority."*) ✓ · DEF-226 → B12 C8 held at 100, reply first-person, no third-party
+attribution anywhere in the run ✓ · DEF-227 not yet measured. **So the work IS reaching
+production and IS changing what he reads.** The benchmark moves; Grok's card does not,
+because its stated basis for Accurate Communication is the missing receipts and bodies —
+which needs a production pack to re-read, not a benchmark run.

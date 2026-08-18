@@ -4833,3 +4833,148 @@ every confirmed open-item update.
 helpers, so a fix on one is a fix on both.
 **FALSIFIER (observable):** any reply still contains `field=value` after an update, or B04's
 C6 does not recover.
+
+---
+
+## Iteration 19 — the prohibition was the menu (DEF-228)
+
+### 0. Remediation — Iteration 4. `review_log.md` is STILL 692 lines
+
+Eighth consecutive re-issue; the review log has not gained a line since the finding was
+written. **(a) Accept as a known limitation with a DEF row. (b) revert is wrong** — it
+would remove the transaction boundary, event-token identity, the per-row claim CAS and the
+paging fix in order to answer findings that named their absence. Closure table with commits
+and lines: `6ea9dcf`, restated in `1ead102`, `70c2715`, `d83a0dc`, `5a7b1e8`, `9209234`,
+`6e8c0b3`.
+
+### 1. Attempt 6 — what I now believe the obstacle is, with the evidence I did not have before
+
+I have said twice that the obstacle is (a) the scorer's stated blocker — *"0 provider
+receipts; worker send bodies not stored"* — and (b) the loop aiming at a 7-point gap. What
+this turn adds is **a measured answer to the prior question: is the work reaching him at
+all?**
+
+Using the deploy lag from DEF-224, every fix now has a run that contained it:
+
+| DEF | measured in | result |
+|---|---|---|
+| DEF-224 open-items completeness | iter-17 | **B06 C6 85 → 100**, *"You have no items with Critical or Low priority."* ✓ |
+| DEF-225 sent-record | iter-17 | no reply change expected — it is a storage fix |
+| DEF-226 agent boundary | **iter-18** | **B12 C8 held at 100**, reply is first person (*"I can see I sent it twice"*), no third-party attribution anywhere in the run ✓ |
+| DEF-227 second update receipt | not yet | — |
+
+**So the work IS reaching production and IS changing what he reads.** The benchmark moves;
+Grok's card does not, because Grok reads the codebase against a professional bar and its
+*stated* basis for Accurate Communication is the missing receipts and bodies — which DEF-225
+addressed and which needs a **production pack** to re-read, not a benchmark run. That is the
+obstacle, stated as precisely as I can: **not "the work is not reaching production" — the
+work reaches production, and the number that gates this loop is not computed from
+production replies.**
+
+### 2. The fix queue entry I targeted
+
+> **C1 85, `B12-reminder-referent`** — *"Brain states 'It looks like a stutter on my end
+> caused the duplicate reminder' … but then says 'I don't have a record of why it repeated'.
+> This is a slight contradiction."*
+
+I expect **C1 on B12** to move. Not the C4 entry above it — that is register, which the
+brief forbids chasing.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING.** `fabricated-status`, six occurrences in chart
+§3, so the mechanism must change rather than the instance.
+
+### 3. The mechanism — the block printed the phrase
+
+DEF-165's cause paragraph enumerated four candidate causes as examples of what NOT to say:
+
+```
+"A system glitch", "a sync issue", "a duplicate job", "a stutter on my end" are
+GUESSES; naming one as the cause is a fabricated finding …
+```
+
+B12 replied with **"a stutter on my end"**. `iter-14` produced the same phrase. That is
+`examples-outvote-the-instruction` (DEF-138) in the production prompt.
+
+**And DEF-165's own test recorded the evidence and read it the other way.** Its comment
+approved of the list precisely because *"the one it actually produced is among them"* — the
+same observation, taken as confirmation that the list was working.
+
+I have fixed this identical mistake in my own **guards** three times — DEF-213's
+forbidden-phrase list, DEF-214's `toContain('17:07')`, DEF-226's whole-block regex — and
+never once in the prompt those guards protect.
+
+**Change** — `dispatchLedgerService.ts:200-224`: the menu is deleted; the prohibition is
+stronger, not weaker:
+
+> *"Naming ANY mechanism is a fabricated finding, however technical or modest it sounds — if
+> your sentence explains HOW it happened, you invented the how, because this record does not
+> contain one."*
+
+A list can be evaded by picking a fifth phrase. A **test the model applies to its own
+sentence** cannot, and it keeps Codex's ruling that synonyms must not be chased with a regex.
+
+**IT DOES NOT REVERSE DEF-213 OR DEF-226, and the distinction is the finding:**
+
+- Those two named a phrase **the owner had already received** — *"my dispatch log"*, *"the
+  system sent it"*. Naming a sentence that exists removes ambiguity about it.
+- DEF-165 enumerated **hypotheticals** for a cause the model has to invent. That is a menu.
+
+**Name what he got; never list what he might get.** DEF-226's agent boundary is untouched
+and still names "the system" — asserted in the tests, not merely argued here.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            222 files (221 passed, 1 skipped)
+                          2797 tests — 2768 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check, comments stripped: all four menu phrases absent, the prohibition and the
+HOW-test present, DEF-226's agent boundary intact.
+
+**8 new tests (17 with DEF-226's). 4 mutants applied and RUN, all 4 die** — the menu
+restored · the HOW-test dropped · the honest alternative dropped · DEF-226's agent boundary
+removed.
+
+**PROCESS NOTE, recorded because it nearly became a false claim.** My first attempt at two
+of those mutants used `perl` substitutions that silently failed to match, and both runs came
+back green. I was one sentence from writing "two mutants survived". **A mutant that does not
+apply is not a surviving mutant — it is a broken experiment.** Both were redone in Python
+with an `assert` on the anchor text, and both then died.
+
+**Superseded assertions updated with the reasoning inline, never silenced:**
+`def165SelfConductEvidence` ×1 — it asserted the block *contains* "stutter on my end" — and
+`def226OwnTheAction` ×1.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability.
+- **No C4 register work**, per the brief. B12's C4 80 is the top queue entry and I left it.
+- **I did not sweep the other prompt blocks for the same menu shape.** `pushHistoryBlock`
+  and the core rules both quote phrases they forbid; DEF-213's list is one of them, and by
+  the distinction above it is the legitimate kind — but I have not checked the rest, and I
+  would rather name that than imply a sweep.
+- **I did not revert anything.** DEF-226 measured well and DEF-227 is untested.
+- **Unsure whether B12's C1 recovers.** The phrase is gone from the prompt, which is
+  necessary; whether the model invents a different mechanism unprompted is exactly what
+  DEF-206 says I cannot guarantee. If it names a fresh mechanism the block never printed,
+  the menu was not the whole cause and I would want that said rather than explained away.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes; the
+ledger block reaches both composers including `reasoningCompose`, the default.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1** — removing a source of a
+fabrication is a repair, not new reach, and claiming more would be the overstatement the
+capability contract exists to stop.
+**MECHANISM:** the block no longer supplies the vocabulary of the defect it forbids, so the
+cheapest completion stops being a fabricated mechanism.
+**FALSIFIER (observable):** B12 still names a mechanism for the duplicate, or its C1 does
+not recover from 85.
