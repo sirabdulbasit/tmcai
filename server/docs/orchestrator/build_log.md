@@ -4978,3 +4978,138 @@ capability contract exists to stop.
 cheapest completion stops being a fabricated mechanism.
 **FALSIFIER (observable):** B12 still names a mechanism for the duplicate, or its C1 does
 not recover from 85.
+
+---
+
+## Iteration 20 — `invalid_grant` reached the owner, and the translator was already there (DEF-229)
+
+### 0. Remediation — Iteration 4. `review_log.md` is STILL 692 lines
+
+Ninth consecutive re-issue; no reviewer has posted since the finding was written.
+**(a) Accept as a known limitation with a DEF row. (b) revert is wrong** — it would remove
+the transaction boundary, event-token identity, the per-row claim CAS and the paging fix to
+answer findings that named their absence. Closure table with commits and lines: `6ea9dcf`,
+restated in six later commits.
+
+### 1. Attempt 7 — the honest finding is about the QUEUE
+
+`iter-19` measured **DEF-227** (deploy 06:16:46, run started 06:31:59); DEF-228 is
+unmeasured. Two things follow, and the second is the important one.
+
+**B12's C1 recovered to 100 in this run — without DEF-228.** It was 85 in DEF-226's run.
+Same pattern as B12's C8 last iteration: **the case recovers before my fix for it is
+measured.** I am not claiming DEF-228 did this, and its falsifier remains untested.
+
+**And the fixQueue is now ENTIRELY C4 register:**
+
+| entry | judge |
+|---|---|
+| C4 75 B12 | *"'My apologies, Sir' is a bit overly formal and canned"* |
+| C4 80 B09 | *"'Sir's AI executive assistant' is a bit formal"* |
+| C4 85 B01 | *"'because it requires intervention' is slightly more formal than necessary"* |
+| C4 85 B08 | *"'It reported 'invalid_grant'' is slightly clunky"* |
+| C4 85 B10 | *"the bulleted list feels slightly mechanical"* |
+
+Every other criterion averages **96.7**, and C4 is the one the brief forbids chasing. **So
+the benchmark has essentially no remaining Accurate Communication work I am permitted to
+do** — except the one entry that is not really register, which is what I took.
+
+**Benchmark fairness, raised and not acted on** (the brief invites exactly this): the judge
+repeatedly marks down "Sir", and **the owner configured "Sir"** — Codex's class #6 records
+*"Another owner-facing surface used 'Basit' despite the configured 'Sir'."* Brain is being
+penalised for obeying him. I have not touched the benchmark; Codex arbitrates.
+
+### 2. The entry I targeted, and why it is not register
+
+> **C1 90 / C2 90, `B08-bad-news`** — *"I sent a WhatsApp notification … about a problem
+> with your Google Calendar connection. **It reported 'invalid_grant'** and the last
+> successful sync was 76 hours ago."*
+
+`invalid_grant` is an OAuth token from Google's SDK. It tells him nothing he can act on, and
+it is the same class as `priority=high`: machine vocabulary crossing into the reply. I
+expect **C1 and C2 on B08** to move.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING** — `protection-with-two-implementations`, chart §3.
+
+### 3. The mechanism — and it is a live surface, not the benchmark
+
+`staleConnectorPing` sends the owner a **WhatsApp ping** and interpolated the stored error
+straight into it:
+
+```ts
+const reason = row.last_oauth_error ? ` (${row.last_oauth_error})` : '';
+```
+
+**And a translator already existed.** `sanitizeScribeError`
+(`routes/admin/clientConnectorRoutes.ts`) has done exactly this job since it was written,
+and its own docblock states the principle: *"surfacing that verbatim to admins tells them
+nothing about what to do."* It was **private to one admin route** — the shape
+`applyOpenItemUpdate`'s docblock named: *"the @lid resolver living privately in one
+consumer: one implementation, one caller, and every new caller silently broken."*
+
+**What changed, by file:line:**
+
+- `src/services/connectors/providerErrorText.ts` (new) — `classifyProviderError` is the ONE
+  definition of the patterns; `ownerFacingCause` renders his situation without provider
+  vocabulary (*"its access permission has expired"*).
+- **Order is load-bearing and asserted:** an expiry often arrives wrapped in a 403, so auth
+  is tested before permission. The other way round he is told to change an account setting
+  that is already correct.
+- **An untranslatable code returns `null`** and `staleConnectorPing.ts:50` says nothing
+  extra rather than pasting it. A code he cannot act on is worse than silence, and the
+  message already tells him what to do.
+- `routes/admin/clientConnectorRoutes.ts:120` classifies through the shared module and
+  **keeps its scribe-specific sentences unchanged** — *"click Re-connect on the Google Drive
+  card"*, *"then Re-scribe"* would be wrong in a ping about a calendar. **Only the matching
+  is shared, because only the matching was duplicated.**
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            223 files (222 passed, 1 skipped)
+                          2809 tests — 2780 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check, comments stripped: the raw interpolation gone from the ping, the
+translator called there, the admin using the shared classifier, its private regexes gone and
+its sentences intact.
+
+**12 tests. 5 mutants applied and RUN, all 5 die** — unknown returning the raw code instead
+of `null` · auth tested after permission so a 403-wrapped expiry misroutes · the ping pasting
+the code again · the admin keeping its own regexes · the admin's scribe sentences replaced by
+the generic clause. **Each mutant was applied in Python with an `assert` on its anchor**,
+which is DEF-228's lesson carried forward: a mutant that does not apply is a broken
+experiment, not a survivor.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability.
+- **No C4 register work**, per the brief — including the four register entries above.
+- **I did not trace every other consumer of `lastRefreshError`.** `connectorHealthService`
+  builds its own owner-facing lines and I read them (they are already curated English); I
+  have not audited every job that reads connector metadata, and I would rather name that gap
+  than imply a sweep.
+- **I did not fix `B09`'s "Sir's AI executive assistant"**, which I think is a real error
+  rather than register — the honorific used as a possessive name, the same confusion as
+  Codex's class #6. It belongs to Memory/persona, not to this change, and the continuation
+  forbids changing capability.
+- **Unsure whether B08's C1/C2 move.** They are 90s and the judge called the phrase "clunky"
+  under C4 rather than untruthful. What I am confident of is that the owner's WhatsApp ping
+  no longer contains an OAuth token, which is worth doing whatever the judge says.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, and
+directly: the stale-connector ping is a WhatsApp message he receives.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1.**
+**MECHANISM:** one classifier for provider errors, so the owner-facing surface states a
+cause he can act on instead of the provider's token.
+**FALSIFIER (observable):** any owner-facing message still contains `invalid_grant` or
+another provider code, or B08's C1/C2 do not recover from 90.

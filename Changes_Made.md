@@ -4408,3 +4408,64 @@ attribution anywhere in the run ✓ · DEF-227 not yet measured. **So the work I
 production and IS changing what he reads.** The benchmark moves; Grok's card does not,
 because its stated basis for Accurate Communication is the missing receipts and bodies —
 which needs a production pack to re-read, not a benchmark run.
+
+---
+
+## 80. DEF-229 — `invalid_grant` reached the owner, and the translator was already there (2026-08-18, BUILDER: Claude — orchestrator iteration 20, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `protection-with-two-implementations`** — partly closed.
+
+**What he read.** `iter-19-post-build.json`, `B08-bad-news`, C1 90 / C2 90:
+
+> "I sent a WhatsApp notification … about a problem with your Google Calendar connection.
+> **It reported 'invalid_grant'** and the last successful sync was 76 hours ago."
+
+`invalid_grant` is an OAuth token from Google's SDK — machine vocabulary crossing into the
+reply, the same class as `priority=high` (DEF-220/DEF-227).
+
+**It came from a live owner-facing surface, not the benchmark.** `staleConnectorPing` sends
+a WhatsApp ping and interpolated the stored error straight into it:
+`` const reason = row.last_oauth_error ? ` (${row.last_oauth_error})` : '' ``.
+
+**And a translator already existed.** `sanitizeScribeError` has done exactly this job since
+it was written — its docblock says *"surfacing that verbatim to admins tells them nothing
+about what to do"* — and was **private to one admin route**. One implementation, one caller,
+every other consumer leaking the code: the shape `applyOpenItemUpdate`'s docblock named
+(*"the @lid resolver living privately in one consumer … every new caller silently broken"*).
+
+**The fix — the classification is shared; the phrasing is not.** New
+`services/connectors/providerErrorText.ts`: `classifyProviderError` is the one definition of
+the patterns, `ownerFacingCause` renders his situation without provider vocabulary (*"its
+access permission has expired"*). **Order is load-bearing and asserted:** an expiry often
+arrives wrapped in a 403, so auth is tested before permission — otherwise he is sent to
+change an account setting that is already correct. **An untranslatable code returns `null`
+and the ping says nothing extra**, because a code he cannot act on is worse than silence.
+The admin route classifies through the shared module and keeps its scribe-specific sentences
+unchanged — *"the Google Drive card"*, *"Re-scribe"* would be wrong in a ping about a
+calendar.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+223 files (222 passed, 1 skipped), **2809 tests, 2780 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **12 tests, 5 mutants
+applied and RUN, all 5 die** — each applied with an `assert` on its anchor, carrying forward
+DEF-228's lesson that a mutant which does not apply is a broken experiment, not a survivor.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** one classifier for
+provider errors, so the owner-facing surface states a cause he can act on instead of the
+provider's token. **FALSIFIER:** any owner-facing message still contains `invalid_grant` or
+another provider code, or B08's C1/C2 do not recover from 90.
+
+**THE HONEST FINDING OF THIS TURN IS ABOUT THE QUEUE.** After seven attempts on Accurate
+Communication the fixQueue is **entirely C4 register** — *"My apologies, Sir"*, *"Sir's AI
+executive assistant"*, *"because it requires intervention"*, *"the bulleted list feels
+mechanical"* — while every other criterion averages **96.7**. `invalid_grant` was the last
+substantive Accurate Communication defect visible in it.
+
+**Benchmark fairness, raised and not acted on:** the judge repeatedly marks down "Sir", and
+**the owner configured "Sir"** (Codex's class #6 records *"Another owner-facing surface used
+'Basit' despite the configured 'Sir'"*). Brain is being penalised for obeying him. The
+benchmark is untouched; Codex arbitrates.
+
+**Also recorded:** B12's C1 recovered to 100 in this run **without** DEF-228, which is
+unmeasured — the same pattern as B12's C8 recovering before DEF-226 was measured. Said
+plainly rather than claimed as a win.
