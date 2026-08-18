@@ -16,6 +16,14 @@
  */
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+// DEF-227 — ONE vocabulary for "what was applied", shared with the inline
+// composer branch. A second copy of the sentence here is what produced the
+// defect this closes.
+import {
+  appliedChanges,
+  actionAppliedMarker,
+  type AppliedChange,
+} from '../knowledge/actionReceipt';
 
 const log = createLogger('open-item-update');
 
@@ -32,7 +40,24 @@ export interface OpenItemUpdateInput {
 
 export interface OpenItemUpdateResult {
   ok: boolean;
+  /**
+   * DEF-227 — what the OWNER reads. A provenance-stamped applied-marker whose
+   * curated meaning is composed from the fields (DEF-220), not the machine
+   * receipt. On the confirmed-plan path this value IS the reply, so leaving the
+   * receipt here put `Updated "…": priority=high.` on his screen — the exact
+   * string DEF-212, DEF-219 and DEF-220 were each written to eliminate, alive
+   * in a second implementation none of them touched.
+   */
   message: string;
+  /**
+   * The machine receipt, unchanged and still true by construction. DEF-144
+   * ruled it stays the AUDIT record; it just stops being the sentence.
+   */
+  receipt?: string;
+  /** The fields the database actually received, for callers that compose their own. */
+  applied?: AppliedChange[];
+  /** The item's title as it stands after the write. */
+  title?: string;
   artifactId?: string;
 }
 
@@ -102,9 +127,29 @@ export async function applyOpenItemUpdate(
   if (data.status === 'NEW') changes.push('status=NEW (DRAFT completed)');
   log.info('open item updated', { openItemId: existing.id, changes });
 
+  const receipt = `Updated "${data.title ?? existing.title}": ${changes.join(', ')}.`;
+  const title = String(data.title ?? existing.title);
+  const applied = appliedChanges(data as Record<string, unknown>);
+
   return {
     ok: true,
     artifactId: existing.id,
-    message: `Updated "${data.title ?? existing.title}": ${changes.join(', ')}.`,
+    // DEF-227 — the owner-facing value is the marker; the receipt travels
+    // beside it for the ledger. When nothing in the shared vocabulary was
+    // written there is no fact to compose, so the receipt stays the message —
+    // the DEF-220 fail-closed rule, unchanged.
+    //
+    // MUTATION HONESTY: removing this guard kills no test today, because every
+    // key this function can put in `data` except `metadata` is in the shared
+    // vocabulary, and `metadata` is only ever set alongside `status`. So the
+    // branch is unreachable NOW. It is kept rather than deleted — unlike the
+    // genuinely redundant check DEF-221 removed — because the failure it
+    // prevents is silent: `appliedMarkerMeaning` rejects a zero-field payload,
+    // so a future internal-only field would mint an uncurated marker and the
+    // owner would read the neutral fallback instead of the truth.
+    message: applied.length > 0 ? actionAppliedMarker({ title, applied }) : receipt,
+    receipt,
+    applied,
+    title,
   };
 }

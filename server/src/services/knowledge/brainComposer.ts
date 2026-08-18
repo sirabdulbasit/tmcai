@@ -6886,6 +6886,11 @@ export async function dispatchPendingDirect(
         dueDateRaw: slots.dueDateRaw as string | undefined,
         note: slots.note as string | undefined,
       });
+      // DEF-227 — pass the composed fact through. This `message` becomes the
+      // owner's reply on the confirmed path, and returning `r.receipt` here is
+      // what put `Updated "…": priority=high.` back on his screen after three
+      // DEFs had removed it from the inline branch. The receipt is still built
+      // and still returned by `applyOpenItemUpdate` for the ledger.
       return { ok: r.ok, artifactId: r.artifactId, message: r.message };
     }
     case 'add_open_item': {
