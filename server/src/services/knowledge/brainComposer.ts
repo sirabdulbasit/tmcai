@@ -32,6 +32,7 @@ import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 import { renderOwnerClockLine } from '../userTimezoneService';
 import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots } from './actionReceipt';
 import { PERSON_REFERENCE_RULE, statesPersonReferenceRule } from './personReference';
+import { renderOpenItemsHeader, OPEN_ITEMS_PAGE } from './openItemsCompleteness';
 
 export interface OpenedPage {
   id: string;
@@ -2044,20 +2045,43 @@ export async function buildOpenItemsBlockForReasoning(
   clientNumber: string,
 ): Promise<string> {
   try {
-    const rows = await prisma.openItem.findMany({
-      where: {
-        clientNumber, userId, ownerId: userId,
-        status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT'] },
-      },
-      select: {
-        id: true, title: true, status: true, priority: true, dueDate: true,
-        delegateeName: true, delegateeEmail: true, metadata: true,
-        delegationFollowupCount: true, delegationLastFollowupAt: true,
-        createdAt: true,
-      } as any,
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-    });
+    // DEF-224 — ONE definition of "active open items", shared by the page and
+    // the tally. Two hand-written where-clauses would drift, and a tally that
+    // counts a different set from the page is worse than no tally: it would
+    // make Brain state a total it cannot support.
+    const ACTIVE_WHERE = {
+      clientNumber, userId, ownerId: userId,
+      status: { in: ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT'] },
+    };
+    const [rows, tally] = await Promise.all([
+      prisma.openItem.findMany({
+        where: ACTIVE_WHERE,
+        select: {
+          id: true, title: true, status: true, priority: true, dueDate: true,
+          delegateeName: true, delegateeEmail: true, metadata: true,
+          delegationFollowupCount: true, delegationLastFollowupAt: true,
+          createdAt: true,
+        } as any,
+        orderBy: { createdAt: 'desc' },
+        take: OPEN_ITEMS_PAGE,
+      }),
+      // The complete count per priority over the SAME set. One indexed
+      // group-by; it is what lets Brain say "no low-priority items" as a fact
+      // instead of leaving him to infer it from a heading that is not there.
+      // `Promise.resolve().then(...)` rather than a bare call: a client without
+      // `groupBy` throws SYNCHRONOUSLY, `.catch` never runs, and the outer
+      // try/catch returns '' — the whole open-items block would vanish because
+      // a COUNT failed. Caught by the existing `openItemsOwnerRouting` suite,
+      // which mocks a client with no `groupBy`, and it is exactly the
+      // `guard-destroys-the-answer` shape: an improvement deleting the evidence.
+      Promise.resolve()
+        .then(() => (prisma.openItem as any).groupBy({
+          by: ['priority'],
+          where: ACTIVE_WHERE,
+          _count: { _all: true },
+        }))
+        .catch(() => [] as Array<{ priority: string | null; _count: { _all: number } }>),
+    ]);
     if (rows.length === 0) return '';
 
     // Fix 2026-07-10 (Basit "ask status of EXIM" → wrong recipient):
@@ -2122,14 +2146,17 @@ export async function buildOpenItemsBlockForReasoning(
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
       return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    // DEF-221 attached the person-reference rule here, because this block names
-    // third parties (`delegated_to="…"`). DEF-222 MOVED IT to the core rules and
-    // deleted it from here: this block is gated on
-    // `isActionTurn || day_brief || factual`, so on a turn like "Did you send
-    // that message to Hamna?" it never shipped — and that reply said "delegated
-    // to HER". A rule that only exists when its evidence does is not an
-    // invariant. It now rides on every turn from one place.
-    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}`;
+    // DEF-221 attached the person-reference rule here; DEF-222 moved it to the
+    // core conversational rules so it rides on every turn from one place.
+    //
+    // DEF-224 CORRECTS WHAT DEF-222'S COMMENT SAID HERE. It claimed this block
+    // "is gated on `isActionTurn || day_brief || factual`". That gate is on
+    // `assembleSystemPrompt`'s `openItemsBlock`, a different variable. THIS
+    // function feeds the reasoning path, which passes it UNGATED (`:2591`), and
+    // the reasoning path is the default composer. So the gate never explained
+    // why B01 said "delegated to her" — the rule simply was not on the reasoning
+    // prompt at all, which is what DEF-223 fixed.
+    return `${renderOpenItemsHeader(rows.length, tally)}\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';
