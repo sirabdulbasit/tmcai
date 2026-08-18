@@ -4694,3 +4694,142 @@ overstatement the capability contract exists to stop.
 no longer the reading of least resistance.
 **FALSIFIER (observable):** B12 C8 does not return to its 100 median, or any reply still
 attributes Brain's own dispatch to "the system".
+
+---
+
+## Iteration 18 — the field-name receipt came back, from the other implementation (DEF-227)
+
+### 0. The escalation, answered plainly: (a), accept with a DEF row
+
+`review_log.md` is **still 692 lines** — a seventh consecutive re-issue of Iteration 4 with
+no reviewer having posted since it was written. **(a) Accept as a known limitation with a
+DEF row. (b) is wrong**, and the reason is unchanged and checkable: reverting would remove
+the transaction boundary (`openItemsBacklogCleanupJob.ts:742-828`), event-token identity
+(`:184`, `:582`, `:754-756`), the per-row claim CAS (`:758-783`) and the paging fix
+(`:600-643`) — four mechanisms that exist to stop a fabricated withdrawal notice reaching
+the owner — in order to answer findings that named their absence. Closure table with
+commits and lines: `6ea9dcf`, restated in `1ead102`, `70c2715`, `d83a0dc`, `5a7b1e8`,
+`9209234`.
+
+### 1. Two measurements first, one of them good news
+
+By the deploy lag documented in DEF-224: `iter-17` started 05:47:43, deploy 16 (DEF-225)
+landed 05:34:34, deploy 17 (DEF-226) landed 05:54:08. **So `iter-17` measured DEF-225, and
+DEF-226 is unmeasured.**
+
+- **DEF-224 WORKED, and this is the first cleanly attributable win in this lineage.** B06
+  is at **C6 100** with: *"You have 4 open items in total… **You have no items with
+  Critical or Low priority.**"* That sentence is the completeness statement DEF-224 built,
+  in his words, and B06's C6 complaint had recurred in three consecutive runs before it.
+- **B12's C8 returned to 100 on its own** — in the run that measured DEF-225, *before*
+  DEF-226 deployed. So last turn's fix has **not** been tested, and the case it was written
+  for recovered without it. I said at the time that one sample proves little; that cuts
+  both ways and I am not claiming DEF-226 did this.
+
+### 2. The fix queue entry I targeted
+
+> **C6 75, `B04-outstanding-question-ignored`** — *"The system updated the priority but did
+> not acknowledge the remaining outstanding question about the deadline."*
+
+The reply:
+
+```
+Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.
+```
+
+**That is verbatim the string DEF-212, DEF-219 and DEF-220 were each written to eliminate.**
+I expect **C6 and C4 on B04** to move.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING** — `protection-with-two-implementations` is in
+chart §3, so a patch on the instance is forbidden and the duplicate implementation is the
+thing to remove.
+
+### 3. The mechanism — and it is the fourth time this session
+
+**There are two implementations of the update receipt, and all three earlier fixes landed
+on one of them.**
+
+`applyOpenItemUpdate` is the shared module. Its own docblock says so: *"the single
+implementation used by BOTH the inline reasoning path and the confirmed-plan dispatcher"*,
+written on 2026-08-04 after a confirmed plan died with `[Unknown pending action kind:
+updateopenitem]`. **It shares the WRITE. It never shared the RECEIPT** — it built its own
+`` `Updated "${title}": ${changes.join(', ')}.` `` at `applyOpenItemUpdate.ts:108`, and on
+the confirmed path that string **is** the reply, because the dispatcher's contract is
+`{ok, artifactId, message}` and `message` becomes the answer.
+
+That is the same shape as DEF-222 → DEF-223 (`assembleSystemPrompt` versus
+`reasoningCompose`). **Four times in this session a fix has landed on the path the live turn
+does not take**, and each time I found it only after the score showed the defect surviving.
+
+**What changed, by file:line:**
+
+- `src/services/openItems/applyOpenItemUpdate.ts:33-57` — the result type gains `receipt`,
+  `applied` and `title` beside `message`.
+- `:118-137` — `message` is now the provenance-stamped applied-marker, built from
+  `appliedChanges(data)` + `actionAppliedMarker` — **the same two helpers DEF-220 put on the
+  inline branch, imported rather than restated.** `receipt` keeps the machine string, because
+  DEF-144 ruled it stays the audit record; it just stops being the sentence.
+- `src/services/knowledge/brainComposer.ts:6889` — the confirmed-plan caller returns
+  `r.message`, with a guard asserting it never returns `r.receipt`.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            221 files (220 passed, 1 skipped)
+                          2789 tests — 2760 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check, comments stripped: the marker is the message, the receipt is still
+returned, and `applied` comes from the written payload.
+
+**11 tests. 5 mutants applied and RUN, 4 die.** Dead: the receipt back as the message · the
+audit receipt dropped · `applied` read from the INPUT instead of the written payload · the
+confirmed caller returning `r.receipt`.
+
+**ONE SURVIVED, and it is reported rather than hidden.** Removing the `applied.length > 0`
+fail-closed guard kills no test, because every key this function can write except
+`metadata` is in the shared vocabulary and `metadata` only ever accompanies `status` — the
+branch is unreachable today. **Kept rather than deleted**, unlike the genuinely redundant
+check DEF-221 removed, because the failure it prevents is silent: `appliedMarkerMeaning`
+rejects a zero-field payload, so a future internal-only field would mint an uncurated marker
+and the owner would read the neutral fallback instead of the truth. The reasoning is in the
+source, not only here.
+
+**One test assumption of mine was wrong and the real behaviour is recorded instead:** I
+expected `applied` to be empty when only a note is written; `note` maps to `description`,
+which IS in the vocabulary. The stronger property — a dropped `urgent-ish` priority is never
+mentioned in either the fact or the receipt — is asserted in its place.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability.
+- **No C4 register work**, per the brief.
+- **I did not widen the dispatcher contract.** `{ok, artifactId, message}` conflating the
+  receipt and the reply is the deeper design problem, and separating them end-to-end touches
+  every confirmed action kind. This turn makes the update path speak correctly through the
+  existing contract; the contract itself is named here and not attempted.
+- **I did not audit the other confirmed action kinds** for the same conflation. `create_contact`,
+  `delegate_open_item` and the rest each return their own `message`. That is the obvious
+  next place this class lives, and I would rather name it than imply a sweep.
+- **Unsure whether B04 was actually on the confirmed path.** The evidence is strong —
+  the string exists in exactly one other producer, and DEF-220 removed it from the inline
+  branch — but I could not run the failing turn to observe which dispatcher it took. If
+  Codex can show B04 goes through the inline branch, this fix is still correct and the B04
+  cause is still open, and I would want that said.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, on
+every confirmed open-item update.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.**
+**MECHANISM:** both update paths compose the owner-facing sentence from the same two
+helpers, so a fix on one is a fix on both.
+**FALSIFIER (observable):** any reply still contains `field=value` after an update, or B04's
+C6 does not recover.

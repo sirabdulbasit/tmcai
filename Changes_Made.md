@@ -4273,3 +4273,72 @@ model to do something is not a guarantee. What makes it more than a wish is plac
 beside the evidence, in the block the model already honours for "did you…?" — the one
 intervention in this lineage with a measured precedent (DEF-165). Also: DEF-225 remains
 **unmeasured**; `iter-16` predates its deploy by six minutes.
+
+---
+
+## 78. DEF-227 — the field-name receipt came back, from the other implementation (2026-08-18, BUILDER: Claude — orchestrator iteration 18, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `protection-with-two-implementations`** — partly closed.
+
+**What he was reading again.** `iter-17-post-build.json`, `B04-outstanding-question-ignored`,
+C6 75:
+
+```
+Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.
+```
+
+**Verbatim the string DEF-212, DEF-219 and DEF-220 were each written to eliminate.**
+
+**The cause: there are two implementations of the update receipt, and all three earlier
+fixes landed on one.** `applyOpenItemUpdate` is the shared module — its own docblock says
+*"the single implementation used by BOTH the inline reasoning path and the confirmed-plan
+dispatcher"*, written after a confirmed plan died with `[Unknown pending action kind]`. **It
+shares the WRITE. It never shared the RECEIPT**: it built its own
+`` `Updated "${title}": ${changes.join(', ')}.` `` and on the confirmed path that string
+**is** the reply, because the dispatcher's contract is `{ok, artifactId, message}`.
+
+Same shape as DEF-222 → DEF-223. **Four times this session a fix has landed on the path the
+live turn does not take**, and each time I found it only after the score showed the defect
+surviving.
+
+**The fix — the shared module shares the sentence too.** `message` is now the
+provenance-stamped applied-marker built from `appliedChanges(data)` + `actionAppliedMarker`
+— the same two helpers DEF-220 put on the inline branch, imported rather than restated — so
+the owner reads *"The open item "X" was updated: its priority is now high."* The machine
+receipt is still built and returned as `receipt` (DEF-144 ruled it stays the audit record);
+`applied` and `title` travel too. The confirmed caller returns `r.message`, with a guard
+that it never returns `r.receipt`.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+221 files (220 passed, 1 skipped), **2789 tests, 2760 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **11 tests, 5 mutants
+applied and RUN, 4 die.**
+
+**One mutant SURVIVED and is reported rather than hidden.** Removing the
+`applied.length > 0` fail-closed guard kills no test — every key this function can write
+except `metadata` is in the shared vocabulary, so the branch is unreachable today. **Kept
+rather than deleted** (unlike DEF-221's genuinely redundant check) because the failure it
+prevents is silent: `appliedMarkerMeaning` rejects a zero-field payload, so a future
+internal-only field would mint an uncurated marker and he would read the neutral fallback
+instead of the truth. The reasoning is in the source.
+
+**A test assumption of mine was wrong and the real behaviour is recorded instead:** `note`
+maps to `description`, which IS in the vocabulary, so `applied` is not empty there; the
+stronger property — a dropped `urgent-ish` priority is never mentioned — is asserted in its
+place.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** both update paths
+compose the owner-facing sentence from the same two helpers, so a fix on one is a fix on
+both. **FALSIFIER:** any reply still contains `field=value` after an update, or B04's C6
+does not recover.
+
+**ALSO MEASURED THIS TURN — DEF-224 WORKED.** B06 is at **C6 100** with *"You have 4 open
+items in total… **You have no items with Critical or Low priority.**"* — the completeness
+statement DEF-224 built, in his words, after that complaint had recurred in three
+consecutive runs. First cleanly attributable win in this lineage. **And B12's C8 returned to
+100 in the run BEFORE DEF-226 deployed**, so last turn's fix is untested and the case it was
+written for recovered without it — said plainly rather than claimed.
+
+**Named, not swept:** the other confirmed action kinds (`create_contact`,
+`delegate_open_item`, …) each return their own `message` through the same conflated
+contract. That is where this class lives next.
