@@ -216,3 +216,48 @@ export function renderSelfPruneNotice(args: {
   };
   return systemMarker(`selfpruning_withdrawn: ${JSON.stringify(payload)}`);
 }
+
+/**
+ * DEF-217 — C-3 increment 1's OWNER-FACING SURFACE.
+ *
+ * The campaign's increment 1 is "a read-only classifier + counter over inbound:
+ * for each sender/thread, how many pushes reached the owner and how many he ever
+ * acted on", and its *Done when* is "Deployed, and the real count for the CL-033
+ * unknown-number burst is quoted back to the owner from production data."
+ *
+ * The classifier has existed for some time — `inboundNoiseLedger`'s
+ * `summariseInboundNoise` produces exactly those counts. What did not exist was
+ * anything that says the number to HIM: its only consumers were a hand-run
+ * script and a prompt block. I recorded that finding in iterations 8 and 9; this
+ * is the surface.
+ *
+ * Counts only. No suppression, no deletion, no behaviour change — the increment
+ * is explicit that it "only produces the number that proves the problem", and a
+ * report that also acted would be increment 2 arriving early and unreviewed.
+ */
+export function renderInboundNoiseNotice(args: {
+  /** How the sender appears to him — a saved name, or the raw number. */
+  sender: string;
+  /** Pushes delivered to him from that sender in the window. */
+  reached: number;
+  /** How many he ever acted on. */
+  acted: number;
+  windowHours: number;
+  /** True when the rows carried no item/thread identity (CL-033's shape). */
+  unattributed: boolean;
+}): string {
+  const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
+  const int = (n: number, lo: number, hi: number) =>
+    (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : lo);
+  const reached = int(args.reached, 1, 10_000);
+  const payload = {
+    sender: clean(String(args.sender)).slice(0, 80) || 'an unknown sender',
+    reached,
+    // Acted can never exceed reached: a payload the constructor cannot produce
+    // is one the parser must reject, so the clamp lives here.
+    acted: Math.min(int(args.acted, 0, 10_000), reached),
+    windowHours: int(args.windowHours, 1, 8_760),
+    unattributed: args.unattributed === true,
+  };
+  return systemMarker(`selfpruning_noise: ${JSON.stringify(payload)}`);
+}

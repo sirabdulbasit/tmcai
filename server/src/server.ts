@@ -377,6 +377,29 @@ const server = app.listen(env.port, async () => {
     setInterval(notifyPass, 60 * 60 * 1000);
   }, 20 * 60 * 1000);
 
+  // DEF-217 — C-3 increment 1: the inbound-noise COUNT reaches the owner.
+  //
+  // Hourly tick, at most ONE message per user per DAY — the day is in the dedup
+  // key, so the queue refuses the second one rather than a timer here. Hourly
+  // rather than daily on purpose: a once-a-day timer that fires while the process
+  // is restarting simply never runs, and this is the first surface that makes the
+  // classifier's number owner-visible at all.
+  //
+  // Read-only by construction: it reads the ledger and enqueues a sentence. No
+  // suppression, no deletion, no open-item write — that is increment 2, which is
+  // designed and gated separately.
+  setTimeout(() => {
+    const noisePass = () => protectedJob('inbound_noise_report', 'maintenance', async () => {
+      const { runInboundNoiseReportForAllTenants } = await import('./jobs/inboundNoiseReportJob');
+      const r = await runInboundNoiseReportForAllTenants();
+      if (r.reported || r.errors) {
+        console.log(`[inboundNoise] reported=${r.reported} quiet=${r.quiet} users=${r.users} errors=${r.errors}`);
+      }
+    });
+    noisePass();
+    setInterval(noisePass, 60 * 60 * 1000);
+  }, 25 * 60 * 1000);
+
   // MyOS — attachment_doc backfill worker (Batch 2):
   //   drains historical Gmail events whose attachments pre-date the
   //   attachment-wiki hook. Per-user cursor in system_config, resumable,

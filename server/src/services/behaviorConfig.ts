@@ -201,6 +201,14 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'selfpruning.withdrawal_notice_enabled', unit: 'count', def: 0, min: 0, max: 1, scope: 'tenant',
     description: 'C-3 increment 3 MASTER SWITCH for the withdrawal-notice DISPATCHER (0/1). While 0 — the default — the backlog cleanup still archives reversibly and still records each withdrawal\'s owed-notice debt durably on the row, but NOTHING is announced: no outbox batch is created and no message is enqueued. DEF-191 (escalation decision, 2026-08-17): after three remediation rounds Codex still holds open findings against the dispatcher (non-atomic revalidate-then-enqueue, immortal batch membership, no DB ownership constraint), all confined to this announce path. Gating it off makes those findings dormant-by-default instead of live, exactly the owner-controlled-gate shape Codex required for selfpruning.digest_enabled, while the reviewed-clean archive/tenant/authority work ships. Turning this on before the event-token redesign (DEF-191) accepts those recorded limitations.',
   },
+  'selfpruning.noise_report_enabled': {
+    key: 'selfpruning.noise_report_enabled', unit: 'count', def: 1, min: 0, max: 1, scope: 'tenant',
+    description: 'C-3 increment 1 (DEF-217) — the read-only inbound-noise COUNT report. Default 1, and deliberately so: increment 1 is explicitly "no suppression, no deletion, no behaviour change — it only produces the number that proves the problem", and its Done-when requires that number to reach the owner. Nothing here reads or changes an open item, and nothing is withheld from him; the only effect is at most ONE message per user per day naming a sender, how many pushes reached him and how many he acted on. Contrast selfpruning.digest_enabled and selfpruning.withdrawal_notice_enabled, which default 0 because they SUPPRESS or ANNOUNCE state changes. Set to 0 to silence the report.',
+  },
+  'selfpruning.noise_report_min_pushes': {
+    key: 'selfpruning.noise_report_min_pushes', unit: 'count', def: 5, min: 2, max: 100, scope: 'tenant',
+    description: 'DEF-217 — the report says nothing below this many pushes from one sender in the window. CL-033 was ten in a morning; five is the floor at which a count is worth a message. A report about two pushes would itself be the noise the campaign exists to remove.',
+  },
   'selfpruning.digest_after_pushes': {
     key: 'selfpruning.digest_after_pushes', unit: 'count', def: 3, min: 2, max: 20, scope: 'tenant',
     description: 'C-3 increment 2. How many DELIVERED-and-unanswered pushes about one item, inside the digest window, before further pushes fold into the item\'s single digest message.',

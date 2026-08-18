@@ -349,6 +349,45 @@ function appliedMarkerMeaning(answer: string): string | null {
 }
 
 /**
+ * DEF-217 — the inbound-noise count's curated meaning.
+ *
+ * Same contract as the digest and withdrawal markers: JSON body, and a payload
+ * the constructor could not have produced is rejected rather than repaired.
+ *
+ * It states COUNTS and nothing else. No recommendation, no "shall I mute them",
+ * no judgement about the sender — increment 1 is explicitly the number that
+ * proves the problem, and a report that proposed an action would be increment 2
+ * arriving early, unreviewed and ungated.
+ */
+function noiseMarkerMeaning(answer: string): string | null {
+  const m = /^\s*\[selfpruning_noise:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (typeof p?.sender !== 'string' || !p.sender.trim()) return null;
+    if (!Number.isInteger(p?.reached) || p.reached < 1 || p.reached > 10_000) return null;
+    if (!Number.isInteger(p?.acted) || p.acted < 0 || p.acted > p.reached) return null;
+    if (!Number.isInteger(p?.windowHours) || p.windowHours < 1 || p.windowHours > 8_760) return null;
+    if (typeof p?.unattributed !== 'boolean') return null;
+
+    const sender = String(p.sender).slice(0, 80);
+    const push = p.reached === 1 ? 'message' : 'messages';
+    const acted = p.acted === 0
+      ? 'you acted on none of them'
+      : `you acted on ${p.acted}`;
+    // "could not be tied to" — the join failed, which is a fact about the rows,
+    // not a claim that the sender is unknown to him.
+    const identity = p.unattributed
+      ? ' None of them could be tied to an open item or thread.'
+      : '';
+    return `In the last ${p.windowHours}h, ${sender} reached you with ${p.reached} ${push}`
+      + ` and ${acted}.${identity}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The curated meaning of a whole-answer marker, when we have one.
  *
  * These 25 replacements are not throwaway strings — several were reworded
@@ -372,6 +411,8 @@ export function curatedMarkerMeaning(answer: string): string | null {
   if (proceeding) return proceeding;
   const applied = appliedMarkerMeaning(answer);
   if (applied) return applied;
+  const noise = noiseMarkerMeaning(answer);
+  if (noise) return noise;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }
