@@ -3935,3 +3935,71 @@ calls a contact "he" or "she", or B07/B11 fall below their current C4/C5/C6.
 `error: "judge returned nothing"`. The answer was produced; the judge failed to return.
 The overall of 94.8 is an average over eleven cases and must not be read as a product
 regression.
+
+---
+
+## 73. DEF-222 — the rule was attached to the evidence, so it shipped when the evidence did (2026-08-18, BUILDER: Claude — orchestrator iteration 13, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `protection-with-two-implementations`** — partly closed.
+
+**DEF-221's own falsifier fired, and this is the report of the firing.** It said *"a reply
+still calls a contact 'he' or 'she'"*, and `iter-12-post-build.json` has two:
+
+> **B11-capability-limit** — *"…or I can give you **her** number if you'd like."*
+> **B01-did-you-send** — *"…two overdue items delegated to **her**."*
+
+The second clause of the falsifier did NOT fire: every score rose (B11 C5 90→95, C6 90→100,
+C4 85→90; B07 C4 85→90 with the formal-name complaint gone and the gender complaint gone
+from the judge's reasons entirely). **The fix worked where it arrived. It did not arrive
+everywhere** — which is a more useful outcome than a clean pass, because it localises the
+failure.
+
+**Where it did not arrive, from the predicate rather than from memory.** DEF-221 appended
+the rule to two blocks, and both are gated: candidates on `isActionTurn || factual`, open
+items on `isActionTurn || day_brief || factual`. `looksLikeImperative` matches a leading
+verb from a fixed list, and **`place` is not in it**. Running the two real regexes:
+
+```
+not-act   "Can you place a WhatsApp call to Latif for me?"     → B11, said "her"
+not-act   "Did you send that message to Hamna?"                → B01, said "her"
+ACTION    "Tell me what is outstanding with Hamna, and which…" → B07, fixed
+```
+
+The pattern matches the outcome exactly. A rule about how to WRITE is an invariant of the
+output; hanging it off a data block makes it exist precisely when the data does.
+
+**The fix is placement, not wording.**
+
+- `PERSON_REFERENCE_RULE` becomes rule 8 of `CORE_CONVERSATIONAL_RULES` — *"always sent
+  regardless of intent"* — **by reference**, so there is still one definition of the
+  sentence. That also covers `buildCasualPrompt`, which strips almost everything.
+- **Second hazard closed rather than assumed away:** `core_conversational_rules` is
+  DB-overridable from `prompt_blocks`, so a tenant row written before rule 8 existed would
+  silently drop it — the identical failure in a new costume. The resolved block is checked
+  and the rule re-attached only when missing, so the default prompt never says it twice.
+- Deleted from both evidence blocks. `refer_to` stays on the candidate row: it is data
+  about that candidate.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+216 files (215 passed, 1 skipped), **2730 tests, 2701 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **9 new tests, 5
+mutants applied and RUN, all 5 die.**
+
+**The diagnosis is pinned, not just described:** the test copies `looksLikeImperative`'s two
+regexes and first asserts they are still the ones in the source, so an edit to the verb list
+fails there rather than quietly invalidating the three classifications this fix rests on.
+
+**A verification check of mine was wrong and I caught it before writing it down.** The
+emitted-code grep reported two falses; the CommonJS output renders the call as
+`(0, personReference_1.statesPersonReferenceRule)(...)`, so the regex missed it. The check
+was wrong, not the build.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the rule is present
+on every turn, including casual and non-imperative ones, instead of only when a
+person-naming evidence block happened to ship. **FALSIFIER:** B01 or B11 still calls a
+contact "he" or "she" in the next scored run.
+
+**Honest limit, unchanged from DEF-221 and now measured.** Presence is necessary, not
+sufficient. **If the next run still says "her", the answer is NOT a third, bigger rule** —
+it is that the pronoun cannot be fixed by instruction, and the options are then to stop
+claiming it or to change what the model is asked to produce.

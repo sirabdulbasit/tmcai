@@ -3989,3 +3989,140 @@ and the delegation chase.
 that gender is unrecorded, so the model is not required to invent either.
 **FALSIFIER (observable):** a reply still calls a contact "he" or "she", or `B07`/`B11`
 fall below their current C4/C5/C6.
+
+---
+
+## Iteration 13 — the rule was attached to the evidence, so it shipped when the evidence did (DEF-222)
+
+### 0. Remediation — Iteration 4, attempt 3 of 3. Closed; the record says where
+
+`review_log.md` is **still unchanged at 692 lines**. Codex has posted no verdict since
+Iteration 4, so this is the third re-issue for want of a newer review rather than a
+finding I have left open. The closure table with commits and lines is in `6ea9dcf`
+(Iteration 11, second entry) and was restated in `1ead102` (Iteration 12). In one line
+each: CRITICAL 1 → one `$transaction` (`openItemsBacklogCleanupJob.ts:742-828`) ·
+HIGH 2 → event tokens (`:184`, `:582`, `:754-756`) · HIGH 3 → per-row CAS with
+`count === 1` and in-transaction self-cancel (`:758-783`) · MEDIUM 4 →
+`OWED_SCAN_PAGES` paging (`:600-643`) · MEDIUM 5 → matrix 0 failed · MEDIUM 6 →
+superseded by the 2026-08-13 owner ruling · 3b CARRIED → `bb0cf57` + `9cb7720`.
+**Attempt 3 is the last one the brief allows; I have nothing further to add without a
+verdict to answer, and I would rather say that than manufacture a fourth restatement.**
+
+### 1. DEF-221's falsifier fired, and I am reporting it as a firing
+
+I wrote, one iteration ago: *"FALSIFIER: a reply still calls a contact 'he' or 'she', or
+B07/B11 fall below their current C4/C5/C6."* `iter-12-post-build.json`:
+
+> **B11-capability-limit** — *"…or I can give you **her** number if you'd like."*
+> **B01-did-you-send** — *"…two overdue items delegated to **her**."*
+
+The second clause did not fire — every score rose (B11 C5 90→95, C6 90→100, C4 85→90;
+B07 C4 85→90 with the "Hamna Latif Bhutta feels formal" complaint gone, and the gender
+complaint gone from the judge's reasons entirely). **So the fix worked where it arrived,
+and the first clause tells me it did not arrive everywhere.** That is a better outcome
+than a clean pass would have been, because it localises the failure.
+
+### 2. Where it did not arrive, established from the predicate rather than from memory
+
+DEF-221 appended the rule to two blocks, and both are gated:
+
+- `brainComposer.ts:1748` — candidates: `isActionTurn || intent === 'factual'`
+- `brainComposer.ts:1737` — open items: `isActionTurn || day_brief || factual`
+
+`looksLikeImperative` (`:1180`) matches a **leading verb from a fixed list**, and `place`
+is not in it. Running the two real regexes over the three questions:
+
+```
+not-act   "Can you place a WhatsApp call to Latif for me?"     → B11, said "her"
+not-act   "Did you send that message to Hamna?"                → B01, said "her"
+ACTION    "Tell me what is outstanding with Hamna, and which…" → B07, fixed
+```
+
+**The pattern matches the outcome exactly.** A rule about how to WRITE is an invariant of
+the output; hanging it off a data block makes it exist precisely when the data does.
+That is `protection-with-two-implementations` — the tag is in chart §3 at 10/11, so per
+CLAUDE.md rule 5 the verdict is **CIRCLING** and a structural fix is required. Moving the
+invariant is that fix; rewording it would not have been.
+
+### 3. What changed, by file:line
+
+- `brainComposer.ts:1208` — `PERSON_REFERENCE_RULE` becomes **rule 8 of
+  `CORE_CONVERSATIONAL_RULES`**, *"always sent regardless of intent"*, **by reference**,
+  so there is still exactly one definition of the sentence. This also covers
+  `buildCasualPrompt` (`:1492`), which strips almost everything and interpolates the
+  constant directly — "almost" is where a rule goes missing.
+- `brainComposer.ts:1655-1669` — **second hazard, closed rather than assumed away.**
+  `core_conversational_rules` is DB-overridable from `prompt_blocks`. A tenant row
+  written before rule 8 existed would silently drop it: the rule present in the source
+  and absent from the prompt, which is *the identical failure DEF-221 had for a different
+  reason.* The resolved block is checked with `statesPersonReferenceRule` and the rule
+  re-attached only when missing — conditional, so the default prompt never says it twice.
+- `brainComposer.ts:2100` and `contactResolver.ts:405` — the rule deleted from both
+  evidence blocks. **`refer_to` stays on the candidate row**: it is data about that
+  candidate and belongs with the candidate.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            216 files (215 passed, 1 skipped)
+                          2730 tests — 2701 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check: `8. ${personReference_1.PERSON_REFERENCE_RULE}` present in the core
+rules, the `statesPersonReferenceRule(coreRules)` re-attachment present, `referenceRule`
+gone from the open-items block, `refer_to=` kept in `contactResolver.js`. **My first
+version of that check reported two falses and I nearly wrote them down** — the CommonJS
+output renders the call as `(0, personReference_1.statesPersonReferenceRule)(...)`, so my
+regex missed it. The check was wrong, not the build.
+
+**9 new tests (24 with DEF-221's). 5 mutants applied and RUN, all 5 die** — rule 8
+removed from the core rules · the DB-override re-attachment dropped · re-attached
+unconditionally · `refer_to` dropped from the row · `statesPersonReferenceRule` forced
+true.
+
+**The diagnosis is pinned, not just described.** The test copies `looksLikeImperative`'s
+two regexes and first asserts they are still the ones in the source, so an edit to the
+verb list fails here rather than quietly invalidating the three classifications this fix
+rests on.
+
+**Superseded assertions updated with the reasoning inline, never silenced:** `def221` ×2
+placement assertions — they pinned the rule to the two evidence blocks, which is exactly
+the arrangement that let B11 and B01 ship "her". What survives there is the property that
+file was written for: the sentence has one definition and nobody re-types it.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. Said plainly: this turn produced nothing toward
+  Self-Pruning.** Increments 1–3 are built and undeployed; the blocker is deployment and
+  live observation, which I do not own, and a fourth undeployed increment is the pile-up
+  the campaign's own ABORT CONDITION exists to stop.
+- **No C4 register work** — `B12`'s "My apologies, Sir" at C4 80 is the worst entry and
+  the brief forbids chasing C4.
+- **`B09-identity` C1 fell to 85** on a new reason — *"The reply implies a fixed identity
+  ('Suzi') which is not strictly true as Brain's persona can be customized."* I have not
+  touched it. It is arguably a judge quibble about a configured persona name being used
+  as a name, and I would rather flag it than fix a criticism I do not agree with.
+- **Benchmark untouched.**
+- **The honest limit, unchanged from DEF-221 and now measured.** Presence is necessary,
+  not sufficient. This makes the rule reachable on every turn; whether the model obeys is
+  not provable from here. **If the next run still says "her", the answer is NOT a third,
+  bigger rule** — it is that the pronoun cannot be fixed by instruction, and the options
+  then are to stop claiming it or to change what the model is asked to produce. I would
+  say that plainly rather than write DEF-223 in the same shape.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes;
+this rides on every composer turn, including casual ones, and on the same prompt the
+delegation chase composes from.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.**
+**MECHANISM:** the rule is present on every turn, including casual and non-imperative
+ones, instead of only when a person-naming evidence block happened to ship.
+**FALSIFIER (observable):** `B01` or `B11` still calls a contact "he" or "she" in the
+next scored run.
