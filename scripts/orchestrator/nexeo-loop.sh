@@ -1342,7 +1342,15 @@ PYOV
     CHAT_HASH_WAS="$(cat "$CHAT_HASH_FILE" 2>/dev/null || echo "")"
     if [ "$CHAT_HASH_NOW" != "$CHAT_HASH_WAS" ] || [ ! -s "$CHATROOTS_FILE" ]; then
       CHAT_SEEN="$(cat "$STATE/chat-chats-analysed" 2>/dev/null || echo 0)"
-      CHAT_TOTAL="$(grep -c '^## Chat ' "$CHAT_SRC" 2>/dev/null || echo 0)"
+      # Count the heading the ACTIVE source actually uses. The harvested transcript is
+      # split into "## Session" blocks and the curated archive into "## Chat" ones, so a
+      # single hard-coded pattern read 0 against the harvest and the analyst was handed
+      # "18 of 0 chats already analysed" — a sentence with no meaning, in the one place
+      # that tells it what is new.
+      CHAT_TOTAL="$(grep -cE '^## (Chat|Session) ' "$CHAT_SRC" 2>/dev/null || echo 0)"
+      # And "seen" cannot exceed what exists: a stale count from the previous source
+      # would tell it everything had been read when nothing had.
+      [ "$CHAT_SEEN" -le "$CHAT_TOTAL" ] 2>/dev/null || CHAT_SEEN=0
       say "CHAT   iter=$ITER archive changed — $CHAT_SEEN of $CHAT_TOTAL chats already analysed; sending the new ones"
       CHAT_PROMPT="$(cat "$PROMPTS/chat-analysis.md")
 ## Your previous ranking — carry it forward
