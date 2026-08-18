@@ -1297,7 +1297,7 @@ def collect():
     seat = {"Build & Deploy": "Claude -> production", "Checks": "orchestrator",
             "Check & Measure": "orchestrator", "Chat Analysis": "Claude",
             "Review Capabilities": "Claude",
-            "Capability Evaluation": "Grok"}
+            "Capability Evaluation": "Claude"}
     models = seat_models()
     phase_rows = []
     for ph in PHASE_ORDER:
