@@ -3604,3 +3604,45 @@ Reverting restores an anchor labelled with a zone it is not in, on a class with 
 **This is prompt-side.** It removes a false premise and supplies a true fact; nothing in code forbids the model from inventing an hour anyway. **No benchmark case asks the time**, so the score may not move — the evidence here is the owner's chat and the arithmetic, not the harness.
 
 **CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the anchor is no longer labelled with a zone it is not in, and the hour is supplied as a fact instead of inferred. **FALSIFIER:** Brain states a clock time differing from his real local time, or labels an hour with his timezone when `getOwnerClock` returned null.
+
+## 66. DEF-215 — "should be asked for" was a licence to defer (2026-08-18, BUILDER: Claude — orchestrator iteration 8, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+`iter-08-post-build.json`, B04 — **C6 75, C5 80**. The guard did not fire; I found it by reading the report.
+
+> "Got it. I've set the priority to high. **I'll ask for a due date if one becomes necessary.**"
+
+Judge C6: *"Brain had previously asked for both 'priority and deadline'. The response only addresses the priority."*
+
+### Root cause — mine, two iterations old
+
+DEF-209 and DEF-212 both ended the outstanding-slot fact with *"and should be asked for"*. That is a **standing intention**, not an instruction about this reply, and the model satisfied it in the future tense and made it conditional. The run before, the same case read *"OK, I've set the priority to high. When is it due?"* — so this is not the old drop-it-silently defect returning; it is a new hedge created by the wording I introduced. A fact that DESCRIBES asking is not a fact that REQUIRES the question now.
+
+### Files changed
+
+- `server/src/services/knowledge/answerSanitizer.ts` — both curated meanings now end: *"ASK FOR IT IN THIS REPLY — do not promise to ask later and do not make it conditional. He answered part of what you asked; the rest is still open now."* The last clause credits what he did answer, so the chase cannot read as a repeat of the whole question. Changed at **both** sites in one edit.
+- `server/tests/def215AskNowNotLater.test.ts` — 11 tests, both markers driven through the real parser.
+- `server/tests/def209ActionReceipt.test.ts` — one assertion updated, not silenced.
+
+### Rollback considered and rejected
+
+Reverting restores the phrase that produced the hedge.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 210 files — 209 passed, 1 skipped; 2,656 tests — **2,627 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (the deferral licence confirmed gone from the emitted code; the new instruction present at both sites) · `git diff --check` clean.
+
+**Two mutants applied and RUN, both die:** restore the deferral licence · keep "ask now" but stop forbidding the two hedges.
+
+### Known issues deliberately not fixed
+
+**The escalation is answered (a): accept as a known limitation with a DEF row, do NOT revert.** Every numbered risk from iteration 4 is closed with commits (DEF-208 `2acb272`, DEF-202, DEF-210 `b095875`, DEF-209 `41358ab`, DEF-191 `bb0cf57` / DEF-192 `9cb7720` for the carried item), and `review_log.md` has not grown since — the reviewer has not re-read the change three remediations later. Reverting would strip the transaction boundary, event-token identity, membership-derived ownership and the paging fix to remove findings that are no longer there.
+
+**C-3 increment 1 is BUILT but has no live surface.** `inboundNoiseLedger.ts` already exports `summariseInboundNoise` and `renderNoiseReport` — the read-only classifier and counter. Its only consumers are a hand-run script (`src/scripts/nexeoInboundNoiseReport.ts`) and the push-history prompt block. Nothing scheduled produces that number for the owner, and the increment's *Done when* requires exactly that. The remaining work is one scheduled surface, not the classifier — recorded so the next turn can take it directly.
+
+**No C-3 progress this turn**, five consecutive turns now. I took B04 because it is a live owner-visible regression that I caused.
+
+**B04 has flapped across three consecutive runs** (asked → deferred → asked), so one good measurement will not prove this fix.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the outstanding-slot fact no longer describes a future intention the model can satisfy by promising. **FALSIFIER:** a reply still defers or conditionalises a slot Brain itself asked for, or B04 C5/C6 do not recover.

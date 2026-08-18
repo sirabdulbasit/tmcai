@@ -3137,3 +3137,119 @@ the live composer path with no gate in front of it.
 clock time that differs from his real local time; or labelling an hour with his timezone on a turn
 where `getOwnerClock` returned null; or a fifth occurrence of the tag after this ships, which would
 mean the drift enters somewhere other than these two prompt lines.
+
+## Iteration 8 (second entry under this number) — "should be asked for" was a licence to defer (DEF-215)
+
+**Mode: structural · ESCALATED (released to new work) · guard CLEAN · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer` — and this time the guard was mine**
+
+### 0. The escalation, answered plainly
+
+**(a) Accept as a known limitation with a DEF row. NOT grounds for reverting.**
+
+Every numbered risk in iteration 4's review is closed, with commits: CRITICAL 1 → DEF-208
+`2acb272` · HIGH 2 → DEF-202 · HIGH 3 → DEF-210 `b095875` · MEDIUM 4 → DEF-209 `41358ab` ·
+MEDIUM 5 → matrix green · MEDIUM 6 → DEF-209/211/212. The CARRIED item
+(`delegationFollowUpJob`) was already closed by DEF-191 `bb0cf57` / DEF-192 `9cb7720`.
+`review_log.md` has not grown since (692 lines, 10 sections), so **the reviewer has not re-read
+the change three remediations later** — the dissatisfaction on record is with the artifact as it
+stood at iteration 4, not with what is in the tree now.
+
+Reverting would strip the transaction boundary, event-token identity, membership-derived
+ownership and the paging fix, to remove findings that are no longer there. That is a bad trade on
+its face, and I would rather it be recorded as an accepted limitation with this DEF row than
+quietly re-litigated a fourth time.
+
+### 1. The fix-queue entry I targeted, quoted
+
+Not from the guard — the guard was clean and I found this by reading the report.
+
+> **B04 C6 75** — "Brain had previously asked for both 'priority and deadline'. The response only
+> addresses the priority."
+> **B04 C5 80** — "it still has an open question about the deadline from its previous turn…"
+
+The reply:
+
+> "Got it. I've set the priority to high. **I'll ask for a due date if one becomes necessary.**"
+
+**Criteria I expect to move: B04 C5 and C6.**
+
+### 2. Circling or progressing — and the defect is mine
+
+**Circling on `guard-destroys-the-answer` (8 in chart §3), and the wording that caused it is two
+iterations old and my own.** DEF-209 and DEF-212 both ended the outstanding-slot fact with
+*"and should be asked for"*. That is a standing intention, not an instruction about this reply,
+and the model satisfied it **in the future tense and conditionally**.
+
+The run before, the same case read *"OK, I've set the priority to high. When is it due?"* — so
+this is NOT the old drop-it-silently defect returning. It is a new hedge, created by me.
+
+**A fact that DESCRIBES asking is not a fact that REQUIRES the question now.** That distinction is
+the whole change.
+
+### 3. What changed
+
+`answerSanitizer.ts` — both curated meanings (`proceedingMarkerMeaning`, `appliedMarkerMeaning`)
+now end:
+
+> ASK FOR IT IN THIS REPLY — do not promise to ask later and do not make it conditional. He
+> answered part of what you asked; the rest is still open now.
+
+The last clause credits what he DID answer, so the chase cannot read as a repeat of the whole
+question. Changed at **both** sites in one edit, because two copies drifting is the class next
+door.
+
+### 4. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  209 passed | 1 skipped (210)
+                    Tests  2627 passed | 7 expected fail | 21 skipped | 1 todo (2656)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the deferral licence confirmed GONE from the
+                                   emitted code with comments stripped, "ASK FOR IT IN THIS
+                                   REPLY" present at both sites)
+git diff --check    clean
+```
+
+**11 new tests**, both markers driven through the REAL parser. **2 mutants applied and RUN, both
+die:** restore the deferral licence · keep "ask now" but stop forbidding the two hedges.
+
+**One DEF-209 assertion was UPDATED, not silenced** — it pinned the superseded phrase; the
+property it defends is unchanged and is now pinned to this reply.
+
+### 5. A campaign finding the orchestrator should have — C-3 increment 1 is BUILT but has no live surface
+
+I checked before claiming nothing: **`inboundNoiseLedger.ts` already exports
+`summariseInboundNoise` and `renderNoiseReport`** — a read-only classifier and counter over
+inbound, per sender/subject, with reached and acted counts. That IS increment 1's code.
+
+Its only consumers are `src/scripts/nexeoInboundNoiseReport.ts` (a hand-run script) and
+`pushHistoryBlock` (a prompt block). **Nothing scheduled ever produces that number for the owner**,
+and increment 1's *Done when* is "Deployed, and the real count for the CL-033 unknown-number burst
+is quoted back to the owner from production data."
+
+So the remaining work is not the classifier — it is one scheduled surface that runs it and reports
+the count. That is a smaller, shippable turn than the campaign brief implies, and I am recording it
+so the next turn can take it directly.
+
+### 6. What I did NOT do, and what I am unsure about
+
+- **No C-3 progress this turn**, plainly — five consecutive turns now. I took B04 because it is a
+  live owner-visible regression **that I caused**, and leaving my own defect in place to start a
+  feature would be the wrong order.
+- **I did not chase C4** (88.3, five cases at 85 on register), on instruction.
+- **Prompt-side again**, so by DEF-206's own rule weaker than a code guarantee.
+- **B04 has flapped across three consecutive runs** — asked, then deferred, then asked. One good
+  measurement will not prove this fix, and I would rather say that than claim a win from the next
+  reading.
+
+### 7. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** the curated
+meaning is on the live render path with no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +0 to +1.** **Proved wrong by:** a reply still
+deferring or conditionalising a slot Brain itself asked for — *"I'll ask if it becomes necessary"*
+— or B04 C5/C6 not recovering, which would mean the hedge comes from somewhere other than this
+sentence.
