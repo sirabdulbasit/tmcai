@@ -4003,3 +4003,72 @@ contact "he" or "she" in the next scored run.
 sufficient. **If the next run still says "her", the answer is NOT a third, bigger rule** —
 it is that the pronoun cannot be fixed by instruction, and the options are then to stop
 claiming it or to change what the model is asked to produce.
+
+---
+
+## 74. DEF-223 — DEF-222 fixed the wrong prompt, and the right one taught the defect (2026-08-18, BUILDER: Claude — orchestrator iteration 14, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `protection-with-two-implementations`** — the same tag DEF-222 claimed,
+because DEF-222 fixed one of the two implementations without establishing which one
+mattered.
+
+**DEF-222's falsifier fired on B11 for the second consecutive run.** B01 is now clean; B11
+says it again:
+
+> Q: *"Can you place a WhatsApp call to Latif for me?"*
+> A: *"…I can send a text message via WhatsApp or give you **her** number if you'd like."*
+
+(B02's "her" is **not** a violation: the owner's own question is *"what did **she** say in
+**her** last reply?"*, and mirroring the pronoun he supplied is correct.)
+
+**What was wrong with the last attempt.** Two facts I did not have, both checkable:
+
+1. **The reasoning path is the default** — `resolveReasoningMode` returns true unless
+   `BRAIN_USE_REASONING === 'never'`, and the benchmark passes no override. So
+   `reasoningCompose` wrote that reply, not `assembleSystemPrompt`.
+2. **`reasoningCompose` is handed `personaForReasoning.systemPreamble` ALONE**
+   (`brainComposer.ts:2589`), not the assembled prompt — so `CORE_CONVERSATIONAL_RULES`,
+   and DEF-222's rule 8 inside it, was never in the prompt that produced the answer.
+
+DEF-222's diagnosis (the `isActionTurn` gate) was true about `assembleSystemPrompt` and
+irrelevant to the observed sentence. I checked a gate, found a real defect there, and never
+asked which prompt had actually run.
+
+**And the prompt that did run worked B11's own question as its decline example:**
+*"Write \"I can't place a WhatsApp call, but I can message **him** or give you **his**
+number\""*. The reply is the model following it and flipping the gender — DEF-213's finding
+exactly: *"Brain is echoing THIS BLOCK."*
+
+**The fix.**
+
+- `reasoningCompose.ts:155` carries `PERSON_REFERENCE_RULE` by reference, before the
+  decision contract so it precedes the worked examples.
+- The decline example becomes *"I can message Latif or give you Latif's number"*, keeping
+  everything it existed to teach (address him in your own voice; never narrate the
+  conversation from outside it) — asserted, not assumed.
+- **Secondary, labelled as secondary:** DEF-222 left the legacy path with rule 8 naming
+  `refer_to` on every turn while `refer_to` shipped only inside a gated block — a rule
+  pointing at a field that is not there. `renderPersonReferenceIndex` supplies the names and
+  nothing that is an action affordance (no email, phone, score or routing line), on turns
+  the full block is withheld from. It costs nothing extra: the candidates are already
+  resolved every turn and were being discarded.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+217 files (216 passed, 1 skipped), **2744 tests, 2715 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **14 tests, 5 mutants
+applied and RUN, all 5 die.**
+
+**Two tests exist to fail rather than pass quietly if the premise inverts:** one pins that
+reasoning is still the default, one that the preamble is still all it receives. If either
+changes, this fix is aimed at a dead path and it goes red.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the rule and the
+reference datum reach the prompt that actually composes the owner's reply, and the contract
+no longer demonstrates the defect in the failing case's own words. **FALSIFIER:** B11 says
+"her" a third time.
+
+**I said last turn that a recurrence would not be answered with a third, bigger rule.** It
+is not one — the rule text is byte-identical; what changed is which prompt gets it and what
+the example beside it says. **If B11 still says "her" after this, the honest conclusion is
+that the pronoun is not fixable by instruction and the claim should be dropped rather than
+attempted a fourth time.**

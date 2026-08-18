@@ -4126,3 +4126,138 @@ delegation chase composes from.
 ones, instead of only when a person-naming evidence block happened to ship.
 **FALSIFIER (observable):** `B01` or `B11` still calls a contact "he" or "she" in the
 next scored run.
+
+---
+
+## Iteration 14 — DEF-222 fixed the wrong prompt, and the right one taught the defect (DEF-223)
+
+### 0. The escalation, answered plainly: (a), accept with a DEF row. Not (b)
+
+Iteration 4's finding has been remediated three times and `review_log.md` is **still
+unchanged at 692 lines** — Codex has posted no verdict since Iteration 4, so no reviewer
+has been dissatisfied with the remediations; there has been no reviewer. Every numbered
+risk is closed in the tree with a commit and a line
+(`6ea9dcf`, restated in `1ead102` and `70c2715`).
+
+**(a) Accept as a known limitation with a DEF row. (b) is wrong and I want the reason on
+the record:** reverting would strip the transaction boundary (`openItemsBacklogCleanupJob.ts:742-828`),
+event-token identity (`:184`, `:582`, `:754-756`), the per-row claim CAS (`:758-783`) and
+the paging fix (`:600-643`) — four mechanisms that exist to stop a fabricated withdrawal
+notice reaching the owner — in order to answer findings that named their absence. The
+correct disposition of a finding nobody has re-reviewed is a row, not a revert.
+
+### 1. CONTINUATION 1 of 3 — what I now believe was wrong about the last attempt
+
+DEF-222's falsifier: *"B01 or B11 still calls a contact 'he' or 'she' in the next scored
+run."* `iter-13-post-build.json`: B01 is clean; **B11 says it again.**
+
+> Q: *"Can you place a WhatsApp call to Latif for me?"*
+> A: *"I can't place a WhatsApp call, Sir. I can send a text message via WhatsApp or give
+> you **her** number if you'd like."*
+
+(B02's "her" is **not** a violation and I am not counting it: his own question is *"what
+did **she** say in **her** last reply?"* — mirroring the pronoun he supplied is correct.)
+
+**DEF-222 fixed a prompt that did not write the sentence.** Two facts I did not have, both
+checkable and both now pinned by tests:
+
+1. **The reasoning path is the default.** `resolveReasoningMode` returns true unless
+   `BRAIN_USE_REASONING === 'never'`, and `nexeoCapabilityBenchmark.ts:336` passes only
+   `{ channel: 'whatsapp' }`. So `reasoningCompose` wrote that reply.
+2. **`reasoningCompose` receives `personaForReasoning.systemPreamble` ALONE**
+   (`brainComposer.ts:2589`) — not the assembled prompt. `CORE_CONVERSATIONAL_RULES`, and
+   DEF-222's rule 8 inside it, was never in the prompt that produced the answer.
+
+So my iteration-13 diagnosis — the `isActionTurn` gate — was *true about
+`assembleSystemPrompt`* and irrelevant to the observed sentence. I checked the gate, found
+a real defect there, and never asked which prompt had actually run.
+
+**And the prompt that did run works B11's own question as its decline example:**
+
+> `reasoningCompose.ts:163` — *Write "I can't place a WhatsApp call, but I can message
+> **him** or give you **his** number"*
+
+The reply is the model following that example and flipping the gender. This is DEF-213's
+finding exactly — *"Brain is echoing THIS BLOCK"* — and it is the third time in this
+lineage that the prompt supplied the vocabulary that came back.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING.** `protection-with-two-implementations` is in
+chart §3, and this is the same tag DEF-222 claimed — because DEF-222 fixed one of the two
+implementations and I did not establish which one mattered.
+
+### 2. What changed, by file:line
+
+- `reasoningCompose.ts:155` — `PERSON_REFERENCE_RULE`, by reference, **before** the
+  decision contract so it precedes the worked examples. One import, one definition, both
+  paths.
+- `reasoningCompose.ts:169` — the decline example becomes *"I can message Latif or give
+  you Latif's number"*. Everything it existed to teach survives and is asserted: address
+  him in your own voice, never narrate the conversation from outside it.
+- **Secondary, and secondary is how I am labelling it.** DEF-222 left the legacy path with
+  rule 8 naming `refer_to` on every turn while `refer_to` shipped only inside a block gated
+  on `isActionTurn || factual` — a rule pointing at a field that is not there.
+  `contactResolver.ts:395` adds `renderPersonReferenceIndex`: names, and nothing that is an
+  action affordance — no email, no phone, no score, no routing line, because the gate is
+  right to withhold those from a non-action turn. `brainComposer.ts:1754` ships it exactly
+  when the full block is withheld. **It costs nothing extra**: the candidates are already
+  resolved on every turn (`:3062`) and were simply being discarded.
+
+### 3. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            217 files (216 passed, 1 skipped)
+                          2744 tests — 2715 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check (CommonJS forms, after last iteration's near-miss): the rule present in
+`reasoningCompose.js` as `personReference_1.PERSON_REFERENCE_RULE`, the gendered example
+absent, the de-gendered one present, the `else if (personIndexBlock)` branch present,
+`renderPersonReferenceIndex` emitted.
+
+**14 tests. 5 mutants applied and RUN, all 5 die** — the rule dropped from the reasoning
+contract · the gendered decline example restored · the index leaks the email · the dedup
+removed so one person reads as two · the composer's else-branch dead-coded.
+
+**Two tests exist to make this file fail rather than pass quietly if its premise inverts:**
+one pins that reasoning is still the default, one that the preamble is still all it
+receives. If either changes, this fix is aimed at a dead path and I want that to go red.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability, and increments 1–3 remain built and undeployed
+  behind a deploy phase I do not own.
+- **No C4 register work.** `B12` at C4 85 and `B11` at C4 85 are both "Sir feels formal",
+  and the brief forbids chasing C4.
+- **I did not sweep the other prompt builders for gendered examples.** I checked the
+  reasoning decision contract's decline section, which is where the failing example was,
+  and asserted no other example in it genders a third party. There may be more elsewhere;
+  I would rather name that gap than claim a sweep I did not do.
+- **The persona preamble itself is unaudited.** It is the only thing the reasoning path
+  received before this change, and I have not read it for the same defect.
+- **Unsure whether this closes it.** The rule is now on the right path AND the
+  counter-example is gone, which is a materially different intervention from the last two —
+  but it is still instruction, and instruction has failed twice here.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, and
+this time on the path that is actually running: `reasoningCompose` is the default composer
+for web and WhatsApp alike.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.**
+**MECHANISM:** the rule and the reference datum now reach the prompt that composes the
+owner's reply, and the contract no longer demonstrates the defect in the failing case's own
+words.
+**FALSIFIER (observable):** `B11` says "her" a third time.
+
+**I said last turn that if it recurred the answer would not be a third, bigger rule. It is
+not one** — the rule text is byte-identical; what changed is which prompt gets it and what
+the example beside it says. **If B11 still says "her" after this, the honest conclusion is
+that the pronoun is not fixable by instruction, and the claim should be dropped rather than
+attempted a fourth time.** I would write that as the DEF row.
