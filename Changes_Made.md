@@ -3863,3 +3863,75 @@ asserted that `priority=high` reaches the WhatsApp body — that assertion WAS t
 marker carries structured fields, so the fact is composed from the shared vocabulary instead of
 a string built in the action layer. **FALSIFIER:** any dispatch reply still arrives containing
 `field=value`, or B04/B06 fall below their current C4.
+
+---
+
+## 72. DEF-221 — the record has no gender, and nothing said so (2026-08-18, BUILDER: Claude — orchestrator iteration 12, branch `release/cmp-2026-08-16`)
+
+**NO LISTED SYMPTOM TAG CLOSED** — said plainly rather than invented. This is a new root
+cause; nothing in chart §3 covers it, and `fabricated-status` is about "sent/updated/
+recorded/fixed" and causal claims, not invented attributes.
+
+**What he was reading.** `B11-capability-limit` — *"Can you place a WhatsApp call to Latif
+for me?"*:
+
+> "I can send a WhatsApp message to ask **her** to call you, or I can give you **her**
+> number if you'd like."
+
+**Latif is a man's name.** The judge flagged it twice — C5 90 *"the gender assumption [is]
+an unnecessary detail to include without further context"*, C6 90 *"a minor inaccuracy"*.
+
+**The cause.** Nothing in this system records anyone's gender. `Person` carries
+`displayName`/`canonicalName`; `PersonFacet` carries emails and phone numbers; `Entity` a
+name, email and phone — the schema was checked, not assumed. The two blocks that describe
+a person to the model hand over a name and nothing else: the candidates block
+(`1. Hamna Latif Bhutta <email> [teammate]`) and the open-items block
+(`delegated_to="Hamna Latif Bhutta"`).
+
+**This is DEF-214's shape exactly** — *"No HOUR was supplied at all, so 'what time is it'
+could only be answered by inventing one."* Writing *"ask ___ to call you"* can only be done
+by inventing a reference. One absent datum, two complaints in the same run: the second is
+`B07` C4 85, *"'Hamna Latif Bhutta' feels a little formal or robotic for a casual query
+about 'Hamna'"* — the same block giving the only string it had.
+
+**Not a benchmark artefact.** These blocks feed the delegation chase, which composes text
+about and to a delegatee and sends it from the owner's Gmail. Misgendering a real business
+contact in a message signed by the owner is worse than the sentence that exposed it.
+
+**The fix — supply what the model would otherwise invent** (the DEF-214 / DEF-220 move):
+
+- new `personReference.ts`: `personReferenceFor({displayName, asAskedFor})` returns the
+  name to use and **never guesses one**. `asAskedFor` wins only when it is genuinely a word
+  of the stored name, so "Muhammad Yousaf" becomes "Yousaf" only if the owner typed it, and
+  "the ShireMe guy" is refused — resolving to somebody is not being called that.
+- every candidate row carries `refer_to="…"`.
+- `PERSON_REFERENCE_RULE` states the absence as a fact about the record, once, shared by
+  both blocks, and names the failure concretely (*"'Latif' was called 'her' and Latif is a
+  man"*) per DEF-213's lesson that a rule which cannot say what it forbids is weaker.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+215 files (214 passed, 1 skipped), **2722 tests, 2693 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **16 tests, 5 mutants
+applied and RUN, all 5 die.** One further mutant SURVIVED — a redundant multi-word guard —
+and the code was **deleted rather than defended**, with the reasoning left in the source.
+
+**A guard caught itself again.** The first B11 assertion regexed the whole block for
+pronouns and failed, because the rule quotes "her" as the thing it forbids — it would have
+passed with every row gendered. Same mistake as DEF-213's list and DEF-214's
+`toContain('17:07')`. It now reads the candidate rows only.
+
+**Honest limit:** the data half (`refer_to`) is enforced and tested; the pronoun half is a
+prompt contract, and DEF-206 established that asking a model to do something is not a
+guarantee. A whole-answer pronoun guard is not the answer either — that is the
+`guard-destroys-the-answer` machine this session spent four defects dismantling.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the
+person-describing blocks supply the reference form as data and state that gender is
+unrecorded, so the model is not required to invent either. **FALSIFIER:** a reply still
+calls a contact "he" or "she", or B07/B11 fall below their current C4/C5/C6.
+
+**Also recorded this iteration, benchmark untouched:** `iter-11-post-build.json` scored
+**eleven** cases, not twelve — `B09-identity` returned `overallScore: null` with
+`error: "judge returned nothing"`. The answer was produced; the judge failed to return.
+The overall of 94.8 is an average over eleven cases and must not be read as a product
+regression.

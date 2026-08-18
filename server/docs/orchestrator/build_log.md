@@ -3838,3 +3838,154 @@ class made human; DEF-219 had already masked part of its reach, so I am not clai
 from the shared vocabulary instead of a string built in the action layer.
 **FALSIFIER (observable):** any dispatch reply still arrives containing `field=value`, or
 B04/B06 fall below their current C4.
+
+---
+
+## Iteration 12 — the record has no gender, and nothing said so (DEF-221)
+
+### 0. Remediation — Iteration 4, attempt 2. Already closed, and the record says where
+
+`review_log.md` is **unchanged at 692 lines**: Codex has posted no verdict since. The
+brief re-issues attempt 2 because there is no newer review, not because a finding is
+open. I closed all six numbered risks plus the carried CRITICAL last turn with commits
+and lines, in `6ea9dcf` (build log, Iteration 11 second entry). Restated compactly:
+CRITICAL 1 → `settleBatch` is one `$transaction` (`openItemsBacklogCleanupJob.ts:742-828`,
+DEF-208) · HIGH 2 → immutable event tokens (`:184`, `:582`, `:754-756`, DEF-202) ·
+HIGH 3 → per-row claim CAS, `count === 1`, self-cancel in the same transaction
+(`:758-783`) · MEDIUM 4 → `OWED_SCAN_PAGES` paging (`:600-643`, DEF-209) · MEDIUM 5 →
+matrix now 0 failed · MEDIUM 6 → superseded by the owner's 2026-08-13 ruling ·
+3b CARRIED → `bb0cf57` + `9cb7720` (DEF-191/192). I have nothing further to add
+without a new verdict to answer.
+
+### 1. What the score actually says this run
+
+`iter-11-post-build.json` (03:24, after the DEF-220 commits): overall **94.8**, C4 **87.3**.
+**The drop from 96 is not a product regression and I am not going to let it be read as
+one.** `B09-identity` has `overallScore: null` and `error: "judge returned nothing"` —
+the answer was produced, the judge failed to return — so `casesScored: 11` and the
+average is over eleven cases. That is a harness observation, not a licence: I have not
+touched the benchmark, and the orchestrator owns it.
+
+**DEF-220's own falsifier survived.** It named B04/B06 falling below their current C4.
+`B04-outstanding-question-ignored` C4 went **85 → 95** with the judge writing *"Reads as
+a person, not a template."* The reply is now *"Got it, priority is set to high. Is there
+a due date for this?"* — no `field=value` anywhere in the run.
+
+### 2. The fix queue entry I targeted, and why it is not a C4 register note
+
+The queue is almost entirely C4 register, which the brief forbids chasing. The entry I
+took is not one of those — it is a truth defect the judge caught on two criteria:
+
+> **C5 90, `B11-capability-limit`** — *"It does use 'her' when the name was 'Latif',
+> which could imply a male or female, making the gender assumption an unnecessary detail
+> to include without further context."*
+> **C6 90** — *"The gender assumption for 'Latif' is a minor inaccuracy."*
+
+The reply: *"I can send a WhatsApp message to ask **her** to call you, or I can give you
+**her** number if you'd like."* **Latif is a man's name.** I expect **C5 and C6 on B11**
+to move, and possibly C4 on B07.
+
+**This is live, not a benchmark artefact.** The same blocks feed the delegation chase,
+which composes text *about* and *to* a delegatee and sends it from the owner's Gmail.
+Misgendering a real business contact in a message signed by the owner is a worse failure
+than the benchmark sentence that exposed it.
+
+**Verdict per CLAUDE.md rule 5: PROGRESSING — new root cause.** No symptom tag in chart
+§3 covers it. I am not stretching `fabricated-status`, whose owner-visible requirement is
+about "sent/updated/recorded/fixed" and causal claims. **No listed symptom tag closed.**
+
+### 3. The mechanism
+
+No field records gender. `Person` has `displayName`/`canonicalName`; `PersonFacet` holds
+emails and phone numbers; `Entity` a name, email and phone — I checked the schema rather
+than assuming. The two blocks that describe a person to the model hand over a name and
+nothing else:
+
+- `contactResolver.ts:395` — `1. Hamna Latif Bhutta <email> [teammate]`
+- `brainComposer.ts:2073` — `delegated_to="Hamna Latif Bhutta"`
+
+**This is DEF-214's shape, exactly:** *"No HOUR was supplied at all, so 'what time is it'
+could only be answered by inventing one — and then labelling it with his timezone."*
+Writing *"ask ___ to call you"* can only be done by inventing a reference, and the model
+invents it from the name. One absent datum, two judge complaints in the same run — the
+second being `B07` C4 85, *"'Hamna Latif Bhutta' feels a little formal or robotic for a
+casual query about 'Hamna'"*, which is the same block giving the only string it had.
+
+**What changed, by file:line:**
+
+- `src/services/knowledge/personReference.ts` (new) — `personReferenceFor` returns the
+  name to use, and **never guesses one**: `asAskedFor` wins only when it is genuinely a
+  word of the stored name. "Muhammad Yousaf" becomes "Yousaf" only if the owner typed it;
+  "the ShireMe guy" is refused, because resolving to somebody is not being called that.
+  `PERSON_REFERENCE_RULE` states the absence as a fact about the record and names the
+  failure concretely — per DEF-213, a rule that cannot say the thing it forbids is weaker.
+- `src/services/knowledge/contactResolver.ts:399-408` — every row carries `refer_to="…"`;
+  the rule is appended once, last, so rows and routing stay adjacent.
+- `src/services/knowledge/brainComposer.ts:2100-2106` — the open-items block appends the
+  same shared constant, **gated** on a delegatee actually being named.
+
+Supplying the datum is the same move as DEF-214 and DEF-220. It is not a prompt wish.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            215 files (214 passed, 1 skipped)
+                          2722 tests — 2693 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check: `personReference.js` carries the rule, `contactResolver.js` emits
+`refer_to=`, `brainComposer.js` references `PERSON_REFERENCE_RULE`.
+
+**16 tests. 5 mutants applied and RUN, all 5 die** — the name-membership check dropped ·
+the query's casing returned instead of the stored spelling · the candidates block stops
+carrying the rule · the open-items rule attached unconditionally · `refer_to` dropped
+from the row.
+
+**One further mutant SURVIVED, and I deleted the code rather than defending it.** A
+`if (/\s/.test(asked)) return display` guard was equivalent — "Hamna Latif" is not a word
+of "Hamna Latif Bhutta" either, so the membership test already rejected it. Gone, with
+the reasoning in the source.
+
+**A guard caught itself, for the third time in this lineage.** My first B11 assertion was
+`expect(block).not.toMatch(/\b(he|she|his|her|hers)\b/)` — and it failed, because the
+rule quotes "her" as the thing it forbids. A whole-block regex matches its own prose and
+would have passed with every row gendered. Same mistake as DEF-213's forbidden-phrase
+list and DEF-214's `toContain('17:07')`. It now reads the candidate ROWS only.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment. Said plainly: this turn produced nothing toward
+  Self-Pruning.** Increments 1–3 are built and undeployed; a fourth would be exactly the
+  pile-up the campaign's own ABORT CONDITION exists to stop, and the blocker is
+  deployment and live observation, which I do not own.
+- **No C4 register work** — the templated greeting, repeated "Sir", `B12`'s "My
+  apologies, Sir". The brief forbids chasing C4 and I agree with the ruling.
+- **Benchmark untouched**, including the `B09` judge failure, which I am reporting rather
+  than repairing.
+- **The honest limit of this fix.** The DATA half — `refer_to` — is enforced and tested.
+  The pronoun half is a **prompt contract**, and DEF-206 established that asking a model
+  to do something is not a guarantee. I have not claimed otherwise, and a whole-answer
+  pronoun guard is not the answer either: that is precisely the
+  `guard-destroys-the-answer` machine this session has spent four defects dismantling.
+- **A third producer that names a person is not automatically covered.** The guard names
+  the two that exist today; a new one would slip through.
+- **Unsure whether C5/C6 move at all.** These are 90s, the judge called it "minor", and
+  90 → 95 is inside the noise the brief warns about. The reason to do it anyway is the
+  chase-email path, not the score.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes,
+and on more than the benchmark: the contact and open-items blocks feed the live composer
+and the delegation chase.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.**
+**MECHANISM:** the person-describing blocks supply the reference form as data and state
+that gender is unrecorded, so the model is not required to invent either.
+**FALSIFIER (observable):** a reply still calls a contact "he" or "she", or `B07`/`B11`
+fall below their current C4/C5/C6.
