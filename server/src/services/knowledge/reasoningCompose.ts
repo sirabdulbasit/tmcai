@@ -44,6 +44,12 @@ import { listActiveActions, validateActionPayload, getActionDefinition } from '.
 import { renderToolCatalogue, executeBrainTool, BRAIN_TOOLS } from './brainTools';
 import type { ComposerHistoryTurn } from './brainComposer';
 import { resolveUserTimezone, getTimezoneOffset, formatLocalDate } from '../userTimezoneService';
+// DEF-223 — the reasoning path is the DEFAULT path (`resolveReasoningMode` returns
+// true unless env says 'never'), and its system prompt is the persona preamble
+// ALONE — not `assembleSystemPrompt`. So DEF-222's rule 8, which lives in
+// `CORE_CONVERSATIONAL_RULES`, never reached the prompt that actually writes the
+// owner's reply. One import, one definition, both paths.
+import { PERSON_REFERENCE_RULE } from './personReference';
 
 export type ReasoningDecision = 'act' | 'ask' | 'answer' | 'decline' | 'tool_call';
 
@@ -152,6 +158,8 @@ export async function reasoningCompose(input: ReasoningInput): Promise<Reasoning
 
   const systemPromptWithDecisionContract = `${input.systemPrompt}
 
+${PERSON_REFERENCE_RULE}
+
 # Reasoning decision contract (this turn)
 
 Read the user's message + all the context above. Decide ONE of these:
@@ -160,7 +168,7 @@ Read the user's message + all the context above. Decide ONE of these:
 - **act**: you have enough context to perform a structured action right now (one of the action types in the registry below). Emit the action JSON with payload that validates against its schema.
 - **ask**: you need ONE specific piece of information from the user before you can act. Emit a clarifying question naming exactly what's missing. The question SHOULD include the actual options when there are 2-3 candidates (e.g., "Which Asad — Asad Ahmed Taj or Asad Shafique?"). Avoid open-ended questions when constrained ones work. **ANSWER WHAT YOU ALREADY KNOW BEFORE YOU ASK: fill answer_text with it as well.** If you can name the subject in the question then you know enough to say something useful about it first, and a reply that is only a question makes him answer before he learns anything. "He's still waiting on the Q3 headcount plan — it's due Friday and unassigned. Did you want the detail, or should I do something about it?" beats the same question alone. Leave answer_text null only when you genuinely know nothing yet.
 - **answer**: the user asked a question rather than requesting an action; just answer from the context.
-- **decline**: he asked for something genuinely impossible or unsafe (no capability, no integration, would violate policy). Decline honestly and offer the closest legitimate alternative. **Put the decline in answer_text, addressed TO HIM in your own voice** — decline_reason is an internal one-line note and is NOT what he reads. Write "I can't place a WhatsApp call, but I can message him or give you his number", never "The user asked to place a call, which is a capability I do not have": the second describes the conversation from outside it.
+- **decline**: he asked for something genuinely impossible or unsafe (no capability, no integration, would violate policy). Decline honestly and offer the closest legitimate alternative. **Put the decline in answer_text, addressed TO HIM in your own voice** — decline_reason is an internal one-line note and is NOT what he reads. Write "I can't place a WhatsApp call, but I can message Latif or give you Latif's number", never "The user asked to place a call, which is a capability I do not have": the second describes the conversation from outside it.
 
 Output strictly this JSON shape — no prose outside the object, no markdown fencing:
 

@@ -390,6 +390,43 @@ export function topIsDominant(candidates: ContactCandidate[]): boolean {
   return a.score >= 50 && a.score > b.score * 1.5;
 }
 
+/**
+ * DEF-223 — the reference names ALONE, for turns that do not get the full block.
+ *
+ * `renderCandidatesBlock` below is gated in the composer on
+ * `isActionTurn || intent === 'factual'`, and that gate is correct: emails,
+ * phone numbers, scores and "use it directly when filling
+ * action.delegateeEmail" are action affordances, and a turn that is not an
+ * action should not be handed them.
+ *
+ * But DEF-222 put *"use the name in `refer_to`"* into the rules that ship on
+ * EVERY turn, and `refer_to` lives only in that gated block. On B11 — *"Can you
+ * place a WhatsApp call to Latif for me?"*, not an imperative — the rule
+ * arrived and the field it names did not, so Brain had an instruction pointing
+ * at nothing and answered *"give you HER number"* for the second run running.
+ *
+ * This is the datum without the affordances: names, and nothing else. No email,
+ * no phone, no score, no routing instruction. It costs nothing extra — the
+ * candidates are already resolved on every turn (`brainComposer.ts:3053`) and
+ * were simply being discarded.
+ */
+export function renderPersonReferenceIndex(query: string, candidates: ContactCandidate[]): string {
+  if (candidates.length === 0) return '';
+  // Deduplicated: two candidate rows for one person (a User row and its Entity
+  // twin) must not read as two people to refer to.
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const c of candidates) {
+    const refer = personReferenceFor({ displayName: c.displayName, asAskedFor: query });
+    const key = refer.toLowerCase();
+    if (!refer || seen.has(key)) continue;
+    seen.add(key);
+    names.push(`refer_to="${refer}"`);
+  }
+  if (names.length === 0) return '';
+  return `# Person named in this turn: "${query}"\n${names.join('  ')}`;
+}
+
 /** Markdown block of candidates for injection into the composer prompt.
  *  Lists name, email, relationship, and reasons. Used by the composer
  *  to disambiguate person names mentioned in the user's message. */

@@ -1525,6 +1525,8 @@ async function assembleSystemPrompt(args: {
   todayCalendarBlock: string;
   attentionBlock: string;
   candidatesBlock: string;
+  /** DEF-223 — names only, for turns the full block is withheld from. */
+  personIndexBlock: string;
   artifactsBlock: string;
   recentLog: string;
   openedBlock: string;
@@ -1571,7 +1573,7 @@ async function assembleSystemPrompt(args: {
   const {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
-    attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
+    attentionBlock, candidatesBlock, personIndexBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
     dispatchLedgerBlock, pushHistoryBlock, ownerClock,
   } = args;
 
@@ -1749,6 +1751,13 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // or for factual queries about specific people.
   if (candidatesBlock && (isActionTurn || intent === 'factual')) {
     parts.push(candidatesBlock);
+  } else if (personIndexBlock) {
+    // DEF-223 — the gate above is right to withhold emails, phones, scores and
+    // "use it directly when filling action.delegateeEmail" from a non-action
+    // turn. It was wrong to withhold the NAME: rule 8 tells the model to refer
+    // to people by `refer_to` on every turn, and this is the only place that
+    // field comes from. B11 got the rule without its referent, twice running.
+    parts.push(personIndexBlock);
   }
 
   // Recent action artifacts — needed when actions might be emitted so
@@ -3050,7 +3059,8 @@ export async function compose(
   // resulting candidate blocks so the LLM can pick the right person OR
   // ask a clean disambiguation question. Without this, MD says "delegate
   // to Asad" → LLM picks one Asad at random or says "I don't see them".
-  const candidatesBlock = await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
+  const { full: candidatesBlock, index: personIndexBlock } =
+    await buildCandidatesBlockForTurn(clientNumber, userId, question, history);
   // Today's date in the USER's local timezone, not UTC.
   // Sprint 4A (2026-05-21): swapped to per-user lookup via
   // userTimezoneService. Existing rows default to Asia/Karachi
@@ -3239,6 +3249,7 @@ ${calLines.join('\n')}`;
     todayCalendarBlock,
     attentionBlock,
     candidatesBlock,
+    personIndexBlock,
     artifactsBlock,
     recentLog: recentLog || '(no recent activity logged)',
     openedBlock,
@@ -5351,18 +5362,29 @@ async function buildCandidatesBlockForTurn(
   userId: number,
   question: string,
   history: ComposerHistoryTurn[],
-): Promise<string> {
+): Promise<{ full: string; index: string }> {
   const names = extractNameCandidates(question, history);
-  if (names.length === 0) return '';
-  const { resolveContact, renderCandidatesBlock } = await import('./contactResolver');
+  if (names.length === 0) return { full: '', index: '' };
+  const { resolveContact, renderCandidatesBlock, renderPersonReferenceIndex } =
+    await import('./contactResolver');
   const results = await Promise.all(
     names.map((n) => resolveContact(n, { clientNumber, userId, limit: 4 }).catch(() => [])),
   );
   const blocks: string[] = [];
+  // DEF-223 — the same resolution, rendered twice: the FULL block for turns that
+  // are allowed action affordances, and the reference INDEX for the rest. The
+  // index exists because DEF-222's rule 8 names `refer_to` on every turn while
+  // `refer_to` shipped only inside the gated block, so on B11 the model was told
+  // to use a field that was not in its prompt. Costs nothing extra — the
+  // candidates are resolved on every turn either way.
+  const indexes: string[] = [];
   results.forEach((cands, i) => {
-    if (cands.length > 0) blocks.push(renderCandidatesBlock(names[i], cands));
+    if (cands.length === 0) return;
+    blocks.push(renderCandidatesBlock(names[i], cands));
+    const idx = renderPersonReferenceIndex(names[i], cands);
+    if (idx) indexes.push(idx);
   });
-  return blocks.join('\n\n');
+  return { full: blocks.join('\n\n'), index: indexes.join('\n') };
 }
 
 function renderRiskRadarBlock(doc: { generatedAt?: Date | null; runDate?: Date | null; flags?: unknown; summary?: string | null; narrative?: string | null; flagCount?: number; highSeverityCount?: number } | null | undefined): string {
