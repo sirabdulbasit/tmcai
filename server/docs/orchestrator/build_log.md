@@ -3688,3 +3688,153 @@ composer path with no gate in front of it.
 **CAPABILITY: Accurate Communication · PREDICTED: +2 to +4** — not a new mechanism, three existing
 ones becoming reachable. **Proved wrong by:** B04 C6/C3 not recovering, or a dispatch reply still
 arriving as `Updated "…": field=value.`
+
+---
+
+## Iteration 11 (second entry under this number) — the envelope was the fix, the letter was unchanged (DEF-220)
+
+The brief re-fired Iteration 11 verbatim after my DEF-219 commits (`922c130`, `af3509c` at
+02:46) and after the score that measured them (`iter-11-post-build.json`, 02:52). The
+completion condition — a `## Iteration 11` section plus a commit — was already met, so
+rather than repeat the turn I did the work the brief's own re-scope clause asks for: one
+owner-visible behaviour made correct, and it is the residual I named on the record last
+turn instead of a new subject.
+
+### 0. Remediation — Iteration 4's findings, closed with commits and lines
+
+The brief marks this remediation attempt 1 of 3 and permits *"If you believe the finding is
+already closed by work in a later commit, say which commit and which line."* Every numbered
+risk is verified present in the tree as of this commit, not asserted from memory:
+
+| Iteration-4 finding | Where it is closed now |
+|---|---|
+| **CRITICAL 1** — revalidation is not atomic with enqueue | `settleBatch` is ONE `prisma.$transaction` (`openItemsBacklogCleanupJob.ts:742-828`): fresh read → per-row claim → queue insert **on `tx`** → sent-mark that throws to roll the whole thing back (DEF-208) |
+| **HIGH 2** — a sent batch permanently consumes an item ID | Membership is an immutable **event token**, not an item id: `noticeMeta` mints `eventToken: randomUUID()` (`:184`), `claimed` is a set of tokens (`:582`), and the in-transaction claim requires the row's token to be the one THIS batch owns (`:754-756`) — DEF-202 |
+| **HIGH 3** — two dispatchers can both enqueue | The per-row claim is a CAS on `(id, tenant, status, updatedAt)` and only `res.count === 1` counts (`:758-771`); a batch that claims nothing cancels itself **inside the same transaction** (`:774-783`). The unique event claim Codex asked for is on the item row, where the debt actually lives |
+| **MEDIUM 4** — the 200-row cap starves unclaimed debt | The owed scan pages past claimed rows, bounded by `OWED_SCAN_PAGES = 10`, and says out loud when it stops early (`:600-643`) — DEF-209 |
+| **MEDIUM 5** — the release evidence is red | The matrix below is **0 failed**. Closed |
+| **MEDIUM 6** — the measured C4 gate is untouched | **Superseded by an owner ruling**, not by me: the benchmark is a regression guard as of 2026-08-13 and this brief says C4 @ 87.5 — *"do not chase this to 95"* |
+| **3b CARRIED CRITICAL** — `delegationFollowUpJob` enumerates globally and resolves owner identity by bare user ID | Closed by `bb0cf57` (DEF-191) and `9cb7720` (DEF-192). The entry point is now `runDelegationFollowUpForTenant(clientNumber)`; the only cross-tenant read is the tenant registry (`delegationFollowUpJob.ts:82-95`), identity resolves under the item's tenant, and mutations are scoped `updateMany`s whose affected-row count is checked |
+
+I previously answered this escalation with *"accept as a known limitation, do not revert"*
+for 3b. That answer was **wrong on the facts** — the finding was already closed by DEF-192,
+which I had written myself two iterations earlier. Correcting it rather than repeating it.
+
+### 1. What I targeted, and why it is not a fixQueue entry
+
+The worst fixQueue entries are now all **C4 85** register notes — a run-on sentence, a
+templated *"Good morning, Sir."*, repeated *"Sir"* — and the brief forbids chasing C4.
+`B04-outstanding-question-ignored`, which was **C6 70** last turn, is now **96**:
+
+> "Got it. I've marked it as high priority. It's still missing a due date, if you'd like to
+> add one."
+
+DEF-219's causal chain held. What it did **not** close is the residual I wrote into its own
+DEF row: *"DEF-212's no-slots branch still renders the bare receipt when nothing IS
+outstanding… fixing it needs the marker to carry applied fields as DATA rather than as a
+rendered string — a separate build."* This is that build.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING.** `guard-destroys-the-answer` is in chart §3 with
+8 occurrences and DEF-107/113/114/135/144/150/167 against it. Structural fix required.
+
+### 2. The mechanism, and why the earlier fixes could not close the class
+
+`actionAppliedMarker({ receipt })` took `actionResult.message` — English built by hand in the
+action layer — and `appliedMarkerMeaning` returned it **verbatim** whenever `outstanding`
+was empty. The marker was not a fix; it was an envelope around the same string. Each fix in
+this lineage moved *where* the deterministic English was produced. None removed the
+**channel** that let a rendered sentence reach the owner.
+
+DEF-219 then turned that branch from unreachable-for-the-wrong-reason into the common one:
+before it, `outstanding` was empty on every call because `lastBrainQuestion` was always
+`null`; after it, `outstanding` is empty exactly when Brain had no open question — most
+turns. So the fix that recovered B04 also promoted its residual to the default path.
+
+**What changed, by file:line:**
+
+- `src/services/knowledge/actionReceipt.ts:315-345` — `APPLIED_FIELDS`, the ONE vocabulary
+  for saying each applied field, keyed by the Prisma payload field. Same shape
+  `RECEIPT_SLOTS` already had for the outstanding half.
+- `:301-313` — `readableDate`, by string surgery. Deliberately **not** `new Date(...)`:
+  DEF-214 was an entire defect class built out of a date value that moved when a zone was
+  applied to it, and a calendar date has no instant in it to convert.
+- `:355-372` — `appliedChanges(payload)` reads the fields off the Prisma object the database
+  actually received. Empty, blank and absent values are not applied changes (the
+  `filledSlots` rule, same reasoning: claiming a field was set when it was not is
+  `fabricated-status` pointing the other way).
+- `:374-395` — `normaliseApplied` / `appliedFingerprint`, shared by builder and verifier so
+  they cannot disagree byte for byte.
+- `src/services/knowledge/answerSanitizer.ts:326-372` — the curated meaning composes
+  *"The open item "X" was updated: its priority is now high."* from the vocabulary. A field
+  outside it is `null`, not a guess (DEF-175).
+- `src/services/knowledge/answerReceiptPolicy.ts:317-341` — the token binds to
+  `appliedFingerprint(title, applied)` instead of a substring test on the rendered receipt.
+  **Stricter, not looser:** two different renderings of the same write used to be
+  indistinguishable here.
+- `src/services/knowledge/brainComposer.ts:3788-3813` — builds the marker from `applied`,
+  and when NO owner-facing field was written it keeps the receipt as the answer rather than
+  emitting an uncurated marker (which would reach him as the neutral fallback — less than
+  the truth).
+
+The audit receipt still exists and is still the ledger record, exactly as DEF-144 ruled. It
+no longer has a route to his screen.
+
+### 3. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            214 files (213 passed, 1 skipped)
+                          2706 tests — 2677 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — in the CLEAN CLONE at
+                          scratchpad/bp198/server, never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check, because a source assertion is not a deployment fact: the built
+`actionReceipt.js` carries `JSON.stringify({ title, applied, outstanding })` and **zero**
+occurrences of the old `{ receipt, outstanding }` payload.
+
+**20 tests. 5 mutants applied and RUN, all 5 die:**
+
+1. the vocabulary check becomes a skip (`if (!spec) continue`) → parser accepts an invented field
+2. `readableDate` keeps the zero-padded day → `01 Jan 2026`
+3. `appliedChanges` accepts an empty value → a field claimed as set that was not
+4. the fingerprint binding is dropped from `verifyAppliedMarker` → replay onto another item
+5. the composer's `applied.length === 0` guard inverted → **dies in `def144` and `def147`,
+   on the REAL compose path, not only in the code guard**
+
+**Superseded assertions updated with the reasoning inline, never silenced:** `def147` ×4
+(each asserted `priority=high` reaches the WhatsApp body — that assertion WAS the defect,
+written by me), `def144` ×2, `def215` ×1, `def219` ×2, `def209` ×1.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **No C-3 campaign increment.** Increments 1–3 are built and undeployed; building increment
+  2 on top would pile a fourth undeployed increment onto three, which is the exact shape the
+  campaign's own ABORT CONDITION exists to stop. The campaign's blocker is uniformly
+  deployment and live observation, and I cannot deploy. **Said plainly: this turn produced
+  nothing toward Self-Pruning.**
+- **No C4 register work** — templated greeting, repeated "Sir", the run-on in B02. The brief
+  forbids chasing C4 and I agree with the ruling.
+- **`brain_evaluation_chart.md` untouched.** Its `D-*` rows are appended by the orchestrator's
+  deploy phase and are dirty in the tree; writing there would collide with that phase.
+- **Operator directives:** none skipped that I found applicable to a build turn.
+- **Unsure:** B12 now says *"I'm looking into my dispatch records now to understand why that
+  happened."* DEF-213 removed the supplied vocabulary and the model reached for a synonym.
+  That is a present-tense claim about an investigation that is not running — `fabricated-status`
+  in a new dress — and the judge did not flag it. I did not fix it this turn because it is a
+  different mechanism and would have made the diff two changes; it is the honest next
+  candidate.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, on the
+live composer update path, no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** One owner-visible sentence
+class made human; DEF-219 had already masked part of its reach, so I am not claiming more.
+**MECHANISM:** the applied-receipt marker carries structured fields, so the fact is composed
+from the shared vocabulary instead of a string built in the action layer.
+**FALSIFIER (observable):** any dispatch reply still arrives containing `field=value`, or
+B04/B06 fall below their current C4.

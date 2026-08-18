@@ -3805,3 +3805,61 @@ Reverting restores a reader that returns null on every real call.
 **No C-3 progress** (the continuation forbade it), and the other fixQueue entries are C4 register, which the brief forbids chasing.
 
 **CAPABILITY: Accurate Communication · PREDICTED: +2 to +4 · MECHANISM:** the outstanding-slot computation now receives Brain's actual last question instead of `null` on every turn — three existing mechanisms becoming reachable, not a new one. **FALSIFIER:** B04 C6/C3 do not recover, or a dispatch reply still arrives as `Updated "…": field=value.` — either would mean the causal chain above is wrong.
+
+---
+
+## 71. DEF-220 — the envelope was the fix, the letter was unchanged (2026-08-18, BUILDER: Claude — orchestrator iteration 11, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `guard-destroys-the-answer`** — the last member of that lineage that could still
+put a log line on the owner's screen.
+
+**What he was reading.** On any update where Brain had no open question of its own — most turns:
+
+> `Updated "Define rules for Brain's responsiveness to new vs. existing contacts": priority=high.`
+
+Field names and an equals sign. The exact string DEF-144, DEF-145 and DEF-212 were each written
+about.
+
+**Why three fixes did not close it.** DEF-212 moved the receipt into a marker payload and the
+curated meaning returned that payload **verbatim** when nothing was outstanding. The marker was
+not a fix; it was an envelope around the same sentence. Every fix in this lineage moved *where*
+the deterministic English was produced — none removed the **channel** that carried a rendered
+sentence to the owner. DEF-219 then promoted that branch from unreachable-for-the-wrong-reason
+to the default path: `outstanding` used to be empty on every call because `lastBrainQuestion`
+was always `null`, and afterwards it is empty precisely when Brain had nothing outstanding.
+
+I named this residual in DEF-219's own row and said it needed a separate build. This is it.
+
+**The fix — the marker carries fields and values; no sentence crosses the boundary.**
+
+- `APPLIED_FIELDS` (`actionReceipt.ts:315`) is the one vocabulary for saying each applied field,
+  the same shape `RECEIPT_SLOTS` already had for the outstanding half.
+- `appliedChanges` reads them off the Prisma payload the database actually received — the
+  DEF-147 discipline, unchanged. Empty and absent values are not applied changes.
+- `readableDate` renders `2026-08-20` as `20 Aug 2026` by string surgery, never `new Date(...)`:
+  DEF-214 was a whole defect class built out of a date value that moved when a zone was applied.
+- `appliedMarkerMeaning` composes *"The open item "X" was updated: its priority is now high."*
+- The token binds to `appliedFingerprint(title, applied)` instead of a substring test on the
+  rendered receipt — **stricter**, because two renderings of the same write used to be
+  indistinguishable.
+- When NO owner-facing field was written, the receipt stays the answer rather than becoming an
+  uncurated marker, which would reach him as the neutral fallback — less than the truth.
+
+The audit receipt still exists and is still the ledger record, exactly as DEF-144 ruled. It no
+longer has a route to his screen. Fail-closed is unchanged: unverifiable prose still loses.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run` 214
+files (213 passed, 1 skipped), **2706 tests, 2677 passed, 0 failed** · `npm run build` exit 0 in
+a clean clone (never this tree — `dist` is `chattr +i`), with the old `{ receipt, outstanding }`
+payload confirmed absent from the emitted code · `git diff --check` clean. 20 tests, **5 mutants
+applied and RUN, all 5 die** — one of them dies on the real compose path in `def144`/`def147`
+rather than in a code guard.
+
+**Superseded assertions updated with the reasoning inline, never silenced:** `def147` ×4 (each
+asserted that `priority=high` reaches the WhatsApp body — that assertion WAS the defect),
+`def144` ×2, `def215` ×1, `def219` ×2, `def209` ×1.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** the applied-receipt
+marker carries structured fields, so the fact is composed from the shared vocabulary instead of
+a string built in the action layer. **FALSIFIER:** any dispatch reply still arrives containing
+`field=value`, or B04/B06 fall below their current C4.
