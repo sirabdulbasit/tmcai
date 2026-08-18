@@ -1072,9 +1072,15 @@ export default function OrchestratorPulsePanel() {
             <Icon name="warning" size={14} /> The seat is alive but producing nothing — this is not progress.
           </div>
         )}
-        {!data.loop_alive && stage === 'IDLE' && (
+        {/* WAITING is healthy and gets no banner: under cron, between pulses is the
+            normal state, and an amber bar that is always on is one nobody reads. The
+            warning is reserved for a pulse that DIED mid-flight, which is what an
+            abandoned stage means — it started and no completion was ever recorded. */}
+        {(data.phases || []).some((p) => p.state === 'abandoned') && (
           <div className="orch-banner orch-banner-warn">
-            <Icon name="warning" size={14} /> The build loop is not running on this host.
+            <Icon name="warning" size={14} /> The last healing pulse stopped mid-stage —
+            {' '}{(data.phases || []).filter((p) => p.state === 'abandoned').map((p) => p.name).join(', ')}
+            {' '}never completed. Cron will start a fresh pulse; this one will not resume.
           </div>
         )}
 

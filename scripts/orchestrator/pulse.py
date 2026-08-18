@@ -259,6 +259,26 @@ def detect_stage():
         return "REVIEWING", rev_age, "logfile", os.path.basename(rev)
 
     quiet = f", Builder quiet for {fmt_dur(age)}" if age is not None else ""
+    # WAITING, not IDLE — owner, 2026-08-18: "idle is nothing." Under cron there is no
+    # such thing as idle: either a pulse is running or the next one is due at a time we
+    # can state. Naming the wait is what turns "nothing is happening" into "nothing is
+    # SUPPOSED to be happening yet", which are different facts about a system.
+    _np = next_pulses(time.time())
+    _bits = []
+    if _np.get("conversational_in_s") is not None:
+        _cin = _np["conversational_in_s"]
+        _bits.append(f"conversational check in {_cin // 60}m{_cin % 60:02d}s "
+                     "(runs only if you have messaged Brain since the last one)")
+    if _np.get("night_in_s") is not None:
+        _nin = _np["night_in_s"]
+        _bits.append(f"night evaluation at {_np['night_at']}, in {_nin // 3600}h{(_nin % 3600) // 60:02d}m")
+    if _bits:
+        # The elapsed clock is the time until the SOONEST next pulse, counting down,
+        # rather than time-since-something-stopped, which is what made a finished pulse
+        # look like a stall.
+        _soon = min(v for v in (_np.get("conversational_in_s"), _np.get("night_in_s"))
+                    if v is not None)
+        return "WAITING", _soon, "next cron", " · ".join(_bits)
     return "IDLE", 0, "none", f"no build, review or measurement running{quiet}"
 
 
@@ -994,6 +1014,47 @@ def pulse_labels():
     return out
 
 
+
+def next_pulses(now_ts):
+    """When the next pulse of each kind is due, from the crontab that actually runs them.
+
+    Owner, 2026-08-18: "idle is nothing … mean waiting for next Cron etc." Between pulses
+    nothing is broken and nothing is stalled — the system is waiting for a known event at
+    a knowable time, and "IDLE" said none of that.
+
+    Read from `crontab -l` rather than hard-coded here: a schedule in two places drifts,
+    and the deck would then confidently announce a time nothing was going to happen at.
+    """
+    import subprocess
+    out = {"conversational_in_s": None, "night_in_s": None, "night_at": None}
+    try:
+        tab = subprocess.run(["crontab", "-l"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return out
+    for line in tab.splitlines():
+        line = line.strip()
+        if line.startswith("#") or not line:
+            continue
+        if "watch-conversations.sh" in line:
+            m = re.match(r"\*/(\d+)\s", line)
+            if m:
+                every = int(m.group(1)) * 60
+                out["conversational_in_s"] = every - (int(now_ts) % every)
+        elif "nightly-iteration.sh" in line:
+            f = line.split()
+            if len(f) >= 2 and f[0].isdigit() and f[1].isdigit():
+                minute, hour = int(f[0]), int(f[1])
+                t = time.gmtime(now_ts)
+                due = calendar.timegm((t.tm_year, t.tm_mon, t.tm_mday, hour, minute, 0,
+                                       0, 0, 0))
+                if due <= now_ts:
+                    due += 86400
+                out["night_in_s"] = int(due - now_ts)
+                out["night_at"] = f"{hour:02d}:{minute:02d} UTC"
+    return out
+
+
 # ── collect, then render ─────────────────────────────────────────────────────
 #
 # Owner, 2026-08-12: *"what if we build live dashboard in ?tab=health which shows
@@ -1234,8 +1295,8 @@ def collect():
                 break
 
     seat = {"Build & Deploy": "Claude -> production", "Checks": "orchestrator",
-            "Check & Measure": "orchestrator", "Chat Analysis": "Codex",
-            "Review Capabilities": "Codex",
+            "Check & Measure": "orchestrator", "Chat Analysis": "Claude",
+            "Review Capabilities": "Claude",
             "Capability Evaluation": "Grok"}
     models = seat_models()
     phase_rows = []
