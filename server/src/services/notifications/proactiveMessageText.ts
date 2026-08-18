@@ -245,11 +245,20 @@ export function renderInboundNoiseNotice(args: {
   windowHours: number;
   /** True when the rows carried no item/thread identity (CL-033's shape). */
   unattributed: boolean;
+  /**
+   * DEF-230 — how many distinct subsystems pushed about it. The first
+   * production read showed the real noise is ONE item pushed 17 times by FOUR
+   * producers that do not know about each other; without this number the notice
+   * reads as "one chatty sender" when the finding is "four uncoordinated
+   * nudgers". Optional: unattributed rows genuinely have no producer split.
+   */
+  producers?: number;
 }): string {
   const clean = (s: string) => stripMarkerEnvelope(s ?? '').replace(/\s+/g, ' ').trim();
   const int = (n: number, lo: number, hi: number) =>
     (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : lo);
   const reached = int(args.reached, 1, 10_000);
+  const producers = args.producers != null ? int(args.producers, 1, 50) : undefined;
   const payload = {
     sender: clean(String(args.sender)).slice(0, 80) || 'an unknown sender',
     reached,
@@ -258,6 +267,9 @@ export function renderInboundNoiseNotice(args: {
     acted: Math.min(int(args.acted, 0, 10_000), reached),
     windowHours: int(args.windowHours, 1, 8_760),
     unattributed: args.unattributed === true,
+    // Only meaningful when at least two subsystems collided; producers=1 is
+    // every normal push and would add noise to a notice about noise.
+    ...(producers != null && producers >= 2 ? { producers } : {}),
   };
   return systemMarker(`selfpruning_noise: ${JSON.stringify(payload)}`);
 }

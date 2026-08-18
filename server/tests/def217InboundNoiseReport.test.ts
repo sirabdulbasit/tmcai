@@ -43,10 +43,21 @@ describe('DEF-217 — choosing what to report', () => {
     });
   });
 
-  it('falls back to the loudest resolved subject when no flood clears the floor', () => {
-    expect(worstOffender({ ...CL033, unattributed: [] }, 3)).toMatchObject({
-      sender: 'item:a1', reached: 3, unattributed: false,
-    });
+  it('a well-answered subject is NOT reported once the flood is gone', () => {
+    // DEF-230 SUPERSEDED this test's original expectation, and the first
+    // production read of the ledger is why. This fixture's subject is 3
+    // delivered / 2 answered — one unanswered push. The old rule ranked by
+    // `reached` and would have reported it; the real data showed that rule
+    // choosing a fully-answered thread (14/14) over an item pushed 17 times by
+    // four subsystems. Noise is what he did NOT act on, so one unanswered push
+    // under a floor of 3 is silence, not a report.
+    expect(worstOffender({ ...CL033, unattributed: [] }, 3)).toBeNull();
+    // And when the unanswered count DOES clear the floor, the subject is chosen.
+    expect(worstOffender({
+      windowHours: 36,
+      unattributed: [],
+      subjects: [{ subjectKey: 'item:a1', reached: 9, acted: 2 }],
+    }, 3)).toMatchObject({ sender: 'item:a1', reached: 9, unattributed: false });
   });
 
   it('says nothing below the floor — a report about two pushes IS the noise', () => {

@@ -147,50 +147,108 @@ export async function runInboundNoiseReportForTenant(clientNumber: string): Prom
 /**
  * The loudest sender worth a sentence, or null.
  *
- * FLOODS FIRST, and that ordering is the point: CL-033 — ten unactionable pushes
- * from one unknown number in a single morning — lands in `unattributed`/`floods`
- * precisely because those rows carry no item or thread identity. A report that
- * only looked at resolved subjects would have missed the case the campaign was
- * written about.
+ * DEF-230 — RANKED BY WHAT HE DID NOT ACT ON, and production is why.
+ *
+ * DEF-217 ranked by `reached` and returned from `unattributed` before it ever
+ * looked at subjects, justified from CL-033's premise: *"ten unactionable pushes
+ * from one unknown number"*. The first production read of this ledger
+ * (2026-08-18, 200h window, TMC-0001/user 2) refuted that premise:
+ *
+ *     +239487846228094 — 14 delivered, 14 answered (0% unanswered)
+ *     item:cmsernsi… — 17 delivered via 4 producers, 10 answered
+ *     BURSTS=0
+ *
+ * The unknown number is not noise: he answered every one of its messages. So the
+ * old rule would have sent him, as its very first message, a complaint about the
+ * one thread he handled completely — and said nothing about an open item pushed
+ * seventeen times by four subsystems that do not know about each other.
+ *
+ * Three consequences, and each is a change of rule rather than a threshold tweak:
+ *
+ *   1. **Noise is what he did NOT act on.** Ranking and the floor both use
+ *      `reached - acted`, so a fully-answered thread can never be reported. The
+ *      ledger's own header already says this is the meaningful figure.
+ *   2. **The `unattributed`-first preference is gone.** It existed only to serve
+ *      CL-033's shape. All candidates compete on the same number; the category
+ *      is now a rendering detail, not a priority.
+ *   3. **The producer count travels.** `SubjectGroup.producers` exists, in its
+ *      author's words, so that *"three producers nag one item is a fact the data
+ *      states rather than arithmetic in a build entry"* — and `worstOffender`
+ *      was throwing it away. That is DEF-219's shape: the information existed
+ *      and nothing read it.
+ *
+ * `ignored` is DERIVED here as `reached - acted` rather than read from the
+ * ledger's own field. The ledger defines it identically, and deriving means the
+ * two can never disagree about the number this decision rests on.
  *
  * `truncated` is NOT a reason to stay silent: the totals are then a floor, so the
- * real count is at least what we say. Saying "at least N" would be more precise
- * and is deliberately left to increment 2, which is where the wording is designed.
+ * real count is at least what we say.
  */
 export function worstOffender(
   noise: {
     windowHours: number;
     unattributed: ReadonlyArray<{ senderKey: string; reached: number; acted: number }>;
-    subjects: ReadonlyArray<{ subjectKey: string; reached: number; acted: number }>;
+    subjects: ReadonlyArray<{
+      subjectKey: string;
+      reached: number;
+      acted: number;
+      /** Which subsystems pushed about it. Absent on older shapes. */
+      producers?: ReadonlyArray<unknown>;
+    }>;
   },
   minPushes: number,
-): { sender: string; reached: number; acted: number; windowHours: number; unattributed: boolean } | null {
+): {
+  sender: string;
+  reached: number;
+  acted: number;
+  windowHours: number;
+  unattributed: boolean;
+  /** How many distinct subsystems pushed about it, when the rows say. */
+  producers?: number;
+} | null {
   const floor = Math.max(2, Math.floor(minPushes));
 
-  const loudestUnattributed = [...(noise.unattributed ?? [])]
-    .filter((g) => g.reached >= floor)
-    .sort((a, b) => b.reached - a.reached)[0];
-  if (loudestUnattributed) {
-    return {
-      sender: loudestUnattributed.senderKey,
-      reached: loudestUnattributed.reached,
-      acted: loudestUnattributed.acted,
-      windowHours: noise.windowHours,
-      unattributed: true,
-    };
-  }
+  type Candidate = {
+    sender: string; reached: number; acted: number;
+    unattributed: boolean; producers?: number;
+  };
 
-  const loudestSubject = [...(noise.subjects ?? [])]
-    .filter((g) => g.reached >= floor)
-    .sort((a, b) => b.reached - a.reached)[0];
-  if (loudestSubject) {
-    return {
-      sender: loudestSubject.subjectKey,
-      reached: loudestSubject.reached,
-      acted: loudestSubject.acted,
-      windowHours: noise.windowHours,
+  const candidates: Candidate[] = [
+    ...(noise.subjects ?? []).map((g) => ({
+      sender: g.subjectKey,
+      reached: g.reached,
+      acted: g.acted,
       unattributed: false,
-    };
-  }
-  return null;
+      producers: Array.isArray(g.producers) ? g.producers.length : undefined,
+    })),
+    ...(noise.unattributed ?? []).map((g) => ({
+      sender: g.senderKey,
+      reached: g.reached,
+      acted: g.acted,
+      unattributed: true,
+      producers: undefined as number | undefined,
+    })),
+  ];
+
+  // No Math.max(0,…) clamp: mutation proved it EQUIVALENT. The floor filter
+  // below runs first and floor >= 2, so a negative difference (a malformed
+  // group with acted > reached) is excluded exactly as a zero would be and can
+  // never reach the sort. Deleted rather than left as decoration (DEF-221).
+  const ignoredOf = (c: Candidate) => c.reached - c.acted;
+
+  const worst = candidates
+    .filter((c) => ignoredOf(c) >= floor)
+    // Most unanswered first; more pushes breaks a tie, because between two
+    // subjects he ignored equally often the noisier one is the better sentence.
+    .sort((a, b) => (ignoredOf(b) - ignoredOf(a)) || (b.reached - a.reached))[0];
+
+  if (!worst) return null;
+  return {
+    sender: worst.sender,
+    reached: worst.reached,
+    acted: worst.acted,
+    windowHours: noise.windowHours,
+    unattributed: worst.unattributed,
+    ...(worst.producers != null ? { producers: worst.producers } : {}),
+  };
 }

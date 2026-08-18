@@ -390,6 +390,12 @@ function noiseMarkerMeaning(answer: string): string | null {
     if (!Number.isInteger(p?.acted) || p.acted < 0 || p.acted > p.reached) return null;
     if (!Number.isInteger(p?.windowHours) || p.windowHours < 1 || p.windowHours > 8_760) return null;
     if (typeof p?.unattributed !== 'boolean') return null;
+    // DEF-230 — optional, and validated when present: at least two subsystems,
+    // and never more of them than there were pushes. The constructor only emits
+    // it at >= 2, so anything else is a payload it could not have produced.
+    if (p.producers !== undefined) {
+      if (!Number.isInteger(p.producers) || p.producers < 2 || p.producers > p.reached) return null;
+    }
 
     const sender = String(p.sender).slice(0, 80);
     const push = p.reached === 1 ? 'message' : 'messages';
@@ -401,7 +407,12 @@ function noiseMarkerMeaning(answer: string): string | null {
     const identity = p.unattributed
       ? ' None of them could be tied to an open item or thread.'
       : '';
-    return `In the last ${p.windowHours}h, ${sender} reached you with ${p.reached} ${push}`
+    // The production finding, said as a fact: the pushes came from N different
+    // subsystems, which is why he received so many about one thing.
+    const via = p.producers !== undefined
+      ? `, from ${p.producers} different subsystems that each push on their own schedule,`
+      : '';
+    return `In the last ${p.windowHours}h, ${sender} reached you with ${p.reached} ${push}${via}`
       + ` and ${acted}.${identity}`;
   } catch {
     return null;
