@@ -19,6 +19,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../../db/prisma';
 import { requireAdmin } from '../../middleware/auth';
+import { classifyProviderError } from '../../services/connectors/providerErrorText';
 
 const router = Router();
 
@@ -118,24 +119,29 @@ async function getCachedPreview(clientNumber: string, slug: string, userId: numb
  * fixes; fall back to a generic "try again" for anything unrecognised.
  */
 function sanitizeScribeError(err: any): string {
+  // DEF-229 — the CLASSIFICATION moved to `providerErrorText`; these sentences
+  // did not. They are scribe-specific ("the Google Drive card", "Re-scribe")
+  // and would be wrong in a WhatsApp ping about a calendar, so each surface
+  // still writes its own action. What was duplicated — and what leaked
+  // `invalid_grant` to the owner from `staleConnectorPing` — is the pattern
+  // matching, and there is now one copy of it.
   const raw = String(err?.message ?? err ?? '');
-  if (/oauth2\.googleapis\.com\/token|invalid_grant|invalid_token|Token has been expired|refresh.*token/i.test(raw)) {
-    return 'Google access expired — click Re-connect on the Google Drive card to refresh authorisation.';
+  switch (classifyProviderError(raw)) {
+    case 'auth_expired':
+      return 'Google access expired — click Re-connect on the Google Drive card to refresh authorisation.';
+    case 'no_permission':
+      return 'Google account does not have read access to that folder. Re-connect with an account that can read the folder, or change the folder ID.';
+    case 'not_found':
+      return 'Folder ID not found in Google Drive. Open Change folder and paste the correct folder ID.';
+    case 'network':
+      return 'Network error reaching Google. Try again in a minute.';
+    case 'rate_limit':
+      return 'Google API rate limit reached. Try again in a few minutes.';
+    case 'unknown':
+    default:
+      // Unknown — generic message; never leak SDK internals.
+      return 'Scribe failed. Try Re-connect, then Re-scribe.';
   }
-  if (/insufficientPermissions|not authorized|403/i.test(raw)) {
-    return 'Google account does not have read access to that folder. Re-connect with an account that can read the folder, or change the folder ID.';
-  }
-  if (/404|notFound|file not found/i.test(raw)) {
-    return 'Folder ID not found in Google Drive. Open Change folder and paste the correct folder ID.';
-  }
-  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i.test(raw)) {
-    return 'Network error reaching Google. Try again in a minute.';
-  }
-  if (/quota|rate.?limit|429/i.test(raw)) {
-    return 'Google API rate limit reached. Try again in a few minutes.';
-  }
-  // Unknown — generic message; never leak SDK internals.
-  return 'Scribe failed. Try Re-connect, then Re-scribe.';
 }
 
 async function readConfig(clientNumber: string, key: string): Promise<string | null> {

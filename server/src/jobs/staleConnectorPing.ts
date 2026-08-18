@@ -15,6 +15,7 @@
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
+import { ownerFacingCause } from '../services/connectors/providerErrorText';
 
 const log = createLogger('stale-connector-ping');
 
@@ -47,7 +48,13 @@ export async function runStaleConnectorPing(opts: { dryRun?: boolean } = {}): Pr
     const { enqueueBrainPrompt } = await import('../services/brainPrompts/brainPromptQueueService');
     for (const row of stale) {
       const connType = row.connector_type_id?.replace(/^ct_/, '').replace(/_personal$/, '').replace(/_/g, ' ') ?? 'a connector';
-      const reason = row.last_oauth_error ? ` (${row.last_oauth_error})` : '';
+      // DEF-229 — the owner used to get the provider's own token here:
+      // ` (invalid_grant)`. `B08-bad-news` quoted it back verbatim. He is told
+      // what happened in his terms, and when the code cannot be translated he
+      // is told NOTHING extra — a code he cannot act on is worse than silence,
+      // and the sentence below already says what to do.
+      const cause = ownerFacingCause(row.last_oauth_error);
+      const reason = cause ? ` ${cause[0].toUpperCase()}${cause.slice(1)}.` : '';
       const ageHours = row.last_sync_at
         ? Math.floor((Date.now() - new Date(row.last_sync_at).getTime()) / (60 * 60 * 1000))
         : null;
