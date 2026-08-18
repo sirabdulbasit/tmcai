@@ -120,11 +120,17 @@ describe('DEF-221 — the candidates block, which is where a person is described
   const block = (query: string, names: string[]) =>
     renderCandidatesBlock(query, names.map((displayName) => candidate({ displayName })));
 
-  it('carries refer_to for each candidate, and the rule once', () => {
+  it('carries refer_to for each candidate — and, since DEF-222, NOT the rule', () => {
     const out = block('Hamna', ['Hamna Latif Bhutta']);
     expect(out).toContain('refer_to="Hamna"');
-    expect(statesPersonReferenceRule(out)).toBe(true);
-    expect(out.split('NO GENDER IS RECORDED').length - 1, 'stated once, not per row').toBe(1);
+    // DEF-222 SUPERSEDED the second half of this assertion. DEF-221 pushed the
+    // rule onto this block; the block is gated on `isActionTurn || factual`, so
+    // on B11 ("Can you place a WhatsApp call to Latif for me?" — not an
+    // imperative, "place" is not in the verb list) it never shipped, and that
+    // reply still said "her number". The rule moved to the core conversational
+    // rules, which ship on every turn. `refer_to` stays here: it is DATA about
+    // this candidate.
+    expect(statesPersonReferenceRule(out), 'the rule is an invariant, not evidence').toBe(false);
   });
 
   it('THE B11 CASE: a query for Latif carries no gender and a usable name', () => {
@@ -155,32 +161,34 @@ describe('DEF-221 — the candidates block, which is where a person is described
   });
 });
 
-describe('DEF-221 — the open-items block names delegatees, so it carries the rule too', () => {
-  const code = (() => {
-    const raw = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src/services/knowledge/brainComposer.ts'), 'utf8');
+describe('DEF-221 — one definition of the sentence, wherever it is used', () => {
+  const stripped = (rel: string) => {
+    const raw = fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8');
     // Comments stripped: a guard must read code, not prose about it (DEF-195).
     return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-  })();
+  };
 
-  it('appends the ONE shared rule — not a second copy of the words', () => {
-    expect(code).toMatch(/const referenceRule = namesSomeone \? `\\n\\n\$\{PERSON_REFERENCE_RULE\}` : '';/);
-    expect(code).toMatch(/import \{ PERSON_REFERENCE_RULE \} from '\.\/personReference'/);
-    expect(code, 'no second hand-written copy of the sentence')
-      .not.toContain('NO GENDER IS RECORDED FOR ANYONE');
+  // DEF-222 SUPERSEDED the placement assertions that were here — they pinned the
+  // rule to the two evidence blocks, which is exactly the arrangement that let
+  // B11 and B01 ship "her". `def222PersonRuleAlways.test.ts` owns the new
+  // placement. What survives, unchanged, is the property this file was written
+  // for: the SENTENCE has one definition and nobody re-types it.
+
+  it('only `personReference.ts` contains the words', () => {
+    expect(stripped('src/services/knowledge/personReference.ts'))
+      .toContain('NO GENDER IS RECORDED FOR ANYONE');
+    for (const f of [
+      'src/services/knowledge/brainComposer.ts',
+      'src/services/knowledge/contactResolver.ts',
+    ]) {
+      expect(stripped(f), f).not.toContain('NO GENDER IS RECORDED FOR ANYONE');
+    }
   });
 
-  it('is GATED on a person actually being named — an empty rule is noise', () => {
-    expect(code).toMatch(/const namesSomeone = rows\.some\(\(r: any\) => Boolean\(r\.delegateeName\)\)/);
-    expect(code).toMatch(/\$\{lines\.join\('\\n'\)\}\$\{referenceRule\}/);
-  });
-
-  it('the resolver imports the shared rule rather than restating it', () => {
-    const resolver = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src/services/knowledge/contactResolver.ts'), 'utf8');
-    expect(resolver).toMatch(
-      /import \{ personReferenceFor, PERSON_REFERENCE_RULE \} from '\.\/personReference'/);
-    expect(resolver.replace(/\/\*[\s\S]*?\*\//g, ''))
-      .not.toContain('NO GENDER IS RECORDED FOR ANYONE');
+  it('both consumers import it rather than restating it', () => {
+    expect(stripped('src/services/knowledge/brainComposer.ts'))
+      .toMatch(/import \{ PERSON_REFERENCE_RULE, statesPersonReferenceRule \} from '\.\/personReference'/);
+    expect(stripped('src/services/knowledge/contactResolver.ts'))
+      .toMatch(/import \{ personReferenceFor \} from '\.\/personReference'/);
   });
 });

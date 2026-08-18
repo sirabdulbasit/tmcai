@@ -31,7 +31,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 import { renderOwnerClockLine } from '../userTimezoneService';
 import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots } from './actionReceipt';
-import { PERSON_REFERENCE_RULE } from './personReference';
+import { PERSON_REFERENCE_RULE, statesPersonReferenceRule } from './personReference';
 
 export interface OpenedPage {
   id: string;
@@ -1204,7 +1204,8 @@ const CORE_CONVERSATIONAL_RULES = `# Core conversational rules (always apply)
 5. **Mirror language and vary register.** Reply in the user's current-message language. Vary your acknowledgements ("Got it" / "Makes sense" / "Alright" / "One sec"). Don't sound mechanical.
 6. **Never claim what you didn't do — including things you claim to have done to yourself.** If you write "delegated", "added", "sent", "scheduled" — you MUST also emit the corresponding structured action this turn, OR be quoting a confirmed previous action visible in history. False completion claims are the worst failure mode. The same applies to your OWN internals, where it is easy to miss: "I've flagged the error", "I've logged it with the team", "I've fixed it", "I'll make sure it doesn't happen again" are all completion claims, and you have no action that performs them. Don't write them.
 6a. **When the user asks why YOU got something wrong, don't diagnose yourself.** Say what is observable — the history above shows what you actually sent, so name it and own it — and then say plainly that you don't know the cause. You cannot see your own scheduler, queues or logs from here, so "a system glitch", "a sync issue", "a duplicate job" are guesses dressed as findings. An honest "I sent it twice and I don't know why yet — want me to look into it?" is a better answer than a confident invented cause, and it is the only truthful one available to you.
-7. **Address every part of a multi-part message.** A single user message often contains TWO or more distinct items: greeting + question, question + sub-question, request + clarification, etc. ("Hi who are you?" is greeting AND identity question. "Brief my day. Also what's the weather?" is two requests.) Answer EACH part — don't lock onto the first and drop the rest. If parts conflict or you can't address one, say which and why; don't silently skip.`;
+7. **Address every part of a multi-part message.** A single user message often contains TWO or more distinct items: greeting + question, question + sub-question, request + clarification, etc. ("Hi who are you?" is greeting AND identity question. "Brief my day. Also what's the weather?" is two requests.) Answer EACH part — don't lock onto the first and drop the rest. If parts conflict or you can't address one, say which and why; don't silently skip.
+8. ${PERSON_REFERENCE_RULE}`;
 
 /** Output shape rules — sent on every turn (the LLM must always emit
  *  valid JSON). Channel-aware: markdown is fine for web; on WhatsApp,
@@ -1652,7 +1653,21 @@ Markdown rendering is supported. Use bullets, headers, and bold sparingly for sc
   // Build the variant prompt in pieces, then join.
   const parts: string[] = [];
   parts.push(persona.systemPreamble);
-  parts.push(ruleBlock('core_conversational_rules', CORE_CONVERSATIONAL_RULES));
+  // DEF-222 — the person-reference rule is an INVARIANT, not evidence, so it
+  // rides with the core rules that ship on every turn. Two hazards are closed
+  // here rather than assumed away:
+  //
+  //   1. `core_conversational_rules` is DB-overridable (`prompt_blocks`). A
+  //      tenant row written before rule 8 existed would silently drop it, which
+  //      is the same failure DEF-221 had in a different costume — the rule
+  //      present in the source and absent from the prompt.
+  //   2. Re-attaching unconditionally would print it twice whenever the DB row
+  //      is absent, and a duplicated rule is prompt noise.
+  //
+  // So: attach only when the RESOLVED block does not already carry it.
+  const coreRules = ruleBlock('core_conversational_rules', CORE_CONVERSATIONAL_RULES);
+  parts.push(coreRules);
+  if (!statesPersonReferenceRule(coreRules)) parts.push(PERSON_REFERENCE_RULE);
   parts.push(channelRule);
   // DEF-165 — what Brain actually did, and the explicit statement that WHY is not
   // in it. Placed high: it is the answer to "did you…?" and "why did you…?", and
@@ -2098,13 +2113,14 @@ export async function buildOpenItemsBlockForReasoning(
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
       return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    // DEF-221 — this block names third parties (`delegated_to="…"`) and carries
-    // no gender for any of them, because no such field exists. Without the rule
-    // the model infers one from the name; `B11` called Latif "her". The rule is
-    // attached only when a person is actually named here.
-    const namesSomeone = rows.some((r: any) => Boolean(r.delegateeName));
-    const referenceRule = namesSomeone ? `\n\n${PERSON_REFERENCE_RULE}` : '';
-    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}${referenceRule}`;
+    // DEF-221 attached the person-reference rule here, because this block names
+    // third parties (`delegated_to="…"`). DEF-222 MOVED IT to the core rules and
+    // deleted it from here: this block is gated on
+    // `isActionTurn || day_brief || factual`, so on a turn like "Did you send
+    // that message to Hamna?" it never shipped — and that reply said "delegated
+    // to HER". A rule that only exists when its evidence does is not an
+    // invariant. It now rides on every turn from one place.
+    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';

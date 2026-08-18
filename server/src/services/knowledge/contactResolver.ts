@@ -24,7 +24,7 @@
  *     ask the user to spell out who they mean
  */
 import prisma from '../../db/prisma';
-import { personReferenceFor, PERSON_REFERENCE_RULE } from './personReference';
+import { personReferenceFor } from './personReference';
 
 export interface ContactCandidate {
   source: 'user' | 'entity';
@@ -415,7 +415,11 @@ export function renderCandidatesBlock(query: string, candidates: ContactCandidat
   } else {
     lines.push('\nNo dominant winner. Ask ONE question listing the top 2 by name + one distinguishing reason each. Do NOT emit an action yet.');
   }
-  // Last, so the rows and the routing instruction stay adjacent.
-  lines.push('', PERSON_REFERENCE_RULE);
+  // DEF-222 — the rule itself has MOVED to the core conversational rules, which
+  // ship on every turn. This block is gated on `isActionTurn || factual`, so on
+  // "Can you place a WhatsApp call to Latif for me?" (not an imperative by
+  // `looksLikeImperative` — "place" is not in the verb list) it was absent, and
+  // that reply still said "her number". `refer_to` stays: it is DATA about this
+  // candidate and belongs with the candidate.
   return lines.join('\n');
 }
