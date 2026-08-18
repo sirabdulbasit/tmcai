@@ -339,8 +339,32 @@ ROOT_DOCS = "/var/www/tmcai/server/docs"
 # Check & Measure runs inside that span and keeps its own row, because tsc and vitest
 # are the only gate left between the diff and the owner's production WhatsApp and a
 # gate that cannot be seen is not a gate.
-PHASE_ORDER = ["Capability Evaluation", "Chat Analysis", "Build & Deploy",
-               "Check & Measure", "Review Capabilities"]
+# Two pulse kinds, two stage lists — owner, 2026-08-18. A conversational pulse reads the
+# new turns and ships a fix; it does not score, measure or review, so showing those rows
+# would draw three stages that can never fill and read as a stalled pulse.
+# The kind is written by the loop into state/pulse-mode at the banner, so the deck follows
+# what actually ran instead of guessing from which rows happen to be empty.
+PHASE_ORDER_EVALUATION = ["Capability Evaluation", "Chat Analysis", "Build & Deploy",
+                          "Check & Measure", "Review Capabilities"]
+PHASE_ORDER_CONVERSATIONAL = ["Chat Analysis", "Build & Deploy"]
+
+
+def pulse_mode():
+    try:
+        return (open(os.path.join(STATE, "pulse-mode")).read().strip()
+                or "evaluation")
+    except Exception:
+        return "evaluation"
+
+
+def _phase_order():
+    return (PHASE_ORDER_CONVERSATIONAL if pulse_mode() == "conversational"
+            else PHASE_ORDER_EVALUATION)
+
+
+# Kept as a module-level name because several helpers close over it; it is refreshed on
+# every collect() so a mode change is picked up without a restart.
+PHASE_ORDER = PHASE_ORDER_EVALUATION
 
 
 def phase_timeline():
@@ -933,6 +957,43 @@ def stage_tokens(it):
     return rows
 
 
+
+def pulse_labels():
+    """{iteration: "C3"|"N2"} from the pulse ledger.
+
+    Owner, 2026-08-18: "trend conversational healing 1, 2, 3 and night build heal 1, 2,
+    3." C = conversational (a new conversation arrived), N = night (the full evaluation).
+
+    Only pulses that actually ran appear. A conversational pulse skips Capability
+    Evaluation, so it produces no card and no trend column — and its numbers are NOT
+    carried forward to fake one, because a column of last-night's scores under a C label
+    would say a conversational pulse measured something it never measured.
+    """
+    out = {}
+    path = os.path.join(STATE, "pulse-ledger.jsonl")
+    if not os.path.exists(path):
+        return out
+    try:
+        for line in open(path, errors="replace"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            it = d.get("iteration")
+            if it is None:
+                continue
+            prefix = "C" if d.get("kind") == "conversational" else "N"
+            # Last writer wins: a repeated iteration means a later pulse reused the
+            # number, and the newest label is the one that describes the card on disk.
+            out[int(it)] = f"{prefix}{d.get('kind_n') or '?'}"
+    except Exception:
+        pass
+    return out
+
+
 # ── collect, then render ─────────────────────────────────────────────────────
 #
 # Owner, 2026-08-12: *"what if we build live dashboard in ?tab=health which shows
@@ -1113,6 +1174,11 @@ def campaign_snapshot():
 
 
 def collect():
+    # Refreshed here, before anything reads it: a conversational pulse draws two
+    # stage rows and an evaluation pulse draws five, and the mode can change between
+    # two frames of the same live deck.
+    global PHASE_ORDER
+    PHASE_ORDER = _phase_order()
     stage, elapsed, basis, detail = detect_stage()
     # A process-derived elapsed time is the kernel's own and needs no help; a
     # file-derived one is staleness, not duration, so it is replaced by the
@@ -1284,7 +1350,10 @@ def collect():
             }
 
     moved, flat, iters = capability_trend()
-    trend = {"iterations": list(iters), "unmoved": flat, "rows": [
+    _lbl = pulse_labels()
+    trend = {"iterations": list(iters),
+             "labels": [_lbl.get(i, f"#{i}") for i in iters],
+             "unmoved": flat, "rows": [
         {"name": nm, "series": series, "first": first, "last": last,
          "delta": round(last - first, 1), "overall": nm == "BRAIN overall"}
         for nm, series, first, last in moved]}
@@ -1342,6 +1411,7 @@ def collect():
         # or move around the circle." The budget is shown so circling is VISIBLE rather
         # than inferred from a total nobody is comparing against anything.
         "iteration_budget_s": 2400,
+        "pulse_mode": pulse_mode(),
         "stage_tokens": stage_tokens(cur_it),
         "iteration_elapsed_all": (first_attempt_start(cur_it) and
                                   now - first_attempt_start(cur_it)) or None,

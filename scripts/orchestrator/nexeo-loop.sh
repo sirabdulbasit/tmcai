@@ -746,6 +746,24 @@ PYADV
   printf '%s' "$ITER" > "$STATE/iteration"
   BASE_HEAD="$(git rev-parse HEAD)"
   say "──────── iteration $ITER ────────"
+  # THE PULSE LEDGER — owner, 2026-08-18: "we will have trend conversational healing 1,
+  # 2, 3 and night build heal 1, 2, 3."
+  #
+  # One line per pulse, with its kind and its ordinal WITHIN that kind, so the deck can
+  # label columns C1/C2/N1 instead of a bare iteration number that no longer means
+  # anything. The ordinal is computed by counting previous lines of the same kind rather
+  # than kept in a counter file — a counter drifts the moment a pulse dies mid-run, and
+  # the ledger is the record either way.
+  if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+    PULSE_KIND=conversational
+  else
+    PULSE_KIND=evaluation
+  fi
+  printf '%s' "$PULSE_KIND" > "$STATE/pulse-mode"
+  PULSE_N="$(( $(grep -c "\"kind\":\"$PULSE_KIND\"" "$STATE/pulse-ledger.jsonl" 2>/dev/null || echo 0) + 1 ))"
+  printf '{"iteration":%s,"kind":"%s","kind_n":%s,"at":"%s"}\n' \
+    "$ITER" "$PULSE_KIND" "$PULSE_N" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
+  say "PULSE  iter=$ITER $PULSE_KIND #$PULSE_N"
 
   # ── CAPABILITY EVALUATION (Grok) — FIRST, before anything is built ────────
   #
@@ -764,8 +782,10 @@ PYADV
   #     to start from, which is what the builder needs to aim.
   #   • head is BASE_HEAD, the commit actually scored. Using HEAD would attribute
   #     the reading to a commit that did not exist when Grok read the code.
-  if [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
-    say "SCORE  iter=$ITER asking Grok (reads the codebase; nobody edits its numbers)"
+  if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+    say "SCORE  iter=$ITER skipped — conversational pulse (Chat Analysis + Build & Deploy only)"
+  elif [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
+    say "SCORE  iter=$ITER asking the scorer (reads the codebase; nobody edits its numbers)"
     if "$ROOT/scripts/orchestrator/run-score.sh" "$ITER" >/dev/null 2>&1; then
       CAPJSON="$SCORES/iter-$(printf '%02d' "$ITER")-capability.json"
       if python3 "$ROOT/scripts/orchestrator/scorecard.py" --ingest "$CAPJSON" \
@@ -1542,7 +1562,11 @@ PYGAP
     # G4 — MEASURE is blocking again, and runs BEFORE the review. The owner ruled
     # the phases are a sequence; the overlap also cost Codex this iteration's score,
     # which is what produced its strongest early finding.
-    measure "$ITER" "post-build" || say "MEASURE iter=$ITER failed — the reviewer is told the score is missing"
+    if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+      say "MEASURE iter=$ITER skipped — conversational pulse; deploy.sh still runs tsc and vitest at the deploy commit"
+    else
+      measure "$ITER" "post-build" || say "MEASURE iter=$ITER failed — the reviewer is told the score is missing"
+    fi
     MEASURE_STARTED=1
   else
     TESTS_AFTER="not run (tsc red)"
@@ -1597,7 +1621,11 @@ PYGAP
     DIFFSTAT "$DIFF_STAT" \
     BUILDDOC "$BUILD_DOC" REVIEWDOC "$REVIEW_DOC" \
     TARGETCAP "$TARGET_CAP" CAPGAPS "$CAPGAPS")"
-  run_codex "$ITER" "$REVIEW_PROMPT" || say "REVIEW iter=$ITER codex returned non-zero — continuing"
+  if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+    say "REVIEW iter=$ITER skipped — conversational pulse; the nightly run reviews what accumulated"
+  else
+    run_codex "$ITER" "$REVIEW_PROMPT" || say "REVIEW iter=$ITER reviewer returned non-zero — continuing"
+  fi
 
   check_forbidden "$ITER" "$BASE_HEAD" || true
 

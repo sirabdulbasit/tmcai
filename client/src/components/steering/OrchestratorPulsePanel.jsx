@@ -841,8 +841,11 @@ function CapabilityTrend({ data }) {
       <thead>
         <tr>
           <th>Trend by pulse</th>
-          {it.map((i) => (
-            <th key={i} style={{ textAlign: 'right' }}>#{i}</th>
+          {it.map((i, idx) => (
+            <th key={i} style={{ textAlign: 'right' }}
+                title={`iteration ${i}`}>
+              {(data.trend.labels && data.trend.labels[idx]) || `#${i}`}
+            </th>
           ))}
         </tr>
       </thead>
