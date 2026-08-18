@@ -58,6 +58,7 @@
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
+import { sentRecord } from '../services/delegation/sentRecord';
 
 const log = createLogger('delegation-followup');
 
@@ -398,11 +399,30 @@ export async function runDelegationFollowUpForTenant(clientNumber: string): Prom
               messageId: r.messageId,
               nextDueAt: nextDueAt.toISOString(),
               toneSamplesUsed: composed.toneSamplesUsed,
-              disclosureFooter: true,
+              // DEF-225 — every field below is READ from the body that was
+              // actually sent. `disclosureFooter: true` used to be a hardcoded
+              // literal: a record asserting a property of a message without
+              // looking at it, which is `fabricated-status` inside the audit
+              // trail itself. The body is stored (bounded, with its true length
+              // and a digest) because the scorer's stated reason for not raising
+              // Accurate Communication is "worker send bodies not stored —
+              // wording/delivery quality unconfirmed on chase path", and because
+              // the owner's own "i am unable to see ur email in my sent items"
+              // cannot be settled against a record that kept only the subject.
+              ...sentRecord(composed.body),
               verdictReason: verdict.reason,
             } as any,
           } as any,
-        }).catch(() => {});
+        }).catch((e: any) => {
+          // NOT swallowed. A lost audit row means a chase went out in the
+          // owner's name with no record of what it said — the exact hole this
+          // DEF is closing, and silence about it would hide the hole rather
+          // than close it.
+          log.warn('CHASE SENT but its audit row did not write — no stored record of what was sent', {
+            itemId: item.id, clientNumber: item.clientNumber, userId: item.userId,
+            messageId: r.messageId, error: e?.message,
+          });
+        });
 
         summary.sent += 1;
         log.info('chase sent', {

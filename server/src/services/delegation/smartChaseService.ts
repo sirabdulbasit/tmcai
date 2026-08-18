@@ -32,6 +32,7 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
 import { getSentSamplesToRecipient } from '../gmailService';
+import { DISCLOSURE_MARK } from './sentRecord';
 
 const log = createLogger('smart-chase');
 
@@ -245,7 +246,11 @@ function disclosureFooter(userName: string, userEmail: string): string {
     '',
     '',
     '—',
-    `Sent by Nexeo, ${userName}'s AI assistant. Your reply goes directly to ${userName} at ${userEmail}.`,
+    // DEF-225 — the opening is `DISCLOSURE_MARK`, the same constant the audit
+    // record checks for. Two copies of this sentence would drift, and the audit
+    // would then report a footer that is not there — the very defect the record
+    // exists to prevent, reintroduced one layer down.
+    `${DISCLOSURE_MARK} ${userName}'s AI assistant. Your reply goes directly to ${userName} at ${userEmail}.`,
   ].join('\n');
 }
 
