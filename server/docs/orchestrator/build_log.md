@@ -3356,3 +3356,109 @@ is on the live clarification path with no gate in front of it.
 **CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a reply still
 containing the same question twice; or B02 C5/C3/C4 not recovering, which would mean the
 duplication enters somewhere other than this function.
+
+## Iteration 9 (second entry under this number) — C-3 increment 1 finally has a surface (DEF-217)
+
+**Mode: structural · REMEDIATION 2/3 · guard CLEAN · deployed=no**
+**SYMPTOM TAG CLOSED: none — this is campaign work, and I am not inventing one**
+
+### 0. Why this turn is the campaign and not the fix queue
+
+Three facts decided it, and I want them on the record rather than asserted:
+
+1. **The guard is CLEAN** — nothing regressed. B02 recovered after DEF-216
+   (*"I can see Hamna Latif Bhutta in your contacts, but her mobile number isn't on file…"* —
+   the repeated ask is gone).
+2. **Remediation has nothing left to close.** Iteration 4's numbered risks are all closed with
+   commits — CRITICAL 1 → DEF-208 `2acb272`, HIGH 2 → DEF-202, HIGH 3 → DEF-210 `b095875`,
+   MEDIUM 4 → DEF-209 `41358ab`, carried item → DEF-191 `bb0cf57` / DEF-192 `9cb7720` — and
+   `review_log.md` has not grown (692 lines, 10 sections). The reviewer has not re-read the change.
+3. **The queue offers only C4 register nits** (85s across cases), which the brief forbids chasing,
+   and Accurate Communication is now the NARROWEST gap on the card at 11.
+
+Meanwhile the campaign's increment 1 has been unbuilt for six turns and I have twice written down
+exactly why. Doing it again instead of building it would be the drift this structure exists to stop.
+
+**DIVERGENCE DECLARED:** the brief's target is Accurate Communication; **this turn is Self-Pruning**,
+which the campaign names. Gap 49 versus 11.
+
+### 1. What was actually missing — not the classifier
+
+`inboundNoiseLedger.summariseInboundNoise` already produces per-sender and per-subject
+reached-and-acted counts. Its only consumers were a **hand-run script** and a **prompt block**.
+Nothing ever said the number to HIM — and increment 1's *Done when* is precisely that:
+
+> "Deployed, and the real count for the CL-033 unknown-number burst is quoted back to the owner
+> from production data."
+
+So five campaign turns could pass with the increment "nearly done" and nothing owner-visible. The
+missing piece was a scheduled surface, and that is what this builds.
+
+### 2. What changed, and why the ordering inside it is the point
+
+- **`src/jobs/inboundNoiseReportJob.ts`** — tenant REGISTRY read only (the DEF-191/192 shape),
+  then per-tenant, per-user. Reads the ledger, picks the loudest sender clearing a configurable
+  floor, enqueues **at most one message per user per day** — the date is in the dedup key, so the
+  QUEUE refuses the second one rather than a timer I would have to get right.
+- **FLOODS BEFORE RESOLVED SUBJECTS.** CL-033 — ten unactionable pushes from one unknown number —
+  lands in `unattributed`, not `subjects`, *because those rows carry no item or thread identity*.
+  A report that looked only at `subjects` would have missed the case the campaign was written
+  about. That ordering has its own test.
+- **`renderInboundNoiseNotice` + `noiseMarkerMeaning`** — provenance-stamped marker, JSON body,
+  and the fact states **counts only**. No recommendation, no offer to mute, no judgement about the
+  sender: increment 1 is explicitly "the number that proves the problem", and proposing an action
+  here would be increment 2 arriving early, unreviewed and ungated. A test asserts the absence of
+  that vocabulary and of any question mark.
+- **Two flags** — `selfpruning.noise_report_enabled` (**default 1**) and
+  `selfpruning.noise_report_min_pushes` (default 5).
+- **Scheduled hourly** in `server.ts`.
+
+**On default 1, because it is the one judgement call here.** The two neighbouring self-pruning
+flags default 0 because they SUPPRESS or ANNOUNCE state changes. This one only reads and reports;
+nothing is withheld from him and no item is touched. Its own Done-when requires the number to reach
+him, so a gate defaulting off would leave the increment exactly as unbuilt as it has been. Set it to
+0 to silence the report.
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  211 passed | 1 skipped (212)
+                    Tests  2648 passed | 7 expected fail | 21 skipped | 1 todo (2677)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the job emitted, its schedule confirmed in
+                                   server.js, the curated meaning present)
+git diff --check    clean
+```
+
+**12 tests. 7 mutants applied and RUN, all 7 die:** subjects before floods (CL-033 missed) · first
+instead of loudest · floor ignored · identity sentence dropped · parser accepts acted > reached ·
+constructor stops clamping · the count is not stated.
+
+**A vacuous assertion caught before it could pass for the wrong reason:** I wrote
+`not.toContain('could not be tied')` against a sentence whose real wording is *"None of them could
+be tied…"*. That phrase never exists, so the assertion could never fail. Fixed to the real phrase —
+the same trap mutation caught in DEF-213 and DEF-214.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **It is not observed live.** The increment's Done-when is not met until this is deployed and a
+  real count is quoted back from production data. I can build it; I cannot deploy it, and I will
+  not describe an unshipped increment as delivered.
+- **No suppression, no digest, no quarantine** — those are increments 2 and 3, and shipping any of
+  them inside a report would be ungated behaviour change.
+- **Unsure whether Grok scores it.** The card gives Self-Pruning *basis: absent*; this makes one
+  third of the increment list exist and reach the owner. My prediction is deliberately a wide band.
+- **The C4 register floor is untouched**, on instruction.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes, and this is
+the first turn in nine where that sentence describes a new capability rather than a repaired one.
+No migration is required; the flags default sensibly and the job is read-only.
+
+**CAPABILITY: Self-Pruning · PREDICTED: +5 to +15** — the campaign's own arithmetic is +20 to +30
+for making an absent capability exist, and this is increment 1 of 3, read-only, so I am claiming a
+fraction of it. **Proved wrong by:** a morning burst passing with no message; or a message naming a
+sender or count that production data does not support; or Grok leaving Self-Pruning at *basis:
+absent* after this ships, which would mean the surface is not what it was scoring.

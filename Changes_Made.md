@@ -3683,3 +3683,48 @@ Reverting restores a dedup that only fires on a byte-identical repeat.
 **A pattern the orchestrator should weigh:** three of my last four turns fixed defects introduced by my own turns two before. The changes are small and tested and they still generate work at about the rate they close it, which is the argument for spending the next turn on the campaign rather than the queue.
 
 **CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** a repeat is detected at the sentence, where it occurs, instead of only when the whole appended string is a substring. **FALSIFIER:** a reply still contains the same question twice, or B02 C5/C3/C4 do not recover.
+
+## 68. DEF-217 — C-3 increment 1 finally has a surface (2026-08-18, BUILDER: Claude — orchestrator iteration 9, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Campaign work, not a reported reply defect — **no symptom tag closed, and none invented**. The owner's words behind it are CL-033: *ten unactionable pushes from one unknown number in a single morning, all of which he had to read.*
+
+The regression guard was CLEAN (B02 recovered after DEF-216), remediation had nothing left to close, and the fix queue offered only C4 register nits the brief forbids chasing. Accurate Communication is now the **narrowest** gap on the card at 11; Self-Pruning is 49. **Divergence from the stated target is declared:** the campaign names this work.
+
+### Root cause — the classifier was never the missing piece
+
+`inboundNoiseLedger.summariseInboundNoise` has produced per-sender and per-subject reached-and-acted counts for some time. Its only consumers were a hand-run script (`scripts/nexeoInboundNoiseReport.ts`) and a prompt block. **Nothing ever said the number to the owner** — and increment 1's *Done when* is exactly that: *"Deployed, and the real count for the CL-033 unknown-number burst is quoted back to the owner from production data."* Five campaign turns could therefore pass with the increment "nearly done" and nothing owner-visible. I recorded this in iterations 8 and 9 and took benchmark regressions instead; this builds it.
+
+### Files changed
+
+- `server/src/jobs/inboundNoiseReportJob.ts` (new) — tenant REGISTRY read only (the DEF-191/192 shape), then per-tenant, per-user; reads the ledger; picks the loudest sender clearing a configurable floor; enqueues **at most one message per user per day**, with the date in the dedup key so the queue refuses the second rather than a timer. **Floods are chosen before resolved subjects**, because CL-033 lands in `unattributed` precisely for having no item or thread identity — a report reading only `subjects` would have missed the founding case.
+- `server/src/services/notifications/proactiveMessageText.ts` — `renderInboundNoiseNotice`, a provenance-stamped marker with a JSON body; `acted` clamped to `reached` at the constructor so it can never mint what the parser rejects.
+- `server/src/services/knowledge/answerSanitizer.ts` — `noiseMarkerMeaning`, stating **counts only**: no recommendation, no offer to mute, no judgement about the sender. Increment 1 is "the number that proves the problem"; proposing an action would be increment 2 arriving early and ungated.
+- `server/src/services/behaviorConfig.ts` — `selfpruning.noise_report_enabled` (**default 1**) and `selfpruning.noise_report_min_pushes` (default 5).
+- `server/src/server.ts` — scheduled hourly.
+- `server/tests/def217InboundNoiseReport.test.ts` — 12 tests.
+
+**On default 1**, the one judgement call: the neighbouring self-pruning flags default 0 because they SUPPRESS or ANNOUNCE state changes. This one only reads and reports — nothing is withheld and no item is touched — and its Done-when requires the number to reach him, so a gate defaulting off would leave the increment as unbuilt as it has been for six turns.
+
+### Rollback considered and rejected
+
+Reverting returns the count to a script nobody runs.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 212 files — 211 passed, 1 skipped; 2,677 tests — **2,648 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (job emitted, schedule confirmed in `server.js`, curated meaning present) · `git diff --check` clean.
+
+**Seven mutants applied and RUN, all seven die:** subjects before floods (CL-033 missed) · first instead of loudest · floor ignored · identity sentence dropped · parser accepts acted > reached · constructor stops clamping · the count is not stated.
+
+**A vacuous assertion was caught before it could pass for the wrong reason:** `not.toContain('could not be tied')` against a sentence whose real wording is "None of them could be tied…" — that phrase never exists, so it could never fail. The same trap mutation caught in DEF-213 and DEF-214.
+
+### Known issues deliberately not fixed
+
+**It is not observed live.** The increment's Done-when is not met until deployed and a real count is quoted back. I can build it; I cannot deploy it, and an unshipped increment is not delivered.
+
+**No suppression, digest or quarantine** — increments 2 and 3, and shipping any of them inside a report would be ungated behaviour change.
+
+**Unsure whether Grok scores it.** The card gives Self-Pruning *basis: absent*; this makes one third of the increment list exist and reach the owner, hence a deliberately wide prediction band.
+
+**CAPABILITY: Self-Pruning · PREDICTED: +5 to +15 · MECHANISM:** the count that proves the problem now reaches the owner on a schedule instead of living in a script nobody runs. **FALSIFIER:** a morning burst passes with no message; a message names a sender or count production data does not support; or Grok leaves Self-Pruning at *basis: absent* after this ships.
