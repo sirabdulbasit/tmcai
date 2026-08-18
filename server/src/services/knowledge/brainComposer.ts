@@ -29,6 +29,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // C-3 — Brain's own push record. Statically imported because it is needed on
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
+import { renderOwnerClockLine } from '../userTimezoneService';
 import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, outstandingSlots } from './actionReceipt';
 
 export interface OpenedPage {
@@ -1528,6 +1529,12 @@ async function assembleSystemPrompt(args: {
   steeringHint: string | null | undefined;
   channel: 'web' | 'whatsapp';
   todayDate: string;
+  /**
+   * DEF-214 — the owner's clock, resolved by `userTimezoneService`. Optional so
+   * an older caller still typechecks, but its ABSENCE is now a stated fact in
+   * the prompt rather than a silent fallback to a mislabelled date.
+   */
+  ownerClock?: import('../userTimezoneService').OwnerClock | null;
   userId?: number;       // Phase 3: passed through for prompt_blocks user-scope override
   clientNumber?: string;
   /**
@@ -1563,11 +1570,30 @@ async function assembleSystemPrompt(args: {
     intent, isActionTurn, persona, schema, capsBlock, overlayBlock, delegationMatrixBlock,
     radarBlock, instructionsBlock, prefsBlock, memoriesBlock, replyContextBlock, openItemsBlock, todayCalendarBlock,
     attentionBlock, candidatesBlock, artifactsBlock, recentLog, openedBlock, steeringHint, channel, todayDate,
-    dispatchLedgerBlock, pushHistoryBlock,
+    dispatchLedgerBlock, pushHistoryBlock, ownerClock,
   } = args;
 
+  // DEF-214 — `time-of-day-drift`, 5 in chart §3 and the source of the owner's
+  // *"Are u traveling back to time?"*.
+  //
+  // This line said `Today is ${todayDate} (UTC)` while `todayDate` has been the
+  // user's LOCAL date since Sprint 4A. The value was right and the label was a
+  // lie, so the anchor the model reasons from was declared to be in a zone it
+  // was not in — and a model told "this is UTC" converts it when asked the time.
+  // 12:07 versus his real 17:07 is exactly Asia/Karachi's five-hour offset.
+  //
+  // It also carried no HOUR at all, so "what time is it" could only be answered
+  // by inventing one and labelling it with his zone. The clock is now supplied,
+  // named, and rendered by ONE builder in `userTimezoneService` — a value and a
+  // label that live apart are what came adrift here.
   const todayBlock = `# Today
-Today is ${todayDate} (UTC). Use this as the anchor for relative dates ("today", "tomorrow", "yesterday", "Friday"). When the user gives a relative date, resolve against today and emit ISO (YYYY-MM-DD) in any \`action.dueDate\` you produce.`;
+${ownerClock
+    ? renderOwnerClockLine(ownerClock)
+    : `Today is ${todayDate} in the user's own local timezone — NOT UTC. Use it as the anchor for `
+      + `relative dates ("today", "tomorrow", "yesterday", "Friday") and emit ISO (YYYY-MM-DD) in any `
+      + '`action.dueDate` you produce. The current clock time and the timezone NAME could not be '
+      + 'resolved this turn, so you do not know either: if he asks the time, say so plainly rather '
+      + 'than working one out, and never attach a timezone to an hour you inferred.'}`;
 
   // Channel-specific compactness directive. When writing for WhatsApp,
   // the LLM must produce one-line-per-item compact output — no
@@ -3006,8 +3032,11 @@ export async function compose(
   // Sprint 4A (2026-05-21): swapped to per-user lookup via
   // userTimezoneService. Existing rows default to Asia/Karachi
   // (back-compat); new users in other zones get correct anchoring.
-  const { getUserLocalDate } = await import('../userTimezoneService');
+  const { getUserLocalDate, getOwnerClock } = await import('../userTimezoneService');
   const todayDate = await getUserLocalDate(userId).catch(() => new Date().toISOString().slice(0, 10));
+  // DEF-214 — resolved, not inferred. A failure here yields null and the prompt
+  // SAYS the clock is unknown; it never falls back to a time nobody looked up.
+  const ownerClock = await getOwnerClock(userId).catch(() => null);
 
   // ── Today's calendar ──
   // Only built for day_brief intent. Pulls today's gcal feed_events so
@@ -3193,6 +3222,7 @@ ${calLines.join('\n')}`;
     steeringHint: opts.steeringHint,
     channel: opts.channel ?? 'web',
     todayDate,
+    ownerClock,
     userId,
     clientNumber,
   });
@@ -3341,6 +3371,7 @@ ${calLines.join('\n')}`;
       openItemsBlock: openItemsBlock ?? '',
       artifactsBlock: artifactsBlock ?? '',
       todayDate,
+      ownerClock,
       userId, clientNumber,
     });
     console.info('[brain-chat] decideAction.result', {
@@ -6134,6 +6165,8 @@ async function decideAction(opts: {
   openItemsBlock: string;
   artifactsBlock: string;
   todayDate: string;
+  /** DEF-214 — the resolved clock; same one the main prompt gets. */
+  ownerClock?: import('../userTimezoneService').OwnerClock | null;
   userId?: number;
   clientNumber?: string;
 }): Promise<{ action: ComposedAction | null; missingSlot: string | null; rationale: string } | null> {
@@ -6183,7 +6216,10 @@ If only ONE field is genuinely missing, set "action": null and "missing_slot" to
 
 If the message has no action intent at all, set both action and missing_slot to null.
 
-Today is ${opts.todayDate} (UTC). Use this as the anchor for relative dates.`;
+${opts.ownerClock
+    ? renderOwnerClockLine(opts.ownerClock)
+    : `Today is ${opts.todayDate} in the user's own local timezone — NOT UTC. Use it as the anchor `
+      + 'for relative dates. The clock time and timezone name are unknown this turn.'}`;
 
   const historyText = opts.history.slice(-8).map((h) => `[${h.role}] ${h.text}`).join('\n');
   const userPayload = `User's current message:

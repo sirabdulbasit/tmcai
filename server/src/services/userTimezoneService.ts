@@ -255,3 +255,81 @@ export function calendarRangeBounds(range: string, tz: string, now: Date = new D
   if (/^\d{4}-\d{2}-\d{2}$/.test(range)) return { ...zonedDayBounds(tz, range), label: range };
   return null;
 }
+
+/**
+ * DEF-214 — the owner's clock, resolved ONCE, with every part named.
+ *
+ * `time-of-day-drift` is 5 in the recurrence table (DEF-026 x4, DEF-148, both
+ * OPEN) and Codex's analysis records it as "not diagnosed from code". It is
+ * diagnosable, and the arithmetic in the owner's own report is the proof:
+ *
+ *     Brain: "My current time is 12:07 PM in your timezone (Asia/Karachi)."
+ *     Owner: "Are u traveling back to time?"     (local was 17:07)
+ *
+ * **12:07 and 17:07 differ by exactly five hours, which is Asia/Karachi's offset
+ * from UTC.** He was handed a UTC clock wearing a PKT label.
+ *
+ * The composer had the right value and the wrong word: `getUserLocalDate` returns
+ * the LOCAL date, and the prompt said `Today is ${date} (UTC)`. So the anchor
+ * the model reasons from was declared to be in a zone it was not in, and a model
+ * told "this is UTC" will convert it into local when asked the time.
+ *
+ * A date alone also cannot answer "what time is it" — nothing in the prompt
+ * carried an hour — so the hour was necessarily invented and then labelled with
+ * his zone, which is `fabricated-status` wearing a clock face.
+ *
+ * This returns all four parts together because they are one fact, and splitting
+ * them is how the label came adrift from the value in the first place.
+ */
+export interface OwnerClock {
+  /** IANA zone, e.g. "Asia/Karachi". */
+  timezone: string;
+  /** YYYY-MM-DD in that zone. */
+  date: string;
+  /** HH:MM, 24-hour, in that zone. */
+  time: string;
+  /** "+05:00" — that zone's offset from UTC on this date. */
+  offset: string;
+}
+
+/** HH:MM in a specific zone. 24-hour so there is no am/pm to lose. */
+export function formatLocalTime(tz: string, asOf: Date = new Date()): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(asOf);
+  } catch {
+    return asOf.toISOString().slice(11, 16);
+  }
+}
+
+export function ownerClockFor(tz: string, asOf: Date = new Date()): OwnerClock {
+  return {
+    timezone: tz,
+    date: formatLocalDate(tz, asOf),
+    time: formatLocalTime(tz, asOf),
+    offset: getTimezoneOffset(tz, asOf),
+  };
+}
+
+export async function getOwnerClock(userId: number, asOf: Date = new Date()): Promise<OwnerClock> {
+  const tz = await getUserTimezone(userId);
+  return ownerClockFor(tz, asOf);
+}
+
+/**
+ * The line the composer puts in the prompt. ONE definition, because the defect
+ * was a value and a label that disagreed, and two builders would let them
+ * disagree again.
+ */
+export function renderOwnerClockLine(clock: OwnerClock): string {
+  return `Today is ${clock.date} and the current local time is ${clock.time}`
+    + ` in the user's own timezone, ${clock.timezone} (UTC${clock.offset}).`
+    + ' Every date and time above and below is already in that zone: use them as written,'
+    + ' and do NOT convert, shift or re-render an hour.'
+    + ' Resolve "today", "tomorrow", "yesterday" and weekday names against this date,'
+    + ' and emit ISO (YYYY-MM-DD) in any `action.dueDate` you produce.'
+    + ' NEVER state a clock time that is not given here, and never attach his timezone'
+    + " to an hour you worked out yourself — an unverifiable clock labelled with his zone"
+    + ' is exactly how he was once told 12:07 when it was 17:07.';
+}
