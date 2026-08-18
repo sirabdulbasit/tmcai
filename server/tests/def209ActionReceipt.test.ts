@@ -139,7 +139,12 @@ describe('DEF-209 — the owner-facing fact', () => {
     expect(fact).toBeTruthy();
     expect(fact!).toContain('the due date');
     expect(fact!).toContain('still unanswered');
-    expect(fact!).toContain('should be asked for');
+    // DEF-215 SUPERSEDED THIS PHRASE, deliberately. "should be asked for" reads
+    // as a standing intention, and B04 obeyed it in the future tense: "I'll ask
+    // for a due date if one becomes necessary" (C6 75, C5 80). The property this
+    // test defends — the fact tells Brain to chase the unanswered slot — is
+    // unchanged and now pins it to THIS reply.
+    expect(fact!).toContain('ASK FOR IT IN THIS REPLY');
   });
 
   it('does NOT claim the action finished — it is under way and unconfirmed', () => {

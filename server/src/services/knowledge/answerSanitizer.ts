@@ -306,7 +306,8 @@ function proceedingMarkerMeaning(answer: string): string | null {
     // did answer, just not all of it, and saying otherwise would be wrong about
     // what he did.
     return `${base}. ${named} ${labels.length === 1 ? 'is' : 'are'} still unanswered `
-      + `from the earlier question and should be asked for.`;
+      + 'from the earlier question. ASK FOR IT IN THIS REPLY — do not promise to ask later and do not\n'
+      + 'make it conditional. He answered part of what you asked; the rest is still open now.';
   } catch {
     return null;
   }
@@ -340,7 +341,8 @@ function appliedMarkerMeaning(answer: string): string | null {
       ? labels[0]
       : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
     return `${done} ${named} ${labels.length === 1 ? 'is' : 'are'} still unanswered `
-      + `from the earlier question and should be asked for.`;
+      + 'from the earlier question. ASK FOR IT IN THIS REPLY — do not promise to ask later and do not\n'
+      + 'make it conditional. He answered part of what you asked; the rest is still open now.';
   } catch {
     return null;
   }
