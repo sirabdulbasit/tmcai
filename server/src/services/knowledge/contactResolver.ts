@@ -24,6 +24,7 @@
  *     ask the user to spell out who they mean
  */
 import prisma from '../../db/prisma';
+import { personReferenceFor, PERSON_REFERENCE_RULE } from './personReference';
 
 export interface ContactCandidate {
   source: 'user' | 'entity';
@@ -401,12 +402,20 @@ export function renderCandidatesBlock(query: string, candidates: ContactCandidat
     const tag = c.relationship === 'internal_teammate' ? '[teammate]' : '[external]';
     const email = c.email ?? '(no email on file)';
     const reasons = c.signals.reasons.length ? ` — ${c.signals.reasons.join(', ')}` : '';
-    lines.push(`${idx + 1}. ${c.displayName} <${email}> ${tag}${reasons}  (score ${Math.round(c.score)})`);
+    // DEF-221 — the reference form is DATA, not something to be inferred. Without
+    // it the model had only the full stored name and no gender, and supplied both
+    // ("Hamna Latif Bhutta" for a query about "Hamna"; "her" for Latif, a man).
+    const refer = personReferenceFor({ displayName: c.displayName, asAskedFor: query });
+    lines.push(
+      `${idx + 1}. ${c.displayName} <${email}> ${tag} refer_to="${refer}"${reasons}`
+      + `  (score ${Math.round(c.score)})`);
   });
   if (topIsDominant(candidates)) {
     lines.push('\nThe top candidate is dominant — use it directly when filling action.delegateeEmail / attendeeEmails. Confirm in your prose ("Setting up with X — sound right?") but do not ask "which X?".');
   } else {
     lines.push('\nNo dominant winner. Ask ONE question listing the top 2 by name + one distinguishing reason each. Do NOT emit an action yet.');
   }
+  // Last, so the rows and the routing instruction stay adjacent.
+  lines.push('', PERSON_REFERENCE_RULE);
   return lines.join('\n');
 }

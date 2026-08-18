@@ -31,6 +31,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 import { renderOwnerClockLine } from '../userTimezoneService';
 import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots } from './actionReceipt';
+import { PERSON_REFERENCE_RULE } from './personReference';
 
 export interface OpenedPage {
   id: string;
@@ -2097,7 +2098,13 @@ export async function buildOpenItemsBlockForReasoning(
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
       return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
     });
-    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}`;
+    // DEF-221 — this block names third parties (`delegated_to="…"`) and carries
+    // no gender for any of them, because no such field exists. Without the rule
+    // the model infers one from the name; `B11` called Latif "her". The rule is
+    // attached only when a person is actually named here.
+    const namesSomeone = rows.some((r: any) => Boolean(r.delegateeName));
+    const referenceRule = namesSomeone ? `\n\n${PERSON_REFERENCE_RULE}` : '';
+    return `# Your active open items (use id to update/delegate/mark_done; to message the OWNER of an item use its delegatee_candidateId)\n${lines.join('\n')}${referenceRule}`;
   } catch (e: any) {
     console.warn('[reasoning] buildOpenItemsBlock failed', { error: e?.message, userId });
     return '';
