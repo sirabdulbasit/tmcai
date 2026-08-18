@@ -143,6 +143,31 @@ export async function buildDispatchLedgerBlock(
     + 'This is the only valid source for "did you…?" / "have you…?" questions about your own\n'
     + 'actions. If something is not listed here, you did NOT do it in this window — say so.\n'
     + 'If it IS listed, you did, even if this conversation does not mention it.\n'
+    // ── DEF-226 — EVERY ROW HERE IS YOU ─────────────────────────────────────
+    //
+    // The regression guard fired on `B12-reminder-referent`, C8 100 → 80, with
+    // the judge naming it exactly: *"the reference to 'the system' creating the
+    // duplicate feels like it's trying to distance itself from the action,
+    // rather than owning it."* The reply was "It looks like THE SYSTEM sent you
+    // a duplicate reminder" — after three consecutive runs in which the same
+    // case said "I sent the reminder twice."
+    //
+    // The rows below are subjectless event lines (`- 08-17 12:04 ✓ WhatsApped:
+    // …`). A model reading a log of events can narrate them in the third person
+    // without ever making a false statement, and that is what happened.
+    //
+    // DEF-165 put the CAUSE boundary here rather than in the rulebook, on the
+    // finding that "a constraint placed next to the data outranks one placed in
+    // a rulebook". This is the AGENT boundary, and it belongs in the same place
+    // for the same reason. They are different questions: DEF-165's paragraph
+    // forbids naming "a system glitch" as the CAUSE, and says nothing about who
+    // performed the action.
+    + '\nEVERY LINE BELOW IS SOMETHING **YOU** DID. There is no other actor in this record:\n'
+    + '"the system", "an automated process", "a background job" and "the platform" are you,\n'
+    + 'described from outside. Say "I sent it", never "the system sent it" — the second\n'
+    + 'disowns your own action and he has to work out that you mean yourself. Owning a\n'
+    + 'mistake plainly ("I sent it twice, and I don\'t know why") is the whole of what is\n'
+    + 'wanted here; distancing yourself from it is not modesty, it is inaccuracy.\n'
     // ── DEF-165 — the boundary this block never stated ──────────────────────
     //
     // Codex's iteration-18 HIGH #2. Asked "Why did you remind me about that one
