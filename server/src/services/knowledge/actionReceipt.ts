@@ -125,18 +125,46 @@ export function outstandingSlots(
   return requestedSlots(priorQuestion).filter((k) => !filled.has(k));
 }
 
-/** The most recent thing BRAIN said, which is the only turn that can have left
- *  a question open. Callers hand us the composer's history shape. */
-export function lastBrainQuestion(
-  history: Array<{ role?: string; content?: string }> | null | undefined,
-): string | null {
+/**
+ * The most recent thing BRAIN said, which is the only turn that can have left a
+ * question open.
+ *
+ * DEF-219 — IT READS `text`, AND THAT IS THE WHOLE DEFECT THIS FIXES.
+ *
+ * The composer's history turn is `ComposerHistoryTurn = { role; text }`. This
+ * function read `t.content`, which is `undefined` on every real call, so
+ * `String(undefined)` became the string "undefined", `isQuestionTurn` said no,
+ * and it returned **null in production, always**.
+ *
+ * Everything downstream then behaved exactly as though Brain had never asked a
+ * question: `requestedSlots(null)` is `[]`, so `outstandingSlots` is `[]`, so
+ * DEF-209's proceeding marker named no slot, DEF-212's applied marker rendered
+ * as the bare receipt (its no-slots branch returns the receipt verbatim), and
+ * DEF-215's "ASK FOR IT IN THIS REPLY" could never fire. Three consecutive
+ * fixes were dead on arrival on one field name.
+ *
+ * My tests did not catch it because every one of them built its own
+ * `{ role, content }` fixture instead of the type the composer actually passes.
+ * A fixture I invent cannot disagree with me; the real type can.
+ *
+ * Both keys are accepted because other call sites may hold either shape, and a
+ * reader that understands only one of them is how this happened.
+ */
+export interface HistoryTurnLike {
+  role?: string;
+  /** The composer's field (`ComposerHistoryTurn`). */
+  text?: string;
+  /** The chat-message field some other producers use. */
+  content?: string;
+}
+
+export function lastBrainQuestion(history: HistoryTurnLike[] | null | undefined): string | null {
   const turns = Array.isArray(history) ? history : [];
   for (let i = turns.length - 1; i >= 0; i--) {
     const t = turns[i];
-    const role = String(t?.role ?? '');
-    if (role === 'user') continue;              // keep walking back past the answer
-    const content = String(t?.content ?? '');
-    return isQuestionTurn(content) ? content : null;
+    if (String(t?.role ?? '') === 'user') continue;   // walk back past the answer
+    const said = t?.text ?? t?.content ?? '';
+    return isQuestionTurn(String(said)) ? String(said) : null;
   }
   return null;
 }
