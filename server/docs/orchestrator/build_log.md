@@ -3253,3 +3253,106 @@ meaning is on the live render path with no gate in front of it.
 deferring or conditionalising a slot Brain itself asked for — *"I'll ask if it becomes necessary"*
 — or B04 C5/C6 not recovering, which would mean the hedge comes from somewhere other than this
 sentence.
+
+## Iteration 9 — the same question, twice, in one reply (DEF-216)
+
+**Mode: structural · REMEDIATION 1/3 · CONTINUATION 1/3 on Accurate Communication · guard FIRED · deployed=no**
+**SYMPTOM TAG CLOSED (partly): `guard-destroys-the-answer` — and the defect was mine**
+
+### 0. What was wrong with the last attempt
+
+DEF-215 changed the outstanding-slot fact from *"should be asked for"* to *"ASK FOR IT IN THIS
+REPLY"*. That was the right correction and I stand by it, but the continuation is right that it
+did not move BRAIN: **it was prompt-side, and prompt-side changes have now failed to move the
+overall number six times in a row.** I said as much when I shipped it.
+
+What I now believe was wrong is not the wording — it is that **I have been fixing the sentence
+Brain produces instead of the machinery that assembles it.** This turn's defect proves the point:
+the reply was broken by a five-line function I wrote, not by anything the model chose.
+
+### 1. The regression, quoted, and it is mine
+
+> **B02-unknown-fact** C5 **95 → 60**, C3 95 → 75, C4 90 → 70, mean 95.6 → 83.1
+> C5: *"it repeats a question it just asked ('Shall I create a new contact for her?')"*
+
+What he read:
+
+```
+I can't find a contact entry for Hamna Latif Bhutta, so I don't have her mobile number.
+Her last reply was on August 12th regarding the "Vision Metric's service sales package video"…
+Shall I create a new contact for her?
+
+I can't seem to find Hamna Latif Bhutta in your contacts list to get her number.
+Shall I create a new contact for her?
+```
+
+**Circling on `guard-destroys-the-answer` (8 in chart §3), and the cause is DEF-211, mine, two
+iterations old.** `answerThenAsk` deduped with `if (a.includes(q)) return a` — byte-identical
+only. The decider's question was a LONGER string whose tail duplicated the prose's last sentence
+and whose head restated its first. Neither was a substring, so `includes` said "append".
+
+**Criteria I expect to move: B02 C5, C3, C4.**
+
+### 2. What changed, and why that is the mechanism
+
+The comparison is now **sentence by sentence** on a normalised key — case, punctuation and spacing
+flattened — so an exact repeat is caught wherever it sits, not only when the whole appended string
+happens to be a substring. Three properties are pinned:
+
+- nothing fresh → the answer alone;
+- a partial repeat → only the new sentences;
+- nothing repeated → the question passes through **verbatim**, not re-joined, so a mis-cut
+  sentence can never reach him reworded.
+
+### 3. Verification — exact numbers, re-run AFTER the last edit
+
+```
+npx tsc --noEmit    TSC_EXIT=0
+npx vitest run      Test Files  210 passed | 1 skipped (211)
+                    Tests  2636 passed | 7 expected fail | 21 skipped | 1 todo (2665)
+                    0 failed
+npm run build       BUILD_EXIT=0  (clean clone; the byte-identical dedup confirmed GONE from the
+                                   emitted code, the sentence-level one present)
+git diff --check    clean
+```
+
+**9 tests driving the exact B02 strings. 5 mutants applied and RUN, all 5 die:** revert to
+byte-identical · make sameness case/punctuation sensitive · drop the verbatim pass-through ·
+append even when nothing is fresh · question before answer.
+
+**MUTATION CAUGHT A REAL HOLE.** The pass-through mutant **survived** the first pass: my fixture
+was a single-space sentence pair, so `fresh.join(' ')` reproduced it byte for byte and the test
+could not tell the two paths apart. The fixture now contains formatting the re-join would flatten,
+and asserts that before using it.
+
+**I also corrected MY OWN EXPECTATION rather than the code.** I predicted the whole appended
+question would vanish. It does not: the head sentence is a **paraphrase** of paragraph one, not a
+repeat, and deleting sentences that merely resemble the prose is `guard-destroys-the-answer`
+itself — the class eight rows of the chart are about. The test now records the real behaviour.
+
+### 4. What I did NOT do, and what I am unsure about
+
+- **The paraphrased restatement survives.** B02's reply will still carry one redundant sentence.
+  Removing it needs semantic judgement, and I would rather ship a redundant sentence than a
+  renderer that deletes prose it merely thinks it has seen.
+- **Remediation:** iteration 4's numbered risks are all closed with commits (CRITICAL 1 → DEF-208
+  `2acb272`, HIGH 2 → DEF-202, HIGH 3 → DEF-210 `b095875`, MEDIUM 4 → DEF-209 `41358ab`, carried
+  item → DEF-191 `bb0cf57` / DEF-192 `9cb7720`). `review_log.md` has not grown (692 lines), so the
+  reviewer has not re-read the change; repeating that work would be motion.
+- **No C-3 progress**, six consecutive turns. Last turn I recorded that increment 1's classifier
+  already exists (`inboundNoiseLedger.summariseInboundNoise`) and needs only a scheduled surface
+  to quote the count to the owner. That is still true and still the smallest real capability move
+  available. I took B02 because a live regression that I caused outranks starting a feature.
+- **A pattern worth the orchestrator's attention:** three of my last four turns fixed defects
+  introduced by my own two turns before. The changes are small and tested, and they still
+  generate work at roughly the rate they close it. That is the argument for spending the next turn
+  on the campaign rather than the queue.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** `answerThenAsk`
+is on the live clarification path with no gate in front of it.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2.** **Proved wrong by:** a reply still
+containing the same question twice; or B02 C5/C3/C4 not recovering, which would mean the
+duplication enters somewhere other than this function.

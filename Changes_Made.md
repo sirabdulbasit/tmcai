@@ -3646,3 +3646,40 @@ Reverting restores the phrase that produced the hedge.
 **B04 has flapped across three consecutive runs** (asked → deferred → asked), so one good measurement will not prove this fix.
 
 **CAPABILITY: Accurate Communication · PREDICTED: +0 to +1 · MECHANISM:** the outstanding-slot fact no longer describes a future intention the model can satisfy by promising. **FALSIFIER:** a reply still defers or conditionalises a slot Brain itself asked for, or B04 C5/C6 do not recover.
+
+## 67. DEF-216 — the same question, twice, in one reply (2026-08-18, BUILDER: Claude — orchestrator iteration 9, branch `release/cmp-2026-08-16`)
+
+### Observed behavior
+
+Regression guard fired on `B02-unknown-fact`: C5 **95 → 60**, C3 95 → 75, C4 90 → 70, mean 95.6 → 83.1. Judge C5: *"it repeats a question it just asked ('Shall I create a new contact for her?')"*. What he read ended with the same ask twice, the second copy preceded by a restatement of the reply's own opening.
+
+### Root cause — mine, from DEF-211 two iterations ago
+
+`answerThenAsk` deduped with `if (a.includes(q)) return a` — **byte-identical only**. The prose already ended *"Shall I create a new contact for her?"*; the decider's question was a longer string whose tail duplicated that sentence and whose head restated paragraph one. Neither was a substring, so `includes` said "append" and both shipped.
+
+### Files changed
+
+- `server/src/services/knowledge/actionReceipt.ts` — the comparison is now sentence by sentence on a normalised key (case, punctuation and spacing flattened), so an exact repeat is caught wherever it sits. Three properties pinned: nothing fresh → the answer alone; a partial repeat → only the new sentences; nothing repeated → the question passes through **verbatim** rather than re-joined, so a mis-cut sentence cannot reach him reworded.
+- `server/tests/def216NoRepeatedAsk.test.ts` — 9 tests driving the exact B02 strings.
+
+### Rollback considered and rejected
+
+Reverting restores a dedup that only fires on a byte-identical repeat.
+
+### Tests added / verification (measured after the last code edit)
+
+`npx tsc --noEmit` clean, exit 0 · `npx vitest run`: 211 files — 210 passed, 1 skipped; 2,665 tests — **2,636 passed, 0 failed**, 7 expected fail, 21 skipped, 1 todo · `npm run build` **OK** in a clean clone (the byte-identical dedup confirmed gone from the emitted code) · `git diff --check` clean.
+
+**Five mutants applied and RUN, all five die.** Mutation caught a real hole: the pass-through mutant survived the first pass because my fixture re-joined to the identical string, so the test could not tell the two paths apart; the fixture now contains formatting the re-join would flatten and asserts that first.
+
+**I corrected my own expectation rather than the code.** I predicted the whole appended question would vanish; the head sentence is a paraphrase of paragraph one, not a repeat, and deleting sentences that merely resemble the prose is `guard-destroys-the-answer` itself.
+
+### Known issues deliberately not fixed
+
+**The paraphrased restatement survives** — B02's reply still carries one redundant sentence. Removing it needs semantic judgement, and shipping a redundant sentence is better than a renderer that deletes prose it merely thinks it has seen.
+
+**No C-3 progress**, six consecutive turns. Increment 1's classifier already exists (`inboundNoiseLedger.summariseInboundNoise`) and needs only a scheduled surface to quote the count to the owner — recorded last turn, still the smallest real capability move available.
+
+**A pattern the orchestrator should weigh:** three of my last four turns fixed defects introduced by my own turns two before. The changes are small and tested and they still generate work at about the rate they close it, which is the argument for spending the next turn on the campaign rather than the queue.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +1 to +2 · MECHANISM:** a repeat is detected at the sentence, where it occurs, instead of only when the whole appended string is a substring. **FALSIFIER:** a reply still contains the same question twice, or B02 C5/C3/C4 do not recover.
