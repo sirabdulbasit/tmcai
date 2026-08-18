@@ -4140,3 +4140,73 @@ category is empty on a page whose header said INCOMPLETE.
 `scripts/orchestrator/nexeo-loop.sh`, which the Builder is forbidden to touch. If the
 orchestrator measured after deploying, every falsifier in the build log would mean what it
 says. `state/eval-isolation-proof` also reads `NOT_PROVEN`; noted so it is not lost.
+
+---
+
+## 76. DEF-225 — the obstacle is that nobody kept what Brain sent (2026-08-18, BUILDER: Claude — orchestrator iteration 16, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: `fabricated-status`** — partly closed, in the audit trail itself.
+
+**The real obstacle, in the scorer's own words.** Three attempts on Accurate Communication
+and BRAIN overall had not moved. `state/capability_scorecard.json`, Accurate Communication
+87: *"Pack: 0 provider receipts; **worker send bodies not stored** — wording/delivery
+quality unconfirmed on chase path."* The same sentence sits against Self Follow-Up
+(*"provider receipts 0, bodies not stored… Capability fires; quality unmeasured"*) and
+Authorized Action.
+
+**Six iterations of composer work were invisible to the scorer by construction** — not
+because the work failed to reach production (it did; `state/deploy-history` records every
+deploy), but because what Brain says is not recorded, so nothing it says can be assessed.
+
+**And it is the owner's class, not a scoring artefact.** `fabricated-status` is his *"i am
+unable to see ur email in my sent items"* and *"no email is being sent"*, and the falsifier
+set for that class is literally *"Provider receipts, Sent-folder evidence or confirmed
+database transitions prove the disputed outcomes occurred exactly as claimed."* The
+evidence needed to settle his complaint is evidence the system does not keep — which is
+also why the class has six occurrences and no verified closure.
+
+**The defect proper.** `delegationFollowUpJob` sends email in the owner's name and stored
+the subject, the recipient and the Gmail `messageId` — and not one word of what it wrote.
+It also wrote `disclosureFooter: true` as a **hardcoded literal**: a record asserting a
+property of a message without reading the message. The footer is the whole structural
+mitigation for *"Brain never speaks as the user"*, so a false claim about it is not
+cosmetic.
+
+**The fix — every field derived from the body that was actually sent.** New `sentRecord.ts`:
+`bodyExcerpt` (bounded at 2000 chars), `bodyChars` (the **true** length, so a truncated
+excerpt can never read as the whole message), `bodySha256` over the **full** body (so the
+excerpt is provably from the real message), `disclosureFooter` **read from the text**, and
+`excerptTruncated`. `DISCLOSURE_MARK` is one exported constant shared by the footer builder
+and the check — two copies would drift and the audit would report a footer that is not
+there, this module's own defect one layer down. The audit write's `.catch(() => {})` now
+logs: a lost audit row means a chase went out in his name with no record of what it said.
+
+**On storing the body:** it is the owner's own outbound mail, already in his Gmail Sent
+folder, kept in his own tenant's `agent_actions.output` beside the subject and recipient
+stored there today. Same class of data, bounded rather than unbounded.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` exit 0 · `npx vitest run`
+219 files (218 passed, 1 skipped), **2769 tests, 2740 passed, 0 failed** · `npm run build`
+exit 0 in a clean clone (never this tree) · `git diff --check` clean. **12 tests, 6 mutants
+applied and RUN, all 6 die.**
+
+**A verification check of mine read false and I checked before writing it down:** the only
+surviving `disclosureFooter: true` in the emitted job is inside a comment explaining the
+defect; stripped of comments the check is true.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +2 to +4 · MECHANISM:** what Brain sent in
+the owner's name is recorded from the message, so delivery and wording become assessable and
+the audit stops claiming a property it never checked. **FALSIFIER:** the next production
+pack still reports "bodies not stored" for the chase path, or a chase audit row records a
+disclosure footer on a body that has none.
+
+**Honest limits:** this covers the delegation-chase path only — the one the scorer names.
+`send_email` from the composer and the WhatsApp send path keep their own records and were
+not audited this turn. And Grok's own rule is that anything unexercised in production stays
+UNVERIFIED, so the score may not move until a real chase runs.
+
+**Reported, not fixed:** the brief's target line calls Accurate Communication *"the widest
+gap, computed from Grok's card"* while the card in the same brief shows it at **7 — the
+narrowest of nine** (Simple & Smart is 59). Perfecting it moves BRAIN overall by at most
+0.8. Six iterations were spent there. `scripts/orchestrator/**` is forbidden to the
+Builder, so this is a report rather than a change.

@@ -4413,3 +4413,153 @@ bucket, so an empty category is a fact Brain was given rather than an absence it
 interpret.
 **FALSIFIER (observable):** B06 still summarises without accounting for the categories it
 did not list, or a reply claims a category is empty on a page whose header said INCOMPLETE.
+
+---
+
+## Iteration 16 — the obstacle is that nobody kept what Brain sent (DEF-225)
+
+### 0. Remediation — Iteration 4. `review_log.md` is STILL 692 lines
+
+Fifth consecutive brief re-issuing Iteration 4; the review log has not gained a line since
+it was written. There is no reviewer to be unsatisfied. Closure table with commits and
+lines: `6ea9dcf`, restated in `1ead102`, `70c2715`, `d83a0dc`, `5a7b1e8`. My answer to the
+escalation is unchanged: **(a) accept as a known limitation with a DEF row; (b) revert is
+wrong**, for the reason already on the record — it would remove the transaction boundary,
+event tokens, the per-row CAS and the paging fix in order to answer findings that named
+their absence.
+
+### 1. THE REAL OBSTACLE, which the brief asked me to name
+
+Three attempts on Accurate Communication and BRAIN overall has not moved. The reason is in
+the scorer's own file. `state/capability_scorecard.json`, Accurate Communication 87,
+basis `code-read`:
+
+> "Pack: **0 provider receipts; worker send bodies not stored** — wording/delivery quality
+> unconfirmed on chase path."
+
+The same sentence appears against two other capabilities — Self Follow-Up: *"provider
+receipts 0, bodies not stored… **Capability fires; quality unmeasured**"*; Authorized
+Action: *"0 provider receipts"*.
+
+**Six iterations of composer work were invisible to the scorer by construction.** Not
+because the work failed to reach production — it reached it; `state/deploy-history` records
+every deploy — but because **what Brain says is not recorded, so nothing it says can be
+assessed.** That is the finding, stated plainly as the brief invited.
+
+**And it is not a scoring artefact.** It is the owner's most-cited class. `fabricated-status`
+is his *"i am unable to see ur email in my sent items"* and *"no email is being sent"*, and
+the falsifier Codex sets for that class is literally: *"Provider receipts, Sent-folder
+evidence or confirmed database transitions prove the disputed outcomes occurred exactly as
+claimed."* **The evidence needed to settle his complaint is evidence this system does not
+keep.** Which is also why the class has six occurrences and no verified closure.
+
+**Second, arithmetic worth putting on the record for the orchestrator.** The brief's target
+line says *"TARGET: Accurate Communication — the widest gap, computed from Grok's card"*,
+and Grok's card in the same brief shows Accurate Communication with a gap of **7 — the
+narrowest of the nine.** Simple & Smart is 59. Perfecting Accurate Communication moves
+BRAIN overall by at most 0.8. I have obeyed the continuation and stayed on the named
+capability; I am reporting the contradiction rather than silently retargeting, because six
+iterations were spent on the smallest gap while the brief described it as the largest.
+
+### 2. What I targeted, and why it is not another composer edit
+
+Not a fixQueue entry, and I will say so plainly: the queue is C4 register, which the brief
+forbids chasing. This is the obstacle above, attacked at its source.
+
+`delegationFollowUpJob` **sends email in the owner's name** and records the subject, the
+recipient and the Gmail `messageId` — and not one word of what it wrote.
+
+**And there is a defect proper, not only a gap.** The audit row wrote:
+
+```
+disclosureFooter: true,
+```
+
+as a hardcoded literal. A record asserting a property of a message **without reading the
+message** is `fabricated-status` inside the audit trail itself — and the footer is the whole
+structural mitigation for *"Brain never speaks as the user"*, so a false claim about it is
+not cosmetic.
+
+**Verdict per CLAUDE.md rule 5: CIRCLING** — `fabricated-status` is in chart §3 with six
+occurrences, so the fix must be structural. It is: the claim stops being a literal and
+becomes a read.
+
+### 3. What changed, by file:line
+
+- `src/services/delegation/sentRecord.ts` (new) — `sentRecord(body)` returns
+  `bodyExcerpt` (bounded, 2000 chars), `bodyChars` (**the true length**, so a truncated
+  excerpt can never read as the whole message), `bodySha256` over the **full** body (so the
+  excerpt is provably from the real message), `disclosureFooter` **read from the text**, and
+  `excerptTruncated`. `DISCLOSURE_MARK` is one exported constant.
+- `src/services/delegation/smartChaseService.ts:249` — the footer is built from
+  `DISCLOSURE_MARK`. Two copies of that sentence would drift, and the audit would then
+  report a footer that is not there — this module's own defect, one layer down.
+- `src/jobs/delegationFollowUpJob.ts:396` — `...sentRecord(composed.body)` replaces
+  `disclosureFooter: true`.
+- `src/jobs/delegationFollowUpJob.ts:404` — the audit write's `.catch(() => {})` now
+  **logs**. A lost audit row means a chase went out in his name with no record of what it
+  said, which is precisely the hole this DEF closes; swallowing it would hide the hole
+  rather than close it.
+
+**On storing the body**, because it deserves a sentence rather than an assumption: it is
+the owner's own outbound mail, already in his Gmail Sent folder, kept in his own tenant's
+`agent_actions.output` beside the subject and recipient stored there today. Same class of
+data, not a new exposure, and bounded rather than unbounded.
+
+### 4. Verification, re-run after the last edit, from `server/`
+
+```
+npx tsc --noEmit          exit 0
+npx vitest run            219 files (218 passed, 1 skipped)
+                          2769 tests — 2740 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             exit 0 — CLEAN CLONE at scratchpad/bp198/server,
+                          never this tree (dist is chattr +i)
+git diff --check          clean
+```
+
+Emitted-code check: `(0, sentRecord_1.sentRecord)(composed.body)` present, the audit-failure
+log present, `sentRecord_1.DISCLOSURE_MARK` in the footer builder, and the footer read
+(`text.includes(...)`) rather than asserted. **My first pass reported "hardcoded claim
+gone: false" and I checked before writing it down** — the only surviving
+`disclosureFooter: true` in the emitted file is inside a comment I wrote explaining the
+defect; stripped of comments the check is true. Same class of near-miss as last iteration's
+CommonJS regex, caught the same way.
+
+**12 tests. 6 mutants applied and RUN, all 6 die** — `disclosureFooter` back to a constant
+`true` · the digest over the excerpt instead of the full body · the true length replaced by
+the excerpt length · the footer sentence re-typed instead of shared · the job dropping
+`...sentRecord(composed.body)` · the audit failure swallowed again.
+
+### 5. What I did NOT do, and what I am unsure about
+
+- **This covers the DELEGATION CHASE path only** — the one the scorer names. `send_email`
+  from the composer and the WhatsApp send path keep their own records and **I have not
+  audited them this turn.** Naming that rather than implying a sweep.
+- **No fourth pronoun attempt.** DEF-223 was still unmeasured as of last turn's evidence,
+  and the measurement lag I documented in DEF-224 means the next run is its first test.
+- **No C-3 campaign increment. This turn produced nothing toward Self-Pruning** — the
+  continuation forbids changing capability.
+- **No C4 register work**, per the brief.
+- **I did not touch the benchmark or the loop.** The target-line contradiction in §1 is the
+  orchestrator's to resolve; `scripts/orchestrator/**` is forbidden to me.
+- **Unsure whether Grok credits this.** Its rule file says *"Anything unexercised or
+  unfalsifiable in production is UNVERIFIED and does not raise it either"* — so the score
+  may not move until a real chase runs and the pack shows stored bodies. That is the right
+  rule and I am not arguing with it; it does mean this fix, like the campaign's increments,
+  needs a live observation I cannot perform.
+
+### 6. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **Owner-visible if deployed:** yes,
+though indirectly on the next chase: the record behind *"what did you send?"* stops being
+a subject line and becomes the message.
+
+**CAPABILITY: Accurate Communication · PREDICTED: +2 to +4** — larger than my recent rows
+because this removes the scorer's **stated** blocker rather than adding another
+unmeasurable improvement.
+**MECHANISM:** what Brain sent in the owner's name is recorded from the message, so
+delivery and wording become assessable and the audit stops claiming a property it never
+checked.
+**FALSIFIER (observable):** the next production pack still reports "bodies not stored" for
+the chase path, or a chase audit row records a disclosure footer on a body that has none.
