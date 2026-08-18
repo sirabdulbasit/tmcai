@@ -200,7 +200,10 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
       // this asserts what the owner reads rather than a JSON-escaped substring.
       const meaning = curatedMarkerMeaning(stripMarkerEnvelope(String(r.answer)));
       expect(meaning, 'the marker renders').toBeTruthy();
-      expect(meaning!).toContain('Updated "');
+      // DEF-220 SUPERSEDED `toContain('Updated "')`. The receipt no longer
+      // travels as text; the fact is composed from the fields the database
+      // received. What is asserted is the same outcome, said in words.
+      expect(meaning!).toContain('its note has been updated');
     });
 
     it('falls BACK to the receipt when a requested field was silently dropped', async () => {
@@ -217,12 +220,14 @@ describe('DEF-144 — the receipt is the audit record, not the answer', () => {
       expect(updates.length, 'the note is a real field, so a write happens').toBe(1);
       expect(updates[0].data.priority, 'an unnormalisable priority is dropped').toBeUndefined();
       expect(r.answer).not.toContain('urgent');
-      // DEF-212 — the receipt text is preserved VERBATIM; it is now the payload
-      // of a marker rather than the raw reply, so the owner reads it in Brain's
-      // voice with the still-unanswered part of the earlier question attached.
-      // The substring assertion is unchanged because nothing about the receipt
-      // was reworded.
-      expect(r.answer).toContain('Updated \\"');
+      // DEF-212 carried the receipt as the marker's payload; DEF-220 carries the
+      // FIELDS instead, because the payload was still the field-name string and
+      // the no-outstanding branch handed it to him unchanged. The dropped
+      // priority is still absent and the applied note is still stated.
+      const meaning = curatedMarkerMeaning(stripMarkerEnvelope(String(r.answer)))!;
+      expect(meaning).toContain('its note has been updated');
+      expect(meaning, 'the field-name receipt is gone from the reply').not.toContain('Updated "');
+      expect(r.answer, 'and from the marker payload too').not.toContain('priority=');
     });
 
     it('emits an honest marker — not Brain\'s false claim — when NOTHING applied', async () => {

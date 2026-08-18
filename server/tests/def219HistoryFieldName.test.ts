@@ -85,25 +85,33 @@ describe('DEF-219 — what the three dead fixes now do', () => {
   it('B04: the applied receipt stops rendering as the bare field-name string', () => {
     const outstanding = outstandingSlots(
       lastBrainQuestion(B04_HISTORY), { openItemId: 'x1', priority: 'HIGH' });
-    const receipt = 'Updated "Define rules for Brain\'s responsiveness": priority=high.';
-    const fact = curatedMarkerMeaning(stripMarkerEnvelope(
-      actionAppliedMarker({ receipt, outstanding })))!;
+    const fact = curatedMarkerMeaning(stripMarkerEnvelope(actionAppliedMarker({
+      title: "Define rules for Brain's responsiveness",
+      applied: [{ f: 'priority', v: 'high' }],
+      outstanding,
+    })))!;
 
-    expect(fact, 'the receipt still travels, verbatim').toContain(receipt);
-    expect(fact, 'and now so does the open half').toContain('the due date');
+    // DEF-220 superseded the payload: it was the rendered receipt string, and
+    // this test asserted the receipt travelled verbatim inside the fact. It no
+    // longer does, and that is the point — the fact is composed from the fields.
+    expect(fact, 'what was written, said in words').toContain('its priority is now high');
+    expect(fact, 'and the open half').toContain('the due date');
     expect(fact).toContain('ASK FOR IT IN THIS REPLY');
-    expect(fact).not.toBe(receipt);
+    expect(fact, 'the field-name string is gone entirely').not.toContain('priority=');
   });
 
-  it('with the OLD `content` read, every one of those is empty — the regression, pinned', () => {
+  it('with the OLD `content` read, the outstanding half is empty — the regression, pinned', () => {
     // Exactly what production was doing: the composer's turns have no `content`.
     const asOldCodeSawIt = B04_HISTORY.map((t) => ({ role: t.role, content: undefined }));
     expect(lastBrainQuestion(asOldCodeSawIt)).toBeNull();
     expect(outstandingSlots(lastBrainQuestion(asOldCodeSawIt), { priority: 'HIGH' })).toEqual([]);
-    const receipt = 'Updated "x": priority=high.';
-    expect(
-      curatedMarkerMeaning(stripMarkerEnvelope(actionAppliedMarker({ receipt, outstanding: [] }))),
-      'the no-slots branch returns the receipt verbatim — what B04 actually read',
-    ).toBe(receipt);
+    // The no-slots branch is what B04 then took. Under DEF-220 it is a composed
+    // sentence rather than the receipt, so the SECOND defect this history bug
+    // exposed is closed as well; only the missing question would remain.
+    const fact = curatedMarkerMeaning(stripMarkerEnvelope(actionAppliedMarker({
+      title: 'x', applied: [{ f: 'priority', v: 'high' }], outstanding: [],
+    })))!;
+    expect(fact).toBe('The open item "x" was updated: its priority is now high.');
+    expect(fact).not.toContain('still unanswered');
   });
 });

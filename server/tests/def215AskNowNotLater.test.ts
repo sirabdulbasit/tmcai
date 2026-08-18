@@ -29,7 +29,7 @@ import { curatedMarkerMeaning } from '../src/services/knowledge/answerSanitizer'
 import { stripMarkerEnvelope } from '../src/services/knowledge/systemMarker';
 
 const B04_QUESTION = 'Sure — what priority should it have, and what deadline should I set?';
-const RECEIPT = 'Updated "Define rules for Brain\'s responsiveness": priority=high.';
+const TITLE = "Define rules for Brain's responsiveness";
 
 const meaningOf = (m: string) => curatedMarkerMeaning(stripMarkerEnvelope(m))!;
 
@@ -39,8 +39,11 @@ const proceeding = () => meaningOf(actionReceiptMarker({
   priorQuestion: B04_QUESTION,
 }));
 
+// DEF-220 superseded the payload: the marker carries the applied FIELDS, not
+// the rendered receipt. The property this file defends — the fact demands the
+// unanswered slot in THIS reply — is unchanged, so only the constructor moved.
 const applied = () => meaningOf(actionAppliedMarker({
-  receipt: RECEIPT, outstanding: ['dueDate'],
+  title: TITLE, applied: [{ f: 'priority', v: 'high' }], outstanding: ['dueDate'],
 }));
 
 describe('DEF-215 — the fact requires the question NOW, on both markers', () => {
@@ -72,8 +75,12 @@ describe('DEF-215 — the fact requires the question NOW, on both markers', () =
   }
 
   it('says nothing about asking when nothing is outstanding', () => {
-    const fact = meaningOf(actionAppliedMarker({ receipt: RECEIPT }));
-    expect(fact).toBe(RECEIPT);
+    const fact = meaningOf(actionAppliedMarker({
+      title: TITLE, applied: [{ f: 'priority', v: 'high' }],
+    }));
+    // DEF-220: this branch used to return the rendered receipt verbatim. It is
+    // now the composed fact, and it still must not invent an open question.
+    expect(fact).toBe(`The open item "${TITLE}" was updated: its priority is now high.`);
     expect(fact).not.toContain('ASK FOR IT');
   });
 });

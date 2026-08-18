@@ -282,6 +282,7 @@ export function answerThenAsk(
 
 /**
  * DEF-212 — the receipt survives as FACT without being the owner's sentence.
+ * DEF-220 — and it stops being ENGLISH at all.
  *
  * B04's reply came back as `Updated "Define rules for Brain's responsiveness to
  * new vs. existing contacts": priority=high.` — field names and an equals sign,
@@ -293,22 +294,131 @@ export function answerThenAsk(
  * That fallback is RIGHT about truth and WRONG about everything else. The
  * receipt is true by construction — it lists what the database actually
  * received — so replacing unverifiable prose with it is the correct fail-closed
- * move, and I am not touching that judgement. What it also does is throw away
- * the outstanding half of Brain's own question (DEF-209) and hand the owner a
- * log line.
+ * move, and I am not touching that judgement.
  *
- * So the receipt stops being the SENTENCE and becomes the PAYLOAD: the curated
- * meaning states it verbatim — no rewording, nothing added to the claim — and
- * then names whatever the owner still has not answered. `sanitizeAnswerInBrainVoice`
- * chooses the words from that fact. Nothing about what was written is softened,
- * asserted or inferred; the receipt text travels intact.
+ * DEF-212 made the receipt the PAYLOAD of this marker instead of the sentence.
+ * It did not go far enough, and I said so on the record when I shipped it: the
+ * payload was still the rendered English string, so when NOTHING was
+ * outstanding the curated meaning returned that string verbatim and the owner
+ * read `Updated "…": priority=high.` anyway. DEF-219 then made that branch the
+ * COMMON one — before it, `outstanding` was empty on every real call for a
+ * different reason, and afterwards it is empty exactly when Brain had no open
+ * question, which is most turns.
+ *
+ * So the marker carries FIELDS AND VALUES, never a sentence. `APPLIED_FIELDS`
+ * below is the one vocabulary for saying each of them, the curated meaning in
+ * `answerSanitizer` composes the fact from it, and `sanitizeAnswerInBrainVoice`
+ * chooses the final words. The hand-built receipt stays exactly what DEF-144
+ * ruled it should be — the audit record — and no longer has a route to his
+ * screen. This is the structural half the earlier patches kept deferring: the
+ * channel that carried deterministic English is gone, rather than its current
+ * occupant reworded.
  */
+
+interface AppliedFieldSpec {
+  key: string;
+  /** How the fact states this field. `value` is already non-empty. */
+  say: (value: string) => string;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * `2026-08-20` → `20 Aug 2026`, by string surgery.
+ *
+ * Deliberately NOT via `new Date(...)`: DEF-214 was a whole defect class built
+ * out of a date value that changed meaning when a zone was applied to it. This
+ * is a calendar date with no instant in it, and nothing here can shift it by a
+ * day. Anything that is not exactly `YYYY-MM-DD` is passed through untouched.
+ */
+function readableDate(value: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return value;
+  const month = MONTHS[Number(m[2]) - 1];
+  if (!month) return value;
+  return `${Number(m[3])} ${month} ${m[1]}`;
+}
+
+/**
+ * The fields an update can apply, and the ONE way each is said to the owner.
+ *
+ * Keyed by the Prisma payload field, so the fact is derived from what the
+ * database received rather than from what the model asked for — the DEF-147
+ * discipline, unchanged.
+ */
+export const APPLIED_FIELDS: AppliedFieldSpec[] = [
+  { key: 'priority', say: (v) => `its priority is now ${v.toLowerCase()}` },
+  { key: 'dueDate', say: (v) => `it is now due on ${readableDate(v)}` },
+  { key: 'title', say: (v) => `it is now called "${v}"` },
+  {
+    key: 'status',
+    // The only status this branch writes is DRAFT → NEW, and "NEW" is a word
+    // from the schema, not from his vocabulary.
+    say: (v) => (v.toUpperCase() === 'NEW'
+      ? 'it is now a live item rather than a draft'
+      : `its status is now ${v.toLowerCase()}`),
+  },
+  // The note is carried so the fact can mention it, but never printed: a
+  // description can be paragraphs long, and a fact that quotes one in full stops
+  // being a fact and becomes the reply.
+  { key: 'description', say: () => 'its note has been updated' },
+];
+
+export interface AppliedChange { f: string; v: string }
+
+/**
+ * The applied fields of a Prisma update payload, in `APPLIED_FIELDS` order.
+ *
+ * A `Date` becomes its calendar date; everything else its trimmed string. An
+ * empty or absent value is not an applied change — the same rule `filledSlots`
+ * uses, and for the same reason: claiming a field was set when it was not is
+ * the `fabricated-status` class.
+ */
+export function appliedChanges(payload: Record<string, unknown> | null | undefined): AppliedChange[] {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const out: AppliedChange[] = [];
+  for (const spec of APPLIED_FIELDS) {
+    const raw = p[spec.key];
+    if (raw === undefined || raw === null) continue;
+    const v = raw instanceof Date
+      ? raw.toISOString().slice(0, 10)
+      : String(raw).replace(/\s+/g, ' ').trim();
+    if (!v) continue;
+    out.push({ f: spec.key, v: v.slice(0, 200) });
+  }
+  return out;
+}
+
+/** Builder and verifier must agree byte for byte, so both normalise here. */
+export function normaliseApplied(applied: readonly AppliedChange[] | undefined): AppliedChange[] {
+  const known = new Set(APPLIED_FIELDS.map((s) => s.key));
+  return (applied ?? [])
+    .filter((c) => c && known.has(c.f) && String(c.v ?? '').trim().length > 0)
+    .map((c) => ({ f: c.f, v: String(c.v).replace(/\s+/g, ' ').trim().slice(0, 200) }))
+    .slice(0, 6);
+}
+
+/**
+ * The exact segment of the marker body that identifies WHICH update this is.
+ *
+ * `verifyAppliedMarker` checks the marker contains it, so a token cannot be
+ * replayed onto a marker for a different item or a different set of applied
+ * values. It is a substring by construction because `actionAppliedMarker`
+ * serialises these two keys first, in this order.
+ */
+export function appliedFingerprint(title: string, applied: readonly AppliedChange[] | undefined): string {
+  return `"title":${JSON.stringify(String(title ?? '').trim().slice(0, 200))}`
+    + `,"applied":${JSON.stringify(normaliseApplied(applied))}`;
+}
+
 export function actionAppliedMarker(args: {
-  receipt: string;
+  title: string;
+  applied: readonly AppliedChange[];
   outstanding?: readonly string[];
 }): string {
-  const receipt = String(args.receipt ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const title = String(args.title ?? '').trim().slice(0, 200);
+  const applied = normaliseApplied(args.applied);
   const known = new Set(RECEIPT_SLOTS.map((s) => s.key));
   const outstanding = (args.outstanding ?? []).filter((k) => known.has(k)).slice(0, 4);
-  return systemMarker(`applied: ${JSON.stringify({ receipt, outstanding })}`);
+  return systemMarker(`applied: ${JSON.stringify({ title, applied, outstanding })}`);
 }

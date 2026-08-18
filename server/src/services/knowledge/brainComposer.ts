@@ -30,7 +30,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 import { renderOwnerClockLine } from '../userTimezoneService';
-import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, outstandingSlots } from './actionReceipt';
+import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots } from './actionReceipt';
 
 export interface OpenedPage {
   id: string;
@@ -3781,22 +3781,44 @@ ${calLines.join('\n')}`;
                 // Brain's own earlier question is still unanswered (DEF-209).
                 //
                 // Fail-closed is UNCHANGED: unverifiable prose still loses. What
-                // ships instead is the same receipt, verbatim, inside a marker
-                // whose curated meaning states it and then names what is still
-                // outstanding. Outstanding is computed from what the DATABASE
-                // received (`data`), never from what the model asked for.
-                const appliedMarker = actionAppliedMarker({
-                  receipt: actionResult.message as string,
-                  outstanding: outstandingSlots(
-                    lastBrainQuestion(history),
-                    data as unknown as Record<string, unknown>,
-                  ),
-                });
-                actionResult.verifiedProse = verifyAppliedMarker(appliedMarker, {
-                  receipt: actionResult.message as string,
-                  artifactId: existing.id,
-                });
-                answer = appliedMarker;
+                // ships instead is a marker carrying the FIELDS AND VALUES the
+                // database received, whose curated meaning composes the sentence
+                // and then names what is still outstanding.
+                //
+                // DEF-220 — it used to carry `actionResult.message`, the rendered
+                // receipt, and with nothing outstanding the curated meaning
+                // returned that string unchanged, so `priority=high` reached him
+                // anyway. The receipt is the audit record (DEF-144) and now has
+                // no route to his screen. Both halves are read from `data`, the
+                // Prisma payload actually written — never from what the model
+                // asked for.
+                const applied = appliedChanges(data as unknown as Record<string, unknown>);
+                if (applied.length === 0) {
+                  // Nothing in the shared vocabulary was written — the payload
+                  // was internal only (a cleared draft block, say). No fact can
+                  // be composed from fields that have no owner-facing meaning,
+                  // so the receipt stays the answer. That is the DEF-146
+                  // containment unchanged, and it is deliberately NOT a marker:
+                  // an uncurated marker has no curated meaning and would reach
+                  // him as the neutral fallback, which says less than the truth.
+                  answer = actionResult.message as string;
+                } else {
+                  const appliedMarker = actionAppliedMarker({
+                    title: existing.title,
+                    applied,
+                    outstanding: outstandingSlots(
+                      lastBrainQuestion(history),
+                      data as unknown as Record<string, unknown>,
+                    ),
+                  });
+                  actionResult.verifiedProse = verifyAppliedMarker(appliedMarker, {
+                    receipt: actionResult.message as string,
+                    artifactId: existing.id,
+                    title: existing.title,
+                    applied,
+                  });
+                  answer = appliedMarker;
+                }
               }
             } else if (!actionResult) {
               actionResult = { ok: false, message: `[update_open_item: no recognised fields to update]` };

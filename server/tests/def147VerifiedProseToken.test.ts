@@ -32,6 +32,23 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
+import { curatedMarkerMeaning } from '../src/services/knowledge/answerSanitizer';
+import { stripMarkerEnvelope } from '../src/services/knowledge/systemMarker';
+
+/**
+ * What the owner actually reads when the receipt wins.
+ *
+ * DEF-220 SUPERSEDED the four assertions below, deliberately. They were
+ * `expect(body).toContain('priority=high')` — and `priority=high` is the
+ * field-name string DEF-144, DEF-145 and DEF-212 were all written about. It
+ * passed because the rendered receipt was embedded verbatim in the marker's
+ * JSON payload; the marker now carries the FIELDS, and the sentence is composed
+ * from them. The property this file defends — unverifiable prose loses, and the
+ * true-by-construction outcome ships instead — is unchanged, and each case now
+ * asserts it through the real sanitizer rather than on a JSON substring.
+ */
+const owner = (body: string) => curatedMarkerMeaning(stripMarkerEnvelope(String(body)));
+
 const ITEM_TITLE = "Define rules for Brain's responsiveness to new vs. existing contacts";
 const OTHER_TITLE = 'Vision Metric Integration';
 
@@ -123,7 +140,7 @@ describe('DEF-147 — only the verifier can mint the token, and it checks values
       const body = await composeThenRender(
         "Got it. I've set it to critical. Is there a deadline?", { priority: 'high' },
       );
-      expect(body).toContain('priority=high');
+      expect(owner(body)).toContain('its priority is now high');
       expect(body).not.toContain('critical');
     });
 
@@ -131,7 +148,7 @@ describe('DEF-147 — only the verifier can mint the token, and it checks values
       const body = await composeThenRender(
         `I've set "${OTHER_TITLE}" to high priority for you.`, { priority: 'high' },
       );
-      expect(body).toContain('priority=high');
+      expect(owner(body)).toContain('its priority is now high');
       expect(body).not.toContain(OTHER_TITLE);
     });
 
@@ -139,7 +156,7 @@ describe('DEF-147 — only the verifier can mint the token, and it checks values
       const body = await composeThenRender(
         "Done — priority is high and I've set the deadline to Friday.", { priority: 'high' },
       );
-      expect(body).toContain('priority=high');
+      expect(owner(body)).toContain('its priority is now high');
       expect(body).not.toContain('Friday');
     });
 
@@ -149,8 +166,10 @@ describe('DEF-147 — only the verifier can mint the token, and it checks values
       const body = await composeThenRender(
         "I've marked it done and set the priority to high.", { priority: 'high' },
       );
-      expect(body).toContain('priority=high');
+      expect(owner(body)).toContain('its priority is now high');
       expect(body).not.toMatch(/marked it done/i);
+      // DEF-220 — and the field-name string is not in the marker either.
+      expect(body).not.toContain('priority=high');
     });
 
     it('the quoted CORRECT title is allowed through', async () => {

@@ -26,7 +26,7 @@ import {
 } from './systemMarker';
 // DEF-209 — the receipt's vocabulary lives with its constructor, so the parser
 // and the marker builder cannot drift into two implementations of one label.
-import { RECEIPT_SLOTS, actionPhrase } from './actionReceipt';
+import { RECEIPT_SLOTS, APPLIED_FIELDS, actionPhrase } from './actionReceipt';
 
 interface MarkerRule {
   match: RegExp;
@@ -314,20 +314,28 @@ function proceedingMarkerMeaning(answer: string): string | null {
 }
 
 /**
- * DEF-212 — the applied receipt's curated meaning.
+ * DEF-212 / DEF-220 — the applied receipt's curated meaning.
  *
- * The receipt is quoted VERBATIM. That is the whole point: it is true by
- * construction because it lists what the database actually received, and
- * rewording it here would put this parser in the business of restating a fact it
- * did not establish. What this adds is the part the bare receipt could never
- * carry — which half of Brain's earlier question is still unanswered.
+ * DEF-212 quoted the receipt verbatim, on the reasoning that it is true by
+ * construction and this parser should not restate a fact it did not establish.
+ * The reasoning was right about truth and wrong about who was speaking: the
+ * receipt is `Updated "…": priority=high.` — field names and an equals sign —
+ * and when nothing was outstanding that string WAS the returned meaning, so it
+ * reached him unchanged. DEF-219 then made that the common branch.
+ *
+ * So the payload carries fields and values now, and the sentence is composed
+ * here from `APPLIED_FIELDS` — one vocabulary, shared with the builder, exactly
+ * as `RECEIPT_SLOTS` is for the outstanding half. Nothing is softened, inferred
+ * or added: every clause names a field the database actually received and the
+ * value it received.
  */
 function appliedMarkerMeaning(answer: string): string | null {
   const m = /^\s*\[applied:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
   if (!m) return null;
   try {
     const p = JSON.parse(m[1]);
-    if (typeof p?.receipt !== 'string' || !p.receipt.trim()) return null;
+    if (typeof p?.title !== 'string' || !p.title.trim()) return null;
+    if (!Array.isArray(p?.applied) || p.applied.length < 1 || p.applied.length > 6) return null;
     if (!Array.isArray(p?.outstanding) || p.outstanding.length > 4) return null;
     if (p.outstanding.some((k: unknown) => typeof k !== 'string')) return null;
     const labels = (p.outstanding as string[])
@@ -335,7 +343,20 @@ function appliedMarkerMeaning(answer: string): string | null {
       .filter((l): l is string => Boolean(l));
     if (labels.length !== p.outstanding.length) return null;
 
-    const done = String(p.receipt).trim().slice(0, 400);
+    // A field outside the shared vocabulary is not a receipt this builder made.
+    const clauses: string[] = [];
+    for (const c of p.applied as unknown[]) {
+      const change = c as { f?: unknown; v?: unknown };
+      if (typeof change?.f !== 'string' || typeof change?.v !== 'string' || !change.v.trim()) return null;
+      const spec = APPLIED_FIELDS.find((s) => s.key === change.f);
+      if (!spec) return null;
+      clauses.push(spec.say(change.v.trim()));
+    }
+
+    const said = clauses.length === 1
+      ? clauses[0]
+      : `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}`;
+    const done = `The open item "${String(p.title).trim()}" was updated: ${said}.`;
     if (labels.length === 0) return done;
     const named = labels.length === 1
       ? labels[0]

@@ -208,7 +208,11 @@ describe('DEF-209 — neither receipt site may replace the reply any more', () =
 
   it('the slot vocabulary has ONE definition, shared by builder and parser', () => {
     expect(RECEIPT_SLOTS.length).toBeGreaterThan(0);
+    // DEF-220 added `APPLIED_FIELDS` to the same import — a second shared
+    // vocabulary, for the fields an update APPLIED rather than the slots it left
+    // open. The property here is that the sanitizer defines neither itself, so
+    // the guard names both and tolerates their order.
     expect(src('src/services/knowledge/answerSanitizer.ts'))
-      .toMatch(/import \{ RECEIPT_SLOTS, actionPhrase \} from '\.\/actionReceipt'/);
+      .toMatch(/import \{[^}]*\bRECEIPT_SLOTS\b[^}]*\bAPPLIED_FIELDS\b[^}]*\} from '\.\/actionReceipt'/);
   });
 });

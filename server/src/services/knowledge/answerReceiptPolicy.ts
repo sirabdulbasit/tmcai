@@ -44,6 +44,7 @@
  */
 
 import { isSystemMarker } from './systemMarker';
+import { appliedFingerprint, normaliseApplied, type AppliedChange } from './actionReceipt';
 
 /** Below this, a "reply" is a fragment rather than an answer, and the
  *  deterministic receipt is more use to the owner than three words. */
@@ -316,15 +317,22 @@ export function verifyUpdateProse(prose: string, outcome: UpdateOutcome): Verifi
  */
 export function verifyAppliedMarker(
   marker: string,
-  outcome: { receipt: string; artifactId?: string | null },
+  outcome: {
+    receipt: string;
+    artifactId?: string | null;
+    title: string;
+    applied: readonly AppliedChange[];
+  },
 ): VerifiedProse | null {
   if (!isSystemMarker(marker)) return null;
   if (!outcome.receipt?.trim()) return null;
-  // The receipt must actually be inside the marker it claims to carry — a
-  // marker built from some other outcome is not this one's record.
-  if (!marker.includes(JSON.stringify(outcome.receipt.replace(/\s+/g, ' ').trim().slice(0, 400)).slice(1, -1))) {
-    return null;
-  }
+  // DEF-220 — the marker no longer carries the receipt STRING, so the binding
+  // is to what it does carry: this item and this exact set of applied values.
+  // That is a stricter check than the old receipt-substring test, not a looser
+  // one — the receipt was a rendering of these values, and two different
+  // renderings of the same write used to be indistinguishable here.
+  if (!outcome.title?.trim() || normaliseApplied(outcome.applied).length === 0) return null;
+  if (!marker.includes(appliedFingerprint(outcome.title, outcome.applied))) return null;
   const token = Object.freeze({}) as unknown as VerifiedProse;
   tokenRecords.set(token as unknown as object, {
     prose: marker,
