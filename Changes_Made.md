@@ -4469,3 +4469,61 @@ benchmark is untouched; Codex arbitrates.
 **Also recorded:** B12's C1 recovered to 100 in this run **without** DEF-228, which is
 unmeasured — the same pattern as B12's C8 recovering before DEF-226 was measured. Said
 plainly rather than claimed as a win.
+
+---
+
+## 81. DEF-230 — the campaign's premise, refuted by its own instrument (2026-08-18, BUILDER: Claude — orchestrator iteration 22, branch `release/cmp-2026-08-16`)
+
+**SYMPTOM TAG: none of the listed tags** — said plainly rather than invented. **CAPABILITY:
+Self-Pruning** (campaign-sanctioned divergence from the brief's Accurate Communication
+target, stated per the campaign's own rule).
+
+**C-3 increment 1's Done-when finally ran.** On 2026-08-18 07:24 UTC the read-only report
+(`nexeoInboundNoiseReport.ts`, 200h window, TMC-0001/user 2) made the first production read
+of the noise ledger:
+
+```
+Pushes delivered: 59. Replied to: 32.   BURSTS=0
++239487846228094 — 14 delivered, 14 answered (0% unanswered)
+item:cmsernsi…   — 17 delivered via 4 producers (preactive_due_nudge 7×,
+                   action_lifecycle_governor 5×, action_lifecycle_reply 4×,
+                   delegation_capture 1×), 10 answered
+```
+
+**The campaign's founding premise is not what production shows.** The unknown number is the
+one sender he answered completely. The real noise is **one open item pushed seventeen times
+by four subsystems that do not know about each other.**
+
+**That refuted shipped code.** DEF-217's `worstOffender` ranked by `reached` and preferred
+`unattributed` outright — verified on this data, it returns `+239487846228094, reached 14,
+acted 14`, so the job's first-ever message would have complained about the one thread he
+handled completely.
+
+**The fix — noise is what he did NOT act on.** Rank and floor on `reached − acted`; the
+category preference is deleted (a genuinely ignored flood still wins on merit, so CL-033's
+shape is kept without being privileged); the producer count travels, and the notice now
+says *"…17 messages, from 4 different subsystems that each push on their own schedule, and
+you acted on 10."* Constructor emits `producers` only at ≥ 2; parser rejects what the
+constructor cannot mint; the no-producers sentence is byte-identical to DEF-217's.
+
+**Verification, re-run after the last edit:** `npx tsc --noEmit` **exit 134 at default
+heap — OOM, not a type error** (`NODE_OPTIONS=--max-old-space-size=6144` → exit 0, clean);
+`npx vitest run` 224 files (223 passed, 1 skipped), **2821 tests, 2792 passed, 0 failed**;
+`git diff --check` clean; clean-clone build NOT re-run this turn (named as a gap — config
+unchanged, three touched files type-checked and covered). **12 new tests, 7 mutants applied
+and RUN (each with an assert on its anchor), 6 die, one EQUIVALENT and the code deleted**
+with the reasoning in the source (DEF-221 precedent).
+
+**For the orchestrator:** the brief's "tsc RED" is node's default heap being outgrown —
+exit 134 `Reached heap limit` at ~2 GB, exit 0 with the heap flag, zero type errors. The
+matrix invocation in `scripts/orchestrator/**` needs `NODE_OPTIONS`; not the Builder's to
+change.
+
+**Increment 2 is reshaped by this data, not started:** the digest that matters is
+per-SUBJECT across producers, not per-sender — recorded so it is not lost.
+
+**MECHANISM:** the noise report ranks by disregard rather than volume, so the first live
+notice describes the real problem (multi-producer nagging) instead of a solved one.
+**PREDICTED: +2 to +4 Self-Pruning. FALSIFIER:** the next production read plus
+`worstOffender` still yields a fully-answered sender, or the live notice names a thread
+with 0% unanswered.
