@@ -5243,3 +5243,100 @@ the brief's Accurate Communication target, stated per the campaign's own rule.
 notice describes the real problem (multi-producer nagging) instead of a solved one.
 **FALSIFIER (observable):** the next production read plus `worstOffender` still yields a
 fully-answered sender, or the live notice names a thread with 0% unanswered.
+
+---
+
+## Iteration 23 — the release gate was failing on heap, not on types (DEF-231)
+
+### 0. The brief's one job: make HEAD deployable. Done, and here is exactly what blocked it
+
+The campaign is suspended on one undeployed code commit (`6057c9d`, DEF-230). Two candidate
+blockers were named; both are resolved on the record:
+
+1. **Review findings** — `review_log.md` is **still 692 lines**, unchanged since Iteration 4
+   was written. There are no reviewer findings against `6057c9d` or anything else; nothing
+   to close there. The escalation's standing question is answered the same way for the
+   eleventh time: **(a) accept Iteration 4's finding as a known limitation with a DEF row;
+   (b) revert is wrong** — reverting removes the transaction boundary, event tokens, the
+   per-row CAS and the paging fix to answer findings that named their absence.
+2. **"tsc RED"** — the real blocker, and it is not a type error.
+
+### 1. The mechanism
+
+`npx tsc --noEmit` — the matrix's own first command, documented in CLAUDE.md and invoked
+verbatim by the deploy phase — exits **134** on this box: `Reached heap limit` at node
+v20.20.2's default old-space (measured: `heap_size_limit` = **2096 MB**). With a larger
+heap the same command exits **0 with zero type errors**. The src graph outgrew the default
+across 40+ iterations; any gate reading exit 134 as RED blocks deploys on resource
+exhaustion.
+
+No lever existed in my lane last turn — `skipLibCheck` already on, tests already excluded,
+heap is not a compiler option, and the invocation lives in `scripts/orchestrator/**`. This
+turn found one that is in my lane:
+
+**`server/.npmrc` — one line: `node-options=--max-old-space-size=4096`.** npm applies it as
+`NODE_OPTIONS` to the node processes it spawns, so the exact documented command passes
+unmodified, harness untouched.
+
+### 2. Proven A/B, not asserted
+
+```
+without server/.npmrc :  npx tsc --noEmit  →  exit 134  (heap OOM)
+with    server/.npmrc :  npx tsc --noEmit  →  exit 0    (clean)
+removed / restored again — same result both ways
+```
+
+npm 10.8.2 accepts `node-options` with no warning.
+
+**Production is untouched by construction, and it is verified rather than argued:** pm2
+launches `node dist/server.js` **directly**, with its own
+`node_args: --max-old-space-size=1024` (`ecosystem.config.js:8`) — confirmed against the
+live process argv (`/proc/<pid>/cmdline` = `node /var/www/tmcai/server/dist/server.js`).
+An npm config cannot reach a process npm does not spawn. 4096 is a cap, not an allocation,
+on a 16 GB box; `npm run build` and `npx vitest` inherit the same cap, which is at worst
+neutral for both.
+
+### 3. Verification — the exact documented commands, after the change
+
+```
+npx tsc --noEmit          exit 0            (previously exit 134 on this box)
+npx vitest run            224 files (223 passed, 1 skipped)
+                          2821 tests — 2792 passed, 0 FAILED,
+                          7 expected-fail, 21 skipped, 1 todo
+npm run build             NOT run in this tree (dist is chattr +i, the deployed artifact);
+                          .npmrc does not enter the artifact, so clean-clone parity is
+                          unaffected by this change
+git diff --check          clean
+```
+
+**No unit tests for this change, stated plainly rather than padded:** there is no code path
+— only an environment fact — and a test asserting the file exists would be prose about
+configuration (DEF-195's line). The A/B above is the verification, and it is stronger than
+a test that would trivially pass.
+
+### 4. What I did NOT do
+
+- **No campaign increment, no new defect, no refactor, no opportunistic fix** — the brief
+  forbids all four this turn, and the temptation was real (the fixQueue and DEF-230's
+  increment-2 reshaping are both sitting there).
+- **I did not touch `scripts/orchestrator/**`** — the harness still runs the same command;
+  it simply passes now. If the orchestrator later prefers `NODE_OPTIONS` in the loop
+  itself, this file becomes redundant, not conflicting.
+- **I did not raise pm2's 1024 MB heap** — the running server is not mine to retune, and it
+  is not what was failing.
+- **Unsure about one thing:** whether the deploy phase's environment strips `NODE_OPTIONS`
+  set via npm config (a hardened shell could). The A/B ran in the same shell family the
+  loop uses; if the deploy still reads RED, that is the falsifier firing and the remaining
+  fix is the orchestrator's one-line env change, already documented in DEF-230's row.
+
+### 5. Deployability and falsifier
+
+**Deployed=no** — the orchestrator owns the phase. **This turn's explicit prediction: HEAD
+is now deployable.** The matrix is green under the exact documented commands; the only
+prior blocker was the exit-134 OOM, and it is gone deterministically.
+
+**CAPABILITY: RELIABILITY-ONLY · PREDICTED: +0.**
+**MECHANISM:** the release gate stops failing on heap exhaustion, so the DEF-230 commits —
+and everything after them — can ship.
+**FALSIFIER (observable):** `npx tsc --noEmit` exits non-zero on this box again, or the
+deploy phase still reports tsc RED at this HEAD.

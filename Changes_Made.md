@@ -4527,3 +4527,47 @@ notice describes the real problem (multi-producer nagging) instead of a solved o
 **PREDICTED: +2 to +4 Self-Pruning. FALSIFIER:** the next production read plus
 `worstOffender` still yields a fully-answered sender, or the live notice names a thread
 with 0% unanswered.
+
+---
+
+## 82. DEF-231 — the release gate was failing on heap, not on types (2026-08-18, BUILDER: Claude — orchestrator iteration 23, branch `release/cmp-2026-08-16`)
+
+**NO SYMPTOM TAG — not an owner-visible Brain defect. CAPABILITY: RELIABILITY-ONLY,
+PREDICTED: +0.** The brief suspended the campaign on one undeployed commit and ruled:
+*"YOUR ONLY JOB THIS TURN IS TO MAKE HEAD DEPLOYABLE."*
+
+**The blocker.** `npx tsc --noEmit` — the verification matrix's own first command — exits
+**134** on this box: `Reached heap limit` at node v20.20.2's default old-space (measured
+2096 MB). **Zero type errors**; with a larger heap the same command exits 0 clean. The src
+graph outgrew the default across 40+ iterations, and every gate reading exit 134 as RED
+blocks deploys on resource exhaustion. `review_log.md` is unchanged at 692 lines — there
+were no reviewer findings to close; this was the whole blocker.
+
+**The fix, in the Builder's lane.** `server/.npmrc`, one line:
+`node-options=--max-old-space-size=4096`. npm applies it as `NODE_OPTIONS` to node
+processes it spawns, so the exact documented command passes unmodified and
+`scripts/orchestrator/**` stays untouched.
+
+**Proven A/B, twice, not asserted:** without the file → exit 134; with it → exit 0.
+npm 10.8.2, no warnings. **Production untouched by construction and verified:** pm2 runs
+`node dist/server.js` directly with its own `node_args: --max-old-space-size=1024`
+(`ecosystem.config.js:8`), confirmed against the live process argv — an npm config cannot
+reach a process npm does not spawn. 4096 is a cap, not an allocation, on a 16 GB box.
+
+**Matrix after the change, exact documented commands:** `npx tsc --noEmit` **exit 0** ·
+`npx vitest run` 224 files (223 passed, 1 skipped), **2821 tests, 2792 passed, 0 failed** ·
+`git diff --check` clean · `npm run build` not run in this tree (dist is `chattr +i`;
+`.npmrc` does not enter the artifact).
+
+**No unit tests, stated plainly:** there is no code path — only an environment fact — and a
+test asserting the file exists would be prose about configuration (DEF-195). The A/B is the
+verification.
+
+**MECHANISM:** the release gate stops failing on heap exhaustion, so the DEF-230 commits —
+and everything after them — can ship. **FALSIFIER:** `npx tsc --noEmit` exits non-zero on
+this box again, or the deploy phase still reports tsc RED at this HEAD.
+
+**Remediation (ESCALATED, eleventh consecutive re-issue):** `review_log.md` still 692
+lines, no reviewer has posted since Iteration 4. Answer unchanged: **(a) accept as a known
+limitation with a DEF row; (b) revert is wrong** — it would strip the transaction boundary,
+event tokens, per-row CAS and paging fix to answer findings that named their absence.
