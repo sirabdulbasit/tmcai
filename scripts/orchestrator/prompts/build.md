@@ -256,3 +256,44 @@ this turn.
 
 Work now. End your turn once `@@BUILDDOC@@` has its `## Iteration @@ITER@@`
 section and your commit is made.
+
+# COST — READ NARROWLY, THE PREFIX IS RE-READ EVERY TURN
+
+Owner, 2026-08-20: "my main concern is token consumption which costing me too much for each
+iteration specially cache rd."
+
+Measured on the pulse that ran just before this instruction was written: **cache read was 45%
+of the bill** — the single largest line, ahead of cache write (30%) and output (24%). The
+mechanism is not obvious and it decides how you should work:
+
+**Everything you put in the context is re-read on EVERY subsequent turn.** The prefix started
+at 45k tokens and reached ~335k by the end. Cost is therefore roughly QUADRATIC in the number
+of turns, and every large read you make early is paid for again by every turn that follows it.
+
+The three largest reads on that pulse were the orchestrator's own append-only logs:
+
+    72k chars  operator_directives.md   (1,267 lines)
+    56k chars  review_log.md            (692 lines, read in full)
+    50k chars  review_log.md            AGAIN, offset 375 — a file already read whole
+
+That is ~44k tokens of prefix, re-read for the rest of the run, for documents that grow every
+night and will cost more tomorrow than they did today.
+
+So:
+
+- **Never read an append-only log in full.** `review_log.md`, `operator_directives.md`,
+  `ledger.jsonl`, `loop.log` and the chart's history all grow without bound. Read the tail, or
+  grep for the id you need. `tail -60` and `grep -n` cost a few hundred tokens; the file costs
+  tens of thousands.
+- **Never re-read a file you have already read.** It is already in your context. A second read
+  adds its whole length again and buys nothing.
+- **Summarise command output.** `npx vitest run` prints thousands of lines; you need the counts.
+  Pipe it: `npx vitest run --reporter=dot 2>&1 | tail -5`. Same for builds and greps — `grep -c`
+  before `grep`, and `head` on anything that might be long.
+- **Prefer `grep -n` to `Read`** when you want to find something rather than understand it.
+  Reading a 7,000-line file to check one function costs the file; grepping costs the match.
+
+None of this asks you to verify less. The verification matrix is unchanged and non-negotiable —
+run `npx tsc --noEmit`, `npx vitest run` and `git diff --check`, and report the exact numbers.
+Cheap and thorough are not in tension here: the waste measured above bought no information at
+all, because one of those files was read twice.
