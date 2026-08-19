@@ -52,6 +52,7 @@ then
 fi
 
 PRIORITY="$(cat "$ORCH/state/capability-priority" 2>/dev/null || true)"
+RUN_STARTED="$(date -u +%s)"
 say "starting ONE iteration · deploy=1 · priority='${NEXEO_TARGET_CAPABILITY:-${PRIORITY:-by headroom}}'"
 
 cd "$ROOT" || exit 1
@@ -62,11 +63,17 @@ rc=$?
 # The cost of the run, read back from the builder's own result event rather than
 # estimated — the loop records total_cost_usd per turn and that is the only figure that
 # is not a guess.
-COST="$(python3 - "$ORCH/logs" <<'PY'
+COST="$(python3 - "$ORCH/logs" "$RUN_STARTED" <<'PY'
 import glob, json, os, sys
 best = None
+# Only count a build log written DURING this run. The newest file otherwise belongs to
+# whatever ran last — which is how a 57-second no-op reported $9.85 of someone else's
+# spend and looked like it had done a full build.
+started = float(sys.argv[2]) if len(sys.argv) > 2 else 0
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "iter-*-build.jsonl")),
                 key=os.path.getmtime)[-1:]:
+    if started and os.path.getmtime(f) < started:
+        break
     for line in reversed(open(f, errors="replace").read().splitlines()):
         if '"type":"result"' in line:
             try:

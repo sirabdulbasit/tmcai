@@ -703,8 +703,19 @@ while :; do
   if [ "$BENCH_GATE" = "pass" ]; then
     say "benchmark gate would have passed (overall=$BENCH_OVERALL, min >= $TARGET) — noted, NOT an exit"
   fi
-  if [ "$ITER" -ge "$MAX_ITER" ]; then
-    say "iteration cap $MAX_ITER reached without passing the gate — stopping (rail, not success)"
+  # THE CAP COUNTS THIS RUN'S PULSES, NOT THE ABSOLUTE COUNTER.
+  #
+  # It compared $ITER — which persists across runs — against MAX_ITER. Under cron with
+  # NEXEO_MAX_ITER=1 the counter was already 1 from the first pulse, so EVERY run since
+  # exited in ~57 seconds saying "cap reached" without doing any work: the 02:30 nightly,
+  # the 08:42 run, all of them. The owner asked why only one pulse had run since
+  # yesterday, and this was the whole answer — the crons fired faithfully into a
+  # condition that was true before they started.
+  #
+  # PULSES_THIS_RUN starts at 0 in every process, so "1" means "one pulse from here".
+  PULSES_THIS_RUN=$((${PULSES_THIS_RUN:-0} + 1))
+  if [ "$PULSES_THIS_RUN" -gt "$MAX_ITER" ]; then
+    say "pulse cap $MAX_ITER reached for this run — stopping (rail, not success)"
     break
   fi
 
