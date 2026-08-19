@@ -39,6 +39,50 @@ MAX_BUILDS_DAY="${NEXEO_WATCH_MAX_BUILDS:-4}"     # ~$30-80/day worst case, not 
 
 say() { printf '%s  WATCH %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*" >> "$LOG"; }
 
+# THE PHASE EVENTS THE DECK READS — owner, 2026-08-20: he clicked Heal now, the header went
+# green and the phase list beneath it still showed "done 2m19s" from a pulse five hours old,
+# labelled idle.
+#
+# The reason was structural, not cosmetic: a conversational pulse launched here wrote only to
+# watch.log, while `pulse.py` builds its phase rows from the `STAGE iter=N` lines in loop.log
+# that nexeo-loop.sh emits. So a pulse this script ran had no phases at all, and the panel
+# displayed the last ones it could find. Two paths, one concept, and only one of them told
+# the deck anything — which is `protection-with-two-implementations` wearing a different hat.
+#
+# It writes the same lines to the same file, so the deck needs no second parser.
+ORCH_LOG="$ORCH/loop.log"
+
+# A NEW PULSE IS A NEW PULSE, and needs its own number and its own banner.
+#
+# The first version of this reused the number in state/iteration, so a second pulse wrote its
+# "started" event into a row whose `end` was already recorded from the first — and the panel
+# went on showing "done 2m19s" while the analyst was live. `pulse.py` banks and resets the
+# open spans on the `─── iteration N ───` banner, which only nexeo-loop.sh was writing. The
+# conversational path emitted phase events into a completed row.
+#
+# So the counter advances here too, and the banner is written before the first phase event.
+# That is also what the owner asked the number to mean: "Healing Pulse #4" should become #5
+# when a fifth pulse starts, not stay at #4 forever because the full loop happens to own the
+# counter.
+# LAZY, because most ticks are no-ops. This script runs 144 times a day and exits at the
+# watermark check whenever nothing has been said to Brain — numbering those would produce 144
+# "pulses" a day and make the counter meaningless, which is the complaint that got the old
+# iteration numbering reset in the first place. The number is claimed by the first pulse that
+# has actual work to do.
+PULSE_ITER=""
+begin_pulse() {
+  [ -n "$PULSE_ITER" ] && return 0
+  PULSE_ITER=$(( $(cat "$STATE/iteration" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$PULSE_ITER" > "$STATE/iteration"
+  printf '%s  ─── iteration %s ───\n' \
+    "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" >> "$ORCH_LOG"
+}
+phase() {
+  begin_pulse
+  printf '%s  %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
+    "$1 iter=$PULSE_ITER $2" >> "$ORCH_LOG"
+}
+
 # ── 1. WATERMARK. Free, and exits immediately on the common case of nothing new. ─────
 NEWEST="$(cd "$ROOT/server" && timeout 60 node -r dotenv/config -e '
 const {PrismaClient}=require("/var/www/tmcai/server/node_modules/@prisma/client");
@@ -68,15 +112,19 @@ fi
 printf '%s' "$NEWEST" > "$WATERMARK"
 
 PREV_HASH="$(cat "$ROOTS_HASH" 2>/dev/null || echo none)"
+phase "CHAT" "started reading the live conversations (all tenants, last 14 days)"
 if ! timeout 900 bash "$ROOT/scripts/orchestrator/run-chat-analysis.sh" >> "$LOG" 2>&1; then
   say "analysis failed — the previous ranking stands"
+  phase "CHAT" "exit=1 (analysis failed — the previous ranking stands)"
   exit 0
 fi
+phase "CHAT" "exit=0 (ranking written)"
 NEW_HASH="$(sha256sum "$STATE/chat-root-causes.md" 2>/dev/null | awk '{print $1}')"
 printf '%s' "$NEW_HASH" > "$ROOTS_HASH"
 
 if [ "$NEW_HASH" = "$PREV_HASH" ] && [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" != "1" ]; then
   say "conversation was new but the root causes did not change — analysed, no build"
+  phase "BUILD" "exit=skip (nothing new in the ranking to build)"
   exit 0
 fi
 [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" = "1" ] && [ "$NEW_HASH" = "$PREV_HASH" ] && \
@@ -108,12 +156,14 @@ if [ "$MANUAL" = "1" ]; then
   [ "$MSTAMP_DAY" = "$TODAY" ] || MCOUNT=0
   if [ "$MCOUNT" -ge "$MAX_MANUAL_DAY" ]; then
     say "MANUAL cap reached ($MCOUNT/$MAX_MANUAL_DAY today) — build deferred. Raise NEXEO_WATCH_MAX_MANUAL to override"
+  phase "BUILD" "exit=skip (deferred: manual cap $MCOUNT/$MAX_MANUAL_DAY today)"
     exit 0
   fi
   say "MANUAL run ($((MCOUNT + 1))/$MAX_MANUAL_DAY today) — daily auto-cap ($COUNT/$MAX_BUILDS_DAY) and ${MIN_GAP_MIN}m spacing both waived: a person asked"
 else
   if [ "$COUNT" -ge "$MAX_BUILDS_DAY" ]; then
     say "daily auto-build cap reached ($COUNT/$MAX_BUILDS_DAY) — analysis recorded, build deferred to the nightly run"
+    phase "BUILD" "exit=skip (deferred: daily cap $COUNT/$MAX_BUILDS_DAY, waiting for the nightly run)"
     exit 0
   fi
 
@@ -121,6 +171,7 @@ else
   NOW="$(date -u +%s)"
   if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
     say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
+    phase "BUILD" "exit=skip (deferred: last build $(( (NOW - LAST) / 60 ))m ago, min gap ${MIN_GAP_MIN}m)"
     exit 0
   fi
 fi

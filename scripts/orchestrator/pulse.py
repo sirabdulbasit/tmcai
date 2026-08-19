@@ -464,8 +464,20 @@ def phase_timeline():
         if kind == "BUILD":
             ph = d.setdefault("Build & Deploy", {})
             if "exit=" in rest:
+                # START AS WELL AS END. Without a start the row has no span, so the panel
+                # renders it `pending` — a build that finished, reported as one that never
+                # ran. It only showed up once the conversational pulse began emitting a
+                # single terminal BUILD event with no preceding "started": the full loop
+                # always writes both, so the missing setdefault was invisible for months.
+                ph.setdefault("start", t)
                 ph["end"] = t
-                ph["detail"] = rest.split("(")[0].strip()
+                # KEEP THE PARENTHESISED REASON on a skip. `split("(")[0]` was written for
+                # "claude exit=1 (log-name.jsonl)", where the parenthesis is noise — but for
+                # "exit=skip (deferred: daily cap 4/4 …)" the parenthesis IS the answer to
+                # "why did nothing build", and cutting it left the owner with a bare
+                # "exit=skip".
+                ph["detail"] = (rest.strip() if "skip" in rest
+                                else rest.split("(")[0].strip())
             else:
                 ph.setdefault("start", t)
         elif kind == "RAILS":
@@ -1757,7 +1769,20 @@ def collect():
     # the detector said IDLE while the log plainly showed Checks open. That rendered
     # a running phase as "started, no completion recorded", in red: a working loop
     # displayed as a broken one, which is the failure this window exists to end.
-    loop_alive = any("nexeo-loop.sh" in a and "bash" in a for _, a in procs())
+    # A CONVERSATIONAL PULSE IS ALSO A LIVE PULSE.
+    #
+    # This asked only for `nexeo-loop.sh`, so a pulse run by the watcher — which is every
+    # 10-minute pulse and every "Heal now" — counted as dead, and its open Chat Analysis row
+    # rendered `abandoned` while the analyst was demonstrably reading. Owner, 2026-08-20: "it
+    # should start analyzing under Healing Pulse Phases and build & deploy also."
+    #
+    # Matched per argv element rather than by substring, the same way stage() does it, because
+    # an agent carrying a script's NAME in its prompt has fooled a substring test in this file
+    # three times.
+    _pulse_scripts = ("nexeo-loop.sh", "watch-conversations.sh", "heal-now.sh",
+                      "run-chat-analysis.sh", "nightly-iteration.sh")
+    loop_alive = any(any(tok.endswith(n) for tok in a.split() for n in _pulse_scripts)
+                     for _, a in procs())
     if current is None and loop_alive:
         for ph in reversed(PHASE_ORDER):
             p_ = phases.get(ph, {})
