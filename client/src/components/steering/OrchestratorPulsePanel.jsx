@@ -40,6 +40,12 @@ const STAGE_COLOR = {
   SCORING: 'var(--op-score)',
   STALLED: 'var(--op-stalled)',
   IDLE: 'var(--op-idle)',
+  // A live pulse now has its own two stages. Without these it fell through to the idle grey
+  // while genuinely working — owner, 2026-08-20: "only see 'started' and nothing happening
+  // on screen." The analyst reads for ~2m19s, so grey for that long reads as a dead button.
+  ANALYZING: 'var(--op-score)',
+  PULSING: 'var(--op-build)',
+  WAITING: 'var(--op-idle)',
 };
 const PHASE_COLOR = {
   // Owner, 2026-08-17: scoring moved to the front and renamed. It runs BEFORE the
@@ -989,9 +995,14 @@ export default function OrchestratorPulsePanel() {
       // prose note is dropped; the phases below are the answer, and they are refreshed on a
       // short ladder because the ambient poll is 30s and the first phase event lands in
       // about five seconds.
-      setHealMsg('started');
+      // Poll for the first two minutes. Chat Analysis takes ~2m19s and the ambient poll is
+      // 30s, so a click could sit on "started" for half a minute with nothing moving —
+      // which is exactly what he reported at 01:17 PKT.
+      setHealMsg(force ? 'started — will build even if the ranking is unchanged'
+                       : 'started — reading your conversations now');
       load();
-      [4000, 12000, 25000].forEach((ms) => setTimeout(load, ms));
+      [3000, 8000, 15000, 25000, 40000, 60000, 90000, 120000]
+        .forEach((ms) => setTimeout(load, ms));
     } catch (e) {
       // Say what failed. A silent button is how a dead trigger looks identical to a
       // working one — and the route is unreachable until the server is deployed.

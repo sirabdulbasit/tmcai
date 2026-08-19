@@ -143,7 +143,10 @@ router.post('/heal', requireAdmin, (req: Request, res: Response) => {
     return;
   }
   const args: string[] = [HEAL_SCRIPT];
-  if (req.body?.force === true) args.push('--force');
+  // heal-now.sh forces the READ by default now, so `force` from the UI means the stronger
+  // thing: build even when the ranking has not moved. Owner, 2026-08-20: a click that
+  // returned in a second and changed nothing on screen read as a dead button.
+  if (req.body?.force === true) args.push('--build-anyway');
   const cap = typeof req.body?.capability === 'string' ? req.body.capability.trim() : '';
   if (cap) {
     if (!NINE_CAPABILITIES.has(cap)) {

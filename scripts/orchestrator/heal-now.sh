@@ -31,11 +31,22 @@ set -uo pipefail
 ROOT="/var/www/tmcai"
 STATE="$ROOT/server/docs/orchestrator/state"
 
-FORCE=0
+# ALWAYS RE-READ. Owner, 2026-08-20 01:17 PKT, having clicked Heal now: "it should start
+# analyzing the chat but only see 'started' and nothing happening on screen."
+#
+# The button used to run without --force, so on a tick with no new message the watcher
+# exited at the watermark check in about a second — correct for a 10-minute cron, wrong for
+# a person who just asked. A deliberate click means "read it now", so the harvest and the
+# analysis always run. It is the BUILD that stays conditional, and --build-anyway is what
+# lifts that.
+FORCE=1
+BUILD_ANYWAY=0
 CAP=""
 for a in "$@"; do
   case "$a" in
     --force) FORCE=1 ;;
+    --no-force) FORCE=0 ;;
+    --build-anyway) BUILD_ANYWAY=1 ;;
     *) CAP="$a" ;;
   esac
 done
@@ -62,6 +73,11 @@ fi
 # 2026-08-19, and which reads as "the cron did nothing".
 #
 # The concurrency guard is still NOT waived. One builder in one tree, ever.
+if [ "$BUILD_ANYWAY" = "1" ]; then
+  echo "heal-now: FORCE — will build even if the ranking is unchanged, and the manual cap is lifted"
+  export NEXEO_WATCH_ALWAYS_BUILD=1 NEXEO_WATCH_MAX_MANUAL=99
+fi
+
 echo "heal-now: starting a conversational pulse (auto caps waived — manual budget applies)"
 NEXEO_WATCH_MANUAL=1 NEXEO_WATCH_MIN_GAP_MIN=0 \
   exec bash "$ROOT/scripts/orchestrator/watch-conversations.sh"

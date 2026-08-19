@@ -258,6 +258,41 @@ def detect_stage():
     if rev and rev_age < FRESH_S:
         return "REVIEWING", rev_age, "logfile", os.path.basename(rev)
 
+    # A PULSE IS RUNNING AND THE PANEL COULD NOT SEE IT.
+    #
+    # Owner, 2026-08-20 01:17 PKT, having clicked Heal now: "it should start analyzing the
+    # chat but only see 'started' and nothing happening on screen." The pulse WAS running —
+    # a chat analyst was in the process table at that moment — and the deck said WAITING,
+    # because the only live-work matchers here were for `tsc`, `vitest` and the three agent
+    # seats. The orchestrator's OWN scripts had no matcher, so a pulse launched by cron or
+    # by his click was invisible for its whole first stage.
+    #
+    # Matched on the script's argv, an element at a time, because a substring test against a
+    # joined command line is what this file has already been burned by three times: an agent
+    # carrying a prompt that NAMES a script matched as if it were running it.
+    # MOST SPECIFIC STAGE WINS, in two passes. A conversational pulse runs the analyst as a
+    # CHILD of the watcher, so both are in the table at once — and a single pass returns
+    # whichever the kernel listed first, which meant "checking for new turns" while the
+    # analyst had been reading for two minutes. The inner work is the informative fact.
+    def _elapsed_of(names):
+        for _et, _arg in ps:
+            _argv = _arg.split()
+            if any(a.endswith(n) for a in _argv for n in names):
+                return _et
+        return None
+
+    _inner = _elapsed_of(["run-chat-analysis.sh"])
+    if _inner is not None:
+        return ("ANALYZING", _inner, "process",
+                "reading your conversations with Brain (all tenants, last 14 days)")
+    _outer = _elapsed_of(["watch-conversations.sh", "heal-now.sh"])
+    if _outer is not None:
+        return ("PULSING", _outer, "process",
+                "conversational pulse: checking for new turns, then analysing")
+    _full = _elapsed_of(["nexeo-loop.sh", "nightly-iteration.sh"])
+    if _full is not None:
+        return ("PULSING", _full, "process", "full evaluation pulse running")
+
     quiet = f", Builder quiet for {fmt_dur(age)}" if age is not None else ""
     # WAITING, not IDLE — owner, 2026-08-18: "idle is nothing." Under cron there is no
     # such thing as idle: either a pulse is running or the next one is due at a time we

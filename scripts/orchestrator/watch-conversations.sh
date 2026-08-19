@@ -75,10 +75,12 @@ fi
 NEW_HASH="$(sha256sum "$STATE/chat-root-causes.md" 2>/dev/null | awk '{print $1}')"
 printf '%s' "$NEW_HASH" > "$ROOTS_HASH"
 
-if [ "$NEW_HASH" = "$PREV_HASH" ]; then
+if [ "$NEW_HASH" = "$PREV_HASH" ] && [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" != "1" ]; then
   say "conversation was new but the root causes did not change — analysed, no build"
   exit 0
 fi
+[ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" = "1" ] && [ "$NEW_HASH" = "$PREV_HASH" ] && \
+  say "root causes unchanged, but ALWAYS_BUILD is set — a person asked for a build anyway"
 say "root causes CHANGED — a build may be warranted"
 
 # ── 3. BUILD. Guarded, because this is the expensive stage. ──────────────────────────
