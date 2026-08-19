@@ -703,6 +703,29 @@ def observed_gaps(top=6):
     # from the system rather than a label somebody chose afterwards.
     counts = {}
     last_seen_map = {}
+    # OCCURRENCES SINCE THE LAST FIX SHIPPED — the only number that answers the owner's
+    # actual question.
+    #
+    # Owner, 2026-08-19: "if x21 times mean this occure 21 times and still i am seeing
+    # this means cron is unable to fix it, cron is not here to provide me stats, the
+    # primary job of cron is to analyze and fix the things and then provide stat if any."
+    #
+    # He is right, and a total count cannot answer it. Of the 21 canned-denial replies and
+    # 16 dispatch failures on this panel, every single one landed BEFORE the fix went out
+    # at 13:14 UTC — the last of them ten minutes before. Presented as bare totals the two
+    # cases are indistinguishable: a defect the cron already closed looks exactly like one
+    # it keeps missing. I misread my own panel that way minutes after building it.
+    #
+    # So each row now carries how many times it happened AFTER the most recent deploy.
+    # since > 0 is the real alarm: a shipped fix that did not hold, which the change-log
+    # protocol calls CIRCLING and which forbids another patch on the instance.
+    since_map = {}
+    try:
+        deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
+    except Exception:
+        deployed_at = 0
+    deployed_utc = (time.strftime("%Y-%m-%d %H:%M", time.gmtime(deployed_at))
+                    if deployed_at else None)
     # WHEN the transcript was read, and how far back — owner, 2026-08-19: "here also
     # mention the time from where you read the conversation." A count with no window is
     # unreadable: "x14" means nothing until you know whether that is fourteen days or one
@@ -712,6 +735,32 @@ def observed_gaps(top=6):
     if os.path.exists(live):
         try:
             txt = open(live, errors="replace").read()
+            # THE LIVE ROWS NEED TAGS TOO, or they can never be marked fixed.
+            #
+            # Rows keyed by an English sentence are matched against commit messages that
+            # speak in tags and DEF ids, so no commit ever matched one: DEF-232 shipped at
+            # 13:14 and the row it closed still read "open" on the deck. The commit matcher
+            # was never wrong — the two sides had no shared vocabulary. Each signature now
+            # declares the ids and tags that count as ITS fix.
+            sig_tags = {
+                'You confirmed a plan and it could not execute it':
+                    {"DEF-232", "confirm-misfires", "plan-step-not-dispatchable"},
+                # DELIBERATELY NOT mapped to DEF-232, and not to `fabricated-status`
+                # either. This sentence is answerSanitizer.ts:46 rendering the
+                # `[no action dispatched]` marker — a symptom RENDERER, not a defect. It
+                # fires whenever nothing was dispatched, and DEF-232 removed only one of
+                # the reasons nothing gets dispatched. Mapping it there would strike 21
+                # occurrences off his list on my inference that one cause was the only
+                # cause. `fabricated-status` is worse: 16 commits name it and he was still
+                # hit 21 times, which is the definition of CIRCLING — marking it shipped
+                # would print the exact false "fixed" this panel exists to prevent.
+                'Replied "Hold on — I hadn\'t actually done that yet" instead of acting':
+                    {"canned-hold-on-denial"},
+                'Gave up: "I couldn\'t put together an answer I trust"':
+                    {"guard-destroys-the-answer"},
+                'Asked you to clarify again after you had already answered':
+                    {"confirm-misfires"},
+            }
             sigs = [
                 (r"Hold on — I hadn.t actually done that yet",
                  'Replied "Hold on — I hadn\'t actually done that yet" instead of acting'),
@@ -750,6 +799,15 @@ def observed_gaps(top=6):
                 if hits:
                     counts[name] = len(hits)
                     last_seen_map[name] = _last_seen(hits[-1].start())
+                    globals()["_SIG_TAGS"] = sig_tags
+                    if deployed_utc:
+                        # The session heading is UTC and so is the dist mtime, so these
+                        # compare directly as strings. Getting this wrong by five hours in
+                        # the PKT direction is what made a closed defect look open.
+                        since_map[name] = sum(
+                            1 for h in hits
+                            if (_last_seen(h.start()) or "") > deployed_utc)
+            out["deployed_utc"] = deployed_utc
         except Exception:
             pass
     # The curated archive's tags are kept as well: they carry the recurrence vocabulary
@@ -784,10 +842,6 @@ def observed_gaps(top=6):
                                      capture_output=True, text=True, timeout=8).stdout
             except Exception:
                 log = ""
-            try:
-                deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
-            except Exception:
-                deployed_at = 0
             # TWO VOCABULARIES, ONE CONCEPT. The archive says `capability-fabrication`;
             # the recurrence table and every commit say `fabricated-status`. Same
             # defect, different string — so the deck showed all six as open while the
@@ -815,6 +869,9 @@ def observed_gaps(top=6):
                                            "send-fabrication"},
                 "fabricated-status": {"fabricated-status", "capability-fabrication"},
             }
+            # The live sentences, folded in as their own alias groups.
+            for _sig, _tags in globals().get("_SIG_TAGS", {}).items():
+                aliases.setdefault(_sig, set()).update(_tags)
             try:
                 roots = open(os.path.join(STATE, "chat-root-causes.md"),
                              errors="replace").read()
@@ -859,9 +916,17 @@ def observed_gaps(top=6):
                         built_tags.add(t)
                         if deployed_at and int(ts) <= deployed_at:
                             shipped_tags.add(t)
+            def _state(k):
+                # An occurrence AFTER the deploy outranks every other signal. The commit
+                # said it closed the class; the transcript says the owner hit it anyway.
+                # The transcript wins — it is the only source that is not a claim.
+                if since_map.get(k):
+                    return "regressed"
+                if k in shipped_tags:
+                    return "shipped"
+                return "built" if k in built_tags else "open"
             out["chat"] = [{"tag": k, "times": v, "last_seen": last_seen_map.get(k),
-                            "state": ("shipped" if k in shipped_tags
-                                      else "built" if k in built_tags else "open")}
+                            "since": since_map.get(k), "state": _state(k)}
                            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
         except Exception:
             pass

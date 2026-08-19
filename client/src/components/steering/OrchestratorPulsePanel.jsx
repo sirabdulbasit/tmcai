@@ -1380,17 +1380,32 @@ export default function OrchestratorPulsePanel() {
                          after a slug made that unreadable. A count with no recency also
                          cannot separate a defect that hit him an hour ago from one last
                          seen ten days ago. */
+                      /* THE VERDICT, not the tally. Owner, 2026-08-19: "cron is not here
+                         to provide me stats, the primary job of cron is to analyze and fix
+                         the things and then provide stat if any." So each row leads with
+                         where it stands against the last deploy: NOT FIXED when nothing
+                         shipped for it, STILL HAPPENING when something shipped and he was
+                         hit anyway, fixed when it shipped and has not recurred. The total
+                         count drops to the end, where a stat belongs. */
                       <li key={c.tag} className={`is-${c.state || 'open'}`}
-                          title={c.state === 'shipped' ? 'a shipped fix names this'
-                                 : c.state === 'built' ? 'fixed, not shipped — you can still hit this'
-                                 : 'still open'}>
-                        <b>{c.times}×</b> {c.tag}
-                        {c.last_seen && (
-                          <span className="orch-progress-of">
-                            {' '}· last {pktStamp(String(c.last_seen).replace(' ', 'T') + 'Z')}
-                          </span>
-                        )}
-                        {c.state === 'built' && <span className="orch-tag-state"> built</span>}
+                          title={c.state === 'regressed'
+                                   ? 'a fix shipped for this and it happened again afterwards'
+                                 : c.state === 'shipped' ? 'a shipped fix names this; not seen since'
+                                 : c.state === 'built' ? 'fixed but not shipped — you can still hit this'
+                                 : 'nothing shipped for this yet'}>
+                        <span className="orch-verdict">
+                          {c.state === 'regressed' ? 'STILL HAPPENING'
+                           : c.state === 'shipped' ? 'fixed'
+                           : c.state === 'built' ? 'built' : 'NOT FIXED'}
+                        </span>
+                        {' '}{c.tag}
+                        <span className="orch-window-note">
+                          {' '}· {c.times}× {c.since > 0
+                            ? `, ${c.since}× since the fix`
+                            : c.state === 'shipped' ? ', none since the fix' : ''}
+                          {c.last_seen &&
+                            ` · last ${pktStamp(String(c.last_seen).replace(' ', 'T') + 'Z')}`}
+                        </span>
                       </li>
                     ))}
                   </ul>
