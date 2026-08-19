@@ -113,7 +113,14 @@ export async function countGeminiTokens(
 export async function callGemini(
   systemPrompt: string,
   userMessage: string,
-  opts?: { maxTokens?: number; flash?: boolean; responseMimeType?: string },
+  opts?: {
+    maxTokens?: number; flash?: boolean; responseMimeType?: string;
+    /** Tokens the model may spend REASONING before it answers. Additive to maxOutputTokens,
+     *  so raising it never shortens the reply. Ignored on Flash, which accepts only 0.
+     *  Default 128 — the minimum Pro accepts — because most callers classify rather than
+     *  reason and thinking tokens are billed. */
+    thinkingBudget?: number;
+  },
 ): Promise<string> {
   if (!env.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
   const modelId = opts?.flash ? (await activeModels()).flash : (await activeModels()).pro;
@@ -151,9 +158,31 @@ export async function callGemini(
   // still accepts 0. So: Flash → 0 (fast chat), Pro → 128 (minimum
   // non-zero so the call doesn't 400, but small enough that thinking
   // tokens don't eat the output budget).
+  // BRAIN THINKS BEFORE IT ANSWERS — owner, 2026-08-19: "LLM should be thinking model of
+  // brain."
+  //
+  // It was not thinking. Pro ran with `thinkingBudget: 128`, which is the smallest value the
+  // model accepts without a 400 — chosen because thinking tokens are billed against
+  // maxOutputTokens, so a real budget starved the answer and produced truncation. The two
+  // were competing for one pool, and the answer won by making the thinking negligible.
+  //
+  // They no longer compete: the thinking budget is ADDED to the answer's room instead of
+  // subtracted from it. The answer keeps every token it had.
+  //
+  // OPT-IN PER CALL, and this is the load-bearing part. `callGemini` serves `triage`
+  // (58,539 Pro calls in 14 days) as well as the conversational path (64). A global raise
+  // would have added roughly 120M billed thinking tokens for work that classifies rather than
+  // reasons. So the default stays exactly where it was and only callers that ASK get a real
+  // budget.
   const requested = opts?.maxTokens ?? 1024;
-  const effectiveMax = Math.max(2048, requested);
-  const thinkingBudget = opts?.flash ? 0 : 128;
+  const answerRoom = Math.max(2048, requested);
+  // FLOORED, not just defaulted. `?? 128` only fills in null/undefined, so a caller passing
+  // `thinkingBudget: 0` on Pro would have sent 0 — which this model rejects outright
+  // ("Budget 0 is invalid. This model only works in thinking mode", observed on a real
+  // WhatsApp turn 2026-05-20). Found by the test asserting the floor rather than by the
+  // change itself.
+  const thinkingBudget = opts?.flash ? 0 : Math.max(128, opts?.thinkingBudget ?? 128);
+  const effectiveMax = answerRoom + (opts?.flash ? 0 : thinkingBudget);
   const resp = await ai.models.generateContent({
     model: modelId,
     contents: [{ role: 'user', parts: [{ text: userMessage }] }],

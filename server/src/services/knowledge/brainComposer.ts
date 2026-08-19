@@ -3341,6 +3341,16 @@ ${calLines.join('\n')}`;
     try {
       const r = await callLLM(systemPrompt, userMessage, {
         maxTokens: 2048,
+        // BRAIN THINKS BEFORE IT ANSWERS — owner, 2026-08-19: "LLM should be thinking model
+        // of brain." This path ran with the minimum budget Pro accepts (128 tokens), which
+        // is thinking in name only. It is additive to maxTokens, so the reply loses nothing.
+        //
+        // Set HERE and not in the service, because `callGemini` also serves `triage` — 58,539
+        // Pro calls in 14 days against this path's 64. Thinking tokens are billed, so the
+        // budget goes where the reasoning actually happens: the turn that decides what to do
+        // for the owner. At 64 calls a fortnight this is ~131k thinking tokens, against the
+        // ~120M a global default would have added.
+        thinkingBudget: 4096,
         userId, clientNumber, purpose: 'chat_compose',
       });
       raw = r.text;

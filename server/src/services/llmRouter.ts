@@ -22,6 +22,12 @@ export interface CallLlmResult {
 
 export interface CallLlmOpts {
   maxTokens?: number;
+  /** Tokens the model may spend REASONING before answering (Gemini Pro only; Flash accepts
+   *  only 0, Claude ignores it). Additive to maxTokens, so raising it never shortens the
+   *  reply. Owner ruling, 2026-08-19: "LLM should be thinking model of brain" — the
+   *  conversational path sets this; classifiers deliberately do not, because thinking tokens
+   *  are billed and `triage` alone makes 58k Pro calls a fortnight. */
+  thinkingBudget?: number;
   /** Preferred order. Default: ['gemini', 'gemini-flash', 'claude']. */
   providers?: LlmProvider[];
   /** Hard timeout per provider attempt (ms). Default 15000. */
@@ -61,12 +67,13 @@ async function callProvider(
   systemPrompt: string,
   userMessage: string,
   maxTokens?: number,
+  thinkingBudget?: number,
 ): Promise<string> {
   switch (provider) {
     case 'claude':
       return await callClaude(systemPrompt, userMessage, { maxTokens });
     case 'gemini':
-      return await callGemini(systemPrompt, userMessage, { maxTokens });
+      return await callGemini(systemPrompt, userMessage, { maxTokens, thinkingBudget });
     case 'gemini-flash':
       return await callGemini(systemPrompt, userMessage, { maxTokens, flash: true });
   }
@@ -93,7 +100,8 @@ export async function callLLM(
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await withTimeout(
-          () => callProvider(provider, systemPrompt, userMessage, opts?.maxTokens),
+          () => callProvider(provider, systemPrompt, userMessage, opts?.maxTokens,
+                                 opts?.thinkingBudget),
           timeoutMs,
         );
         if (text && text.trim().length > 0) {

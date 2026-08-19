@@ -700,13 +700,31 @@ def _signature_rows():
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) < 3:
             continue
-        label, fragment, tag = cells[0], cells[1], cells[2]
+        # FIRST cell is the label, LAST is the tag, everything between is fragments.
+        #
+        # Not cells[1] and cells[2]: my own prompt asked for multiple wordings separated by
+        # " | " inside a table whose delimiter is "|", so a real row came back as four cells
+        # and the tag column held a fragment of a sentence. Reading from both ends survives
+        # that, and survives a quote from Brain that simply contains a pipe.
+        label, tag = cells[0], cells[-1]
+        middle = cells[1:-1]
         # Skip the header and the markdown separator row.
-        if set(fragment) <= set("-: ") or fragment.lower().startswith("verbatim"):
+        if all(set(c) <= set("-: ") for c in middle) or (
+                middle and middle[0].lower().startswith("verbatim")):
             continue
-        if not label or not fragment:
+        frags = []
+        for c in middle:
+            # " OR " is what the prompt now asks for; " | " is still honoured because the
+            # analyst may be mid-transition between prompt versions.
+            for f in re.split(r"\s+OR\s+", c):
+                # Trailing backslashes are markdown table escaping, not part of Brain's
+                # sentence — one real row came back ending in one, and a literal match
+                # including it would silently count zero.
+                f = f.strip().rstrip("\\").strip().strip('"').strip()
+                if f:
+                    frags.append(f)
+        if not label or not frags:
             continue
-        frags = [f.strip() for f in fragment.split("|") if f.strip()]
         rows.append((label, frags, tag))
     return rows
 

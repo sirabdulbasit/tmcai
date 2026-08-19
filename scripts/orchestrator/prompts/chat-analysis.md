@@ -221,7 +221,7 @@ End your output with this section, exactly this shape, machine-read by `pulse.py
 ## SIGNATURES
 | what the owner saw | verbatim fragment | tag |
 |---|---|---|
-| Said it had not run the action, instead of running it | I didn't run anything just now | canned-hold-on-denial |
+| Said it had not run the action, instead of running it | I didn't run anything just now OR I hadn't actually done that yet | canned-hold-on-denial |
 | You confirmed a plan and it could not execute it | no dispatcher for this action | DEF-232 |
 ```
 
@@ -231,8 +231,9 @@ Rules for it, and they are the difference between a deck that informs him and on
   of the previous version: *"still gaps are totally meaningless for me."*
 - **Column 2 is a fragment of BRAIN'S OWN REPLY, copied verbatim from the transcript** — never
   a phrase you composed. It is what makes the count checkable against the file.
-- **Include EVERY wording of the same mechanism**, separated by ` | `, when a fix has reworded
-  it. One mechanism is one row: two rows for one mechanism double-count, and dropping the old
+- **Include EVERY wording of the same mechanism**, separated by ` OR ` — never by `|`, which
+  is the table's own delimiter and would split your row into extra columns — when a fix has
+  reworded it. One mechanism is one row: two rows for one mechanism double-count, and dropping the old
   wording makes the history vanish the moment someone rewords the sentence.
 - **Column 3 is the DEF id or symptom tag whose fix would close it.** If nothing has been built
   for it, write the symptom tag alone — never a DEF id that fixed something adjacent. The deck
