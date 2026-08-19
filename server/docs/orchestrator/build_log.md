@@ -160,3 +160,117 @@ the dispatcher-set unification (`DISPATCHABLE_PLAN_STEP_KINDS` `brainComposer.ts
 `IMMEDIATE_INTERNAL_ACTION_TYPES` `:211`, rejection `:2670` — ~13 owner-facing hits,
 re-verified live this session; derive both sets from the dispatcher's real case labels),
 then the C4 register mechanism (B02/B06/B10/B12), then composer budget awareness.
+
+## Iteration 9 — 2026-08-19
+
+**Remediation turn (attempt 2 of 3): "Iteration 4's review closed WRONG."** The review
+log's only `## Iteration 4` section is the DEF-186 self-prune notice outbox review. Every
+one of its numbered risks was closed by a LATER commit that is an ancestor of the recorded
+deploy SHA `41381db` — verified this turn against the code at HEAD, finding by finding,
+with the mechanism read rather than the commit message trusted:
+
+| Iteration 4 finding | Closed by | Where it stands at HEAD |
+|---|---|---|
+| CRITICAL 1 — revalidation not atomic with enqueue; a restored item could still be announced | `2acb272` (DEF-208) | `settleBatch` holds final revalidation, per-row claim CAS on (tenant, user, id, status, updatedAt), the queue insert ON THE SAME `tx`, and the batch sent-mark in ONE `prisma.$transaction` (`openItemsBacklogCleanupJob.ts:742-829`); `enqueueBrainPrompt` accepts `tx` (`brainPromptQueueService.ts:84,152,421`). A restore that commits first makes the claim match nothing; one that arrives later serialises behind it. Dispatch is deliberately outside — a queued row, not a sent message, so nothing rolls back a WhatsApp send. `def208TransactionalEnqueue.test.ts` covers it. |
+| HIGH 2 — a sent batch permanently consumed an item id, erasing a later withdrawal event | `417b4a2` (DEF-202) + migration `20260817_self_prune_notice_event_tokens` | Identity belongs to the withdrawal EVENT: a token is minted when the debt is recorded (`:184`), batches claim by token (`:579-582`), and `clearOwedFlags` refuses to clear a later event's flag (`:880-887`). A restored-and-re-withdrawn item carries a NEW token and forms a new batch. |
+| HIGH 3 — concurrent dispatch could create two sendable batches (uniqueness only on random dedup_key) | `417b4a2` (DEF-202) | The dedup key is now DETERMINISTIC from the sorted member event tokens (`:652-659`), so the existing unique index IS the ownership constraint — the second writer collides and stands down (`:672-681`). Any residual overlap is serialised row-by-row by the claim CAS inside the DEF-208 transaction. |
+| MEDIUM 4 — the 200-row cap could starve unclaimed debt behind failing clears | `41358ab` (DEF-209 paging) | The owed scan pages past claimed rows until it finds unclaimed debt, bounded by `OWED_SCAN_PAGES`, and says OUT LOUD when it stops with debt unread (`:611-643`). |
+| MEDIUM 5 — release evidence red | closed at THIS HEAD | The red pair was the orchestrator's own pulse-contract drift; the pulse committed its WIP in `81ba131` this session and the full matrix is now green (numbers below). |
+| MEDIUM 6 — measured C4 untouched | out of scope, per the review's own §6 | Assigned to "a fresh iteration" by the directive itself; named as a residual, not smuggled in here. |
+| Directive 5 — settings authority through mutating background callers; tenant-scoped delegation enumeration | `bb0cf57` (DEF-191) | `delegationFollowUpJob` resolves via `resolveOpenItemsSettings`; `no_user` HOLDS the item with a loud log, never inherits defaults (`:196-207`); the only cross-tenant read is the tenant REGISTRY, and every item query carries the tenant (`runDelegationFollowUpForTenant`). This also closes the review's carried finding 3b.1. |
+
+All seven closing commits (`08237bb e441723 8576274 bb0cf57 417b4a2 2acb272 41358ab`) are
+ancestors of `41381db` — these closures are recorded-deployed, not merely committed.
+
+**What else this turn did — the release-blocking governance debt.** The chat analyst named
+it verbatim: "DEF-232/233/234/235 are all UNLOGGED in brain_change_log.md (three-document
+protocol violated: commits without DEF rows)" and "log DEF-232–235 with the correct
+deployed-sha". Done: four rows added to `brain_change_log.md` §A (above DEF-231), each with
+its capability block, falsifier, and symptom tag where one exists (`phantom-capability` on
+DEF-232 and DEF-234; the others state plainly that no deck tag applies).
+
+**And the deployed-sha discrepancy the analyst said the deploy seat must reconcile — RESOLVED
+READ-ONLY, with evidence** (production-identity procedure, no mutation, `--no-optional-locks`):
+
+- `server/dist` was REBUILT 2026-08-19 **20:50:06 UTC** and `tmcai-server` (pid 1154972,
+  restarts 54) started 2026-08-19 **20:50:08 UTC** — two seconds later. PRODUCTION_OBSERVED.
+- The artifact contains `internalActionExecutors.js` (exists only after DEF-232) and the
+  DEF-034(a) wording — so the running code is POST-`41381db`. Artifact source class:
+  the `23e255b` src tree (`f061cd90…`), i.e. everything through DEF-232/233/234/235 and
+  DEF-034, but NOT DEF-236 (committed 21:13, after the build). STRONGLY_INFERRED (node
+  loads at require-time; clone-rebuild reproduction still owed by the deploy seat).
+- `state/deployed-sha` still says `41381db` (recorded 08-18 17:06Z) and the live dist
+  manifest `3bf7a691…` matches NO entry in `state/deploy-manifests`. **The record is wrong,
+  not the analyst's transcript reading.** `dist` is currently `chattr +i` again.
+- Consequence for the deck: DEF-034(a)'s falsifier window and the `since` counters must be
+  measured from 20:50Z (or from the earlier unrecorded restart, if any — S35 16:36 predates
+  this build, so EITHER an earlier unrecorded artifact carried it or the model phrased the
+  OLD curated fact similarly; not established, and said so rather than guessed).
+- **This unrecorded build/restart violates the deploy protocol** (no manifest verify, no
+  evaluation-chart row, no owner report, `deployed-sha` not moved). The actor is the
+  orchestrator's own pulse ("approving its own build", `647a8d4`; "a click can actually
+  build", `d2d73e1`). `scripts/orchestrator/**` is forbidden to me — the orchestrator must
+  reconcile the record and bring its pulse deploys under `deploy.sh`'s bookkeeping.
+
+**fixQueue entry targeted:** none, and here is why rather than silence — this is a
+remediation turn and the campaign is suspended; the brief forbids new product surface. The
+worst fixQueue entry (B07 C1/C6/C7 60: "Both items are marked as CANCELLED" contradicting
+"outstanding") is real and untouched; it belongs to the next fresh turn.
+
+**Verification (from `server/`, measured AFTER the last code-affecting state, at HEAD
+`81ba131` + this turn's two doc files):**
+- `npx tsc --noEmit` → exit **0**
+- `npx vitest run` → **229 passed | 1 skipped** files (230); **2849 passed | 0 failed**
+  (7 expected fail | 21 skipped | 1 todo, of 2878)
+- `git diff --check` → clean (run after the final edit of this entry)
+- `npm run build` NOT run in this tree — `server/dist` is `chattr +i` and is the running
+  production artifact (CLAUDE.md); `--noEmit` is the build check. No `server/src` file
+  changed this turn, so artifact identity is untouched by me.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0
+**MECHANISM:** no product code changed; the turn closes the Iteration 4 review by evidence,
+pays the three-document debt on four shipped-in-fact commits, and establishes production
+identity so the next deploy is measured against what is actually running.
+**FALSIFIER:** any cited closure line not containing what this entry claims; or the live
+dist manifest matching a recorded entry after all (I could not make it match any of the
+last five).
+
+**TARGET divergence, said explicitly:** the brief's target placeholder is malformed
+("Simple @@TARGETCAP@@ Smart" — known orchestrator defect) and reads as Simple & Smart.
+This turn does not move it: remediation wins on scope, campaign suspended. RELIABILITY-ONLY
++0 is the honest declaration, not a productivity claim.
+
+**Symptom tag:** `phantom-capability` — partly closed, and precisely in this sense: the
+shipped fixes (`010b130`, `76003a2`) predate the name-the-tag rule and never carried it;
+this turn's DEF-232/DEF-234 rows and commit carry it on their behalf so the deck can link
+reported→shipped. The three OPEN deck tags in the brief (the "reply send" demand, the
+undeletable draft item, the verify-first magic word) are NOT closed by this turn — their
+fixes are DEF-034(b) (not built), the DRAFT lifecycle floor (DEF-236 landed 21:13, row
+still owed), and the confirmation-suppression class (DEF-151/161, open).
+
+**Governing-docs verdict (rule 5):** the *turn itself* is accounting — neither progressing
+nor circling. The four rows it logs: DEF-232/234 are the 17th recorded `phantom-capability`
+occurrence closed STRUCTURALLY (gate derived from the dispatcher — the chart's §3 demanded
+exactly that after the count reached 17); DEF-233/235 are new root causes (progressing).
+
+**What I did NOT do, and am unsure about:**
+- DEF-034(b) read-back-before-any-state-claim — the analyst's #1 — NOT built (structural,
+  forbidden scope this turn). The DRAFT-delete fabrication (his item 1) therefore still
+  stands in production.
+- DEF-236 (DRAFT joins the lifecycle, committed by the pulse at 21:13 during this session)
+  has NO change-log row — owed by its author or the next turn; I did not write it to avoid
+  racing the pulse's own bookkeeping.
+- The S35/S37 wording-provenance question is narrowed, not closed (see above).
+- Operator directives D-5/D-11/D-1 etc. not advanced this turn — remediation wins on scope;
+  D-11 is in fact moving via DEF-236, which is its prescribed structural fix.
+- Unsure: whether the 20:50Z artifact was built from committed `23e255b` exactly or from a
+  tree with uncommitted drift — only a clone rebuild against the manifest can settle it.
+
+**Honest prediction:** no benchmark criterion moves (docs only). What would prove this turn
+wrong: Codex finding a cited mechanism absent at HEAD, or the deploy seat reproducing the
+manifest from `41381db` (which would mean my production-identity reading is wrong).
+**Deployable at the end of this turn?** The matrix at this HEAD is green and the Iteration 4
+findings are closed, so YES on the reviewed surface — but the deploy must FIRST reconcile
+the unrecorded 20:50Z deploy (deployed-sha, manifest ledger, evaluation-chart row), or it
+will be measured against a baseline production is no longer running.
