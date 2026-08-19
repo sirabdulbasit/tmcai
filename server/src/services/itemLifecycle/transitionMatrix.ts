@@ -38,9 +38,28 @@ export type ItemStatus =
   // and decisions get changed; a terminal cancel would make "actually, put that
   // back" impossible and push the owner toward re-creating the item, losing its
   // history.
-  | 'CANCELLED';
+  | 'CANCELLED'
+  // DEF-236 — see the note on ALL_STATUSES. A draft is an item whose slots are not yet
+  // filled; it is the START of a life, not a phase of one, so it has no way IN.
+  | 'DRAFT';
 
 export const ALL_STATUSES: readonly ItemStatus[] = [
+  // DEF-236 — DRAFT was a live status the lifecycle had never heard of.
+  //
+  // Owner, 2026-08-20, on a red deck row: "Couldn't delete the draft item, with no reason he
+  // could act on", 3 occurrences and 2 of them AFTER a fix shipped. Brain told him "one of
+  // the items was a draft, and my removal process has a bug" — and it was telling the truth:
+  // `isValidStatus('DRAFT')` was false, so `lifecycleService` refused every transition with
+  // "current status DRAFT is not in the v15 lifecycle — migrate first". His most-repeated
+  // request died on it.
+  //
+  // NOT a legacy row to be migrated away, which is what "migrate first" invites. DRAFT is a
+  // first-class product concept: `openItemDraftAskJob` runs DAILY over exactly these items to
+  // fill their missing slots over WhatsApp, and `update_open_item` is documented as
+  // "typically used to complete DRAFT items by filling priority/dueDate". The gate creates
+  // them deliberately. Migrating the row would have hidden the class and broken that job,
+  // and the next draft would have failed identically.
+  'DRAFT',
   'NEW',
   'TRIAGED',
   'IN_PROGRESS',
@@ -68,13 +87,28 @@ export interface TransitionSpec {
 }
 
 /**
- * The 29 transitions. Count is exact — any change requires documenting why.
+ * The 32 transitions. Count is exact — any change requires documenting why.
+ *
+ * DEF-236 added 3: the three exits from `DRAFT`. Nothing enters DRAFT — the gate creates items
+ * there — so there is no way in to declare.
  *
  * DEF-129 added 8: seven ways INTO `CANCELLED` (every non-terminal state) and
  * one way back out of it. `CLOSED -> CANCELLED` is deliberately absent —
  * cancelling completed work would rewrite history rather than record a decision.
  */
 export const TRANSITIONS: readonly TransitionSpec[] = [
+  // From DRAFT (3) — DEF-236.
+  //
+  // Three, and only three, because a draft can do exactly three things: become a real item
+  // once its slots are filled, be abandoned, or be picked up directly. There is no way INTO
+  // DRAFT: the gate creates items there, it is where a life starts.
+  //
+  // CANCELLED and not CLOSED for the abandon path — the DEF-129 rule, and the whole reason
+  // that status exists. CLOSED would record work as completed that never happened, which is
+  // the fabricated-completion class written into the data instead of into a sentence.
+  { from: 'DRAFT', to: 'TRIAGED', guards: [], requiresApproval: false, description: 'Slots filled — the draft became a real item (openItemDraftAskJob or update_open_item)' },
+  { from: 'DRAFT', to: 'CANCELLED', guards: [], requiresApproval: false, description: 'Owner removed a draft he never completed — reversible, and never recorded as done' },
+  { from: 'DRAFT', to: 'IN_PROGRESS', guards: ['is_owner_or_agent'], requiresApproval: false, description: 'Owner started work on it without completing the slots first' },
   // From NEW (4)
   { from: 'NEW', to: 'TRIAGED', guards: [], requiresApproval: false, description: 'Curator/Triage classified the item' },
   { from: 'NEW', to: 'IN_PROGRESS', guards: ['is_owner_or_agent'], requiresApproval: false, description: 'Owner picked it up directly without triage' },
@@ -174,7 +208,11 @@ export function allFromTransitions(from: ItemStatus): TransitionSpec[] {
  * out of it (`CANCELLED -> TRIAGED`). This guard did its job — it caught the
  * change on the first test run — so it is being updated with reasoning rather
  * than loosened.
+ *
+ * DEF-236 raised it to 32: the three exits from `DRAFT`, a status the matrix had
+ * never listed while `openItemDraftAskJob` ran over it daily. This guard caught
+ * that change on the first test run too, exactly as designed.
  */
-if (TRANSITIONS.length !== 29) {
-  throw new Error(`transitionMatrix: expected 29 transitions, found ${TRANSITIONS.length}`);
+if (TRANSITIONS.length !== 32) {
+  throw new Error(`transitionMatrix: expected 32 transitions, found ${TRANSITIONS.length}`);
 }

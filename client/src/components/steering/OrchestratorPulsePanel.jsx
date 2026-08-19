@@ -44,7 +44,7 @@ const STAGE_COLOR = {
   // while genuinely working — owner, 2026-08-20: "only see 'started' and nothing happening
   // on screen." The analyst reads for ~2m19s, so grey for that long reads as a dead button.
   ANALYZING: 'var(--op-score)',
-  PULSING: 'var(--op-build)',
+  HEALING: 'var(--op-build)',
   WAITING: 'var(--op-idle)',
 };
 const PHASE_COLOR = {

@@ -270,6 +270,10 @@ def detect_stage():
     # Matched on the script's argv, an element at a time, because a substring test against a
     # joined command line is what this file has already been burned by three times: an agent
     # carrying a prompt that NAMES a script matched as if it were running it.
+    #
+    # HEALING, not PULSING — owner, 2026-08-20. The verb the deck shows should be the one the
+    # thing is FOR: this is the Healing Pulse, and "pulsing" describes its heartbeat rather
+    # than its purpose. ANALYZING stays as it is, because that stage really is only reading.
     # MOST SPECIFIC STAGE WINS, in two passes. A conversational pulse runs the analyst as a
     # CHILD of the watcher, so both are in the table at once — and a single pass returns
     # whichever the kernel listed first, which meant "checking for new turns" while the
@@ -287,11 +291,11 @@ def detect_stage():
                 "reading your conversations with Brain (all tenants, last 14 days)")
     _outer = _elapsed_of(["watch-conversations.sh", "heal-now.sh"])
     if _outer is not None:
-        return ("PULSING", _outer, "process",
+        return ("HEALING", _outer, "process",
                 "conversational pulse: checking for new turns, then analysing")
     _full = _elapsed_of(["nexeo-loop.sh", "nightly-iteration.sh"])
     if _full is not None:
-        return ("PULSING", _full, "process", "full evaluation pulse running")
+        return ("HEALING", _full, "process", "full evaluation pulse running")
 
     quiet = f", Builder quiet for {fmt_dur(age)}" if age is not None else ""
     # WAITING, not IDLE — owner, 2026-08-18: "idle is nothing." Under cron there is no
