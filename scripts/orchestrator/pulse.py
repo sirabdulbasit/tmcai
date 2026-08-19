@@ -702,6 +702,11 @@ def observed_gaps(top=6):
     # no tags — Brain's own failure sentence is the evidence, and it is his words back
     # from the system rather than a label somebody chose afterwards.
     counts = {}
+    # WHEN the transcript was read, and how far back — owner, 2026-08-19: "here also
+    # mention the time from where you read the conversation." A count with no window is
+    # unreadable: "x14" means nothing until you know whether that is fourteen days or one
+    # afternoon, and it is exactly how a stale panel passed for a live one for two weeks.
+    out["window"] = None
     live = os.path.join(STATE, "recent-chats.md")
     if os.path.exists(live):
         try:
@@ -712,6 +717,16 @@ def observed_gaps(top=6):
                 (r"couldn.t put together an answer I trust", "no-answer-produced"),
                 (r"I need to be sure what you mean", "re-asks-after-answer"),
             ]
+            m = re.search(r"harvested (\S+)", txt)
+            m2 = re.search(r"(\d+) turns · (DELTA since (\S+)|last (\d+) days)", txt)
+            first_session = re.search(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)
+            out["window"] = {
+                "harvested_at": m.group(1) if m else None,
+                "turns": int(m2.group(1)) if m2 else None,
+                "from": (m2.group(3) if (m2 and m2.group(3))
+                         else (first_session.group(1) + " UTC" if first_session else None)),
+                "span": (f"last {m2.group(4)} days" if (m2 and m2.group(4)) else "delta"),
+            }
             for pat, name in sigs:
                 n = len(re.findall(pat, txt))
                 if n:

@@ -1327,7 +1327,23 @@ export default function OrchestratorPulsePanel() {
                   </ul>
                 </div>
                 <div>
-                  <div className="orch-observed-h">Chat log · reported</div>
+                  <div className="orch-observed-h">
+                    Chat log · reported
+                    {/* Owner, 2026-08-19: "here also mention the time from where you read
+                        the conversation." A count with no window is unreadable — "x14"
+                        means nothing until you know whether that is a fortnight or one
+                        afternoon, and an unlabelled window is exactly how this panel
+                        passed for live while reading a file from Aug 5. */}
+                    {data.observed?.window?.harvested_at && (
+                      <span className="orch-progress-of">
+                        {' '}· {data.observed.window.turns} turns
+                        {data.observed.window.from
+                          ? ` from ${String(data.observed.window.from).replace('T', ' ').slice(0, 16)}`
+                          : ''}
+                        {' '}· read {String(data.observed.window.harvested_at).replace('T', ' ').slice(0, 16)} UTC
+                      </span>
+                    )}
+                  </div>
                   <ul className="orch-observed-list">
                     {(data.observed.chat || []).map((c) => (
                       /* Struck through only when a fix naming this tag has SHIPPED.
