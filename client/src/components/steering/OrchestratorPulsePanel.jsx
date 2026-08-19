@@ -1152,7 +1152,13 @@ export default function OrchestratorPulsePanel() {
               {stage}
             </div>
             <div className="orch-stage-timer">
-              {fmtDur(stage === 'IDLE' ? data.stage.elapsed : data.stage.elapsed + drift)}
+              {/* WAITING counts DOWN to the next pulse; every other stage counts UP.
+                  The local drift is added to keep a running timer smooth between polls —
+                  applied to a countdown it made the number GROW, so the deck showed the
+                  wait getting longer while the server was correctly counting down. */}
+              {fmtDur(stage === 'WAITING'
+                ? Math.max(0, data.stage.elapsed - drift)
+                : stage === 'IDLE' ? data.stage.elapsed : data.stage.elapsed + drift)}
             </div>
             <div className="orch-stage-side">
               <div style={{ fontSize: 'var(--fs-md)', fontWeight: 'var(--fw-semibold)' }}>
