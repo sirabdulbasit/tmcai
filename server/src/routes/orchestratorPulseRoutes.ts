@@ -165,7 +165,12 @@ router.post('/heal', requireAdmin, (req: Request, res: Response) => {
     // Said plainly because the deck must never imply an outcome it has not seen: this
     // confirms the pulse was LAUNCHED. Whether it fixes anything shows up in the phases,
     // the token table and the symptom list, minutes later.
-    note: 'pulse started — watch the phases; a pulse takes ~15 minutes and may decline to build if nothing changed',
+    // The client no longer renders this; the phases are the answer. It stays for anyone
+    // calling the route directly, and it no longer says the pulse "may decline to build" —
+    // heal-now.sh now runs with NEXEO_WATCH_MANUAL=1, which waives the daily auto-build cap
+    // and the hourly spacing. A click on a day that had used its four auto-builds used to
+    // run the analysis and skip the build, which is indistinguishable from doing nothing.
+    note: 'pulse started',
   });
 });
 

@@ -55,5 +55,13 @@ if [ -n "$CAP" ]; then
   echo "heal-now: aiming this pulse at '$CAP'"
 fi
 
-echo "heal-now: starting a conversational pulse (interval guard lifted)"
-NEXEO_WATCH_MIN_GAP_MIN=0 exec bash "$ROOT/scripts/orchestrator/watch-conversations.sh"
+# NEXEO_WATCH_MANUAL=1 is what tells the watcher a person is asking: it waives the daily
+# auto-build cap and the hourly spacing, and spends against a separate manual budget
+# (3/day by default). Without it a click on a day that had already used its four auto-builds
+# ran the analysis and skipped the build — which is exactly what happened at 16:37 UTC on
+# 2026-08-19, and which reads as "the cron did nothing".
+#
+# The concurrency guard is still NOT waived. One builder in one tree, ever.
+echo "heal-now: starting a conversational pulse (auto caps waived — manual budget applies)"
+NEXEO_WATCH_MANUAL=1 NEXEO_WATCH_MIN_GAP_MIN=0 \
+  exec bash "$ROOT/scripts/orchestrator/watch-conversations.sh"

@@ -781,14 +781,29 @@ def observed_gaps(top=6):
             m2 = re.search(r"(\d+) turns · (DELTA since (\S+)|last (\d+) days)", txt)
             all_sessions = re.findall(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)
             first_session = re.match(r"()", "")  # placeholder, replaced below
+            # THE LAST MESSAGE, not the last session heading. A heading is stamped when a
+            # conversation opens, so a session that ran 21:36 → 21:37 reported 21:36 and the
+            # panel sat a minute behind the transcript it was describing.
+            msg_times = re.findall(r"^\s*-\s+\*\*[^*]+\*\*\s+(\d{2}:\d{2})", txt, re.M)
+            last_day = all_sessions[-1].split(" ")[0] if all_sessions else None
+            newest = ((last_day + " " + max(
+                        t for t in re.findall(
+                            r"^\s*-\s+\*\*[^*]+\*\*\s+(\d{2}:\d{2})",
+                            txt.rsplit("## Session", 1)[-1], re.M) or ["00:00"]))
+                      if last_day else None)
             out["window"] = {
                 "harvested_at": m.group(1) if m else None,
                 "turns": int(m2.group(1)) if m2 else None,
                 "from": (all_sessions[0] + " UTC") if all_sessions else None,
-                # The newest session, because "6 Aug onward" on a panel he is reading after
-                # chatting today reads as though the harvest stopped two weeks ago.
-                "to": (all_sessions[-1] + " UTC") if all_sessions else None,
+                # Owner, 2026-08-19, for the third time: leading with the OLDEST end is
+                # wrong. "6 Aug onward" is what he sees after chatting minutes earlier, and
+                # no amount of appending the other end fixes which fact comes first. The
+                # client now leads with when the transcript was READ; the span survives only
+                # as the basis of the counts, because a count over an unstated period is the
+                # unreadable "x21" he objected to before.
+                "to": ((newest or all_sessions[-1]) + " UTC") if all_sessions else None,
                 "span": (f"last {m2.group(4)} days" if (m2 and m2.group(4)) else "delta"),
+                "lead": "read",
             }
             heads = [(mm.start(), mm.group(1))
                       for mm in re.finditer(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)]

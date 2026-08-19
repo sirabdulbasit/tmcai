@@ -31,6 +31,7 @@ WATERMARK="$STATE/conversation-watermark"
 ROOTS_HASH="$STATE/chat-roots-hash"
 BUILD_STAMP="$STATE/last-auto-build"
 BUILD_COUNT="$STATE/auto-builds-today"
+MANUAL_COUNT="$STATE/manual-builds-today"   # a click's budget, kept apart from the cron's
 
 # Guards, all overridable but all present by default.
 MIN_GAP_MIN="${NEXEO_WATCH_MIN_GAP_MIN:-60}"      # never two auto-builds inside an hour
@@ -86,17 +87,42 @@ STAMP_DAY="$(cut -d' ' -f1 "$BUILD_COUNT" 2>/dev/null || echo '')"
 COUNT="$(cut -d' ' -f2 "$BUILD_COUNT" 2>/dev/null || echo 0)"
 [ "$STAMP_DAY" = "$TODAY" ] || COUNT=0
 
-if [ "$COUNT" -ge "$MAX_BUILDS_DAY" ]; then
-  say "daily auto-build cap reached ($COUNT/$MAX_BUILDS_DAY) — analysis recorded, build deferred to the nightly run"
-  exit 0
-fi
+# A HUMAN CLICKING "Heal now" IS NOT THE CASE THESE CAPS PROTECT AGAINST.
+#
+# Owner, 2026-08-19, after clicking it: "where i am expecting to start it immediately."
+# The pulse DID start immediately — but today's auto-build cap was already 4/4, so it would
+# have run the analysis and silently skipped the build. He asked for a fix and would have
+# received a document. The caps exist to stop a CRON spending money unattended every ten
+# minutes; neither reason survives a deliberate click.
+#
+# So a manual run skips the daily cap and the hourly spacing — and gets its OWN cap, because
+# "unattended" is not the only way to spend $60 by accident. A stuck finger is the other.
+MANUAL="${NEXEO_WATCH_MANUAL:-0}"
+MAX_MANUAL_DAY="${NEXEO_WATCH_MAX_MANUAL:-3}"
+MCOUNT=0
+if [ "$MANUAL" = "1" ]; then
+  MSTAMP_DAY="$(cut -d' ' -f1 "$MANUAL_COUNT" 2>/dev/null || echo '')"
+  MCOUNT="$(cut -d' ' -f2 "$MANUAL_COUNT" 2>/dev/null || echo 0)"
+  [ "$MSTAMP_DAY" = "$TODAY" ] || MCOUNT=0
+  if [ "$MCOUNT" -ge "$MAX_MANUAL_DAY" ]; then
+    say "MANUAL cap reached ($MCOUNT/$MAX_MANUAL_DAY today) — build deferred. Raise NEXEO_WATCH_MAX_MANUAL to override"
+    exit 0
+  fi
+  say "MANUAL run ($((MCOUNT + 1))/$MAX_MANUAL_DAY today) — daily auto-cap ($COUNT/$MAX_BUILDS_DAY) and ${MIN_GAP_MIN}m spacing both waived: a person asked"
+else
+  if [ "$COUNT" -ge "$MAX_BUILDS_DAY" ]; then
+    say "daily auto-build cap reached ($COUNT/$MAX_BUILDS_DAY) — analysis recorded, build deferred to the nightly run"
+    exit 0
+  fi
 
-LAST="$(cat "$BUILD_STAMP" 2>/dev/null || echo 0)"
-NOW="$(date -u +%s)"
-if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
-  say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
-  exit 0
+  LAST="$(cat "$BUILD_STAMP" 2>/dev/null || echo 0)"
+  NOW="$(date -u +%s)"
+  if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
+    say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
+    exit 0
+  fi
 fi
+[ "$MANUAL" = "1" ] && printf '%s %s\n' "$TODAY" "$((MCOUNT + 1))" > "$MANUAL_COUNT"
 
 # One builder in one tree, ever. Two would produce commits nobody can attribute.
 #

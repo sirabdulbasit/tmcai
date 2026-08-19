@@ -981,9 +981,17 @@ export default function OrchestratorPulsePanel() {
   const startHeal = async (force) => {
     setHealing(true); setHealMsg('');
     try {
-      const r = await api.post('/orchestrator/heal', { force: !!force });
-      setHealMsg(r?.data?.note || 'pulse started');
+      await api.post('/orchestrator/heal', { force: !!force });
+      // SHOW it start. Owner, 2026-08-19: "where i am expecting to start it immediately."
+      // The pulse DID start on his click — a running watcher was in the process table
+      // seconds later — but the button answered with a paragraph about what a pulse
+      // generally does, so nothing on screen changed and it read as inert. The server's
+      // prose note is dropped; the phases below are the answer, and they are refreshed on a
+      // short ladder because the ambient poll is 30s and the first phase event lands in
+      // about five seconds.
+      setHealMsg('started');
       load();
+      [4000, 12000, 25000].forEach((ms) => setTimeout(load, ms));
     } catch (e) {
       // Say what failed. A silent button is how a dead trigger looks identical to a
       // working one — and the route is unreachable until the server is deployed.
@@ -1363,9 +1371,15 @@ export default function OrchestratorPulsePanel() {
                         labelled by its oldest end reads as though the harvest stopped two
                         weeks ago. */}
                     {data.observed?.window?.harvested_at && (
+                      /* READ TIME FIRST. Owner said three times that leading with the
+                         oldest end is wrong — "6 Aug onward" is what he sees minutes after
+                         chatting, and appending the other end did not fix which fact came
+                         first. The span stays only because it is the basis of the counts:
+                         a count over an unstated period is the unreadable "x21". */
                       <span className="orch-window-note">
-                        {' '}· {data.observed.window.turns} turns,{' '}
-                        {pktStamp(data.observed.window.from)} → {pktStamp(data.observed.window.to)}
+                        {' '}· read {pktStamp(data.observed.window.to)}
+                        {' '}· {data.observed.window.turns} turns counted,{' '}
+                        {data.observed.window.span}
                       </span>
                     )}
                   </div>
