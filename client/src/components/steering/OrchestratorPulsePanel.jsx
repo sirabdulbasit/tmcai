@@ -1358,17 +1358,13 @@ export default function OrchestratorPulsePanel() {
               itself, and it was taking the room Observed Gaps needed. */}
           {data.observed && (
             <PulseCard className="orch-deck-brain" title="Observed gaps">
-              <div className="orch-observed">
-                <div>
-                  <div className="orch-observed-h">Capability · code-read</div>
-                  <ul className="orch-observed-list">
-                    {(data.observed.capability || []).map((c) => (
-                      <li key={c.name} title={`${c.nexeo} vs professional · basis ${c.basis}`}>
-                        <b>{c.name}</b> {c.nexeo} · gap {c.gap}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              {/* ONE COLUMN. Owner, 2026-08-20: "also remove column of Capability · code-read
+                  from Observed Gaps." The nine capability scores and their gaps are already
+                  the whole Brain Capability card beside this one, so the column repeated them
+                  in a smaller font while squeezing the chat rows — which are the only thing
+                  here he cannot read anywhere else. The `capability` array is still in the
+                  payload; the loop targets a capability from it every pulse. */}
+              <div className="orch-observed orch-observed-single">
                 <div>
                   <div className="orch-observed-h orch-observed-h-wide">
                     Chat log · reported

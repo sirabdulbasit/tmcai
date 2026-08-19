@@ -147,6 +147,17 @@ COUNT="$(cut -d' ' -f2 "$BUILD_COUNT" 2>/dev/null || echo 0)"
 #
 # So a manual run skips the daily cap and the hourly spacing — and gets its OWN cap, because
 # "unattended" is not the only way to spend $60 by accident. A stuck finger is the other.
+# HOISTED ABOVE THE BRANCH, because the build stamp below is written on BOTH paths.
+#
+# These lived inside the auto-only `else`, and this script runs under `set -u`. So on a MANUAL
+# run — every "Heal now" — `$NOW` was unbound at `printf '%s' "$NOW" > "$BUILD_STAMP"` and bash
+# killed the script dead, right after logging "MANUAL run (1/6 today) … a person asked". The
+# owner saw a pulse approve its own build and then simply stop: Chat Analysis done, Build &
+# Deploy "—", stage WAITING. Mine, introduced an hour earlier when I wrapped the guards in the
+# if/else that waives them for a person.
+LAST="$(cat "$BUILD_STAMP" 2>/dev/null || echo 0)"
+NOW="$(date -u +%s)"
+
 MANUAL="${NEXEO_WATCH_MANUAL:-0}"
 # 6, not 3. Three was my guess an hour after building the button, sized against a cron's risk
 # profile rather than a person's use of it — and it ran out the same evening, so his click
@@ -171,8 +182,6 @@ else
     exit 0
   fi
 
-  LAST="$(cat "$BUILD_STAMP" 2>/dev/null || echo 0)"
-  NOW="$(date -u +%s)"
   if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
     say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
     phase "BUILD" "exit=skip (deferred: last build $(( (NOW - LAST) / 60 ))m ago, min gap ${MIN_GAP_MIN}m)"

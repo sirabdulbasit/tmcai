@@ -748,3 +748,8 @@ li.is-open > .orch-verdict     { background: rgba(239,68,68,.13); color: #ef4444
 li.is-regressed > .orch-verdict{ background: #ef4444; color: #fff; }
 li.is-shipped > .orch-verdict  { background: rgba(34,197,94,.13); color: #22c55e; }
 li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308; }
+
+/* Single-column Observed Gaps. Owner, 2026-08-20 — the code-read capability column was
+   repeating the Brain Capability card beside it, in a smaller font, while squeezing the chat
+   rows that appear nowhere else. One column, and the rows get the width. */
+.orch-observed-single { grid-template-columns: 1fr; }
