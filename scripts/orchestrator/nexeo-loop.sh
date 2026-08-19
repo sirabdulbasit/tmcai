@@ -679,6 +679,23 @@ fi
 # a conversational pulse never reports anyway.
 if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
   say "MEASURE iter=$ITER baseline skipped — conversational pulse (Chat Analysis + Build & Deploy only)"
+  # A SKIPPED STAGE MUST STILL DEFINE WHAT IT WOULD HAVE SET.
+  #
+  # The guard above, added an hour earlier, killed pulse #10 outright: `set -u` and
+  # `BASELINE_OVERALL="$BENCH_OVERALL"` four lines down — "line 687: BENCH_OVERALL: unbound
+  # variable", the loop dead in the same second it started, the deck showing Build & Deploy
+  # as "—" with no event at all.
+  #
+  # THE SECOND TIME TONIGHT I made this exact mistake: guard a stage, forget that the code
+  # after it reads what that stage set. The first was `$NOW` in watch-conversations.sh. Under
+  # `set -u` the failure is silent death rather than an empty string, which is the right trade
+  # and also why it surfaces only as absence.
+  #
+  # "null" and "error" are this file's own convention for a measurement that did not happen —
+  # measure() already uses exactly these on its failure path (line 204), so downstream readers,
+  # the ledger and the review prompt all handle them. Not "0", which would read as a score.
+  BENCH_OVERALL="null"; BENCH_MIN="null"; BENCH_WEAKEST="null"
+  BENCH_GATE="skipped"; BENCH_JSON=""
 elif [ "$REUSED_SCORE" -eq 0 ]; then
   if ! measure "$ITER" "baseline"; then
     die "baseline measurement failed — the loop has no metric; see logs/"
