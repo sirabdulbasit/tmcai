@@ -90,6 +90,14 @@ guardrails only. Therefore:
 - **Wording belongs to the model.** Never add a hardcoded user-facing sentence. A curated
   string may carry the FACT; the phrasing goes through the model, and a fixed string is
   correct only when the model is unreachable.
+- **The rule applies to YOUR OWN code too**, not only to Brain's (owner, 2026-08-19: *"always
+  build & deploy under governance of LLM … nothing should be hardcoded"*). Do not add a list of
+  sentences, symptoms, capability names or defect shapes to `scripts/orchestrator/**`. Those are
+  judgements, and they belong to whichever model is reading the evidence — a hand-written
+  detector went stale within hours of being written and reported a live defect as fixed. The
+  test is: **does this line DECIDE something, or does it EXECUTE something?** Deploy mechanics,
+  the verification matrix and the four guardrails stay deterministic. Everything that judges
+  goes to the model.
 
 Symptom tags and capability numbers below remain how the work is TRACKED. They are not the
 objective. The objective is that the thing he asked for happens.

@@ -53,3 +53,29 @@ refused:
 - The accepted fix **removes the enumeration** or makes the two sides unable to disagree.
 - A fix that moves authority from the model to code must state which of the four guardrails it
   is enforcing. If it is none of them, it is not a guardrail — it is the 42%.
+
+### And it binds the orchestrator's OWN code, not only Brain's
+
+Owner, 2026-08-19: *"always build & deploy under governance of LLM (not programatic or template
+strings etc, nothing should be hardcoded)."*
+
+The Build & Deploy stage decides things — which defect to work, what counts as a failure,
+whether a fix held. **Those judgements belong to the model reading the evidence, never to a
+literal in a script.** The first casualty was a list of 17 failure sentences hand-written in
+`pulse.py`: a wording fix changed one of them, the detector was watching the sentence rather
+than the mechanism, and a defect that recurred 71 minutes after its own fix was shown to the
+owner as *fixed*. The chat analyst declares the signatures now, and with none declared the deck
+says so rather than falling back to a default.
+
+**What stays deterministic, and why it is not a contradiction.** These are mechanics, not
+judgements — a model has nothing to decide here, and a non-deterministic answer would be a
+defect:
+
+- the deploy protocol (`chattr` unlock → build → the exact sha256 manifest → relock);
+- the verification matrix (`npx tsc --noEmit`, `npx vitest run`, `git diff --check`) and its
+  exact numbers;
+- the four guardrails above;
+- the nine capability names, which are this document.
+
+The test: **does it decide, or does it execute?** A decision goes to the model. A mechanic
+stays in the script, deterministic and auditable.
