@@ -1170,6 +1170,44 @@ def pulse_progress():
     }
 
 
+
+def tokens_by_pulse(limit=10):
+    """Per-pulse tokens and cost, labelled by kind.
+
+    Owner, 2026-08-19: "i also want to know token consumption in, out, cache rd, cost
+    iteration wise for both Conversational and Night separately."
+
+    One row per pulse the ledger recorded, newest last, so a C pulse and an N pulse can be
+    compared directly — they cost differently by design: a conversational pulse runs two
+    stages, a nightly runs five, and that difference should be visible rather than averaged
+    away into a single "cost per iteration".
+
+    Totals are per KIND, not one grand total, for the same reason.
+    """
+    labels = pulse_labels()
+    rows = []
+    for it in sorted(labels)[-limit:]:
+        t = stage_tokens(it)
+        tot = t.get("_total") or {}
+        if not any(tot.get(k) for k in ("input", "output", "cache_read", "cost_usd")):
+            continue
+        rows.append({
+            "label": labels.get(it, f"#{it}"),
+            "kind": "conversational" if labels.get(it, "").startswith("C") else "nightly",
+            "input": tot.get("input", 0), "output": tot.get("output", 0),
+            "cache_read": tot.get("cache_read", 0), "cost_usd": tot.get("cost_usd", 0),
+        })
+    per_kind = {}
+    for r in rows:
+        k = per_kind.setdefault(r["kind"], {"pulses": 0, "input": 0, "output": 0,
+                                           "cache_read": 0, "cost_usd": 0.0})
+        k["pulses"] += 1
+        for f in ("input", "output", "cache_read"):
+            k[f] += r[f]
+        k["cost_usd"] = round(k["cost_usd"] + (r["cost_usd"] or 0), 2)
+    return {"rows": rows, "per_kind": per_kind}
+
+
 # ── collect, then render ─────────────────────────────────────────────────────
 #
 # Owner, 2026-08-12: *"what if we build live dashboard in ?tab=health which shows
@@ -1590,6 +1628,7 @@ def collect():
         "pulse_mode": pulse_mode(),
         "pulse_progress": pulse_progress(),
         "stage_tokens": stage_tokens(cur_it),
+        "tokens_by_pulse": tokens_by_pulse(),
         "iteration_elapsed_all": (first_attempt_start(cur_it) and
                                   now - first_attempt_start(cur_it)) or None,
         "iterations_built": built, "iteration_in_flight": in_flight,

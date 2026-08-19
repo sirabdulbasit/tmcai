@@ -748,6 +748,54 @@ function PulseTable({ data }) {
   );
 }
 
+function TokensByPulse({ data }) {
+  // Owner, 2026-08-19: "token consumption in, out, cache rd, cost iteration wise for both
+  // Conversational and Night separately."
+  //
+  // Per-kind subtotals rather than one grand total: a C pulse runs two stages and an N
+  // pulse runs five, so they cost differently BY DESIGN. Averaging them into "cost per
+  // iteration" would hide the only comparison that matters — whether the cheap kind is
+  // doing the work.
+  const t = data.tokens_by_pulse;
+  if (!t || !(t.rows || []).length) return null;
+  const k = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0);
+  const kinds = Object.entries(t.per_kind || {});
+  return (
+    <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
+      <thead>
+        <tr>
+          <th>Tokens by pulse</th>
+          <th style={{ textAlign: 'right' }}>in</th>
+          <th style={{ textAlign: 'right' }}>out</th>
+          <th style={{ textAlign: 'right' }}>cache rd</th>
+          <th style={{ textAlign: 'right' }}>cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {t.rows.map((r) => (
+          <tr key={r.label} title={r.kind}>
+            <td>{r.label}</td>
+            <td className="num">{k(r.input)}</td>
+            <td className="num">{k(r.output)}</td>
+            <td className="num">{k(r.cache_read)}</td>
+            <td className="num">{r.cost_usd != null ? `$${r.cost_usd}` : '—'}</td>
+          </tr>
+        ))}
+        {kinds.map(([kind, v]) => (
+          <tr key={kind}>
+            <td><b>{kind === 'conversational' ? 'Conversational' : 'Nightly'}</b>
+              <span className="orch-progress-of"> ({v.pulses})</span></td>
+            <td className="num"><b>{k(v.input)}</b></td>
+            <td className="num"><b>{k(v.output)}</b></td>
+            <td className="num"><b>{k(v.cache_read)}</b></td>
+            <td className="num"><b>${v.cost_usd}</b></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function StageTokens({ data }) {
   // Owner, 2026-08-18: "record input and output tokens of each stage and total tokens
   // of each iteration." cache-read is its own column rather than folded into input,
@@ -1184,6 +1232,7 @@ export default function OrchestratorPulsePanel() {
                     <CapabilityTrend data={data} />
                     <StageTimings data={data} />
                     <StageTokens data={data} />
+                    <TokensByPulse data={data} />
                   </>
                 )
                 : <CapabilityMap data={data} />}
@@ -1213,52 +1262,11 @@ export default function OrchestratorPulsePanel() {
               had shipped, so it was a list of work he had not received. The ship state
               it carried now belongs on the chat-log items, where it answers "can I
               still hit this". */}
-          {/* PROGRESS OF BOTH KINDS — owner, 2026-08-18. Measured differently on purpose:
-              conversational exists to clear the symptoms he reported, nightly to lift the
-              nine capabilities. Showing a capability delta for a conversational pulse
-              would borrow a nightly run's work and label it as its own. "0 pulses · 4
-              open" is the honest reading when the machinery exists and has not yet run. */}
-          {data.pulse_progress && (
-            <div className="orch-progress">
-              <div className="orch-progress-cell">
-                <div className="orch-observed-h">Conversational healing</div>
-                <div className="orch-progress-big">
-                  {data.pulse_progress.conversational.symptoms_cleared}
-                  <span className="orch-progress-of">
-                    /{data.pulse_progress.conversational.symptoms_total} symptoms cleared
-                  </span>
-                </div>
-                <div className="orch-section-note">
-                  {data.pulse_progress.conversational.pulses} pulse
-                  {data.pulse_progress.conversational.pulses === 1 ? '' : 's'} run ·{' '}
-                  {data.pulse_progress.conversational.symptoms_open} still open
-                </div>
-              </div>
-              <div className="orch-progress-cell">
-                <div className="orch-observed-h">Nightly evaluation</div>
-                <div className="orch-progress-big">
-                  {data.pulse_progress.nightly.overall_last != null
-                    ? data.pulse_progress.nightly.overall_last
-                    : '—'}
-                  {data.pulse_progress.nightly.overall_delta != null
-                    && data.pulse_progress.nightly.overall_delta !== 0 && (
-                    <span className="orch-progress-of" style={{
-                      color: data.pulse_progress.nightly.overall_delta > 0
-                        ? 'var(--ok, #4ade80)' : 'var(--danger, #f87171)' }}>
-                      {data.pulse_progress.nightly.overall_delta > 0 ? ' ▲ +' : ' ▼ '}
-                      {Math.abs(data.pulse_progress.nightly.overall_delta)}
-                    </span>
-                  )}
-                  <span className="orch-progress-of"> BRAIN overall</span>
-                </div>
-                <div className="orch-section-note">
-                  {data.pulse_progress.nightly.pulses} pulse
-                  {data.pulse_progress.nightly.pulses === 1 ? '' : 's'} run
-                  {data.pulse_progress.nightly.pulses === 0 ? ' — no capability card yet' : ''}
-                </div>
-              </div>
-            </div>
-          )}
+          {/* PROGRESS BLOCK REMOVED — owner, 2026-08-19. It restated two numbers that
+              are already legible elsewhere: symptoms cleared is the strike-through on the
+              list directly below, and BRAIN overall is the trend's own last column. A
+              second rendering of a figure is how a dashboard starts disagreeing with
+              itself, and it was taking the room Observed Gaps needed. */}
           {data.observed && (
             <PulseCard className="orch-deck-brain" title="Observed gaps">
               <div className="orch-observed">
