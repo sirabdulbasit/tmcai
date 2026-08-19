@@ -50,6 +50,15 @@ export type PendingActionKind =
   | 'add_open_item'
   | 'create_contact'
   | 'update_contact'
+  // DEF-232 `no-dispatcher-in-confirmed-plan` — the four immediate-internal
+  // kinds, same story as update_open_item above: valid plan steps that the
+  // dispatcher fans out, never top-level pendings of their own. Absent here
+  // and from the dispatcher, "delete all open items" died AFTER the owner's
+  // "confirm delete all 7 items" (S33, 2026-08-19).
+  | 'remove_open_item'
+  | 'mark_open_item_done'
+  | 'record_preference'
+  | 'set_brain_name'
   // Compound plan (2026-07-14): several outbound steps previewed and
   // confirmed TOGETHER ("send followup on email AND whatsapp" → one
   // preview, one "send", both dispatch). slots = { steps: [{kind,

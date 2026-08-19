@@ -315,9 +315,13 @@ describe('DEF-127 — the migration is idempotent and matches the model', () => 
  */
 describe('DEF-128 — a refused transition is never reported as done', () => {
   const composer = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+  // DEF-232 moved the mark_open_item_done body to `internalActionExecutors`
+  // so the confirmed-plan path executes the SAME implementation the inline
+  // branch does. The DEF-128 property is unchanged; only its address moved.
+  const executors = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'internalActionExecutors.ts'), 'utf-8');
 
   it('mark_open_item_done inspects the transition result', () => {
-    const block = composer.slice(composer.indexOf("reason: act.completionNote || 'Marked done via Brain Chat'"));
+    const block = executors.slice(executors.indexOf("reason: input.completionNote || 'Marked done via Brain Chat'"));
     expect(block.slice(0, 500)).toContain('closeResult.ok');
     expect(block.slice(0, 700)).toContain('[mark_open_item_done: not closed');
   });
@@ -329,18 +333,20 @@ describe('DEF-128 — a refused transition is never reported as done', () => {
   });
 
   it('neither success summary can be reached without an ok result', () => {
-    // The success wording must sit INSIDE the ok branch, not after it.
-    const close = composer.slice(composer.indexOf('const closeResult = await transitionStatus'));
-    const okIdx = close.indexOf('} else {');
+    // The success wording must sit BEHIND the refusal return: the executor
+    // returns `[… not closed …]` early, so `Marked "…" done.` is unreachable
+    // on a refused transition.
+    const close = executors.slice(executors.indexOf('const closeResult = await transitionStatus'));
+    const refusalIdx = close.indexOf('[mark_open_item_done: not closed');
     const summaryIdx = close.indexOf('let summary = `Marked');
-    expect(okIdx).toBeGreaterThan(-1);
-    expect(summaryIdx).toBeGreaterThan(okIdx);
+    expect(refusalIdx).toBeGreaterThan(-1);
+    expect(summaryIdx).toBeGreaterThan(refusalIdx);
   });
 
   it('refusal messages are bracketed markers, not hardcoded Brain sentences', () => {
     // §2.4 — a plain English sentence pretending to be Brain is forbidden;
     // markers are rendered into Brain's voice by answerSanitizer.
-    expect(composer).toContain('[mark_open_item_done: not closed —');
+    expect(executors).toContain('[mark_open_item_done: not closed —');
     expect(composer).toContain('[delegate_open_item: not delegated —');
   });
 });

@@ -192,6 +192,18 @@ export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
   'send_email',
   'notify_via_whatsapp',
   'delegate_open_item',
+  // DEF-232 `no-dispatcher-in-confirmed-plan` — the four immediate-internal
+  // kinds. They were dispatchable inline and refused here, so the owner's
+  // confirmed "delete all open items" died AFTER his "yes" (~14 hits,
+  // S14→S33). Their `dispatchPendingDirect` cases call the same
+  // `internalActionExecutors` the inline branches call. INVARIANT, pinned by
+  // tests/def232ConfirmedPlanExecutesInternalKinds.test.ts: every member of
+  // IMMEDIATE_INTERNAL_ACTION_TYPES is in this set — a kind must never again
+  // be executable on one path and rejected on the other.
+  'mark_open_item_done',
+  'remove_open_item',
+  'record_preference',
+  'set_brain_name',
   // 'action_plan' is deliberately absent — nested plans are rejected.
 ]);
 
@@ -3892,152 +3904,28 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'remove_open_item') {
-        // DEF-106 — the capability that was missing entirely.
-        //
-        // CANCELLED, not deleted, and not DONE. DONE would be a lie: the work
-        // did not happen, the owner decided it should not exist. CANCELLED is
-        // the honest status and it is reversible, which matters because the
-        // instruction that reaches here ("remove the meaningless ones") is a
-        // judgement the owner may want to revisit.
-        try {
-          let target = act.openItemId
-            ? await prisma.openItem.findFirst({
-                where: { id: act.openItemId, clientNumber, userId },
-                select: { id: true, title: true, status: true },
-              })
-            : null;
-
-          // Same stale-id rescue as update_open_item: he named it, so use the
-          // name rather than asking him to repeat himself.
-          const lookup = act.titleRef;
-          if (!target && lookup) {
-            const matches = await prisma.openItem.findMany({
-              where: {
-                clientNumber, userId,
-                status: { notIn: ['DONE', 'CANCELLED'] },
-                title: { contains: lookup.trim(), mode: 'insensitive' },
-              },
-              select: { id: true, title: true, status: true },
-              take: 5,
-            }).catch(() => []);
-            const exact = matches.filter(
-              (m: any) => m.title.trim().toLowerCase() === lookup.trim().toLowerCase(),
-            );
-            if (exact.length === 1) target = exact[0];
-            else if (matches.length === 1) target = matches[0];
-            else if (matches.length > 1) {
-              // Ambiguity is a question, never a guess — removing the wrong
-              // item is not something the owner can easily notice.
-              actionResult = {
-                ok: false,
-                message: `[remove_open_item: "${lookup}" matches ${matches.length} items — ${matches.map((m: any) => `"${m.title}"`).join(', ')}]`,
-              };
-              answer = actionResult.message;
-            }
-          }
-
-          if (!actionResult && !target) {
-            actionResult = {
-              ok: false,
-              message: `[remove_open_item: could not find an open item matching ${lookup ? `"${lookup}"` : 'that reference'}]`,
-            };
-            answer = actionResult.message;
-          } else if (!actionResult && target) {
-            // DEF-129 — removal now goes THROUGH the lifecycle matrix.
-            //
-            // This wrote `status: 'CANCELLED'` straight to the row, bypassing
-            // guards, the ledger and the event publish — not out of carelessness
-            // but because `CANCELLED` did not exist in the matrix, so there was
-            // no legal transition to ask for. The status has been added (with a
-            // restore path), which removes the reason to bypass.
-            //
-            // CANCELLED rather than CLOSED on purpose: the owner asked for this
-            // item to go away, and recording that as "completed" would log work
-            // that never happened.
-            const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
-            const removeResult = await transitionStatus(target.id, 'CANCELLED', {
-              clientNumber,
-              actor: `user:${userId}`,
-              reason: act.reason ? `${act.reason}`.slice(0, 500) : 'Removed via Brain Chat',
-            });
-            if (!removeResult.ok) {
-              actionResult = { ok: false, message: `[remove_open_item: not removed — ${removeResult.error ?? 'transition refused'}]` };
-            } else {
-              actionResult = { ok: true, message: `[removed: "${target.title}"]` };
-            }
-            answer = actionResult.message;
-          }
-        } catch (e: any) {
-          console.warn('[brain-chat] remove_open_item failed', { error: e?.message, userId });
-          actionResult = { ok: false, message: `[remove_open_item failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-232 — the body moved to `internalActionExecutors` VERBATIM
+        // (DEF-106 capability, DEF-129 lifecycle-matrix transition, DEF-103
+        // stale-id title rescue all preserved there). It lived only in this
+        // branch, so a confirmed "delete all open items" plan died at the
+        // dispatchability gate AFTER the owner's "yes" — ~14 owner-facing
+        // hits, S14→S33. One implementation, two callers.
+        const { executeRemoveOpenItem } = await import('./internalActionExecutors');
+        actionResult = await executeRemoveOpenItem(clientNumber, userId, {
+          openItemId: act.openItemId, titleRef: act.titleRef, reason: act.reason,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'mark_open_item_done') {
-        // Mark DONE + closure summary to user. If the item was
-        // DELEGATED with a follow-up trail, the user gets the
-        // accumulated trail (per Basit 2026-05-23 spec step 5).
-        try {
-          const existing = await prisma.openItem.findFirst({
-            where: { id: act.openItemId, clientNumber, userId },
-            select: {
-              id: true, title: true, status: true,
-              delegateeName: true, delegateeEmail: true,
-              delegationFollowupTrail: true, delegationFollowupCount: true,
-            } as any,
-          });
-          if (!existing) {
-            actionResult = { ok: false, message: `[mark_open_item_done: openItemId not found]` };
-            answer = actionResult.message;
-          } else if ((existing as any).status === 'CLOSED' || (existing as any).status === 'INFORMED') {
-            actionResult = { ok: false, message: `[mark_open_item_done: item already ${(existing as any).status.toLowerCase()}]` };
-            answer = actionResult.message;
-          } else {
-            const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
-            // DEF-128 — READ THE RESULT. `transitionStatus` RETURNS
-            // `{ ok: false, error }` for a refused transition (guard failed,
-            // approval required, not in the matrix); it does not throw. This
-            // call ignored it and went straight on to compose "Marked … done",
-            // so a refusal was reported to the owner as a completion.
-            //
-            // Found on 2026-08-11 by the ledger restored in DEF-127: the audit
-            // row said `NEW->CLOSED rejected — approval required, none
-            // provided` in the same second that Brain said the item was done.
-            // Exactly the fabricated-completion class §2.5 forbids.
-            const closeResult = await transitionStatus((existing as any).id, 'CLOSED', {
-              clientNumber,
-              actor: `user:${userId}`,
-              reason: act.completionNote || 'Marked done via Brain Chat',
-            });
-            if (!closeResult.ok) {
-              actionResult = { ok: false, message: `[mark_open_item_done: not closed — ${closeResult.error ?? 'transition refused'}]` };
-              answer = actionResult.message;
-            } else {
-            // Build closure summary
-            const wasDelegated = !!(existing as any).delegateeName;
-            const trail = Array.isArray((existing as any).delegationFollowupTrail) ? (existing as any).delegationFollowupTrail as any[] : [];
-            let summary = `Marked "${(existing as any).title}" done.`;
-            if (act.completionNote) summary += ` ${act.completionNote}`;
-            if (wasDelegated) {
-              summary += `\n\n— Delegation summary —`;
-              summary += `\nDelegated to: ${(existing as any).delegateeName} <${(existing as any).delegateeEmail}>`;
-              summary += `\nFollow-ups sent: ${(existing as any).delegationFollowupCount ?? 0}`;
-              if (trail.length > 0) {
-                summary += `\nTrail:`;
-                trail.slice(-5).forEach((t: any) => {
-                  const time = t.at ? new Date(t.at).toISOString().slice(0, 16).replace('T', ' ') : '?';
-                  summary += `\n  • [${time}] ${t.channel} ${t.direction}: ${String(t.content ?? '').slice(0, 80)}${(t.content?.length ?? 0) > 80 ? '…' : ''}`;
-                });
-              }
-            }
-            actionResult = { ok: true, artifactId: (existing as any).id, message: summary };
-            answer = summary;
-            }
-          }
-        } catch (e: any) {
-          console.warn('[brain-chat] mark_open_item_done failed', { error: e?.message, openItemId: act.openItemId, userId });
-          actionResult = { ok: false, message: `[mark_open_item_done failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-232 — body moved to `internalActionExecutors` VERBATIM (the
+        // DEF-128 read-the-transition-result rule and the 2026-05-23 closure
+        // summary with delegation trail live there now). Shared with the
+        // confirmed-plan path, which previously had no case for this kind
+        // ("Remove all the meaningless kind of actionable items", S14).
+        const { executeMarkOpenItemDone } = await import('./internalActionExecutors');
+        actionResult = await executeMarkOpenItemDone(clientNumber, userId, {
+          openItemId: act.openItemId, completionNote: act.completionNote,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'delegate_open_item') {
         try {
           // (1) Item existence check.
@@ -4427,54 +4315,22 @@ ${calLines.join('\n')}`;
           answer = actionResult.message;
         }
       } else if (act.type === 'record_preference') {
-        try {
-          const { recordExplicitMemory } = await import('./userMemoryService');
-          await recordExplicitMemory({
-            clientNumber, userId,
-            key: act.key,
-            value: act.value,
-          });
-          const valStr = typeof act.value === 'string' ? act.value : JSON.stringify(act.value);
-          const emailDays = act.key === 'email_max_age_days' ? Number(act.value) : NaN;
-          const preferenceMessage = Number.isFinite(emailDays)
-            ? `Got it — I'll limit normal email retrieval and briefing to the most recent ${Math.max(1, Math.round(emailDays))} days. If you explicitly ask for an older email, I'll treat that as a one-time override.`
-            : `Got it — I'll remember "${act.key}" as ${valStr} going forward. You can change or remove this in Settings → Brain → Memories.`;
-          actionResult = {
-            ok: true,
-            artifactId: `pref:${act.key}`,
-            message: preferenceMessage,
-          };
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `Couldn't save preference: ${e?.message ?? 'unknown'}` };
-          answer = actionResult.message;
-        }
+        // DEF-232 — body moved to `internalActionExecutors` VERBATIM and shared
+        // with the confirmed-plan path ("Chase everyone … don't ask for
+        // permission" died at step 3 (record_preference), S15).
+        const { executeRecordPreference } = await import('./internalActionExecutors');
+        actionResult = await executeRecordPreference(clientNumber, userId, {
+          key: act.key, value: act.value,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'set_brain_name') {
-        // User renamed Brain through chat ("call yourself Suzi" /
-        // "your name is Friday" / "reset your name"). Persisted via
-        // setBrainName which also invalidates the persona cache so
-        // the very next turn uses the new name in the system prompt.
-        // Same destination as Settings → Brain → Name input, so the
-        // UI and conversation paths stay in sync.
-        try {
-          const { setBrainName } = await import('./brainPersonaService');
-          const saved = await setBrainName(userId, act.name || null);
-          if (saved) {
-            actionResult = {
-              ok: true,
-              message: `Got it — from now on you can call me ${saved}.`,
-            };
-          } else {
-            actionResult = {
-              ok: true,
-              message: `Cleared my custom name — I'll go by "your AI assistant" from here on. You can name me again any time.`,
-            };
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `Couldn't save the name: ${e?.message ?? 'unknown'}` };
-          answer = actionResult.message;
-        }
+        // User renamed Brain through chat ("call yourself Suzi" / "reset your
+        // name"). DEF-232 — body moved to `internalActionExecutors` VERBATIM;
+        // `setBrainName` still invalidates the persona cache, same destination
+        // as Settings → Brain → Name.
+        const { executeSetBrainName } = await import('./internalActionExecutors');
+        actionResult = await executeSetBrainName(userId, { name: act.name });
+        answer = actionResult.message;
       } else if (act.type === 'notify_via_whatsapp') {
         // Two dispatch paths (per Basit 2026-07-07 fix):
         //   (a) recipientCandidateId → resolve to contact name+phone
@@ -6781,6 +6637,22 @@ export async function renderPlanPreview(
       case 'reschedule_meeting':
         line = `Reschedule meeting ${s.titleHint ?? s.eventId ?? ''} to ${s.newWhenRaw ?? ''}`;
         break;
+      // DEF-232 — the owner confirms WHICH item leaves his list, never a bare
+      // verb. "remove open item" ×7 is unconfirmable (same rule that put
+      // itemTitleOf here on 08-04: a preview naming only the action cannot be
+      // checked against intent).
+      case 'remove_open_item':
+        line = `Remove ${s.openItemId ? await itemTitleOf(s.openItemId) : `"${s.titleRef ?? ''}"`} from your open items`;
+        break;
+      case 'mark_open_item_done':
+        line = `Mark ${await itemTitleOf(s.openItemId)} done`;
+        break;
+      case 'record_preference':
+        line = `Remember your preference: ${s.key ?? ''} = ${typeof s.value === 'string' ? s.value : JSON.stringify(s.value ?? null)}`;
+        break;
+      case 'set_brain_name':
+        line = s.name ? `Change my name to "${s.name}"` : 'Clear my custom name';
+        break;
       default:
         line = `${step.kind.replace(/_/g, ' ')}`;
     }
@@ -6892,6 +6764,43 @@ export async function dispatchPendingDirect(
       // DEFs had removed it from the inline branch. The receipt is still built
       // and still returned by `applyOpenItemUpdate` for the ledger.
       return { ok: r.ok, artifactId: r.artifactId, message: r.message };
+    }
+    // DEF-232 `no-dispatcher-in-confirmed-plan` — the four immediate-internal
+    // kinds. All four had working inline implementations and NO case here, so
+    // "delete all open items" → "confirm delete all 7 items" died with
+    // "no dispatcher for this action in a confirmed plan" after the owner's
+    // explicit confirmation (~14 hits, S14→S33). Exactly DEF-023's shape, for
+    // the kinds DEF-023 left out. Each case calls the SAME executor the inline
+    // branch calls — one implementation, two callers — and
+    // `tests/def232ConfirmedPlanExecutesInternalKinds.test.ts` pins the
+    // invariant that every immediately-dispatchable kind is plan-dispatchable.
+    case 'remove_open_item': {
+      const { executeRemoveOpenItem } = await import('./internalActionExecutors');
+      return executeRemoveOpenItem(clientNumber, userId, {
+        openItemId: slots.openItemId != null ? String(slots.openItemId) : undefined,
+        titleRef: slots.titleRef != null ? String(slots.titleRef) : undefined,
+        reason: slots.reason != null ? String(slots.reason) : undefined,
+      });
+    }
+    case 'mark_open_item_done': {
+      const { executeMarkOpenItemDone } = await import('./internalActionExecutors');
+      return executeMarkOpenItemDone(clientNumber, userId, {
+        openItemId: slots.openItemId != null ? String(slots.openItemId) : undefined,
+        completionNote: slots.completionNote != null ? String(slots.completionNote) : undefined,
+      });
+    }
+    case 'record_preference': {
+      const { executeRecordPreference } = await import('./internalActionExecutors');
+      if (typeof slots.key !== 'string' || !slots.key.trim()) {
+        return { ok: false, message: `[record_preference: missing key]` };
+      }
+      return executeRecordPreference(clientNumber, userId, { key: slots.key, value: slots.value });
+    }
+    case 'set_brain_name': {
+      const { executeSetBrainName } = await import('./internalActionExecutors');
+      return executeSetBrainName(userId, {
+        name: slots.name != null ? String(slots.name) : null,
+      });
     }
     case 'add_open_item': {
       // Plan-step only (single add_open_item dispatches inline in

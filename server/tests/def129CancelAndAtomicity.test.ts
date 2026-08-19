@@ -364,6 +364,10 @@ describe('DEF-129 — no writer mints a status the matrix cannot move', () => {
     'services/delegation/delegationTrackerService.ts',
     'services/openItemsService.ts',
     'services/knowledge/brainComposer.ts',
+    // DEF-232 — the remove/done implementations moved here, shared by the
+    // inline and confirmed-plan paths. They mutate status only through
+    // transitionStatus, and this scan keeps that true.
+    'services/knowledge/internalActionExecutors.ts',
     'routes/openItemsRoutes.ts',
     'routes/briefRoutes.ts',
   ];
