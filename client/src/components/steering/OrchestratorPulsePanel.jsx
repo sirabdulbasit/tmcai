@@ -1387,10 +1387,17 @@ export default function OrchestratorPulsePanel() {
                          chatting, and appending the other end did not fix which fact came
                          first. The span stays only because it is the basis of the counts:
                          a count over an unstated period is the unreadable "x21". */
+                      /* TWO DIFFERENT FACTS, NAMED SEPARATELY. Owner, 2026-08-20: "i have
+                         seen it showed me 1:15am time in Chat Log, but it is also not true."
+                         The NUMBER was right — 1:15am is his last turn with Brain, matching
+                         the database to the minute — but I had labelled it "read", and the
+                         read happened at 1:44am. Calling the newest turn a read time is a
+                         claim about the orchestrator that the orchestrator did not make. */
                       <span className="orch-window-note">
-                        {' '}· read {pktStamp(data.observed.window.to)}
-                        {' '}· {data.observed.window.turns} turns counted,{' '}
-                        {data.observed.window.span}
+                        {' '}· last turn {pktStamp(data.observed.window.to)}
+                        {data.observed.window.harvested_at
+                          && `, read ${pktStamp(data.observed.window.harvested_at)}`}
+                        {' '}· {data.observed.window.turns} turns, {data.observed.window.span}
                       </span>
                     )}
                   </div>

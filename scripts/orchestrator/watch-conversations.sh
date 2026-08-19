@@ -148,7 +148,11 @@ COUNT="$(cut -d' ' -f2 "$BUILD_COUNT" 2>/dev/null || echo 0)"
 # So a manual run skips the daily cap and the hourly spacing — and gets its OWN cap, because
 # "unattended" is not the only way to spend $60 by accident. A stuck finger is the other.
 MANUAL="${NEXEO_WATCH_MANUAL:-0}"
-MAX_MANUAL_DAY="${NEXEO_WATCH_MAX_MANUAL:-3}"
+# 6, not 3. Three was my guess an hour after building the button, sized against a cron's risk
+# profile rather than a person's use of it — and it ran out the same evening, so his click
+# analysed and silently declined to build. A manual build is a deliberate act that he watches
+# the result of; the runaway it guards against is a stuck finger, and six still bounds that.
+MAX_MANUAL_DAY="${NEXEO_WATCH_MAX_MANUAL:-6}"
 MCOUNT=0
 if [ "$MANUAL" = "1" ]; then
   MSTAMP_DAY="$(cut -d' ' -f1 "$MANUAL_COUNT" 2>/dev/null || echo '')"
@@ -156,7 +160,7 @@ if [ "$MANUAL" = "1" ]; then
   [ "$MSTAMP_DAY" = "$TODAY" ] || MCOUNT=0
   if [ "$MCOUNT" -ge "$MAX_MANUAL_DAY" ]; then
     say "MANUAL cap reached ($MCOUNT/$MAX_MANUAL_DAY today) — build deferred. Raise NEXEO_WATCH_MAX_MANUAL to override"
-  phase "BUILD" "exit=skip (deferred: manual cap $MCOUNT/$MAX_MANUAL_DAY today)"
+    phase "BUILD" "exit=skip (deferred: manual cap $MCOUNT/$MAX_MANUAL_DAY today)"
     exit 0
   fi
   say "MANUAL run ($((MCOUNT + 1))/$MAX_MANUAL_DAY today) — daily auto-cap ($COUNT/$MAX_BUILDS_DAY) and ${MIN_GAP_MIN}m spacing both waived: a person asked"
