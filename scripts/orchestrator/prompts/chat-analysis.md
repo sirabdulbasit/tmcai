@@ -202,3 +202,41 @@ Worked example, from his own 08-19 exchange:
            dispatchable in one place and refused in another.
 
 Prefer the class fix and say plainly when you are only closing the instance.
+
+# LAST — DECLARE THE SIGNATURES THE DECK WILL COUNT
+
+Owner ruling, 2026-08-19: *"always build & deploy under governance of LLM (not programatic or
+template strings etc, nothing should be hardcoded)."*
+
+Until now the deck detected defects with a list of sentences hand-written in `pulse.py`. That
+list broke the same evening it was written: a wording fix changed one of the sentences, the
+detector was matching the sentence, and a defect that recurred 71 minutes after its own fix
+was displayed to the owner as **fixed**. `detector-is-a-list-of-sentences` is already in the
+recurrence table three deep. **You** decide what to count now, because you are the one reading
+the transcript.
+
+End your output with this section, exactly this shape, machine-read by `pulse.py`:
+
+```
+## SIGNATURES
+| what the owner saw | verbatim fragment | tag |
+|---|---|---|
+| Said it had not run the action, instead of running it | I didn't run anything just now | canned-hold-on-denial |
+| You confirmed a plan and it could not execute it | no dispatcher for this action | DEF-232 |
+```
+
+Rules for it, and they are the difference between a deck that informs him and one that lies:
+
+- **Column 1 is what HE experienced**, in plain language, no tag vocabulary, no slugs. He said
+  of the previous version: *"still gaps are totally meaningless for me."*
+- **Column 2 is a fragment of BRAIN'S OWN REPLY, copied verbatim from the transcript** — never
+  a phrase you composed. It is what makes the count checkable against the file.
+- **Include EVERY wording of the same mechanism**, separated by ` | `, when a fix has reworded
+  it. One mechanism is one row: two rows for one mechanism double-count, and dropping the old
+  wording makes the history vanish the moment someone rewords the sentence.
+- **Column 3 is the DEF id or symptom tag whose fix would close it.** If nothing has been built
+  for it, write the symptom tag alone — never a DEF id that fixed something adjacent. The deck
+  measures recurrence AFTER that fix's deploy, so a wrong id here reports a live defect as
+  cured. That specific error was made today with DEF-034 against the canned denial: it fixed
+  the wording, not the action, and the row read "fixed" while he was still being refused.
+- Order: worst first, same ranking as your root causes.

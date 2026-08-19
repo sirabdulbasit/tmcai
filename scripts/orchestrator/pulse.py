@@ -663,6 +663,78 @@ def iteration_timings(limit=10):
 
 
 
+def _signature_rows():
+    """[(label, [verbatim fragments], tag)] — the analyst's ## SIGNATURES table.
+
+    Owner ruling, 2026-08-19: "nothing should be hardcoded." The chat analyst reads the real
+    transcript, so it declares which sentences count as failures and which fix would close
+    each one. This function only PARSES that declaration — it contributes no vocabulary of its
+    own, deliberately, because the list it replaced was mine and it went stale within hours of
+    being written.
+
+    Returns [] when the analyst has not declared any. The caller must say so rather than
+    substituting a default: a deck that quietly falls back to a stale list is the exact
+    failure this replaces.
+    """
+    path = os.path.join(STATE, "chat-root-causes.md")
+    if not os.path.exists(path):
+        return []
+    try:
+        txt = open(path, errors="replace").read()
+    except Exception:
+        return []
+    # The LAST such section wins — the analyst appends updates, so an older run's table must
+    # not outvote the current one.
+    parts = re.split(r"^##\s+SIGNATURES\s*$", txt, flags=re.M)
+    if len(parts) < 2:
+        return []
+    rows = []
+    for line in parts[-1].splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            # Stop at the first non-table line after the table has started, so prose that
+            # follows the section cannot be read as data.
+            if rows:
+                break
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        label, fragment, tag = cells[0], cells[1], cells[2]
+        # Skip the header and the markdown separator row.
+        if set(fragment) <= set("-: ") or fragment.lower().startswith("verbatim"):
+            continue
+        if not label or not fragment:
+            continue
+        frags = [f.strip() for f in fragment.split("|") if f.strip()]
+        rows.append((label, frags, tag))
+    return rows
+
+
+def declared_signatures():
+    """[(pattern, label)] in the shape observed_gaps() matches with.
+
+    Fragments are matched LITERALLY (re.escape) — they are quotes from Brain, not patterns,
+    and treating a quote as a regex would let an apostrophe or a bracket in a real sentence
+    change what is counted.
+    """
+    out = []
+    for label, frags, _tag in _signature_rows():
+        pattern = "|".join(re.escape(f) for f in frags)
+        if pattern:
+            out.append((pattern, label))
+    return out
+
+
+def declared_signature_tags():
+    """{label: {tag}} — which fix closes each signature, per the analyst."""
+    tags = {}
+    for label, _frags, tag in _signature_rows():
+        if tag:
+            tags.setdefault(label, set()).add(tag)
+    return tags
+
+
 def observed_gaps(top=6):
     """{capability:[...], chat:[...]} — the two evidence sources, side by side.
 
@@ -743,51 +815,33 @@ def observed_gaps(top=6):
             # 13:14 and the row it closed still read "open" on the deck. The commit matcher
             # was never wrong — the two sides had no shared vocabulary. Each signature now
             # declares the ids and tags that count as ITS fix.
-            sig_tags = {
-                'You confirmed a plan and it could not execute it':
-                    {"DEF-232", "confirm-misfires", "plan-step-not-dispatchable"},
-                # DELIBERATELY NOT mapped to DEF-232, and not to `fabricated-status`
-                # either. This sentence is answerSanitizer.ts:46 rendering the
-                # `[no action dispatched]` marker — a symptom RENDERER, not a defect. It
-                # fires whenever nothing was dispatched, and DEF-232 removed only one of
-                # the reasons nothing gets dispatched. Mapping it there would strike 21
-                # occurrences off his list on my inference that one cause was the only
-                # cause. `fabricated-status` is worse: 16 commits name it and he was still
-                # hit 21 times, which is the definition of CIRCLING — marking it shipped
-                # would print the exact false "fixed" this panel exists to prevent.
-                # DEF-034 (a)+(c) shipped 08-19 20:27 PKT and names this mechanism
-                # explicitly, so the row may now be struck on evidence rather than on my
-                # inference. DEF-232 is still NOT listed here: it removed one reason nothing
-                # gets dispatched, and this sentence fires for any of them. Part (b) of
-                # DEF-034 — the dispatch-ledger read — is still unbuilt, so if the sentence
-                # reappears after this deploy the row flips to STILL HAPPENING and says so.
-                'Said it had not run the action, instead of running it':
-                    # DEF-034 fixed the WORDING. It did not make the action run, and the
-                    # mechanism recurred 71 minutes after that deploy, so this tag set must
-                    # NOT include DEF-034 — a wording fix is not a fix for this row.
-                    {"canned-hold-on-denial"},
-                'Gave up: "I couldn\'t put together an answer I trust"':
-                    {"guard-destroys-the-answer"},
-                'Asked you to clarify again after you had already answered':
-                    {"confirm-misfires"},
+            sig_tags = declared_signature_tags()
+            # THE ANALYST DECLARES WHAT TO COUNT — NOT THIS FILE.
+            #
+            # Owner ruling, 2026-08-19: "always build & deploy under governance of LLM (not
+            # programatic or template strings etc, nothing should be hardcoded)."
+            #
+            # This was a list of sentences I hand-wrote, and it broke the evening it was
+            # written: DEF-034 reworded one of them, the detector was matching the sentence,
+            # and a defect that recurred 71 minutes after its own fix was shown to the owner
+            # as "fixed". `detector-is-a-list-of-sentences` is three deep in the recurrence
+            # table for exactly this. The model reads the transcript, so the model decides
+            # what a failure looks like — and it declares the verbatim fragment from Brain's
+            # own reply, which keeps the count checkable against the file.
+            #
+            # NO HARDCODED FALLBACK. If the analyst has not declared signatures, the deck says
+            # so and counts nothing. A silent fallback to my own list is how a stale detector
+            # passed for a live one for two weeks.
+            sigs = declared_signatures()
+            # Say it out loud when the model has not declared any yet, so an empty list can
+            # never be mistaken for "nothing is wrong". The deck renders this verbatim.
+            out["signatures"] = {
+                "declared": len(sigs),
+                "source": "chat analyst" if sigs else None,
+                "note": None if sigs
+                        else "the chat analyst has not declared signatures yet — "
+                             "counts appear after the next Chat Analysis stage",
             }
-            sigs = [
-                # BOTH WORDINGS, ONE MECHANISM. I reworded this sentence at 20:27 PKT
-                # (DEF-034) and thereby blinded the detector that was watching it: the
-                # mechanism fired again at 21:37, 71 minutes after the deploy, and the deck
-                # reported "none since the fix" because it was matching a string I had just
-                # replaced. A signature must track the MECHANISM, not the sentence, or every
-                # rewording reads as a cure. Both renderings of `[no action dispatched]`
-                # count as the same defect.
-                (r"Hold on — I hadn.t actually done that yet|I didn.t run anything just now",
-                 'Said it had not run the action, instead of running it'),
-                (r"no dispatcher for this action",
-                 'You confirmed a plan and it could not execute it'),
-                (r"couldn.t put together an answer I trust",
-                 'Gave up: "I couldn\'t put together an answer I trust"'),
-                (r"I need to be sure what you mean",
-                 'Asked you to clarify again after you had already answered'),
-            ]
             m = re.search(r"harvested (\S+)", txt)
             m2 = re.search(r"(\d+) turns · (DELTA since (\S+)|last (\d+) days)", txt)
             all_sessions = re.findall(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)

@@ -1429,6 +1429,15 @@ export default function OrchestratorPulsePanel() {
                         </span>
                       </li>
                     ))}
+                    {/* THE MODEL DECIDES WHAT COUNTS, and says so when it has not decided
+                        yet. Owner ruling: "nothing should be hardcoded" — the signatures used
+                        to be regexes hand-written in pulse.py, which went stale within hours.
+                        An empty list must never read as "nothing is wrong". */}
+                    {data.observed?.signatures?.note && (
+                      <li className="is-built">
+                        <span className="orch-window-note">{data.observed.signatures.note}</span>
+                      </li>
+                    )}
                     {/* Hidden, not lost — one muted line, no status, so the backlog leaves a
                         trace without becoming a list he has to read. */}
                     {(() => {
