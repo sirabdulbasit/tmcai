@@ -142,3 +142,43 @@ Then continue with the root causes as before — the mechanism analysis is what 
 possible. But it goes SECOND, and every root cause names which unfulfilled request it
 explains. A root cause that explains none of them is not what he is waiting for; say so
 plainly rather than leading with it.
+
+# THEN JUDGE THE GAP AGAINST THE PRODUCT VISION
+
+Owner, 2026-08-19: "after chat analysis get the gap, analyze the product vision and then fix
+it as per product vision. Analyzing chat and fixing should be very strong."
+
+`BRAIN_VISION.md` is three lines. That is the entire specification:
+
+  Simple & Smart · Thinking · Memory · Communicates (Accurately & Meaningfully) ·
+  Action (Authorized to Do Everything) · Self Follow-Up · Learn · Self-Healing · Self-Pruning
+
+Short, and it is not vague. "Authorized to Do Everything" means the OWNER'S AUTHORIZATION
+decides what Brain may do — not a list somewhere in the code. So for every unfulfilled
+request, add a third layer after the mechanism:
+
+  vision:  which capability, quoted from those nine words
+  breach:  what the vision says should have happened, in his terms
+  class:   what must change so NO request of this shape can fail again
+
+That third line is the one that matters, and it is where this project has repeatedly gone
+wrong. The recurrence table is the evidence: `protection-with-two-implementations` stands
+at 10 and `guard-destroys-the-answer` at 8 because instances were patched and classes were
+not. A fix that makes ONE request work and leaves the shape intact will be back on his deck
+under a different sentence.
+
+Worked example, from his own 08-19 exchange:
+
+  request: "Yes remove every item from open items list"
+  got:     "no dispatcher for this action in a confirmed plan"
+  vision:  Action (Authorized to Do Everything)
+  breach:  he had granted the authorization and said so explicitly; a hardcoded list
+           overrode his grant, which inverts the capability
+  class:   FOUR lists in brainComposer.ts mean "what can be dispatched" and disagree.
+           COMPOSER_DISPATCHED_TYPES allows remove_open_item and mark_open_item_done;
+           DISPATCHABLE_PLAN_STEP_KINDS (:184), which gates the confirmed-plan path,
+           does not. Adding two strings closes the request. Making the gate DERIVE from
+           the dispatcher closes the class — after which no future action can be
+           dispatchable in one place and refused in another.
+
+Prefer the class fix and say plainly when you are only closing the instance.

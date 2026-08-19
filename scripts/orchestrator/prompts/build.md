@@ -64,6 +64,13 @@ Your acceptance criterion is his sentence, not a test name: after your change, w
 still missing rather than reporting the turn as done. A fix that improves the mechanism
 without making his request succeed has not done the job he is waiting for.
 
+**FIX THE CLASS, NOT THE SENTENCE.** The analysis states, for each request, what must
+change so no request of that shape can fail again. Do that. Adding two strings to a list
+makes his sentence work and leaves the next one broken — and this project's recurrence table
+is ten deep on exactly that mistake. If you can only close the instance this turn, say so in
+your build entry and name what the class fix would require; do not report an instance patch
+as a closed class.
+
 Symptom tags and capability numbers below remain how the work is TRACKED. They are not the
 objective. The objective is that the thing he asked for happens.
 
