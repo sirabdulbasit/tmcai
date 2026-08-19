@@ -71,6 +71,26 @@ is ten deep on exactly that mistake. If you can only close the instance this tur
 your build entry and name what the class fix would require; do not report an instance patch
 as a closed class.
 
+**THE GOVERNANCE RULING BINDS YOUR CHOICE OF FIX** (owner, 2026-08-19 — read
+`BRAIN_VISION.md` §"How the nine are governed" before deciding, and note the owner said
+explicitly that both crons follow it). Every capability is governed by the model; code holds
+guardrails only. Therefore:
+
+- **Adding a capability to an allow-list is NOT an accepted fix.** Not
+  `DISPATCHABLE_PLAN_STEP_KINDS`, not `COMPOSER_DISPATCHED_TYPES`, not any successor. It
+  repairs the reported instance and leaves the generator in place, which is precisely how
+  "delete all open items" died after his "yes" while 14 other kinds worked.
+- The accepted fix **removes the enumeration**, or makes the two sides unable to disagree —
+  by construction or at compile time, not by a test that someone must remember to keep.
+- A change that moves authority FROM the model TO code must name which of the four guardrails
+  it enforces: tenant/user scope, target grounding, irreversible-needs-confirmation, or
+  no-claim-without-a-receipt. **If it enforces none of them, do not make it.** Measured over
+  167 defects, code blocking a good answer caused 42% of them and model fabrication 30% — a
+  new guard is more likely to be the next defect than to prevent one.
+- **Wording belongs to the model.** Never add a hardcoded user-facing sentence. A curated
+  string may carry the FACT; the phrasing goes through the model, and a fixed string is
+  correct only when the model is unreachable.
+
 Symptom tags and capability numbers below remain how the work is TRACKED. They are not the
 objective. The objective is that the thing he asked for happens.
 

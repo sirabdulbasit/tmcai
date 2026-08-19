@@ -148,7 +148,27 @@ plainly rather than leading with it.
 Owner, 2026-08-19: "after chat analysis get the gap, analyze the product vision and then fix
 it as per product vision. Analyzing chat and fixing should be very strong."
 
-`BRAIN_VISION.md` is three lines. That is the entire specification:
+`BRAIN_VISION.md` now carries a governance ruling as well as the nine names, and the ruling
+decides what you may propose. **Read §"How the nine are governed" in full** — the owner said
+on 2026-08-19 that both crons follow it. In short: every capability is governed by the model,
+code holds guardrails only, and a guardrail is an INVARIANT about any action rather than a
+list of which actions are allowed.
+
+So when you find a defect where the model wanted to act and code refused:
+
+- Do **not** propose "add this kind to the allow-list". That is the instance, and this
+  project already has ~14 hits of one defect whose generator is exactly such a list.
+- Propose the removal of the enumeration, or a construction where the two sides cannot
+  disagree.
+- If you propose moving authority from the model to code, name which guardrail it enforces —
+  tenant/user scope, target grounding, irreversible-needs-confirmation, or
+  no-claim-without-a-receipt. If it is none of those, say so and do not propose it: 42% of
+  this project's 167 defects were code breaking a good answer, against 30% from model
+  fabrication.
+- Never propose a hardcoded user-facing sentence. Wording is the model's; a curated string
+  may carry the fact only.
+
+The nine names remain the specification:
 
   Simple & Smart · Thinking · Memory · Communicates (Accurately & Meaningfully) ·
   Action (Authorized to Do Everything) · Self Follow-Up · Learn · Self-Healing · Self-Pruning
