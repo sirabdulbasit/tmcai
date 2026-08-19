@@ -756,11 +756,29 @@ def observed_gaps(top=6):
                 roots = open(os.path.join(STATE, "chat-root-causes.md"),
                              errors="replace").read()
                 # Split on the numbered root causes, then group tags within each item.
+                # ONLY the tags on a "Recurrence:" line count as aliases of each other.
+                #
+                # The first version treated every tag ANYWHERE in a root-cause item as an
+                # alias of the others. That held while the analysis had six well-separated
+                # items; when a later run collapsed to 28 lines, one section swallowed 15
+                # unrelated tags into a single group and `whatsapp-lid-activity-rejected`
+                # became an "alias" of `time-of-day-drift`. Any shipped commit naming any
+                # of them struck all of them, and the deck reported 3/6 symptoms cleared
+                # when nothing had been. A false "fixed" is the worst thing this panel can
+                # print, so the grouping is now anchored to the line where the analyst is
+                # explicitly stating equivalence, not to mere co-location in a paragraph.
                 for item in re.split(r"\n(?=\d+\.\s+\*\*)", roots):
-                    group = set(re.findall(r"`([a-z][a-z0-9:-]{6,})`", item))
-                    for t in group:
-                        aliases.setdefault(t, set()).update(group)
-                        aliases[t].add(t)
+                    for line in item.splitlines():
+                        if "Recurrence" not in line:
+                            continue
+                        group = set(re.findall(r"`([a-z][a-z0-9:-]{6,})`", line))
+                        # A "group" of one is not an equivalence; a group of more than four
+                        # is a paragraph, not a claim about naming.
+                        if not (2 <= len(group) <= 4):
+                            continue
+                        for t in group:
+                            aliases.setdefault(t, set()).update(group)
+                            aliases[t].add(t)
             except Exception:
                 pass
             shipped_tags = set()
