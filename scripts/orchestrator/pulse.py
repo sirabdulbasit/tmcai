@@ -702,6 +702,7 @@ def observed_gaps(top=6):
     # no tags — Brain's own failure sentence is the evidence, and it is his words back
     # from the system rather than a label somebody chose afterwards.
     counts = {}
+    last_seen_map = {}
     # WHEN the transcript was read, and how far back — owner, 2026-08-19: "here also
     # mention the time from where you read the conversation." A count with no window is
     # unreadable: "x14" means nothing until you know whether that is fourteen days or one
@@ -712,25 +713,43 @@ def observed_gaps(top=6):
         try:
             txt = open(live, errors="replace").read()
             sigs = [
-                (r"Hold on — I hadn.t actually done that yet", "canned-hold-on-denial"),
-                (r"no dispatcher for this action", "no-dispatcher-in-confirmed-plan"),
-                (r"couldn.t put together an answer I trust", "no-answer-produced"),
-                (r"I need to be sure what you mean", "re-asks-after-answer"),
+                (r"Hold on — I hadn.t actually done that yet",
+                 'Replied "Hold on — I hadn\'t actually done that yet" instead of acting'),
+                (r"no dispatcher for this action",
+                 'You confirmed a plan and it could not execute it'),
+                (r"couldn.t put together an answer I trust",
+                 'Gave up: "I couldn\'t put together an answer I trust"'),
+                (r"I need to be sure what you mean",
+                 'Asked you to clarify again after you had already answered'),
             ]
             m = re.search(r"harvested (\S+)", txt)
             m2 = re.search(r"(\d+) turns · (DELTA since (\S+)|last (\d+) days)", txt)
-            first_session = re.search(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)
+            all_sessions = re.findall(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)
+            first_session = re.match(r"()", "")  # placeholder, replaced below
             out["window"] = {
                 "harvested_at": m.group(1) if m else None,
                 "turns": int(m2.group(1)) if m2 else None,
-                "from": (m2.group(3) if (m2 and m2.group(3))
-                         else (first_session.group(1) + " UTC" if first_session else None)),
+                "from": (all_sessions[0] + " UTC") if all_sessions else None,
+                # The newest session, because "6 Aug onward" on a panel he is reading after
+                # chatting today reads as though the harvest stopped two weeks ago.
+                "to": (all_sessions[-1] + " UTC") if all_sessions else None,
                 "span": (f"last {m2.group(4)} days" if (m2 and m2.group(4)) else "delta"),
             }
+            heads = [(mm.start(), mm.group(1))
+                      for mm in re.finditer(r"^## Session \d+ — ([0-9-]+ [0-9:]+)", txt, re.M)]
+            def _last_seen(pos):
+                stamp = None
+                for at, ts in heads:
+                    if at <= pos:
+                        stamp = ts
+                    else:
+                        break
+                return stamp
             for pat, name in sigs:
-                n = len(re.findall(pat, txt))
-                if n:
-                    counts[name] = n
+                hits = list(re.finditer(pat, txt))
+                if hits:
+                    counts[name] = len(hits)
+                    last_seen_map[name] = _last_seen(hits[-1].start())
         except Exception:
             pass
     # The curated archive's tags are kept as well: they carry the recurrence vocabulary
@@ -840,7 +859,7 @@ def observed_gaps(top=6):
                         built_tags.add(t)
                         if deployed_at and int(ts) <= deployed_at:
                             shipped_tags.add(t)
-            out["chat"] = [{"tag": k, "times": v,
+            out["chat"] = [{"tag": k, "times": v, "last_seen": last_seen_map.get(k),
                             "state": ("shipped" if k in shipped_tags
                                       else "built" if k in built_tags else "open")}
                            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
@@ -1113,7 +1132,13 @@ def next_pulses(now_ts):
                 if due <= now_ts:
                     due += 86400
                 out["night_in_s"] = int(due - now_ts)
-                out["night_at"] = f"{hour:02d}:{minute:02d} UTC"
+                # Displayed in PKT (UTC+5) because that is the only clock he reads.
+                # Cron itself stays on UTC; converting here rather than changing the
+                # schedule keeps one source of truth for WHEN it runs.
+                pk = (hour + 5) % 24
+                ampm = "pm" if pk >= 12 else "am"
+                pk12 = pk % 12 or 12
+                out["night_at"] = f"{pk12}:{minute:02d}{ampm} PKT"
     return out
 
 

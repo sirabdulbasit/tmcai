@@ -89,6 +89,30 @@ function pkt(epoch, offset, withDate = false) {
   return `${withDate ? `${iso.slice(0, 10)} ` : ''}${iso.slice(11, 19)} PKT`;
 }
 
+/** "19 Aug 26, 5:17pm" — Pakistan Standard Time, always.
+ *
+ * Owner, 2026-08-19: "always use Pakistan Standard Time." He reads this deck in Karachi and
+ * every earlier label mixed UTC fragments with PKT stamps, so a 12:17 on screen could mean
+ * either 12:17pm or 5:17pm depending on which line he was looking at. One function, one zone.
+ *
+ * Takes an ISO string (what the collector emits for harvest times) rather than an epoch,
+ * because the existing pkt() already covers epochs and duplicating its job would give two
+ * answers for one instant.
+ */
+function pktStamp(iso) {
+  if (!iso) return null;
+  const t = Date.parse(String(iso).replace(/\.$/, ''));
+  if (Number.isNaN(t)) return null;
+  // +5h, then read the UTC fields — the browser's own zone is irrelevant and must not leak in.
+  const d = new Date(t + 5 * 3600 * 1000);
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let h = d.getUTCHours();
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12 || 12;
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}, ${h}:${mm}${ampm}`;
+}
+
 function DeltaChip({ value, className = '' }) {
   const v = Number(value ?? 0);
   const tone = v > 0 ? 'up' : v < 0 ? 'down' : '';
@@ -1334,13 +1358,14 @@ export default function OrchestratorPulsePanel() {
                         means nothing until you know whether that is a fortnight or one
                         afternoon, and an unlabelled window is exactly how this panel
                         passed for live while reading a file from Aug 5. */}
+                    {/* The RANGE, not just its start. Owner asked why it said "6 Aug
+                        onward" when he had chatted that same day — a 14-day window
+                        labelled by its oldest end reads as though the harvest stopped two
+                        weeks ago. */}
                     {data.observed?.window?.harvested_at && (
                       <span className="orch-progress-of">
-                        {' '}· {data.observed.window.turns} turns
-                        {data.observed.window.from
-                          ? ` from ${String(data.observed.window.from).replace('T', ' ').slice(0, 16)}`
-                          : ''}
-                        {' '}· read {String(data.observed.window.harvested_at).replace('T', ' ').slice(0, 16)} UTC
+                        {' '}· {data.observed.window.turns} turns,{' '}
+                        {pktStamp(data.observed.window.from)} → {pktStamp(data.observed.window.to)}
                       </span>
                     )}
                   </div>
@@ -1350,11 +1375,21 @@ export default function OrchestratorPulsePanel() {
                          "built" is dimmed but NOT struck — the owner can still hit a
                          defect whose fix sits on the branch, and striking it would
                          tell him it is gone when it is not. */
+                      /* Count FIRST and last-seen beside it. Owner: "what is meant by
+                         x21??? mean it occured 21 times?" — yes, and a bare "x21" buried
+                         after a slug made that unreadable. A count with no recency also
+                         cannot separate a defect that hit him an hour ago from one last
+                         seen ten days ago. */
                       <li key={c.tag} className={`is-${c.state || 'open'}`}
-                          title={c.state === 'shipped' ? 'fixed and shipped'
+                          title={c.state === 'shipped' ? 'a shipped fix names this'
                                  : c.state === 'built' ? 'fixed, not shipped — you can still hit this'
-                                 : 'open'}>
-                        <b>{c.tag}</b> ×{c.times}
+                                 : 'still open'}>
+                        <b>{c.times}×</b> {c.tag}
+                        {c.last_seen && (
+                          <span className="orch-progress-of">
+                            {' '}· last {pktStamp(String(c.last_seen).replace(' ', 'T') + 'Z')}
+                          </span>
+                        )}
                         {c.state === 'built' && <span className="orch-tag-state"> built</span>}
                       </li>
                     ))}

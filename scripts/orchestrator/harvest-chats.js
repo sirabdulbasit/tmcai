@@ -58,10 +58,17 @@ const SESSION_GAP_MIN = 45;
 
 (async () => {
   const prisma = new PrismaClient();
-  const since = SINCE_MS > 0
-    ? new Date(SINCE_MS)
-    : new Date(Date.now() - DAYS * 24 * 3600 * 1000);
-  const mode = SINCE_MS > 0 ? `DELTA since ${since.toISOString()}` : `last ${DAYS} days`;
+  // ALWAYS THE FULL WINDOW in the file. --since now marks where the NEW turns begin
+  // rather than truncating the transcript to them.
+  //
+  // Delta-only harvesting broke the owner's deck: the panel counts failures from this file,
+  // so a 5-turn delta made it read "5 turns from 5:17pm" above counts of 17 occurrences
+  // carried from a frozen archive. Two datasets under one label, which he correctly called
+  // meaningless. The analyst still reads incrementally — it is told the boundary — but the
+  // file it reads holds the whole picture, so anything counting from it is coherent.
+  const since = new Date(Date.now() - DAYS * 24 * 3600 * 1000);
+  const NEW_FROM = SINCE_MS > 0 ? new Date(SINCE_MS) : null;
+  const mode = `last ${DAYS} days`;
   // EVERY TENANT, EVERY USER. Owner, 2026-08-18: "since it is multitenant and multiuser
   // you should read conversation of each user and collectively analyze the gap of
   // brain's capability."
@@ -100,6 +107,13 @@ const SESSION_GAP_MIN = 45;
     perParty[k] = (perParty[k] || 0) + 1;
   }
   out.push(`Straight from the \`messages\` table: ${rows.length} turns · ${mode}.`);
+  if (NEW_FROM) {
+    const fresh = rows.filter((r) => r.createdAt > NEW_FROM).length;
+    out.push('');
+    out.push(`**NEW SINCE THE LAST ANALYSIS: ${fresh} turn(s) after ${NEW_FROM.toISOString()}.**`);
+    out.push('Everything before that line was already analysed — read it for context and');
+    out.push('recurrence, but the new turns are what you are being asked about.');
+  }
   out.push('');
   out.push(`**Parties: ${Object.keys(perParty).length}** (tenant/user → turns) — `
     + Object.entries(perParty).map(([k, v]) => `${k}: ${v}`).join(' · '));
@@ -138,7 +152,7 @@ const SESSION_GAP_MIN = 45;
 
   const fs = require('fs');
   if (rows.length === 0) {
-    console.log('harvested 0 turns — leaving the existing transcript in place');
+    console.log('harvested 0 turns in the window — leaving the existing transcript in place');
     await prisma.$disconnect();
     return;
   }
