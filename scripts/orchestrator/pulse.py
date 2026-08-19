@@ -922,6 +922,45 @@ def observed_gaps(top=6):
                             aliases[t].add(t)
             except Exception:
                 pass
+            # THE LEDGER IS AUTHORITATIVE, AND THE DECK WAS NEVER READING IT.
+            #
+            # Owner, 2026-08-19: "why are you showing me 'Not fixed' mean you are unable to
+            # fix it?? if you can then fix it without informing me."
+            #
+            # `whatsapp-lid-activity-rejected` was on his deck as NOT FIXED. It was fixed on
+            # 08-13 in 7735df8, the function is in the deployed artifact, and the symptom
+            # appears ZERO times in 288 live turns. The only thing still open was the DEF row
+            # — nobody moved it. State was derived from commit-message text alone, so a fix
+            # whose commit says "DEF-159 completed" instead of naming the tag stays "open"
+            # forever, and the panel invents work he has already paid for.
+            #
+            # brain_change_log.md is the authoritative record by project ruling, so it is now
+            # read as one. An explicit OPEN still wins over a resolution elsewhere: between a
+            # row that says open and a row that says fixed, the pessimistic reading is the
+            # only safe one on a deck whose worst failure mode is a false "fixed".
+            ledger_open = set()
+            ledger_fixed = set()
+            try:
+                cl = open(os.path.join(ROOT_DOCS, "brain_change_log.md"),
+                          errors="replace").read()
+                for row in cl.splitlines():
+                    if not row.startswith("| **DEF-"):
+                        continue
+                    tags_here = set(re.findall(r"`([a-z][a-z0-9:-]{6,})`", row))
+                    if not tags_here:
+                        continue
+                    # The verification/status cells, where a row's own verdict lives.
+                    verdict = row.upper()
+                    resolved = ("RESOLVED" in verdict or "CODE-COMPLETE" in verdict
+                                or "VERIFIED" in verdict)
+                    still_open = re.search(r"\*\*OPEN\b|\| *OPEN\b", row.upper()) is not None
+                    for t in tags_here:
+                        if still_open:
+                            ledger_open.add(t)
+                        elif resolved:
+                            ledger_fixed.add(t)
+            except Exception:
+                pass
             shipped_tags = set()
             built_tags = set()
             for chunk in log.split("\n"):
@@ -937,6 +976,13 @@ def observed_gaps(top=6):
                         built_tags.add(t)
                         if deployed_at and int(ts) <= deployed_at:
                             shipped_tags.add(t)
+            def _ledger(k):
+                """'fixed' | 'open' | None — the change log's own verdict on this tag."""
+                names = aliases.get(k, {k}) | {k}
+                if names & ledger_open:
+                    return "open"
+                return "fixed" if names & ledger_fixed else None
+
             def _state(k):
                 # An occurrence AFTER the deploy outranks every other signal. The commit
                 # said it closed the class; the transcript says the owner hit it anyway.
@@ -945,9 +991,24 @@ def observed_gaps(top=6):
                     return "regressed"
                 if k in shipped_tags:
                     return "shipped"
+                # The ledger settles what commit text cannot see. Its OPEN is honoured even
+                # against a matching commit, because a false "fixed" is the worse error.
+                led = _ledger(k)
+                if led == "open":
+                    return "built" if k in built_tags else "open"
+                if led == "fixed":
+                    return "shipped"
                 return "built" if k in built_tags else "open"
+            # LIVE vs ARCHIVE. A tag counted from the curated archive has no occurrence in
+            # the harvest window at all — `stale-contact-data` was last reported on 08-05 and
+            # has not been seen in the 288 turns since. Presenting it beside a defect that
+            # hit him this afternoon, in the same list, under the same heading "reported",
+            # is what made the list read as a to-do board he had to police. The deck renders
+            # live rows; --open-symptoms still emits every unfixed row, so the builder keeps
+            # working the backlog whether or not it is on screen.
             out["chat"] = [{"tag": k, "times": v, "last_seen": last_seen_map.get(k),
-                            "since": since_map.get(k), "state": _state(k)}
+                            "since": since_map.get(k), "state": _state(k),
+                            "evidence": ("live" if last_seen_map.get(k) else "archive")}
                            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:top]]
         except Exception:
             pass

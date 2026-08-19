@@ -1384,7 +1384,14 @@ export default function OrchestratorPulsePanel() {
                     )}
                   </div>
                   <ul className="orch-observed-list">
-                    {(data.observed.chat || []).map((c) => (
+                    {/* LIVE ROWS ONLY. Owner, 2026-08-19: "why are you showing me 'Not
+                        fixed' mean you are unable to fix it?? if you can then fix it without
+                        informing me." The archive rows are 14-day-silent backlog from 5
+                        August, and standing beside a defect that hit him this afternoon they
+                        turned the list into a board he had to police. They are not dropped —
+                        pulse.py --open-symptoms still hands every unfixed row to the
+                        builder, so the backlog is worked whether or not it is on screen. */}
+                    {(data.observed.chat || []).filter((c) => c.evidence !== 'archive').map((c) => (
                       /* Struck through only when a fix naming this tag has SHIPPED.
                          "built" is dimmed but NOT struck — the owner can still hit a
                          defect whose fix sits on the branch, and striking it would
@@ -1422,6 +1429,20 @@ export default function OrchestratorPulsePanel() {
                         </span>
                       </li>
                     ))}
+                    {/* Hidden, not lost — one muted line, no status, so the backlog leaves a
+                        trace without becoming a list he has to read. */}
+                    {(() => {
+                      const n = (data.observed.chat || [])
+                        .filter((c) => c.evidence === 'archive' && c.state !== 'shipped').length;
+                      return n ? (
+                        <li className="is-shipped">
+                          <span className="orch-window-note">
+                            +{n} older item{n > 1 ? 's' : ''} from the archive, not seen in this
+                            window — the cron works these
+                          </span>
+                        </li>
+                      ) : null;
+                    })()}
                   </ul>
                 </div>
               </div>
