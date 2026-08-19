@@ -351,9 +351,20 @@ export async function answerAsBrain(
   // WhatsApp. Those are internal signals meant for downstream
   // re-composition, not user prose. This sanitizer rewrites known
   // markers to plain language and strips unknown ones.
-  const { sanitizeAnswerForUser } = await import('../services/knowledge/answerSanitizer');
+  // THROUGH THE MODEL, ON THIS SURFACE TOO. Owner, 2026-08-19: "don't use any template
+  // string, always respond through model."
+  //
+  // The synchronous sanitizer substitutes a curated sentence and no model is involved, so
+  // the web surface delivered the literal template while WhatsApp at least attempted a
+  // rewrite. One surface, one behaviour: the voiced path takes the curated meaning as the
+  // FACT — which is what keeps this anti-fabrication rather than free-form — and asks the
+  // model for the phrasing. It never throws, and falls back to the synchronous sanitizer
+  // when the model is unavailable, which is the only case a fixed string is still correct.
+  const { sanitizeAnswerInBrainVoice } = await import('../services/knowledge/answerSanitizer');
   return {
-    answer: sanitizeAnswerForUser(result.answer),
+    answer: await sanitizeAnswerInBrainVoice(result.answer, {
+      clientNumber, userId, audience: 'owner', userMessage: question,
+    }),
     sources: result.sources,
     gaps: result.gaps,
     intent: plan.intent,

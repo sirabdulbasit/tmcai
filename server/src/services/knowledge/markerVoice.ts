@@ -64,8 +64,41 @@ ABSOLUTE RULES — these override any instinct to be helpful:
 4. No apologising twice, no filler, no "As an AI". Do not mention markers, systems, code, or that you were given anything to rewrite.
 5. One or two sentences. Speak the way a competent human assistant speaks to the person they work for.
 6. Match the language of the user's message when one is given — English to English, Urdu to Urdu, Roman Urdu to Roman Urdu.
+7. YOUR OWN WORDS. The marker is the FACT, never the phrasing. Do not copy its sentence back — say the same thing the way you would say it to this person about the thing they just asked for, and refer to what they actually asked for rather than "that".
 
 Return ONLY the sentence. No quotes, no brackets, no preamble.`;
+
+/** How much of the marker's own phrasing came back. 1 = a verbatim echo.
+ *
+ *  Owner, 2026-08-19: "don't use any template string, always respond through model."
+ *
+ *  The model WAS being called on this path — and returned the curated sentence
+ *  byte-for-byte 19 times out of 21, because it was handed a finished sentence and told
+ *  "say what it says". A model that echoes is a template with a bill attached, and it is
+ *  indistinguishable from one on the owner's screen, which is exactly how he described it:
+ *  "the way brain respond to me, feels like not through LLM".
+ *
+ *  Word-level rather than character-level, so a reply that keeps the facts but rebuilds the
+ *  sentence scores low while a copy with a comma moved still scores high. */
+export function contentWords(t: string): number {
+  return t.toLowerCase().replace(/[^a-z0-9\s']/g, ' ').split(/\s+/).filter((w) => w.length > 2).length;
+}
+
+export function echoRatio(source: string, out: string): number {
+  const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9\s']/g, ' ').split(/\s+/)
+    .filter((w) => w.length > 2);
+  const a = words(source);
+  const b = words(out);
+  if (!a.length || !b.length) return 0;
+  const bag = new Map<string, number>();
+  for (const w of b) bag.set(w, (bag.get(w) ?? 0) + 1);
+  let shared = 0;
+  for (const w of a) {
+    const have = bag.get(w) ?? 0;
+    if (have > 0) { shared += 1; bag.set(w, have - 1); }
+  }
+  return shared / a.length;
+}
 
 /**
  * The unreachable-config fallback, in the DEF-082 sense: a literal that exists
@@ -118,6 +151,37 @@ export async function renderMarkerInBrainVoice(
     // return, and a model that echoes the marker back in brackets rather than
     // rewriting it.
     if (!text || /^\s*\[/.test(text)) return lastResort(trimmed);
+    // AN ECHO IS NOT AN ANSWER. One retry with the instruction sharpened, because the first
+    // pass reproduced the input verbatim 19 times in 14 days on this exact path.
+    // Only for sentences long enough that rephrasing MEANS something. "Got it — noted." has
+    // two content words: any reply that acknowledges at all scores 1.0, so the echo test
+    // fires on every acknowledgement and buys a second call for a phrase that has no other
+    // sensible form. Eight content words is where the curated failure sentences start.
+    if (contentWords(trimmed) >= 8 && echoRatio(trimmed, text) >= 0.85) {
+      try {
+        const r2 = await callLLM(
+          `${SYSTEM}\n\nYour previous attempt copied the marker's wording almost exactly. That`
+          + ` is a failure. Rebuild the sentence from scratch: same fact, your own`
+          + ` construction, naming what they actually asked about.`,
+          user, {
+            clientNumber: ctx.clientNumber,
+            userId: ctx.userId,
+            purpose: 'marker_voice_retry',
+            maxTokens: 120,
+            timeoutMs: 6000,
+          },
+        );
+        const t2 = (r2?.text ?? '').trim().replace(/^["'`]|["'`]$/g, '');
+        // Accept the retry only if it is BOTH non-empty and less of a copy. A second echo
+        // is kept rather than discarded: the fact is still true, and silence or a vague
+        // fallback would be worse than a plainly-worded truth.
+        if (t2 && !/^\s*\[/.test(t2) && echoRatio(trimmed, t2) < echoRatio(trimmed, text)) {
+          return t2;
+        }
+      } catch {
+        // Fall through to the first attempt — it is honest, just unimaginative.
+      }
+    }
     return text;
   } catch (err) {
     // A judgement path degrading to a fallback is itself worth a finding
