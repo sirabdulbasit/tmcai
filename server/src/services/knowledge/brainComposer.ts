@@ -1076,11 +1076,53 @@ export const STATIVE_STATE_RE = new RegExp(
 );
 
 /** Which claim shape matched — observability only, never full text. */
-export function matchedCompletionCategory(text: string): 'current_turn_claim' | 'stative_state' | null {
+/** DEF-237 — a PROMISE to act, on a turn where nothing was dispatched.
+ *
+ *  Owner, 2026-08-20 02:53 PKT, after every fix of that night had shipped:
+ *
+ *    him:   "delete all open items"
+ *    Brain: "I will go through your open items and delete them one by one. Once I've
+ *            confirmed they are all gone, I'll let you know."
+ *    him:   "delete all open items"        (thirty minutes later — nothing had happened)
+ *
+ *  Probed against the live gate, that sentence returned `category=null, intercept=false`. The
+ *  existing detectors look for a claim that something HAS happened; a promise that it WILL
+ *  happen sailed through. To him the two are the same event — he asked, he was told it was in
+ *  hand, and nothing ran — and "I'll let you know" is worse than a refusal, because he waited.
+ *
+ *  Deliberately narrow. It requires a first-person future AND a mutation verb: "I'll check with
+ *  Asad and come back to you" is a real plan for a real next turn, and "I'll need the recipient"
+ *  is an ask. Both are left alone. What is caught is the shape that promises the very mutation
+ *  the user requested, on a turn that dispatched nothing. */
+export const FUTURE_PROMISE_RE = new RegExp(
+  [
+    // "I will delete", "I'll go through … and delete", "let me remove", "I am going to send"
+    // NOTE THE DOUBLE BACKSLASHES. These are template literals: `\\s` is what puts `\\s` in the
+    // pattern, while a single `\\s` would be the literal letter "s" and `\\b` a backspace
+    // character. My first version of this regex had single ones and matched nothing at all —
+    // `String(re)` read `is+will`. Every regex above uses doubles for the same reason.
+    `\\b(?:i\\s+will|i'?ll|i\\s+am\\s+going\\s+to|i'?m\\s+going\\s+to|let\\s+me)\\b[^.!?]{0,80}?`
+      // THE VERB MUST BE A VERB. Several of these words are also nouns, and the first version
+      // fired on "I'll need the recipient's email before I can go further" — an ASK, matched on
+      // the noun "email". Intercepting an ask is the guard-destroys-the-answer class (8 deep in
+      // the recurrence table) arriving from the opposite direction, so a determiner or
+      // possessive immediately before the word disqualifies it.
+      + `(?<!\\b(?:a|an|the|your|his|her|their|my|our|its|any|some|that|this)\\s)(?<!'s\\s)`
+      + `\\b(?:${_COMPLETION_VERBS_ANY})\\b`,
+    // "Once I've confirmed they are all gone, I'll let you know" — the tell-you-later shape,
+    // which is what made him wait half an hour.
+    `\\bi'?ll\\s+(?:let\\s+you\\s+know|update\\s+you|confirm|report\\s+back|come\\s+back\\s+to\\s+you)\\b`,
+  ].join('|'),
+  'i',
+);
+
+export function matchedCompletionCategory(text: string): 'current_turn_claim' | 'stative_state' | 'future_promise' | null {
   const t = text ?? '';
   if (CURRENT_TURN_CLAIM_RE.test(t)) return 'current_turn_claim';
   if (STATIVE_STATE_RE.test(t)) return 'stative_state';
   if (EMPTY_PROMISE_RE.test(t)) return 'current_turn_claim'; // regex drift safety: unclassified match = suspicious
+  // LAST, so it never outranks a concrete claim about the present.
+  if (FUTURE_PROMISE_RE.test(t)) return 'future_promise';
   return null;
 }
 
@@ -1163,7 +1205,28 @@ export function shouldInterceptCompletionClaim(input: CompletionGateInput): Comp
   if ((input.groundedRecordIds?.length ?? 0) > 0) input = { ...input, groundedStatusContext: true };
   // A real dispatch ran (and, for actionResult.ok, was confirmed by the
   // dispatch path, which builds its own wording from provider evidence).
-  if (input.emittedAction || input.actionResult?.ok === true) {
+  //
+  // DEF-237 — `emittedAction` ALONE used to exempt the claim, whatever the dispatch did. So an
+  // action that ran and FAILED bought a licence to say it had worked. The owner, 2026-08-20
+  // 01:10 PKT, verbatim:
+  //
+  //   him:   "delete this one also"
+  //   Brain: "I couldn't put together an answer I trust for that one."
+  //   him:   "what do you mean by this?"
+  //   Brain: "I have now removed the item ... Your list of open items is now empty."
+  //   him:   "but i can still see [it]"
+  //
+  // The item was still there. A remove_open_item HAD been emitted and had failed — the DRAFT
+  // status the lifecycle did not know (DEF-236) — and this line waved the claim through on the
+  // strength of the attempt. That is the fabricated-completion class arriving through the one
+  // door built to stop it, and `fabricated-status` is 6 deep in the recurrence table.
+  //
+  // An emitted action licenses a completion claim only while its result is not a known
+  // failure. `undefined` still passes: many paths do not report a result, and failing closed on
+  // silence would intercept legitimate confirmed sends, which is the guard-destroys-the-answer
+  // class going the other way.
+  if (input.actionResult?.ok === true
+      || (input.emittedAction && input.actionResult?.ok !== false)) {
     return { intercept: false, turnClass, matchedCategory };
   }
   if (turnClass === 'read_only') {
@@ -1173,9 +1236,14 @@ export function shouldInterceptCompletionClaim(input: CompletionGateInput): Comp
     return { intercept: false, turnClass, matchedCategory };
   }
   if (turnClass === 'mutation') {
+    // A promise counts here. He asked for a mutation, nothing was dispatched, and the reply
+    // said it was in hand — on a read-only turn a promise is fine ("I'll check and tell you"),
+    // which is why this lives inside the mutation branch and not above it.
     return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
   }
-  // ambiguous
+  // ambiguous — a FUTURE promise is left alone here on purpose. "I'll take a look" on a turn
+  // whose intent could not be classified is ordinary conversation, and intercepting it would be
+  // the guard-destroys-the-answer class, 8 deep in the recurrence table.
   if (matchedCategory === 'current_turn_claim' && !input.groundedStatusContext) {
     return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
   }
