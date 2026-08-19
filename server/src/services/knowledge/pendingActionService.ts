@@ -59,6 +59,17 @@ export type PendingActionKind =
   | 'mark_open_item_done'
   | 'record_preference'
   | 'set_brain_name'
+  // DEF-234 — the last four with the same story, closed under the owner's governance ruling
+  // of 2026-08-19 (`BRAIN_VISION.md`). They executed inline and were refused inside a plan
+  // the owner had confirmed. The ruling forbids fixing that by adding them to an allow-list,
+  // so `DISPATCHABLE_PLAN_STEP_KINDS` is now DERIVED from what the composer can execute —
+  // and this union is what the compiler uses to hold the dispatcher to it. tsc rejected the
+  // four new dispatcher cases until they were named here, which is the enforcement working:
+  // the two sides cannot drift without failing the build.
+  | 'set_contact_scope'
+  | 'mark_contact_inactive'
+  | 'archive_wiki_page'
+  | 'delete_wiki_page'
   // Compound plan (2026-07-14): several outbound steps previewed and
   // confirmed TOGETHER ("send followup on email AND whatsapp" → one
   // preview, one "send", both dispatch). slots = { steps: [{kind,

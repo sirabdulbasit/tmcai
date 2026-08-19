@@ -181,31 +181,6 @@ export function displacementNotice(
   return `\u26a0\ufe0f Heads up: this replaces ${what} you hadn't confirmed yet — "send" now applies to what's below, not that.\n\n`;
 }
 
-export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> = new Set([
-  'add_open_item',
-  'update_open_item',
-  'update_contact',
-  'create_contact',
-  'schedule_meeting',
-  'reschedule_meeting',
-  'cancel_meeting',
-  'send_email',
-  'notify_via_whatsapp',
-  'delegate_open_item',
-  // DEF-232 `no-dispatcher-in-confirmed-plan` — the four immediate-internal
-  // kinds. They were dispatchable inline and refused here, so the owner's
-  // confirmed "delete all open items" died AFTER his "yes" (~14 hits,
-  // S14→S33). Their `dispatchPendingDirect` cases call the same
-  // `internalActionExecutors` the inline branches call. INVARIANT, pinned by
-  // tests/def232ConfirmedPlanExecutesInternalKinds.test.ts: every member of
-  // IMMEDIATE_INTERNAL_ACTION_TYPES is in this set — a kind must never again
-  // be executable on one path and rejected on the other.
-  'mark_open_item_done',
-  'remove_open_item',
-  'record_preference',
-  'set_brain_name',
-  // 'action_plan' is deliberately absent — nested plans are rejected.
-]);
 
 /** DEF-048 — does this action, with THESE slots, reach another human?
  *
@@ -248,6 +223,37 @@ export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
   'set_contact_scope', 'mark_contact_inactive', 'update_contact', 'create_contact',
   'record_preference',
 ]);
+
+/**
+ * DERIVED, NOT DECLARED — owner ruling, 2026-08-19 (`BRAIN_VISION.md`,
+ * "How the nine are governed"): *"we will govern all capabilities through LLM where we will
+ * have some guardrail"*, and a guardrail is an invariant about any action, never a list of
+ * which actions are allowed.
+ *
+ * This WAS such a list: 15 hand-written strings beside 18 kinds the composer can actually
+ * execute. The four in the gap — `set_contact_scope`, `mark_contact_inactive`,
+ * `archive_wiki_page`, `delete_wiki_page` — worked when asked for directly and died with
+ * "no dispatcher for this action in a confirmed plan" inside a plan the owner had confirmed.
+ * DEF-232 closed that for four other kinds by hand; DEF-234 removes the thing that generates
+ * it, because the next capability would have landed in the same gap.
+ *
+ * The rule now has one source: **a kind the composer can execute is dispatchable from a
+ * confirmed plan.** Adding a capability to `COMPOSER_DISPATCHED_TYPES` makes it work on BOTH
+ * paths or neither — there is no second list to forget.
+ *
+ * `action_plan` stays OUT, and deliberately: a plan step that is itself a plan is rejected, so
+ * nested plans cannot recurse. It is not in `COMPOSER_DISPATCHED_TYPES` either — it is the
+ * container plans arrive in, never an inline act — so the derivation excludes it for free
+ * rather than by a special case. (I nearly added it back: my own audit regex read the line
+ * `// 'action_plan' is deliberately absent` as a MEMBER of the old literal and reported it
+ * dispatchable. Two existing tests caught that, which is what they are for.)
+ *
+ * The gate it feeds is still worth keeping and is NOT a capability list: it refuses to ask
+ * the owner to confirm something that cannot execute, which is a fact about the dispatcher
+ * rather than an opinion about the verb.
+ */
+export const DISPATCHABLE_PLAN_STEP_KINDS: ReadonlySet<string> =
+  new Set<string>(COMPOSER_DISPATCHED_TYPES);
 
 /** Resolve plan → opened pages (full body where FACL titles were named).
  *  `query` is the raw user question, used for the semantic-vector search
@@ -4175,88 +4181,20 @@ ${calLines.join('\n')}`;
           answer = res.message;
         }
       } else if (act.type === 'set_contact_scope') {
-        try {
-          // contactCandidateId is the entities.id, but the visibility
-          // lives on wiki_pages.metadata.scope for the corresponding
-          // entity_person page. Lookup by entity → wiki page via email.
-          const ent = await prisma.entity.findFirst({
-            where: { id: act.contactCandidateId, clientNumber },
-            select: { id: true, name: true, email: true, phone: true },
-          });
-          if (!ent) {
-            actionResult = { ok: false, message: `[set_contact_scope: contact not found in your contacts]` };
-          } else {
-            // Locate the wiki_page (entity_person) for this contact
-            const pageRows = await prisma.$queryRawUnsafe<any[]>(
-              `SELECT id, metadata, user_id FROM wiki_pages
-               WHERE client_number = $1 AND page_type = 'entity_person'
-                 AND (
-                   ($2 <> '' AND lower(metadata->>'email') = $2)
-                   OR ($3 <> '' AND regexp_replace(COALESCE(metadata->>'phone',''),'[^0-9+]','','g') = $3)
-                 ) LIMIT 1`,
-              clientNumber,
-              (ent.email ?? '').toLowerCase(),
-              (ent.phone ?? '').replace(/[^\d+]/g, ''),
-            ).catch(() => []);
-            const page = pageRows[0];
-            if (!page) {
-              actionResult = { ok: false, message: `[set_contact_scope: no wiki page for ${ent.name}]` };
-            } else if (page.user_id !== userId) {
-              actionResult = { ok: false, message: `[set_contact_scope: only the owner can change scope]` };
-            } else {
-              const newMeta = { ...(page.metadata as object), scope: act.scope };
-              if (act.scope === 'tenant') {
-                (newMeta as any).publicSince = new Date().toISOString();
-                (newMeta as any).publicSetBy = userId;
-              }
-              await prisma.$executeRawUnsafe(
-                `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
-                JSON.stringify(newMeta), page.id,
-              );
-              actionResult = { ok: true, artifactId: page.id, message: `Set "${ent.name}" scope to ${act.scope}.` };
-            }
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `[set_contact_scope failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-234 — body moved to `internalActionExecutors` VERBATIM and shared with the
+        // confirmed-plan path. It used to be reachable only from a direct request.
+        const { executeSetContactScope } = await import('./internalActionExecutors');
+        actionResult = await executeSetContactScope(clientNumber, userId, {
+          contactCandidateId: act.contactCandidateId, scope: act.scope,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'mark_contact_inactive') {
-        try {
-          const ent = await prisma.entity.findFirst({
-            where: { id: act.contactCandidateId, clientNumber },
-            select: { id: true, name: true, email: true, phone: true },
-          });
-          if (!ent) {
-            actionResult = { ok: false, message: `[mark_contact_inactive: contact not found]` };
-          } else {
-            // Locate wiki page and set status='inactive' + metadata.markedInactiveByUser=true
-            const pageRows = await prisma.$queryRawUnsafe<any[]>(
-              `SELECT id, metadata, user_id FROM wiki_pages
-               WHERE client_number = $1 AND page_type = 'entity_person'
-                 AND (
-                   ($2 <> '' AND lower(metadata->>'email') = $2)
-                   OR ($3 <> '' AND regexp_replace(COALESCE(metadata->>'phone',''),'[^0-9+]','','g') = $3)
-                 ) LIMIT 1`,
-              clientNumber,
-              (ent.email ?? '').toLowerCase(),
-              (ent.phone ?? '').replace(/[^\d+]/g, ''),
-            ).catch(() => []);
-            const page = pageRows[0];
-            if (page && page.user_id === userId) {
-              const newMeta = { ...(page.metadata as object), markedInactiveByUser: true, markedInactiveAt: new Date().toISOString() };
-              await prisma.$executeRawUnsafe(
-                `UPDATE wiki_pages SET metadata = $1::jsonb, status = 'inactive', last_updated_at = NOW() WHERE id = $2`,
-                JSON.stringify(newMeta), page.id,
-              );
-            }
-            actionResult = { ok: true, artifactId: ent.id, message: `Marked "${ent.name}" inactive. Brain will skip them.` };
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `[mark_contact_inactive failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-234 — shared with the confirmed-plan path.
+        const { executeMarkContactInactive } = await import('./internalActionExecutors');
+        actionResult = await executeMarkContactInactive(clientNumber, userId, {
+          contactCandidateId: act.contactCandidateId,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'update_contact') {
         // Real contact-field edit (2026-07-13). Shared helper — the same
         // implementation serves plan steps in dispatchPendingDirect.
@@ -4268,52 +4206,19 @@ ${calLines.join('\n')}`;
         });
         answer = actionResult.message;
       } else if (act.type === 'archive_wiki_page') {
-        try {
-          const existing = await prisma.wikiPage.findUnique({
-            where: { id: act.wikiPageId },
-            select: { id: true, clientNumber: true, userId: true, scope: true, title: true, status: true },
-          });
-          if (!existing || existing.clientNumber !== clientNumber) {
-            actionResult = { ok: false, message: `[archive_wiki_page: page not found]` };
-          } else if (existing.scope === 'user' && existing.userId !== userId) {
-            actionResult = { ok: false, message: `[archive_wiki_page: only the owner can archive this page]` };
-          } else if (existing.status === 'archived') {
-            actionResult = { ok: true, artifactId: existing.id, message: `"${existing.title}" was already archived.` };
-          } else {
-            await prisma.wikiPage.update({
-              where: { id: existing.id },
-              data: { status: 'archived' as any, lastUpdatedAt: new Date() } as any,
-            });
-            actionResult = { ok: true, artifactId: existing.id, message: `Archived wiki page "${existing.title}". Brain won't surface it until you restore it.` };
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `[archive_wiki_page failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-234 — shared with the confirmed-plan path.
+        const { executeArchiveWikiPage } = await import('./internalActionExecutors');
+        actionResult = await executeArchiveWikiPage(clientNumber, userId, {
+          wikiPageId: act.wikiPageId,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'delete_wiki_page') {
-        try {
-          const existing = await prisma.wikiPage.findUnique({
-            where: { id: act.wikiPageId },
-            select: { id: true, clientNumber: true, userId: true, scope: true, title: true, pageType: true },
-          });
-          if (!existing || existing.clientNumber !== clientNumber) {
-            actionResult = { ok: false, message: `[delete_wiki_page: page not found]` };
-          } else if (existing.scope === 'user' && existing.userId !== userId) {
-            actionResult = { ok: false, message: `[delete_wiki_page: only the owner can delete this page]` };
-          } else {
-            await prisma.wikiPage.delete({ where: { id: existing.id } });
-            console.warn('[brain-chat] wiki page hard-deleted via Brain', {
-              id: existing.id, title: existing.title, pageType: existing.pageType,
-              actor: userId, clientNumber,
-            });
-            actionResult = { ok: true, artifactId: existing.id, message: `Deleted wiki page "${existing.title}". Brain has forgotten it.` };
-          }
-          answer = actionResult.message;
-        } catch (e: any) {
-          actionResult = { ok: false, message: `[delete_wiki_page failed: ${e?.message ?? 'unknown'}]` };
-          answer = actionResult.message;
-        }
+        // DEF-234 — shared with the confirmed-plan path.
+        const { executeDeleteWikiPage } = await import('./internalActionExecutors');
+        actionResult = await executeDeleteWikiPage(clientNumber, userId, {
+          wikiPageId: act.wikiPageId,
+        });
+        answer = actionResult.message;
       } else if (act.type === 'record_preference') {
         // DEF-232 — body moved to `internalActionExecutors` VERBATIM and shared
         // with the confirmed-plan path ("Chase everyone … don't ask for
@@ -6801,6 +6706,37 @@ export async function dispatchPendingDirect(
       return executeSetBrainName(userId, {
         name: slots.name != null ? String(slots.name) : null,
       });
+    }
+    // ── DEF-234: the last four kinds that could execute inline but not from a
+    //    confirmed plan. Same functions the inline branches call, so the derived
+    //    gate above is TRUE rather than merely asserted. ──
+    case 'set_contact_scope': {
+      const { executeSetContactScope } = await import('./internalActionExecutors');
+      const id = slots.contactCandidateId != null ? String(slots.contactCandidateId) : '';
+      if (!id) return { ok: false, message: `[set_contact_scope: missing contact]` };
+      const scope = String(slots.scope ?? '');
+      if (scope !== 'tenant' && scope !== 'normal' && scope !== 'private') {
+        return { ok: false, message: `[set_contact_scope: scope must be tenant, normal or private]` };
+      }
+      return executeSetContactScope(clientNumber, userId, { contactCandidateId: id, scope });
+    }
+    case 'mark_contact_inactive': {
+      const { executeMarkContactInactive } = await import('./internalActionExecutors');
+      const id = slots.contactCandidateId != null ? String(slots.contactCandidateId) : '';
+      if (!id) return { ok: false, message: `[mark_contact_inactive: missing contact]` };
+      return executeMarkContactInactive(clientNumber, userId, { contactCandidateId: id });
+    }
+    case 'archive_wiki_page': {
+      const { executeArchiveWikiPage } = await import('./internalActionExecutors');
+      const id = slots.wikiPageId != null ? String(slots.wikiPageId) : '';
+      if (!id) return { ok: false, message: `[archive_wiki_page: missing page]` };
+      return executeArchiveWikiPage(clientNumber, userId, { wikiPageId: id });
+    }
+    case 'delete_wiki_page': {
+      const { executeDeleteWikiPage } = await import('./internalActionExecutors');
+      const id = slots.wikiPageId != null ? String(slots.wikiPageId) : '';
+      if (!id) return { ok: false, message: `[delete_wiki_page: missing page]` };
+      return executeDeleteWikiPage(clientNumber, userId, { wikiPageId: id });
     }
     case 'add_open_item': {
       // Plan-step only (single add_open_item dispatches inline in

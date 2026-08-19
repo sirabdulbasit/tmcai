@@ -212,3 +212,183 @@ export async function executeSetBrainName(
     return { ok: false, message: `Couldn't save the name: ${e?.message ?? 'unknown'}` };
   }
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * DEF-234 — the same class DEF-232 closed for four kinds, closed for its last
+ * four siblings, under the owner's governance ruling of 2026-08-19.
+ *
+ * `COMPOSER_DISPATCHED_TYPES` held 18 kinds the composer can execute inline.
+ * `DISPATCHABLE_PLAN_STEP_KINDS` held 15. The four in the gap —
+ * `set_contact_scope`, `mark_contact_inactive`, `archive_wiki_page`,
+ * `delete_wiki_page` — worked when asked for directly and died with
+ * "no dispatcher for this action in a confirmed plan" the moment they appeared
+ * in a plan the owner had confirmed. Exactly the sentence he read 16 times.
+ *
+ * The ruling forbids the obvious patch: BRAIN_VISION.md now says a guardrail is
+ * an invariant about any action, never a list of which actions are allowed, and
+ * that adding a kind to an allow-list is not an accepted fix. So the gate is no
+ * longer its own list — it is DERIVED from what can execute (see
+ * `DISPATCHABLE_PLAN_STEP_KINDS` in brainComposer.ts). These four functions are
+ * what make that derivation true rather than merely declared: a kind the
+ * composer can execute is now executable from the confirmed path too, because
+ * both paths call the same function.
+ *
+ * Bodies are moved VERBATIM from the inline branches, messages included, so
+ * behaviour on the inline path is unchanged by construction.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The `entity_person` wiki page for a saved contact, matched on email or
+ *  phone. Shared by the two contact executors, which located it with the same
+ *  query duplicated — and a second copy of a lookup is how
+ *  `protection-with-two-implementations` reached five recurrences. */
+async function contactWikiPage(
+  clientNumber: string,
+  ent: { email: string | null; phone: string | null },
+): Promise<{ id: string; metadata: unknown; user_id: number } | undefined> {
+  const rows = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT id, metadata, user_id FROM wiki_pages
+     WHERE client_number = $1 AND page_type = 'entity_person'
+       AND (
+         ($2 <> '' AND lower(metadata->>'email') = $2)
+         OR ($3 <> '' AND regexp_replace(COALESCE(metadata->>'phone',''),'[^0-9+]','','g') = $3)
+       ) LIMIT 1`,
+    clientNumber,
+    (ent.email ?? '').toLowerCase(),
+    (ent.phone ?? '').replace(/[^\d+]/g, ''),
+  ).catch(() => []);
+  return rows[0];
+}
+
+export async function executeSetContactScope(
+  clientNumber: string,
+  userId: number,
+  args: { contactCandidateId: string; scope: 'tenant' | 'normal' | 'private' },
+): Promise<InternalActionResult> {
+  try {
+    // contactCandidateId is the entities.id, but the visibility lives on
+    // wiki_pages.metadata.scope for the corresponding entity_person page.
+    const ent = await prisma.entity.findFirst({
+      where: { id: args.contactCandidateId, clientNumber },
+      select: { id: true, name: true, email: true, phone: true },
+    });
+    if (!ent) return { ok: false, message: `[set_contact_scope: contact not found in your contacts]` };
+    const page = await contactWikiPage(clientNumber, ent);
+    if (!page) return { ok: false, message: `[set_contact_scope: no wiki page for ${ent.name}]` };
+    // GUARDRAIL, and one of the four the vision names: user scope. Not a list of
+    // permitted kinds — a fact about who owns this record.
+    if (page.user_id !== userId) {
+      return { ok: false, message: `[set_contact_scope: only the owner can change scope]` };
+    }
+    const newMeta: any = { ...(page.metadata as object), scope: args.scope };
+    if (args.scope === 'tenant') {
+      newMeta.publicSince = new Date().toISOString();
+      newMeta.publicSetBy = userId;
+    }
+    await prisma.$executeRawUnsafe(
+      `UPDATE wiki_pages SET metadata = $1::jsonb, last_updated_at = NOW() WHERE id = $2`,
+      JSON.stringify(newMeta), page.id,
+    );
+    return { ok: true, artifactId: page.id, message: `Set "${ent.name}" scope to ${args.scope}.` };
+  } catch (e: any) {
+    return { ok: false, message: `[set_contact_scope failed: ${e?.message ?? 'unknown'}]` };
+  }
+}
+
+export async function executeMarkContactInactive(
+  clientNumber: string,
+  userId: number,
+  args: { contactCandidateId: string },
+): Promise<InternalActionResult> {
+  try {
+    const ent = await prisma.entity.findFirst({
+      where: { id: args.contactCandidateId, clientNumber },
+      select: { id: true, name: true, email: true, phone: true },
+    });
+    if (!ent) return { ok: false, message: `[mark_contact_inactive: contact not found]` };
+    const page = await contactWikiPage(clientNumber, ent);
+    // The page update is best-effort and scoped to the owner; the contact is
+    // still reported inactive either way, which is the inline behaviour.
+    if (page && page.user_id === userId) {
+      const newMeta = {
+        ...(page.metadata as object),
+        markedInactiveByUser: true,
+        markedInactiveAt: new Date().toISOString(),
+      };
+      await prisma.$executeRawUnsafe(
+        `UPDATE wiki_pages SET metadata = $1::jsonb, status = 'inactive', last_updated_at = NOW() WHERE id = $2`,
+        JSON.stringify(newMeta), page.id,
+      );
+    }
+    return { ok: true, artifactId: ent.id, message: `Marked "${ent.name}" inactive. Brain will skip them.` };
+  } catch (e: any) {
+    return { ok: false, message: `[mark_contact_inactive failed: ${e?.message ?? 'unknown'}]` };
+  }
+}
+
+export async function executeArchiveWikiPage(
+  clientNumber: string,
+  userId: number,
+  args: { wikiPageId: string },
+): Promise<InternalActionResult> {
+  try {
+    const existing = await prisma.wikiPage.findUnique({
+      where: { id: args.wikiPageId },
+      select: { id: true, clientNumber: true, userId: true, scope: true, title: true, status: true },
+    });
+    // GUARDRAIL: tenant scope, then user scope. Both are facts about the record,
+    // not opinions about the verb.
+    if (!existing || existing.clientNumber !== clientNumber) {
+      return { ok: false, message: `[archive_wiki_page: page not found]` };
+    }
+    if (existing.scope === 'user' && existing.userId !== userId) {
+      return { ok: false, message: `[archive_wiki_page: only the owner can archive this page]` };
+    }
+    if (existing.status === 'archived') {
+      return { ok: true, artifactId: existing.id, message: `"${existing.title}" was already archived.` };
+    }
+    await prisma.wikiPage.update({
+      where: { id: existing.id },
+      data: { status: 'archived' as any, lastUpdatedAt: new Date() } as any,
+    });
+    return {
+      ok: true, artifactId: existing.id,
+      message: `Archived wiki page "${existing.title}". Brain won't surface it until you restore it.`,
+    };
+  } catch (e: any) {
+    return { ok: false, message: `[archive_wiki_page failed: ${e?.message ?? 'unknown'}]` };
+  }
+}
+
+export async function executeDeleteWikiPage(
+  clientNumber: string,
+  userId: number,
+  args: { wikiPageId: string },
+): Promise<InternalActionResult> {
+  try {
+    const existing = await prisma.wikiPage.findUnique({
+      where: { id: args.wikiPageId },
+      select: { id: true, clientNumber: true, userId: true, scope: true, title: true, pageType: true },
+    });
+    if (!existing || existing.clientNumber !== clientNumber) {
+      return { ok: false, message: `[delete_wiki_page: page not found]` };
+    }
+    if (existing.scope === 'user' && existing.userId !== userId) {
+      return { ok: false, message: `[delete_wiki_page: only the owner can delete this page]` };
+    }
+    await prisma.wikiPage.delete({ where: { id: existing.id } });
+    // A hard delete is the one action here with no undo, so it is logged with
+    // the actor. The vision's third guardrail — irreversible needs confirmation
+    // — is satisfied upstream: a plan step reaches here only after the owner
+    // confirmed the rendered preview.
+    console.warn('[brain-chat] wiki page hard-deleted via Brain', {
+      id: existing.id, title: existing.title, pageType: existing.pageType,
+      actor: userId, clientNumber,
+    });
+    return {
+      ok: true, artifactId: existing.id,
+      message: `Deleted wiki page "${existing.title}". Brain has forgotten it.`,
+    };
+  } catch (e: any) {
+    return { ok: false, message: `[delete_wiki_page failed: ${e?.message ?? 'unknown'}]` };
+  }
+}
