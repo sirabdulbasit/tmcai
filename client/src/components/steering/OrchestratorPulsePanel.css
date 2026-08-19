@@ -753,3 +753,7 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
    repeating the Brain Capability card beside it, in a smaller font, while squeezing the chat
    rows that appear nowhere else. One column, and the rows get the width. */
 .orch-observed-single { grid-template-columns: 1fr; }
+
+/* A pulse that spent nothing: shown, but dimmed. Its dashes mean "no builder ran", which is a
+   fact worth seeing — six of these were being hidden entirely. */
+.orch-table tr.is-quiet td { color: var(--text-dim); }

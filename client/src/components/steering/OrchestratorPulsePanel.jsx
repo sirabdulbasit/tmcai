@@ -802,13 +802,21 @@ function TokensByPulse({ data }) {
         </tr>
       </thead>
       <tbody>
+        {/* EVERY PULSE, INCLUDING THE ONES THAT SPENT NOTHING. Owner, 2026-08-20: "i want to
+            see Token in and out and cache rd and cost iteration wise, this should show only
+            last 10 iteration data." Pulses with no token record were being dropped upstream,
+            so this table showed three rows beside a timing table showing nine — and the six it
+            hid were the interesting ones: no tokens means THE BUILD NEVER RAN. A dash says
+            that; an omitted row says nothing at all. */}
         {t.rows.map((r) => (
-          <tr key={r.label} title={r.kind}>
+          <tr key={r.iteration ?? r.label}
+              title={r.ran ? r.kind : `${r.kind} · no builder ran, so nothing was spent`}
+              className={r.ran ? undefined : 'is-quiet'}>
             <td>{r.label}</td>
-            <td className="num">{k(r.input)}</td>
-            <td className="num">{k(r.output)}</td>
-            <td className="num">{k(r.cache_read)}</td>
-            <td className="num">{r.cost_usd != null ? `$${r.cost_usd}` : '—'}</td>
+            <td className="num">{r.ran ? k(r.input) : '—'}</td>
+            <td className="num">{r.ran ? k(r.output) : '—'}</td>
+            <td className="num">{r.ran ? k(r.cache_read) : '—'}</td>
+            <td className="num">{r.ran ? `$${r.cost_usd}` : '—'}</td>
           </tr>
         ))}
         {kinds.map(([kind, v]) => (

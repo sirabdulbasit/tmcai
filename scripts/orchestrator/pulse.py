@@ -1364,10 +1364,17 @@ def pulse_labels():
     carried forward to fake one, because a column of last-night's scores under a C label
     would say a conversational pulse measured something it never measured.
     """
+    # A LEDGER GAP MUST NOT ERASE A PULSE. Pulses 5-8 ran, appear in loop.log with their
+    # phases and timings, and had no ledger line because only the full loop wrote that file
+    # until 2026-08-20. Rows keyed off this map silently lost them — the token table showed
+    # C1/C2/C3 next to a timing table showing #1 to #9. Anything the log knows about gets a
+    # label; the ledger supplies the kind where it can, and the fallback says "#N" rather
+    # than guessing a kind it cannot know.
     out = {}
     path = os.path.join(STATE, "pulse-ledger.jsonl")
     if not os.path.exists(path):
-        return out
+        return {r["iteration"]: f"#{r['iteration']}"
+                for r in (iteration_timings() or []) if r.get("iteration") is not None}
     try:
         for line in open(path, errors="replace"):
             line = line.strip()
@@ -1386,6 +1393,11 @@ def pulse_labels():
             out[int(it)] = f"{prefix}{d.get('kind_n') or '?'}"
     except Exception:
         pass
+    # Fill the gaps from the log, so a missing ledger line costs a KIND label, never the row.
+    for row in (iteration_timings() or []):
+        it = row.get("iteration")
+        if it is not None:
+            out.setdefault(it, f"#{it}")
     return out
 
 
@@ -1518,24 +1530,46 @@ def tokens_by_pulse(limit=10):
 
     Totals are per KIND, not one grand total, for the same reason.
     """
+    # ITERATION-WISE, AND EVERY ONE OF THE LAST TEN — owner, 2026-08-20: "i want to see Token
+    # in and out and cache rd and cost iteration wise, this should show only last 10 iteration
+    # data."
+    #
+    # The rows were already per-pulse and capped at ten, but a `continue` dropped any pulse
+    # with no token record — so the table showed C1/C2/C3 while the Time-by-pulse table above
+    # it showed #1 to #9. Six rows vanished, and they were the interesting ones: a pulse with
+    # zero tokens is a pulse whose BUILD NEVER RAN, which is precisely what he had been asking
+    # about all evening. Silently omitting them made seven dead builds look like three healthy
+    # pulses.
+    #
+    # Keyed by iteration now, so the two tables line up column for column, with the C/N label
+    # kept alongside because a conversational pulse and a nightly cost differently by design.
     labels = pulse_labels()
     rows = []
     for it in sorted(labels)[-limit:]:
         t = stage_tokens(it)
         tot = t.get("_total") or {}
-        if not any(tot.get(k) for k in ("input", "output", "cache_read", "cost_usd")):
-            continue
+        spent = any(tot.get(k) for k in ("input", "output", "cache_read", "cost_usd"))
         rows.append({
+            "iteration": it,
             "label": labels.get(it, f"#{it}"),
-            "kind": "conversational" if labels.get(it, "").startswith("C") else "nightly",
+            # KIND COMES FROM THE LEDGER OR NOT AT ALL. `startswith("C") else "nightly"`
+            # declared the four pulses with no ledger line to be nightly runs, which they were
+            # not — they were conversational, and the nightly had not run yet. An inferred kind
+            # on a cost table is a wrong bill attributed to the wrong schedule.
+            "kind": ("conversational" if labels.get(it, "").startswith("C")
+                     else "nightly" if labels.get(it, "").startswith("N")
+                     else "unrecorded"),
             "input": tot.get("input", 0), "output": tot.get("output", 0),
             "cache_read": tot.get("cache_read", 0), "cost_usd": tot.get("cost_usd", 0),
+            # Distinguishes "cost nothing" from "no record", which a zero cannot.
+            "ran": bool(spent),
         })
     per_kind = {}
     for r in rows:
         k = per_kind.setdefault(r["kind"], {"pulses": 0, "input": 0, "output": 0,
                                            "cache_read": 0, "cost_usd": 0.0})
-        k["pulses"] += 1
+        if r["ran"]:
+            k["pulses"] += 1
         for f in ("input", "output", "cache_read"):
             k[f] += r[f]
         k["cost_usd"] = round(k["cost_usd"] + (r["cost_usd"] or 0), 2)

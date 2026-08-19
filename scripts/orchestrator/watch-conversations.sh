@@ -76,6 +76,18 @@ begin_pulse() {
   printf '%s' "$PULSE_ITER" > "$STATE/iteration"
   printf '%s  ─── iteration %s ───\n' \
     "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" >> "$ORCH_LOG"
+  # THE LEDGER TOO, not just the log. Owner, 2026-08-20, on a token table showing C1/C2/C3
+  # beside a timing table showing #1 to #9: four of the nine pulses had no ledger line, so the
+  # deck could not label them and dropped them. Only nexeo-loop.sh wrote this file, so a pulse
+  # that skipped its build — most conversational pulses — was never recorded as having existed.
+  # Same split as the phase events, same fix: this path writes the same line to the same file.
+  printf '{"iteration":%s,"kind":"conversational","kind_n":%s,"at":"%s"}\n' \
+    "$PULSE_ITER" \
+    "$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || echo 0) + 1 ))" \
+    "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
+  printf '%s  PULSE  iter=%s conversational (started by %s)\n' \
+    "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" \
+    "$([ "${NEXEO_WATCH_MANUAL:-0}" = "1" ] && echo 'a person' || echo 'cron')" >> "$ORCH_LOG"
 }
 phase() {
   begin_pulse
