@@ -720,6 +720,7 @@ def observed_gaps(top=6):
     # since > 0 is the real alarm: a shipped fix that did not hold, which the change-log
     # protocol calls CIRCLING and which forbids another patch on the instance.
     since_map = {}
+    hit_times = {}
     try:
         deployed_at = os.path.getmtime("/var/www/tmcai/server/dist/server.js")
     except Exception:
@@ -760,16 +761,26 @@ def observed_gaps(top=6):
                 # gets dispatched, and this sentence fires for any of them. Part (b) of
                 # DEF-034 — the dispatch-ledger read — is still unbuilt, so if the sentence
                 # reappears after this deploy the row flips to STILL HAPPENING and says so.
-                'Replied "Hold on — I hadn\'t actually done that yet" instead of acting':
-                    {"DEF-034", "canned-hold-on-denial"},
+                'Said it had not run the action, instead of running it':
+                    # DEF-034 fixed the WORDING. It did not make the action run, and the
+                    # mechanism recurred 71 minutes after that deploy, so this tag set must
+                    # NOT include DEF-034 — a wording fix is not a fix for this row.
+                    {"canned-hold-on-denial"},
                 'Gave up: "I couldn\'t put together an answer I trust"':
                     {"guard-destroys-the-answer"},
                 'Asked you to clarify again after you had already answered':
                     {"confirm-misfires"},
             }
             sigs = [
-                (r"Hold on — I hadn.t actually done that yet",
-                 'Replied "Hold on — I hadn\'t actually done that yet" instead of acting'),
+                # BOTH WORDINGS, ONE MECHANISM. I reworded this sentence at 20:27 PKT
+                # (DEF-034) and thereby blinded the detector that was watching it: the
+                # mechanism fired again at 21:37, 71 minutes after the deploy, and the deck
+                # reported "none since the fix" because it was matching a string I had just
+                # replaced. A signature must track the MECHANISM, not the sentence, or every
+                # rewording reads as a cure. Both renderings of `[no action dispatched]`
+                # count as the same defect.
+                (r"Hold on — I hadn.t actually done that yet|I didn.t run anything just now",
+                 'Said it had not run the action, instead of running it'),
                 (r"no dispatcher for this action",
                  'You confirmed a plan and it could not execute it'),
                 (r"couldn.t put together an answer I trust",
@@ -821,13 +832,13 @@ def observed_gaps(top=6):
                     counts[name] = len(hits)
                     last_seen_map[name] = _last_seen(hits[-1].start())
                     globals()["_SIG_TAGS"] = sig_tags
-                    if deployed_utc:
-                        # The session heading is UTC and so is the dist mtime, so these
-                        # compare directly as strings. Getting this wrong by five hours in
-                        # the PKT direction is what made a closed defect look open.
-                        since_map[name] = sum(
-                            1 for h in hits
-                            if (_last_seen(h.start()) or "") > deployed_utc)
+                    # Every occurrence's time is kept, because the boundary that matters is
+                    # not known yet: it is the deploy of the fix for THIS tag, not the most
+                    # recent deploy of anything. Counting against the newest deploy let a
+                    # deck-only commit reset every defect's clock, so a bug that fired 71
+                    # minutes after its own fix reported "none since the fix" once an
+                    # unrelated change shipped behind it.
+                    hit_times[name] = [(_last_seen(h.start()) or "") for h in hits]
             out["deployed_utc"] = deployed_utc
         except Exception:
             pass
@@ -963,6 +974,7 @@ def observed_gaps(top=6):
                 pass
             shipped_tags = set()
             built_tags = set()
+            fix_ts = {}          # tag -> unix time of the newest SHIPPED commit naming it
             for chunk in log.split("\n"):
                 if "|" not in chunk:
                     continue
@@ -976,6 +988,18 @@ def observed_gaps(top=6):
                         built_tags.add(t)
                         if deployed_at and int(ts) <= deployed_at:
                             shipped_tags.add(t)
+                            fix_ts[t] = max(fix_ts.get(t, 0), int(ts))
+            # NOW the boundary is known per tag, so "since the fix" can mean what it says.
+            for name, times in hit_times.items():
+                names = aliases.get(name, {name}) | {name}
+                own = max((fix_ts[a] for a in names if a in fix_ts), default=0)
+                if not own:
+                    # No shipped commit names this mechanism, so "since the fix" has no
+                    # referent. It stays None rather than 0 — "0 since the fix" on something
+                    # never fixed is the same false reassurance as a bare total.
+                    continue
+                bound = time.strftime("%Y-%m-%d %H:%M", time.gmtime(own))
+                since_map[name] = sum(1 for t in times if t > bound)
             def _ledger(k):
                 """'fixed' | 'open' | None — the change log's own verdict on this tag."""
                 names = aliases.get(k, {k}) | {k}
