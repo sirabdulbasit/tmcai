@@ -661,7 +661,25 @@ if [ -s "$STATE/last-measure" ]; then
   fi
 fi
 
-if [ "$REUSED_SCORE" -eq 0 ]; then
+# A CONVERSATIONAL PULSE HAS TWO STAGES, AND MEASURING IS NOT ONE OF THEM.
+#
+# Owner, 2026-08-20, looking at a conversational pulse whose header read MEASURING: "what is
+# 'Measuring'?? it is not part of Healing Pulse - Phase." He is right, and by his own
+# definition: a conversational pulse is Chat Analysis + Build & Deploy, nothing else.
+#
+# The post-build MEASURE stage and the Capability Evaluation stage were both already guarded
+# for this. THIS one — the startup baseline — was not, so a pulse launched from a click ran a
+# 12-case compose-and-judge benchmark before it built anything, took several minutes over it,
+# and displayed a stage that does not exist in that pulse's own phase list. Three guards for
+# one condition, and the third was missing, which is `protection-with-two-implementations`
+# counted a third time.
+#
+# What replaces it on this path is not nothing: deploy.sh runs tsc and vitest at the deploy
+# commit, so the build is still verified — it just is not scored against the benchmark, which
+# a conversational pulse never reports anyway.
+if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
+  say "MEASURE iter=$ITER baseline skipped — conversational pulse (Chat Analysis + Build & Deploy only)"
+elif [ "$REUSED_SCORE" -eq 0 ]; then
   if ! measure "$ITER" "baseline"; then
     die "baseline measurement failed — the loop has no metric; see logs/"
   fi
@@ -1583,10 +1601,14 @@ PYGAP
     # which is what produced its strongest early finding.
     if [ "${NEXEO_TARGET_SOURCE:-}" = "chat" ]; then
       say "MEASURE iter=$ITER skipped — conversational pulse; deploy.sh still runs tsc and vitest at the deploy commit"
+      # NOT started, so nothing is collected later. It was set to 1 unconditionally, which
+      # sent the collector after a benchmark that was never launched — it returns 1 and logs
+      # "nothing pending to collect", making a correctly-skipped stage look like a failed one.
+      MEASURE_STARTED=0
     else
       measure "$ITER" "post-build" || say "MEASURE iter=$ITER failed — the reviewer is told the score is missing"
+      MEASURE_STARTED=1
     fi
-    MEASURE_STARTED=1
   else
     TESTS_AFTER="not run (tsc red)"
     say "RAILS  iter=$ITER tsc RED — skipping build/tests/measure; the score stands from before"
