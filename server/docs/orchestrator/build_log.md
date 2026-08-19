@@ -274,3 +274,91 @@ manifest from `41381db` (which would mean my production-identity reading is wron
 findings are closed, so YES on the reviewed surface — but the deploy must FIRST reconcile
 the unrecorded 20:50Z deploy (deployed-sha, manifest ledger, evaluation-chart row), or it
 will be measured against a baseline production is no longer running.
+
+## Iteration 12 — 2026-08-20
+
+**Remediation turn (attempt 3 of 3): "Iteration 2's review closed WRONG."** The newest
+`## Iteration 2` section (review_log.md:151 after rotation) is the wrong-referent review of
+the DEF-197/198 prompt-wording repair, reviewed at deployed `5176c60`. Attempts 1 and 2
+left no build entries (no Iteration 10/11 exists) — but the findings did not wait for this
+turn either: **every numbered risk and directive was closed by DEF-199/200/201/203/213,
+all five ancestors of the CURRENT deployed SHA `4bd6fbc`** (verified with
+`merge-base --is-ancestor`, mechanisms read at HEAD, not trusted from titles):
+
+| Iteration 2 finding | Closed by | Where it stands at HEAD |
+|---|---|---|
+| CRITICAL 1 — multi-subject evidence lets the model attach authoritative counts to the wrong task | `f50e1cf` (DEF-200) | **The resolver runs in code, before rendering**: `selectSubjectsForConversation` (`pushHistoryBlock.ts:229-242`) matches subjects' REAL titles (the DEF-199 join) against the conversation; `renderPushHistoryBlock` renders ONLY what matched (`:366-374`), and the no-match case withholds the record entirely with an explicit "NO ENTRY FOR THE ITEM UNDER DISCUSSION" block that also refuses item-denial generalisation (`:385-406`, DEF-203). The candidates are not supplied, so there is nothing to outvote the dialogue — closure by construction, not instruction. Both live call sites pass the conversation: `brainComposer.ts:2628` (reasoning) and `:3275` (legacy) via `conversationTextForPushHistory` (`:701`). |
+| HIGH 2 — `absenceIsInformative` ignored `unattributed`/`floods` | `f50e1cf` (DEF-200) | `pushHistoryBlock.ts:195-196` — both collections now veto the "at most one push" authorisation, with the reviewer quoted in the comment (`:188-194`). Refusal tests per degraded state at `def197PushHistoryBlock.test.ts:288-299`. |
+| MEDIUM 3 — "see the ⚠ flags above" was false for a line-cap-only slice | `6dcc5c2` (DEF-201) | `incompletenessReasons` — each reason NAMES ITSELF (`pushHistoryBlock.ts:168-182`); the line-cap reason (`:175`) carries its own text and no ⚠ reference. |
+| Directive 2 — test the final owner-visible path with the exact fixture; mutation: remove scoping and both tests fail | `6dcc5c2` (DEF-201) + `f50e1cf` | Codex's fixture verbatim (conversation says Fujairah; record holds ShireMe AND Vision Metric) driven through the REAL builder and title join — asserts neither unrelated title, key, count nor timestamp reaches the prompt (`def197PushHistoryBlock.test.ts:560+`). **Mutations applied and RUN, on the record in the commits:** DEF-200 — six mutants, all die (incl. "render allRepeats and ignore the resolver", 4 tests fail); DEF-201 — five mutants incl. M5 "remove the scoping", two tests fail. |
+| Directive 4 — no unqualified "at most one" from a bounded window | `6dcc5c2` (DEF-201) | The absence claim is BOUND TO THE WINDOW in the standing rules (`pushHistoryBlock.ts:289-296`): "…IN THE LAST ${windowHours} HOURS", never a lifetime claim. |
+| Directive 5 — C4 register, after truth/continuity repaired | deferred by the review's own sequencing | Untouched this turn, deliberately; named as the next fresh turn's aim (with `53982df` DEF-213 already removing the "my dispatch log" bookkeeping voice the judge flagged). |
+
+**One residual, stated rather than papered over:** no test drives the full composer LLM
+call to a final rendered ANSWER (DEF-201's commit declined it twice, on the record, for
+arbitration). The closure argument that stands without it: the model cannot name a title
+that never enters its prompt, and the real-builder test asserts exactly that absence. If
+Codex still wants a full-composer harness, that is a named piece of NEW work, not evidence
+these findings are open.
+
+**What this turn changed (one file of substance):** `brain_change_log.md` — DEF-236's owed
+row, the last surviving three-document violation (the chat analyst's second remaining
+code-light action). The row records: root cause (`isValidStatus('DRAFT')` false → every
+transition refused), the class fix (DRAFT joins the lifecycle: three transitions out, none
+in, CANCELLED-never-CLOSED per DEF-129), deploy identity (`81ba131`, ancestor of `4bd6fbc`,
+live since 21:25:06Z), and the honest split: the lifecycle-floor half of the deck row
+**`guard-destroys-the-answer`** is shipped; the fabrication half (DEF-034(b)
+read-back-before-claim) is NOT BUILT and stays open.
+
+**fixQueue targeted:** none exists — the brief's report path is `none` and the benchmark
+was reused. Remediation wins on scope regardless.
+
+**Governing-docs verdict (rule 5):** the referent saga is *circling correctly handled* —
+the chart's §3 counts `fabricated-status` at 6 and the reviewed diff was the forbidden
+second patch-on-instance; DEF-200 is the demanded structural fix (the decision moved to
+where the information is: code resolves the subject, the model never sees non-matching
+candidates). This turn itself is accounting on top of that — no new root cause, no new
+patch.
+
+**Verification (from `server/`, after the last edit, at HEAD `f0d662b` + this turn's two
+doc files):**
+- `npx tsc --noEmit` → exit **0**
+- `npx vitest run` → **229 passed | 1 skipped** files (230); **2849 passed | 0 failed**
+  (7 expected fail | 21 skipped | 1 todo, of 2878)
+- `git diff --check` → clean (run after this entry was written)
+- `npm run build` NOT run in this tree — `server/dist` is `chattr +i` and is the deployed
+  artifact (CLAUDE.md); `--noEmit` is the build check. No `server/src` change this turn.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0
+**MECHANISM:** no product code changed; the turn closes the wrong-referent review by
+evidence (five deployed commits mapped finding-by-finding) and pays the last ledger debt
+(DEF-236's row), so the deck can link the draft-delete deck row to its shipped floor fix.
+**FALSIFIER:** any cited line not containing what this entry claims; or a post-21:25Z
+transcript showing the ShireMe/Vision-Metric wrong-referent shape again, which would mean
+the in-code resolver does not reach the live path after all.
+
+**TARGET divergence, said explicitly:** the brief's placeholder target ("Simple
+@@TARGETCAP@@ Smart") is not moved; remediation wins on scope. Campaign C-3's next
+increment (the digest) is NOT started: same rule.
+
+**Symptom tag:** `guard-destroys-the-answer` — PARTLY, and precisely: DEF-236 (shipped
+21:25Z) closes the draft-item lifecycle floor named in the deck row "Couldn't delete the
+draft item, with no reason he could act on"; this turn's row and commit carry the tag on
+the shipped fix's behalf (the fix commit predates the name-the-tag rule). The other two
+open deck tags (the "reply send" demand; the verify-first magic word) are NOT closed —
+their fixes are DEF-151/161 and the confirmation-suppression class, both open.
+
+**What I did NOT do:**
+- DEF-034(b) read-back-before-any-state-claim — the analyst's #1 remaining build. It is
+  new structural code on the messaging path; at remediation attempt 3 of 3 it would add
+  exactly the review surface this turn is told not to add. It is the strongest candidate
+  for the next FRESH turn, ahead of campaign increment 2.
+- No campaign increment, no C4 register work, no operator directives advanced (D-5 etc.) —
+  remediation wins on scope; named, not silently dropped.
+
+**Honest prediction:** no criterion moves (docs only). Deployable at end of turn: YES —
+matrix green at this HEAD, doc-only diff on top of an already-deployed baseline; nothing
+in this tree blocks `deploy.sh`. What would prove this entry wrong: Codex demonstrating
+any of the five mapped findings still reproducible at HEAD, or the wrong-referent shape
+recurring live.
