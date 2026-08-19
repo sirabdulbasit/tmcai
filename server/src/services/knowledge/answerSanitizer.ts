@@ -42,8 +42,22 @@ const MARKERS: MarkerRule[] = [
     // mutation, the model CLAIMED it happened, nothing actually ran.
     // Honest wording: no invented dispatch failure, no recipient demand
     // (chat 9 rewording, 2026-07-14) — just the truth plus the offer.
+    //
+    // DEF-034, rewritten 2026-08-19 — the two defects the old sentence carried.
+    //
+    // SCOPE. The marker is TURN-scoped: "no action dispatched *in this turn*". The
+    // sentence rendered it WORLD-scoped: "nothing was executed on my end." On 08-05 that
+    // fired one second after Brain had successfully delegated three items, so the reply
+    // was simply false about the world. It has since fired 21 more times in 14 days.
+    // A turn-scoped fact may only be stated in turn-scoped words.
+    //
+    // DUPLICATION. "Say the word and I'll do it now" is an invitation to re-run work that
+    // may already have happened — for anything with an external side effect (a message
+    // sent, an item deleted) that is a second irreversible action, offered precisely when
+    // the system has just admitted it does not know what ran. It now promises to CHECK
+    // first, which is the only offer it can honestly make from this position.
     match: /^\s*\[no action dispatched[^\]]*\]\s*$/i,
-    replace: "Hold on — I hadn't actually done that yet; nothing was executed on my end. Say the word and I'll do it now.",
+    replace: "I didn't run anything just now, so I can't tell you it's done. Let me check what has already happened before I act — say \"go ahead\" and I'll verify first.",
     whole: true,
   },
   {

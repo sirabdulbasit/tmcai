@@ -32,8 +32,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
-  sanitizeAnswerForUser, sanitizeAnswerInBrainVoice,
-} from '../src/services/knowledge/answerSanitizer';
+  sanitizeAnswerForUser, sanitizeAnswerInBrainVoice, curatedMarkerMeaning } from '../src/services/knowledge/answerSanitizer';
 import {
   systemMarker, isSystemMarker, NEUTRAL_MARKER_FALLBACK,
 } from '../src/services/knowledge/systemMarker';
@@ -124,7 +123,7 @@ describe('DEF-169 — curated markers keep their vetted wording', () => {
   it('web: the curated meaning wins over the neutral line', () => {
     const out = sanitizeAnswerForUser(CURATED_MARKER);
     expect(out).not.toContain('[');
-    expect(out).toMatch(/hadn't actually done that yet/i);
+    expect(out).toBe(curatedMarkerMeaning(CURATED_MARKER));   // the vetted text, whatever it says
     expect(out).not.toBe(NEUTRAL_MARKER_FALLBACK);
   });
 

@@ -43,7 +43,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { validateBeforeRender } from '../src/services/knowledge/responseValidator';
-import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
+import { sanitizeAnswerForUser, curatedMarkerMeaning } from '../src/services/knowledge/answerSanitizer';
 // DEF-169 — these cases construct markers through the producer, because a
 // bracket alone is no longer (and never was) evidence of internal origin.
 import { systemMarker } from '../src/services/knowledge/systemMarker';
@@ -153,7 +153,10 @@ describe('DEF-168 — the sanitizer keeps its own promise', () => {
     const out = sanitizeAnswerForUser(known);
     expect(out).not.toContain('[');
     expect(out, 'the curated human wording must win over the generic catch-all')
-      .toMatch(/hadn't actually done that yet/i);
+      // Compared against the curated source rather than a copied sentence, so a future
+      // rewording cannot make this test fail while the requirement still holds. DEF-034
+      // rewrote this wording on 2026-08-19 and broke four tests that had pinned the string.
+      .toBe(curatedMarkerMeaning(known));
   });
 
   describe('the brackets it must leave alone', () => {

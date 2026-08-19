@@ -149,9 +149,13 @@ describe('G — dispatched but unconfirmed mutation', () => {
 
   it('sanitizer fabricated-completion wording never POSITIVELY claims completion', () => {
     const msg = sanitizeAnswerForUser(completionInterceptMarker('fabricated_completion_on_action_turn'));
-    // The truthful negation ("hadn't actually done that") is required;
-    // what must never appear is an affirmative claim.
-    expect(msg).toContain("hadn't actually done");
+    // The truthful negation is required; what must never appear is an affirmative claim.
+    // DEF-034, 2026-08-19: the negation must also be TURN-scoped. The old wording said
+    // "nothing was executed on my end" — a claim about the world, which fired one second
+    // after three real delegations. So the assertion is now on the scope, not on a
+    // sentence: it must speak about this turn and must not deny the world.
+    expect(msg).toMatch(/just now/i);
+    expect(msg).not.toMatch(/nothing was executed/i);
     expect(msg.toLowerCase()).not.toMatch(/^done\b|\bis sent\b|\bwas sent\b|\bhas been sent\b|\bcompleted successfully\b/);
   });
 });
@@ -278,7 +282,7 @@ describe('claim-shape classifier', () => {
 describe('sanitizer wording per failure type', () => {
   it('fabricated completion: truthful, no invented dispatch failure, no recipient demand', () => {
     const msg = sanitizeAnswerForUser('[no action dispatched — the assistant claimed completion but no action ran]');
-    expect(msg).toContain("hadn't actually done that");
+    expect(msg).toMatch(/didn't run anything just now/i);   // turn-scoped — DEF-034
     expect(msg.toLowerCase()).not.toContain('dispatch');
     expect(msg.toLowerCase()).not.toContain('recipient');
   });

@@ -46,7 +46,10 @@ describe('DEF-092 marker voice — a marker is spoken, never printed', () => {
     callLLM.mockResolvedValue({ text: 'anything', provider: 'gemini' });
     await sanitizeAnswerInBrainVoice('[no action dispatched — retry]', {});
     const userMessage = callLLM.mock.calls[0][1] as string;
-    expect(userMessage).toContain("nothing was executed on my end");
+    // DEF-034, 2026-08-19: the curated meaning is now turn-scoped. The assertion follows
+    // the wording it is guarding, and the class-level rule — a turn-scoped marker may not
+    // be rendered in world-scoped words — is enforced in def034MarkerScope.test.ts.
+    expect(userMessage).toContain("I didn't run anything just now");
     expect(userMessage).not.toContain('[no action dispatched');
   });
 
