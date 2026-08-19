@@ -19,7 +19,7 @@
  * output lines), which no tenant user has any business reading.
  */
 import { Router, Request, Response } from 'express';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { requireAdmin } from '../middleware/auth';
@@ -106,6 +106,67 @@ router.get('/pulse', requireAdmin, async (_req: Request, res: Response) => {
     // "I could not read the pulse" instead of quietly showing a stale one as live.
     res.status(502).json({ error: `could not read the pulse: ${err.message}` });
   }
+});
+
+/**
+ * POST /orchestrator/heal — start a conversational healing pulse now.
+ *
+ * Owner, 2026-08-19: he wanted the manual trigger on the Brain Evolution deck rather than
+ * having to reach a shell. This runs the same heal-now.sh a human would run, which runs the
+ * same watch-conversations.sh the cron runs — one implementation, three callers, so the
+ * button cannot drift from the schedule.
+ *
+ * SECURITY, and the reasons rather than the assertions:
+ *  • requireAdmin, like the pulse read above: this spends money and writes to production.
+ *  • execFile with a FIXED argv and no shell. Nothing from the request reaches a command
+ *    line — `force` and `capability` are the only inputs, and both are validated below,
+ *    because a capability name interpolated into a shell is a command-injection hole on a
+ *    box that deploys to production.
+ *  • `capability` is checked against the nine names, not sanitised. An allow-list cannot be
+ *    escaped; a sanitiser can.
+ *  • detached + unref: a healing pulse takes ~15 minutes and must not be tied to the
+ *    lifetime of an HTTP request. The response says "started", never "finished" — claiming
+ *    a result we have not observed is the exact class this deck exists to expose.
+ */
+const NINE_CAPABILITIES = new Set([
+  'Simple & Smart', 'Thinking', 'Memory', 'Accurate Communication',
+  'Authorized Action', 'Self Follow-Up', 'Learn', 'Self-Healing', 'Self-Pruning',
+]);
+
+export const HEAL_SCRIPT =
+  process.env.ORCH_HEAL_SCRIPT ||
+  path.resolve(__dirname, '../../..', 'scripts/orchestrator/heal-now.sh');
+
+router.post('/heal', requireAdmin, (req: Request, res: Response) => {
+  if (!fs.existsSync(HEAL_SCRIPT)) {
+    res.status(503).json({ error: 'heal script not found on this host', script: HEAL_SCRIPT });
+    return;
+  }
+  const args: string[] = [HEAL_SCRIPT];
+  if (req.body?.force === true) args.push('--force');
+  const cap = typeof req.body?.capability === 'string' ? req.body.capability.trim() : '';
+  if (cap) {
+    if (!NINE_CAPABILITIES.has(cap)) {
+      res.status(400).json({ error: `not one of the nine capabilities: ${cap}` });
+      return;
+    }
+    args.push(cap);
+  }
+
+  // spawn, not execFile: only spawn takes `detached`, and a 15-minute pulse must outlive
+  // the request. stdio ignored — the pulse writes its own logs, and buffering its output
+  // here would tie a long build to this process's memory for no reader.
+  const child = spawn('/bin/bash', args, { detached: true, stdio: 'ignore' });
+  child.unref();
+  res.json({
+    started: true,
+    force: req.body?.force === true,
+    capability: cap || null,
+    // Said plainly because the deck must never imply an outcome it has not seen: this
+    // confirms the pulse was LAUNCHED. Whether it fixes anything shows up in the phases,
+    // the token table and the symptom list, minutes later.
+    note: 'pulse started — watch the phases; a pulse takes ~15 minutes and may decline to build if nothing changed',
+  });
 });
 
 export default router;

@@ -947,6 +947,30 @@ export default function OrchestratorPulsePanel() {
   const [frame, setFrame] = useState(null);
   const [error, setError] = useState(null);
   const [paused, setPaused] = useState(false);
+  // Manual healing pulse — owner, 2026-08-19, wanted this on the Brain Evolution deck
+  // rather than in a shell. `healing` is the button's own state, NOT a claim about the
+  // pulse: the request returns as soon as the pulse is LAUNCHED, and whether it fixes
+  // anything appears in the phases and the symptom list minutes later. Reporting
+  // "healed" here would be the fabricated-status shape this deck exists to expose.
+  const [healing, setHealing] = useState(false);
+  const [healMsg, setHealMsg] = useState('');
+  const startHeal = async (force) => {
+    setHealing(true); setHealMsg('');
+    try {
+      const r = await api.post('/orchestrator/heal', { force: !!force });
+      setHealMsg(r?.data?.note || 'pulse started');
+      load();
+    } catch (e) {
+      // Say what failed. A silent button is how a dead trigger looks identical to a
+      // working one — and the route is unreachable until the server is deployed.
+      setHealMsg(e?.response?.data?.error
+        || (e?.response?.status === 404
+          ? 'route not deployed yet — the server needs a build'
+          : `could not start: ${e?.message || 'unknown'}`));
+    } finally {
+      setHealing(false);
+    }
+  };
   /* Three views behind one hint, because the owner asked for his diagram ON the
      dashboard and the deck is fixed at three cards in one column — so the map
      lives INSIDE the capability card rather than becoming a fourth row. It leads,
@@ -1098,6 +1122,16 @@ export default function OrchestratorPulsePanel() {
               <Icon name="refresh" size={14} /> New build — reload
             </Button>
           )}
+          <Button variant="primary" size="sm" disabled={healing}
+                  title="Read the newest conversation, analyse it, and fix what it shows. Takes ~15 minutes; declines to build if nothing changed."
+                  onClick={() => startHeal(false)}>
+            <Icon name="zap" size={14} /> {healing ? 'starting…' : 'Heal now'}
+          </Button>
+          <Button variant="secondary" size="sm" disabled={healing}
+                  title="Re-read the last 14 days even if no new message has arrived"
+                  onClick={() => startHeal(true)}>
+            Force
+          </Button>
           <Button variant="secondary" size="sm" onClick={() => setPaused((p) => !p)}>
             {paused ? 'Resume' : 'Pause'}
           </Button>
@@ -1106,6 +1140,12 @@ export default function OrchestratorPulsePanel() {
           </Button>
         </div>
       </div>
+
+      {healMsg && (
+        <div className="orch-banner">
+          <Icon name="pulse" size={14} /> {healMsg}
+        </div>
+      )}
 
       {error && (
         <div className="orch-banner orch-banner-bad">
