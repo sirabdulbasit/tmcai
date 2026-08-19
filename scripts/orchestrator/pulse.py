@@ -754,8 +754,14 @@ def observed_gaps(top=6):
                 # cause. `fabricated-status` is worse: 16 commits name it and he was still
                 # hit 21 times, which is the definition of CIRCLING — marking it shipped
                 # would print the exact false "fixed" this panel exists to prevent.
+                # DEF-034 (a)+(c) shipped 08-19 20:27 PKT and names this mechanism
+                # explicitly, so the row may now be struck on evidence rather than on my
+                # inference. DEF-232 is still NOT listed here: it removed one reason nothing
+                # gets dispatched, and this sentence fires for any of them. Part (b) of
+                # DEF-034 — the dispatch-ledger read — is still unbuilt, so if the sentence
+                # reappears after this deploy the row flips to STILL HAPPENING and says so.
                 'Replied "Hold on — I hadn\'t actually done that yet" instead of acting':
-                    {"canned-hold-on-denial"},
+                    {"DEF-034", "canned-hold-on-denial"},
                 'Gave up: "I couldn\'t put together an answer I trust"':
                     {"guard-destroys-the-answer"},
                 'Asked you to clarify again after you had already answered':
