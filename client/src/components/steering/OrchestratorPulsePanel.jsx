@@ -807,9 +807,15 @@ function TokensByPulse({ data }) {
         <tr>
           <th>Tokens by pulse</th>
           {rows.map((r) => (
+            /* THE ITERATION NUMBER, not the kind ordinal — owner, 2026-08-20: "show
+               iteration with numbers like #1, #2 etc not with C". C1/C2 counted only
+               conversational pulses, so its numbers drifted away from the timing table's
+               #1..#9 the moment a nightly ran between two of them: the same column meant a
+               different pulse in each table. One numbering, one meaning. The kind stays in the
+               tooltip, where it explains a cost rather than identifying a column. */
             <th key={r.iteration ?? r.label} style={{ textAlign: 'right' }}
-                title={r.ran ? r.kind : `${r.kind} · no builder ran`}>
-              {r.label}
+                title={`${r.label} · ${r.ran ? r.kind : `${r.kind} · no builder ran`}`}>
+              #{r.iteration ?? r.label}
             </th>
           ))}
         </tr>
