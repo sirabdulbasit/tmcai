@@ -1351,7 +1351,7 @@ export default function OrchestratorPulsePanel() {
                   </ul>
                 </div>
                 <div>
-                  <div className="orch-observed-h">
+                  <div className="orch-observed-h orch-observed-h-wide">
                     Chat log · reported
                     {/* Owner, 2026-08-19: "here also mention the time from where you read
                         the conversation." A count with no window is unreadable — "x14"
@@ -1363,7 +1363,7 @@ export default function OrchestratorPulsePanel() {
                         labelled by its oldest end reads as though the harvest stopped two
                         weeks ago. */}
                     {data.observed?.window?.harvested_at && (
-                      <span className="orch-progress-of">
+                      <span className="orch-window-note">
                         {' '}· {data.observed.window.turns} turns,{' '}
                         {pktStamp(data.observed.window.from)} → {pktStamp(data.observed.window.to)}
                       </span>

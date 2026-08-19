@@ -731,3 +731,9 @@
 .orch-table td.cell-up   { color: var(--ok, #4ade80); font-weight: var(--fw-semibold); }
 .orch-table td.cell-down { color: var(--danger, #f87171); font-weight: var(--fw-semibold); }
 
+
+/* The harvest window: one fact, one line. Owner, 2026-08-19 — smaller, and never wrapped:
+   split across two lines the range reads as two separate dates rather than one span. */
+.orch-window-note { font-size: 0.72em; font-weight: var(--fw-regular);
+  color: var(--text-dim); white-space: nowrap; letter-spacing: 0; text-transform: none; }
+.orch-observed-h-wide { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
