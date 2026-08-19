@@ -50,6 +50,23 @@ instead — do not invent a tag to look productive.
 
 @@HOLD@@
 
+## THE ASK: make something he asked for actually work
+
+Owner, 2026-08-19: "cron unable to understand my basic ask which is unable to be done by
+brain in chat log."
+
+The chat analysis below opens with a table of UNFULFILLED REQUESTS — things he told Brain
+to do that did not happen. **That table is your objective.** Pick one row, and make that
+exact request work.
+
+Your acceptance criterion is his sentence, not a test name: after your change, would
+"Yes remove every item from open items list" execute? If you cannot answer yes, say what is
+still missing rather than reporting the turn as done. A fix that improves the mechanism
+without making his request succeed has not done the job he is waiting for.
+
+Symptom tags and capability numbers below remain how the work is TRACKED. They are not the
+objective. The objective is that the thing he asked for happens.
+
 ## The owner's OPEN symptoms — the ones still on his deck
 
 Each of these is a defect he reported in his own conversations, for which **no shipped fix

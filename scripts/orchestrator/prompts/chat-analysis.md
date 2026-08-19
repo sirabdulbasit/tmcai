@@ -108,3 +108,37 @@ So in every root-cause item, name **both**: the archive tag from
 backticks, in the same item. The deck treats tags co-mentioned in one item as aliases,
 so this is what lets a shipped fix strike the owner's symptom off his list. If a class
 genuinely has only one name, say that explicitly rather than leaving it ambiguous.
+
+# START WITH WHAT HE ASKED FOR AND DID NOT GET
+
+Owner, 2026-08-19: *"what i feel cron unable to understand my basic ask which is unable to
+be done by brain in chat log."*
+
+He is right, and the fault is in how this analysis has been framed. It has been producing
+root causes in engineering vocabulary — `protection-with-two-implementations`,
+`guard-destroys-the-answer` — which are accurate and are NOT what he asked for. His ask is
+plain: **he told Brain to do something, Brain did not do it, make Brain able to do it.**
+
+So the FIRST section of your output, before any root-cause analysis, is a table of
+UNFULFILLED REQUESTS. One row per thing he asked for that did not happen:
+
+| what he asked, verbatim | what he got instead | can Brain do this at HEAD today? |
+|---|---|---|
+| "Yes remove every item from open items list" | "no dispatcher for this action in a confirmed plan" | NO — `remove_open_item` is absent from `DISPATCHABLE_PLAN_STEP_KINDS` (brainComposer.ts:184) |
+
+Rules for that table:
+
+- **His words, not your summary.** "Delete all actionable items" is the request; "the user
+  attempted a bulk deletion operation" is not.
+- **Answer the third column from the CODE at HEAD**, not from the transcript. He may have
+  been failed by a defect that is already fixed and not deployed, or by one still open, and
+  those need different actions. Say which, with a `file:line`.
+- **A request he abandoned still counts.** He asked four times in seven minutes and gave up;
+  the fact that he stopped asking is not the fact that it started working.
+- **Do not merge requests.** "Delete open items" and "delete closed items" are two asks if
+  he made them separately, and a fix for one is not a fix for both.
+
+Then continue with the root causes as before — the mechanism analysis is what makes a fix
+possible. But it goes SECOND, and every root cause names which unfulfilled request it
+explains. A root cause that explains none of them is not what he is waiting for; say so
+plainly rather than leading with it.
