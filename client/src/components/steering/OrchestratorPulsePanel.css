@@ -757,3 +757,8 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
 /* A pulse that spent nothing: shown, but dimmed. Its dashes mean "no builder ran", which is a
    fact worth seeing — six of these were being hidden entirely. */
 .orch-table tr.is-quiet td { color: var(--text-dim); }
+
+/* Transposed token table: a pulse that spent nothing keeps its column but reads as absent. */
+.orch-table td.is-quiet-cell { color: var(--text-dim); }
+/* The per-kind subtotal spans the row — it summarises columns, so it cannot sit in one. */
+.orch-tokens-total { padding-top: var(--s-2); }

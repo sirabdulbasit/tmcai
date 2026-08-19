@@ -779,54 +779,68 @@ function PulseTable({ data }) {
 }
 
 function TokensByPulse({ data }) {
-  // Owner, 2026-08-19: "token consumption in, out, cache rd, cost iteration wise for both
-  // Conversational and Night separately."
+  // HORIZONTAL, iterations as COLUMNS — owner, 2026-08-20: "show iterations horizontally for
+  // token consumptions." It now matches the Time-by-pulse table directly above it, so the
+  // same pulse sits in the same column in both and a slow pulse can be read against an
+  // expensive one without counting rows.
   //
-  // Per-kind subtotals rather than one grand total: a C pulse runs two stages and an N
-  // pulse runs five, so they cost differently BY DESIGN. Averaging them into "cost per
-  // iteration" would hide the only comparison that matters — whether the cheap kind is
-  // doing the work.
+  // Per-kind subtotals stay at the end rather than becoming one grand total: a conversational
+  // pulse runs two stages and a nightly runs five, so they cost differently BY DESIGN.
+  // Averaging them into "cost per iteration" would hide the only comparison that matters —
+  // whether the cheap kind is doing the work.
   const t = data.tokens_by_pulse;
   if (!t || !(t.rows || []).length) return null;
   const k = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0);
-  const kinds = Object.entries(t.per_kind || {});
+  const rows = t.rows;
+  // A dash, not a zero. A pulse whose build never ran spent nothing, and "0" reads as a
+  // measurement while "—" reads as an absence — which is the honest one, and the fact he was
+  // chasing all evening when seven builds silently failed to start.
+  const cell = (r, f) => (r.ran ? f(r) : '—');
+  const metrics = [
+    ['in', (r) => k(r.input)],
+    ['out', (r) => k(r.output)],
+    ['cache rd', (r) => k(r.cache_read)],
+  ];
   return (
     <table className="orch-table" style={{ marginTop: 'var(--s-4)' }}>
       <thead>
         <tr>
           <th>Tokens by pulse</th>
-          <th style={{ textAlign: 'right' }}>in</th>
-          <th style={{ textAlign: 'right' }}>out</th>
-          <th style={{ textAlign: 'right' }}>cache rd</th>
-          <th style={{ textAlign: 'right' }}>cost</th>
+          {rows.map((r) => (
+            <th key={r.iteration ?? r.label} style={{ textAlign: 'right' }}
+                title={r.ran ? r.kind : `${r.kind} · no builder ran`}>
+              {r.label}
+            </th>
+          ))}
         </tr>
       </thead>
       <tbody>
-        {/* EVERY PULSE, INCLUDING THE ONES THAT SPENT NOTHING. Owner, 2026-08-20: "i want to
-            see Token in and out and cache rd and cost iteration wise, this should show only
-            last 10 iteration data." Pulses with no token record were being dropped upstream,
-            so this table showed three rows beside a timing table showing nine — and the six it
-            hid were the interesting ones: no tokens means THE BUILD NEVER RAN. A dash says
-            that; an omitted row says nothing at all. */}
-        {t.rows.map((r) => (
-          <tr key={r.iteration ?? r.label}
-              title={r.ran ? r.kind : `${r.kind} · no builder ran, so nothing was spent`}
-              className={r.ran ? undefined : 'is-quiet'}>
-            <td>{r.label}</td>
-            <td className="num">{r.ran ? k(r.input) : '—'}</td>
-            <td className="num">{r.ran ? k(r.output) : '—'}</td>
-            <td className="num">{r.ran ? k(r.cache_read) : '—'}</td>
-            <td className="num">{r.ran ? `$${r.cost_usd}` : '—'}</td>
+        {metrics.map(([name, f]) => (
+          <tr key={name}>
+            <td>{name}</td>
+            {rows.map((r) => (
+              <td className={`num${r.ran ? '' : ' is-quiet-cell'}`} key={r.iteration ?? r.label}>
+                {cell(r, f)}
+              </td>
+            ))}
           </tr>
         ))}
-        {kinds.map(([kind, v]) => (
+        <tr>
+          <td><b>cost</b></td>
+          {rows.map((r) => (
+            <td className={`num${r.ran ? '' : ' is-quiet-cell'}`} key={r.iteration ?? r.label}>
+              <b>{cell(r, (x) => `$${x.cost_usd}`)}</b>
+            </td>
+          ))}
+        </tr>
+        {Object.entries(t.per_kind || {}).map(([kind, v]) => (
           <tr key={kind}>
-            <td><b>{kind === 'conversational' ? 'Conversational' : 'Nightly'}</b>
-              <span className="orch-progress-of"> ({v.pulses})</span></td>
-            <td className="num"><b>{k(v.input)}</b></td>
-            <td className="num"><b>{k(v.output)}</b></td>
-            <td className="num"><b>{k(v.cache_read)}</b></td>
-            <td className="num"><b>${v.cost_usd}</b></td>
+            <td colSpan={1 + rows.length} className="orch-tokens-total">
+              <span className="orch-window-note">
+                {kind} ({v.pulses}) · in {k(v.input)} · out {k(v.output)}
+                {' '}· cache rd {k(v.cache_read)} · <b>${v.cost_usd}</b>
+              </span>
+            </td>
           </tr>
         ))}
       </tbody>
