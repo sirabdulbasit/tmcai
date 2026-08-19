@@ -688,8 +688,38 @@ def observed_gaps(top=6):
                  "basis": c.get("basis")} for c in rows]
         except Exception:
             pass
-    # Symptom tags the OWNER reported, counted from the archive itself. Not a summary
-    # anybody wrote — the tags are the unit of recurrence this project already uses.
+    # WHAT ACTUALLY FAILED, counted from the LIVE transcript.
+    #
+    # This panel read brain_chat_archive.md — a curated file last touched 2026-08-05 —
+    # while production failed the owner 43 times in 14 days with signatures that appear
+    # nowhere in it. The two lists had ZERO overlap: the deck showed
+    # whatsapp-lid-activity-rejected x4 while he was hitting
+    # "no dispatcher for this action" 14 times and the canned "Hold on" denial 22 times.
+    # He asked to delete open items eight times across five days and it was not on his
+    # own deck at all.
+    #
+    # Counted by RESPONSE SIGNATURE rather than by tag, because the live transcript has
+    # no tags — Brain's own failure sentence is the evidence, and it is his words back
+    # from the system rather than a label somebody chose afterwards.
+    counts = {}
+    live = os.path.join(STATE, "recent-chats.md")
+    if os.path.exists(live):
+        try:
+            txt = open(live, errors="replace").read()
+            sigs = [
+                (r"Hold on — I hadn.t actually done that yet", "canned-hold-on-denial"),
+                (r"no dispatcher for this action", "no-dispatcher-in-confirmed-plan"),
+                (r"couldn.t put together an answer I trust", "no-answer-produced"),
+                (r"I need to be sure what you mean", "re-asks-after-answer"),
+            ]
+            for pat, name in sigs:
+                n = len(re.findall(pat, txt))
+                if n:
+                    counts[name] = n
+        except Exception:
+            pass
+    # The curated archive's tags are kept as well: they carry the recurrence vocabulary
+    # the change log and the strike-off matching are keyed to.
     arc = os.path.join(ROOT_DOCS, "brain_chat_archive.md")
     if os.path.exists(arc):
         try:
@@ -700,7 +730,6 @@ def observed_gaps(top=6):
             # the owner had reported it in 3 conversations. "How many times did this
             # happen to me" is the question; mentions in a summary are not occurrences.
             sections = re.split(r"^## Chat ", txt, flags=re.M)[1:]
-            counts = {}
             for sec in sections:
                 for t in set(re.findall(r"`([a-z][a-z0-9-]{6,})`", sec)):
                     counts[t] = counts.get(t, 0) + 1
