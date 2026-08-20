@@ -422,3 +422,85 @@ export function actionAppliedMarker(args: {
   const outstanding = (args.outstanding ?? []).filter((k) => known.has(k)).slice(0, 4);
   return systemMarker(`applied: ${JSON.stringify({ title, applied, outstanding })}`);
 }
+
+// ─── DEF-238 — the item-action OUTCOME, in a vocabulary the renderer knows ───
+//
+// Measured on production, 2026-08-19 22:23 (owner turn S38): "delete all open
+// items" EXECUTED — `open_items` row cmsotakwf0006rts1bdsrjjkj went CANCELLED
+// at 22:23:40.059 — and the owner was told "I couldn't put together an answer
+// I trust for that one." The executor returned `[removed: "…"]`, a receipt
+// hand-written in `internalActionExecutors`, and `curatedMarkerMeaning` has no
+// rule for it (nor for ANY of that file's nine marker strings), so the
+// sanitizer swallowed a SUCCESSFUL deletion into the neutral fallback. The
+// 20:09 DRAFT refusal died the same way: `[remove_open_item: not removed —
+// current status DRAFT …]` also has no curated meaning, which is why he got
+// "a message he could do nothing with" instead of the reason.
+//
+// The class is two hand-maintained lists that can disagree: executors mint
+// receipt strings over here, curated meanings live over there, and nothing
+// makes a new receipt renderable. So the constructor and the renderer now
+// live in THIS module and share one payload vocabulary: a receipt built by
+// `itemOutcomeMarker` is renderable by `itemOutcomeMeaning` by construction,
+// and a payload the constructor could not have minted is rejected, not
+// repaired (the DEF-175 rule, same as the applied/digest/withdrawal markers).
+//
+// The meaning is a FACT with no embedded instructions, because it has two
+// consumers: the whole-marker path hands it to `renderMarkerInBrainVoice`
+// (the model phrases it — wording belongs to the model), and the confirmed
+// multi-step plan path joins it into a per-step results list where no model
+// pass follows.
+
+export type ItemOutcomeVerb = 'removed' | 'closed';
+
+const ITEM_OUTCOME_VOCAB: Record<ItemOutcomeVerb, { did: string; attempt: string }> = {
+  removed: {
+    did: 'was removed from his open items just now — cancelled, not deleted, so it can be restored if he changes his mind',
+    attempt: 'removal',
+  },
+  closed: {
+    did: 'was marked done and closed just now',
+    attempt: 'closing',
+  },
+};
+
+export function itemOutcomeMarker(o: {
+  verb: ItemOutcomeVerb;
+  ok: boolean;
+  title?: string | null;
+  why?: string | null;
+}): string {
+  const title = String(o.title ?? '').trim().slice(0, 200);
+  const payload: Record<string, unknown> = { verb: o.verb, ok: !!o.ok };
+  if (title) payload.title = title;
+  // A failure with no recorded reason still says so honestly — "no reason"
+  // is the fact then, never an invented one.
+  if (!o.ok) payload.why = String(o.why ?? '').trim().slice(0, 300) || 'the system recorded no reason';
+  return systemMarker(`item_outcome: ${JSON.stringify(payload)}`);
+}
+
+export function itemOutcomeMeaning(answer: string): string | null {
+  const m = /^\s*\[item_outcome:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    const vocab = ITEM_OUTCOME_VOCAB[p?.verb as ItemOutcomeVerb];
+    if (!vocab || typeof p?.ok !== 'boolean') return null;
+    const title = typeof p?.title === 'string' && p.title.trim() && p.title.length <= 200
+      ? p.title.trim()
+      : null;
+    if (p.ok) {
+      // A success must name what it acted on — an unnameable success reads
+      // as a claim with no referent, which is the fabricated-status shape.
+      if (!title) return null;
+      return `The open item "${title}" ${vocab.did}.`;
+    }
+    const why = typeof p?.why === 'string' && p.why.trim() && p.why.length <= 300
+      ? p.why.trim()
+      : null;
+    if (!why) return null;
+    return `The ${vocab.attempt} of ${title ? `the open item "${title}"` : 'that item'} did not happen`
+      + ` and nothing was changed. The system's reason: ${why}`;
+  } catch {
+    return null;
+  }
+}

@@ -6712,7 +6712,15 @@ export async function dispatchPendingDirect(
           actionKind: step.kind as import('./pendingActionService').PendingActionKind,
           slots: step.slots,
         });
-        results.push(`${i + 1}. ${r.ok ? '✓' : '✗'} ${r.message}`);
+        // DEF-238 — a step's receipt may be a structured marker (the item
+        // executors mint them so the whole-answer path can render them). In
+        // THIS join the message lands EMBEDDED in a numbered list, where the
+        // whole-marker renderer never fires — so it is rendered to its curated
+        // fact here, or the owner would read a sentinel-wrapped JSON payload.
+        const { curatedMarkerMeaning } = await import('./answerSanitizer');
+        const { stripMarkerEnvelope } = await import('./systemMarker');
+        const stepFact = curatedMarkerMeaning(stripMarkerEnvelope(r.message)) ?? r.message;
+        results.push(`${i + 1}. ${r.ok ? '✓' : '✗'} ${stepFact}`);
         if (r.ok && !firstArtifact && r.artifactId) firstArtifact = r.artifactId;
         if (!r.ok) {
           const remaining = steps.length - i - 1;

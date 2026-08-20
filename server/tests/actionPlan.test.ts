@@ -106,7 +106,11 @@ describe('action_plan dispatch — fan-out with per-step guarantees', () => {
       { kind: 'notify_via_whatsapp', slots: { recipientCandidateId: 'ghost', message: 'x' } },
     ]) as any);
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/target unresolved/);
+    // DEF-238 — the join renders each step's marker to its curated meaning, so
+    // the owner reads the vetted ask ("confirm the WhatsApp recipient…"), not
+    // the raw `[target unresolved: …]` internals this line used to pin.
+    expect(r.message).toMatch(/confirm the WhatsApp recipient/);
+    expect(r.message).not.toMatch(/target unresolved/);
     expect(sendWaMock).not.toHaveBeenCalled();
   });
 

@@ -84,6 +84,12 @@ import {
   executeRecordPreference,
   executeSetBrainName,
 } from '../src/services/knowledge/internalActionExecutors';
+// DEF-238 — executor receipts are now CONSTRUCTED markers; the assertions
+// below read the rendered FACT, which is what the owner actually receives.
+// The hand-written strings these replaced had no curated meaning and shipped
+// the neutral fallback on success AND refusal (production, 08-19 20:09/22:23).
+import { itemOutcomeMeaning } from '../src/services/knowledge/actionReceipt';
+import { stripMarkerEnvelope } from '../src/services/knowledge/systemMarker';
 
 const COMPOSER = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf8',
@@ -160,7 +166,9 @@ describe('DEF-232 — executeRemoveOpenItem (the S33 request)', () => {
     const r = await executeRemoveOpenItem('TMC-0001', 2, { openItemId: 'it-1' });
     expect(r.ok).toBe(true);
     expect(r.artifactId).toBe('it-1');
-    expect(r.message).toBe('[removed: "Fujairah pricing"]');
+    const fact = itemOutcomeMeaning(stripMarkerEnvelope(r.message));
+    expect(fact).toContain('"Fujairah pricing"');
+    expect(fact).toContain('removed from his open items');
     expect(state.transitions).toEqual([
       { id: 'it-1', to: 'CANCELLED', reason: 'Removed via Brain Chat' },
     ]);
@@ -183,9 +191,10 @@ describe('DEF-232 — executeRemoveOpenItem (the S33 request)', () => {
     ];
     const r = await executeRemoveOpenItem('TMC-0001', 2, { titleRef: 'Call' });
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('matches 2 items');
-    expect(r.message).toContain('"Call Asad"');
-    expect(r.message).toContain('"Call Asad Sheikh"');
+    const fact = itemOutcomeMeaning(stripMarkerEnvelope(r.message));
+    expect(fact).toContain('matches 2 open items');
+    expect(fact).toContain('"Call Asad"');
+    expect(fact).toContain('"Call Asad Sheikh"');
     expect(state.transitions).toHaveLength(0);
   });
 
@@ -194,7 +203,9 @@ describe('DEF-232 — executeRemoveOpenItem (the S33 request)', () => {
     state.transitionResult = { ok: false, error: 'approval required' };
     const r = await executeRemoveOpenItem('TMC-0001', 2, { openItemId: 'it-1' });
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('not removed — approval required');
+    const fact = itemOutcomeMeaning(stripMarkerEnvelope(r.message));
+    expect(fact).toContain('did not happen');
+    expect(fact).toContain('approval required');
   });
 });
 
@@ -220,7 +231,9 @@ describe('DEF-232 — executeMarkOpenItemDone (the S14 request)', () => {
     state.transitionResult = { ok: false, error: 'guard failed' };
     const r = await executeMarkOpenItemDone('TMC-0001', 2, { openItemId: 'it-2' });
     expect(r.ok).toBe(false);
-    expect(r.message).toContain('not closed — guard failed');
+    const fact = itemOutcomeMeaning(stripMarkerEnvelope(r.message));
+    expect(fact).toContain('did not happen');
+    expect(fact).toContain('guard failed');
   });
 });
 

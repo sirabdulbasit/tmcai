@@ -26,7 +26,7 @@ import {
 } from './systemMarker';
 // DEF-209 — the receipt's vocabulary lives with its constructor, so the parser
 // and the marker builder cannot drift into two implementations of one label.
-import { RECEIPT_SLOTS, APPLIED_FIELDS, actionPhrase } from './actionReceipt';
+import { RECEIPT_SLOTS, APPLIED_FIELDS, actionPhrase, itemOutcomeMeaning } from './actionReceipt';
 
 interface MarkerRule {
   match: RegExp;
@@ -459,6 +459,12 @@ export function curatedMarkerMeaning(answer: string): string | null {
   if (applied) return applied;
   const noise = noiseMarkerMeaning(answer);
   if (noise) return noise;
+  // DEF-238 — the item-action outcome. Constructor and renderer share one
+  // module (`actionReceipt.ts`), so a receipt an executor mints is renderable
+  // here by construction — the drift that swallowed a SUCCESSFUL delete on
+  // 2026-08-19 22:23 cannot recur for this family.
+  const outcome = itemOutcomeMeaning(answer);
+  if (outcome) return outcome;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }
@@ -509,6 +515,15 @@ export function sanitizeAnswerForUser(answer: string): string {
     // A curated meaning is vetted plain language; anything else states the
     // situation and stops (see `NEUTRAL_MARKER_FALLBACK` on why it promises
     // nothing).
+    if (!curated) {
+      // DEF-238 — the swallow is NAMED. On 2026-08-19 22:23 this line replaced
+      // the receipt of a successful delete with the fallback and recorded
+      // nothing, so the producing marker had to be dug out of pm2 logs and the
+      // database. A guard that discards an answer must log what it discarded.
+      console.warn('[answer-sanitizer] marker had no curated meaning — neutral fallback shipped', {
+        markerHead: stripMarkerEnvelope(answer).slice(0, 120),
+      });
+    }
     return curated ?? NEUTRAL_MARKER_FALLBACK;
   }
 
@@ -604,7 +619,14 @@ export async function sanitizeAnswerInBrainVoice(
   // Only a CURATED meaning — a vetted plain-language sentence about what
   // happened — is safe to hand over. Everything else takes the neutral
   // fallback, which is not a rewriting problem and so needs no model.
-  if (!curated) return NEUTRAL_MARKER_FALLBACK;
+  if (!curated) {
+    // DEF-238 — same rule as the synchronous path: a discarded answer is
+    // logged, never silently vanished (the 22:23 swallow left no trace).
+    console.warn('[answer-sanitizer] marker had no curated meaning — neutral fallback shipped', {
+      markerHead: stripMarkerEnvelope(answer).slice(0, 120),
+    });
+    return NEUTRAL_MARKER_FALLBACK;
+  }
 
   try {
     const { renderMarkerInBrainVoice } = await import('./markerVoice');

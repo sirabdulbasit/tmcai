@@ -32,6 +32,14 @@
  * ledger can record what it removed.
  */
 import prisma from '../../db/prisma';
+// DEF-238 — receipts are CONSTRUCTED, never hand-written. Every hand-written
+// `[removed: …]`-style string in this file was unrenderable: the sanitizer had
+// no curated meaning for any of them, so success AND refusal both reached the
+// owner as "I couldn't put together an answer I trust for that one" (measured
+// live, 2026-08-19 20:09 and 22:23). The constructor and its renderer share
+// one module and one payload, so a receipt this file mints is renderable by
+// construction.
+import { itemOutcomeMarker } from './actionReceipt';
 
 export interface InternalActionResult {
   ok: boolean;
@@ -82,7 +90,10 @@ export async function executeRemoveOpenItem(
         // not something the owner can easily notice.
         return {
           ok: false,
-          message: `[remove_open_item: "${lookup}" matches ${matches.length} items — ${matches.map((m: any) => `"${m.title}"`).join(', ')}]`,
+          message: itemOutcomeMarker({
+            verb: 'removed', ok: false,
+            why: `"${lookup}" matches ${matches.length} open items — ${matches.map((m: any) => `"${m.title}"`).join(', ')} — he must say which one`,
+          }),
         };
       }
     }
@@ -90,7 +101,10 @@ export async function executeRemoveOpenItem(
     if (!target) {
       return {
         ok: false,
-        message: `[remove_open_item: could not find an open item matching ${lookup ? `"${lookup}"` : 'that reference'}]`,
+        message: itemOutcomeMarker({
+          verb: 'removed', ok: false,
+          why: `no open item matches ${lookup ? `"${lookup}"` : 'that reference'} — it may already be gone, or he can name it differently`,
+        }),
       };
     }
 
@@ -101,12 +115,20 @@ export async function executeRemoveOpenItem(
       reason: input.reason ? `${input.reason}`.slice(0, 500) : 'Removed via Brain Chat',
     });
     if (!removeResult.ok) {
-      return { ok: false, message: `[remove_open_item: not removed — ${removeResult.error ?? 'transition refused'}]` };
+      return {
+        ok: false,
+        message: itemOutcomeMarker({
+          verb: 'removed', ok: false, title: target.title,
+          why: removeResult.error ?? 'the lifecycle transition was refused',
+        }),
+      };
     }
-    return { ok: true, artifactId: target.id, message: `[removed: "${target.title}"]` };
+    // The receipt is constructed FROM the transition result, after it
+    // succeeded — a read-back, never a pre-dispatch claim.
+    return { ok: true, artifactId: target.id, message: itemOutcomeMarker({ verb: 'removed', ok: true, title: target.title }) };
   } catch (e: any) {
     console.warn('[brain-chat] remove_open_item failed', { error: e?.message, userId });
-    return { ok: false, message: `[remove_open_item failed: ${e?.message ?? 'unknown'}]` };
+    return { ok: false, message: itemOutcomeMarker({ verb: 'removed', ok: false, why: e?.message ?? 'unknown error' }) };
   }
 }
 
@@ -131,10 +153,22 @@ export async function executeMarkOpenItemDone(
       } as any,
     });
     if (!existing) {
-      return { ok: false, message: `[mark_open_item_done: openItemId not found]` };
+      return {
+        ok: false,
+        message: itemOutcomeMarker({
+          verb: 'closed', ok: false,
+          why: 'the item reference is stale — no open item was found under that id; he can name it by title',
+        }),
+      };
     }
     if ((existing as any).status === 'CLOSED' || (existing as any).status === 'INFORMED') {
-      return { ok: false, message: `[mark_open_item_done: item already ${(existing as any).status.toLowerCase()}]` };
+      return {
+        ok: false,
+        message: itemOutcomeMarker({
+          verb: 'closed', ok: false, title: (existing as any).title,
+          why: `it is already ${(existing as any).status.toLowerCase()} — there is nothing left to do`,
+        }),
+      };
     }
     const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
     const closeResult = await transitionStatus((existing as any).id, 'CLOSED', {
@@ -143,7 +177,13 @@ export async function executeMarkOpenItemDone(
       reason: input.completionNote || 'Marked done via Brain Chat',
     });
     if (!closeResult.ok) {
-      return { ok: false, message: `[mark_open_item_done: not closed — ${closeResult.error ?? 'transition refused'}]` };
+      return {
+        ok: false,
+        message: itemOutcomeMarker({
+          verb: 'closed', ok: false, title: (existing as any).title,
+          why: closeResult.error ?? 'the lifecycle transition was refused',
+        }),
+      };
     }
     const wasDelegated = !!(existing as any).delegateeName;
     const trail = Array.isArray((existing as any).delegationFollowupTrail) ? (existing as any).delegationFollowupTrail as any[] : [];
@@ -164,7 +204,7 @@ export async function executeMarkOpenItemDone(
     return { ok: true, artifactId: (existing as any).id, message: summary };
   } catch (e: any) {
     console.warn('[brain-chat] mark_open_item_done failed', { error: e?.message, openItemId: input.openItemId, userId });
-    return { ok: false, message: `[mark_open_item_done failed: ${e?.message ?? 'unknown'}]` };
+    return { ok: false, message: itemOutcomeMarker({ verb: 'closed', ok: false, why: e?.message ?? 'unknown error' }) };
   }
 }
 

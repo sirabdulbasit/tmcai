@@ -362,3 +362,106 @@ matrix green at this HEAD, doc-only diff on top of an already-deployed baseline;
 in this tree blocks `deploy.sh`. What would prove this entry wrong: Codex demonstrating
 any of the five mapped findings still reproducible at HEAD, or the wrong-referent shape
 recurring live.
+
+## Iteration 17 — 2026-08-20
+
+**Remediation attempt 1 of 3 for "Iteration 2's review" — resolved by pointer, and the
+real blocker was elsewhere.** The review log's newest `## Iteration` section (line 151
+after rotation) is STILL the wrong-referent review that Iteration 12 closed finding-by-
+finding against deployed commits (DEF-199/200/201/203/213 — see that entry's table; all
+citations stand). No review section exists for the one undeployed commit `efc29a4`, so
+there were no new reviewer findings to close: the remediation counter appears to track a
+review that was never re-run. Said plainly rather than re-litigated. Escalation ruling
+carried from Iteration 14's brief, restated: the wrong-referent CRITICAL is closed
+structurally in deployed code; the one residual (no full-composer final-answer test) is
+a testing-depth limitation, recommended as **(a) known limitation** — reverting DEF-200
+would restore the wrong-referent fabrication.
+
+**What actually blocked deployability, and what this turn did about it:** the tree was
+DIRTY with my own iteration-14 work — `actionReceipt.ts` (+82) and
+`internalActionExecutors.ts` (+58/−9), left uncommitted when that session died mid-turn —
+sitting on top of the undeployed `efc29a4`. Discarding it would have thrown away the fix
+for the analyst's measured top defect; deploying around it is impossible (dirty-tree
+refusal). So this turn FINISHED it, as **DEF-238**, renumbered because another session
+took DEF-237 for the completion-gate work in `efc29a4`.
+
+**DEF-238 — the diagnosis, from production, not inference:**
+- 2026-08-19 22:23:40.059: `open_items.cmsotakwf0006rts1bdsrjjkj` went **CANCELLED** —
+  "delete all open items" **EXECUTED** (read-only DB check, iteration 14).
+- The executor returned the hand-written receipt `[removed: "…"]`;
+  `curatedMarkerMeaning` has a rule for NONE of the executor's nine receipt strings; the
+  composer does `answer = actionResult.message`; `answerSanitizer.ts:512` swallowed it to
+  `NEUTRAL_MARKER_FALLBACK` — **"I couldn't put together an answer I trust for that
+  one."** His list was emptied and he was never told. The 20:09 DRAFT refusal died in
+  the same swallow, which is why its reason was never one he could act on.
+
+**The class fix (files:lines at this commit):**
+- `actionReceipt.ts` — `itemOutcomeMarker` + `itemOutcomeMeaning`: constructor and
+  renderer in ONE module, one payload; renderable by construction; a payload the
+  constructor could not mint is rejected, not repaired.
+- `internalActionExecutors.ts` — all nine receipts constructed; the success receipt is
+  built FROM the transition result AFTER it ran (read-back, DEF-034(b)'s principle at the
+  site that fired).
+- `answerSanitizer.ts` — `curatedMarkerMeaning` consults `itemOutcomeMeaning`; BOTH
+  neutral-fallback sites now `console.warn` the swallowed marker head (the 22:23 swallow
+  left no trace and had to be dug out of pm2 logs).
+- `brainComposer.ts` (`action_plan` join) — each step's marker renders to its curated
+  fact before joining; the join was shipping RAW markers into the owner's numbered list
+  (proven by the superseded `actionPlan.test.ts` assertion that pinned one).
+
+**Verification (from `server/`, after the last edit):**
+- `npx tsc --noEmit` → exit **0**
+- `npx vitest run` → **231 passed | 1 skipped** files (232); **2868 passed | 0 failed**
+  (7 expected fail | 21 skipped | 1 todo, of 2897) — 10 new tests in
+  `def238ReceiptRendersAsFact.test.ts` on the live fixtures.
+- **Mutations RUN, not asserted:** (M1) drop the renderer hook from
+  `curatedMarkerMeaning` → **7 of 10 fail** (survivors are the pure constructor tests,
+  correctly); (M2) revert the success receipt to the old hand-written string → **2 fail**
+  across def238+def232. Both restored, restoration verified by grep.
+- Superseded assertions updated with reasoning inline: def232 (4 — now assert the
+  RENDERED FACT), def127 (3 — source assertions follow the moved contract), actionPlan
+  (1 — the curated ask replaces the raw marker it used to pin).
+- `git diff --check` → clean (run after this entry).
+- `npm run build` NOT run in this tree — dist is `chattr +i` (CLAUDE.md); `--noEmit` is
+  the build check.
+
+**Governing docs (rule 5 verdict): CIRCLING, handled structurally.**
+`guard-destroys-the-answer` stood at 8 and the 22:23 turn is its 9th, post-deploy — so a
+patch on the instance was forbidden. This is the structural close for the receipt
+family: the producer/renderer split that generated the class is gone for every receipt
+these executors mint. Rows written: **DEF-238** (this work) and **DEF-237** (`efc29a4`
+shipped without its row — the last unlogged commit; rule-1 violation named).
+
+**CAPABILITY:** Accurate Communication
+**PREDICTED:** the owner is told what a delete actually did — including success, which
+was being swallowed. No numeric claim until scored.
+**MECHANISM:** receipt producer and renderer share one module and one payload, so no
+item-action outcome can reach the sanitizer unrenderable; the plan join renders per-step
+facts; both fallbacks log what they discard.
+**FALSIFIER:** any post-deploy transcript where a delete/mark-done turn returns the
+neutral fallback; or a raw `item_outcome` payload visible in a reply.
+
+**Symptom tag:** `guard-destroys-the-answer` — this closes the deck row "Asked to delete
+his items, got a message he could do nothing with — again, after it was supposedly
+fixed" at the mechanism that produced both its occurrences. The DEF-237 row carries
+`trigger-instruction-as-task` (hole 1) and partly `fabricated-status` (hole 2) on
+`efc29a4`'s behalf.
+
+**What I did NOT do, named:**
+- The analyst's NEW top items from S37 13:14 — the `(unknown item <cuid>)` preview
+  (DEF-044/045) and the confirm-gate re-ask on a direct instruction (DEF-038/151/161) —
+  are NOT touched: deployability won on scope. They are the next fresh turn's target,
+  and the analyst's class prescription (ONE shared item-label resolver; instructed
+  deletes skip the re-confirm) is the right shape.
+- DEF-034(b) general ledger read-back: still not built (DEF-238 applies its principle
+  only to these receipts).
+- `set_contact_scope`/wiki-page executor failures and composer-local failure markers
+  (`[add_open_item: …]`, `[delegate_open_item: …]`) still have no curated meanings —
+  same class, now at least LOGGED when swallowed; named as the residual migration.
+- `brain_evaluation_chart.md` carries the orchestrator's own uncommitted D-66 deploy row
+  — orchestrator-owned WIP, not committed by me; it must be reconciled before deploy.
+
+**Honest prediction:** deployable at end of turn — YES for the Builder's surface: the
+matrix is green and every Brain-code file is committed; the remaining dirt is
+orchestrator state/WIP. What would prove this entry wrong: Codex showing a receipt path
+this misses, or the fallback string appearing on a delete turn after this deploys.

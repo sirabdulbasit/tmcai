@@ -323,7 +323,11 @@ describe('DEF-128 — a refused transition is never reported as done', () => {
   it('mark_open_item_done inspects the transition result', () => {
     const block = executors.slice(executors.indexOf("reason: input.completionNote || 'Marked done via Brain Chat'"));
     expect(block.slice(0, 500)).toContain('closeResult.ok');
-    expect(block.slice(0, 700)).toContain('[mark_open_item_done: not closed');
+    // DEF-238 — the refusal is a CONSTRUCTED receipt carrying the transition's
+    // own error, replacing the hand-written '[mark_open_item_done: not closed'
+    // string that no curated rule could render.
+    expect(block.slice(0, 900)).toContain('itemOutcomeMarker({');
+    expect(block.slice(0, 900)).toContain('closeResult.error');
   });
 
   it('delegate_open_item inspects the transition result', () => {
@@ -337,7 +341,9 @@ describe('DEF-128 — a refused transition is never reported as done', () => {
     // returns `[… not closed …]` early, so `Marked "…" done.` is unreachable
     // on a refused transition.
     const close = executors.slice(executors.indexOf('const closeResult = await transitionStatus'));
-    const refusalIdx = close.indexOf('[mark_open_item_done: not closed');
+    // DEF-238 — the refusal receipt is now minted by `itemOutcomeMarker`; the
+    // first mint after the transition call IS the refusal return.
+    const refusalIdx = close.indexOf('itemOutcomeMarker({');
     const summaryIdx = close.indexOf('let summary = `Marked');
     expect(refusalIdx).toBeGreaterThan(-1);
     expect(summaryIdx).toBeGreaterThan(refusalIdx);
@@ -346,7 +352,9 @@ describe('DEF-128 — a refused transition is never reported as done', () => {
   it('refusal messages are bracketed markers, not hardcoded Brain sentences', () => {
     // §2.4 — a plain English sentence pretending to be Brain is forbidden;
     // markers are rendered into Brain's voice by answerSanitizer.
-    expect(executors).toContain('[mark_open_item_done: not closed —');
+    // DEF-238 — the marker is constructed (provenance-stamped, renderable by
+    // curated meaning), no longer a hand-written bracket string.
+    expect(executors).toContain('itemOutcomeMarker({');
     expect(composer).toContain('[delegate_open_item: not delegated —');
   });
 });
