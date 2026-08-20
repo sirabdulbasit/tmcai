@@ -5944,11 +5944,36 @@ function priorTurnWasPreview(history: ComposerHistoryTurn[]): boolean {
 
 /** The user's current message is a short confirmation of a preview
  *  Brain just showed. Limited to a closed set of confirmation words
- *  to avoid false positives ("yes I know him" should NOT confirm). */
+ *  to avoid false positives ("yes I know him" should NOT confirm).
+ *
+ *  DEF-239 — AND AN AFFIRMATIVE THAT RESTATES THE REQUEST.
+ *
+ *  Owner, 2026-08-20 18:12 PKT. Brain asked "Do you want me to remove all 7 active open
+ *  items?", he answered **"yes remove all"**, and this function said no — the pattern was
+ *  anchored end-to-end, so only a BARE affirmative counted. Having already confirmed, he was
+ *  asked again, this time to reply with the word "send". That is `confirm-misfires`, 7 deep in
+ *  the recurrence table, and this anchor is why: the most natural way to confirm — say yes and
+ *  repeat what you want — was the one form not accepted.
+ *
+ *  The closed set stays, because the false positive it guards is real: "yes I know him" must
+ *  never dispatch. What is added is narrow and checkable: an affirmative FOLLOWED BY a mutation
+ *  verb. "yes remove all" and "yes delete all" confirm; "yes I know him" does not, because
+ *  `know` is not a verb that changes anything. The verb list is the composer's existing
+ *  vocabulary rather than a new one, so it cannot drift from what the actions actually are.
+ *
+ *  Negation still refuses outright: "yes but don't send the email" is not a confirmation, and
+ *  reading it as one would be the worst possible error here. */
 function userMessageIsShortConfirmation(question: string): boolean {
   const q = question.trim().toLowerCase();
-  if (q.length > 30) return false; // long messages aren't bare confirmations
-  return /^(yes|yep|yes\s+send|send|send\s+it|go\s+ahead|do\s+it|confirm|confirmed|ok|okay|proceed|approved|approve|yes\s+please)\.?$/.test(q);
+  if (q.length > 40) return false; // long messages aren't bare confirmations
+  if (/\b(?:but|except|don'?t|do\s+not|instead|wait|hold\s+on|not\s+yet|cancel|stop)\b/.test(q)) {
+    return false;
+  }
+  const AFFIRM = "yes|yep|yeah|yup|ok|okay|sure|confirm|confirmed|proceed|approved|approve|go\\s+ahead|do\\s+it|please\\s+do|send|send\\s+it";
+  // Bare affirmative — unchanged behaviour.
+  if (new RegExp(`^(?:${AFFIRM})(?:\\s+please)?\\.?$`).test(q)) return true;
+  // Affirmative, then a restatement carrying a mutation verb.
+  return new RegExp(`^(?:${AFFIRM})\\b[\\s,]*(?:\\S+\\s+){0,4}?\\b(?:${_COMPLETION_VERBS_ANY})\\b`).test(q);
 }
 
 /** Recognize the canonical test-email pattern: subject + body match
@@ -6048,18 +6073,18 @@ async function renderActionPreview(
     const r = await resolveCandidate(act.contactCandidateId, userId, clientNumber);
     const who = r?.name ?? act.nameHint ?? act.contactCandidateId;
     const label = act.scope === 'tenant' ? 'Public (tenant-shared)' : act.scope === 'private' ? 'Private (Brain-muted)' : 'Normal (default)';
-    return `Before I change visibility, please confirm — set "${who}" to ${label}? Reply "send" to confirm.`;
+    return `Before I change visibility, please confirm — set "${who}" to ${label}? Say yes and I'll do it.`;
   }
   if (act.type === 'mark_contact_inactive') {
     const r = await resolveCandidate(act.contactCandidateId, userId, clientNumber);
     const who = r?.name ?? act.nameHint ?? act.contactCandidateId;
-    return `Before I mark inactive, please confirm — "${who}" will be hidden and Brain will skip them. Reply "send" to confirm.`;
+    return `Before I mark inactive, please confirm — "${who}" will be hidden and Brain will skip them. Say yes and I'll do it.`;
   }
   if (act.type === 'archive_wiki_page') {
-    return `Before I archive, please confirm — I'm about to archive wiki page:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nArchiving hides it from Brain's retrieval. It stays in the DB and can be restored. Reply "send" to confirm, or tell me what to change.`;
+    return `Before I archive, please confirm — I'm about to archive wiki page:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nArchiving hides it from Brain's retrieval. It stays in the DB and can be restored. Say yes and I'll go ahead, or tell me what to change.`;
   }
   if (act.type === 'delete_wiki_page') {
-    return `⚠️ PERMANENT DELETE — please confirm:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nThis is IRREVERSIBLE. Brain will forget this page entirely. If you just want Brain to ignore it temporarily, say "archive instead". Reply "send" to confirm permanent deletion.`;
+    return `⚠️ PERMANENT DELETE — please confirm:\n\n"${act.titleHint ?? '(id ' + act.wikiPageId + ')'}"\n\nThis is IRREVERSIBLE. Brain will forget this page entirely. If you just want Brain to ignore it temporarily, say "archive instead". Say yes and I'll delete it permanently.`;
   }
   // DEF-116 — say WHICH details, and WHY you are asking.
   //
@@ -6106,13 +6131,15 @@ async function renderActionPreview(
     }
     const verb = act.type === 'add_open_item' ? 'create' : 'update';
     return `Before I proceed, please confirm — ${verb} "${title}"`
-      + `${bits.length ? ` (${bits.join(', ')})` : ''}. Reply "send" to confirm, or tell me what to change.`;
+      + `${bits.length ? ` (${bits.join(', ')})` : ''}. Say yes and I'll do it, or tell me what to change.`;
   }
 
   // Last resort. Still names the action rather than saying nothing, so a type
   // with no renderer degrades to "confirm this thing" instead of "confirm".
+  // DEF-239 — this branch does not know WHAT the action is, so it cannot claim anything is
+  // being sent. "Say yes" is true of every action; "reply send" was true of three.
   return `Before I proceed, please confirm — ${String(act.type).replace(/_/g, ' ')}. `
-    + `Reply "send" to confirm, or tell me what to change.`;
+    + `Say yes and I'll go ahead, or tell me what to change.`;
 }
 
 /** Constrained action-decider. Replaces A's free-form retry with a
@@ -6681,7 +6708,21 @@ export async function renderPlanPreview(
     }
     lines.push(`${i + 1}. ${line}`);
   }
-  return `Before I proceed, please confirm — I'm about to do ALL of these:\n\n${lines.join('\n')}\n\nReply "send" to confirm everything, or tell me what to change.`;
+  // DEF-239 — DO NOT DEMAND A MAGIC WORD, AND NEVER SAY "send" ABOUT A DELETE.
+  //
+  // Owner, 2026-08-20: *"the word 'Send' to confirm doesnt make sense and make it like template
+  // strings and that's why i think the response are not through LLM."*
+  //
+  // Both halves are right. "Reply \"send\"" on a plan that REMOVES five items is semantically
+  // wrong — nothing is being sent — and being told to type a specific token is what makes a
+  // reply read as a form rather than an assistant.
+  //
+  // And the word was never required. `userMessageIsShortConfirmation` already accepts yes, ok,
+  // sure, go ahead, do it, proceed, confirm — so the prompt was demanding one member of a set
+  // it happens to accept, and naming the least apt one. Asking in plain language costs nothing
+  // and matches what the code actually does.
+  return `Before I proceed, please confirm — I'm about to do ALL of these:\n\n${lines.join('\n')}`
+    + `\n\nSay yes and I'll go ahead, or tell me what to change.`;
 }
 
 /** Dispatch a pending action directly from its stored slots.

@@ -71,7 +71,14 @@ describe('a resolvable delegation names the person', () => {
 describe('the fallback no longer says nothing', () => {
   it('names the action type even when no renderer exists', () => {
     // Degrades to "confirm this thing", never to "confirm".
-    expect(BLOCK).toMatch(/String\(act\.type\)\.replace\(\/_\/g, ' '\)/);
+    //
+    // Asserted against the WHOLE source, not the 3000-char BLOCK window. DEF-239 added a
+    // comment inside that window and pushed this line past its end, turning a fixed byte
+    // distance from an unrelated anchor into a failing test. The requirement is that the
+    // fallback names the action type; where that line sits relative to the DEF-116 comment is
+    // not the requirement. (The file's own note two tests below says it: anchor on code
+    // shapes, not on prose — the window is prose-distance in disguise.)
+    expect(SRC).toMatch(/String\(act\.type\)\.replace\(\/_\/g, ' '\)/);
   });
 
   it('the bare, detail-free sentence is gone', () => {

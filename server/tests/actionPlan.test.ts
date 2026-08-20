@@ -139,8 +139,16 @@ describe('renderPlanPreview — one combined confirmation', () => {
     expect(preview).toMatch(/1\. Update contact Asad Ahmed Taj: email → asad\.ahmed@tmcltd\.com/);
     expect(preview).toMatch(/2\. Email to Asad Ahmed Taj — "Followup: Leave Request"/);
     expect(preview).toMatch(/3\. WhatsApp to Muhammad Yousaf/);
-    // Exactly one confirm instruction, covering everything.
-    expect(preview).toMatch(/Reply "send" to confirm everything/);
-    expect((preview.match(/Reply "send"/g) ?? []).length).toBe(1);
+    // Exactly one confirm instruction, covering everything. Asserted as the REQUIREMENT rather
+    // than the sentence: DEF-239 reworded this after the owner pointed out that "Reply
+    // \"send\"" makes no sense on a plan that deletes, and that being told to type a token is
+    // what makes a reply read as a form. A test pinned to the wording turns a correctness fix
+    // into a red suite — which is exactly what happened to four tests on DEF-034.
+    expect(preview).toMatch(/\bconfirm\b/i);
+    expect(preview).toMatch(/tell me what to change/i);
+    // ONE instruction, not one per step — the point of a combined preview.
+    expect(preview.match(/tell me what to change/gi)?.length).toBe(1);
+    // The line that used to count occurrences of `Reply "send"` is gone with the phrase. Its
+    // intent — ONE instruction rather than one per step — is the assertion directly above.
   });
 });
