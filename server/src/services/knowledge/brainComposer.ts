@@ -2756,6 +2756,46 @@ export async function compose(
               invalid = `step ${i + 1} (${step.type}): no dispatcher for this action in a confirmed plan`;
               break;
             }
+            // DEF-238 — AND ITS TARGETS MUST EXIST. The same principle as the paragraph above,
+            // applied to the records rather than the verb: never ask the owner to confirm
+            // something that cannot execute.
+            //
+            // Owner, 2026-08-20 18:14 PKT, verbatim from his WhatsApp:
+            //
+            //   him:   "Can u delete all open items including draft?"
+            //   Brain: "…Do you want me to remove all 7 active open items?"
+            //   him:   "yes remove all"
+            //   Brain: "Before I proceed, please confirm — I'm about to do ALL of these:
+            //           • Remove (unknown item cmou52r0) from your open items
+            //           • Remove (unknown item cmou55ls) …   [five in total]
+            //           Reply "send" to confirm everything"
+            //
+            // He had ZERO active open items — 276 CLOSED, 7 CANCELLED — and those five ids
+            // exist in NO TABLE in the database. The model invented the records, and he was
+            // asked to authorise deleting them.
+            //
+            // The preview already KNEW: `itemTitleOf` printed "(unknown item …)" precisely
+            // because the row could not be found. It rendered the doubt as text and asked for
+            // confirmation anyway. `verifyActionTargets` — the ground-or-ask guard that would
+            // have caught every one — ran only in `dispatchPendingDirect`, AFTER his "send".
+            // So it now runs here, before he is asked, which is the only place a fabricated
+            // target can be refused without spending his authorisation on it.
+            try {
+              const { verifyActionTargets } = await import('./actionTargetGuard');
+              const verdict = await verifyActionTargets(
+                step.type, (step.payload ?? {}) as any, userId, clientNumber,
+              );
+              if (!verdict.ok) {
+                invalid = `step ${i + 1} (${step.type}): ${verdict.marker}`;
+                break;
+              }
+            } catch (e: any) {
+              // Guard failure must not block a legitimate plan — the same non-fatal stance
+              // dispatchPendingDirect takes, where the per-verb resolution still fails closed.
+              console.warn('[compose] plan target guard errored (non-fatal)', {
+                userId, clientNumber, stepType: step.type, error: e?.message,
+              });
+            }
           }
           if (invalid) {
             return {
