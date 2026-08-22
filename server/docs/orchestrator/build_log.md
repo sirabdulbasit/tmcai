@@ -465,3 +465,77 @@ fixed" at the mechanism that produced both its occurrences. The DEF-237 row carr
 matrix is green and every Brain-code file is committed; the remaining dirt is
 orchestrator state/WIP. What would prove this entry wrong: Codex showing a receipt path
 this misses, or the fallback string appearing on a delete turn after this deploys.
+
+## Iteration 22 — 2026-08-22
+
+**Deployability turn.** Two commits stand between deployed `85cf393` and HEAD, both built
+by other sessions, both shipped WITHOUT ledger rows, one under a COLLIDING DEF id. No
+review section exists for either (the review log is unchanged at 216 lines), so no
+reviewer finding blocks release; what blocked it was the three-document protocol and the
+ledger's integrity. Closed this turn:
+
+1. **DEF-239 (`63a3b74`) — row written.** "yes remove all" now CONFIRMS: the matcher
+   accepts an affirmative followed by a mutation verb from the composer's existing verb
+   vocabulary (`brainComposer.ts:5966+`, verified at HEAD), and non-send previews stop
+   demanding the token "send" (3 sites now say a natural affirmative). This is the
+   shipped fix for the deck's TOP open row — `confirm-misfires`, "Gave a direct
+   instruction, got asked to confirm it yet again", 5 conversations.
+2. **DEF-240 (`5509066`) — row written, collision resolved on the record.** Its commit
+   message and test filename say "DEF-238", which belongs to the deployed receipt-
+   renderer fix (`85cf393`). The ledger now owns the disambiguation: DEF-240 is the
+   ground-or-ask guard running per plan step BEFORE the preview
+   (`brainComposer.ts:2784-2785`, verified at HEAD) — he can no longer be asked to
+   authorise deleting five items that exist in no table. Files were NOT renamed: a
+   rename adds review surface for zero behaviour; the row carries the mapping.
+3. **DEF-238's own row updated** — commit `85cf393`, DEPLOYED 2026-08-20 13:38:52Z per
+   `deploy-history`; status DEPLOYED (unverified live), live acceptance named.
+
+**Remediation attempt 2 of 3, resolved by pointer:** the newest `## Iteration 2` review
+section (line 151) is still the wrong-referent review; Iteration 12's finding-by-finding
+closure against deployed commits stands unchanged, and no new review has been written
+since. Nothing to re-close; said plainly rather than re-derived.
+
+**Verification (from `server/`, at HEAD `63a3b74` + this turn's two doc files, after the
+last edit):**
+- `npx tsc --noEmit` → exit **0**
+- `npx vitest run` → **232 passed | 1 skipped** files (233); **2873 passed | 0 failed**
+  (7 expected fail | 21 skipped | 1 todo, of 2902)
+- `git diff --check` → clean (run after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+  No `server/src` change this turn, so artifact identity is untouched by me.
+
+**Governing docs (rule 5): verdict per row, said in each row** — DEF-239 is the 7th
+`confirm-misfires` closed at the mechanism (the anchored matcher) rather than the
+sentence; DEF-240 is the `DEF-045` family's grounding half moved to where the
+confirmation is minted. This turn itself is accounting: no product code changed.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 from this turn's own diff (docs only). The two commits it makes
+deployable carry their own declared movements (Simple & Smart; Authorized Action) in
+their rows.
+**MECHANISM:** the ledger stops lying about what shipped — every commit between deployed
+and HEAD now has a row, a correct id, and a named falsifier, which is what the deploy
+report and the deck's strike logic read.
+**FALSIFIER:** a cited line not containing what a row claims; or the deck failing to
+link `confirm-misfires` to DEF-239 after deploy.
+
+**Symptom tag:** `confirm-misfires` — named for DEF-239's shipped fix on its behalf (its
+commit predates none of the rules, it simply didn't name the tag; the row and this commit
+carry it). Also named in-row: `DEF-045` family for DEF-240. Not closed by this turn and
+still open: `fabricated-status` (DEF-034(b) still not built — the "no concept of draft"
+denial recurred 08-22 and remains the analyst's #1), the image-reading live confirmation
+(DEF-110/113 deployed-unverified), `guard-destroys-the-answer`'s verify-first loop.
+
+**What I did NOT do, named:** DEF-034(b) (analyst's top build — new structural work,
+forbidden while deploy debt stands); the image-reading live turn (needs the owner or the
+orchestrator's live check, not a Builder edit); test-file rename for the DEF-238
+collision (surface for zero behaviour); the chart's uncommitted D-66/D-67 rows and state
+files (orchestrator-owned WIP). One honest caveat: "Say yes and I'll go ahead" is
+deterministic preview prose replacing worse deterministic preview prose ("Reply send…")
+on an existing curated surface — if the reviewer wants preview wording model-phrased,
+that is a named follow-up, not a regression introduced here.
+
+**Honest prediction:** deployable at end of turn — YES: matrix green at HEAD, every
+Brain-code commit has its row, tree clean of Brain files. After deploy, the owner's next
+"yes remove all" on a populated list should execute without a second demand — and if it
+instead re-asks, DEF-239's falsifier fires and the row flips.
