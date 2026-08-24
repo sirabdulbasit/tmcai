@@ -164,6 +164,44 @@ export async function describeInboundImage(
  * that every Brain-surface reply is LLM-generated or a bracketed marker, and
  * `answerSanitizer` already renders markers of this shape.
  */
+/**
+ * Fold an inbound image into the TEXT of a communication, whatever channel carried it.
+ *
+ * Owner, 2026-08-24: *"since i have the quickest comm is whatsapp and i am analyzing brain
+ * through it, but it not limit with whatsapp it should cover all aspects of communications"*.
+ *
+ * `describeInboundImage` was already channel-neutral — it takes bytes and a mimetype and knows
+ * nothing about WhatsApp. The reason image reading WAS WhatsApp-only is that it had exactly one
+ * caller in the entire codebase. This function is the seam that stops the next channel from
+ * copy-pasting the WhatsApp version: give it bytes, a mimetype and whatever caption came with
+ * the message, and it returns the text a Comm channel should carry downstream.
+ *
+ * Two rules it enforces so every channel behaves the same way:
+ *   • A CAPTION LEADS. What the person actually wrote outranks what the picture contains.
+ *   • A FAILURE IS SAID, NEVER SWALLOWED. It returns a bracketed marker rather than empty
+ *     text, because an empty body is silently dropped by every length guard downstream — which
+ *     is exactly how images vanished on the owner's own WhatsApp with no reply and no log line.
+ */
+export async function readCommImageIntoText(
+  buffer: Buffer,
+  mimetype: string | undefined,
+  caption?: string,
+): Promise<string> {
+  const lead = (caption ?? '').trim();
+  const join = (marker: string) => (lead ? `${lead}\n\n${marker}` : marker);
+  try {
+    const read = await describeInboundImage(buffer, mimetype);
+    if (read.text) return join(`[image received — contents:]\n${read.text}`);
+    return join(imageReadFailureMarker(read.failureReason));
+  } catch (e: any) {
+    log.error('Comm image read failed', {
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      bytes: buffer.length,
+    });
+    return join(imageReadFailureMarker('provider_failed'));
+  }
+}
+
 export function imageReadFailureMarker(reason?: ImageReadFailure): string {
   switch (reason) {
     case 'no_provider':  return '[no image reader configured — I could not look at that image]';

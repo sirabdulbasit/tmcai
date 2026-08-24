@@ -291,9 +291,46 @@ async function handleSelfDictation(args: {
 }): Promise<void> {
   const { userId, clientNumber, rawFrom, message } = args;
   const isVoice = message.type === 'ptt' || message.type === 'audio';
+  const isImage = String(message.type ?? '').toLowerCase() === 'image';
 
   // 1. Transcribe voice if needed.
   let transcriptText = (message.body || '').trim();
+
+  // READ AN IMAGE THE OWNER SENDS HIMSELF. Owner, 2026-08-24: "this comm should read image
+  // also", after being shown that describeInboundImage had exactly ONE caller in the codebase —
+  // the TENANT WhatsApp provider. This is his OWN WhatsApp, and it is the busier path.
+  //
+  // What happened before this: an image with no caption produced an empty transcriptText, and
+  // the `length < 2` guard below returned silently. He sent a screenshot and Brain did nothing —
+  // no reply, no marker, no log line. That silence is worse than a refusal, because there is
+  // nothing to report as a bug.
+  //
+  // Voice has been read here since the path was built; images were simply never wired. Same
+  // shape as the tenant provider (WebjsProvider ~line 946): the contents are folded into the
+  // text so everything downstream — intent extraction, staging, the confirmation preview — sees
+  // observed input rather than a placeholder. A caption leads when there is one, because that is
+  // what he actually asked.
+  if (isImage && message.hasMedia) {
+    try {
+      const media = await message.downloadMedia();
+      if (media?.data) {
+        const { readCommImageIntoText } = await import('../imageService');
+        transcriptText = await readCommImageIntoText(
+          Buffer.from(media.data, 'base64'), media.mimetype, transcriptText,
+        );
+      } else {
+        const { imageReadFailureMarker } = await import('../imageService');
+        transcriptText = transcriptText || imageReadFailureMarker('invalid_media');
+      }
+    } catch (e: any) {
+      log.warn('self-dictation image read failed', {
+        userId, error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      });
+      const { imageReadFailureMarker } = await import('../imageService');
+      transcriptText = transcriptText || imageReadFailureMarker('provider_failed');
+    }
+  }
+
   let voiceTranscript: { language: string; original: string; english: string; confidence: number } | null = null;
   if (isVoice && message.hasMedia) {
     try {
