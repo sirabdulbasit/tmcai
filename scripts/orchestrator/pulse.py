@@ -804,6 +804,45 @@ def declared_signature_tags():
     return tags
 
 
+def _finding_state(tag):
+    """"open" | "built" | "deployed" | "verified" | "unknown" — is this finding actually fixed?
+
+    Owner, 2026-08-24, reading the new `found this cycle` list: *"are these fixec?"* He should not
+    have had to ask — a list of findings with no state is a list you cannot act on, and it reads
+    as either "all outstanding" or "all handled" depending on the reader's mood. That ambiguity is
+    the same failure as the archive list rendering everything struck through.
+
+    Only a DEF id can be resolved this way, because only a DEF row records a commit and a deploy
+    state. A bare symptom tag like `fabricated-status` spans many defects and cannot be collapsed
+    to one status, so it returns "open" — the honest default, since a symptom the analyst has
+    just re-reported is by definition still being observed. UNKNOWN is never rendered as fixed:
+    a false "handled" is the worse error, exactly as the ledger rule says.
+    """
+    if not re.match(r"^DEF-\d+$", tag or ""):
+        return "open"
+    path = os.path.join(ROOT, "server", "docs", "brain_change_log.md")
+    try:
+        for line in open(path, errors="replace"):
+            if f"**{tag}**" not in line:
+                continue
+            if "VERIFIED (LIVE)" in line or "VERIFIED BY A/B" in line:
+                return "verified"
+            if "**NOT YET**" in line:
+                return "built"
+            # "DEPLOYED-IN-FACT (unrecorded)" is DEF-234's wording: shipped inside a commit
+            # that never named the tag, so the deck could not strike it. It is deployed, and
+            # reading it as `open` would be a false NEGATIVE — less dangerous than a false
+            # "fixed", but still a row the owner would chase twice.
+            if re.search(r"\*\*YES\s*—\s*deployed", line) or "DEPLOYED-IN-FACT" in line:
+                return "deployed"
+            if "CODE-COMPLETE" in line:
+                return "built"
+            return "open"
+    except Exception:
+        return "unknown"
+    return "unknown"
+
+
 def found_now(limit=8):
     """The analyst's CURRENT findings — what this cycle actually turned up.
 
@@ -841,7 +880,8 @@ def found_now(limit=8):
         tag = cells[-1]
         if not tag or tag.lower() == "tag" or set(tag) <= set("-: "):
             continue           # header row or markdown rule
-        out.append({"tag": tag, "saw": cells[0][:150], "fragment": cells[1][:150]})
+        out.append({"tag": tag, "saw": cells[0][:150], "fragment": cells[1][:150],
+                    "state": _finding_state(tag)})
         if len(out) >= limit:
             break
     return out

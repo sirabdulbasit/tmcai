@@ -1424,6 +1424,14 @@ export default function OrchestratorPulsePanel() {
                       <ul>
                         {(data.found_now || []).map((f, i) => (
                           <li key={`${f.tag}-${i}`}>
+                            {/* The STATE first, because "are these fixed?" was the owner's
+                                first question on seeing this list without one. `open` is the
+                                honest default for a bare symptom tag: it spans many defects and
+                                cannot collapse to one status, and a symptom just re-reported is
+                                by definition still being observed. */}
+                            <span className={`orch-fstate orch-fstate-${f.state || 'open'}`}>
+                              {f.state || 'open'}
+                            </span>
                             <code>{f.tag}</code> {f.saw}
                           </li>
                         ))}
