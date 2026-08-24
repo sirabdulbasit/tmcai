@@ -902,8 +902,12 @@ describe('DEF-187/188/189/190 — the cleanup job: CAS writes, atomic outbox bat
     assertAllWritesGuarded();
   });
 
-  it('DEF-191 — the dispatcher is OFF by default: withdrawals archive with their debt recorded, and NOTHING is announced', async () => {
-    mocks.getBehaviorValue.mockResolvedValue(0); // the registry default
+  it('DEF-191/DEF-242 — the gate is RESPECTED when the owner sets 0: withdrawals archive with their debt recorded, and NOTHING is announced', async () => {
+    // DEF-242 flipped the registry DEFAULT to 1 (the DEF-191 hold's exit
+    // condition — the event-token redesign — landed as DEF-202/208/209).
+    // This test now pins the owner's explicit opt-OUT, which must keep
+    // silencing the announce path exactly as the old default did.
+    mocks.getBehaviorValue.mockResolvedValue(0);
     mocks.state.items = [staleItem({ metadata: quarantinedStaleMeta(8) })];
 
     const stats = await runOpenItemsBacklogCleanup('tenant-1');
@@ -916,6 +920,19 @@ describe('DEF-187/188/189/190 — the cleanup job: CAS writes, atomic outbox bat
     expect(mocks.enqueueBrainPrompt).not.toHaveBeenCalled();
     expect(mocks.getBehaviorValue).toHaveBeenCalledWith(
       'selfpruning.withdrawal_notice_enabled', { clientNumber: 'tenant-1' });
+  });
+
+  it('DEF-242 — the registry default is ON: the DEF-191 hold ended when its exit condition landed', async () => {
+    // Not config prose: the default IS this change's behaviour — with it, a
+    // tenant that never touched behavior config gets increment 3's contract
+    // ("the owner is told once what was withdrawn"); reverting it to 0 makes
+    // the announce path dark again for every such tenant. The mutation
+    // "def: 1 → 0" must fail a test, and this is that test.
+    const { BEHAVIOR_SPECS } = await vi.importActual<typeof import('../src/services/behaviorConfig')>('../src/services/behaviorConfig');
+    expect(BEHAVIOR_SPECS['selfpruning.withdrawal_notice_enabled'].def).toBe(1);
+    // The consent-taking sibling stays opt-in: suppressing pushes is the
+    // owner's call, telling him what withdrew is not.
+    expect(BEHAVIOR_SPECS['selfpruning.digest_enabled'].def).toBe(0);
   });
 
   it('DEF-191 — an unreachable behavior config reads as OFF: when opt-in cannot be known, nothing is announced', async () => {

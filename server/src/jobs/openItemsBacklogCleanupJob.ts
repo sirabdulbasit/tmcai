@@ -498,19 +498,18 @@ async function cleanupUserBacklog(
  * DEF-190 — the outbox dispatcher. Deterministic order (userId asc, batches
  * oldest-first); one owner's failure never blocks the next.
  *
- * DEF-191 (escalation decision after three remediation rounds) — the
- * dispatcher runs ONLY when the owner has switched
- * `selfpruning.withdrawal_notice_enabled` on. Codex's iteration-4 findings
- * (a restore inside the revalidate→enqueue window, immortal batch
- * membership suppressing a re-withdrawal, no DB ownership constraint for
- * concurrent dispatchers, cap starvation behind uncleared sent members) are
- * ALL confined to this announce path; while the gate is 0 they are dormant
- * limitations of a disabled path, not live risks. The archive side is
- * unaffected: withdrawals stay reversible and every debt is still recorded
- * durably in the archiving write, so notices flow — from the accumulated
- * debt — once the event-token redesign (DEF-191) lands and the gate opens.
- * An unreachable config reads as 0: when we cannot know the owner opted in,
- * nothing is announced.
+ * DEF-191 (escalation decision after three remediation rounds) gated this
+ * dispatcher to 0 while four Codex iteration-4 findings stood against the
+ * announce path. DEF-242 opens the gate by default, because the hold's own
+ * exit condition — "once the event-token redesign lands" — was met a week
+ * before anyone went back: DEF-208 (revalidate + claim CAS + enqueue +
+ * sent-mark in ONE transaction), DEF-202 (per-withdrawal event tokens;
+ * batch dedup key derived from sorted member tokens, so the unique index IS
+ * the concurrent-dispatcher ownership constraint), DEF-209 (owed scan pages
+ * past claimed debt). The owner can still set
+ * `selfpruning.withdrawal_notice_enabled` to 0 to silence notices.
+ * An unreachable config reads as 0: when we cannot read the tenant's
+ * setting, nothing is announced — fail-closed on the announce side.
  */
 async function dispatchOwedNotices(clientNumber: string, stats: CleanupStats): Promise<void> {
   let enabled = 0;

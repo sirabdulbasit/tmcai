@@ -794,3 +794,86 @@ change, docs in the same commit). After deploy, the 2026-08-05 fixture — "send
 twice in two seconds — produces a reply grounded on the first send's receipt instead
 of a denial. What would prove me wrong: the falsifier above, or Codex showing a
 mutation-turn path that bypasses both call sites.
+
+## Iteration 34 — 2026-08-24
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/behaviorConfig.ts`, `server/src/jobs/openItemsBacklogCleanupJob.ts`
+(docblock), `server/tests/def186SelfPruneWithdrawnNotice.test.ts`. **This turn ships the
+campaign: DEF-242 — C-3 increment 3's announce path stops being dark by default.**
+
+**The find, then the change.** The campaign cap ordered the lowest undelivered
+increment. Increment 2 (the digest) is BUILT and deployed (DEF-172/173/174) behind
+`selfpruning.digest_enabled=0` — a CONSENT gate by decided semantics (suppressing the
+owner's pushes takes his opt-in; not a builder's flag to flip). Increment 3
+(quarantine → soft-close → notice) is BUILT and deployed (the DEF-186→240 saga) — but
+its owner-visible half, "the owner is told once what was withdrawn," never fired:
+`selfpruning.withdrawal_notice_enabled` defaulted 0 as a DEF-191 HOLD naming four open
+Codex findings, with its own exit condition written down: notices flow "once the
+event-token redesign lands and the gate opens." **The redesign landed a week ago** —
+DEF-208 (one-transaction settle), DEF-202 (event tokens + membership-derived dedup key
+= DB ownership constraint), DEF-209 (paged owed scan), all deployed, mapped
+finding-by-finding in Iteration 9, DEF-236 VERIFIED (LIVE) beside them — and nobody
+went back to the gate. The registry description still cited the closed findings as
+open. That is a finished, reviewed feature kept dark by stale evidence.
+
+**Change, by file:line:** `behaviorConfig.ts` `selfpruning.withdrawal_notice_enabled`
+`def: 0 → 1`, description rewritten to cite the closing DEFs and the consent
+distinction (digest stays 0; the noise report's def-1 rationale applies here — telling
+him what withdrew IS the increment's contract). Cleanup-job docblock corrected.
+Tests: gate-respected-on-owner-0 and unreachable-config-reads-as-0 kept (retitled with
+reasoning); NEW test pins def=1 and the consent sibling's def=0 — not config prose:
+the default IS this change's behaviour, and the mutation "def 1→0" must fail a test.
+
+**Due diligence for THIS change (not history-verification): flood risk measured.**
+Zero owed rows exist in any tenant — the 08-24 purge cleared all accumulated debt — so
+enabling announces NOTHING retroactively. Notices flow only for future withdrawals,
+bounded to one batch notice per user per tick, through quiet-hours-aware dispatch,
+fail-closed when the tenant's config is unreachable.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2899 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2928)
+- Touched suites: def186 + behaviorConfig → **62 passed | 0 failed**. **Mutation RUN
+  and killed:** def reverted to 0 → 1 test fails; restore grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): progressing** — the root cause (a hold outliving its
+exit condition because gate descriptions are not re-read when their cited findings
+close) is newly named; no §3 symptom tag covers it, and the deck is empty this harvest,
+said plainly. DEF-242 row written with the capability block inside it.
+
+**CAPABILITY:** Self-Pruning
+**PREDICTED:** increment 3's Done-when becomes observable on the next real withdrawal —
+"he can name one thing that withdrew itself and restore it" — which is the campaign's
+missing live evidence; the score should move only when Grok sees the notice path
+reachable by default, and the exit condition still needs increment 2's owner opt-in.
+**MECHANISM:** the reviewed announce path runs by default; the archive side is
+unchanged.
+**FALSIFIER:** a notice naming a restored or non-withdrawn item; more than one notice
+per user per tick; or the next real withdrawal producing no notice.
+
+**Symptom tag:** none — the deck is empty this harvest (every reported symptom has a
+shipped fix naming it), and inventing one is forbidden. What was done instead: the
+campaign's lowest undelivered increment-piece a builder can deliver.
+
+**Remediation pointer (attempt 2 of 3), resolved by pointer, sixth time:** the newest
+`## Iteration 2` review section remains the never-re-run wrong-referent review;
+Iteration 12's finding-by-finding closure stands. The orchestrator should retire the
+pointer.
+
+**What I did NOT do, named:** flip `selfpruning.digest_enabled` (consent gate — the
+ONE owner sentence that would complete increment 2's Done-when; the orchestrator
+should put it to him in the deploy report); the analyst's #1 (Comm-surface ingest — a
+capability build, and the campaign cap governs this turn); DEF-241's outvoted-after
+half; live acceptance of D-68/69/70 (needs a real owner turn).
+
+**Honest prediction:** deployable at end of turn — YES: one coherent change, matrix
+green, docs in the same commit. After deploy, the next item that quarantines and
+soft-closes produces exactly one owner notice through the DEF-208 transaction. What
+would prove me wrong: the falsifier above — or Codex ruling that the notice default
+needed owner consent like the digest, in which case the distinction I drew (announce ≠
+suppress, and the noise report's def-1 precedent) is the claim to judge.
