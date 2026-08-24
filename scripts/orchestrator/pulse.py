@@ -859,8 +859,18 @@ def nightly_health():
         except Exception:
             pass
 
+    # rc 0 and 2 both mean the run REACHED ITS FINISH LINE — 0 with the gate passed, 2 without.
+    # Only 2 has ever been seen here, because the gate is 95 on every criterion and C4 sits at
+    # 87.9. Since 2026-08-24 the loop reserves 1 for "did not reach the finish line", which is
+    # the only code that should ever raise an alarm. Before that date every ending was 0 or 2
+    # regardless of what happened, so an old rc is evidence of nothing and is not treated as a
+    # failure retroactively.
     if out["at"]:
-        out["ran"] = True
+        out["ran"] = out["rc"] in (0, 2)
+        if out["rc"] not in (0, 2):
+            out["note"] = (f"the last nightly FAILED before reaching its finish line "
+                           f"(rc={out['rc']}) — this is a real failure, not a gate result")
+            return out
     if fresh:
         out["scored_at"] = fresh[0]
 

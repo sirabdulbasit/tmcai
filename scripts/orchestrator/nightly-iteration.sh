@@ -84,5 +84,16 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "iter-*-build.jsonl")),
 print(f"{best:.2f}" if isinstance(best, (int, float)) else "unknown")
 PY
 )"
-say "finished rc=$rc · build cost \$$COST"
+# SAY WHICH KIND OF ENDING, not just the number. `nightly.log` recorded `rc=2` six nights
+# running and nothing could read it: 2 is the code for "finished, gate did not pass", which is
+# a HEALTHY run whose C4 sits below target — but it looks identical to a failure to anyone
+# scanning the log, and on 2026-08-24 it fooled me into reporting the nightly as dead. The loop
+# now distinguishes 0/2/1 (see nexeo-loop.sh's exit contract); this writes the meaning down so
+# the next reader does not have to know that.
+case "$rc" in
+  0) VERDICT="gate PASSED" ;;
+  2) VERDICT="finished, gate did not pass — NOT a failure" ;;
+  *) VERDICT="FAILED — the run did not reach its finish line" ;;
+esac
+say "finished rc=$rc ($VERDICT) · build cost \$$COST"
 exit "$rc"

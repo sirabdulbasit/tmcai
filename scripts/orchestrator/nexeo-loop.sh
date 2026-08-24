@@ -610,6 +610,34 @@ EOF
 cd "$ROOT" || die "cannot cd $ROOT"
 
 say "════════ orchestrator start · target $TARGET on every criterion · max $MAX_ITER iterations ════════"
+
+# THE EXIT CODE MUST SAY WHICH KIND OF ENDING THIS WAS. Owner, 2026-08-24, after I misread five
+# nights of `rc=2` as crashes and told him the nightly was dead.
+#
+# The last line of this script used to compute the exit code from ONE thing — whether the bench
+# gate passed. So a run that fell over halfway exited 2, and a healthy run whose C4 sat at 87.9
+# exited 2, and NOTHING could tell them apart. That is not a reporting nicety: for five nights a
+# fatal shell error fired inside this file and the exit code calmly reported "gate did not pass".
+# I then read the log and concluded the opposite of the truth, twice, in both directions.
+#
+#   0  the run finished AND the gate passed
+#   2  the run finished, the gate did not pass          ← normal, expected, not a failure
+#   1  the run did NOT reach its finish line            ← a real failure, always worth waking for
+#
+# 1 is the one that could not previously be expressed. The trap is what makes it honest: any
+# ending that has not passed the finish line — `set -u`, a signal, an unexpected `exit` — lands
+# here with FINISHED_CLEANLY still 0 and is reported as the failure it is.
+FINISHED_CLEANLY=0
+ORCH_RC=1
+finish_orch() {
+  local shell_rc=$?
+  if [ "$FINISHED_CLEANLY" = "1" ]; then
+    exit "$ORCH_RC"
+  fi
+  say "ABORTED — the run ended before its finish line (shell rc=$shell_rc). This is a FAILURE, not a gate result."
+  exit 1
+}
+trap finish_orch EXIT
 say "deploy=$DEPLOY skip_tests=$SKIP_TESTS stall_limit=$STALL_LIMIT"
 
 # Iteration counter survives a kill, so a restarted loop continues numbering.
@@ -649,6 +677,13 @@ if [ -s "$STATE/last-measure" ]; then
   # shellcheck disable=SC2046
   LAST_HEAD="$(sed -E 's/.*head=([0-9a-f]+).*/\1/' "$STATE/last-measure")"
   if [ -n "$LAST_HEAD" ] && git -C "$ROOT" cat-file -e "$LAST_HEAD^{commit}" 2>/dev/null; then
+    # A KNOWN HOLE, written down because it is dormant rather than fixed (2026-08-24). This asks
+    # git whether Brain's CODE changed. Brain's PROMPTS are not only code: `prompt_blocks` is a
+    # database table, written at runtime through promptBlockService, and an edit there changes
+    # how Brain behaves while leaving this diff empty — so the score would silently go on
+    # replaying. Not fixed today because it has never fired: all 8 rows are `source: seeded` and
+    # the newest `updated_at` is 2026-05-23, three months before this line was written. If that
+    # table ever starts changing, this criterion has to include it or the scorer goes blind.
     if [ -z "$(git -C "$ROOT" diff --name-only "$LAST_HEAD" HEAD -- server/src server/prisma)" ]; then
       BENCH_OVERALL="$(sed -E 's/.*overall=([^ ]+).*/\1/' "$STATE/last-measure")"
       BENCH_MIN="$(sed -E     's/.*min=([^ ]+).*/\1/'     "$STATE/last-measure")"
@@ -807,15 +842,30 @@ PYADV
   fi
   printf '%s' "$PULSE_KIND" > "$STATE/pulse-mode"
   # `grep -c` PRINTS 0 AND EXITS 1 when nothing matches, so `|| echo 0` appended a SECOND zero
-  # and the arithmetic became $(( 0\n0 + 1 )) — a syntax error that aborted the iteration.
+  # and the arithmetic became $(( 0\n0 + 1 )). Reproduced in isolation on this box: the
+  # assignment FAILS and leaves PULSE_N UNSET, and the printf below then dies on `set -u` with
+  # "PULSE_N: unbound variable".
   #
-  # It only ever bit the NIGHTLY, which is why it survived six days unnoticed: the ledger has
-  # conversational entries, so that grep exits 0 and prints one number, while "evaluation" had
-  # none — every nightly since 2026-08-20 died on this line in under 60 seconds, four in a row,
-  # each logging `rc=2` and nothing else. The conversational pulses kept running, so the deck
-  # looked alive while the only pulse that scores capability never ran at all.
+  # It only ever bit the NIGHTLY. The ledger has conversational entries, so for
+  # PULSE_KIND=conversational the grep exits 0 and prints one number; "evaluation" had none, so
+  # only that branch tripped. `|| true` keeps the pipeline honest without adding output.
   #
-  # `|| true` keeps the pipeline honest without adding output. Mine, from 8964dbb.
+  # WHAT IT COST, stated narrowly because I first got this wrong and said so to the owner:
+  # the EVALUATION LEDGER ROW, and nothing else that is proven. `pulse-ledger.jsonl` runs
+  # unbroken from 2026-08-18 (iteration 1) to 29 with ZERO "evaluation" rows and zero malformed
+  # lines, which is why the deck's nightly track reads "0 pulses" against six completed runs.
+  # It did NOT stop the nightly from scoring: 08-20 measured overall=94.2 and 08-21 measured
+  # 95.3, both written to scores/iter-NN-baseline.json. The later nights show
+  # "MEASURE skipped — no server/src or server/prisma change", which is the intended
+  # cost guard, not this bug.
+  #
+  # ONE THING REMAINS UNEXPLAINED, and it is left here honestly rather than resolved by
+  # guessing: the record says the run both DIED here (no ledger row was ever written, and
+  # `set -u` is never relaxed in this file) and REACHED ITS FINISH LINE (loop.out shows
+  # "orchestrator finished" after the error, and nightly.log records rc=2, which only line
+  # ~1793 can produce — a `set -u` death would give rc=1). Those cannot both be true, so one
+  # of them is being misread. The exit-code separation added below is what makes the next
+  # occurrence answer this by itself instead of by log archaeology.
   PULSE_N="$(( $(grep -c "\"kind\":\"$PULSE_KIND\"" "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))"
   printf '{"iteration":%s,"kind":"%s","kind_n":%s,"at":"%s"}\n' \
     "$ITER" "$PULSE_KIND" "$PULSE_N" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
@@ -1790,4 +1840,9 @@ done
 
 say "════════ orchestrator finished · iterations=$ITER · overall=$BENCH_OVERALL min=$BENCH_MIN gate=$BENCH_GATE ════════"
 say "ledger: $LEDGER_MD"
-[ "$BENCH_GATE" = "pass" ] && exit 0 || exit 2
+# Reaching this point is what "finished" MEANS — set the flag before choosing the code, so the
+# trap above stops treating this as an abort. 0 = gate passed, 2 = finished but gate did not.
+FINISHED_CLEANLY=1
+if [ "$BENCH_GATE" = "pass" ]; then ORCH_RC=0; else ORCH_RC=2; fi
+say "exit rc=$ORCH_RC ($([ "$ORCH_RC" = "0" ] && echo 'gate passed' || echo 'finished, gate did not pass — NOT a failure'))"
+exit "$ORCH_RC"
