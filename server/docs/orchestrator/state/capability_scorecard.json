@@ -1,8 +1,8 @@
 {
   "_provenance": "History cleared 2026-08-17 on the owner's reset. The nine scores are Grok's current reading and are carried forward; the previous 10 history entries spanned three runs whose iteration numbers collided after the counter was reset, and are archived at retired-2026-08-17-reset2/capability_scorecard.json",
   "_rules": "Evidence-based capability judgements, NOT test-pass percentages. Every score change must name the iteration and the evidence that moved it. Green tests alone never raise a score. Anything unexercised or unfalsifiable in production is UNVERIFIED and does not raise it either.",
-  "as_of_iteration": 23,
-  "as_of_head": "92917bb",
+  "as_of_iteration": 31,
+  "as_of_head": "ac08af5",
   "capabilities": [
     {
       "name": "Simple & Smart",
@@ -14,9 +14,9 @@
     },
     {
       "name": "Thinking",
-      "nexeo": 36,
+      "nexeo": 40,
       "professional": 94,
-      "delta": 0,
+      "delta": 4,
       "basis": "doc-read",
       "evidence": "DEF-161 OPEN (brain_change_log.md): under explicit authority grant Brain still menus instead of acting \u2014 confirm-misfires 7th in brain_evaluation_chart.md \u00a73. DEF-038 named as structural fix, not done. No deliberation-path change in this reset baseline."
     },
@@ -30,17 +30,17 @@
     },
     {
       "name": "Accurate Communication",
-      "nexeo": 89,
+      "nexeo": 90,
       "professional": 94,
-      "delta": 0,
+      "delta": 1,
       "basis": "code-read",
       "evidence": "DEF-169 systemMarker provenance (systemMarker.ts) and answerSanitizer.ts:225-360 curated/whole-marker path block raw internal markers. DEF-171 ACCEPTED residual text-inference still live. Pack: 0 provider receipts; worker send bodies not stored \u2014 wording/delivery quality unconfirmed on chase path."
     },
     {
       "name": "Authorized Action",
-      "nexeo": 56,
+      "nexeo": 59,
       "professional": 91,
-      "delta": 0,
+      "delta": 3,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: action_lifecycle_follow_up 51, action_lifecycle_escalated 42; 86 of 2577 require approval; 0 provider receipts. central_action_governor (server.ts:208-220) and actionLifecycleWorker.ts fire. Handlers declare confirmationCapability. Deployed SHA e356d42; later branch AA reliability not credited as owner-facing."
     },
@@ -70,9 +70,9 @@
     },
     {
       "name": "Self-Pruning",
-      "nexeo": 48,
+      "nexeo": 54,
       "professional": 89,
-      "delta": 0,
+      "delta": 6,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: open_items CLOSED 275, CANCELLED 3, DELEGATED 4; 1 illegal status; 5 test-fixture items. inboundNoiseLedger measures only; digestPolicy exists but behaviorConfig.ts:196-198 digest_enabled def 0 so owner does not receive quieter multi-push behaviour."
     }
@@ -3788,6 +3788,85 @@
           "nexeo": 48,
           "professional": 89,
           "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 31,
+      "head": "ac08af5",
+      "overall": 52.0,
+      "movement": 1.6,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Four capabilities moved on deployed evidence: Thinking 36->40 (DEF-239/240 confirm-misfires + ground-or-ask deployed under 10f66f8), Accurate Communication 89->90 (DEF-034(b) ledger-read-before-denial deployed today), Authorized Action 56->59 (DEF-240/232 + canonical receipts), Self-Pruning 48->54 (DEF-236 DRAFT->CANCELLED VERIFIED LIVE by ledger receipt, build_log Iteration 29). Overall 50.4->52.0. The pipeline is now deploying regularly (deploy-history: 41381db/4bd6fbc/85cf393/10f66f8) after a long branch-only stall.",
+      "what_did_not": "Simple & Smart, Memory, Self Follow-Up, Learn, Self-Healing held. Image reading and COMM ingestion are deployed but unexercised (image=0 inbound), so Simple & Smart could not be credited. DEF-235's 4096 thinking budget did NOT reach production (abandoned feat line; live budget is 512), so Thinking's move rests on the judgement-gate deploys, not raw reasoning depth. Self-Healing stays at rung 1 because Brain still cannot self-deploy. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "unverifiable": "DEF-034(b), DEF-239, DEF-240 are deployed but not yet exercised by a live owner turn since deploy (build_log Iterations 29/31 name the pending falsifiers), so their credit rests on the deployed surface rather than live proof. Image reading is deployed but the owner has not sent an image. Whether any worker send was DELIVERED (0 provider receipts). Whether the deployed thinkingBudgetText:512 materially improves reasoning cannot be judged from a file read.",
+      "notes_for_builder": "Three high-value deploys (DEF-034(b), DEF-239, DEF-240) are live but unexercised \u2014 one owner 'yes remove all' on a populated list and one completion-claim turn would convert deployed credit into live-verified credit and likely lift Accurate Communication and Thinking further. The largest untouched gaps remain Simple & Smart (33, image/COMM deployed but unexercised), Learn (42, still pending_approval only), and Self-Healing (34, stuck at rung 1 of 4 because Brain cannot deploy its own repair).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. Image reading (b97225f) and COMM/email ingestion (fbd096a) are deployed under 10f66f8 but UNEXERCISED: build_log Iteration 29 and the pack show image=0 inbound since ship, owner has not sent one. behaviorConfig.ts:196-202 defaults unchanged. Mechanism deployed, not yet reaching the live surface.",
+        "Thinking +4 [code-read/medium]: 36->40. DEF-239 (confirm-misfires: 'yes remove all' confirms, brainComposer.ts:5966+) and DEF-240 (ground-or-ask before preview, :2784-2785) are DEPLOYED (b520a74, in 10f66f8 history) \u2014 the DEF-161 decide-vs-ask class the score was held down for. Not yet live-verified (owner's next 'yes remove all').",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-24 12:35 UTC: brain_memory table absent, 21771 conversation turns. COMM/email ingestion (fbd096a) is analysis input, not durable personal recall. Score remains wiki/embed plus history (MEM-005/DEF-118).",
+        "Accurate Communication +1 [code-read/medium]: 89->90. DEF-034(b) (deployed SHA 10f66f8, today 12:35) structurally fixes the fabricated-denial arm \u2014 the completion gate now reads the dispatch ledger before minting 'nothing was executed' (brainComposer.ts:1229-1249), the analyst's #1 (21 occurrences/14 days); plus DEF-241 (uses screenshot evidence) and DEF-238 receipts. Tempered to +1: deployed only hours ago, UNVERIFIED LIVE, and only the denial arm of fabricated-status (still 6-deep) is closed.",
+        "Authorized Action +3 [code-read/medium]: 56->59. DEF-240 (ground-or-ask blocks authorising deletion of items in no table, brainComposer.ts:2784-2785), DEF-232 (confirmed path executes), receipt-backed DEF-034(b), canonical action id (325af10) \u2014 all deployed under 10f66f8; DEF-236 execution proven live. Pack 2026-08-24: 0 provider receipts, 86 of 2583 approval \u2014 delivery still unconfirmed.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-24 12:35 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0, bodies not stored. Fires; no deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). COMM/email ingestion (fbd096a) expands input, it is not auto-apply of corrections or learned preferences.",
+        "Self-Healing +0 [live-evidence/medium]: HOLD 34. Rung 1 (detect + truthful alert WITH a receipt) is now live-confirmed \u2014 build_log Iteration 27, whatsapp_messages row 3097, 2026-08-24 04:12 gmail-sync alert. But the owner's 2026-08-14 definition puts the points at rung 4 (self-deploy), and Brain still cannot deploy its own repair \u2014 the orchestrator/human runs deploy.sh (capability_contract.md).",
+        "Self-Pruning +6 [live-evidence/medium]: 48->54. DEF-236 (DRAFT->CANCELLED lifecycle) is VERIFIED LIVE: item_status_history row cmsotakwf..., 2026-08-19 22:23:40 actor=user:2, a real owner turn through the canonical path that refused it for two weeks (build_log Iteration 29). DEF-230 noise ranking deployed; owner purge worked. Tempered to +6: autonomous pruning / withdrawal-notice surfacing still has not fired to the owner."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 4
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 1
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 3
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 34,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 54,
+          "professional": 89,
+          "delta": 6
         }
       ]
     }
