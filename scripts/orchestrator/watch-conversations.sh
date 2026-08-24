@@ -238,8 +238,28 @@ PYFP
 )"
 printf '%s' "$NEW_HASH" > "$ROOTS_HASH"
 
-if [ "$NEW_HASH" = "$PREV_HASH" ] && [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" != "1" ]; then
-  say "conversation was new but the root causes did not change — analysed, no build"
+# TWO REASONS THIS GATE MAY NOT FIRE — owner, 2026-08-24: "i found above observed gaps and then
+# i clicked on Heal Now but it didnt build it why?"
+#
+# 1. A PERSON ASKED. NEXEO_WATCH_MANUAL was read at line ~278, thirty lines AFTER this gate had
+#    already exited, so "Heal now" was refused by the same rule as an unattended cron tick. A
+#    human pressing a button is a stronger signal than a hash; it is not a duplicate of anything.
+#
+# 2. THE FINGERPRINT DEADLOCK, which is the real defect and is mine from this morning. The hash
+#    tracks WHICH FINDINGS EXIST, so it is stable exactly while findings stay open — and a stable
+#    hash forbids the build that would close them. Three findings sat open for hours
+#    (2,608 emails never triaged, dead connectors, the screenshot) and every pulse dutifully
+#    reported "root causes did not change" as a reason NOT to act on them. The prose-hash gate it
+#    replaced built the same ground 18 times out of 18; this one built it zero times. Both
+#    failures come from asking "is this different?" when the question is "has this been worked?".
+#
+#    So the skip now needs BOTH: the findings are unchanged AND a build has already been
+#    attempted against this exact finding-set. One attempt per distinct set — no re-grinding, no
+#    deadlock.
+BUILT_HASH_FILE="$STATE/chat-roots-hash-built"
+LAST_BUILT_HASH="$(cat "$BUILT_HASH_FILE" 2>/dev/null || true)"
+if [ "$NEW_HASH" = "$PREV_HASH" ]    && [ "$NEW_HASH" = "$LAST_BUILT_HASH" ]    && [ "${NEXEO_WATCH_MANUAL:-0}" != "1" ]    && [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" != "1" ]; then
+  say "conversation was new but the root causes did not change, and this finding-set has already been built — analysed, no build"
   finish_pulse "nothing-new"
   phase "BUILD" "exit=skip (nothing new in the ranking to build)"
   exit 0
@@ -339,6 +359,10 @@ then
   exit 0
 fi
 
+# Stamp the finding-set this build is for, so the gate above can tell "already worked" from
+# "merely unchanged". Written when the build STARTS, not when it succeeds: a build that dies
+# still counts as attempted, or a repeatedly-failing one would re-trigger every ten minutes.
+printf '%s' "$NEW_HASH" > "$BUILT_HASH_FILE"
 printf '%s' "$NOW" > "$BUILD_STAMP"
 printf '%s %s' "$TODAY" "$((COUNT + 1))" > "$BUILD_COUNT"
 say "starting ONE bounded iteration (auto-build $((COUNT + 1))/$MAX_BUILDS_DAY today)"
