@@ -317,16 +317,40 @@ export async function markPreviewShown(pendingId: string, hash: string): Promise
   return rowToPending(updated);
 }
 
-/** Mark pending as completed (dispatcher succeeded). Stores the
- *  resulting artifactId so subsequent cancel/reschedule turns can
- *  resolve back to it. Terminal status — won't be returned by
- *  getActivePending. */
+/** Mark pending as completed (dispatcher succeeded), filing the id the dispatcher returned in
+ *  the column that actually means what it is. Terminal status — won't be returned by
+ *  getActivePending.
+ *
+ *  THIS IS WHERE BRAIN LOST ITS OWN RECEIPTS. `DispatchResult.artifactId` is documented as
+ *  "id of whatever Brain created", and the dispatcher fills it accordingly — for calendar it is
+ *  `out.eventId ?? String(r.actionId)`, i.e. a GOOGLE EVENT ID; for email a Gmail message id.
+ *  This function stored that verbatim into `artifact_id`, a column read-back treats as a
+ *  pointer into brain_action_artifacts. Measured on production: 5 of 35 pending rows pointed at
+ *  an artifact that does not exist —
+ *      19fd12e8abc16d71            a Gmail message id
+ *      72ttj4kbqt8n7i3k1qh44u4u7g  a Calendar event id
+ *  — and EVERY ONE was status='completed'. Brain did the thing, filed the provider's id where
+ *  its own receipt id belonged, and a later "did I do that?" found nothing and answered from
+ *  nothing. That is the `fabricated-status` class, the largest live symptom group (6 of 16),
+ *  and DEF-238 is one of its instances.
+ *
+ *  So the id is CLASSIFIED, not assumed: if it resolves to a real artifact it is a receipt
+ *  link; otherwise it is an external id and is filed as one. Nothing is discarded either way —
+ *  losing the provider id would trade one silent gap for another.
+ */
 export async function markCompleted(pendingId: string, artifactId: string): Promise<PendingAction | null> {
+  const isReceipt = artifactId
+    ? !!(await (prisma as any).brainActionArtifact
+        .findUnique({ where: { id: artifactId }, select: { id: true } })
+        .catch(() => null))
+    : false;
+
   const updated = await (prisma as any).brainPendingAction.update({
     where: { id: pendingId },
     data: {
       status: 'completed',
-      artifactId,
+      artifactId: isReceipt ? artifactId : null,
+      artifactExtId: isReceipt ? undefined : (artifactId || undefined),
       updatedAt: new Date(),
     },
   });

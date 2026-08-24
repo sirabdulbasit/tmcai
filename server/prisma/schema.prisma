@@ -833,7 +833,13 @@ model BrainActionArtifact {
   clientNumber    String   @map("client_number") @db.VarChar(20)
   userId          Int      @map("user_id")
   channel         String   @db.VarChar(20) // 'web' | 'whatsapp'
+  // THE CANONICAL ACTION ID. Owner, 2026-08-24, on a schema audit: one id must survive
+  // preview → confirmation → dispatch → receipt → what the user is told. It is the PENDING
+  // action's id where a preview existed, and the artifact's own id for the direct-emit paths
+  // (132 of 152 rows) that legitimately skip the preview gate.
+  brainActionId   String?  @map("brain_action_id") @db.VarChar(40)
   pendingActionId String?  @map("pending_action_id") @db.VarChar(40)
+  pendingAction   BrainPendingAction? @relation(fields: [pendingActionId], references: [id], onDelete: SetNull)
   previewHash     String?  @map("preview_hash") @db.VarChar(64)
   idempotencyKey  String?  @map("idempotency_key") @db.VarChar(128)
   actionType      String   @map("action_type") @db.VarChar(40)
@@ -849,6 +855,7 @@ model BrainActionArtifact {
   @@index([userId, channel, createdAt])
   @@index([clientNumber, createdAt])
   @@index([artifactExtId])
+  @@index([brainActionId])
   @@map("brain_action_artifacts")
 }
 
@@ -1035,12 +1042,19 @@ model BrainPendingAction {
   missingSlots String[]  @default([]) @map("missing_slots")
   previewHash  String?   @map("preview_hash") @db.VarChar(64)
   previewedAt  DateTime? @map("previewed_at")
-  artifactId   String?   @map("artifact_id")
+  // artifactId is a brain_action_artifacts.id AND NOTHING ELSE. Five rows had a GMAIL message
+  // id or a CALENDAR event id filed here, every one of them status='completed' — Brain did the
+  // thing, then stored the provider's id where its own receipt id belonged, so a later "did I
+  // do that?" found nothing and answered from nothing. Provider ids now go to artifactExtId.
+  artifactId    String?   @map("artifact_id")
+  artifactExtId String?   @map("artifact_ext_id") @db.VarChar(200)
+  brainActionId String?   @map("brain_action_id") @db.VarChar(40)
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
   expiresAt    DateTime  @map("expires_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  artifacts BrainActionArtifact[]
 
   // Note: the database has a PARTIAL unique index on (user_id, channel)
   // WHERE status IN ('collecting_slots','preview_shown','confirmed')
@@ -1052,6 +1066,8 @@ model BrainPendingAction {
   // applied via raw SQL migration.
   @@index([clientNumber, expiresAt])
   @@index([userId, channel, updatedAt])
+  @@index([brainActionId])
+  @@index([artifactExtId])
   @@map("brain_pending_actions")
 }
 
