@@ -101,9 +101,49 @@ async function findCandidates(input: HandleReplyInput) {
   });
 }
 
+/**
+ * Markers the media pipelines fold into an inbound turn when Brain has OBSERVED something —
+ * currently an image reading and a voice transcript. Kept as one regex so the next channel that
+ * learns to observe (email attachments, Google Chat images) inherits the DEF-241 rule for free
+ * rather than rediscovering it.
+ */
+const OBSERVATION_MARKER = /\[image received\s*[—-]\s*contents:\]|\[voice note\]|\[transcript\]/i;
+
 export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
   const text = input.text.trim();
   if (!text) return { handled: false };  // empty body — let normal flow ignore it
+
+  // DEF-241 — A TURN CARRYING NEW EVIDENCE IS NOT A BARE REPLY.
+  //
+  // 2026-08-24 17:06 PKT. The owner sent a screenshot captioned "see". The image pipeline did
+  // its job perfectly: 133 KB downloaded, Gemini returned 4,210 characters describing the page,
+  // folded in as `see\n\n[image received — contents:]…`. Two seconds later this handler
+  // correlated the turn to a 2-minute-old pending question at 0.9 confidence, filed it as a
+  // `free_form_note`, and logged `consumed as prompt reply, sideEffect: noop`. The reading was
+  // discarded, the turn never reached the composer and was never even persisted to `messages`.
+  // He then got "Okay, I've seen that." and, when he asked what it had seen, "I found it, but I
+  // couldn't get a clear read on its status" — Brain claiming a reading it had thrown away.
+  //
+  // `pending-prompt-eats-command` is the 4th occurrence of this tag. The previous two fixes both
+  // narrowed WHICH replies may be consumed — a `looksLikeAnswer` regex prefilter, then an LLM
+  // relevance gate. Both asked "is this an answer?"; neither asked "does consuming this DESTROY
+  // something?". A third narrowing of the classifier would produce a fifth occurrence, so the
+  // rule is structural instead: a turn containing an observation marker THIS SYSTEM generated —
+  // an image reading, a voice transcript — is new evidence by construction, and evidence is not
+  // an answer. It is declined here, BEFORE the classifier is consulted, so no confidence score
+  // can override it.
+  //
+  // Deliberately narrow: only markers Brain itself mints. A human typing "[image]" is not
+  // special, which is why the image marker is matched with its `contents:` payload rather than
+  // as a bare word.
+  if (OBSERVATION_MARKER.test(text)) {
+    log.info('declined prompt consumption — turn carries new evidence', {
+      userId: input.userId,
+      marker: text.match(OBSERVATION_MARKER)?.[0] ?? null,
+      reason: 'DEF-241: an observation is evidence, not an answer to a pending question',
+    });
+    return { handled: false };   // straight to the composer, contents intact
+  }
 
   // DEF-095 — which question is this answering?
   //
