@@ -83,7 +83,17 @@ begin_pulse() {
   # Same split as the phase events, same fix: this path writes the same line to the same file.
   printf '{"iteration":%s,"kind":"conversational","kind_n":%s,"at":"%s"}\n' \
     "$PULSE_ITER" \
-    "$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || echo 0) + 1 ))" \
+  # `grep -c` PRINTS 0 AND EXITS 1 when nothing matches, so `|| echo 0` appended a SECOND zero
+    # and the arithmetic became $(( 0\n0 + 1 )) — a syntax error that aborted the iteration.
+    #
+    # It only ever bit the NIGHTLY, which is why it survived six days unnoticed: the ledger has
+    # conversational entries, so that grep exits 0 and prints one number, while "evaluation" had
+    # none — every nightly since 2026-08-20 died on this line in under 60 seconds, four in a row,
+    # each logging `rc=2` and nothing else. The conversational pulses kept running, so the deck
+    # looked alive while the only pulse that scores capability never ran at all.
+    #
+    # `|| true` keeps the pipeline honest without adding output. Mine, from 8964dbb.
+    "$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))" \
     "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
   printf '%s  PULSE  iter=%s conversational (started by %s)\n' \
     "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" \
