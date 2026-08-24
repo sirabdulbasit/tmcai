@@ -1403,7 +1403,7 @@ export default function OrchestratorPulsePanel() {
                   building, which is indistinguishable from a loop turning over for its own sake.
                   Neither block replaces the archive list; they answer the two questions it
                   cannot: what did we find THIS time, and what is being done about it. */}
-              {(data.building_now || (data.found_now || []).length > 0) && (
+              {(data.building_now || ((data.found_now || {}).rows || []).length > 0) && (
                 <div className="orch-nowblock">
                   {data.building_now && (
                     <div className="orch-nowblock-building">
@@ -1416,13 +1416,18 @@ export default function OrchestratorPulsePanel() {
                       )}
                     </div>
                   )}
-                  {(data.found_now || []).length > 0 && (
+                  {((data.found_now || {}).rows || []).length > 0 && (
                     <div className="orch-nowblock-found">
                       <span className="orch-nowblock-k">
-                        found this cycle · {(data.found_now || []).length}
+                        still open · {((data.found_now || {}).rows || []).length}
+                        {/* The settled ones are COUNTED, never silently dropped: a row hidden
+                            without saying so is how a deck starts lying by omission. */}
+                        {(data.found_now || {}).settled > 0 && (
+                          <em> · {(data.found_now).settled} already deployed or verified</em>
+                        )}
                       </span>
                       <ul>
-                        {(data.found_now || []).map((f, i) => (
+                        {(((data.found_now || {}).rows) || []).map((f, i) => (
                           <li key={`${f.tag}-${i}`}>
                             {/* The STATE first, because "are these fixed?" was the owner's
                                 first question on seeing this list without one. `open` is the

@@ -860,15 +860,16 @@ def found_now(limit=8):
     """
     path = os.path.join(STATE, "chat-root-causes.md")
     out = []
+    empty = {"rows": [], "settled": 0, "total": 0}
     if not os.path.exists(path):
-        return out
+        return empty
     try:
         txt = open(path, errors="replace").read()
     except Exception:
-        return out
+        return empty
     parts = re.split(r"^##\s+SIGNATURES\s*$", txt, flags=re.M)
     if len(parts) < 2:
-        return out
+        return empty
     for line in parts[-1].splitlines():
         if not line.strip().startswith("|"):
             if out:
@@ -882,9 +883,22 @@ def found_now(limit=8):
             continue           # header row or markdown rule
         out.append({"tag": tag, "saw": cells[0][:150], "fragment": cells[1][:150],
                     "state": _finding_state(tag)})
-        if len(out) >= limit:
-            break
-    return out
+    # OPEN WORK ONLY, WITH THE REST COUNTED. Owner, 2026-08-24: "still i am seeing these gaps?
+    # when it will be removed? will these come after every Comm Healing Pulse (10m)?"
+    #
+    # Yes, they would have. The analyst re-derives its WHOLE ranking every pulse and deliberately
+    # keeps already-fixed rows in it, because that table is how the deck counts recurrence — a
+    # tag has to stay listed for "8th occurrence" to mean anything. Correct for the analyst,
+    # wrong for this panel: it made a standing list that never shrinks, and a list that never
+    # shrinks is one the eye learns to skip. That is the third time today the same mistake has
+    # been shipped (the replay banner, the all-struck-through archive list, and this).
+    #
+    # So the panel shows what can still be ACTED on — open and built-but-undeployed — and reports
+    # the settled ones as a count rather than dropping them silently. A hidden row nobody is told
+    # about is how a deck starts lying by omission.
+    settled = [r for r in out if r["state"] in ("deployed", "verified")]
+    live = [r for r in out if r["state"] not in ("deployed", "verified")]
+    return {"rows": live[:limit], "settled": len(settled), "total": len(out)}
 
 
 def building_now():
