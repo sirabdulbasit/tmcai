@@ -6,6 +6,40 @@ log credits Codex 45 times against Grok's 3.
 
 # What you are analysing, and why it has never been read
 
+# COMM, NOT JUST CHAT — the second half of the same file
+
+Owner, 2026-08-24: *"pulse healing should analyze the communication and then build/fix the gaps
+identified during analysis by itself"*, and earlier: *"it not limit with whatsapp it should cover
+all aspects of communications"* — Comm meaning WhatsApp, email, chat (Gmail/Teams), and anything
+arriving through a connector.
+
+`recent-chats.md` now carries TWO kinds of evidence and they must not be read as one:
+
+1. **The conversation transcript** — `messages`. Where Brain answered, and answered badly. This
+   is what you have always analysed.
+2. **The Comm surface** — `feed_events`, below the `---`. Items that ARRIVED across every
+   channel and whether Brain ever acted on them. This has never been shown to you before.
+
+They fail differently and need different findings. A bad reply is Brain REASONING wrongly and it
+is visible in the transcript. An item sitting at `status: new` forever is Brain NEVER ACTING, and
+no transcript can show it — the conversation simply never happens, and the owner has no way to
+report a message he was never sent.
+
+**A near-100% "never acted on" column is a capability that has not run, not a backlog.** Say
+which it is. And apply this test, which is the whole reason the section exists:
+
+> If Brain has ever CLAIMED to act on a channel, that claim and this table cannot both be true.
+
+That is not hypothetical. `fabricated-status` is already the largest tag in the recurrence table,
+and one of its instances is Brain saying *"I automatically review incoming emails to identify
+tasks"*. Check it against the gmail row before you write anything else about it.
+
+**A quiet week in the transcript is no longer a quiet analysis.** WhatsApp can carry twenty turns
+while hundreds of emails arrive unactioned; if you report "nothing new" on a week like that, you
+have read half the file. Signature a Comm gap exactly as you would a bad reply — same table, same
+tag discipline — because the builder that reads your output acts on tags, and an untagged finding
+reaches nobody.
+
 **PRIMARY EVIDENCE: `server/docs/orchestrator/state/recent-chats.md`** — the owner's
 ACTUAL conversations with Brain, harvested straight from the production `messages` table
 minutes before you were called. Every tenant, every user, newest last, with Brain's

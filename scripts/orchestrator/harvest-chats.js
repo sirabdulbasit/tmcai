@@ -150,13 +150,124 @@ const SESSION_GAP_MIN = 45;
     out.push(`- **${who}** ${r.createdAt.toISOString().slice(11, 16)}${meta}: ${body}`);
   }
 
+  // ── THE COMM SURFACE ────────────────────────────────────────────────────────────────
+  // Owner, 2026-08-24: *"pulse healing should analyze the comm"* — Comm being WhatsApp,
+  // email, chat (Gmail/Teams) and anything arriving through a connector, not WhatsApp alone.
+  //
+  // Everything above this line comes from `messages`: conversations WITH Brain, which is where
+  // Brain's own bad answers live. That is 1,660 turns. Meanwhile `feed_events` holds ~4,800
+  // items Brain RECEIVED across five channels and the analyst had never been shown one of them.
+  //
+  // These two are NOT the same evidence and the section is kept separate on purpose. A bad
+  // answer in a conversation is Brain reasoning wrongly. An item sitting at status='new'
+  // forever is Brain never acting at all — a different defect class, invisible in any
+  // transcript, and the reason this section exists.
+  //
+  // No tenant filter, for the same reason as the query above: one active tenant today would
+  // make a filter look correct and go blind the moment a second one starts talking.
+  const feed = await prisma.feedEvent.findMany({
+    where: { createdAt: { gte: since } },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      sourceType: true, status: true, eventType: true, createdAt: true,
+      clientNumber: true, senderEmail: true, senderName: true, rawPayload: true,
+    },
+  });
+
+  // Lifetime totals as well as the window: "294 emails this fortnight, none processed" is a
+  // weaker statement than "2,600 lifetime, none processed", and the analyst needs both to tell
+  // a new outage from a capability that has never once run.
+  const lifetime = await prisma.feedEvent.groupBy({
+    by: ['sourceType', 'status'],
+    _count: { _all: true },
+  }).catch(() => []);
+
+  out.push('');
+  out.push('---');
+  out.push('');
+  out.push('# The Comm surface — what Brain RECEIVED, and whether it acted');
+  out.push('');
+  out.push('Everything above is `messages`: conversations WITH Brain. This section is');
+  out.push('`feed_events`: items that ARRIVED across every channel — email, WhatsApp, Google');
+  out.push('Chat, calendar, tasks. A bad answer above is Brain reasoning wrongly. An item stuck');
+  out.push('at `new` here is Brain never acting at all, which no transcript can show you.');
+  out.push('');
+
+  const lifeBy = {};
+  for (const g of lifetime) {
+    const k = g.sourceType || '?';
+    lifeBy[k] = lifeBy[k] || {};
+    lifeBy[k][g.status || '?'] = g._count._all;
+  }
+  if (Object.keys(lifeBy).length) {
+    out.push('| channel | lifetime received | still `new` | processed | never acted on |');
+    out.push('|---|---|---|---|---|');
+    for (const [ch, st] of Object.entries(lifeBy).sort((a, b) => {
+      const t = (x) => Object.values(x[1]).reduce((m, n) => m + n, 0);
+      return t(b) - t(a);
+    })) {
+      const total = Object.values(st).reduce((a, b) => a + b, 0);
+      const fresh = st.new || 0;
+      const done = st.processed || 0;
+      const pct = total ? Math.round((fresh / total) * 100) : 0;
+      out.push(`| ${ch} | ${total} | ${fresh} | ${done} | **${pct}%** |`);
+    }
+    out.push('');
+    out.push('A channel at or near 100% never-acted-on is a capability that has not run, not a');
+    out.push('backlog. Say which it is — and if Brain has ever CLAIMED to act on that channel,');
+    out.push('that claim and this table cannot both be true.');
+    out.push('');
+  }
+
+  const winBy = {};
+  for (const f of feed) {
+    const k = `${f.sourceType || '?'}`;
+    winBy[k] = winBy[k] || { n: 0, fresh: 0 };
+    winBy[k].n += 1;
+    if (f.status === 'new') winBy[k].fresh += 1;
+  }
+  out.push(`In this window (${mode}): `
+    + (Object.keys(winBy).length
+      ? Object.entries(winBy).map(([k, v]) => `${k} ${v.n} (${v.fresh} unactioned)`).join(' · ')
+      : 'no comm events at all — itself worth reporting'));
+  out.push('');
+
+  // A sample with real subjects, because a count cannot be diagnosed and a subject can.
+  const SAMPLE_PER_CHANNEL = 6;
+  const seen = {};
+  const subjectOf = (fe) => {
+    const pl = fe.rawPayload || {};
+    const raw = pl.subject ?? pl.summary ?? pl.title ?? pl.snippet ?? pl.text ?? pl.body ?? '';
+    return String(raw).replace(/\s+/g, ' ').trim().slice(0, 130);
+  };
+  const lines = [];
+  for (const f of feed) {
+    const ch = f.sourceType || '?';
+    seen[ch] = (seen[ch] || 0) + 1;
+    if (seen[ch] > SAMPLE_PER_CHANNEL) continue;
+    const who = f.senderName || f.senderEmail || 'unknown sender';
+    const subj = subjectOf(f) || '(no subject in payload)';
+    lines.push(`- **${ch}** ${f.createdAt.toISOString().slice(0, 16).replace('T', ' ')} `
+      + `· status \`${f.status}\` · from ${who} — ${subj}`);
+  }
+  if (lines.length) {
+    out.push(`## Newest items per channel (up to ${SAMPLE_PER_CHANNEL} each)`);
+    out.push('');
+    out.push(...lines);
+    out.push('');
+  }
+
   const fs = require('fs');
-  if (rows.length === 0) {
-    console.log('harvested 0 turns in the window — leaving the existing transcript in place');
+  // A quiet WhatsApp week is NOT an empty analysis any more. Since 2026-08-24 this file also
+  // carries the Comm surface, and "22 conversation turns but 294 emails, none actioned" is
+  // exactly the week where the transcript alone would have said there was nothing to look at.
+  if (rows.length === 0 && feed.length === 0) {
+    console.log('harvested 0 turns and 0 comm events in the window — leaving the existing file in place');
     await prisma.$disconnect();
     return;
   }
   fs.writeFileSync(OUT, out.join('\n') + '\n', 'utf8');
-  console.log(`harvested ${rows.length} turns across ${session} session(s) -> ${OUT}`);
+  console.log(`harvested ${rows.length} turns across ${session} session(s) `
+    + `+ ${feed.length} comm events (${Object.keys(winBy).length} channels) -> ${OUT}`);
   await prisma.$disconnect();
 })().catch((e) => { console.error('harvest-chats FAILED:', e.message); process.exit(1); });
