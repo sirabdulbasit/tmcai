@@ -127,9 +127,17 @@ begin_pulse() {
 # Called on every exit path, and from a trap, so an abort records "died" rather than nothing —
 # four nightlies died in silence this week and the deck showed a healthy system.
 PULSE_VERDICT="died"
+PULSE_CLOSED=0
 finish_pulse() {
   [ -n "${1:-}" ] && PULSE_VERDICT="$1"
   [ -z "$PULSE_ITER" ] && return 0     # never claimed a number, so nothing to close
+  # CLOSE ONCE. Every explicit call is followed by `exit`, which fires the EXIT trap, which calls
+  # this again — so each pulse wrote its verdict TWICE. Visible in the ledger as duplicate rows
+  # for iterations 36 and 37 within the same second. Harmless to the verdict itself, but it
+  # doubles any count taken from these rows, which is exactly the drift the `kind_n` fix removed
+  # from the other direction this morning.
+  [ "$PULSE_CLOSED" = "1" ] && return 0
+  PULSE_CLOSED=1
   printf '{"iteration":%s,"kind":"conversational","verdict":"%s","at":"%s"}\n' \
     "$PULSE_ITER" "$PULSE_VERDICT" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
   printf '%s  PULSE  iter=%s verdict=%s\n' \
