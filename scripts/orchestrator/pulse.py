@@ -804,6 +804,43 @@ def declared_signature_tags():
     return tags
 
 
+def nightly_health():
+    """{at, rc, ok, note} — did the last NIGHTLY actually run?
+
+    Owner, 2026-08-24: "is Pulse Healing improving brain capabilities?" It was not, and the
+    reason had been sitting in a log file for four days: every nightly since 2026-08-20 aborted
+    in under 60 seconds with rc=2 on a shell arithmetic bug. `nightly.log` recorded it four
+    times and NOTHING read it — the deck showed pulses, phases and a capability card, so the
+    system looked alive while the only pulse that scores capability was inert.
+
+    A non-zero exit that only lands in a log file is not a signal. This makes it one.
+    """
+    path = os.path.join(ORCH, "nightly.log")
+    out = {"at": None, "rc": None, "ok": None, "note": None}
+    if not os.path.exists(path):
+        return out
+    try:
+        lines = open(path, errors="replace").read().splitlines()
+    except Exception:
+        return out
+    for line in reversed(lines):
+        m = re.match(r"^(\S+ \S+ \S+)\s+NIGHTLY finished rc=(\d+)", line)
+        if not m:
+            continue
+        rc = int(m.group(2))
+        out["at"] = m.group(1)
+        out["rc"] = rc
+        out["ok"] = rc == 0
+        out["note"] = (None if rc == 0 else
+                       f"the last nightly evaluation FAILED (rc={rc}) — no capability score "
+                       f"has been taken since it started failing")
+        break
+    # Never ran at all is its own state, and must not read as healthy.
+    if out["rc"] is None:
+        out["note"] = "no nightly evaluation has completed yet"
+    return out
+
+
 def observed_gaps(top=6):
     """{capability:[...], chat:[...]} — the two evidence sources, side by side.
 
@@ -1978,6 +2015,7 @@ def collect():
         "stage": {"name": stage, "elapsed": elapsed, "basis": basis,
                   "detail": detail},
         "loop_alive": loop_alive,
+        "nightly": nightly_health(),
         "iteration": cur_it, "iteration_started": started,
         # TOTAL FOR THIS ATTEMPT. Falls back to `now` whenever ANY stage is still
         # open, not only when none has ended — the first version took the last END,

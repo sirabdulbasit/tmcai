@@ -80,25 +80,42 @@ begin_pulse() {
   # beside a timing table showing #1 to #9: four of the nine pulses had no ledger line, so the
   # deck could not label them and dropped them. Only nexeo-loop.sh wrote this file, so a pulse
   # that skipped its build — most conversational pulses — was never recorded as having existed.
-  # Same split as the phase events, same fix: this path writes the same line to the same file.
+  #
+  # THE COUNT IS COMPUTED FIRST, ON ITS OWN LINE, and this is not stylistic. A comment placed
+  # between two continued lines of a `printf` is NOT a comment — the backslash joins it, and its
+  # words become ARGUMENTS. I did exactly that in fd24ada while fixing the `grep -c || echo 0`
+  # bug, and it emitted `{"kind_n":,"at":""}` and then tried to execute `1` as a command. Every
+  # conversational pulse would have written a malformed ledger line. `bash -n` passes it, because
+  # it is valid syntax that means something else.
+  #
+  # `grep -c` prints 0 AND exits 1 when nothing matches, so `|| echo 0` appended a SECOND zero
+  # and the arithmetic became $(( 0\n0 + 1 )) — the syntax error that killed four nightlies.
+  # `|| true` keeps the pipeline honest without adding output.
+  CONV_N="$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))"
   printf '{"iteration":%s,"kind":"conversational","kind_n":%s,"at":"%s"}\n' \
-    "$PULSE_ITER" \
-  # `grep -c` PRINTS 0 AND EXITS 1 when nothing matches, so `|| echo 0` appended a SECOND zero
-    # and the arithmetic became $(( 0\n0 + 1 )) — a syntax error that aborted the iteration.
-    #
-    # It only ever bit the NIGHTLY, which is why it survived six days unnoticed: the ledger has
-    # conversational entries, so that grep exits 0 and prints one number, while "evaluation" had
-    # none — every nightly since 2026-08-20 died on this line in under 60 seconds, four in a row,
-    # each logging `rc=2` and nothing else. The conversational pulses kept running, so the deck
-    # looked alive while the only pulse that scores capability never ran at all.
-    #
-    # `|| true` keeps the pipeline honest without adding output. Mine, from 8964dbb.
-    "$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))" \
-    "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
+    "$PULSE_ITER" "$CONV_N" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
   printf '%s  PULSE  iter=%s conversational (started by %s)\n' \
     "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" \
     "$([ "${NEXEO_WATCH_MANUAL:-0}" = "1" ] && echo 'a person' || echo 'cron')" >> "$ORCH_LOG"
 }
+# WHAT THIS PULSE ACTUALLY DID, recorded per pulse — owner, 2026-08-24, asking whether every
+# pulse improves Brain. It was unanswerable: the ledger said a pulse HAPPENED and nothing said
+# what it achieved. A verdict line per pulse makes the trend answer the question directly
+# instead of by inference from a weekly score.
+#
+# Called on every exit path, and from a trap, so an abort records "died" rather than nothing —
+# four nightlies died in silence this week and the deck showed a healthy system.
+PULSE_VERDICT="died"
+finish_pulse() {
+  [ -n "${1:-}" ] && PULSE_VERDICT="$1"
+  [ -z "$PULSE_ITER" ] && return 0     # never claimed a number, so nothing to close
+  printf '{"iteration":%s,"kind":"conversational","verdict":"%s","at":"%s"}\n' \
+    "$PULSE_ITER" "$PULSE_VERDICT" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
+  printf '%s  PULSE  iter=%s verdict=%s\n' \
+    "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" "$PULSE_VERDICT" >> "$ORCH_LOG"
+}
+trap 'finish_pulse' EXIT
+
 phase() {
   begin_pulse
   printf '%s  %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
@@ -137,15 +154,58 @@ PREV_HASH="$(cat "$ROOTS_HASH" 2>/dev/null || echo none)"
 phase "CHAT" "started reading the live conversations (all tenants, last 14 days)"
 if ! timeout 900 bash "$ROOT/scripts/orchestrator/run-chat-analysis.sh" >> "$LOG" 2>&1; then
   say "analysis failed — the previous ranking stands"
+  finish_pulse "analysis-failed"
   phase "CHAT" "exit=1 (analysis failed — the previous ranking stands)"
   exit 0
 fi
 phase "CHAT" "exit=0 (ranking written)"
-NEW_HASH="$(sha256sum "$STATE/chat-root-causes.md" 2>/dev/null | awk '{print $1}')"
+# THE FINDINGS, NOT THE PROSE — owner, 2026-08-24: "can we improve brain's capabilities with
+# every pulse healing?"
+#
+# This hashed the analyst's whole output, which is REGENERATED TEXT: 52 lines one run, 95 the
+# next, 57 the next. So the hash differed every time and "root causes CHANGED" fired 18 times
+# out of 18 — the loop could not tell a new defect from the same defect described differently,
+# and rebuilt the same ground while reporting it as warranted. "Nothing new" was not a state the
+# system could reach.
+#
+# The fingerprint is now the SET of declared signature tags, sorted and deduplicated. Reword the
+# analysis and it is unchanged; find a genuinely new defect and it moves.
+NEW_HASH="$(python3 - "$STATE/chat-root-causes.md" <<'PYFP'
+import hashlib, re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    print("unreadable"); raise SystemExit
+# The analyst's machine-readable table is the contract (see prompts/chat-analysis.md). Its LAST
+# occurrence wins: the file is appended to across runs.
+parts = re.split(r"^##\s+SIGNATURES\s*$", txt, flags=re.M)
+tags = set()
+if len(parts) > 1:
+    for line in parts[-1].splitlines():
+        if not line.strip().startswith("|"):
+            if tags:
+                break
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        last = cells[-1] if len(cells) >= 3 else ""
+        # Skip the header row and the markdown rule. "tag" is the header's own label, and it
+        # was being counted as a tag — harmless to the hash's stability but wrong, and a
+        # fingerprint with junk in it is one nobody trusts enough to act on.
+        if last and last.lower() != "tag" and not set(last) <= set("-: "):
+            tags.add(last)
+if not tags:
+    # No declared table — fall back to the full text, which is the old behaviour. Stated rather
+    # than silent: a fingerprint that quietly degrades to "always different" is the bug above.
+    print("prose:" + hashlib.sha256(txt.encode()).hexdigest())
+else:
+    print("tags:" + hashlib.sha256("\n".join(sorted(tags)).encode()).hexdigest())
+PYFP
+)"
 printf '%s' "$NEW_HASH" > "$ROOTS_HASH"
 
 if [ "$NEW_HASH" = "$PREV_HASH" ] && [ "${NEXEO_WATCH_ALWAYS_BUILD:-0}" != "1" ]; then
   say "conversation was new but the root causes did not change — analysed, no build"
+  finish_pulse "nothing-new"
   phase "BUILD" "exit=skip (nothing new in the ranking to build)"
   exit 0
 fi
@@ -193,6 +253,7 @@ if [ "$MANUAL" = "1" ]; then
   [ "$MSTAMP_DAY" = "$TODAY" ] || MCOUNT=0
   if [ "$MCOUNT" -ge "$MAX_MANUAL_DAY" ]; then
     say "MANUAL cap reached ($MCOUNT/$MAX_MANUAL_DAY today) — build deferred. Raise NEXEO_WATCH_MAX_MANUAL to override"
+    finish_pulse "deferred-manual-cap"
     phase "BUILD" "exit=skip (deferred: manual cap $MCOUNT/$MAX_MANUAL_DAY today)"
     exit 0
   fi
@@ -200,12 +261,14 @@ if [ "$MANUAL" = "1" ]; then
 else
   if [ "$COUNT" -ge "$MAX_BUILDS_DAY" ]; then
     say "daily auto-build cap reached ($COUNT/$MAX_BUILDS_DAY) — analysis recorded, build deferred to the nightly run"
+    finish_pulse "deferred-daily-cap"
     phase "BUILD" "exit=skip (deferred: daily cap $COUNT/$MAX_BUILDS_DAY, waiting for the nightly run)"
     exit 0
   fi
 
   if [ $(( (NOW - LAST) / 60 )) -lt "$MIN_GAP_MIN" ]; then
     say "last auto-build was $(( (NOW - LAST) / 60 ))m ago (< ${MIN_GAP_MIN}m) — analysis recorded, build deferred"
+    finish_pulse "deferred-spacing"
     phase "BUILD" "exit=skip (deferred: last build $(( (NOW - LAST) / 60 ))m ago, min gap ${MIN_GAP_MIN}m)"
     exit 0
   fi
@@ -237,6 +300,7 @@ sys.exit(0 if tops else 1)
 PYRUN
 then
   say "an iteration is already running — not starting a second"
+  finish_pulse "skipped-concurrent"
   exit 0
 fi
 

@@ -1231,6 +1231,18 @@ export default function OrchestratorPulsePanel() {
             <Icon name="warning" size={14} /> The seat is alive but producing nothing — this is not progress.
           </div>
         )}
+        {/* A DEAD NIGHTLY IS NOT A HEALTHY SYSTEM. Owner, 2026-08-24, asking whether the
+            Healing Pulse was improving Brain: it was not, and four nightly failures had been
+            sitting in nightly.log for four days with nothing reading them. The deck showed
+            pulses, phases and a capability card, so everything looked alive while the only
+            pulse that SCORES capability was inert. A non-zero exit that lands only in a log
+            file is not a signal; this is the one place he actually looks. */}
+        {data.nightly?.note && (
+          <div className="orch-nightly-warn">
+            ⚠ {data.nightly.note}
+            {data.nightly.at && ` · last attempt ${pktStamp(data.nightly.at.replace(' UTC', '') + 'Z')}`}
+          </div>
+        )}
         {/* WAITING is healthy and gets no banner: under cron, between pulses is the
             normal state, and an amber bar that is always on is one nobody reads. The
             warning is reserved for a pulse that DIED mid-flight, which is what an
