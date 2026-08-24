@@ -619,3 +619,85 @@ bottleneck is the deploy phase, not the tree. If the orchestrator runs `deploy.s
 "send" demand. What would prove this entry wrong: the deploy-phase matrix failing at
 this SHA, or S28's row 3097 being something other than a worker send (e.g. a self-echo —
 its `direction=outbound` and 04:12 timestamp argue otherwise).
+
+## Iteration 29 — 2026-08-24
+
+**State at turn start, checked not assumed:** review log byte-unchanged (216 lines — no
+review of `5509066`/`63a3b74` exists, third turn running); deployed SHA still `85cf393`;
+the same two Brain commits undeployed since 08-20. HEAD was made deployable in Iteration
+22 and re-confirmed in 27; **the deploy phase has still not run.** A third accounting
+restatement would be waste, so this turn did the analyst's standing item (3): **live
+acceptance of what IS deployed, by production receipt — read-only.**
+
+**The evidence haul (all queries read-only, exact strings quoted from the DB):**
+
+1. **DEF-236 is VERIFIED (LIVE), row moved.** `item_status_history` holds exactly one
+   `DRAFT→CANCELLED` transition: **2026-08-19 22:23:40.068, actor=user:2, item
+   cmsotakwf0006rts1bdsrjjkj** — a real owner turn, 58 minutes after the fix deployed
+   (21:25:06Z), through the canonical path that had refused this exact move for two
+   weeks. The lifecycle floor under the delete saga is not "deployed-unverified" any
+   more; it is proven with a durable receipt.
+2. **Three falsifiers QUIET post-deploy (0 occurrences each in outbound WhatsApp):**
+   DEF-238's neutral-fallback string since 08-20 13:38 · DEF-034(a)'s "nothing was
+   executed" since 08-19 21:25 · DEF-234's "no dispatcher for this action" since
+   08-19 21:25. Quiet is necessary, not sufficient — no delete turn has exercised the
+   receipt path since deploy (S27's ask hit an empty list) — so DEF-238 stays
+   DEPLOYED (unverified live), with the dated note added to its row.
+3. **DEF-110/113 (image reading) is deployed and UNEXERCISED:** inbound since 08-10 by
+   `message_type`: **text=120, voice=6, image=0**. He asked four times and never sent an
+   image after it shipped. The deck row cannot verify until he does; noted in the
+   DEF-113 row, and this commit names the tag so reported→shipped finally links.
+4. **The open_items contraction is a HUMAN PURGE, not a defect — pre-empting the next
+   false alarm.** TMC-0001 now reads `CLOSED=239` only (was 276 CLOSED + 7 CANCELLED).
+   16+ items with history rows no longer exist — hard-deleted via
+   `POST /open-items/purge` (`profileRoutes.ts:597-615`): phrase-confirmed, count-checked,
+   fail-closed, user-initiated. The deleted set included the benchmark junk item #506
+   and `def129-*` TEST FIXTURES that had leaked into the production DB (worth its own
+   note: tests once seeded prod; the purge cleaned them). Reversibility is an invariant
+   on BRAIN'S autonomous actions — an owner-typed purge phrase is explicit human
+   authorization. No DEF row minted; the next analyst reading `CLOSED=239, CANCELLED=0`
+   should not panic.
+
+**Escalation ruling, stated as asked:** the thrice-remediated "Iteration 2" finding
+should be **(a) accepted as a known limitation with its record in Iteration 12's closure
+table** — NOT (b) reverted: reverting DEF-200 would restore the wrong-referent
+fabrication the review itself called CRITICAL. The pointer has now consumed four turns
+against a review that was never re-run; the orchestrator should retire it.
+
+**Verification (from `server/`, at HEAD `0b728a2` + this turn's doc edits, after the last
+edit, leaked key stripped per-invocation as disclosed in Iteration 27):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2873 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2902)
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); no `server/src` change this turn.
+
+**Governing docs (rule 5):** no new defect, no patch — one row VERIFIED by receipt, two
+rows annotated with dated evidence. The turn moves rows in the direction the owner's
+rubric actually values: from claimed to proven.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 (evidence, not behaviour — though DEF-236's verification is the first
+lifecycle fix in this saga PROVEN on a real owner turn)
+**MECHANISM:** deployed-unverified rows either gain receipts or gain dated quiet-falsifier
+notes, so the deck and the scorer read proven state instead of hopeful state.
+**FALSIFIER:** the cited `item_status_history` row not matching this entry; or a
+post-08-20 fallback string in outbound WhatsApp that my query missed.
+
+**Symptom tag:** `DEF-113` — named verbatim for the deck row "Asked four times if it
+could read an image" on the shipped fix's behalf (`a758ac5`, deployed 08-10; code half
+closed, live exercise owed and measured impossible so far: image=0 inbound since build).
+Not closed: `fabricated-status` (DEF-034(b) remains the top fresh build), the
+verify-first loop, `stale-contact-data`.
+
+**What I did NOT do:** DEF-034(b) (new Brain code forbidden while the deploy debt
+stands — fourth turn it has been named as next); the Gmail re-auth for u2 (needs the
+owner; the orchestrator should surface it in the deploy report); any touch on the RAG
+classifier fallback from Iteration 27 (still named, still unarbitrated).
+
+**Honest prediction:** deployable — YES, unchanged since Iteration 22. The single
+highest-value action available to the loop is not a build at all: run `deploy.sh`, then
+have the owner send one image and one "delete all open items" on a populated list. Those
+two turns would close three deck rows. What would prove this entry wrong: the deploy
+phase failing at this SHA, or the DRAFT-transition receipt being test data (its actor
+user:2 and timestamp match the owner's live session, arguing not).
