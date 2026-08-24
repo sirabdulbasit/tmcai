@@ -178,10 +178,65 @@ WHAT YOU CANNOT DO (hard limits — these never change):
 ${limitationLines()}`;
 }
 
+// ─── DEF-243 — the channel-ingest truth: a claim about a FEED needs the ──────
+// feed's receipt.
+//
+// Owner, S23 (2026-08-22): "Derive actionable or open items from each email
+// arrive and add them" — Brain replied "I automatically review incoming emails
+// to identify tasks, and I add them to your list." `feed_events` at that
+// moment: gmail 2608 received, 0 EVER processed. The claim was fabricated,
+// and nothing in the prompt could contradict it: the truth-table said what
+// Brain CAN do on request, but nothing said what actually HAPPENS to a
+// channel — so the model filled the silence with assistant-shaped fiction.
+//
+// Same class as the two drifts in this file's header (a hand-written table
+// contradicting reality), same fix shape as the rest of this module: derive
+// the claim from the system that acts. Received/processed counts per channel
+// come from `feed_events` itself, so the day an ingest job actually moves
+// rows off status:new, the numbers — and therefore the licensed claim — flip
+// with NO edit here. Guardrail: no-claim-without-a-receipt, applied to
+// channel capability rather than to a completed action.
+const INGEST_WINDOW_DAYS = 14;
+
+export async function channelIngestSection(clientNumber: string): Promise<string> {
+  try {
+    const since = new Date(Date.now() - INGEST_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const rows = await (prisma as any).feedEvent.groupBy({
+      by: ['sourceType', 'status'],
+      where: { clientNumber, createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+    const byChannel = new Map<string, { received: number; processed: number }>();
+    for (const r of rows as Array<{ sourceType: string; status: string; _count: { _all: number } }>) {
+      const c = byChannel.get(r.sourceType) ?? { received: 0, processed: 0 };
+      c.received += r._count._all;
+      if (r.status === 'processed') c.processed += r._count._all;
+      byChannel.set(r.sourceType, c);
+    }
+    if (byChannel.size === 0) {
+      return `\nCHANNEL FEEDS (LIVE, last ${INGEST_WINDOW_DAYS}d): no events recorded on any channel in this window. Do not claim any automatic channel processing.\n`;
+    }
+    const lines = [...byChannel.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([ch, c]) => `- ${ch}: ${c.received} received, ${c.processed} processed automatically`);
+    return `\nCHANNEL FEEDS — WHAT ACTUALLY HAPPENS TO WHAT ARRIVES (LIVE counts, last ${INGEST_WINDOW_DAYS}d):\n${lines.join('\n')}\n\nA channel with 0 processed is RECEIVE-ONLY today: never tell the user you "automatically review" it or that you auto-add tasks from it — deriving items from such a channel happens only when the user asks in conversation. Claim automatic processing ONLY for a channel whose processed count above is greater than zero.\n`;
+  } catch (e: any) {
+    // Unreadable is NOT license: the fabrication this section exists to stop
+    // is most tempting exactly when the data is missing.
+    log.warn('channel ingest read failed — capability block gets the fail-closed line', { clientNumber, error: e?.message });
+    return '\nCHANNEL FEEDS: activity counts are unreadable right now. Do not claim any automatic channel processing while this is unreadable.\n';
+  }
+}
+
 export async function renderCapabilityBlockLive(clientNumber: string, userId: number): Promise<string> {
   const key = `${clientNumber}:${userId}`;
   const hit = blockCache.get(key);
   if (hit && Date.now() - hit.at < BLOCK_TTL_MS) return hit.block;
+
+  // DEF-243 — fetched before the registry logic so BOTH return paths carry
+  // it: the conservative block is rendered precisely when discovery failed,
+  // which is when an unchecked channel claim would be most dangerous.
+  const channels = await channelIngestSection(clientNumber);
 
   let caps: LiveCapability[];
   try {
@@ -190,11 +245,11 @@ export async function renderCapabilityBlockLive(clientNumber: string, userId: nu
       // Empty registry = seeding hasn't run; render fail-closed rather
       // than an empty CAN list that reads as "I can do nothing".
       log.warn('action registry returned 0 definitions — rendering conservative block', { clientNumber });
-      return conservativeBlock();
+      return conservativeBlock() + channels;
     }
   } catch (e: any) {
     log.warn('live capability discovery failed — rendering conservative block', { clientNumber, error: e?.message });
-    return conservativeBlock();
+    return conservativeBlock() + channels;
   }
 
   const avail = caps.filter((c) => c.state === 'available');
@@ -216,7 +271,7 @@ ${degraded.length > 0 ? `
 SUPPORTED BUT NOT AVAILABLE RIGHT NOW — say so honestly and offer the remedy; never promise these will succeed:
 
 ${degradedLines}
-` : ''}
+` : ''}${channels}
 WHAT YOU CANNOT DO — say so plainly, and offer the closest supported alternative:
 
 ${limitationLines()}
