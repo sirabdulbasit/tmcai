@@ -539,3 +539,83 @@ that is a named follow-up, not a regression introduced here.
 Brain-code commit has its row, tree clean of Brain files. After deploy, the owner's next
 "yes remove all" on a populated list should execute without a second demand — and if it
 instead re-asks, DEF-239's falsifier fires and the row flips.
+
+## Iteration 27 — 2026-08-24
+
+**Remediation attempt 3 of 3, resolved by pointer for the third time:** the review log is
+byte-unchanged (216 lines); its newest section is still the wrong-referent review that
+Iteration 12 closed finding-by-finding against deployed commits. No review of `5509066`
+or `63a3b74` exists. This pointer has now consumed three remediation slots against a
+review that was never re-run — the orchestrator should reset or retire it.
+
+**Deployability: HEAD was already deployable when this turn started, and still is.** The
+ledger work landed in Iteration 22 (rows for DEF-239/240, collision resolved); the two
+Brain commits have sat undeployed for FOUR DAYS while the deck's top tag
+(`confirm-misfires`, DEF-239's fix) waits on them. Nothing in this tree blocks
+`deploy.sh` — **the deploy phase has not run since 08-20 13:38, and that is the entire
+debt.** Matrix re-verified at current HEAD `fd24ada` (exact numbers below).
+
+**This turn's substantive work — the DB check the analyst named, executed read-only:**
+
+1. **The S28 "4:12 AM alert" claim is TRUE.** `whatsapp_messages` row **3097**, outbound,
+   `2026-08-24 04:12:42.718`: *"⚠️ Brain: gmail hasn't synced. Last sync 216h ago. Its
+   access permission has expired. Open Settings…"* — exactly what Brain told him at
+   05:54. The analyst's falsifier resolves in Brain's FAVOUR: this is Self-Healing
+   rung 1 (detect) + a truthful action claim WITH a receipt, observed live.
+   `fabricated-status` does NOT increment for S28, and no DEF row is minted — the
+   suspected defect was refuted by evidence.
+2. **The "nine days unnoticed" framing is substantially refuted.** Gmail-specific alerts
+   fired 08-20 10:38 (125h), 08-21 04:16, 08-24 04:12; sibling alerts for
+   calendar/tasks/chat/drive (same expired grant) from 08-18 04:07 — ~14 outbound
+   WhatsApp alerts across six days. He was told, repeatedly, on the channel he reads;
+   he re-authed neither. The RESIDUAL Self-Healing questions are real but different:
+   first alert at ~76–125h (threshold config, not a dead path), and no escalation when
+   alerts go unactioned. The analyst's #3 should be re-scoped to those two.
+
+**A second finding, self-inflicted and disclosed:** sourcing `server/.env` for the psql
+checks LEAKED into this session's persistent shell env (verified: present in fresh
+calls; `unset` does not stick). That armed `tests/rag/ragQuality.test.ts` — a live-LLM
+suite `describe.skipIf(!GEMINI_API_KEY)` that every prior matrix skipped — and it FAILED
+at 30%: **14 of 20 golden queries all classify as `detailed_analysis`**, the signature of
+the classifier's live call failing into a default fallback, not of bad classification.
+Reported for the orchestrator, not fixed here: (a) if `intentService`'s live surface is
+falling back to one intent, the dashboard query UX is degraded — needs a check with a
+known-good key; (b) a release matrix whose content depends on ambient env is D-8's class
+in a new place. This session's future matrix runs must strip the key per-invocation;
+the deploy phase's own shell never sources `.env`, so ITS matrix is unaffected.
+
+**Verification (from `server/`, at HEAD `fd24ada`, after the last edit, with the leaked
+key stripped per-invocation to restore the documented skip behaviour):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **232 passed | 1 skipped** files (233);
+  **2873 passed | 0 failed** (7 expected fail | 21 skipped | 1 todo, of 2902) —
+  byte-identical shape to Iteration 22's green run.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); no `server/src` change this turn.
+
+**Governing docs (rule 5):** no defect fixed, no defect minted — the turn REFUTED a
+suspected fabrication with a production receipt, which moves no row by design. The RAG
+fallback signal is named for arbitration rather than given a premature DEF id: it is not
+owner-reported and not yet diagnosed to a line.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 (docs-only diff; the verification is evidence, not behaviour)
+**MECHANISM:** the deck's suspected `fabricated-status` recurrence for S28 is cleared by
+receipt, so the next harvest measures Brain's alert claim as TRUE instead of counting it
+against the class; and the deploy debt is re-confirmed green at today's HEAD.
+**FALSIFIER:** row 3097 not matching what this entry quotes; or the deploy phase's own
+matrix arming the RAG suite (which would disprove my env analysis).
+
+**Symptom tag:** none closed — say so plainly. What was done instead: a suspected
+occurrence of `fabricated-status` was DISPROVEN with a production receipt, and the
+`confirm-misfires` fix (DEF-239) remains one deploy-phase run away from striking the
+deck's top row. Not touched: DEF-034(b) (still the top build for the next fresh turn),
+`stale-contact-data` (dormant, not exercisable from a Builder seat this turn), the RAG
+classifier fallback (named above).
+
+**Honest prediction:** deployable at end of turn — YES, as it was at the start; the
+bottleneck is the deploy phase, not the tree. If the orchestrator runs `deploy.sh` at
+`fd24ada`, DEF-239/240 go live and the owner's next "yes remove all" executes without a
+"send" demand. What would prove this entry wrong: the deploy-phase matrix failing at
+this SHA, or S28's row 3097 being something other than a worker send (e.g. a self-echo —
+its `direction=outbound` and 04:12 timestamp argue otherwise).
