@@ -763,8 +763,9 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
 /* The per-kind subtotal spans the row — it summarises columns, so it cannot sit in one. */
 .orch-tokens-total { padding-top: var(--s-2); }
 
-/* The nightly's real exit state. Amber rather than red: the conversational pulses are still
-   working, so this is "half the system is inert", not "everything is down". */
+/* Amber, never red: a replayed score is a gap in EVIDENCE, not a broken system. The nightly
+   runs, the pulses run — the number just isn't fresh. Red here would be the false alarm this
+   banner was rewritten to stop being. */
 .orch-nightly-warn { margin: var(--s-2) 0 var(--s-3); padding: var(--s-2) var(--s-3);
   border-radius: 6px; font-size: 0.82em; line-height: 1.45;
   background: rgba(234,179,8,.10); color: #eab308;

@@ -1231,16 +1231,21 @@ export default function OrchestratorPulsePanel() {
             <Icon name="warning" size={14} /> The seat is alive but producing nothing — this is not progress.
           </div>
         )}
-        {/* A DEAD NIGHTLY IS NOT A HEALTHY SYSTEM. Owner, 2026-08-24, asking whether the
-            Healing Pulse was improving Brain: it was not, and four nightly failures had been
-            sitting in nightly.log for four days with nothing reading them. The deck showed
-            pulses, phases and a capability card, so everything looked alive while the only
-            pulse that SCORES capability was inert. A non-zero exit that lands only in a log
-            file is not a signal; this is the one place he actually looks. */}
+        {/* A STALE SCORE, NOT A DEAD NIGHTLY. Owner, 2026-08-24, asking whether the Healing
+            Pulse improves Brain. I first read four `rc=2` nightlies as crashes and put a
+            FAILED banner here — wrong: rc=2 is nexeo-loop's "gate did not pass", the steady
+            state of a healthy run whose C4 sits at 87.9. A permanent red mark on a working
+            system is how a deck teaches its reader to ignore it.
+
+            The real gap had no signal at all: MEASURE is skipped while server/src and
+            server/prisma are unchanged, so the capability number is a week-old REPLAY that
+            renders exactly like a fresh one. That is what this says, and it clears itself the
+            moment a server-side change deploys. */}
         {data.nightly?.note && (
           <div className="orch-nightly-warn">
             ⚠ {data.nightly.note}
-            {data.nightly.at && ` · last attempt ${pktStamp(data.nightly.at.replace(' UTC', '') + 'Z')}`}
+            {data.nightly.scored_at &&
+              ` · last real measurement ${pktStamp(data.nightly.scored_at.replace(' UTC', '') + 'Z')}`}
           </div>
         )}
         {/* WAITING is healthy and gets no banner: under cron, between pulses is the

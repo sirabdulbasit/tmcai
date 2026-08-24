@@ -70,8 +70,26 @@ ORCH_LOG="$ORCH/loop.log"
 # iteration numbering reset in the first place. The number is claimed by the first pulse that
 # has actual work to do.
 PULSE_ITER=""
+# NOTHING CAN TRAP SIGKILL — not this script, not any script. So a pulse that is hard-killed
+# leaves its ledger entry open forever, and "no verdict" would be indistinguishable from "still
+# running". The next pulse closes it: if the previous iteration has a start line and no verdict,
+# and no iteration is actually running, it is recorded as `vanished`. That word is deliberate —
+# it says the pulse stopped without saying why, which is the truth, rather than guessing.
+close_abandoned_pulse() {
+  local prev="$1"
+  [ -z "$prev" ] || [ "$prev" -lt 1 ] 2>/dev/null && return 0
+  [ -f "$STATE/pulse-ledger.jsonl" ] || return 0
+  grep -q "\"iteration\":$prev,\"kind\":\"conversational\",\"kind_n\"" "$STATE/pulse-ledger.jsonl" || return 0
+  grep -q "\"iteration\":$prev,.*\"verdict\"" "$STATE/pulse-ledger.jsonl" && return 0
+  printf '{"iteration":%s,"kind":"conversational","verdict":"vanished","at":"%s"}\n' \
+    "$prev" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
+  printf '%s  PULSE  iter=%s verdict=vanished (no exit recorded — closed by the next pulse)\n' \
+    "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$prev" >> "$ORCH_LOG"
+}
+
 begin_pulse() {
   [ -n "$PULSE_ITER" ] && return 0
+  close_abandoned_pulse "$(cat "$STATE/iteration" 2>/dev/null || echo 0)"
   PULSE_ITER=$(( $(cat "$STATE/iteration" 2>/dev/null || echo 0) + 1 ))
   printf '%s' "$PULSE_ITER" > "$STATE/iteration"
   printf '%s  ─── iteration %s ───\n' \
@@ -91,7 +109,10 @@ begin_pulse() {
   # `grep -c` prints 0 AND exits 1 when nothing matches, so `|| echo 0` appended a SECOND zero
   # and the arithmetic became $(( 0\n0 + 1 )) — the syntax error that killed four nightlies.
   # `|| true` keeps the pipeline honest without adding output.
-  CONV_N="$(( $(grep -c '"kind":"conversational"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))"
+  # COUNT PULSES, NOT ROWS. Each pulse now writes TWO lines — a start and a verdict — and both
+  # carry "kind":"conversational", so counting that alone double-counts every pulse and the
+  # number drifts. `kind_n` appears on the start line only, which is exactly one per pulse.
+  CONV_N="$(( $(grep -c '"kind":"conversational","kind_n"' "$STATE/pulse-ledger.jsonl" 2>/dev/null || true) + 1 ))"
   printf '{"iteration":%s,"kind":"conversational","kind_n":%s,"at":"%s"}\n' \
     "$PULSE_ITER" "$CONV_N" "$(date -u +%FT%TZ)" >> "$STATE/pulse-ledger.jsonl"
   printf '%s  PULSE  iter=%s conversational (started by %s)\n' \
@@ -115,6 +136,12 @@ finish_pulse() {
     "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$PULSE_ITER" "$PULSE_VERDICT" >> "$ORCH_LOG"
 }
 trap 'finish_pulse' EXIT
+# A SIGNALLED DEATH IS STILL A DEATH. The EXIT trap covers a normal exit; it does NOT cover a
+# process that is signalled away. Iteration 29 proved this: it logged its start line, ran its
+# build, logged `iteration finished rc=2` — and then recorded NO verdict, because the watcher
+# was killed rather than allowed to exit. Verified by running this exact file in a sandbox,
+# where the trap fires correctly.
+trap 'finish_pulse died-signal; exit 143' TERM INT HUP
 
 phase() {
   begin_pulse
