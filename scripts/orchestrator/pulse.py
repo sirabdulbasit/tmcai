@@ -804,6 +804,86 @@ def declared_signature_tags():
     return tags
 
 
+def found_now(limit=8):
+    """The analyst's CURRENT findings — what this cycle actually turned up.
+
+    Owner, 2026-08-24, looking at OBSERVED GAPS while a build ran: *"if it is building something
+    real should be shown in Observed Gaps"*. He was right twice over. That panel is fed from the
+    ARCHIVE's recurrence counts, so every row read `shipped` and the whole list rendered struck
+    through — a deck saying "all clear" at the exact moment the analyst's own #1 finding was
+    `gmail 2606 received / 0 processed / 100% never acted on`, against Brain's recorded claim
+    that it reviews incoming email automatically.
+
+    The archive list is not wrong, it is just answering a different question: "what has recurred
+    historically". This answers "what did the analyst find THIS TIME", read straight from the
+    SIGNATURES table it publishes — the same table the build gate fingerprints, so what is shown
+    here is exactly what the builder is allowed to act on.
+    """
+    path = os.path.join(STATE, "chat-root-causes.md")
+    out = []
+    if not os.path.exists(path):
+        return out
+    try:
+        txt = open(path, errors="replace").read()
+    except Exception:
+        return out
+    parts = re.split(r"^##\s+SIGNATURES\s*$", txt, flags=re.M)
+    if len(parts) < 2:
+        return out
+    for line in parts[-1].splitlines():
+        if not line.strip().startswith("|"):
+            if out:
+                break          # table ended
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        tag = cells[-1]
+        if not tag or tag.lower() == "tag" or set(tag) <= set("-: "):
+            continue           # header row or markdown rule
+        out.append({"tag": tag, "saw": cells[0][:150], "fragment": cells[1][:150]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def building_now():
+    """{aim, files, iteration} — what the builder DECLARED it is working on, or None.
+
+    The other half of the same complaint: a pulse can sit at "Building" for minutes with nothing
+    on screen saying what is being built, which is indistinguishable from a loop turning over for
+    its own sake. Since 2026-08-24 build.md requires the builder to name its target files within
+    two tool calls, so that declaration exists in the log and can simply be shown.
+    """
+    logs = os.path.join(ORCH, "logs")
+    if not os.path.isdir(logs):
+        return None
+    try:
+        cands = [f for f in os.listdir(logs) if re.match(r"^iter-\d+-build\.log$", f)]
+        if not cands:
+            return None
+        newest = max(cands, key=lambda f: os.path.getmtime(os.path.join(logs, f)))
+        it = re.search(r"iter-(\d+)-", newest)
+        text = open(os.path.join(logs, newest), errors="replace").read()
+    except Exception:
+        return None
+    aim, files = None, []
+    for line in text.splitlines():
+        body = re.sub(r"^\[\s*\d+s\]\s*", "", line).strip()
+        if not body or body.startswith(("\u2192", "\u2190", "--", "\u2500")):
+            continue
+        m = re.search(r"Files I will change:?\s*(.+)$", body)
+        if m:
+            files = re.findall(r"`([^`]+)`", m.group(1))[:6]
+            aim = aim or body.split("**")[0].strip()[:200]
+            break
+        if aim is None and len(body) > 30 and not body.startswith("\u2514"):
+            aim = body[:200]
+    if not aim:
+        return None
+    return {"aim": aim, "files": files, "iteration": int(it.group(1)) if it else None}
+
+
 def observed_gaps(top=6):
     """{capability:[...], chat:[...]} — the two evidence sources, side by side.
 
@@ -2029,6 +2109,8 @@ def collect():
         "capability_series": capability_series(),
         "iteration_timings": iteration_timings(),
         "observed": observed_gaps(),
+        "found_now": found_now(),
+        "building_now": building_now(),
         "upgrade_feed": upgrade_feed(),
         "history": history_rows(sc, vd, cur_it),
     }

@@ -762,3 +762,18 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
 .orch-table td.is-quiet-cell { color: var(--text-dim); }
 /* The per-kind subtotal spans the row — it summarises columns, so it cannot sit in one. */
 .orch-tokens-total { padding-top: var(--s-2); }
+
+/* "Found this cycle" and "building now". Plain, not alarming: these are the loop reporting its
+   own work, and the moment they read as warnings the eye starts skipping them. */
+.orch-nowblock { margin: 0 0 var(--s-3); font-size: 0.8em; line-height: 1.5; }
+.orch-nowblock-k { display: inline-block; margin-right: var(--s-2); opacity: .55;
+  text-transform: uppercase; letter-spacing: .06em; font-size: .82em; }
+.orch-nowblock-building { padding: var(--s-2) var(--s-3); border-radius: 6px;
+  background: var(--surface-2, rgba(127,127,127,.08));
+  border: 1px solid var(--border, rgba(127,127,127,.22)); }
+.orch-nowblock-files { display: block; margin-top: 2px; opacity: .55; font-size: .92em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.orch-nowblock-found { margin-top: var(--s-2); }
+.orch-nowblock-found ul { margin: 2px 0 0; padding-left: 1.1em; }
+.orch-nowblock-found li { margin: 1px 0; opacity: .9; }
+.orch-nowblock-found code { opacity: .7; font-size: .92em; margin-right: .35em; }

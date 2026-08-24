@@ -1392,6 +1392,46 @@ export default function OrchestratorPulsePanel() {
                   in a smaller font while squeezing the chat rows — which are the only thing
                   here he cannot read anywhere else. The `capability` array is still in the
                   payload; the loop targets a capability from it every pulse. */}
+              {/* WHAT THIS CYCLE FOUND, and what is being built with it. Owner, 2026-08-24,
+                  watching a build run: "if it is building something real should be shown in
+                  Observed Gaps". He was right on both halves. The list below is fed from the
+                  ARCHIVE's recurrence counts, so every row read `shipped` and the whole panel
+                  rendered struck through — a deck saying ALL CLEAR at the moment the analyst's
+                  own #1 finding was `gmail 2606 received / 0 processed`, against Brain's
+                  recorded claim that it reviews incoming email automatically. And a pulse could
+                  sit at "Building" for minutes with nothing on screen saying what it was
+                  building, which is indistinguishable from a loop turning over for its own sake.
+                  Neither block replaces the archive list; they answer the two questions it
+                  cannot: what did we find THIS time, and what is being done about it. */}
+              {(data.building_now || (data.found_now || []).length > 0) && (
+                <div className="orch-nowblock">
+                  {data.building_now && (
+                    <div className="orch-nowblock-building">
+                      <span className="orch-nowblock-k">building now</span>
+                      {data.building_now.aim}
+                      {(data.building_now.files || []).length > 0 && (
+                        <span className="orch-nowblock-files">
+                          {data.building_now.files.join(' · ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {(data.found_now || []).length > 0 && (
+                    <div className="orch-nowblock-found">
+                      <span className="orch-nowblock-k">
+                        found this cycle · {(data.found_now || []).length}
+                      </span>
+                      <ul>
+                        {(data.found_now || []).map((f, i) => (
+                          <li key={`${f.tag}-${i}`}>
+                            <code>{f.tag}</code> {f.saw}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="orch-observed orch-observed-single">
                 <div>
                   <div className="orch-observed-h orch-observed-h-wide">
