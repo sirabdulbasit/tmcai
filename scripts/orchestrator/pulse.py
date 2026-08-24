@@ -935,7 +935,27 @@ def building_now():
             aim = body[:200]
     if not aim:
         return None
-    return {"aim": aim, "files": files, "iteration": int(it.group(1)) if it else None}
+
+    # IS IT ACTUALLY BUILDING? Owner, 2026-08-24: "why it is static in observed gaps?" Because it
+    # was reading the newest build log and calling it "building now" whether or not anything was
+    # running. Iteration 34 finished at 13:04:50 and the deck still announced it as in progress
+    # while the stage said WAITING — a label asserting a live process from a file that had
+    # stopped changing, which is precisely the fabricated-status shape this deck exists to catch,
+    # committed by the deck itself.
+    #
+    # The phase list is the authority — it is the same source the phase rows above are drawn
+    # from, so the two cannot disagree. Anything not currently in a build phase is reported as
+    # the LAST build, with its iteration, rather than dressed up as a current one.
+    live = False
+    try:
+        for ph in (phase_timeline() or []):
+            if str(ph.get("state")) == "running" and "build" in str(ph.get("name", "")).lower():
+                live = True
+                break
+    except Exception:
+        live = False
+    return {"aim": aim, "files": files,
+            "iteration": int(it.group(1)) if it else None, "live": live}
 
 
 def observed_gaps(top=6):

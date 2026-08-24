@@ -790,3 +790,6 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
 
 /* The settled count sits inside the heading, quieter than the open rows it accompanies. */
 .orch-nowblock-k em { font-style: normal; opacity: .75; }
+
+/* A finished build is history, and reads like it — the live one is the only one worth the ink. */
+.orch-nowblock-building.is-past { opacity: .62; }

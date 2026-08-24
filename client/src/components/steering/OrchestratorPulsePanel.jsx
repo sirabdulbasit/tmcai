@@ -1406,8 +1406,18 @@ export default function OrchestratorPulsePanel() {
               {(data.building_now || ((data.found_now || {}).rows || []).length > 0) && (
                 <div className="orch-nowblock">
                   {data.building_now && (
-                    <div className="orch-nowblock-building">
-                      <span className="orch-nowblock-k">building now</span>
+                    <div className={`orch-nowblock-building${data.building_now.live ? '' : ' is-past'}`}>
+                      {/* "building now" only when something IS building. It used to read the
+                          newest build log and assert a live process regardless — iteration 34
+                          finished at 13:04 and the deck still announced it as in progress while
+                          the stage said WAITING. A label claiming activity from a file that had
+                          stopped changing is the fabricated-status shape, committed by the deck
+                          itself. The phase list is the authority, so the two cannot disagree. */}
+                      <span className="orch-nowblock-k">
+                        {data.building_now.live
+                          ? 'building now'
+                          : `last build · iter ${data.building_now.iteration ?? '?'}`}
+                      </span>
                       {data.building_now.aim}
                       {(data.building_now.files || []).length > 0 && (
                         <span className="orch-nowblock-files">
