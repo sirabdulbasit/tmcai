@@ -19,14 +19,25 @@ import ContactsPage from './pages/ContactsPage';
 import ContactDetailPage from './pages/ContactDetailPage';
 import HowBrainWorksPage from './pages/HowBrainWorksPage';
 import WelcomePage from './pages/WelcomePage';
-import BrainAvatar from './components/BrainAvatar';
 import StaleConnectorBanner from './components/StaleConnectorBanner';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="app-loading">Loading...</div>;
   if (!user) return <Navigate to="/login" replace />;
-  // BrainAvatar — Brain's thinking indicator. Lives over every page.
+  // BrainAvatar REMOVED FROM EVERY PAGE — owner, 2026-08-24: "remove it from all pages",
+  // pointing at the "NEXEO IS THINKING · Reading your inbox and chats…" pill.
+  //
+  // It was `position: fixed` at `z-index: var(--z-toast)`, so it floated above whatever page
+  // was underneath — in his screenshot it was covering the Build Pulse controls (Heal now,
+  // Force, Pause, Now), i.e. an indicator of work obscuring the buttons that start the work.
+  //
+  // The component and its route are left intact, not deleted: it is only unmounted here. If a
+  // thinking indicator is wanted again it belongs INSIDE the page that is thinking, next to
+  // the thing being waited on, where it cannot cover a control — that is what
+  // `ThinkingIndicator` does in the chat and `BrainWorking` does in the Day Brief, both of
+  // which stay.
+  //
   // StaleConnectorBanner — top-of-page warning for stale/errored
   // connectors. Renders only when something is wrong; invisible
   // otherwise. Loud-not-silent failure surface per the trust
@@ -35,7 +46,6 @@ function ProtectedRoute({ children }) {
     <>
       <StaleConnectorBanner />
       {children}
-      <BrainAvatar />
     </>
   );
 }
