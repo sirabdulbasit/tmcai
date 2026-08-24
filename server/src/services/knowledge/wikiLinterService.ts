@@ -17,6 +17,7 @@
  * Knowledge Center index and decides what to do.
  */
 import prisma from '../../db/prisma';
+import { WIKI_STALE_DAYS } from '../wiki/wikiStaleness';
 
 export interface LintSummary {
   scanned: number;
@@ -28,7 +29,7 @@ export interface LintSummary {
   durationMs: number;
 }
 
-const STALE_DAYS = 60;
+const STALE_DAYS = WIKI_STALE_DAYS;
 
 export async function lintAllWikiPages(): Promise<LintSummary> {
   const t0 = Date.now();

@@ -10,6 +10,7 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 // DEF-195 — the one transport policy, applied at the provider boundary.
 import { fitToTransport } from '../knowledge/transportBudget';
+import { META_GRAPH_BASE } from './metaGraph';
 
 const log = createLogger('whatsapp:meta');
 
@@ -55,7 +56,7 @@ export class MetaProvider implements IWhatsAppProvider {
         return { success: false, error: 'Meta credentials not configured' };
       }
       const resp = await fetch(
-        `https://graph.facebook.com/v18.0/${config.phoneNumberId}`,
+        `${META_GRAPH_BASE}/${config.phoneNumberId}`,
         { headers: { Authorization: `Bearer ${config.accessToken}` } },
       );
       if (!resp.ok) {
@@ -83,7 +84,7 @@ export class MetaProvider implements IWhatsAppProvider {
         : { messaging_product: 'whatsapp', to: params.to, type: 'text', text: { body: fitToTransport(params.message).body } };
 
       const resp = await fetch(
-        `https://graph.facebook.com/v18.0/${config.phoneNumberId}/messages`,
+        `${META_GRAPH_BASE}/${config.phoneNumberId}/messages`,
         { method: 'POST', headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
       );
       const data = await resp.json() as any;

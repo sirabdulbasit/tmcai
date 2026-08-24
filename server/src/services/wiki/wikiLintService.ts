@@ -10,9 +10,12 @@
  * page bodies.
  */
 import prisma from '../../db/prisma';
+import { WIKI_STALE_DAYS } from './wikiStaleness';
 
 const ORPHAN_CUTOFF_AGE_DAYS = 7;
-const STALE_CUTOFF_AGE_DAYS = 90;
+// Was 90 while two other linters used 60, so a 70-day-old page was stale to one job and
+// fresh to another. Single definition now — see wikiStaleness.ts.
+const STALE_CUTOFF_AGE_DAYS = WIKI_STALE_DAYS;
 
 export interface LintFindings {
   clientNumber: string;

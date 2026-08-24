@@ -10,8 +10,9 @@
  */
 import crypto from 'crypto';
 import prisma from '../../db/prisma';
+import { META_GRAPH_BASE } from '../whatsapp/metaGraph';
 
-const META_GRAPH = 'https://graph.facebook.com/v18.0';
+const META_GRAPH = META_GRAPH_BASE;
 
 function getKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY ?? '';

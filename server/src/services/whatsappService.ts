@@ -14,6 +14,7 @@ import { isFeatureEnabled } from './featureFlagService';
 import createLogger from '../utils/logger';
 // DEF-194 — the one transport policy. Dependency-free module, no cycle risk.
 import { fitToTransport } from './knowledge/transportBudget';
+import { META_GRAPH_BASE } from './whatsapp/metaGraph';
 
 const log = createLogger('whatsapp');
 
@@ -377,7 +378,7 @@ async function callMetaAPI(toPhone: string, content: string): Promise<string> {
     throw new Error('META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID not configured');
   }
 
-  const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+  const url = `${META_GRAPH_BASE}/${phoneNumberId}/messages`;
   const body = {
     messaging_product: 'whatsapp',
     to: toPhone,

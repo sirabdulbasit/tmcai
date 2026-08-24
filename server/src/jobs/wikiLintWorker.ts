@@ -15,6 +15,7 @@
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
 import { BRAIN_SCHEMA_VERSION } from '../services/knowledge/brainSchema';
+import { WIKI_STALE_MS, WIKI_STALE_DAYS } from '../services/wiki/wikiStaleness';
 
 const log = createLogger('wiki-lint');
 
@@ -27,7 +28,7 @@ export interface LintFindings {
   ranAt: string;
 }
 
-const STALE_THRESHOLD_MS = 60 * 24 * 60 * 60 * 1000;
+const STALE_THRESHOLD_MS = WIKI_STALE_MS;
 
 export async function runLintForUser(clientNumber: string, userId: number): Promise<LintFindings> {
   const now = new Date();
@@ -101,7 +102,7 @@ async function fileLintReport(clientNumber: string, userId: number, f: LintFindi
     '',
     '## Health summary',
     `- Orphans: ${f.orphans}`,
-    `- Stale (older than 60d, still-active subject): ${f.stale}`,
+    `- Stale (older than ${WIKI_STALE_DAYS}d, still-active subject): ${f.stale}`,
     `- Open gap pages: ${f.openGaps}`,
     `- Unresolved contradictions (>7d): ${f.contradictions}`,
     `- Entity names referenced without own page: ${f.missingEntityPages.length}`,
