@@ -423,6 +423,61 @@ export function actionAppliedMarker(args: {
   return systemMarker(`applied: ${JSON.stringify({ title, applied, outstanding })}`);
 }
 
+// ─── DEF-034(b) — the read-back: a state claim meets its receipt ─────────────
+//
+// The completion gate intercepts a claim that something happened when nothing
+// was dispatched THIS turn. But "this turn" is not "ever": on 2026-08-05 the
+// marker fired one second after Brain had successfully delegated three items
+// (send #2 found the pending already terminal), and the owner was told
+// "nothing was executed" about work that HAD run. The denial was as fabricated
+// as the claim it replaced — the gate had no eyes on the dispatch ledger.
+//
+// So when the gate intercepts AND the ledger shows a just-completed dispatch,
+// the replacement is not a denial: it is THIS marker, carrying the receipt
+// (action, time, summary) as the FACT. The model phrases the reply from it
+// (wording belongs to the model); the guardrail enforced is
+// no-claim-without-a-receipt, in BOTH directions — no "done" without a
+// receipt, and no "nothing ran" against one.
+//
+// Constructor and renderer live in this one module, same as itemOutcome:
+// renderable by construction, and a payload the constructor could not have
+// minted is rejected, not repaired.
+
+export function ledgerReadbackMarker(r: {
+  actionType: string;
+  at: Date | string;
+  summary?: string | null;
+}): string {
+  const payload: Record<string, unknown> = {
+    action: String(r.actionType ?? '').trim().slice(0, 60),
+    at: new Date(r.at as any).toISOString(),
+  };
+  const summary = String(r.summary ?? '').trim().slice(0, 120);
+  if (summary) payload.summary = summary;
+  return systemMarker(`ledger_readback: ${JSON.stringify(payload)}`);
+}
+
+export function ledgerReadbackMeaning(answer: string): string | null {
+  const m = /^\s*\[ledger_readback:\s*(\{.*\})\s*\]\s*$/.exec(answer ?? '');
+  if (!m) return null;
+  try {
+    const p = JSON.parse(m[1]);
+    if (typeof p?.action !== 'string' || !p.action.trim() || p.action.length > 60) return null;
+    const at = typeof p?.at === 'string' ? new Date(p.at) : null;
+    if (!at || Number.isNaN(at.getTime())) return null;
+    const summary = typeof p?.summary === 'string' && p.summary.trim() && p.summary.length <= 120
+      ? p.summary.trim()
+      : null;
+    const when = at.toISOString().slice(0, 16).replace('T', ' ');
+    return `His dispatch record shows a completed action: ${actionPhrase(p.action)}`
+      + `${summary ? ` (${summary})` : ''}, at ${when} UTC — moments before this reply. `
+      + 'Answer about THAT action, from the record: it already ran. Do not claim any new '
+      + 'action ran in this turn, and do not deny the recorded one.';
+  } catch {
+    return null;
+  }
+}
+
 // ─── DEF-238 — the item-action OUTCOME, in a vocabulary the renderer knows ───
 //
 // Measured on production, 2026-08-19 22:23 (owner turn S38): "delete all open

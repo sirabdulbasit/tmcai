@@ -26,7 +26,7 @@ import {
 } from './systemMarker';
 // DEF-209 — the receipt's vocabulary lives with its constructor, so the parser
 // and the marker builder cannot drift into two implementations of one label.
-import { RECEIPT_SLOTS, APPLIED_FIELDS, actionPhrase, itemOutcomeMeaning } from './actionReceipt';
+import { RECEIPT_SLOTS, APPLIED_FIELDS, actionPhrase, itemOutcomeMeaning, ledgerReadbackMeaning } from './actionReceipt';
 
 interface MarkerRule {
   match: RegExp;
@@ -465,6 +465,9 @@ export function curatedMarkerMeaning(answer: string): string | null {
   // 2026-08-19 22:23 cannot recur for this family.
   const outcome = itemOutcomeMeaning(answer);
   if (outcome) return outcome;
+  // DEF-034(b) — the read-back receipt. Same one-module contract as itemOutcome.
+  const readback = ledgerReadbackMeaning(answer);
+  if (readback) return readback;
   for (const rule of MARKERS) {
     if (rule.whole && rule.match.test(answer)) return answer.replace(rule.match, rule.replace);
   }

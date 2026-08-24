@@ -701,3 +701,96 @@ have the owner send one image and one "delete all open items" on a populated lis
 two turns would close three deck rows. What would prove this entry wrong: the deploy
 phase failing at this SHA, or the DRAFT-transition receipt being test data (its actor
 user:2 and timestamp match the owner's live session, arguing not).
+
+## Iteration 31 — 2026-08-24
+
+**File named in the first two tool calls, per the owner's ruling, and changed:**
+`server/src/services/knowledge/brainComposer.ts` — plus `actionReceipt.ts`,
+`answerSanitizer.ts`, and `tests/def034bReadBackBeforeClaim.test.ts` (new, 8 tests).
+**This turn shipped code: DEF-034(b), the read-back-before-any-state-claim receipt
+gate** — diagnosed 2026-08-05 14:41, specified in its own DEF row the same day, named
+as the top fund item by four consecutive analyst rankings, and never built until now.
+
+**The defect, one sentence:** the completion gate replaced an unlicensed claim with
+"nothing was executed" WITHOUT READING THE LEDGER — so one second after Brain
+successfully delegated three items, the owner was told nothing ran (21 occurrences in
+14 days), and the denial was as fabricated as the claim it replaced.
+
+**The mechanism, by file:line at this commit:**
+- `brainComposer.ts:1170-1177` — `CompletionGateInput.recentDispatches`: completed
+  dispatches, supplied by the caller.
+- `brainComposer.ts:1229-1249` — the gate reads back before it denies: every intercept
+  routes through `interceptWith()`; a receipt with a succeeded status turns the verdict
+  into `completion_claim_has_recent_receipt` carrying the receipt; no receipt → the
+  three pre-(b) behaviours byte-identical. A FAILED dispatch licenses nothing —
+  DEF-237's rule survives (asserted).
+- `brainComposer.ts:1290-1295` — `completionInterceptMarker` renders the receipt case
+  as `ledgerReadbackMarker(receipt)`.
+- `actionReceipt.ts` — `ledgerReadbackMarker` + `ledgerReadbackMeaning`: constructor and
+  curated renderer in ONE module (DEF-238's renderable-by-construction contract); the
+  meaning is the FACT (action, time, summary), the model phrases it; a payload the
+  constructor could not mint is rejected. `answerSanitizer.ts` consults it in
+  `curatedMarkerMeaning`.
+- Both call sites (`brainComposer.ts` reasoning ~:2874 and legacy-decider ~:3650)
+  fetch via the EXISTING `getRecentDispatches` (no second ledger implementation —
+  `protection-with-two-implementations` is 10 deep and this adds no 11th), only when
+  the answer carries a claim shape (zero queries on ordinary turns), bounded to
+  15 minutes — the diagnosed failure was a re-ask ONE SECOND after dispatch, and a
+  stale receipt must not license an unrelated claim hours later.
+
+**Why this is the CLASS fix and not another wording patch:** DEF-034(a)/(c) reworded
+the denial; DEF-233 made the model phrase it; the denial itself stayed blind. This
+moves the DECISION to where the information is (the dispatch ledger) — the structural
+demand the brief has repeated for 45 iterations. Guardrail named, as the governance
+ruling requires of code taking authority: **no-claim-without-a-receipt, both
+directions** — no "done" without a receipt, no "nothing ran" against one. Wording
+stays the model's.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per
+Iteration 27's disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **236 passed | 1 skipped** files (237);
+  **2898 passed | 0 failed** (7 expected fail | 21 skipped | 1 todo, of 2927)
+- New suite: **8 passed | 0 failed**. **Mutants RUN and killed:** receipt-matching
+  disabled → 2 fail; renderer hook dropped → 1 fail. Restores grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): CIRCLING, answered structurally.**
+`fabricated-status` is 6 deep and its instances have been patched since July
+(Chat 2 → Chat 5 recurrence, DEF-019/034/041/152); this is the generator fix its own
+row specified on 08-05. DEF-034's row updated: (b) BUILT with the capability block and
+falsifier inside it.
+
+**CAPABILITY:** Accurate Communication
+**PREDICTED:** the denial-of-real-work shape becomes inexpressible when the ledger
+holds the receipt; no numeric claim until scored, and the deck's `fabricated-status`
+recurrence should stop counting THIS sub-shape after deploy.
+**MECHANISM:** the gate reads the dispatch ledger before minting any denial; the
+receipt becomes the curated fact the model phrases.
+**FALSIFIER:** any post-deploy transcript where a completion claim within 15 minutes
+of a succeeded dispatch is answered with "nothing was executed"/"no action ran"; or a
+raw `ledger_readback` payload visible in a reply.
+
+**Symptom tag:** `fabricated-status` — partly closed at the class generator (the
+denial arm; the "invents a capability" arm is prompt-side and remains). Named verbatim
+here and in the DEF row per the deck rule.
+
+**Divergences, declared:** (1) The campaign cap says work Self-Pruning — overridden
+this turn by the owner's ship-code ruling plus the analyst's #1 fund item; the
+orchestrator should report it as an override. (2) The remediation pointer again names
+the never-re-run "Iteration 2" review — closed by Iteration 12's evidence table,
+stated by pointer, fifth time. (3) `@@TARGETCAP@@` remains malformed; this turn's
+capability is declared above.
+
+**What I did NOT do:** the send-fabrication PROACTIVE arm (analyst #9 — proactive
+sends need the same receipt gate at a different surface; named as the follow-up);
+DEF-045's shared item-label function; any Self-Pruning increment. Unsure about: the
+15-minute window is a judgement — too tight and a slow re-ask misses its receipt, too
+loose and stale receipts become fabrication fuel; Codex should challenge the number.
+
+**Honest prediction:** deployable at end of turn — YES (matrix green, one coherent
+change, docs in the same commit). After deploy, the 2026-08-05 fixture — "send it"
+twice in two seconds — produces a reply grounded on the first send's receipt instead
+of a denial. What would prove me wrong: the falsifier above, or Codex showing a
+mutation-turn path that bypasses both call sites.

@@ -30,7 +30,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
 import { renderOwnerClockLine } from '../userTimezoneService';
-import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots } from './actionReceipt';
+import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots, ledgerReadbackMarker } from './actionReceipt';
 import { PERSON_REFERENCE_RULE, statesPersonReferenceRule } from './personReference';
 import { renderOpenItemsHeader, OPEN_ITEMS_PAGE } from './openItemsCompleteness';
 
@@ -1166,6 +1166,13 @@ export interface CompletionGateInput {
    *  (open items, events) actually retrieved for this turn. Non-empty
    *  grounds state language more strongly than the block-level boolean. */
   groundedRecordIds?: string[];
+  /** DEF-034(b) — dispatches that COMPLETED in the last few minutes, read
+   *  from the ledger by the caller. When the gate intercepts a claim and one
+   *  of these exists, the honest replacement is the RECEIPT ("that already
+   *  ran"), never the denial that fired one second after a successful
+   *  delegation on 2026-08-05 and 21 more times after. Optional: a caller
+   *  without ledger access keeps the pre-(b) behaviour. */
+  recentDispatches?: Array<{ actionType: string; at: Date | string; status: string; summary?: string | null }>;
 }
 
 /** Extract canonical record ids (cuid-shaped) from rendered data
@@ -1182,9 +1189,13 @@ export function extractRecordIds(...blocks: Array<string | undefined>): string[]
 
 export interface CompletionGateVerdict {
   intercept: boolean;
-  failureType?: 'fabricated_completion_on_action_turn' | 'read_only_answer_validation_failed';
+  failureType?: 'fabricated_completion_on_action_turn' | 'read_only_answer_validation_failed'
+    | 'completion_claim_has_recent_receipt';
   turnClass: TurnIntent;
   matchedCategory: ReturnType<typeof matchedCompletionCategory>;
+  /** DEF-034(b) — set with `completion_claim_has_recent_receipt`: the
+   *  completed dispatch the reply should be grounded on. */
+  recentReceipt?: { actionType: string; at: Date | string; summary?: string | null };
 }
 
 /** THE decision table (chat 9):
@@ -1229,9 +1240,24 @@ export function shouldInterceptCompletionClaim(input: CompletionGateInput): Comp
       || (input.emittedAction && input.actionResult?.ok !== false)) {
     return { intercept: false, turnClass, matchedCategory };
   }
+  // DEF-034(b) — READ BACK BEFORE ANY DENIAL. Every intercept below used to
+  // replace the claim with "nothing ran", sight unseen. Diagnosed 08-05 14:41:
+  // send #2 arrived one second after send #1 dispatched three delegations, the
+  // pending was already terminal, and the marker told the owner "nothing was
+  // executed on my end" — a fabricated denial of real work, 21 occurrences in
+  // 14 days. When the caller supplies the ledger and it shows a dispatch that
+  // COMPLETED moments ago, the interception stands (the model's claim is still
+  // unlicensed) but the replacement carries the RECEIPT, so what reaches him is
+  // the recorded fact rather than either fabrication.
+  const recentReceipt = (input.recentDispatches ?? [])
+    .find((d) => /^(succeeded|done|sent|completed)$/i.test(String(d.status ?? '')));
+  const interceptWith = (fallback: NonNullable<CompletionGateVerdict['failureType']>): CompletionGateVerdict =>
+    recentReceipt
+      ? { intercept: true, failureType: 'completion_claim_has_recent_receipt', recentReceipt, turnClass, matchedCategory }
+      : { intercept: true, failureType: fallback, turnClass, matchedCategory };
   if (turnClass === 'read_only') {
     if (matchedCategory === 'current_turn_claim' && !input.groundedStatusContext) {
-      return { intercept: true, failureType: 'read_only_answer_validation_failed', turnClass, matchedCategory };
+      return interceptWith('read_only_answer_validation_failed');
     }
     return { intercept: false, turnClass, matchedCategory };
   }
@@ -1239,13 +1265,13 @@ export function shouldInterceptCompletionClaim(input: CompletionGateInput): Comp
     // A promise counts here. He asked for a mutation, nothing was dispatched, and the reply
     // said it was in hand — on a read-only turn a promise is fine ("I'll check and tell you"),
     // which is why this lives inside the mutation branch and not above it.
-    return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
+    return interceptWith('fabricated_completion_on_action_turn');
   }
   // ambiguous — a FUTURE promise is left alone here on purpose. "I'll take a look" on a turn
   // whose intent could not be classified is ordinary conversation, and intercepting it would be
   // the guard-destroys-the-answer class, 8 deep in the recurrence table.
   if (matchedCategory === 'current_turn_claim' && !input.groundedStatusContext) {
-    return { intercept: true, failureType: 'fabricated_completion_on_action_turn', turnClass, matchedCategory };
+    return interceptWith('fabricated_completion_on_action_turn');
   }
   return { intercept: false, turnClass, matchedCategory };
 }
@@ -1253,7 +1279,14 @@ export function shouldInterceptCompletionClaim(input: CompletionGateInput): Comp
 /** Marker emitted per failure type — answerSanitizer owns the human
  *  wording. Dispatch/recipient language appears ONLY on the fabricated-
  *  completion type, where a mutation was actually requested. */
-export function completionInterceptMarker(failureType: NonNullable<CompletionGateVerdict['failureType']>): string {
+export function completionInterceptMarker(
+  failureType: NonNullable<CompletionGateVerdict['failureType']>,
+  recentReceipt?: CompletionGateVerdict['recentReceipt'],
+): string {
+  // DEF-034(b) — with a receipt in hand, the replacement IS the receipt.
+  if (failureType === 'completion_claim_has_recent_receipt' && recentReceipt) {
+    return ledgerReadbackMarker(recentReceipt);
+  }
   return failureType === 'read_only_answer_validation_failed'
     ? '[status read failed — answer withheld pending a grounded re-read]'
     : '[no action dispatched — the assistant claimed completion but no action ran]';
@@ -2871,6 +2904,24 @@ export async function compose(
             const groundedRecordIds = extractRecordIds(
               openItemsBlockForReasoning, dayBriefBlock, artifactsBlockForReasoning,
             );
+            // DEF-034(b) — read the ledger BEFORE any denial can be minted.
+            // Fetched only when the answer carries a claim shape (one query on
+            // the turns the gate might act on, zero on the rest), and bounded
+            // to the last 15 minutes: the diagnosed failure was a re-ask ONE
+            // SECOND after a successful dispatch, and a stale receipt from
+            // hours ago must not license an unrelated claim — that would be
+            // fabrication fuel, not grounding.
+            const recentDispatches = matchedCompletionCategory(envelope.answer)
+              ? await (async () => {
+                try {
+                  const { getRecentDispatches } = await import('./dispatchLedgerService');
+                  const cutoff = Date.now() - 15 * 60 * 1000;
+                  return (await getRecentDispatches(userId, clientNumber, 5))
+                    .filter((d) => new Date(d.at).getTime() >= cutoff)
+                    .map((d) => ({ actionType: d.actionType, at: d.at, status: d.status, summary: d.summary }));
+                } catch { return []; }
+              })()
+              : [];
             const verdict = shouldInterceptCompletionClaim({
               userQuestion: question,
               answer: envelope.answer,
@@ -2882,6 +2933,7 @@ export async function compose(
                 openItemsBlockForReasoning || dayBriefBlock || recentEmailsBlock
                 || recentWhatsAppBlock || todayCalendarBlockForReasoning,
               ),
+              recentDispatches,
             });
             if (verdict.intercept) {
               console.warn('[compose] completion claim intercepted (reasoning path)', {
@@ -2896,7 +2948,7 @@ export async function compose(
               });
               return {
                 ...envelope,
-                answer: completionInterceptMarker(verdict.failureType!),
+                answer: completionInterceptMarker(verdict.failureType!, verdict.recentReceipt),
                 actionResult: { ok: false, message: verdict.failureType! },
                 source: 'reasoning',
               };
@@ -3621,6 +3673,19 @@ ${calLines.join('\n')}`;
         // Invariant preserved: completion prose on a mutation turn
         // reaches the user ONLY when built from a real provider
         // response (see the sendRes.messageId assembly for send_email).
+        // DEF-034(b) — same read-back as the reasoning site: one bounded
+        // ledger read, only when a claim shape is present.
+        const recentDispatchesLegacy = matchedCompletionCategory(parsed.answer)
+          ? await (async () => {
+            try {
+              const { getRecentDispatches } = await import('./dispatchLedgerService');
+              const cutoff = Date.now() - 15 * 60 * 1000;
+              return (await getRecentDispatches(userId, clientNumber, 5))
+                .filter((d) => new Date(d.at).getTime() >= cutoff)
+                .map((d) => ({ actionType: d.actionType, at: d.at, status: d.status, summary: d.summary }));
+            } catch { return []; }
+          })()
+          : [];
         const verdict = shouldInterceptCompletionClaim({
           userQuestion: question,
           answer: parsed.answer,
@@ -3628,6 +3693,7 @@ ${calLines.join('\n')}`;
           emittedAction: false,
           actionResult: null,
           groundedStatusContext: Boolean(openItemsBlock || artifactsBlock),
+          recentDispatches: recentDispatchesLegacy,
         });
         if (verdict.intercept) {
           console.warn('[brain-chat] completion claim intercepted (legacy decider path)', {
@@ -3640,7 +3706,7 @@ ${calLines.join('\n')}`;
             failureType: verdict.failureType,
             head: parsed.answer.slice(0, 80), // bounded — never full content
           });
-          parsed.answer = completionInterceptMarker(verdict.failureType!);
+          parsed.answer = completionInterceptMarker(verdict.failureType!, verdict.recentReceipt);
           parsed.action = null;
         }
       }
