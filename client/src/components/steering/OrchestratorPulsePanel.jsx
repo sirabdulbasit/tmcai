@@ -1248,6 +1248,23 @@ export default function OrchestratorPulsePanel() {
               ` · last real measurement ${pktStamp(data.nightly.scored_at.replace(' UTC', '') + 'Z')}`}
           </div>
         )}
+        {/* THE VERIFICATION DEBT, made visible so it stops being absorbed silently. Owner,
+            2026-08-24: the builder's one expensive turn per night kept spending itself on
+            falsifier sweeps of already-shipped work — iteration 29 cost $16.65 and changed no
+            code. It was told to stop; this is where the work goes instead, because telling it
+            to stop without giving the debt a home would simply lose it. Neutral styling, not a
+            warning: rows owing proof are the normal state of a system that ships, and DEPLOYED
+            is never the same as VERIFIED. */}
+        {data.verification_debt?.owed_n > 0 && (
+          <div className="orch-verify-debt">
+            <strong>{data.verification_debt.owed_n}</strong> DEF rows shipped but not proven live
+            <span className="orch-verify-debt-ok"> · {data.verification_debt.verified_n} verified</span>
+            <span className="orch-verify-debt-ids">
+              {data.verification_debt.owed.map(r => r.def_id).join(' · ')}
+              {data.verification_debt.owed_n > data.verification_debt.owed.length ? ' …' : ''}
+            </span>
+          </div>
+        )}
         {/* WAITING is healthy and gets no banner: under cron, between pulses is the
             normal state, and an amber bar that is always on is one nobody reads. The
             warning is reserved for a pulse that DIED mid-flight, which is what an

@@ -886,6 +886,52 @@ def nightly_health():
     return out
 
 
+def verification_debt(limit=8):
+    """{owed:[{def_id, state}], owed_n, verified_n} — DEF rows that shipped but were never
+    proven live.
+
+    Owner, 2026-08-24: "how can we make pulse healing so that can start improving brain's
+    capabilities". Part of the answer was to stop the ONE expensive builder turn per night from
+    spending itself on falsifier sweeps of already-deployed work — 17 of 29 turns produced no
+    code, and iteration 29 spent $16.65 doing exactly this.
+
+    But that work is real, and telling the builder to stop doing it without giving it somewhere
+    to go would simply lose it: rows would sit at DEPLOYED forever and nobody would notice,
+    which is the failure the three-document protocol exists to prevent. So it becomes VISIBLE
+    here instead of invisible there. This does not verify anything — it counts what is owed, so
+    the debt can be assigned deliberately rather than absorbed by whichever turn happens to
+    notice it.
+    """
+    path = os.path.join(ROOT, "server", "docs", "brain_change_log.md")
+    out = {"owed": [], "owed_n": 0, "verified_n": 0}
+    if not os.path.exists(path):
+        return out
+    try:
+        text = open(path, errors="replace").read()
+    except Exception:
+        return out
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        m = re.search(r"\*\*(DEF-\d+)\*\*", line)
+        if not m:
+            continue
+        def_id = m.group(1)
+        # VERIFIED wins wherever it appears in the row: a row can carry both words while
+        # narrating its own history ("DEPLOYED is not VERIFIED, and then it was").
+        if re.search(r"VERIFIED\s*\(LIVE\)|VERIFIED BY A/B", line):
+            out["verified_n"] += 1
+        elif re.search(r"DEPLOYED", line) and "not deployed" not in line.lower():
+            state = "deployed, not proven live"
+            mm = re.search(r"\*\*(DEPLOYED[^*]{0,44})\*\*", line)
+            if mm:
+                state = mm.group(1).strip(" —-")
+            out["owed"].append({"def_id": def_id, "state": state})
+    out["owed_n"] = len(out["owed"])
+    out["owed"] = out["owed"][:limit]
+    return out
+
+
 def observed_gaps(top=6):
     """{capability:[...], chat:[...]} — the two evidence sources, side by side.
 
@@ -2066,6 +2112,7 @@ def collect():
                   "detail": detail},
         "loop_alive": loop_alive,
         "nightly": nightly_health(),
+        "verification_debt": verification_debt(),
         "iteration": cur_it, "iteration_started": started,
         # TOTAL FOR THIS ATTEMPT. Falls back to `now` whenever ANY stage is still
         # open, not only when none has ended — the first version took the last END,

@@ -3,6 +3,38 @@ You are the BUILD side of an autonomous Claude ↔ Codex loop on the Nexeo codeb
 write here against the real diff, so anything you claim without support will be
 caught and fed back to you.
 
+# THIS TURN SHIPS CODE, OR IT ENDS EARLY AND SAYS WHY
+
+Read this before anything else. Owner ruling, 2026-08-24, after asking whether the
+healing pulse improves Brain and being shown that it mostly does not.
+
+**17 of the last 29 builder turns produced no change to `server/src`, `server/tests` or
+`server/prisma` at all.** Iteration 29 is the pattern: $16.65, 7.4 minutes, 14 turns —
+falsifier sweeps, database queries, three edits to `brain_change_log.md`, and a
+docs-only commit. Every one of those actions was defensible. Together they were a turn
+that improved nothing, and the loop had already spent the money by the time it noticed.
+
+So:
+
+1. **Name the file you will change, in `server/src`, `server/tests` or `server/prisma`,
+   within your first two tool calls.** Not the file you might change — the one you will.
+   If you cannot, stop and say why in one paragraph. An honest early exit is worth far
+   more than a turn spent proving the last turn was fine.
+2. **Verifying already-deployed DEF rows is NOT this turn's job.** Falsifier sweeps,
+   production queries confirming a past fix held, chasing whether something is VERIFIED
+   versus DEPLOYED — that work is real, but it belongs to a cheap pulse, not to the one
+   turn per night that can change the product. If you find yourself reading logs to
+   confirm history, you are in the wrong turn.
+3. **Documentation follows the code in the same commit; it never replaces it.** The three
+   Brain documents still get updated — that rule stands and is not weakened here. What is
+   forbidden is a turn whose entire work product is documentation.
+4. **One change, the smallest that closes a symptom tag or moves the capability you were
+   given.** Not a survey, not a refactor, not three related improvements.
+
+The loop already detects a turn that changed nothing and marks it DEAD. That detection
+is a postmortem. This section is the precondition, and it exists so the money is not
+spent before the discovery.
+
 # Iteration @@ITER@@ — mode: @@MODE@@
 
 ## Where the score stands

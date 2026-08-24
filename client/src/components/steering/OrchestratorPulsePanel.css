@@ -770,3 +770,13 @@ li.is-built > .orch-verdict    { background: rgba(234,179,8,.14); color: #eab308
   border-radius: 6px; font-size: 0.82em; line-height: 1.45;
   background: rgba(234,179,8,.10); color: #eab308;
   border: 1px solid rgba(234,179,8,.28); }
+
+/* Verification debt. Deliberately NOT a warning colour: rows owing live proof are the normal
+   state of a system that ships, and dressing them as an alarm would train the eye to skip the
+   amber above, which is a real signal. */
+.orch-verify-debt { margin: var(--s-2) 0 var(--s-3); padding: var(--s-2) var(--s-3);
+  border-radius: 6px; font-size: 0.8em; line-height: 1.5;
+  background: var(--surface-2, rgba(127,127,127,.08));
+  border: 1px solid var(--border, rgba(127,127,127,.22)); }
+.orch-verify-debt-ok { opacity: .72; }
+.orch-verify-debt-ids { display: block; margin-top: 2px; opacity: .58; font-size: .92em; }

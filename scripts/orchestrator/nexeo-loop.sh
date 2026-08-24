@@ -1787,7 +1787,39 @@ PYGAP
   # to pass review and ship, rather than a third attempt at the same class.
   SHIPPED_THIS_ITER="no"
   grep -q "\"iteration\": *$ITER\b" "$STATE/deploy-history" 2>/dev/null && SHIPPED_THIS_ITER="yes"
-  CAP_MOVED="$(python3 - "$ORCH/scores/iter-$ITER-capability.json" <<'PYEOF'
+  # SCORE THE TREE THE BUILD PRODUCED — owner, 2026-08-24: "how can we make pulse healing so
+  # that can start improving brain's capabilities".
+  #
+  # Only reached on a LIVE build: a dead one `continue`s far above, so the scorer is never spent
+  # on a turn that changed no code. That matters — 17 of the last 29 builds produced nothing, and
+  # scoring those would have been pure cost.
+  #
+  # Why this exists at all: the card the loop was reading below is the PRE-BUILD one, taken
+  # before the builder starts, because that is what the builder aims at. Reading it afterwards to
+  # ask "did this iteration move capability" is asking a photograph taken at the start of the
+  # race who won. In 11 SHIP lines the answer was `no` 6 times and `unknown` 5 times and `yes`
+  # never — not because nothing moved, but because nothing could ever have been detected.
+  CAP_POST="$SCORES/iter-$(printf '%02d' "$ITER")-capability-post.json"
+  if [ -x "$ROOT/scripts/orchestrator/run-score.sh" ]; then
+    say "SCORE  iter=$ITER post-build scoring (the build changed code — this is the half that can say it moved)"
+    if "$ROOT/scripts/orchestrator/run-score.sh" "$ITER" --post >/dev/null 2>&1; then
+      if python3 "$ROOT/scripts/orchestrator/scorecard.py" --ingest "$CAP_POST" \
+           --iteration "$ITER" --head "$(git -C "$ROOT" rev-parse --short HEAD)" \
+           --commit --append --label "Post-Build" >> "$ORCH/score.log" 2>&1; then
+        say "SCORE  iter=$ITER post-build card appended"
+      else
+        say "SCORE  iter=$ITER post-build INGEST REJECTED (see score.log) — removed, capability stays UNKNOWN"
+        rm -f "$CAP_POST"
+      fi
+    else
+      say "SCORE  iter=$ITER post-build scorer FAILED — capability stays UNKNOWN for this iteration"
+    fi
+  fi
+
+  # Read the POST-build card, and zero-pad the iteration. Both were bugs: this line read the
+  # pre-build card, and it built the name unpadded (`iter-9-`) while run-score.sh writes padded
+  # (`iter-09-`), so for every single-digit iteration the file it looked for could not exist.
+  CAP_MOVED="$(python3 - "$CAP_POST" <<'PYEOF'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))

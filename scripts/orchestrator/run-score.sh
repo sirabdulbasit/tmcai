@@ -56,15 +56,23 @@ SESSION_FILE="$STATE/scorer-session-id"
 SCORECARD="$STATE/capability_scorecard.json"
 
 ITER="${1:?usage: run-score.sh <iteration> [--dry-run]}"
-DRY=0; FRESH=0
+DRY=0; FRESH=0; POST=0
 [ "${2:-}" = "--dry-run" ] && DRY=1
 [ "${2:-}" = "--fresh" ] && FRESH=1
+# --post: score the tree AFTER the build, into its own file. Owner, 2026-08-24, asking how to
+# make the pulse actually improve Brain. The existing card is labelled Pre-Build and is taken
+# BEFORE the builder starts — it is what the builder AIMS at. The loop was then reading that same
+# pre-build card to decide `capability_moved`, which cannot work: a reading taken before the work
+# cannot attest to the work. That is why `capability_moved=yes` has never once appeared in 11
+# SHIP lines. A post-build card is the missing half of the comparison.
+[ "${2:-}" = "--post" ] && POST=1
 
 n="$(printf '%02d' "$ITER")"
 OUT="$ORCH/scores/iter-$n-capability.json"
 # A re-baseline gets its own file and is NEVER ingested into the series: it is
 # evidence to read AGAINST the running numbers, not a replacement for them.
 [ "$FRESH" -eq 1 ] && OUT="$ORCH/scores/iter-$n-capability-fresh.json"
+[ "$POST" -eq 1 ] && OUT="$ORCH/scores/iter-$n-capability-post.json"
 LOG="$LOGS/iter-$n-score.log"
 mkdir -p "$ORCH/scores" "$LOGS" "$STATE"
 
