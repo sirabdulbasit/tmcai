@@ -61,6 +61,14 @@ router.get('/', async (req: Request, res: Response) => {
         WHERE client_number = $1
           AND page_type = 'entity_person'
           AND status NOT IN ('archived', 'inactive', 'deleted', 'contradicted')
+          -- A MERGED PAGE STAYS MERGED. 2026-08-25: the dedupe pass archived 10 duplicate
+          -- contacts and wikiLinter set every one of them back to 'active' on its next sweep
+          -- (it flips ~310 pages per pass). Status is a column that job OWNS, so recording a
+          -- merge there was my mistake — the record has to live somewhere nothing else rewrites.
+          -- metadata.mergedInto survived the sweep intact, 10 of 10, so the list reads THAT.
+          -- It also names the surviving page, which makes the hiding reversible and auditable
+          -- rather than a row that silently vanished.
+          AND metadata->>'mergedInto' IS NULL
           AND (
             user_id = $2
             OR metadata->>'scope' = 'tenant'
