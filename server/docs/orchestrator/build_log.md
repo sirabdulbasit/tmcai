@@ -965,3 +965,90 @@ yields the counts, not the fiction. What would prove me wrong: the falsifier abo
 the model outvoting the counts with prose anyway, which would make this the
 `examples-outvote-the-instruction` shape and demand structural interception rather
 than prompt data; Codex should weigh that risk explicitly.
+
+## Iteration 39 (continuation 2 of 3) — 2026-08-25
+
+**Files named in the first two tool calls and changed:**
+`server/src/jobs/staleConnectorPing.ts` and
+`server/tests/def244ConnectorHealAttempt.test.ts` (new, 5 tests). **This turn ships
+DEF-244: `connector-selfheal-absent` — the stale-connector job attempts the repair
+before it nags.** CAPABILITY: Self-Healing — matching this turn's assigned target.
+
+**The continuation question, answered:** "what was wrong about the last attempt?"
+Nothing was attempted on Self-Healing before — the prior turns shipped Accurate
+Communication (DEF-243) and Self-Pruning (DEF-242), neither deployed yet; Self-Healing's
+34 stands on rung 1 alone. The analyst's #2 named the gap precisely: the owner's Google
+grant died ~08-15 and Brain sent ~14 "reconnect it yourself" nags over nine days
+without once attempting the refresh it was delegating to him. The job's own header
+confessed it: "detection + nudge only."
+
+**The change, by mechanism (`staleConnectorPing.ts`):**
+- `attemptHeal(userId)` probes via the EXISTING `getAuthenticatedClient` — the same
+  refresh the pollers use, which already durably records success ('active', error
+  cleared) or failure ('expired' + reason). No second refresh implementation
+  (`protection-with-two-implementations` is 10 deep; this adds no 11th).
+- One probe per USER per sweep — the Google family shares one grant; five stale
+  siblings get one refresh, not five.
+- Grant ALIVE → the probe itself healed/validated state; the nag is SUPPRESSED this
+  sweep. A heal that did not stick re-enters next sweep and pings then — suppression
+  is never permanent.
+- Grant DEAD → the nag ships WITH the receipt: the body states Brain tried just now
+  and could not (curated fact on the pre-existing DEF-229 alert surface), and
+  `metadata.healAttempt` carries `{outcome, error}` durably.
+- A THROWING probe never silences the alarm — and never claims an attempt it did not
+  complete (`probe_error`, body unchanged). Non-Google providers keep detection-only,
+  receipted `no_probe`.
+- Guardrail named: **no-claim-without-a-receipt** — the reconnect ask is now a tested
+  fact. The analyst's own falsifier is honoured in both directions: where a grant
+  admits no non-interactive refresh, "reconnect" becomes the CORRECT behaviour once
+  the attempt is receipted.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2908 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2937)
+- New suite: **5 passed | 0 failed** on the lived S24/S25 fixture. **Mutation RUN and
+  killed:** probe disabled → 4 of 5 fail (the non-Google detection-only test correctly
+  survives); restore grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): progressing** — `connector-selfheal-absent` is the
+analyst's single-name tag with no prior fix attempt; this is its first, and it is
+structural (the attempt precedes the nag by construction) rather than a wording patch
+on the nag. DEF-244 row written with the capability block inside it.
+
+**CAPABILITY:** Self-Healing
+**PREDICTED:** rung 2 exists for the connector class. A transient staleness now heals
+silently; a dead grant asks once, with evidence. No numeric claim — Grok scores it.
+**MECHANISM:** the repair attempt precedes the nag; its outcome is the message's
+receipt.
+**FALSIFIER:** a post-deploy stale-connector nag with no `healAttempt` in metadata; an
+"I tried to refresh" claim with no corresponding state write; or a transiently-stale
+connector nagging without a prior failed attempt.
+
+**Symptom tag:** `connector-selfheal-absent` — partly closed (the recover-attempt +
+receipt half; full closure would be re-consent without the human, which Google's grant
+model does not admit — per the analyst's falsifier, receipted delegation IS the correct
+end state for that case).
+
+**Deploy debt, stated plainly:** this stacks a THIRD undeployed Brain commit on
+`c0a161f`/`c225259`. The ship-code ruling and the campaign-suspension clause pull in
+opposite directions; the resolution is the deploy phase running, which has not happened
+since 12:30Z on 08-24. Escalation ruling restated (attempt-count exhausted pointer):
+(a) known limitation — reverting DEF-200 would restore the CRITICAL it fixed; tenth
+statement.
+
+**What I did NOT do:** the Comm-ingest capability (analyst #1 — a real job, the fund
+item); increment 2's digest opt-in (owner's one sentence, flagged since iteration 34);
+any touch on the fixQueue's C6@85 (structural mode forbids another conversational-case
+patch, and the assigned target was Self-Healing).
+
+**Honest prediction:** after deploy, the next transient connector blip produces NO nag
+(vs. today's guaranteed one), and the next dead-grant nag carries "I tried it myself
+just now." What would prove me wrong: the falsifier above, or Codex showing
+`getAuthenticatedClient`'s legacy-fallback path can return `client: null` WITHOUT a
+dead grant (e.g. no integration configured at all) — in which case the receipt wording
+must distinguish "never connected" from "expired", a refinement I did not make this
+turn and flag for review.
