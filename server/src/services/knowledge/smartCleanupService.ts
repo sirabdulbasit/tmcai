@@ -460,6 +460,15 @@ export async function runSmartCleanupAllUsers(): Promise<{
         agg.noEvidenceArchived += r.noEvidenceArchived;
         agg.junkArchived += r.junkArchived;
         agg.errors += r.errors;
+        // SURFACE WHAT THE WIKI PASS DID. Without this the nightly prunes the store the owner
+        // actually looks at and reports nothing about it — the run would be indistinguishable
+        // from one that skipped it, which is how a job quietly stops working and nobody notices
+        // for weeks. That failure mode is already in the change log twice.
+        (agg as any).wikiLidsResolved =
+          ((agg as any).wikiLidsResolved ?? 0) + ((r as any).wikiLidsResolved ?? 0);
+        (agg as any).wikiDuplicatesArchived =
+          ((agg as any).wikiDuplicatesArchived ?? 0) + ((r as any).wikiDuplicatesArchived ?? 0);
+        if ((r as any).wikiPruneError) (agg as any).wikiPruneError = (r as any).wikiPruneError;
         // Don't aggregate mergesSuggested across users — per-user only.
       }
     }
