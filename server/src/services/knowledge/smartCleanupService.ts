@@ -114,6 +114,20 @@ export async function runSmartCleanupForUser(
 ): Promise<SmartCleanupResult> {
   const result: SmartCleanupResult = { ...EMPTY, mergesSuggested: [] };
   const dryRun = opts.dryRun === true;
+
+  // THE STORE THE OWNER IS ACTUALLY LOOKING AT. 2026-08-25: he pressed Prune three times and the
+  // duplicate contacts stayed, because everything below this line works on `entities` while the
+  // Contacts page renders `wiki_pages WHERE page_type='entity_person'` — 773 rows against 703, in
+  // parallel. Prune was correct and invisible. This runs the same job on the visible store, and
+  // runs FIRST so that a failure below cannot silently skip it.
+  try {
+    const { pruneWikiContacts } = await import('./wikiContactPruneService');
+    const wiki = await pruneWikiContacts(clientNumber, { dryRun });
+    (result as any).wikiLidsResolved = wiki.lidsResolved;
+    (result as any).wikiDuplicatesArchived = wiki.duplicatesArchived;
+  } catch (e: any) {
+    (result as any).wikiPruneError = e?.message ?? String(e);
+  }
   const graceDays = Math.max(0, opts.noEvidenceGraceDays ?? 30);
   const runId = `${clientNumber}_${userId}_${Date.now()}`;
 
