@@ -58,6 +58,30 @@ export function isLidId(id: string | null | undefined): boolean {
  * another account's phone. Cross-domain equivalence is established only
  * by asking the library — see resolveIdentityIds.
  */
+/**
+ * Is this value a WhatsApp LID wearing a phone number's clothes?
+ *
+ * DEF-245, 2026-08-25. `255043747987458@lid` reached the database as `+255043747987458`, so
+ * Hamna's WhatsApp identity could never match her real `+923134199294` and she showed up twice in
+ * Contacts. 26 rows were like that — one of them the tenant's own number, filed under the name
+ * "Nexeo". `whatsapp-lid-activity-rejected` is at seven occurrences; every earlier fix guarded a
+ * READ path, and this is the write path nobody guarded.
+ *
+ * The test is length, and that is a heuristic rather than a proof: E.164 permits up to 15 digits,
+ * so a genuine long number could be caught. Two things make it the right trade here. The data is
+ * unambiguous — 118 contacts sit at 12 digits and every 13+ value in the book is plainly a LID.
+ * And the caller never DELETES on a positive: it files the value under `waLid`, where a mistake
+ * is visible and reversible, instead of discarding it.
+ *
+ * Prefer `isLidId()` wherever the raw `<digits>@lid` string is still in hand — that is proof, not
+ * shape. This exists for the layers downstream where the suffix has already been stripped.
+ */
+export function looksLikeLidDigits(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const digits = String(value).replace(/[^0-9]/g, '');
+  return digits.length >= 13;
+}
+
 export function normalizeWid(id: string | null | undefined): string {
   if (typeof id !== 'string' || id.length === 0) return '';
   const trimmed = id.trim().toLowerCase();

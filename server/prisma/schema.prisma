@@ -1386,6 +1386,11 @@ model Entity {
   // knows it's one person, while letting EACH row carry its own
   // Public/Private scope. Nullable — unlinked rows have null. Multiple
   // rows with the same linkedPersonId form a "person group."
+  // A WhatsApp LID (`<digits>@lid`), digits only — NEVER a dialable number. Hamna's LID
+  // `255043747987458@lid` was stored in `phone` as `+255043747987458`, so her WhatsApp
+  // identity could not match her real +923134199294 and she appeared twice in Contacts.
+  // 26 rows were like that, including the tenant's own number filed under the name "Nexeo".
+  waLid          String?  @map("wa_lid") @db.VarChar(32)
   linkedPersonId String?  @map("linked_person_id") @db.VarChar(32)
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
