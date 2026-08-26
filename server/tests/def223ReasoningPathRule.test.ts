@@ -69,9 +69,26 @@ describe('DEF-223 — the path that actually writes the reply', () => {
     expect(composer).toMatch(/if \(process\.env\.BRAIN_USE_REASONING === 'never'\) return false;\s*\n\s*return true;/);
   });
 
-  it('and it is handed the persona preamble ALONE — not the assembled prompt', () => {
-    // This is why DEF-222's rule 8 could not have reached B11.
-    expect(composer).toMatch(/systemPrompt: personaForReasoning\.systemPreamble,/);
+  it('and it is handed the persona preamble — NOT the legacy assembled prompt', () => {
+    // This is why DEF-222's rule 8 could not have reached B11, and it stays true: the reasoning
+    // path never gained `assembleSystemPrompt`.
+    //
+    // UPDATED 2026-08-26 (DEF-248). The assertion used to read
+    // `systemPrompt: personaForReasoning.systemPreamble,` verbatim. That pinned a FACT about the
+    // world — what this path receives — because DEF-223's whole diagnosis rested on knowing it
+    // exactly. It was never a requirement that the preamble travel ALONE, and reading it as one
+    // would have made this test a lock on a defect: the owner's own Rules were absent from the
+    // live reply path for the same reason rule 8 was.
+    //
+    // So the pin is kept and made precise: the reasoning path is still built from the persona
+    // preamble and still does NOT use the legacy assembly, but it now also carries the standing
+    // instructions. Both halves are asserted, so the next person changing this learns what is
+    // deliberate rather than guessing from a string match.
+    expect(composer).toMatch(/systemPrompt: reasoningSystemPrompt,/);
+    expect(composer).toMatch(/reasoningSystemPrompt\s*=[\s\S]{0,400}personaForReasoning\.systemPreamble/);
+    expect(composer).toMatch(/renderInstructionsBlock\(reasoningInstructions/);
+    // The legacy assembler must still be absent from this path — that is DEF-223's actual claim.
+    expect(composer).not.toMatch(/systemPrompt: assembleSystemPrompt\(/);
   });
 
   it('so the reasoning contract carries the rule itself, by reference', () => {

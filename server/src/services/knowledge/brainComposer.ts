@@ -2601,6 +2601,40 @@ export async function compose(
       // legacy path; for now use persona.systemPreamble alone (which
       // includes the DB-fetched communication contract from Phase 2).
       const personaForReasoning = await getBrainPersona(userId, clientNumber);
+
+      // DEF-248 — THE RULES HE SETS MUST REACH THE REPLY HE READS. Owner, 2026-08-26: "do brain
+      // read Rules while communicating?" On this path it did not.
+      //
+      // `/brief/rules` accepts a rule, stores it, and shows it ACTIVE. The block is fetched at
+      // :3195, rendered at :3203 and pushed into the prompt at :1842 — all on the LEGACY assembly
+      // path, which runs only when BRAIN_USE_REASONING='never'. It is not set, in .env or in the
+      // running process, so reasoning is the live path and it was handed
+      // `personaForReasoning.systemPreamble` alone. That preamble is built from promptBlocks (8
+      // rows, all seeded, untouched since 2026-05-23) and references getActiveInstructions
+      // exactly zero times. So his rules were stored, displayed as active, and never read.
+      //
+      // It also explains a signature already on the deck: "Gave its name instead of where its
+      // rules come from" — Brain answering "my operating rules come from my…" and trailing off.
+      // On this path they came from nowhere, so there was nothing truthful to name.
+      //
+      // NOTE the rules DO apply to triage: autonomousExecutor calls findVetoForEvent and
+      // matchInstructionsForEvent, so a rule about what to DO with an arriving email works. What
+      // was missing is the CONVERSATION path — how Brain thinks when he talks to it.
+      //
+      // Fetched directly rather than through getOrCompute: that helper is declared ~500 lines
+      // below this point, and hoisting it to serve one call would move a shared cache for a
+      // local convenience. One indexed read of at most 30 rows per turn is a cost worth paying
+      // to be sure a rule he edited seconds ago is the rule that answers him.
+      //
+      // Failure is non-fatal and SILENT BY DESIGN in one direction only: if the rules cannot be
+      // read, the reply still goes out on the persona alone rather than the turn dying. That is
+      // the same trade the legacy path made.
+      const reasoningInstructions = await getActiveInstructions(clientNumber, userId, 30)
+        .catch(() => [] as any[]);
+      const reasoningRulesBlock = renderInstructionsBlock(reasoningInstructions as any);
+      const reasoningSystemPrompt = reasoningRulesBlock
+        ? `${personaForReasoning.systemPreamble}\n\n${reasoningRulesBlock}`
+        : personaForReasoning.systemPreamble;
       // Scoped dataBlocks for reasoning. Started with open_items only
       // (commit 2026-05-22) — every action that needs real context to
       // avoid hallucination gets its own slice added as we audit it.
@@ -2732,7 +2766,7 @@ export async function compose(
         userId, clientNumber,
         question, history,
         channel: opts.channel ?? 'web',
-        systemPrompt: personaForReasoning.systemPreamble,
+        systemPrompt: reasoningSystemPrompt,
         dataBlocks: {
           openItems: openItemsBlockForReasoning || undefined,
           candidates: candidatesBlockForReasoning || undefined,
