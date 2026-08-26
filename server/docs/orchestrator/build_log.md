@@ -1052,3 +1052,84 @@ just now." What would prove me wrong: the falsifier above, or Codex showing
 dead grant (e.g. no integration configured at all) — in which case the receipt wording
 must distinguish "never connected" from "expired", a refinement I did not make this
 turn and flag for review.
+
+## Iteration 40 — 2026-08-26
+
+**Files named in the first two tool calls and changed:**
+`server/src/jobs/emailItemDerivationJob.ts` (new), `server/src/services/behaviorConfig.ts`
+(two keys), `server/src/server.ts` (scheduling), `server/tests/def246EmailItemDerivation.test.ts`
+(new, 8 tests). **This turn ships DEF-246 — the capability the owner asked for twice,
+verbatim, and never got: items derive from arriving email.**
+
+**Why this and not something else, from the analyst's own bottom line:** the deploy debt
+is CLEARED (`deployed-sha` = HEAD at turn start), the deck is empty, everything else on
+the list is DEPLOYED-unverified and owes only live acceptance — and "the only remaining
+unbuilt fund item is the email→item ingestion capability — the thing he actually asked
+for and still cannot get." The decisive fact from their table: whatsapp/gcal/gtasks feed
+events are consumed at 95–98%; gmail sat at 2,621/0. A consumer existed for every
+channel except the one he asked about.
+
+**The mechanism (one coherent increment, every piece a reuse):**
+- The MODEL judges each inbound email's actionability and slots (flash, JSON, bounded)
+  — the governance ruling's line holds: the judgement is the model's, code executes.
+- Creation goes through `gateOpenItemCreate` — the canonical gate that already carries
+  `sourceFeedEventId`, source dedup, and DRAFT slot-routing built for exactly this
+  ("the daily ask job fills missing slots via WhatsApp" is the gate's own design).
+- Receipts: a feed row leaves `new` ONLY as `processed` (after the item exists) or
+  `skipped` (not actionable / owner's own mail / duplicate). A failed judgement leaves
+  it `new` for retry — never a guessed item, never DLQ.
+- Bounds: 48h window (the 2,621 backlog is deliberately untouched — flooding weeks of
+  dead email into his list would be CL-033 again; a backlog sweep is the owner's call),
+  batch cap 5 LLM calls/tenant/tick, flag def 1 (fulfilling his explicit request IS the
+  contract — the noise report's def-1 rationale; set 0 to stop).
+- **By construction, the first processed row flips DEF-243's licensed claim truthful** —
+  the claim and the feed state are one data source, which was DEF-243's designed exit.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2929 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2958)
+- New suite: **8 passed | 0 failed**. **Mutation RUN and killed:** a failed judgement
+  fabricated into `actionable` → the stays-new test fails; restore grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): progressing** — the root cause (no consumer for the
+gmail feed) is an absence, not a recurring symptom tag; no §3 tag covers it. The
+adjacent `fabricated-status` arm was closed by DEF-243; this builds what that fix
+stopped Brain from falsely claiming. DEF-246 row written with the capability block.
+
+**CAPABILITY:** Simple & Smart (the assigned target, and honestly arguable — his one
+sentence becomes an ongoing behaviour; the analyst files the ask under Action/Self
+Follow-Up, and Grok arbitrates attribution).
+**PREDICTED:** an email arrives asking him for something; minutes later the matching
+item is on his list, unprompted. His sentence, executed. No numeric claim.
+**MECHANISM:** the missing feed consumer exists — model-judged, gate-created,
+receipt-flipped.
+**FALSIFIER:** a post-deploy actionable inbound (in window, under cap) whose row is
+still `new` an hour later with no item; an item minted from a non-actionable email; or
+a derived item lacking its feedEvent receipt.
+
+**Symptom tag:** none — the deck is empty, said plainly. What was done instead: THE
+ASK's top unfulfilled row, the analyst's singular fund item.
+
+**Remediation pointer (attempt 1 of 3), resolved by pointer:** the review log's newest
+`## Iteration 2` remains the never-re-run wrong-referent review; Iteration 12's
+finding-by-finding closure stands — eleventh statement. Campaign C-3 (iteration 16 of
+5): increments 1–3 all built and deployed; the exit needs the owner's digest opt-in and
+live observation, neither buildable from this seat — divergence to THE ASK declared.
+
+**What I did NOT do, and open questions for Codex:** gchat derivation (same shape, 268/0
+— deliberately excluded to keep one channel's blast radius; the job is channel-
+parameterisable when gmail proves out). The DRAFT-flood question: a derived item with
+no due date lands DRAFT and enters the daily slot-ask flow — designed behaviour, but if
+the owner finds the asks noisy, `comm.email_item_derivation_batch` and the flag are the
+levers; named as the risk I most want reviewed. Snippet-only judgement (no full body
+fetch) — a terse snippet may under-detect; accepted for cost, named.
+
+**Honest prediction:** after deploy, the next real ask that lands in his inbox becomes
+an item he can see, and "did you add that email to my items?" is answerable from
+receipts. What would prove me wrong: the falsifier above; or the model's judgement
+quality making junk items at a rate the batch cap doesn't mask — which would surface in
+DEF-217's noise report, the instrument this campaign built.

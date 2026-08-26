@@ -205,6 +205,14 @@ export const BEHAVIOR_SPECS: Record<string, BehaviorSpec> = {
     key: 'selfpruning.noise_report_enabled', unit: 'count', def: 1, min: 0, max: 1, scope: 'tenant',
     description: 'C-3 increment 1 (DEF-217) — the read-only inbound-noise COUNT report. Default 1, and deliberately so: increment 1 is explicitly "no suppression, no deletion, no behaviour change — it only produces the number that proves the problem", and its Done-when requires that number to reach the owner. Nothing here reads or changes an open item, and nothing is withheld from him; the only effect is at most ONE message per user per day naming a sender, how many pushes reached him and how many he acted on. Contrast selfpruning.digest_enabled and selfpruning.withdrawal_notice_enabled, which default 0 because they SUPPRESS or ANNOUNCE state changes. Set to 0 to silence the report.',
   },
+  'comm.email_item_derivation_enabled': {
+    key: 'comm.email_item_derivation_enabled', unit: 'count', def: 1, min: 0, max: 1, scope: 'tenant',
+    description: 'DEF-246 — derive open items from arriving email (0/1). Default 1 because this fulfils the owner\'s explicit, twice-repeated request verbatim ("Derive actionable or open items from each email arrive and add them", S20/S23) — the same def-1 rationale as the noise report: delivering what he asked for is the contract, not a consent question. The MODEL judges actionability per email (governance ruling: judgements are the model\'s); code enforces tenant/user scope, the canonical creation gate with dedup, and receipts (a feed row leaves status:new only as processed=item-created or skipped=judged-not-actionable). Bounded: 48h window (the pre-existing backlog stays untouched — flooding weeks of dead email into his list would be CL-033 in a new costume) and a per-tick LLM batch cap. Set 0 to stop deriving.',
+  },
+  'comm.email_item_derivation_batch': {
+    key: 'comm.email_item_derivation_batch', unit: 'count', def: 5, min: 1, max: 25, scope: 'tenant',
+    description: 'DEF-246 — maximum email actionability judgements (LLM calls) per derivation tick per tenant. Cost cap and spam cap in one: a bad model day can mint at most this many items per 15-minute tick.',
+  },
   'selfpruning.noise_report_min_pushes': {
     key: 'selfpruning.noise_report_min_pushes', unit: 'count', def: 5, min: 2, max: 100, scope: 'tenant',
     description: 'DEF-217 — the report says nothing below this many pushes from one sender in the window. CL-033 was ten in a morning; five is the floor at which a count is worth a message. A report about two pushes would itself be the noise the campaign exists to remove.',

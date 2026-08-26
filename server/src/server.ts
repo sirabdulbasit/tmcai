@@ -412,6 +412,10 @@ const server = app.listen(env.port, async () => {
 
   // Stale-connector proactive ping. Detects sync_stale connectors and
   // surfaces a Brain message asking the user to reconnect.
+  // DEF-246 — the owner's twice-repeated ask: items derive from arriving email.
+  import('./jobs/emailItemDerivationJob').then(({ scheduleEmailItemDerivation }) => {
+    scheduleEmailItemDerivation();
+  }).catch((e) => console.warn('[boot] email item derivation not scheduled:', e?.message));
   import('./jobs/staleConnectorPing').then(({ scheduleStaleConnectorPing }) => {
     scheduleStaleConnectorPing();
   }).catch((e) => console.warn('[staleConnectorPing] start failed:', e.message));
