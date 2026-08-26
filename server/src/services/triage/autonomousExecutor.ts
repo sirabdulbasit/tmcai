@@ -22,6 +22,9 @@
  */
 import prisma from '../../db/prisma';
 import { computeDedupHash, type ItemType, type Archetype, type SuggestedAction } from './triageSuggester';
+import createLogger from '../../utils/logger';
+
+const log = createLogger('autonomous-exec');
 
 export interface FeedEventForExec {
   id: string;
@@ -308,6 +311,56 @@ export async function executeIfMatched(event: FeedEventForExec): Promise<ExecRes
     }
 
     case 'add_open_item': {
+      // DEF-246 — A NEWSLETTER IS NOT A COMMITMENT. Owner, 2026-08-26: "there are many noising or
+      // subsriber emails will brain consider those for actionable items?" It did. Six live items
+      // came from automated senders, four of them near-duplicates:
+      //
+      //   Anthropic <no-reply-cTb0DuBTzWOSLyiP…>  → "Approve new team members"
+      //   no-reply-X6RxjIw48kDq5zLd0sGxwA@mail…   → "Approve new team members"  (again)
+      //   no-reply-Y1ZveKU0jsc4KPd9-ZsyoA@mail…   → "Review team's upgrade and join requests"
+      //   Anthropic <no-reply-HtghXKEQHXmbmyAw…>  → "Approve new Anthropic team members"
+      //   dawar.hussain (via Google Meet)         → "Join Google Meet call"
+      //
+      // All five Anthropic mails carry ONE subject — "You have new requests from your team" — and
+      // a DIFFERENT rotating no-reply address each time, which is exactly why nothing deduplicated
+      // them and why filtering by address history could never have worked.
+      //
+      // The guard was not missing. `senderQualityFilter.isLikelyAutomated` exists and its header
+      // names this very sender ("anthropic <no-reply-dtdehyonk_nsh2a9k_h-da>"). It is applied at
+      // triageSuggester.ts:559 — the SUGGESTION path — while the three services that actually
+      // mint items referenced it zero times. Third time in two days a built capability was found
+      // wired in one place and absent at the write path.
+      //
+      // The star override is copied deliberately from triageSuggester rather than reinvented: a
+      // sender the owner has rated 4+ keeps producing items even when automated, because that is
+      // him saying this robot matters. Silently dropping those would trade a noisy list for a
+      // lossy one, which is the worse failure.
+      {
+        const automatedFrom = event.senderEmail ?? fromFull;
+        let starsForSender = 0;
+        try {
+          const { getStarsForSender } = await import('../knowledge/entitySweepService');
+          starsForSender = await getStarsForSender(event.clientNumber, event.userId as any, automatedFrom);
+        } catch { /* unrated */ }
+        if (starsForSender < 4) {
+          const { isLikelyAutomated } = await import('../knowledge/senderQualityFilter');
+          if (isLikelyAutomated(automatedFrom)) {
+            // Every case in this switch must set actionType/output before breaking — the values
+            // are read after it. Reported as a real outcome, not a silent drop: the owner needs
+            // to be able to see WHY an email produced nothing.
+            actionType = 'ignore_email';
+            output = {
+              skipped: 'automated_sender', from: automatedFrom,
+              subject: String(subject).slice(0, 120), reason: 'DEF-246',
+            };
+            log.info('skipped open item from an automated sender (DEF-246)', {
+              feedEventId: event.id, from: automatedFrom, subject: String(subject).slice(0, 80),
+            });
+            await markSourceAsRead(event);
+            break;
+          }
+        }
+      }
       await markSourceAsRead(event);
       const item = await prisma.openItem.create({
         data: {
