@@ -134,6 +134,24 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
           continue;
         }
 
+        // DEF-247 — the SAME shared sender-quality predicate the gate
+        // enforces, called early so a newsletter never costs an LLM
+        // judgement. The GATE remains the enforcement point: a creator that
+        // skips this line is still blocked there (that asymmetry — guard on
+        // one path, minting on another — is exactly how the Anthropic
+        // no-reply email became an item on 08-26).
+        {
+          const { isLikelyAutomated } = await import('../services/knowledge/senderQualityFilter');
+          if (senderEmail && isLikelyAutomated(senderEmail)) {
+            await prisma.feedEvent.update({
+              where: { id: row.id },
+              data: { status: 'skipped', processedAt: new Date() } as any,
+            });
+            out.skippedNotActionable += 1;
+            continue;
+          }
+        }
+
         const p = (row.rawPayload ?? {}) as Record<string, unknown>;
         const email = {
           subject: String(p.subject ?? '(no subject)').slice(0, 300),

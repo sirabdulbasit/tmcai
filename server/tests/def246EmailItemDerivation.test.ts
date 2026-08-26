@@ -158,6 +158,16 @@ describe('DEF-246 — items derive from arriving email, with receipts', () => {
     expect(state.eventUpdates[0]?.data.status).toBe('skipped');
   });
 
+  it('DEF-247 — a no-reply sender is skipped BEFORE any LLM judgement, with the receipt', async () => {
+    state.rows = [inboundRow({ senderEmail: 'no-reply-ctb0dubtzwoslyip@mail.anthropic.com' })];
+    const { runEmailItemDerivation } = await import('../src/jobs/emailItemDerivationJob');
+    const out = await runEmailItemDerivation();
+    expect(state.judgeCalls).toBe(0);          // the newsletter never costs a judgement
+    expect(state.itemCreates).toHaveLength(0); // and never becomes an item
+    expect(state.eventUpdates[0]?.data.status).toBe('skipped');
+    expect(out.skippedNotActionable).toBe(1);
+  });
+
   it("the owner's own outbound mail is skipped WITHOUT an LLM call", async () => {
     state.rows = [inboundRow({ senderEmail: 'haseeb@tmcltd.com' })];
     const { runEmailItemDerivation } = await import('../src/jobs/emailItemDerivationJob');

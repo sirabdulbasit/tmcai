@@ -122,6 +122,29 @@ export async function gateOpenItemCreate(input: GateInput): Promise<GateOutput> 
             missingSlots: [],
           };
         }
+        // DEF-247 — sender quality, enforced AT THE GATE and nowhere else.
+        //
+        // The lesson that put this here, measured live: `isLikelyAutomated`
+        // was wired into autonomousExecutor (7a36f03) while the job that
+        // actually mints gmail items never called it — and the next no-reply
+        // email (Anthropic, 08-26 01:05) became a to-do item AFTER the "fix"
+        // deployed. Four call sites each holding a partial copy of the same
+        // rule is `protection-with-two-implementations` (10 deep), and this
+        // gate is the one chokepoint every feed-derived create already
+        // passes through. A creator that never heard of the rule is blocked
+        // here anyway; a future channel (gchat next) inherits it for free.
+        // Callers may still call the SAME shared predicate early to save an
+        // LLM judgement — an optimization, never the enforcement.
+        const { isLikelyAutomated } = await import('../knowledge/senderQualityFilter');
+        if (email && isLikelyAutomated(email)) {
+          return {
+            block: true,
+            reason: `automated_sender: ${email} — newsletter/no-reply mail never becomes an open item (CL-038)`,
+            status: 'NEW',
+            delegateeId: null, delegateeName: null, delegateeEmail: null,
+            missingSlots: [],
+          };
+        }
       }
     } catch { /* tolerate — if we can't check, fall through to create */ }
   }

@@ -1133,3 +1133,86 @@ an item he can see, and "did you add that email to my items?" is answerable from
 receipts. What would prove me wrong: the falsifier above; or the model's judgement
 quality making junk items at a rate the batch cap doesn't mask — which would surface in
 DEF-217's noise report, the instrument this campaign built.
+
+## Iteration 42 — 2026-08-26
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/openItems/openItemGate.ts`, `server/src/jobs/emailItemDerivationJob.ts`,
+`server/tests/def247NoiseBlockedAtTheGate.test.ts` (new), plus one test added to
+`server/tests/def246EmailItemDerivation.test.ts`. **This turn ships DEF-247 — the
+analyst's fund item verbatim: sender-quality enforcement moves to `gateOpenItemCreate`,
+the single point every feed-derived create passes through.**
+
+**The finding this closes, measured live by the analyst:** the CL-038 noise fix
+(`7a36f03`) wired `isLikelyAutomated` into `autonomousExecutor` — while
+`emailItemDerivationJob`, the job that actually mints gmail items, never called it —
+and the next no-reply email (Anthropic, 08-26 01:05, AFTER that deploy) became a to-do
+item. Its own falsifier, hit the next day. The class is
+`protection-with-two-implementations` (10 deep), here caught eating its own fix — the
+same generator as DEF-245's LID-guard gap.
+
+**The class fix, structural per the analyst's own prescription:** the gate already
+loads the feed event's sender for the muted-contact check; the sender-quality rule now
+lives there (`openItemGate.ts` step 1) — a feed-derived create from an automated
+sender is blocked with a structured reason, so triageSuggester, autonomousExecutor,
+commitmentExtractor, openItemsService, emailItemDerivationJob AND the next channel's
+derivation job (gchat) inherit the rule without knowing it exists. "Wired in one
+place, absent at the write path" stops being expressible for this family. The
+derivation job also calls the SAME shared predicate early so a newsletter never costs
+an LLM judgement (receipt `skipped`) — explicitly an optimization, never the
+enforcement, and the mutation run proves each layer's test bites independently.
+Fail-open on unreadable sender data — blocking a create because a read failed would be
+`guard-destroys-the-answer` arriving from the other side. Guardrail named: **target
+grounding**.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2942 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2971)
+- Touched suites: **13 passed | 0 failed**, pinning the LIVE fixture (the exact
+  Anthropic no-reply address shape) at all three layers: predicate, gate, job.
+- **Mutations RUN and killed, one per enforcement layer:** gate block disabled → the
+  gate test fails; early skip disabled → the job test fails. Restores grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): CIRCLING, answered structurally** — the class tag
+stands at 10 and this is its 11th/12th instance per the analyst; the fix moves the
+decision to the one place all creators pass rather than adding a 13th partial copy.
+DEF-247 row written with the capability block; it also records the analyst's
+correction that the DEF-242/243/244/246 "NOT YET" deploy cells are stale (all four are
+live at deployed-sha; the deploy seat should stamp them — a Builder turn spent
+re-stamping four cells would be exactly the docs-only turn the owner banned).
+
+**CAPABILITY:** Self-Pruning — junk stops becoming work at the minting point; this is
+the campaign's own goal ("junk withdraws itself" begins with junk not arriving), and
+CL-038 is its owner evidence. Declared divergence from the malformed `@@TARGETCAP@@`
+placeholder, as every turn.
+**PREDICTED:** subscriber/no-reply mail stops becoming to-do items on the running path;
+CL-038's question gets the answer he wanted, enforced.
+**MECHANISM:** one shared predicate, one enforcement gate, all creators inherit.
+**FALSIFIER:** any post-deploy feed-derived open item whose source sender satisfies
+`isLikelyAutomated`; the query that found the 08-26 leak re-run after deploy is the
+check.
+
+**Symptom tag:** `noise-becomes-actionable` — named verbatim (the analyst's new tag,
+1st occurrence, and this closes it at the class).
+
+**Remediation pointer (attempt 2 of 3), resolved by pointer, twelfth statement:** the
+newest `## Iteration 2` review section remains the never-re-run wrong-referent review;
+Iteration 12's closure stands.
+
+**What I did NOT do, named:** the gchat derivation channel (analyst #3 — the next
+increment, now CHEAPER because the gate carries the noise rule); the Yousuf
+contact-merge half of DEF-245 (another session's active saga); LID-shape and dedup
+consolidation into the gate (the analyst's full prescription names three rule
+families — sender-quality is the one that leaked live; the other two move in a
+follow-up rather than three-changes-in-one-turn); the four stale deploy cells (deploy
+seat's stamp).
+
+**Honest prediction:** after deploy, re-running the exact Comm-surface query that
+caught the 08-26 leak returns zero new automated-sender items. What would prove me
+wrong: that query finding one — which, with the gate in place, could only mean a
+creator writing `open_items` WITHOUT the gate, and that would be the next structural
+finding, not a patch.
