@@ -125,8 +125,18 @@ export async function recordLlmSpend(p: SpendParams): Promise<void> {
     bucket[p.provider].calls += 1;
     bucket.byPurpose[p.purpose] = (bucket.byPurpose[p.purpose] ?? 0) + 1;
 
-    // Prune any day older than 14 days to keep the blob small.
-    const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Prune to keep the blob small — 62 days, not 14. Owner, 2026-08-27: "i need this daily,
+    // weekly, monthly and with date range etc". Monthly was not a missing view, it was missing
+    // DATA: at 14 days the month before yesterday had already been deleted, so no UI could have
+    // answered it. Measured before changing: 15 days occupied 5.1 KB, i.e. ~0.34 KB/day, so 62
+    // days costs about 21 KB — enough for "this month" and "last month" side by side.
+    //
+    // NOT longer, deliberately. Every LLM call read-modify-writes this whole row; a year of
+    // history (~124 KB) rewritten hundreds of times a day is the wrong shape, and the answer
+    // there is a real table, not a bigger blob. 62 days is where the view the owner asked for
+    // becomes answerable without pretending the store is something it is not.
+    const RETAIN_DAYS = 62;
+    const cutoff = new Date(Date.now() - RETAIN_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     for (const d of Object.keys(db)) {
       if (d < cutoff) delete db[d];
     }
@@ -293,6 +303,10 @@ function safeParse(s: string): any { try { return JSON.parse(s); } catch { retur
 export interface SpendReport {
   clientNumber: string;
   day: string;
+  from?: string;
+  to?: string;
+  days?: number;
+  series?: Array<{ day: string; calls: number; tokens: number; usd: number }>;
   users: Array<{
     userId: number;
     providers: Record<string, { in: number; out: number; calls: number }>;
@@ -304,13 +318,58 @@ export interface SpendReport {
   totals: { calls: number; tokens: number; usd: number };
 }
 
-export async function getSpendReport(clientNumber: string, day: string = today()): Promise<SpendReport> {
+/**
+ * A report over ONE day or a RANGE of days.
+ *
+ * `from`/`to` are inclusive `YYYY-MM-DD`. Omitted, both default to today, which is exactly the
+ * previous single-day behaviour — every existing caller keeps working unchanged.
+ *
+ * Days are aggregated per user, per provider and per purpose, and a per-day series is returned
+ * alongside so a range can be drawn rather than only totalled. Days with no activity are omitted
+ * from the series rather than emitted as zeros: a quiet Sunday and a day before the connector
+ * existed are different facts, and only the caller knows which it is looking at.
+ */
+export async function getSpendReport(
+  clientNumber: string,
+  from: string = today(),
+  to: string = from,
+): Promise<SpendReport> {
   const cfg = await prisma.systemConfig.findUnique({
     where: { clientNumber_key: { clientNumber, key: 'llm_spend' } },
     select: { value: true },
   }).catch(() => null);
   const db: any = cfg?.value ? safeParse(cfg.value) : {};
-  const dayBucket: any = db[day] ?? {};
+
+  // Collapse every day in the window into one bucket shaped exactly like a single day's, so the
+  // aggregation below is untouched and cannot drift between the one-day and range paths.
+  const lo = from <= to ? from : to;
+  const hi = from <= to ? to : from;
+  const daysInWindow = Object.keys(db)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= lo && d <= hi)
+    .sort();
+
+  const series: SpendReport['series'] = [];
+  const dayBucket: any = {};
+  for (const d of daysInWindow) {
+    let dCalls = 0, dTokens = 0, dUsd = 0;
+    for (const uid of Object.keys(db[d] ?? {})) {
+      const src = db[d][uid];
+      const dst = (dayBucket[uid] ??= { byPurpose: {} });
+      for (const provider of ['gemini', 'gemini-flash', 'claude'] as const) {
+        const b = src[provider];
+        if (!b) continue;
+        const acc = (dst[provider] ??= { in: 0, out: 0, calls: 0 });
+        acc.in += b.in; acc.out += b.out; acc.calls += b.calls;
+        dCalls += b.calls;
+        dTokens += b.in + b.out;
+        dUsd += estimatedCostUsd({ provider, inputTokens: b.in, outputTokens: b.out, purpose: '', userId: Number(uid) });
+      }
+      for (const [purpose, n] of Object.entries(src.byPurpose ?? {})) {
+        dst.byPurpose[purpose] = (dst.byPurpose[purpose] ?? 0) + Number(n);
+      }
+    }
+    series.push({ day: d, calls: dCalls, tokens: dTokens, usd: Math.round(dUsd * 10000) / 10000 });
+  }
   const users: SpendReport['users'] = [];
   let totCalls = 0, totTokens = 0, totUsd = 0;
 
@@ -339,7 +398,10 @@ export async function getSpendReport(clientNumber: string, day: string = today()
 
   users.sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
   return {
-    clientNumber, day, users,
+    clientNumber,
+    day: lo === hi ? lo : `${lo} → ${hi}`,   // kept for existing callers that print it
+    from: lo, to: hi, days: daysInWindow.length, series,
+    users,
     totals: { calls: totCalls, tokens: totTokens, usd: Math.round(totUsd * 10000) / 10000 },
   };
 }
