@@ -7,8 +7,6 @@ import ConfigTab from './admin/ConfigTab';
 import WhatsAppMergedTab from './admin/WhatsAppMergedTab';
 import LlmSpendTab from './admin/LlmSpendTab';
 import ConnectorsAdminTab from './admin/ConnectorsAdminTab';
-import BrainLearningTab from './admin/BrainLearningTab';
-import BrainImprovementTab from './admin/BrainImprovementTab';
 
 /**
  * Admin surface — grouped by WHAT A SETTING APPLIES TO.
@@ -27,9 +25,16 @@ import BrainImprovementTab from './admin/BrainImprovementTab';
  * per tab: WhatsApp 18, Client Config 13, Licenses 9, Connectors 3 — all client-scoped; User
  * Tiers 0, Brain Improvement 0, Brain Learning 1, LLM Spend 2 — global.
  *
- *   Overall   — applies across every client: the client list itself, user tiers, Brain, spend
+ *   Overall   — applies across every client: the client list itself, user tiers, spend
  *   Client    — everything scoped to ONE client, chosen once at the top and held
  *   Users     — the user list
+ *
+ * BRAIN LEARNING AND BRAIN IMPROVEMENT LEFT THIS PAGE (2026-08-27) and are on the Brain
+ * Evolution tab of the steering deck. They are two of the NINE SCORED CAPABILITIES — `Learn` and
+ * `Self-Healing` — and operating a capability is not an administrative act. They were MOVED, not
+ * removed: a check for other consumers of /learning/memories, /gaps, /proposals,
+ * /development-requests and /audit returned ZERO for all five, so deleting the tabs would have
+ * taken two live queues dark, including governed memories awaiting approval.
  *
  * NO FUNCTIONALITY MOVED. Every component rendered before is rendered now; only its address
  * changed. The one thing genuinely absent is a client FILTER on the user list —
@@ -70,8 +75,6 @@ export default function AdminPage() {
   const overallSubs = [
     { key: 'clients',  label: 'Clients' },
     { key: 'tiers',    label: 'User Tiers' },
-    { key: 'brain',    label: 'Brain — Learning' },
-    { key: 'brain-i',  label: 'Brain — Improvement' },
     { key: 'llm',      label: 'LLM Spend' },
   ];
 
@@ -148,12 +151,6 @@ export default function AdminPage() {
         )}
         {activeTab === 'overall' && overallSub === 'tiers' && (
           <TierManagementTab msg={msg} setMsg={setMsg} />
-        )}
-        {activeTab === 'overall' && overallSub === 'brain' && (
-          <BrainLearningTab user={user} msg={msg} setMsg={setMsg} />
-        )}
-        {activeTab === 'overall' && overallSub === 'brain-i' && (
-          <BrainImprovementTab user={user} msg={msg} setMsg={setMsg} />
         )}
         {activeTab === 'overall' && overallSub === 'llm' && (
           <LlmSpendTab user={user} />

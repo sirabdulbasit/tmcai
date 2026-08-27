@@ -5,6 +5,8 @@ import OpenItemsPage from './OpenItemsPage';
 import WikiPage from './WikiPage';
 import HealthCheckTab from '../components/steering/HealthCheckTab';
 import OrchestratorPulsePanel from '../components/steering/OrchestratorPulsePanel';
+import BrainLearningTab from './admin/BrainLearningTab';
+import BrainImprovementTab from './admin/BrainImprovementTab';
 import ErrorBoundary from '../components/ErrorBoundary';
 // CustomActionTab removed from rail — its JSON-rule-builder UI was a
 // developer surface and the API behind it had drifted (POST /shadow/rules
@@ -68,14 +70,86 @@ const PULSE_TAB = {
      card. A status display whose failure blanks the product it reports on is
      worse than no status display. Its own boundary keeps the blast radius to the
      panel. */
-  render: () => (
-    <div style={{ padding: 'var(--s-6)' }}>
-      <ErrorBoundary>
-        <OrchestratorPulsePanel />
-      </ErrorBoundary>
-    </div>
-  ),
+  render: () => <BrainEvolution />,
 };
+
+/**
+ * Brain Evolution — the loop, what Brain wants to remember, and what it wants fixed.
+ *
+ * Owner, 2026-08-27: "Brain learning is also a brain's Capability — my concern is why it is
+ * showing here in admin page", then "can we remove brain learning and brain improvement from
+ * admin page??"
+ *
+ * He is right, and it was a category error rather than a layout preference. `Learn` and
+ * `Self-Healing` are two of the NINE SCORED CAPABILITIES on his own dial, alongside Memory and
+ * Self-Pruning. Admin answers who the clients are, who the users are, what is configured and what
+ * it costs. Operating a capability is not an administrative act.
+ *
+ * They are MOVED, not deleted, and the difference is load-bearing: a check for other consumers of
+ * `/learning/memories`, `/gaps`, `/proposals`, `/development-requests` and `/audit` returned ZERO
+ * for all five. Those two panels are the only way to reach any of it — including two governed
+ * memories sitting pending approval right now. Deleting the tabs would have taken the queues dark
+ * and left `Learn 42%` with no way to act on it.
+ *
+ * Folded into this tab rather than added as rail entries, because three sections of one subject
+ * is a subject, and the last thing this page needs is two more top-level tabs.
+ */
+function BrainEvolution() {
+  const { user } = useAuth();
+  const [section, setSection] = useState('pulse');
+  const [msg, setMsg] = useState('');
+
+  const sections = [
+    { key: 'pulse',       label: 'Healing Pulse' },
+    { key: 'learning',    label: 'Learning' },
+    { key: 'improvement', label: 'Improvement' },
+  ];
+
+  return (
+    <div style={{ padding: 'var(--s-6)' }}>
+      <div className="config-tabs config-tabs-sub" style={evoRowStyle}>
+        {sections.map(t => (
+          <button
+            key={t.key}
+            className={`config-tab ${section === t.key ? 'active' : ''}`}
+            onClick={() => setSection(t.key)}
+            style={evoBtnStyle}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {msg && (
+        <div className="settings-msg" role="status" aria-live="polite"
+             onClick={() => setMsg('')} style={{ cursor: 'pointer' }}>
+          {msg}
+        </div>
+      )}
+
+      {/* Each section keeps its OWN boundary. 2026-08-14: one bad field in the pulse collector
+          unmounted the entire app up to the app-level boundary — the owner lost the whole
+          console, not one card. A panel whose failure blanks the product it reports on is worse
+          than no panel, and that reasoning applies to all three equally. */}
+      {section === 'pulse' && (
+        <ErrorBoundary><OrchestratorPulsePanel /></ErrorBoundary>
+      )}
+      {section === 'learning' && (
+        <ErrorBoundary><BrainLearningTab user={user} msg={msg} setMsg={setMsg} /></ErrorBoundary>
+      )}
+      {section === 'improvement' && (
+        <ErrorBoundary><BrainImprovementTab user={user} msg={msg} setMsg={setMsg} /></ErrorBoundary>
+      )}
+    </div>
+  );
+}
+
+const evoRowStyle = {
+  marginBottom: 12,
+  paddingBottom: 6,
+  borderBottom: '1px solid var(--border, #333)',
+};
+const evoBtnStyle = { fontSize: 12, padding: '4px 12px', opacity: 0.85 };
 
 export default function SteeringWheelPage() {
   const { user, appName, tenantName } = useAuth();
