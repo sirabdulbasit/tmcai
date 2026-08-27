@@ -3838,6 +3838,56 @@ ${calLines.join('\n')}`;
         }
       }
 
+      const actionKindLookup: Record<string, import('./pendingActionService').PendingActionKind | null> = {
+        schedule_meeting: 'schedule_meeting',
+        reschedule_meeting: 'reschedule_meeting',
+        cancel_meeting: 'cancel_meeting',
+        send_email: 'send_email',
+        notify_via_whatsapp: 'notify_via_whatsapp',
+        delegate_open_item: 'delegate_open_item',
+      };
+
+      // DEF-249 — THE CONFIRM STEP DERIVES FROM THE DISPATCH AUTHORITY.
+      //
+      // Session 22, 08-26 10:06: "delegate it to Madeeha Rahat" → preview →
+      // owner confirmed TWICE → dispatch's own guard refused: "who to
+      // delegate to — name the exact contact or give a valid email"
+      // (`actionTargetGuard.ts:129`). The preview had promised an action the
+      // dispatcher could not execute, because grounding ran only AFTER his
+      // "yes" (`dispatchPendingDirect`) — DEF-240 closed exactly this for
+      // PLAN steps and the single-action path kept the old order. Same
+      // guard, same rule, one level up: never ask the owner to confirm
+      // something that cannot execute; fail here, where it costs a message,
+      // instead of after yes. The guard's ask marker becomes the answer —
+      // the model phrases the by-name ask (curated meaning exists; the plan
+      // path already renders it). A THROWING guard never blocks a
+      // legitimate preview (DEF-240's stance), and dispatch still grounds
+      // fail-closed at "send" either way.
+      try {
+        const guardKind = actionKindLookup[parsed.action.type];
+        if (guardKind) {
+          const { verifyActionTargets } = await import('./actionTargetGuard');
+          const { type: _gt, ...guardSlots } = parsed.action as any;
+          const verdict = await verifyActionTargets(guardKind, guardSlots, userId, clientNumber);
+          if (!verdict.ok) {
+            console.warn('[brain-chat] preview refused — target does not ground; asking by name instead', {
+              userId, clientNumber, kind: guardKind,
+            });
+            return {
+              answer: (verdict as any).marker,
+              citedPageIds, gaps: parsed.gaps, sources,
+              action: null,
+              actionResult: { ok: false, message: 'target_unresolved' },
+              source: reasoningOverride ? 'reasoning' : 'legacy',
+            };
+          }
+        }
+      } catch (guardErr: any) {
+        console.warn('[brain-chat] target guard threw — preview proceeds (a broken guard must not block a legitimate action)', {
+          userId, error: guardErr?.message,
+        });
+      }
+
       actionResult = { ok: false, message: 'preview_required' };
 
       // Sprint 1: persist as PendingAction so the next-turn confirm
@@ -3847,14 +3897,6 @@ ${calLines.join('\n')}`;
       // dispatched is detectable.
       try {
         const { startPending, hashProposedAction, markPreviewShown } = await import('./pendingActionService');
-        const actionKindLookup: Record<string, import('./pendingActionService').PendingActionKind | null> = {
-          schedule_meeting: 'schedule_meeting',
-          reschedule_meeting: 'reschedule_meeting',
-          cancel_meeting: 'cancel_meeting',
-          send_email: 'send_email',
-          notify_via_whatsapp: 'notify_via_whatsapp',
-          delegate_open_item: 'delegate_open_item',
-        };
         const kind = actionKindLookup[parsed.action.type];
         if (kind) {
           const { type: _t, ...slots } = parsed.action as any;

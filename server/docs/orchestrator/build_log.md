@@ -1216,3 +1216,85 @@ caught the 08-26 leak returns zero new automated-sender items. What would prove 
 wrong: that query finding one — which, with the gate in place, could only mean a
 creator writing `open_items` WITHOUT the gate, and that would be the next structural
 finding, not a patch.
+
+## Iteration 43 — 2026-08-27
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/knowledge/brainComposer.ts` and
+`server/tests/def249ConfirmDerivesFromDispatchAuthority.test.ts` (new, 5 tests).
+**This turn ships DEF-249 — the analyst's fund item in their stated order: the
+delegation instance of the two-implementations class, closed by making the single-action
+confirm step derive from the dispatch authority.**
+
+**The live failure this closes (S22, 08-26 10:06 — the newest turn in the transcript,
+the analyst's #2):** "delegate it to Madeeha Rahat" → preview → the owner confirmed
+twice → "I need you to tell me the exact contact's name or a valid email." The preview
+promised an action dispatch would refuse, because `verifyActionTargets` ran only inside
+`dispatchPendingDirect` — after his "yes." DEF-240 fixed exactly this for plan steps;
+the single-action path kept the old order. Same generator as DEF-247's noise gap, one
+instance later — the class's 11th–14th family per the analyst.
+
+**The change:** in the single-action preview branch, the SAME `verifyActionTargets`
+now runs BEFORE `startPending` mints anything. Ungrounded target → the guard's ask
+marker IS the answer (`action: null`, `target_unresolved`); the model phrases the
+by-name ask through the existing curated rendering, so the owner is asked to name the
+contact BEFORE any confirmation — never after two. The kind map is hoisted so the guard
+and the persist share ONE lookup (the two sides cannot cover different kind sets — the
+anti-drift shape the governance ruling demands). A throwing guard never blocks a
+legitimate preview; dispatch still grounds fail-closed at "send" — belt kept,
+enforcement moved. Guardrail named: **target grounding**.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2951 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2980)
+- New suite: **5 passed | 0 failed** — the S22 fixture against the REAL guard, the
+  guard-before-persist order pinned on the shared map (the DEF-240 test's own idiom),
+  and the marker's human rendering (never the fallback).
+- **Mutations RUN and killed, one per layer:** guard anchor unwired → 2 fail; guard
+  made to accept an unresolved delegatee → 1 fails. Restores grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): CIRCLING, answered structurally** —
+`confirm-misfires` stands at 7 with S22 the live 8th, and `protection-with-two-
+implementations` at 10; the fix moves the decision to where the confirmation is minted
+rather than patching the delegate verb. DEF-249 row written with the capability block.
+
+**CAPABILITY:** Authorized Action
+**PREDICTED:** the confirmed-then-refused shape becomes inexpressible on BOTH the plan
+and single-action paths — S22's exact exchange, replayed after deploy, asks for
+Madeeha by name at the preview step instead of refusing after "yes."
+**MECHANISM:** one grounding authority (`verifyActionTargets`), consulted where each
+confirmation is minted; one shared kind map.
+**FALSIFIER:** any post-deploy turn where a previewed-and-confirmed action is refused
+with a target-unresolved ask.
+
+**Symptom tag:** `confirm-misfires` — named verbatim; S22 is its newest live
+occurrence and this closes its producing asymmetry. Not closed: the underlying
+question of WHY "Madeeha Rahat" fails to resolve (DEF-245's identity-spine half —
+another session's active saga; if she exists in contacts under a different row, the
+resolution fix is theirs; the by-name ask is correct behaviour either way).
+
+**Remediation pointer (attempt 3 of 3), resolved by pointer, thirteenth statement:**
+the newest `## Iteration 2` review section remains the never-re-run wrong-referent
+review; Iteration 12's closure stands. Campaign C-3 (iteration 19 of 5): increments
+all built; exit awaits the owner's digest opt-in + live observation — divergence to
+the analyst's ranked fund item declared, as the campaign section itself instructs
+("Codex's ranked directive governs HOW").
+
+**What I did NOT do, named:** `thread-answered-but-item-open` (analyst #3, NEW — the
+DAL API delivered two days before the item chasing it was minted; deliberately a
+JUDGEMENT capability: reconciling an item against its thread's later messages belongs
+to the model reading the thread, and the analyst agrees it must not be a lookup — the
+next fresh turn's build, properly scoped); the gchat consumer (#5); the Yousuf
+contact-merge (#6, another session's saga); the four stale deploy cells (deploy seat).
+
+**Honest prediction:** after deploy, replaying S22 verbatim yields the by-name ask at
+preview time, and a resolvable delegatee sails through confirm to dispatch untouched.
+What would prove me wrong: the falsifier above — or Codex finding a third
+preview-minting site this hook misses (the reasoning-path `:2880` action_plan persist
+and this branch are the two I verified; a grep for `startPending` shows one more at
+`:4266`, which previews the delegation EMAIL after a successful delegate and grounds
+its recipient by construction — named so the reviewer can check that reading).
