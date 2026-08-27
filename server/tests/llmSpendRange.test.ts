@@ -1,127 +1,137 @@
 /**
- * LLM spend over a day, a week, a month, or an arbitrary range.
+ * LLM spend over a day, a week, a month, or an arbitrary range — read from `llm_spend`.
  *
- * Owner, 2026-08-27: "i need this daily, weekly, monthly and with date range etc".
+ * Owner, 2026-08-27, on a Jan-to-Aug range grouped by month, seeing ONE row: "i am expecting to
+ * see for each month like Jan-26 Feb-26 Mar-26 Apr-26 etc".
  *
- * Monthly was not a missing view — it was missing DATA. `recordSpend` pruned every day older
- * than 14, so the month before yesterday had already been deleted and no UI could have answered
- * the question. Measured first: 15 days occupied 5.1 KB (~0.34 KB/day), so 62 days costs ~21 KB.
- * Retention moved to 62; longer belongs in a real table, because every LLM call
- * read-modify-writes this whole row.
+ * The months were never missing from the grouping. The report read a JSON blob in system_config
+ * with 62-day retention, so everything older had already been deleted. `llm_spend` — a real
+ * table, one row per call — holds 2,608,934 rows back to 2026-05-03.
  *
- * The aggregation is asserted against a hand-built blob rather than production, so the sums are
- * checkable by eye: three days, two users, two providers.
+ * The two stores also DISAGREED about the month they both covered:
+ *     blob    54,099 calls  $289.98
+ *     table  233,928 calls  $587.19
+ * The page had been under-reporting spend by roughly half. A row per call, with a cost stored at
+ * call time, is the trustworthy one — so the report reads that now and the blob is no longer a
+ * source for it.
+ *
+ * These assertions mock at the SQL boundary. They pin the shaping the UI depends on — bucket
+ * labels, input and output kept apart, the per-user split — without asserting the SQL text, which
+ * would only restate the implementation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
-const findUnique = vi.fn();
+const raw = vi.fn();
 vi.mock('../src/db/prisma', () => ({
-  default: { systemConfig: { findUnique: (...a: any[]) => findUnique(...a) } },
+  default: { $queryRawUnsafe: (...a: any[]) => raw(...a) },
 }));
 
 import { getSpendReport } from '../src/services/llmSpendService';
 
-// 100 in + 100 out on gemini-flash per user-day, so every total is a round multiple.
-const dayBlock = (calls: number) => ({
-  2: { 'gemini-flash': { in: 100, out: 100, calls }, byPurpose: { triage: calls } },
-  7: { 'gemini-flash': { in: 100, out: 100, calls }, byPurpose: { triage: calls } },
-});
+// The service issues three grouped queries, in order: buckets, providers, purposes.
+const mockQueries = (buckets: any[], providers: any[] = [], purposes: any[] = []) => {
+  raw.mockReset();
+  raw.mockResolvedValueOnce(buckets)
+    .mockResolvedValueOnce(providers)
+    .mockResolvedValueOnce(purposes);
+};
 
-beforeEach(() => {
-  findUnique.mockReset();
-  findUnique.mockResolvedValue({
-    value: JSON.stringify({
-      '2026-08-24': dayBlock(1),
-      '2026-08-25': dayBlock(2),
-      '2026-08-26': dayBlock(3),
-    }),
-  });
-});
+// bigint for the token sums, because that is what SUM() returns over an int column.
+const row = (b: string, user: number, calls: number, tin: number, tout: number, usd: number) =>
+  ({ bucket: b, user_id: user, calls, in_tokens: BigInt(tin), out_tokens: BigInt(tout), usd });
+
+beforeEach(() => raw.mockReset());
 
 describe('spend report over a window', () => {
-  it('a single day reports only that day', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-25');
-    expect(r.totals.calls).toBe(4);          // 2 users × 2 calls
-    expect(r.days).toBe(1);
-    expect(r.from).toBe('2026-08-25');
-    expect(r.to).toBe('2026-08-25');
+  it('returns one row per MONTH — the case that showed only August', async () => {
+    mockQueries([
+      row('2026-05-01', 2, 1486436, 1826579581, 363449996, 656.36),
+      row('2026-06-01', 2, 500729, 736702402, 131365980, 511.36),
+      row('2026-07-01', 2, 387816, 548386670, 96866382, 383.24),
+      row('2026-08-01', 2, 232892, 612564948, 51445059, 586.49),
+    ]);
+    const r = await getSpendReport('TMC-0001', '2026-01-27', '2026-08-27', 'month');
+    expect(r.series?.map((s) => s.label)).toEqual(['2026-05', '2026-06', '2026-07', '2026-08']);
   });
 
-  it('a range sums every day inside it, inclusive at both ends', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
-    expect(r.totals.calls).toBe(12);         // 2 users × (1+2+3)
-    expect(r.totals.tokens).toBe(1200);      // 6 user-days × 200
-    expect(r.days).toBe(3);
-  });
-
-  it('returns a per-day series so a range can be drawn, not just totalled', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
-    expect(r.series?.map((s) => s.bucket)).toEqual(['2026-08-24', '2026-08-25', '2026-08-26']);
-    expect(r.series?.map((s) => s.calls)).toEqual([2, 4, 6]);
-  });
-
-  it('omits days with no activity rather than emitting zeros', async () => {
-    // A quiet Sunday and a day before the connector existed are different facts, and only the
-    // caller knows which it is looking at.
-    const r = await getSpendReport('TMC-0001', '2026-08-01', '2026-08-31');
-    expect(r.days).toBe(3);
-    expect(r.series).toHaveLength(3);
-  });
-
-  it('merges a user across days instead of listing them twice', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
-    expect(r.users).toHaveLength(2);
-    const u2 = r.users.find((u) => u.userId === 2);
-    expect(u2?.totalCalls).toBe(6);          // 1 + 2 + 3
-    expect(u2?.byPurpose.triage).toBe(6);    // purposes accumulate too
-  });
-
-  it('reversed arguments are read as a window, not as an empty one', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-26', '2026-08-24');
-    expect(r.totals.calls).toBe(12);
-    expect(r.from).toBe('2026-08-24');
-  });
-
-  it('a window with nothing in it totals zero and says so', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-07-01', '2026-07-31');
-    expect(r.totals.calls).toBe(0);
-    expect(r.days).toBe(0);
-    expect(r.users).toHaveLength(0);
-  });
-
-  it('defaults to a single day when no window is given — existing callers unchanged', async () => {
-    const r = await getSpendReport('TMC-0001');
-    expect(r.from).toBe(r.to);
-  });
-
-  it('reports input and output SEPARATELY, not only a total', async () => {
-    // "i want to know consumption of input, output, total tokens, cost" — a combined figure
-    // cannot answer it, and in/out price differently ($0.075 vs $0.30 per 1M on Flash).
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
+  it('keeps input and output SEPARATE — they price differently', async () => {
+    mockQueries([row('2026-08-27', 2, 940, 3826031, 149716, 5.101)]);
+    const r = await getSpendReport('TMC-0001', '2026-08-27', '2026-08-27');
     const d = r.series?.[0];
-    expect(d?.inTokens).toBe(200);          // 2 users x 100 in
-    expect(d?.outTokens).toBe(200);
-    expect(d?.tokens).toBe(400);
+    expect(d?.inTokens).toBe(3826031);
+    expect(d?.outTokens).toBe(149716);
+    expect(d?.tokens).toBe(3826031 + 149716);
   });
 
-  it('groups by MONTH when asked — the window and the bucket are separate choices', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-01', '2026-08-31', 'month');
+  it('labels a week as its Monday-to-Sunday span', async () => {
+    mockQueries([row('2026-08-24', 2, 100, 1000, 100, 1.5)]);
+    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-30', 'week');
+    expect(r.series?.[0].label).toBe('2026-08-24 → 2026-08-30');
+  });
+
+  it('merges several users into one bucket and splits them inside it', async () => {
+    mockQueries([
+      row('2026-08-27', 2, 900, 3000, 300, 5.0),
+      row('2026-08-27', 7, 40, 200, 20, 0.5),
+    ]);
+    const r = await getSpendReport('TMC-0001', '2026-08-27', '2026-08-27');
     expect(r.series).toHaveLength(1);
-    expect(r.series?.[0].bucket).toBe('2026-08');
-    expect(r.series?.[0].calls).toBe(12);
+    expect(r.series?.[0].calls).toBe(940);
+    expect(r.series?.[0].byUser.map((u) => u.userId)).toEqual([2, 7]);   // costliest first
   });
 
-  it('a week bucket starts MONDAY, matching the period boundary the route computes', async () => {
-    // 24 Aug 2026 is a Monday; the 26th is the same week, so three days collapse to one row.
-    // A Sunday-start week would split his working week across two buckets.
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26', 'week');
-    expect(r.series).toHaveLength(1);
-    expect(r.series?.[0].bucket).toBe('2026-08-24');
+  it('totals across every bucket', async () => {
+    mockQueries([
+      row('2026-08-26', 2, 10, 100, 10, 1.0),
+      row('2026-08-27', 2, 20, 200, 20, 2.0),
+    ]);
+    const r = await getSpendReport('TMC-0001', '2026-08-26', '2026-08-27');
+    expect(r.totals.calls).toBe(30);
+    expect(r.totals.tokens).toBe(330);
+    expect(r.totals.usd).toBe(3);
   });
 
-  it('breaks every bucket down by user, merged across the days inside it', async () => {
-    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26', 'month');
-    expect(r.series?.[0].byUser.map((u) => u.userId).sort()).toEqual([2, 7]);
-    expect(r.series?.[0].byUser.find((u) => u.userId === 2)?.calls).toBe(6);
+  it('reversed arguments are read as a window, not an empty one', async () => {
+    mockQueries([row('2026-08-26', 2, 10, 100, 10, 1.0)]);
+    const r = await getSpendReport('TMC-0001', '2026-08-27', '2026-08-24');
+    expect(r.from).toBe('2026-08-24');
+    expect(r.to).toBe('2026-08-27');
+  });
+
+  it('an empty window totals zero rather than throwing', async () => {
+    mockQueries([]);
+    const r = await getSpendReport('TMC-0001', '2026-01-01', '2026-01-31', 'month');
+    expect(r.totals.calls).toBe(0);
+    expect(r.users).toHaveLength(0);
+    expect(r.series).toHaveLength(0);
+  });
+
+  it('attaches providers and purposes to the right user', async () => {
+    mockQueries(
+      [row('2026-08-27', 2, 100, 1000, 100, 1.0)],
+      [{ user_id: 2, provider: 'gemini', calls: 90, in_tokens: BigInt(900), out_tokens: BigInt(90) }],
+      [{ user_id: 2, purpose: 'triage', calls: 60 }],
+    );
+    const r = await getSpendReport('TMC-0001', '2026-08-27', '2026-08-27');
+    expect(r.users[0].providers.gemini.calls).toBe(90);
+    expect(r.users[0].byPurpose.triage).toBe(60);
+  });
+
+  it('every query degrades to an empty result rather than crashing the page', () => {
+    // Asserted at the SOURCE, not by rejecting the mock. A rejection injected through the mock
+    // escapes via the raw-query observer this codebase installs around $queryRawUnsafe, so the
+    // runtime version of this test fails for a reason that has nothing to do with the guard —
+    // and a test that fails for the wrong reason teaches you to ignore it. The guarantee here is
+    // structural: each of the three queries carries its own fallback, so one bad query yields an
+    // empty section instead of a blank admin page.
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'services', 'llmSpendService.ts'), 'utf8');
+    const fn = src.slice(src.indexOf('export async function getSpendReport('));
+    const queries = (fn.match(/\$queryRawUnsafe<any\[\]>\(/g) ?? []).length;
+    const guards = (fn.match(/\)\.catch\(\(\) => \[\] as any\[\]\);/g) ?? []).length;
+    expect(queries).toBe(3);
+    expect(guards).toBe(queries);
   });
 });

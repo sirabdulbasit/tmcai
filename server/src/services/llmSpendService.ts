@@ -338,135 +338,127 @@ export async function getSpendReport(
   to: string = from,
   groupBy: 'day' | 'week' | 'month' = 'day',
 ): Promise<SpendReport> {
-  const cfg = await prisma.systemConfig.findUnique({
-    where: { clientNumber_key: { clientNumber, key: 'llm_spend' } },
-    select: { value: true },
-  }).catch(() => null);
-  const db: any = cfg?.value ? safeParse(cfg.value) : {};
-
-  // Collapse every day in the window into one bucket shaped exactly like a single day's, so the
-  // aggregation below is untouched and cannot drift between the one-day and range paths.
+  // READS `llm_spend`, THE REAL TABLE — not the system_config JSON blob this used to read.
+  //
+  // Owner, 2026-08-27, on a Jan-to-Aug range grouped by month, seeing ONE row: "i am expecting to
+  // see for each month like Jan-26 Feb-26 Mar-26 Apr-26 etc". The months were never missing from
+  // the grouping — the blob prunes to 62 days, so everything older had already been deleted.
+  //
+  // `llm_spend` holds 2,608,934 rows back to 2026-05-03, one per call, with est_usd computed at
+  // call time. The two stores also DISAGREED about the month they both covered — blob 54,099
+  // calls / $289.98 against table 233,928 / $587.19 — so this page had been under-reporting spend
+  // by roughly half. A row per call with a stored cost is the trustworthy one.
+  //
+  // Cost is SUM(est_usd), not recomputed from tokens: it was priced when the call was made, so a
+  // later edit to the price table cannot silently rewrite history.
   const lo = from <= to ? from : to;
   const hi = from <= to ? to : from;
-  const daysInWindow = Object.keys(db)
-    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= lo && d <= hi)
-    .sort();
+  const loTs = `${lo} 00:00:00`;
+  const hiTs = `${hi} 23:59:59.999`;
 
-  const perDay: Array<{ day: string; calls: number; inTokens: number; outTokens: number;
-                        tokens: number; usd: number;
-                        byUser: Array<{ userId: number; calls: number; tokens: number; usd: number }> }> = [];
-  const dayBucket: any = {};
-  for (const d of daysInWindow) {
-    let dCalls = 0, dIn = 0, dOut = 0, dUsd = 0;
-    // Per-user, per-day. Owner, 2026-08-27: "i am still unable to see break up of users, daily,
-    // weekly, monthly" — the window totals were right and answered a different question. A month
-    // that cost $4.14 is not the same information as which days and which user spent it.
-    const dayUsers: Array<{ userId: number; calls: number; tokens: number; usd: number }> = [];
-    for (const uid of Object.keys(db[d] ?? {})) {
-      let uCalls = 0, uTokens = 0, uUsd = 0;
-      const src = db[d][uid];
-      const dst = (dayBucket[uid] ??= { byPurpose: {} });
-      for (const provider of ['gemini', 'gemini-flash', 'claude'] as const) {
-        const b = src[provider];
-        if (!b) continue;
-        const acc = (dst[provider] ??= { in: 0, out: 0, calls: 0 });
-        acc.in += b.in; acc.out += b.out; acc.calls += b.calls;
-        const cost = estimatedCostUsd({ provider, inputTokens: b.in, outputTokens: b.out, purpose: '', userId: Number(uid) });
-        uCalls += b.calls; uTokens += b.in + b.out; uUsd += cost;
-        dCalls += b.calls; dIn += b.in; dOut += b.out; dUsd += cost;
-      }
-      if (uCalls > 0) {
-        dayUsers.push({ userId: Number(uid), calls: uCalls, tokens: uTokens,
-                        usd: Math.round(uUsd * 10000) / 10000 });
-      }
-      for (const [purpose, n] of Object.entries(src.byPurpose ?? {})) {
-        dst.byPurpose[purpose] = (dst.byPurpose[purpose] ?? 0) + Number(n);
-      }
-    }
-    dayUsers.sort((a, b) => b.usd - a.usd);
-    perDay.push({ day: d, calls: dCalls, inTokens: dIn, outTokens: dOut,
-                  tokens: dIn + dOut, usd: dUsd, byUser: dayUsers });
-  }
-  const users: SpendReport['users'] = [];
-  let totCalls = 0, totTokens = 0, totUsd = 0;
+  // date_trunc('week') is ISO — it starts MONDAY, which is what the route's period boundaries
+  // use. The two must agree, or a Week row and the Week button cover different days.
+  const trunc = groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
 
-  for (const uid of Object.keys(dayBucket)) {
-    const u = dayBucket[uid];
-    const providers: SpendReport['users'][number]['providers'] = {};
-    let userCalls = 0, userTokens = 0, userUsd = 0;
-    for (const provider of ['gemini', 'gemini-flash', 'claude'] as const) {
-      const b = u[provider];
-      if (!b) continue;
-      providers[provider] = { in: b.in, out: b.out, calls: b.calls };
-      userCalls += b.calls;
-      userTokens += (b.in + b.out);
-      userUsd += estimatedCostUsd({ provider, inputTokens: b.in, outputTokens: b.out, purpose: '', userId: 0 });
-    }
-    users.push({
-      userId: Number(uid),
-      providers,
-      totalCalls: userCalls,
-      totalTokens: userTokens,
-      estimatedCostUsd: Math.round(userUsd * 10000) / 10000,
-      byPurpose: u.byPurpose ?? {},
-    });
-    totCalls += userCalls; totTokens += userTokens; totUsd += userUsd;
-  }
+  const rows: any[] = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT to_char(date_trunc('${trunc}', created_at), 'YYYY-MM-DD') AS bucket,
+            user_id,
+            COUNT(*)::int                           AS calls,
+            COALESCE(SUM(input_tokens), 0)::bigint  AS in_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS out_tokens,
+            COALESCE(SUM(est_usd), 0)::float8       AS usd
+       FROM llm_spend
+      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+      GROUP BY 1, 2
+      ORDER BY 1`,
+    clientNumber, loTs, hiTs,
+  ).catch(() => [] as any[]);
 
-  // Roll the daily rows up to the requested bucket. Owner, 2026-08-27: "i want to know
-  // consumption of input, output, total tokens, cost for day wise, week wise and month wise" —
-  // so the WINDOW and the BUCKET are separate choices. A three-month range grouped by month is
-  // three rows; the same range grouped by day is ninety. Both are legitimate questions.
-  //
-  // Weeks start MONDAY, matching the period boundaries the route computes, so a week row here
-  // and the Week period there cover the same days rather than differing by one.
-  const bucketOf = (d: string): { key: string; label: string } => {
-    if (groupBy === 'day') return { key: d, label: d };
-    const dt = new Date(`${d}T00:00:00Z`);
+  const providerRows: any[] = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT user_id, provider,
+            COUNT(*)::int AS calls,
+            COALESCE(SUM(input_tokens), 0)::bigint  AS in_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS out_tokens
+       FROM llm_spend
+      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+      GROUP BY 1, 2`,
+    clientNumber, loTs, hiTs,
+  ).catch(() => [] as any[]);
+
+  const purposeRows: any[] = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT user_id, COALESCE(purpose, 'unknown') AS purpose, COUNT(*)::int AS calls
+       FROM llm_spend
+      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+      GROUP BY 1, 2`,
+    clientNumber, loTs, hiTs,
+  ).catch(() => [] as any[]);
+
+  const labelFor = (bucket: string) => {
+    if (groupBy === 'month') return bucket.slice(0, 7);
     if (groupBy === 'week') {
-      const dow = (dt.getUTCDay() + 6) % 7;
-      const monday = new Date(dt); monday.setUTCDate(dt.getUTCDate() - dow);
-      const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
-      const k = monday.toISOString().slice(0, 10);
-      return { key: k, label: `${k} → ${sunday.toISOString().slice(0, 10)}` };
+      const endD = new Date(`${bucket}T00:00:00Z`);
+      endD.setUTCDate(endD.getUTCDate() + 6);
+      return `${bucket} → ${endD.toISOString().slice(0, 10)}`;
     }
-    const k = d.slice(0, 7);
-    return { key: k, label: k };
+    return bucket;
   };
 
   const buckets = new Map<string, NonNullable<SpendReport['series']>[number]>();
-  for (const row of perDay) {
-    const { key, label } = bucketOf(row.day);
-    const acc = buckets.get(key) ?? {
-      bucket: key, label, calls: 0, inTokens: 0, outTokens: 0, tokens: 0, usd: 0, byUser: [],
+  const perUser = new Map<number, { calls: number; tokens: number; usd: number }>();
+  let totCalls = 0, totTokens = 0, totUsd = 0;
+
+  for (const r of rows) {
+    const uid = Number(r.user_id ?? 0);
+    const inT = Number(r.in_tokens);
+    const outT = Number(r.out_tokens);
+    const usd = Number(r.usd);
+    const acc = buckets.get(r.bucket) ?? {
+      bucket: r.bucket, label: labelFor(r.bucket),
+      calls: 0, inTokens: 0, outTokens: 0, tokens: 0, usd: 0,
+      byUser: [] as NonNullable<SpendReport['series']>[number]['byUser'],
     };
-    acc.calls += row.calls;
-    acc.inTokens += row.inTokens;
-    acc.outTokens += row.outTokens;
-    acc.tokens += row.tokens;
-    acc.usd += row.usd;
-    for (const u of row.byUser) {
-      const hit = acc.byUser.find((x) => x.userId === u.userId);
-      if (hit) { hit.calls += u.calls; hit.tokens += u.tokens; hit.usd += u.usd; }
-      else acc.byUser.push({ ...u });
-    }
-    buckets.set(key, acc);
+    acc.calls += r.calls;
+    acc.inTokens += inT;
+    acc.outTokens += outT;
+    acc.tokens += inT + outT;
+    acc.usd += usd;
+    acc.byUser.push({ userId: uid, calls: r.calls, tokens: inT + outT, usd: Math.round(usd * 10000) / 10000 });
+    buckets.set(r.bucket, acc);
+
+    const u = perUser.get(uid) ?? { calls: 0, tokens: 0, usd: 0 };
+    u.calls += r.calls; u.tokens += inT + outT; u.usd += usd;
+    perUser.set(uid, u);
+
+    totCalls += r.calls; totTokens += inT + outT; totUsd += usd;
   }
+
   const series = [...buckets.values()]
     .sort((a, b) => (a.bucket < b.bucket ? -1 : 1))
-    .map((b) => ({
-      ...b,
-      usd: Math.round(b.usd * 10000) / 10000,
-      byUser: b.byUser
-        .map((u) => ({ ...u, usd: Math.round(u.usd * 10000) / 10000 }))
-        .sort((x, y) => y.usd - x.usd),
-    }));
+    .map((b) => ({ ...b, usd: Math.round(b.usd * 10000) / 10000, byUser: b.byUser.sort((x, y) => y.usd - x.usd) }));
 
-  users.sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
+  const users: SpendReport['users'] = [...perUser.entries()].map(([userId, u]) => {
+    const providers: SpendReport['users'][number]['providers'] = {};
+    for (const pr of providerRows.filter((x) => Number(x.user_id ?? 0) === userId)) {
+      providers[pr.provider] = { in: Number(pr.in_tokens), out: Number(pr.out_tokens), calls: pr.calls };
+    }
+    const byPurpose: Record<string, number> = {};
+    for (const pu of purposeRows.filter((x) => Number(x.user_id ?? 0) === userId)) {
+      byPurpose[pu.purpose] = pu.calls;
+    }
+    return {
+      userId,
+      providers,
+      totalCalls: u.calls,
+      totalTokens: u.tokens,
+      estimatedCostUsd: Math.round(u.usd * 10000) / 10000,
+      byPurpose,
+    };
+  }).sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
+
   return {
     clientNumber,
-    day: lo === hi ? lo : `${lo} → ${hi}`,   // kept for existing callers that print it
-    from: lo, to: hi, days: daysInWindow.length, groupBy, series,
+    day: lo === hi ? lo : `${lo} → ${hi}`,
+    from: lo, to: hi, days: series.length, groupBy, series,
     users,
     totals: { calls: totCalls, tokens: totTokens, usd: Math.round(totUsd * 10000) / 10000 },
   };
