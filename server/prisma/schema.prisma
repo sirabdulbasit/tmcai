@@ -2910,6 +2910,35 @@ model CriticalityFusionCache {
   @@map("criticality_fusion_cache")
 }
 
+/// OPT-004 — the triage decision cache. Same shape and same reasoning as
+/// `criticality_fusion_cache`: content-addressed on the exact prompt the model
+/// sees, so changed inputs miss by construction rather than by anyone
+/// remembering to invalidate.
+model TriageDecisionCache {
+  /// sha256(promptVersion || clientNumber || userId || userPrompt). Tenant AND
+  /// user inside the hash — a triage decision names people and drafts replies,
+  /// so it must not be shareable across either boundary.
+  cacheKey      String   @id @map("cache_key") @db.Char(64)
+  clientNumber  String   @map("client_number") @db.VarChar(20)
+  userId        Int      @map("user_id")
+  /// Not part of the key — carried so an explicit invalidation on a pattern
+  /// (user acts on a card) is an indexed delete rather than a table scan.
+  dedupHash     String   @map("dedup_hash") @db.VarChar(80)
+  /// Bumped when the triage system prompt or the decision schema changes, so a
+  /// prompt improvement is never silently undone by stale cached answers.
+  promptVersion String   @map("prompt_version") @db.VarChar(16)
+  /// The full ReasonerDecision: archetype, rationale, suggestedAction,
+  /// confidence, actions, critical, noise, meetingIntent.
+  decision      Json
+  hits          Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at")
+  lastHitAt     DateTime @default(now()) @map("last_hit_at")
+
+  @@index([dedupHash], map: "triage_decision_cache_dedup_ix")
+  @@index([clientNumber, createdAt], map: "triage_decision_cache_age_ix")
+  @@map("triage_decision_cache")
+}
+
 /// Brain Maturity — the daily record behind the morning WhatsApp report.
 ///
 /// Owner ruling 2026-08-10: a maturity report every morning comparing with

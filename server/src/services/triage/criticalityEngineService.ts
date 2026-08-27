@@ -605,6 +605,7 @@ async function fuseAndScore(
       providers: ['gemini-flash', 'gemini', 'claude'],
       userId: input.userId, clientNumber: input.clientNumber,
       purpose: 'criticality_fuse',
+      feedEventId: input.feedEventId ?? null,
     });
     const m = r.text.match(/\{[\s\S]*\}/);
     if (!m) throw new Error('no JSON');

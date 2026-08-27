@@ -38,6 +38,8 @@ interface SpendParams {
   purpose: string;
   inputTokens: number;
   outputTokens: number;
+  /** Source event this call was about, when there is one. See CallLlmOpts. */
+  feedEventId?: string | null;
 }
 
 // Gemini Flash pricing (per Feb 2026 published rates, USD per 1M tokens):
@@ -73,6 +75,7 @@ export async function recordLlmSpend(p: SpendParams): Promise<void> {
         userId: p.userId ?? null,
         provider: p.provider,
         purpose: p.purpose,
+        feedEventId: p.feedEventId ?? null,
         inputTokens: p.inputTokens,
         outputTokens: p.outputTokens,
         estUsd: usd,

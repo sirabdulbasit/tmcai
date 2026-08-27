@@ -17,9 +17,10 @@
  *     meetingIntent: boolean,
  *   }
  *
- * Cached per dedup_hash for 1 hour — same pattern → same reasoning →
- * one LLM call covers all matching attention cards. Falls back to the
- * deterministic classifier if LLM is unavailable.
+ * Cached durably on the exact prompt bytes (OPT-004) — same inputs →
+ * same reasoning → one LLM call covers every look at that event, across
+ * restarts, until something the model actually sees changes. Falls back
+ * to the deterministic classifier if LLM is unavailable.
  */
 import createLogger from '../../utils/logger';
 
@@ -28,6 +29,9 @@ const log = createLogger('triage-reasoner');
 export interface ReasonerContext {
   userId: number;
   clientNumber: string;
+  /** Feed event this reasoning call is about. Attributes the LLM spend row to
+   *  its source event so a saving can be measured per event, not asserted. */
+  feedEventId?: string | null;
   itemType: 'email' | 'whatsapp' | 'meeting' | 'task';
   sourceType: string;
   from: string;
@@ -79,76 +83,243 @@ export interface ReasonerDecision {
   meetingIntent: boolean;
 }
 
-// ── Cache per (dedupHash + content fingerprint) ────────────────────
+// ── OPT-004 — the triage decision cache ────────────────────────────
 //
-// dedupHash alone is far too coarse — it only encodes
-// (userId, itemType, archetype, senderDomain, actionArchetype). Two
-// completely different emails from the same internal domain with the
-// same archetype (e.g. an L&OD course nudge vs a critical P1 rollout
-// email, both classified `reply_needed`, both `@tmcltd.ai`) would
-// share a cache entry and the second card would render the first
-// card's summary, draft target, and confidence. To preserve the "N
-// identical retries cost 1 LLM call" goal without leaking content
-// across distinct emails, the cache key now combines dedupHash with
-// a sha-256 of the actual email content (sender + subject + preview).
+// The previous cache was an in-process `Map` with a 1-hour TTL, keyed by
+// (dedupHash + a fingerprint of sender/subject/preview). Measured 2026-08-27,
+// it was not working:
+//
+//   triage: 2,439–3,727 LLM calls/day, 10.9–16.6M input tokens, $15–23/day
+//           — for ONE user, against a feed of 4,877 events total that grows
+//           by ~42/day.
+//
+// Two independent reasons, both structural:
+//
+//   1. The Map dies with the process. This tree restarts often, and every
+//      restart re-reasoned the entire backlog from scratch.
+//   2. A 1-hour TTL re-reasons the same unchanged email every hour it is
+//      looked at, forever. Nothing about an email from May changes hourly.
+//
+// This is the same shape, and the same fix, as OPT-003 (`criticality_fuse`,
+// 2026-08-08): that one went from 17,087 calls/day to ~130/day, and its table
+// currently shows 3,699 entries serving 160,241 hits — a 97.7% hit rate. The
+// design is copied deliberately rather than reinvented.
+//
+// THE KEY IS THE PROMPT, not the event and not the dedupHash. `buildUserPrompt`
+// returns the exact string the model sees, so identical bytes mean identical
+// inputs and therefore the same answer. That makes the cache correct BY
+// CONSTRUCTION: when the sender's history, the thread, the related open items
+// or the past decisions change, the prompt changes and the call misses without
+// anyone having to remember to invalidate it. It is also strictly narrower than
+// the old key — the old fingerprint covered only sender/subject/preview and
+// happily served a decision derived from stale thread context.
+//
+// userId is inside the hash, not merely a column. clientNumber alone (the
+// OPT-003 precedent) leaves two users of one tenant able to share an entry if
+// their prompts coincide; a triage decision names people and drafts replies, so
+// that is not a leak worth risking for nothing.
+import crypto from 'crypto';
+
+const TRIAGE_PROMPT_VERSION = 'v1';
+
+/** Cached decisions older than this are ignored and re-reasoned. Model
+ *  behaviour drifts and so does the world; a fortnight-old judgement is the
+ *  outer edge of evidence. Same figure as the fusion cache. */
+const TRIAGE_CACHE_TTL_DAYS = 14;
+
+/** L1, in front of the table. Saves a DB round trip when the same event is
+ *  triaged repeatedly inside one process (My Attention and Brief both call
+ *  through here on a single page load). Deliberately short — the durable
+ *  table is the real cache; this only absorbs bursts. */
 interface CacheEntry { decision: ReasonerDecision; fetchedAt: number }
 const cache = new Map<string, CacheEntry>();
-const TTL_MS = 60 * 60 * 1000; // 1 hour
+const L1_TTL_MS = 60 * 60 * 1000; // 1 hour
+const L1_MAX = 2_000;
 
-function contentFingerprint(ctx: ReasonerContext): string {
-  const crypto = require('crypto') as typeof import('crypto');
-  const blob = [
-    ctx.fromEmail ?? '',
-    (ctx.subject ?? '').slice(0, 200),
-    (ctx.preview ?? '').slice(0, 400),
-  ].join('::');
-  return crypto.createHash('sha256').update(blob).digest('hex').slice(0, 16);
+function buildCacheKey(ctx: ReasonerContext, userPrompt: string): string {
+  return crypto.createHash('sha256')
+    .update(`${TRIAGE_PROMPT_VERSION}\u0000${ctx.clientNumber}\u0000${ctx.userId}\u0000${userPrompt}`)
+    .digest('hex');
 }
 
-function buildCacheKey(dedupHash: string, ctx: ReasonerContext): string {
-  return `${dedupHash}::${contentFingerprint(ctx)}`;
-}
+/** Exported for the cache tests — the key IS the cache's behaviour. */
+export const __triageCacheInternals = { buildCacheKey, TRIAGE_PROMPT_VERSION };
 
+/**
+ * Drop cached reasoning for a pattern.
+ *
+ * Content-addressing already handles the normal case: a new decision on this
+ * pattern changes `recentDecisionCounts` in the prompt, so the next call misses
+ * on its own. This stays as the explicit belt-and-braces path used when the
+ * user acts on a card (`briefRoutes` apply-decision), because the decision_log
+ * write and the next triage read race, and a user who just told Brain something
+ * should never be answered from before they said it.
+ *
+ * L1 is cleared synchronously so callers that do not await still see the effect
+ * immediately; the L2 delete is fire-and-forget and can never throw into a
+ * caller — a failed cache eviction must not fail a user's click.
+ */
 export function invalidateReasonerCache(dedupHash?: string): void {
-  if (dedupHash) {
-    // Clear every cache entry whose key starts with this dedupHash —
-    // we don't know the content fingerprint of every variant, so a
-    // prefix sweep is the safe move.
-    for (const k of cache.keys()) {
-      if (k.startsWith(`${dedupHash}::`) || k === dedupHash) cache.delete(k);
+  cache.clear();
+  void (async () => {
+    const prisma = (await import('../../db/prisma')).default;
+    if (dedupHash) {
+      await prisma.triageDecisionCache.deleteMany({ where: { dedupHash } });
+    } else {
+      await prisma.triageDecisionCache.deleteMany({});
     }
-  } else {
-    cache.clear();
-  }
+  })().catch((err: any) => log.warn('reasoner cache invalidation failed', { dedupHash, error: err?.message }));
 }
 
 /**
  * Main entry. Returns the full triage decision for one feed event.
- * Caches by (dedupHash + content fingerprint) so N identical retries
- * of the same email share 1 LLM call, but two distinct emails that
- * happen to share archetype/domain do not bleed into each other.
+ *
+ * Cached on the exact prompt bytes, so N looks at an unchanged email cost 1
+ * LLM call however many days apart they happen and however many restarts fall
+ * between them.
  */
 export async function reasonAboutEvent(
   dedupHash: string,
   ctx: ReasonerContext,
 ): Promise<ReasonerDecision> {
-  const cacheKey = buildCacheKey(dedupHash, ctx);
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < TTL_MS) return cached.decision;
+  const userPrompt = buildUserPrompt(ctx);
+  const cacheKey = buildCacheKey(ctx, userPrompt);
+
+  const l1 = cache.get(cacheKey);
+  if (l1 && Date.now() - l1.fetchedAt < L1_TTL_MS) return l1.decision;
+
+  // L2 read. Never allowed to break triage: any failure falls through to the
+  // live call, which is exactly the behaviour before this cache existed.
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    const row = await prisma.triageDecisionCache.findUnique({
+      where: { cacheKey },
+      select: { decision: true, createdAt: true, promptVersion: true },
+    });
+    if (
+      row &&
+      row.promptVersion === TRIAGE_PROMPT_VERSION &&
+      Date.now() - row.createdAt.getTime() < TRIAGE_CACHE_TTL_DAYS * 86_400_000
+    ) {
+      const decision = row.decision as unknown as ReasonerDecision;
+      rememberL1(cacheKey, decision);
+      // Fire-and-forget: hit accounting must not add latency to the hit it is
+      // accounting for.
+      void prisma.triageDecisionCache.update({
+        where: { cacheKey },
+        data: { hits: { increment: 1 }, lastHitAt: new Date() },
+      }).catch(() => {});
+      return decision;
+    }
+  } catch (err: any) {
+    log.warn('triage decision cache read failed — reasoning live', { error: err?.message });
+  }
 
   try {
-    const decision = await llmReason(ctx);
-    cache.set(cacheKey, { decision, fetchedAt: Date.now() });
+    const decision = await llmReason(ctx, userPrompt);
+    rememberL1(cacheKey, decision);
+    void writeCache(cacheKey, dedupHash, ctx, decision);
     return decision;
   } catch (err: any) {
     log.warn('LLM reasoning failed, using fallback', { dedupHash, cacheKey, error: err.message });
+    // Deliberately NOT cached. The fallback is what we say when the model is
+    // unreachable; persisting it for a fortnight would turn a transient outage
+    // into two weeks of "LLM unavailable — using deterministic fallback."
     return fallback(ctx);
+  }
+}
+
+function rememberL1(key: string, decision: ReasonerDecision): void {
+  if (cache.size >= L1_MAX) {
+    // Oldest-first: Map preserves insertion order.
+    let i = 0;
+    for (const k of cache.keys()) {
+      if (i >= Math.floor(L1_MAX * 0.2)) break;
+      cache.delete(k);
+      i++;
+    }
+  }
+  cache.set(key, { decision, fetchedAt: Date.now() });
+}
+
+async function writeCache(
+  cacheKey: string,
+  dedupHash: string,
+  ctx: ReasonerContext,
+  decision: ReasonerDecision,
+): Promise<void> {
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    await prisma.triageDecisionCache.upsert({
+      where: { cacheKey },
+      create: {
+        cacheKey,
+        clientNumber: ctx.clientNumber,
+        userId: ctx.userId,
+        dedupHash,
+        promptVersion: TRIAGE_PROMPT_VERSION,
+        decision: decision as unknown as object,
+      },
+      // A concurrent writer got there first, or a TTL-expired row is being
+      // refreshed — either way the newer reasoning wins and the clock resets.
+      update: {
+        decision: decision as unknown as object,
+        promptVersion: TRIAGE_PROMPT_VERSION,
+        dedupHash,
+        createdAt: new Date(),
+        hits: 0,
+      },
+    });
+  } catch (err: any) {
+    log.warn('triage decision cache write failed', { error: err?.message });
+  }
+}
+
+/**
+ * Evict expired and superseded entries. Run on the hourly self-heal pass,
+ * alongside `sweepFusionCache`.
+ *
+ * A cache that never evicts is a second copy of the data growing forever —
+ * which is precisely how `llm_spend` became 80% of this database (OPT-001).
+ * Entries from a superseded prompt version go immediately: they can never be
+ * served again, so keeping them is pure storage.
+ */
+export async function sweepTriageDecisionCache(): Promise<{ deleted: number }> {
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    const cutoff = new Date(Date.now() - TRIAGE_CACHE_TTL_DAYS * 86_400_000);
+    const r = await prisma.triageDecisionCache.deleteMany({
+      where: {
+        OR: [
+          { createdAt: { lt: cutoff } },
+          { promptVersion: { not: TRIAGE_PROMPT_VERSION } },
+        ],
+      },
+    });
+    return { deleted: r.count };
+  } catch {
+    return { deleted: 0 };
+  }
+}
+
+/** Hit rate, for answering "is the cache actually working?" with a number. */
+export async function triageCacheStats(clientNumber?: string): Promise<{ entries: number; hits: number }> {
+  try {
+    const prisma = (await import('../../db/prisma')).default;
+    const agg = await prisma.triageDecisionCache.aggregate({
+      where: clientNumber ? { clientNumber } : undefined,
+      _count: { cacheKey: true },
+      _sum: { hits: true },
+    });
+    return { entries: agg._count.cacheKey ?? 0, hits: agg._sum.hits ?? 0 };
+  } catch {
+    return { entries: 0, hits: 0 };
   }
 }
 
 // ── LLM path ───────────────────────────────────────────────────────
 
-async function llmReason(ctx: ReasonerContext): Promise<ReasonerDecision> {
+async function llmReason(ctx: ReasonerContext, userPrompt: string): Promise<ReasonerDecision> {
   const { callLLM } = await import('../llmRouter');
   const { getBrainPersona } = await import('../knowledge/brainPersonaService');
   const persona = await getBrainPersona(ctx.userId, ctx.clientNumber);
@@ -200,12 +371,12 @@ Self-contradiction (rationale says one thing, action says another) is the worst 
 
 Be decisive. Don't hedge. The user trusts you to pick one path.`;
 
-  const user = buildUserPrompt(ctx);
-  const r = await callLLM(system, user, {
+  const r = await callLLM(system, userPrompt, {
     maxTokens: 500,
     userId: ctx.userId,
     clientNumber: ctx.clientNumber,
     purpose: 'triage',
+    feedEventId: ctx.feedEventId ?? null,
   });
   const text = r.text.trim();
 

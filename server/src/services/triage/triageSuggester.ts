@@ -793,8 +793,8 @@ async function _doTriage(row: {
 
   // ── LIVING BRAIN: LLM reasoner ──
   // Replaces hardcoded rationale templates + branching action logic with
-  // a single context-aware LLM call. Cached per dedup_hash for 1 hour so
-  // N matching attention cards share 1 reasoning call.
+  // a single context-aware LLM call. Cached durably on the prompt bytes
+  // (OPT-004) so N looks at an unchanged event share 1 reasoning call.
   const { reasonAboutEvent } = await import('./triageReasoner');
   const faclDocs = org?.faclDocs ?? [];
   // Shortlist FACL docs whose title keywords appear in the subject/preview
@@ -813,6 +813,7 @@ async function _doTriage(row: {
   const decision = await reasonAboutEvent(dedupHash, {
     userId: row.userId,
     clientNumber: row.clientNumber,
+    feedEventId: row.id,
     itemType,
     sourceType: row.sourceType,
     from: fromFull,

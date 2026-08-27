@@ -38,6 +38,15 @@ export interface CallLlmOpts {
   clientNumber?: string;
   /** Free-text label for analytics ('triage', 'chat', 'scribe', etc.) */
   purpose?: string;
+  /** Which feed event this call was made ABOUT, when there is one.
+   *
+   *  `llm_spend.feed_event_id` has existed since the table was created and was
+   *  NULL on all 2.6M rows: every call site passed `purpose` and none passed
+   *  this. The consequence was not cosmetic — spend could be grouped by purpose
+   *  but never traced to a source event, so "this optimisation removed N calls
+   *  for event X" was unprovable and every cost claim had to be asserted rather
+   *  than shown. Populated so a saving can be MEASURED per event. */
+  feedEventId?: string | null;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -110,6 +119,7 @@ export async function callLLM(
           void recordLlmSpend({
             provider, userId: opts?.userId, clientNumber: opts?.clientNumber,
             purpose: opts?.purpose ?? 'unknown',
+            feedEventId: opts?.feedEventId ?? null,
             inputTokens, outputTokens,
           }).catch(() => {});
           // Prod fix 2026-07-10: LLM output truncated at maxTokens can
