@@ -492,10 +492,15 @@ export async function dispatchInstruction(args: {
     case 'add_open_item': {
       const title = ix.params.itemTitle ?? 'Follow-up';
       const note = ix.params.itemNote ?? '';
+      // DEF-249 — the sibling of the actionLifecycle bug, unguarded for the same reason.
+      // `itemDueDate` also arrives from a model and was accepted on a NaN check alone. It has
+      // not produced a wrong year in production yet, which is luck rather than a difference in
+      // design: same source, same trust, no window. Guarding it here rather than waiting for it
+      // to write its own 2024.
       let dueDate: Date | null = null;
       if (ix.params.itemDueDate) {
-        const parsed = new Date(ix.params.itemDueDate);
-        if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+        const { saneDueDate } = await import('../brainPrompts/promptReplyHandler');
+        dueDate = saneDueDate(new Date(ix.params.itemDueDate));
       }
 
       // Hygiene-level dedup. Per user 2026-05-13: "why brain is creating

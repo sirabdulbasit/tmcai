@@ -1,7 +1,7 @@
 import prisma from '../../db/prisma';
 import { renderLifecycleIntervention } from '../notifications/proactiveMessageText';
 import createLogger from '../../utils/logger';
-import { parseDuePhrase } from '../brainPrompts/promptReplyHandler';
+import { parseDuePhrase, saneDueDate } from '../brainPrompts/promptReplyHandler';
 
 const log = createLogger('action-lifecycle');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -205,7 +205,14 @@ Rules: a future promise is not completion; preserve concrete dates/reasons; flag
     if (!match) return null; // strict-output failure — caller decides fallback policy
     const parsed = JSON.parse(match[0]);
     const allowed = ['completed', 'in_progress', 'blocked', 'unknown'];
-    const parsedDeadline = parsed.newDeadline ? new Date(parsed.newDeadline) : null;
+    // DEF-249 — the model's date gets the SAME sanity window as a parsed phrase.
+    // It used to be accepted on Number.isFinite alone, which asks "is this a date at all"
+    // rather than "is this a date he could have meant". On 2026-08-27 the owner said
+    // "28th October", the model supplied 2024, and the item was written due 2024-10-28 —
+    // permanently overdue by two years. `saneDueDate` returns null outside the window, which
+    // drops through to `parseDuePhrase(body)` below and, failing that, to the existing
+    // "unparseable — ask him" path. Refusing is better than writing a date he never meant.
+    const parsedDeadline = saneDueDate(parsed.newDeadline ? new Date(parsed.newDeadline) : null);
     return {
       outcome: allowed.includes(parsed.outcome) ? parsed.outcome : 'unknown',
       summary: String(parsed.summary ?? body).slice(0, 500),

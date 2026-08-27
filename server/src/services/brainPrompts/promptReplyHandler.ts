@@ -459,10 +459,31 @@ const WEEKDAYS = ['sunday','monday','tuesday','wednesday','thursday','friday','s
  * refusing: returning null routes the caller into its existing
  * "unparseable date — ask the user" path.
  */
-function withinSaneDueWindow(d: Date, todayMidnight: Date): boolean {
+export function withinSaneDueWindow(d: Date, todayMidnight: Date): boolean {
   const oneDayBefore = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
   const fiveYearsAhead = new Date(todayMidnight.getTime() + 5 * 365 * 24 * 60 * 60 * 1000);
   return d >= oneDayBefore && d <= fiveYearsAhead;
+}
+
+/**
+ * DEF-249 — the same window, applied to a date NOBODY parsed here.
+ *
+ * DEF-017 put a sanity window inside `parseDuePhrase`, which was the right fix for the parser
+ * and the wrong shape for the problem. `actionLifecycleService` asks a MODEL for the deadline and
+ * accepts its answer on `Number.isFinite` alone, using `parseDuePhrase` only as a fallback — so
+ * the guard sat in the branch that runs when the model FAILS, and was skipped whenever it
+ * succeeded. 2026-08-27: the owner said "28th October", the model supplied the year 2024, and
+ * `Decide on Imperialsoft services termination date` was written due 2024-10-28 — permanently
+ * overdue, and nagging him about it forever.
+ *
+ * The guard belongs on the VALUE, not on one producer of it. Exported so every path that obtains
+ * a date from anywhere can apply the same window.
+ */
+export function saneDueDate(d: Date | null | undefined): Date | null {
+  if (!d || Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return withinSaneDueWindow(d, todayMidnight) ? d : null;
 }
 
 export function parseDuePhrase(raw: string): Date | null {
