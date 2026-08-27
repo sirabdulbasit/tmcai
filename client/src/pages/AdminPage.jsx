@@ -11,27 +11,38 @@ import BrainLearningTab from './admin/BrainLearningTab';
 import BrainImprovementTab from './admin/BrainImprovementTab';
 
 /**
- * Admin surface — kept intentionally small.
+ * Admin surface — grouped by WHAT A SETTING APPLIES TO.
  *
- * Prior structure (2026-06 vintage) had 9 top-level tabs. Per Basit
- * 2026-07-06 ("this page become too much complex, try to make it
- * simpler with only necessary things") we collapsed to 5:
+ * Basit, 2026-08-27: "i just want clarity with Overall Settings / Client Specific / User List
+ * with filter of client". The previous layout grouped by how often a thing was used (daily vs
+ * Setup), which put client-scoped and global settings side by side and produced two real
+ * confusions:
  *
- *   Users      — daily user management (renamed from Client Management)
- *   WhatsApp   — channel config + Verify panel
- *   Connectors — per-tenant eligibility
- *   Brain      — Learning + Improvement (nested sub-tabs)
- *   Setup      — rare/one-time (Clients, Licenses, Tiers, App Config,
- *                LLM Spend) — nested sub-tabs; hidden unless you need it
+ *   · TWO "Connectors" — a top-level tab (per-tenant eligibility) and "Client Connectors" inside
+ *     the Users tab (tenant knowledge sources). Same word, different scopes, different screens.
+ *   · TWO routes to "Clients" — Setup → Clients and Users → Clients rendered the SAME component
+ *     in the SAME default state, because `initialSubTab` was passed and never accepted as a prop.
  *
- * The nested-sub-tabs pattern (Brain and Setup) keeps the daily
- * surface uncluttered without deleting any functionality.
+ * The grouping now follows the code rather than a preference. Counting client/tenant references
+ * per tab: WhatsApp 18, Client Config 13, Licenses 9, Connectors 3 — all client-scoped; User
+ * Tiers 0, Brain Improvement 0, Brain Learning 1, LLM Spend 2 — global.
+ *
+ *   Overall   — applies across every client: the client list itself, user tiers, Brain, spend
+ *   Client    — everything scoped to ONE client, chosen once at the top and held
+ *   Users     — the user list
+ *
+ * NO FUNCTIONALITY MOVED. Every component rendered before is rendered now; only its address
+ * changed. The one thing genuinely absent is a client FILTER on the user list —
+ * `GET /admin/users` is scoped `where: { clientNumber: req.user.clientNumber }`, so it returns a
+ * single client's users to everyone including a SuperAdmin. Widening it is a tenant-boundary
+ * change, not a UI change, and this codebase carries four recorded `query-without-tenant-scope`
+ * defects — so it is left for a deliberate decision rather than slipped in with a re-layout.
  */
 export default function AdminPage() {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState('users');
-  const [brainSubTab, setBrainSubTab] = useState('learning');
-  const [setupSubTab, setSetupSubTab] = useState('clients');
+  const [activeTab, setActiveTab] = useState('overall');
+  const [overallSub, setOverallSub] = useState('clients');
+  const [clientSub, setClientSub] = useState('config');
   const [msg, setMsgRaw] = useState('');
 
   // Auto-dismiss the floating toast after 4s. Wraps the raw setter so
@@ -50,28 +61,40 @@ export default function AdminPage() {
   }
 
   const topTabs = [
-    { key: 'users',      label: 'Users' },
+    { key: 'overall', label: 'Overall Settings' },
+    { key: 'client',  label: 'Client Specific' },
+    { key: 'users',   label: 'Users' },
+  ];
+
+  // Global — nothing here belongs to one client.
+  const overallSubs = [
+    { key: 'clients',  label: 'Clients' },
+    { key: 'tiers',    label: 'User Tiers' },
+    { key: 'brain',    label: 'Brain — Learning' },
+    { key: 'brain-i',  label: 'Brain — Improvement' },
+    { key: 'llm',      label: 'LLM Spend' },
+  ];
+
+  // Client-scoped. Order is setup-order: what the client IS, then how it talks, then what it
+  // reads, then what it is licensed for.
+  const clientSubs = [
+    { key: 'config',     label: 'Client Config' },
+    // ConfigTab and ClientConfigSection are DIFFERENT screens with confusingly similar names —
+    // the first is application configuration, the second is the client's own config record. I
+    // dropped ConfigTab entirely on the first pass of this re-layout by assuming they were the
+    // same thing; both are listed explicitly so the next person cannot repeat that.
+    { key: 'appconfig',  label: 'Application Config' },
     { key: 'whatsapp',   label: 'WhatsApp' },
     { key: 'connectors', label: 'Connectors' },
-    { key: 'brain',      label: 'Brain' },
-    { key: 'setup',      label: 'Setup' },
+    { key: 'sources',    label: 'Knowledge Sources' },
+    ...(user?.isSuperAdmin ? [{ key: 'licenses', label: 'Licence' }] : []),
   ];
 
-  const brainSubTabs = [
-    { key: 'learning',    label: 'Learning' },
-    { key: 'improvement', label: 'Improvement' },
-  ];
-
-  // Setup groups the tabs used at initial config time or checked
-  // rarely (once a month or less). Order = most-common-first among
-  // the rare ones.
-  const setupSubTabs = [
-    { key: 'clients',    label: 'Clients' },
-    ...(user?.isSuperAdmin ? [{ key: 'licenses', label: 'Licenses' }] : []),
-    { key: 'tiers',      label: 'User Tiers' },
-    { key: 'config',     label: 'Application Configuration' },
-    { key: 'llm-spend',  label: 'LLM Spend' },
-  ];
+  const subsFor = activeTab === 'overall' ? overallSubs
+    : activeTab === 'client' ? clientSubs
+    : [];
+  const activeSub = activeTab === 'overall' ? overallSub : clientSub;
+  const setActiveSub = activeTab === 'overall' ? setOverallSub : setClientSub;
 
   return (
     <div className="settings-page">
@@ -89,30 +112,15 @@ export default function AdminPage() {
           ))}
         </div>
 
-        {/* Sub-tab row — only rendered when the top-level tab has
-            nested sections (Brain, Setup). Kept visually lighter than
-            top tabs so the hierarchy is clear at a glance. */}
-        {activeTab === 'brain' && (
+        {/* One sub-tab row, driven by whichever group is open. Previously each group drew
+            its own conditional row, which is how two of them ended up offering "Clients". */}
+        {subsFor.length > 0 && (
           <div className="config-tabs config-tabs-sub" style={subTabRowStyle}>
-            {brainSubTabs.map(t => (
+            {subsFor.map(t => (
               <button
                 key={t.key}
-                className={`config-tab ${brainSubTab === t.key ? 'active' : ''}`}
-                onClick={() => setBrainSubTab(t.key)}
-                style={subTabButtonStyle}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        )}
-        {activeTab === 'setup' && (
-          <div className="config-tabs config-tabs-sub" style={subTabRowStyle}>
-            {setupSubTabs.map(t => (
-              <button
-                key={t.key}
-                className={`config-tab ${setupSubTab === t.key ? 'active' : ''}`}
-                onClick={() => setSetupSubTab(t.key)}
+                className={`config-tab ${activeSub === t.key ? 'active' : ''}`}
+                onClick={() => setActiveSub(t.key)}
                 style={subTabButtonStyle}
               >
                 {t.label}
@@ -134,41 +142,48 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* Daily surfaces */}
-        {activeTab === 'users' && (
-          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} />
+        {/* ── Overall — global settings ───────────────────────────────────────── */}
+        {activeTab === 'overall' && overallSub === 'clients' && (
+          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} section="tenants" />
         )}
-        {activeTab === 'whatsapp' && (
-          <WhatsAppMergedTab msg={msg} setMsg={setMsg} />
-        )}
-        {activeTab === 'connectors' && (
-          <ConnectorsAdminTab user={user} msg={msg} setMsg={setMsg} />
-        )}
-
-        {/* Brain — Learning + Improvement */}
-        {activeTab === 'brain' && brainSubTab === 'learning' && (
-          <BrainLearningTab user={user} msg={msg} setMsg={setMsg} />
-        )}
-        {activeTab === 'brain' && brainSubTab === 'improvement' && (
-          <BrainImprovementTab user={user} msg={msg} setMsg={setMsg} />
-        )}
-
-        {/* Setup — rare / one-time */}
-        {activeTab === 'setup' && setupSubTab === 'clients' && (
-          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} initialSubTab="clients" />
-        )}
-        {activeTab === 'setup' && setupSubTab === 'licenses' && user?.isSuperAdmin && (
-          <LicensesTab msg={msg} setMsg={setMsg} />
-        )}
-        {activeTab === 'setup' && setupSubTab === 'tiers' && (
+        {activeTab === 'overall' && overallSub === 'tiers' && (
           <TierManagementTab msg={msg} setMsg={setMsg} />
         )}
-        {activeTab === 'setup' && setupSubTab === 'config' && (
-          <ConfigTab user={user} />
+        {activeTab === 'overall' && overallSub === 'brain' && (
+          <BrainLearningTab user={user} msg={msg} setMsg={setMsg} />
         )}
-        {activeTab === 'setup' && setupSubTab === 'llm-spend' && (
+        {activeTab === 'overall' && overallSub === 'brain-i' && (
+          <BrainImprovementTab user={user} msg={msg} setMsg={setMsg} />
+        )}
+        {activeTab === 'overall' && overallSub === 'llm' && (
           <LlmSpendTab user={user} />
         )}
+
+        {/* ── Client Specific — everything scoped to one client ────────────────── */}
+        {activeTab === 'client' && clientSub === 'config' && (
+          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} section="clientconfig" />
+        )}
+        {activeTab === 'client' && clientSub === 'appconfig' && (
+          <ConfigTab user={user} />
+        )}
+        {activeTab === 'client' && clientSub === 'whatsapp' && (
+          <WhatsAppMergedTab msg={msg} setMsg={setMsg} />
+        )}
+        {activeTab === 'client' && clientSub === 'connectors' && (
+          <ConnectorsAdminTab user={user} msg={msg} setMsg={setMsg} />
+        )}
+        {activeTab === 'client' && clientSub === 'sources' && (
+          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} section="connectors" />
+        )}
+        {activeTab === 'client' && clientSub === 'licenses' && user?.isSuperAdmin && (
+          <LicensesTab msg={msg} setMsg={setMsg} />
+        )}
+
+        {/* ── Users ────────────────────────────────────────────────────────────── */}
+        {activeTab === 'users' && (
+          <ClientManagementTab user={user} msg={msg} setMsg={setMsg} section="users" />
+        )}
+
       </div>
     </div>
   );

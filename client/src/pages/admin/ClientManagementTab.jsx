@@ -7,7 +7,23 @@ import { CLIENT_SECTIONS } from './adminConstants';
 // TAB 1: Client Management (Tenants + Users + Client Config)
 // ═══════════════════════════════════════════════════════════════
 
-function ClientManagementTab({ user, msg, setMsg }) {
+/**
+ * `section` (2026-08-27) — render ONE section and hide the internal tab row.
+ *
+ * The four sections here (Clients · Users · Client Config · Client Connectors) belong to two
+ * different groups in the reorganised admin: Clients and Users are not client-scoped, while
+ * Client Config and Client Connectors are. Splitting them across the new top-level groups means
+ * this component must be able to show one section without also drawing a tab row that contradicts
+ * the group the reader is standing in.
+ *
+ * Omitted, it behaves exactly as before — its own tabs, its own state. Nothing about what any
+ * section DOES changes; only whether its siblings are offered alongside it.
+ *
+ * Note: `initialSubTab` was already being passed by AdminPage and was never a parameter, so
+ * Setup → Clients silently rendered the default section. That is why two tabs appeared to show
+ * the same screen.
+ */
+function ClientManagementTab({ user, msg, setMsg, section }) {
   const [tenants, setTenants] = useState([]);
   const [users, setUsers] = useState([]);
   const [prices, setPrices] = useState([]);
@@ -17,6 +33,9 @@ function ClientManagementTab({ user, msg, setMsg }) {
   // by the OAuth round-trip flow to land back on the Client Connectors
   // sub-tab after Google consent). Falls back to the role default.
   const [subTab, setSubTab] = useState(() => {
+    // A pinned section wins over everything, including ?subtab= — the caller has already decided
+    // which group the reader is in, and a URL left over from the old layout must not move them.
+    if (section) return section;
     try {
       const fromUrl = new URLSearchParams(window.location.search).get('subtab');
       const valid = ['tenants', 'users', 'clientconfig', 'connectors'];
@@ -24,6 +43,9 @@ function ClientManagementTab({ user, msg, setMsg }) {
     } catch { /* ignore — fall through to default */ }
     return user?.isSuperAdmin ? 'tenants' : 'users';
   });
+
+  // Keep the pinned section authoritative if the caller switches groups without remounting.
+  React.useEffect(() => { if (section) setSubTab(section); }, [section]);
 
   // ─── New Client form (info + license + config all-in-one) ────
   const [nc, setNc] = useState({
@@ -175,8 +197,8 @@ function ClientManagementTab({ user, msg, setMsg }) {
 
   return (
     <>
-      {/* Sub-tabs */}
-      <div className="config-tabs sub-tabs">
+      {/* Sub-tabs — hidden when the caller pinned a single section. */}
+      <div className="config-tabs sub-tabs" style={section ? { display: 'none' } : undefined}>
         {user?.isSuperAdmin && <button className={`config-tab ${subTab === 'tenants' ? 'active' : ''}`} onClick={() => setSubTab('tenants')}>Clients</button>}
         <button className={`config-tab ${subTab === 'users' ? 'active' : ''}`} onClick={() => setSubTab('users')}>Users</button>
         <button className={`config-tab ${subTab === 'clientconfig' ? 'active' : ''}`} onClick={() => setSubTab('clientconfig')}>Client Config</button>
