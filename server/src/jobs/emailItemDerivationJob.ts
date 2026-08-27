@@ -41,6 +41,9 @@ export interface DerivationSummary {
   drafted: number;
   skippedNotActionable: number;
   skippedDuplicate: number;
+  /** DEF-250 — events that reconciled an existing same-thread item
+   *  (fulfilled → closed/annotated, or advanced → annotated). */
+  reconciled: number;
   errors: number;
 }
 
@@ -83,9 +86,68 @@ export async function judgeEmailActionability(email: {
   }
 }
 
+// ─── DEF-250 — `thread-answered-but-item-open`: the thread that continued ────
+//
+// Owner, verbatim (CL-039 era): "if email said to provide API, but in later
+// email that API was provided and brain didnt get it." Measured: Safi Ullah
+// delivered the DAL API on 08-24 05:56; Brain minted "Share DAL Open API to
+// Basit" on 08-26 — two days AFTER delivery — and chased him for a deadline
+// on it. An item is minted from ONE message and never reconciled against the
+// thread that continued; worse, the continuation may be judged not-actionable
+// on its own and `skipped`, so the fulfilment is never even looked at (the
+// GCP/Imperial reply, 08-27 05:32).
+//
+// So reconciliation runs FIRST, before the noise skip and before the
+// actionability judgement: when an inbound email belongs to a thread that
+// already carries an ACTIVE item, the MODEL judges the relation (fulfils /
+// advances / unrelated — a judgement, therefore the model's). Code executes
+// the verdict through guardrails only: `fulfils` attempts the CANONICAL
+// lifecycle close (`transitionStatus` → CLOSED with the model's note as the
+// resolution reason — ledgered, reversible, refused-able); a REFUSED close
+// (approval guard, lifecycle rule) falls back to annotating the item, never
+// forcing it. `advances` annotates. Every outcome leaves a receipt on the
+// item (`metadata.threadUpdates`) and the event exits `new` as `processed`.
+// Guardrail: no-claim-without-a-receipt — the item's state change carries the
+// feed event that caused it.
+
+interface ThreadJudgement {
+  relation: 'fulfils' | 'advances' | 'unrelated';
+  note?: string;
+}
+
+/** The MODEL's reconciliation call. Exported for the mutation test. */
+export async function judgeThreadReconciliation(args: {
+  item: { title: string; description?: string | null; status: string };
+  email: { subject: string; from: string; snippet: string };
+}): Promise<ThreadJudgement | null> {
+  try {
+    const { callGemini } = await import('../services/geminiService');
+    const system = [
+      'An open to-do item was created from an earlier email in this thread. A NEW email has',
+      'arrived on the SAME thread. Judge the relation:',
+      '- "fulfils": the new email itself DELIVERS or confirms completion of what the item asks for',
+      '  (the thing was provided, done, sent, or answered).',
+      '- "advances": it provides part of it, or materially updates the item (new date, new owner).',
+      '- "unrelated": neither.',
+      'Answer STRICT JSON: {"relation":"fulfils"|"advances"|"unrelated",',
+      ' "note": string (<=200 chars, names WHO did WHAT — used as the closure/update note)}',
+    ].join('\n');
+    const user = `ITEM (${args.item.status}): ${args.item.title}\n${args.item.description ?? ''}\n\nNEW EMAIL\nFrom: ${args.email.from}\nSubject: ${args.email.subject}\n\n${args.email.snippet}`;
+    const r = await callGemini(system, user, { flash: true, maxTokens: 384, responseMimeType: 'application/json' });
+    const parsed = JSON.parse((r as any).text ?? (r as any)) as ThreadJudgement;
+    if (!['fulfils', 'advances', 'unrelated'].includes(parsed?.relation as string)) return null;
+    return parsed;
+  } catch (e: any) {
+    log.warn('thread reconciliation judgement failed — event stays new for retry', { error: e?.message?.slice(0, 150) });
+    return null;
+  }
+}
+
+const ACTIVE_STATUSES = ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT'];
+
 export async function runEmailItemDerivation(): Promise<DerivationSummary> {
   const out: DerivationSummary = {
-    scanned: 0, created: 0, drafted: 0, skippedNotActionable: 0, skippedDuplicate: 0, errors: 0,
+    scanned: 0, created: 0, drafted: 0, skippedNotActionable: 0, skippedDuplicate: 0, reconciled: 0, errors: 0,
   };
   try {
     const { getBehaviorValue } = await import('../services/behaviorConfig');
@@ -132,6 +194,94 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
           });
           out.skippedNotActionable += 1;
           continue;
+        }
+
+        // DEF-250 — THREAD RECONCILIATION RUNS FIRST, before the noise skip
+        // and before the actionability judgement: a continuation that would
+        // be judged not-actionable on its own may be the FULFILMENT of an
+        // item this thread already carries (the DAL API delivery; the
+        // skipped GCP reply). Cheap DB check first; the model is consulted
+        // only when an active same-thread item exists, and the call counts
+        // against the same batch cap.
+        const p0 = (row.rawPayload ?? {}) as Record<string, unknown>;
+        const threadId = String(p0.threadId ?? '').trim();
+        if (threadId) {
+          const activeItems = await prisma.openItem.findMany({
+            where: {
+              clientNumber: row.clientNumber, userId: row.userId,
+              sourceFeed: 'gmail', status: { in: ACTIVE_STATUSES as any },
+              sourceFeedEventId: { not: null },
+            },
+            select: { id: true, title: true, description: true, status: true, sourceFeedEventId: true, metadata: true },
+            take: 25,
+          } as any);
+          let matched: any = null;
+          if (activeItems.length > 0) {
+            const srcEvents = await prisma.feedEvent.findMany({
+              where: { id: { in: activeItems.map((i: any) => i.sourceFeedEventId).filter(Boolean) } },
+              select: { id: true, rawPayload: true } as any,
+            });
+            const threadOf = new Map(srcEvents.map((e: any) => [e.id, String((e.rawPayload ?? {}).threadId ?? '')]));
+            matched = activeItems.find((i: any) => threadOf.get(i.sourceFeedEventId) === threadId) ?? null;
+          }
+          if (matched) {
+            perTenantSeen.set(tenantKey, (perTenantSeen.get(tenantKey) ?? 0) + 1);
+            const pEmail = {
+              subject: String(p0.subject ?? '(no subject)').slice(0, 300),
+              from: String(p0.from ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
+              snippet: String(p0.snippet ?? '').slice(0, 1500),
+            };
+            const rel = await judgeThreadReconciliation({
+              item: { title: matched.title, description: matched.description, status: matched.status },
+              email: pEmail,
+            });
+            if (!rel) continue; // judgement failed — event stays `new`, retried
+            if (rel.relation !== 'unrelated') {
+              const note = String(rel.note ?? '').slice(0, 200) || 'answered by a later email on the same thread';
+              let closed = false;
+              if (rel.relation === 'fulfils') {
+                try {
+                  const { transitionStatus } = await import('../services/itemLifecycle/lifecycleService');
+                  const res = await transitionStatus(matched.id, 'CLOSED', {
+                    clientNumber: row.clientNumber,
+                    actor: 'brain:thread_reconciliation',
+                    reason: note,
+                  });
+                  closed = !!res.ok;
+                  if (!res.ok) {
+                    log.info('reconciliation close refused by the lifecycle — annotating instead', {
+                      itemId: matched.id, error: (res as any).error?.slice?.(0, 120),
+                    });
+                  }
+                } catch (e: any) {
+                  log.warn('reconciliation close failed — annotating instead', { itemId: matched.id, error: e?.message?.slice(0, 120) });
+                }
+              }
+              // The receipt rides the ITEM either way: what arrived, what the
+              // model judged, what was done about it.
+              const meta = (matched.metadata as Record<string, unknown> | null) ?? {};
+              const updates = Array.isArray((meta as any).threadUpdates) ? (meta as any).threadUpdates : [];
+              await prisma.openItem.update({
+                where: { id: matched.id },
+                data: {
+                  metadata: {
+                    ...meta,
+                    threadUpdates: [...updates, {
+                      feedEventId: row.id, relation: rel.relation, note,
+                      closed, at: new Date().toISOString(),
+                    }].slice(-10),
+                  } as any,
+                },
+              }).catch((e: any) => log.warn('thread receipt write failed', { itemId: matched.id, error: e?.message?.slice(0, 120) }));
+              await prisma.feedEvent.update({
+                where: { id: row.id },
+                data: { status: 'processed', processedAt: new Date() } as any,
+              });
+              out.reconciled += 1;
+              continue;
+            }
+            // unrelated → fall through to the normal noise/actionability flow.
+          }
         }
 
         // DEF-247 — the SAME shared sender-quality predicate the gate
@@ -229,10 +379,10 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
                   missingSlots: gate.missingSlots,
                   asksSentCount: 0, firstAskScheduledAt: null, lastAskAt: null,
                 },
-                derivedFrom: { feedEventId: row.id, judgedReason: judged.reason ?? null },
+                derivedFrom: { feedEventId: row.id, threadId: threadId || null, judgedReason: judged.reason ?? null },
               } as any,
             } : {
-              metadata: { derivedFrom: { feedEventId: row.id, judgedReason: judged.reason ?? null } } as any,
+              metadata: { derivedFrom: { feedEventId: row.id, threadId: threadId || null, judgedReason: judged.reason ?? null } } as any,
             }),
           } as any,
           select: { id: true },

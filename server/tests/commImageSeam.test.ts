@@ -26,6 +26,19 @@ vi.mock('../src/services/genaiClient', () => ({
   getGenAI: () => ({ models: { generateContent: (...a: any[]) => generateContent(...a) } }),
 }));
 
+// DEF-250 turn repair — this suite shipped RED (b97225f): the two failure-path
+// tests mocked Gemini but NOT the OpenAI FALLBACK `describeInboundImage` runs
+// when Gemini returns empty/throws — so a REAL OpenAI client was constructed
+// in a unit test and hung to the 10s timeout (SDK retries, no key). The
+// fallback now fails FAST, which is exactly the state the two tests mean to
+// exercise: both providers failed, the seam must still SAY so.
+vi.mock('openai', () => ({
+  __esModule: true,
+  default: class {
+    chat = { completions: { create: async () => { throw new Error('no vision provider in unit tests'); } } };
+  },
+}));
+
 import { readCommImageIntoText } from '../src/services/imageService';
 
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');

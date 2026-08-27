@@ -1298,3 +1298,88 @@ preview-minting site this hook misses (the reasoning-path `:2880` action_plan pe
 and this branch are the two I verified; a grep for `startPending` shows one more at
 `:4266`, which previews the delegation EMAIL after a successful delegate and grounds
 its recipient by construction — named so the reviewer can check that reading).
+
+## Iteration 45 — 2026-08-27
+
+**Files named in the first two tool calls and changed:**
+`server/src/jobs/emailItemDerivationJob.ts` and
+`server/tests/def250ThreadAnsweredItemCloses.test.ts` (new, 6 tests); plus a
+two-hunk repair to `server/tests/commImageSeam.test.ts` (another session's suite,
+shipped red — attribution below). **This turn ships DEF-250 —
+`thread-answered-but-item-open`, the analyst's top unfunded capability, in their
+stated order.**
+
+**The lived defect:** Safi Ullah delivered the DAL Open API on 08-24 05:56; Brain
+minted "Share DAL Open API to Basit" on 08-26 — two days after delivery — and chased
+the owner for a deadline on it. His words: "in later email that API was provided and
+brain didnt get it." And the GCP/Imperial thread's continuation was `skipped` by the
+noise path, so reconciliation could not even have seen it. An item, once minted, was
+never reconciled against its own thread.
+
+**The mechanism:** reconciliation runs FIRST in the derivation job — before the noise
+skip, before the actionability judgement — because a continuation that is
+not-actionable on its own may be the fulfilment of an item the thread already carries.
+Cheap DB check (same-thread ACTIVE item via the source event's `threadId`; zero LLM
+cost when none matches); on a match, the MODEL judges the relation (`fulfils` /
+`advances` / `unrelated` — the analyst's own line: "auto-close is a judgement, not a
+lookup", and judgements are the model's). Code executes through guardrails: `fulfils`
+attempts the CANONICAL `transitionStatus(→CLOSED)` with the model's note as the
+resolution reason — and a REFUSED close (approval guard, lifecycle rule) falls back to
+annotation, never a forced write. Every outcome leaves a receipt on the item
+(`metadata.threadUpdates`) and the event exits `new` as `processed`. Reconciliation
+LLM calls count against the same per-tenant batch cap. New items store
+`derivedFrom.threadId` so future matching needs no join.
+
+**The secondary repair, attributed:** `commImageSeam.test.ts` (`b97225f`, another
+session) was RED at HEAD before my diff — its two failure-path tests mock Gemini but
+not the OpenAI FALLBACK `describeInboundImage` runs on empty/thrown results, so a
+REAL OpenAI client was constructed in a unit test and hung to the 10s timeout, twice.
+Test-file-only fix: the fallback is mocked to fail fast, which is precisely the state
+those tests mean to exercise (both providers down → the seam still SAYS so). 20s →
+0.6s, 5/5. The matrix gates every release; leaving it red was not an option, and the
+source file is untouched.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2966 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 2995) — note: the pre-repair full run was **2 failed**, both
+  in `commImageSeam.test.ts`, reproduced in isolation before I touched anything.
+- New suite: **6 passed | 0 failed** on the DAL fixture. **Mutation RUN and killed:**
+  reconciliation branch disabled → 4 of 6 fail (the two no-op cases correctly
+  survive); restore grep-verified.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): progressing** — `thread-answered-but-item-open` is
+a first-occurrence tag with no §3 alias; the analyst asked for it to be seeded into
+the recurrence table at first count. The fix is the class (any thread, any item, any
+sender), not the DAL sentence. DEF-250 row written with the capability block.
+
+**CAPABILITY:** Self Follow-Up
+**PREDICTED:** a delivered answer closes or advances its item without the owner
+asking. The DAL shape becomes inexpressible; the skipped-continuation blind spot is
+gone because reconciliation looks before the skip.
+**MECHANISM:** the thread is re-examined at the one consumer that sees every new
+message; the model judges, the lifecycle executes, the receipt rides the item.
+**FALSIFIER:** any post-deploy item still chasing a thread whose fulfilment arrived
+in-window; a reconciliation close with no `threadUpdates` receipt; or an item closed
+against a message judged `unrelated`.
+
+**Symptom tag:** `thread-answered-but-item-open` — named verbatim, closed at the
+class. Escalation ruling restated: (a) known limitation, not revert — thirteenth
+statement on the never-re-run pointer.
+
+**What I did NOT do, named:** owner's OWN replies as fulfilment (his reply saying
+"done" should reconcile too — the loop currently skips his outbound mail before
+reconciliation; a deliberate follow-up, called out for Codex); gchat consumer (#5);
+the digest opt-in (owner's sentence); the class fix for #1 (single dispatch/grounding
+authority — DEF-247/249 built two instances of it; the unifying refactor is bigger
+than a night turn and I decline to smuggle it).
+
+**Honest prediction:** after deploy, the next thread that answers its own item
+produces a closed-or-annotated item with a receipt, minutes after the email lands —
+and "why is this still open?" stops being a question he has to ask. What would prove
+me wrong: the falsifier above, or the model's `fulfils` judgement proving too eager on
+politeness replies ("thanks, will do") — the `advances`/`unrelated` distinction and
+the refused-close fallback are the two brakes, and Codex should probe both.
