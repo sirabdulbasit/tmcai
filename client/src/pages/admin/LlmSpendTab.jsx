@@ -11,6 +11,9 @@ export default function LlmSpendTab({ user }) {
   // `period` drives week/month boundaries SERVER-side so client and server cannot disagree about
   // where a week starts — it begins Monday, which matters because his working week does.
   const [period, setPeriod] = useState('day');
+  // The BUCKET, independent of the window. A quarter grouped by month is three rows;
+  // the same quarter by day is ninety. Both are legitimate questions.
+  const [groupBy, setGroupBy] = useState('day');
   const [day, setDay] = useState(today());
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
@@ -25,14 +28,15 @@ export default function LlmSpendTab({ user }) {
       const q = period === 'range'
         ? `from=${from}&to=${to}`
         : `period=${period}&day=${day}`;
-      const { data } = await api.get(`/admin/llm-spend?${q}${cn}`);
+      const g = `&groupBy=${groupBy}`;
+      const { data } = await api.get(`/admin/llm-spend?${q}${g}${cn}`);
       setReport(data);
     } catch (e) {
       setErr(e?.response?.data?.error ?? e.message);
     }
     setLoading(false);
   };
-  useEffect(() => { load(); }, [period, day, from, to]);
+  useEffect(() => { load(); }, [period, day, from, to, groupBy]);
 
   const fmt = (n) => n.toLocaleString();
   const fmtUsd = (n) => `$${n.toFixed(4)}`;
@@ -84,6 +88,59 @@ export default function LlmSpendTab({ user }) {
 
       {report && (
         <>
+          {/* CONSUMPTION OVER TIME. Owner, 2026-08-27: "i am still unable to see break up of
+              users, daily, weekly, monthly", then "i want to know consumption of input, output,
+              total tokens, cost for day wise, week wise and month wise".
+
+              The window totals above were correct and answered a different question. A month that
+              cost $4.14 does not tell you which days spent it, and a single token figure cannot
+              be checked against a bill — input and output price differently ($0.075 vs $0.30 per
+              1M on Flash), so they are separate columns rather than one. */}
+          {report.series?.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={breakHead}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Consumption by</span>
+                <div style={periodRow}>
+                  {[['day', 'Day'], ['week', 'Week'], ['month', 'Month']].map(([k, label]) => (
+                    <button key={k} type="button" onClick={() => setGroupBy(k)}
+                            aria-pressed={groupBy === k}
+                            style={groupBy === k ? periodBtnOn : periodBtn}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="admin-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>{groupBy === 'month' ? 'Month' : groupBy === 'week' ? 'Week' : 'Day'}</th>
+                      <th style={numTh}>Calls</th>
+                      <th style={numTh}>Tokens in</th>
+                      <th style={numTh}>Tokens out</th>
+                      <th style={numTh}>Total tokens</th>
+                      <th style={numTh}>Cost (est)</th>
+                      <th>Users</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.series.map((b) => (
+                      <tr key={b.bucket}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{b.label}</td>
+                        <td style={numTd}>{fmt(b.calls)}</td>
+                        <td style={numTd}>{fmt(b.inTokens)}</td>
+                        <td style={numTd}>{fmt(b.outTokens)}</td>
+                        <td style={numTd}>{fmt(b.tokens)}</td>
+                        <td style={{ ...numTd, color: 'var(--accent, #c2410c)' }}>{fmtUsd(b.usd)}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          {b.byUser.map((u) => `#${u.userId} ${fmtUsd(u.usd)}`).join(' · ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Totals */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
             <StatCard label="Total calls" value={fmt(report.totals.calls)} />
@@ -175,3 +232,9 @@ const periodBtn = {
   background: 'transparent', color: 'var(--text-muted)',
 };
 const periodBtnOn = { ...periodBtn, background: 'var(--accent, #c2410c)', color: '#fff' };
+
+const breakHead = {
+  display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+};
+const numTh = { textAlign: 'right' };
+const numTd = { textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' };

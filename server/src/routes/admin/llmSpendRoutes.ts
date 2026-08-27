@@ -5,6 +5,7 @@
  *   GET /admin/llm-spend?day=YYYY-MM-DD               → one day
  *   GET /admin/llm-spend?from=YYYY-MM-DD&to=YYYY-MM-DD → an inclusive range
  *   GET /admin/llm-spend?period=day|week|month&day=…   → the period containing `day`
+ *   &groupBy=day|week|month                            → how the series is bucketed
  *
  * Retention is 62 days (llmSpendService). A month-to-date query near the start of a month will
  * therefore always resolve; "last month" resolves for most of the current one and then starts
@@ -47,7 +48,11 @@ router.get('/llm-spend', requireAdmin, async (req: Request, res: Response) => {
       }
     }
 
-    const report = await getSpendReport(clientNumber, from, to);
+    // `groupBy` is the BUCKET; `period`/`from`/`to` are the WINDOW. They are independent: a
+    // quarter grouped by month is three rows, the same quarter by day is ninety.
+    const gb = String(req.query.groupBy || 'day');
+    const groupBy = (['day', 'week', 'month'].includes(gb) ? gb : 'day') as 'day' | 'week' | 'month';
+    const report = await getSpendReport(clientNumber, from, to, groupBy);
     res.json(report);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

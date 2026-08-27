@@ -56,7 +56,7 @@ describe('spend report over a window', () => {
 
   it('returns a per-day series so a range can be drawn, not just totalled', async () => {
     const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
-    expect(r.series?.map((s) => s.day)).toEqual(['2026-08-24', '2026-08-25', '2026-08-26']);
+    expect(r.series?.map((s) => s.bucket)).toEqual(['2026-08-24', '2026-08-25', '2026-08-26']);
     expect(r.series?.map((s) => s.calls)).toEqual([2, 4, 6]);
   });
 
@@ -92,5 +92,36 @@ describe('spend report over a window', () => {
   it('defaults to a single day when no window is given — existing callers unchanged', async () => {
     const r = await getSpendReport('TMC-0001');
     expect(r.from).toBe(r.to);
+  });
+
+  it('reports input and output SEPARATELY, not only a total', async () => {
+    // "i want to know consumption of input, output, total tokens, cost" — a combined figure
+    // cannot answer it, and in/out price differently ($0.075 vs $0.30 per 1M on Flash).
+    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26');
+    const d = r.series?.[0];
+    expect(d?.inTokens).toBe(200);          // 2 users x 100 in
+    expect(d?.outTokens).toBe(200);
+    expect(d?.tokens).toBe(400);
+  });
+
+  it('groups by MONTH when asked — the window and the bucket are separate choices', async () => {
+    const r = await getSpendReport('TMC-0001', '2026-08-01', '2026-08-31', 'month');
+    expect(r.series).toHaveLength(1);
+    expect(r.series?.[0].bucket).toBe('2026-08');
+    expect(r.series?.[0].calls).toBe(12);
+  });
+
+  it('a week bucket starts MONDAY, matching the period boundary the route computes', async () => {
+    // 24 Aug 2026 is a Monday; the 26th is the same week, so three days collapse to one row.
+    // A Sunday-start week would split his working week across two buckets.
+    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26', 'week');
+    expect(r.series).toHaveLength(1);
+    expect(r.series?.[0].bucket).toBe('2026-08-24');
+  });
+
+  it('breaks every bucket down by user, merged across the days inside it', async () => {
+    const r = await getSpendReport('TMC-0001', '2026-08-24', '2026-08-26', 'month');
+    expect(r.series?.[0].byUser.map((u) => u.userId).sort()).toEqual([2, 7]);
+    expect(r.series?.[0].byUser.find((u) => u.userId === 2)?.calls).toBe(6);
   });
 });
