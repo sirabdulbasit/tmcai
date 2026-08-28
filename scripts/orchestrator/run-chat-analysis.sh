@@ -53,11 +53,27 @@ if ( cd "$ROOT" && "$CLAUDE_BIN" -p "$PROMPT" \
   # Only overwrite the ranking on a non-trivial answer. A truncated or empty reply that
   # replaced a good ranking would quietly erase the loop's only account of what is
   # wrong — and it would look like "the analysis ran".
-  if [ "$(wc -c < "$LOG")" -gt 400 ]; then
+  # A SIZE BAR IS NOT A COMPLETENESS BAR.
+  #
+  # 400 bytes only catches an empty or stub reply. A reply that is LARGE but truncated
+  # sails through it and overwrites a good ranking — and the damage does not stop there.
+  # The fingerprint in watch-conversations.sh reads the SIGNATURES table; with no table
+  # it falls back to hashing the prose, which is regenerated text that differs on every
+  # run. That is the failure already recorded in this system: "root causes CHANGED" fired
+  # 18 times out of 18, and the loop rebuilt the same ground while reporting it warranted.
+  #
+  # So a truncated analysis costs twice — healing loses its ranking, and the build loop
+  # churns. The SIGNATURES table is the machine-readable contract the loop depends on
+  # (see prompts/chat-analysis.md), so require it rather than a byte count.
+  #
+  # This is correct independently of any turn ceiling: the weak bar was always the defect.
+  # It also makes NEXEO_ANALYSIS_MAX_TURNS safe to lower, because the worst a too-tight
+  # ceiling can now do is fail loudly and leave the previous ranking standing.
+  if [ "$(wc -c < "$LOG")" -gt 400 ] && grep -q '^## SIGNATURES' "$LOG"; then
     cp "$LOG" "$OUT"
     echo "run-chat-analysis: ranking updated ($(wc -l < "$OUT") lines)"
   else
-    echo "run-chat-analysis: reply too short to be a ranking — previous one kept" >&2
+    echo "run-chat-analysis: reply incomplete (too short, or no SIGNATURES table) — previous ranking kept" >&2
     exit 1
   fi
 else
