@@ -27,6 +27,14 @@
  *    never a guessed item.
  *  - Owner's own outbound mail is excluded (an email FROM him is not an ask
  *    OF him on this path).
+ *
+ * DEF-253 — gchat joined this SAME consumer (one job, both channels): the
+ * chat channel sat at 294 received / 0 EVER processed — the owner's own
+ * leadership space unread — while Brain claimed to review incoming messages
+ * across channels. The noise gate, batch cap, thread reconciliation and
+ * receipts are inherited, not re-implemented; each channel keeps its own
+ * kill switch. (The file name is historical — this is the inbound-message
+ * item-derivation consumer.)
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
@@ -65,9 +73,10 @@ export async function judgeEmailActionability(email: {
   try {
     const { callGemini } = await import('../services/geminiService');
     const system = [
-      'You judge ONE inbound email for a busy owner. Decide whether it asks HIM to do',
-      'something concrete (reply, decide, pay, review, attend, provide something).',
-      'Newsletters, receipts, notifications, FYI threads and marketing are NOT actionable.',
+      'You judge ONE inbound message (an email, or a chat message from a Google Chat space)',
+      'for a busy owner. Decide whether it asks HIM to do something concrete (reply, decide,',
+      'pay, review, attend, provide something).',
+      'Newsletters, receipts, notifications, FYI threads, marketing, and chat smalltalk are NOT actionable.',
       'Answer STRICT JSON only:',
       '{"actionable": boolean, "title": string (imperative, <=80 chars, only when actionable),',
       ' "description": string (<=200 chars, names the sender and the ask),',
@@ -153,16 +162,22 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
     const { getBehaviorValue } = await import('../services/behaviorConfig');
 
     const since = new Date(Date.now() - WINDOW_HOURS * 60 * 60 * 1000);
+    // DEF-253 — gchat joins the SAME consumer. The channel sat at 294
+    // received / 0 EVER processed — the owner's own leadership space unread —
+    // while gmail's consumer ran beside it. A second per-channel job would be
+    // `protection-with-two-implementations` (the 10-deep class); one consumer
+    // means the noise gate, the batch cap, the thread reconciliation and the
+    // receipts are inherited, not re-earned.
     const candidates = await prisma.feedEvent.findMany({
       where: {
-        sourceType: 'gmail',
+        sourceType: { in: ['gmail', 'gchat'] },
         status: 'new',
         createdAt: { gte: since },
       },
       orderBy: { createdAt: 'asc' },
       take: 50, // page bound; per-tenant batch cap applied below
       select: {
-        id: true, clientNumber: true, userId: true, sourceId: true,
+        id: true, clientNumber: true, userId: true, sourceId: true, sourceType: true,
         rawPayload: true, senderEmail: true, createdAt: true,
       } as any,
     });
@@ -172,7 +187,12 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
       if (row.userId == null) continue; // no owner to derive FOR — leave for a future owner-mapping pass
       const tenantKey = `${row.clientNumber}:${row.userId}`;
       try {
-        const enabled = await getBehaviorValue('comm.email_item_derivation_enabled', { clientNumber: row.clientNumber });
+        // DEF-253 — each channel keeps its own kill switch; the batch cap is
+        // shared, because it bounds LLM spend per tenant, not per channel.
+        const enabledKey = row.sourceType === 'gchat'
+          ? 'comm.chat_item_derivation_enabled'
+          : 'comm.email_item_derivation_enabled';
+        const enabled = await getBehaviorValue(enabledKey, { clientNumber: row.clientNumber });
         if (enabled !== 1) continue;
         const batchCap = await getBehaviorValue('comm.email_item_derivation_batch', { clientNumber: row.clientNumber });
         const seen = perTenantSeen.get(tenantKey) ?? 0;
@@ -204,12 +224,14 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
         // only when an active same-thread item exists, and the call counts
         // against the same batch cap.
         const p0 = (row.rawPayload ?? {}) as Record<string, unknown>;
-        const threadId = String(p0.threadId ?? '').trim();
+        // gmail carries `threadId`; gchat carries `threadName` (or the space
+        // itself for unthreaded rooms). One key, both channels.
+        const threadId = String(p0.threadId ?? p0.threadName ?? '').trim();
         if (threadId) {
           const activeItems = await prisma.openItem.findMany({
             where: {
               clientNumber: row.clientNumber, userId: row.userId,
-              sourceFeed: 'gmail', status: { in: ACTIVE_STATUSES as any },
+              sourceFeed: row.sourceType, status: { in: ACTIVE_STATUSES as any },
               sourceFeedEventId: { not: null },
             },
             select: { id: true, title: true, description: true, status: true, sourceFeedEventId: true, metadata: true },
@@ -221,15 +243,18 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
               where: { id: { in: activeItems.map((i: any) => i.sourceFeedEventId).filter(Boolean) } },
               select: { id: true, rawPayload: true } as any,
             });
-            const threadOf = new Map(srcEvents.map((e: any) => [e.id, String((e.rawPayload ?? {}).threadId ?? '')]));
+            const threadOf = new Map(srcEvents.map((e: any) => {
+              const rp = (e.rawPayload ?? {}) as Record<string, unknown>;
+              return [e.id, String(rp.threadId ?? rp.threadName ?? '')];
+            }));
             matched = activeItems.find((i: any) => threadOf.get(i.sourceFeedEventId) === threadId) ?? null;
           }
           if (matched) {
             perTenantSeen.set(tenantKey, (perTenantSeen.get(tenantKey) ?? 0) + 1);
             const pEmail = {
               subject: String(p0.subject ?? '(no subject)').slice(0, 300),
-              from: String(p0.from ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
-              snippet: String(p0.snippet ?? '').slice(0, 1500),
+              from: String(p0.from ?? p0.senderDisplayName ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
+              snippet: String((row.sourceType === 'gchat' ? p0.text : p0.snippet) ?? p0.snippet ?? '').slice(0, 1500),
             };
             const rel = await judgeThreadReconciliation({
               item: { title: matched.title, description: matched.description, status: matched.status },
@@ -305,8 +330,10 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
         const p = (row.rawPayload ?? {}) as Record<string, unknown>;
         const email = {
           subject: String(p.subject ?? '(no subject)').slice(0, 300),
-          from: String(p.from ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
-          snippet: String(p.snippet ?? '').slice(0, 1500),
+          // gchat has no sender email — the display name carries who spoke.
+          from: String(p.from ?? p.senderDisplayName ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
+          // gchat's full text beats its 200-char snippet; gmail has snippet only.
+          snippet: String((row.sourceType === 'gchat' ? p.text : p.snippet) ?? p.snippet ?? '').slice(0, 1500),
         };
 
         perTenantSeen.set(tenantKey, seen + 1);
@@ -342,7 +369,7 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
           description,
           priority,
           dueDate,
-          sourceFeed: 'gmail',
+          sourceFeed: row.sourceType,
           sourceRef: String(row.sourceId ?? ''),
         });
         if (gate.block) {
@@ -368,7 +395,7 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
             ...(gate.delegateeEmail ? { delegateeEmail: gate.delegateeEmail } : {}),
             clientNumber: row.clientNumber,
             userId: row.userId,
-            sourceFeed: 'gmail',
+            sourceFeed: row.sourceType,
             sourceRef: String(row.sourceId ?? ''),
             sourceFeedEventId: row.id,
             idempotencyKey: `email_derive:${row.id}`,

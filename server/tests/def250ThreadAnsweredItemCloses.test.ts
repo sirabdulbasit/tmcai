@@ -50,7 +50,9 @@ vi.mock('../src/db/prisma', () => {
     {
       feedEvent: {
         findMany: async (args: any) =>
-          (args?.where?.sourceType === 'gmail' ? state.rows : state.srcEvents),
+          // DEF-253 — the candidates query is multi-channel now; discriminate
+          // on the status filter, which only the candidates query carries.
+          (args?.where?.status === 'new' ? state.rows : state.srcEvents),
         update: async (args: any) => { state.eventUpdates.push({ id: args.where.id, data: args.data }); return {}; },
       },
       openItem: {

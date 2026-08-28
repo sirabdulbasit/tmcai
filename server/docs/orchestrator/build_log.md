@@ -1467,3 +1467,91 @@ item closes it through DEF-250 instead of bouncing off the lifecycle. What would
 me wrong: the falsifier above, or Codex judging that evidence-guarded completion on an
 unconfirmed draft still risks fabricated closure — the counterargument on the record
 is that the guard demands exactly the receipt the fabrication class lacks.
+
+## Iteration 51 — 2026-08-28
+
+**Files named in the first two tool calls and changed:**
+`server/src/jobs/emailItemDerivationJob.ts` (channel-parameterized),
+`server/src/services/behaviorConfig.ts` (one key),
+`server/tests/def253GchatChannelAlive.test.ts` (new, 5 tests), plus superseded-assertion
+updates in the def246/def250 harnesses. **This turn ships DEF-253 — the gchat consumer,
+the analyst's #1 for four consecutive harvests and "the one build no deploy has
+touched."**
+
+**The continuation question, answered first:** "what was wrong about the last attempt?"
+Iteration 49 was cut off mid-scout — it had located the gchat poller and payload and
+built nothing; no commit between `90826f9` and HEAD touches `server/src`. So nothing
+was insufficient; nothing existed. This turn finishes that started work, on the same
+capability the continuation names (Simple & Smart).
+
+**The measured absence:** gchat sat at 294 received / 0 EVER processed — the owner's
+own "TMC Leadership - Service Delivery" messages at `new` as of 04:45 today — while
+Brain claimed (S19) to review incoming messages across channels, and the owner ruled
+verbatim: "it not limit with whatsapp it should cover all aspects of communications."
+The poller even shipped `subject`/`snippet`/`text` "so the triage classifier has
+something to work with"; nothing ever consumed them.
+
+**The mechanism — one consumer, everything inherited:** the candidates query takes
+`sourceType IN ('gmail','gchat')`; per-channel extraction (display name as sender —
+chat has no sender email; the FULL text judged, not the 200-char snippet; `threadName`
+as the thread key beside gmail's `threadId`); `sourceFeed` carried from the row.
+Inherited rather than re-implemented — the DEF-247 noise gate, the shared per-tenant
+batch cap, the 48h window (the 294-row backlog stays untouched), DEF-250 thread
+reconciliation (a chat reply that fulfils a chat-derived item closes it through the
+canonical lifecycle), and the `processed`/`skipped` receipts. Each channel keeps its
+own kill switch (`comm.chat_item_derivation_enabled`, def 1 under the owner's ruling —
+the noise-report def-1 rationale). A second per-channel job would have been
+`protection-with-two-implementations`' 15th instance; this adds none.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3004 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 3033)
+- New suite: **5 passed | 0 failed** on the leadership-space fixture, including the
+  full-text-not-snippet assertion and the DEF-250-inherited reconciliation.
+- **Mutation RUN twice, and the first run is reported honestly: the gmail-only query
+  mutant SURVIVED**, because the mock ignored the sourceType filter — the mock now
+  emulates the filter, and the re-run kills 4 of 5 (the kill-switch test's gmail half
+  correctly survives). Restores grep-verified both times.
+- Superseded assertions in def246 (single-channel `where` pin) and def250 (mock
+  discriminator) updated with reasoning inline.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): progressing** — a dead channel is an absence, not a
+recurring §3 symptom; the adjacent fabrication (claiming to review across channels)
+was closed at the claim by DEF-243, and this builds the thing that makes the claim
+true for chat. DEF-253 row written with the capability block.
+
+**CAPABILITY:** Simple & Smart — the assigned target, matched: his one channel for
+leadership traffic becomes something Brain reads and acts on without being asked.
+**PREDICTED:** the next actionable leadership message becomes an item within a tick;
+gchat's processed count leaves zero, which flips DEF-243's channel table truthful for
+chat by construction.
+**MECHANISM:** the existing consumer reads the second channel; the model judges each
+message; the gate creates; the feed receipts.
+**FALSIFIER:** any post-deploy in-window actionable gchat message still `new` an hour
+later with no item; a chat-derived item minted from smalltalk; or gchat still at 0
+processed a day after deploy.
+
+**Symptom tag:** none exists to close — the deck is empty, said plainly. What was done
+instead: the analyst's #1, verbatim ("the next build worth spending is a gchat
+consumer"). Remediation pointer (attempt 3 of 3): the never-re-run review again;
+Iteration 12's closure stands, fifteenth statement — ruling (a) known limitation.
+Campaign C-3 (iteration 27 of 5): all increments built; exit still awaits the owner's
+digest opt-in and live observation — divergence to the analyst's ranked #1 declared,
+as the campaign's own HOW-clause instructs.
+
+**What I did NOT do, named:** the owner's own outbound replies as reconciliation input
+(the payroll ingestion residual, analyst #2 — a feeds/ingestion change, next turn's
+candidate); gcal/gtasks derivation (their feeds are already 95–98% consumed by other
+pipelines; adding derivation there needs evidence of a gap first); the live
+verifications owed on DEF-250/251 (need real owner turns, not builds).
+
+**Honest prediction:** after deploy, the 04:45 leadership message (in the 48h window)
+is judged on the first tick, and his chat channel stops being dead — the falsifier is
+concrete and checkable in one query. What would prove me wrong: the falsifier above,
+or chat smalltalk volume overwhelming the shared batch cap and starving gmail (the
+cap is shared by design for spend; if chat noise crowds out email, per-channel caps
+are the named follow-up).

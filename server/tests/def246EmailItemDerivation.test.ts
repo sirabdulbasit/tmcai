@@ -199,7 +199,9 @@ describe('DEF-246 — items derive from arriving email, with receipts', () => {
     const { runEmailItemDerivation } = await import('../src/jobs/emailItemDerivationJob');
     await runEmailItemDerivation();
     const where = state.lastFindManyArgs?.where;
-    expect(where.sourceType).toBe('gmail');
+    // DEF-253 — the consumer is now multi-channel (gmail + gchat) by design;
+    // the window protection this test exists for is unchanged.
+    expect(where.sourceType).toEqual({ in: ['gmail', 'gchat'] });
     expect(where.status).toBe('new');
     const gte = where.createdAt?.gte as Date;
     const ageHours = (Date.now() - gte.getTime()) / (60 * 60 * 1000);
