@@ -12,8 +12,15 @@
 # both at once. It cannot run away (NEXEO_MAX_ITER=1), and cron is not reaped by
 # anything, so it needs no watchdog.
 #
-# WORST-CASE COST is one iteration: ~$7 at the mean, ~$21 at the worst build observed.
-# With the builder now capped at 40 turns the tail is shorter than that observed max.
+# WORST-CASE COST is one iteration. Measured 2026-08-28 from the builders' own
+# `total_cost_usd` result events across 90 runs ($564.85 in total): the worst observed
+# build is $45.28 (iteration 47), then $36.37 and $29.58. The figures that stood here
+# before — "~$7 at the mean, ~$21 at the worst" — were stale, and they are the numbers
+# the build caps were sized against.
+#
+# The 40-turn cap did NOT shorten the tail, as this comment used to claim: iteration 47
+# logged 58 turns against `--max-turns 40`, because sub-agent turns appear in the stream
+# without counting toward the cap. Treat 40 as a bound on the main loop only.
 #
 # WHICH CAPABILITY IT WORKS. In priority order:
 #   1. NEXEO_TARGET_CAPABILITY in the environment (a manual run overrides everything)

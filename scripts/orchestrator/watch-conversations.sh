@@ -36,6 +36,34 @@ MANUAL_COUNT="$STATE/manual-builds-today"   # a click's budget, kept apart from 
 # Guards, all overridable but all present by default.
 MIN_GAP_MIN="${NEXEO_WATCH_MIN_GAP_MIN:-60}"      # never two auto-builds inside an hour
 MAX_BUILDS_DAY="${NEXEO_WATCH_MAX_BUILDS:-4}"     # ~$30-80/day worst case, not unbounded
+# A MONEY BOUND, not a count bound. The caps above limit how MANY builds run and say
+# nothing about what they cost, and the spread is wide: measured 2026-08-28 across 90
+# runs, a single build ranges from a few dollars to $45.28 (iteration 47). Summed from
+# each run's own `total_cost_usd` result event — the CLI's accounting, not an estimate.
+#
+# SIZED AGAINST THE MEASURED DISTRIBUTION, not picked. Orchestrator spend per day over
+# the 10 days to 2026-08-28: median $63.08, mean $56.48, highest ORDINARY day $81.04
+# (4 runs, 08-24), and one runaway at $151.22 (12 runs, 08-18).
+#
+# 100 therefore sits above every ordinary day observed and below the runaway, and it
+# still permits two worst-case builds. A first draft of this used 50, which would have
+# tripped below the MEDIAN day — a cap that fires on normal operation is not a guard,
+# it is an outage with a budget attached.
+MAX_USD_DAY="${NEXEO_WATCH_MAX_USD_DAY:-100}"
+
+# Dollars to integer cents, in pure shell. `10#` forces base 10 so a cap written as
+# "08.50" is not read as octal.
+usd_to_cents() {
+  local v="${1:-0}" whole frac
+  whole="${v%%.*}"
+  case "$v" in *.*) frac="${v#*.}" ;; *) frac="00" ;; esac
+  frac="${frac}00"; frac="${frac:0:2}"
+  # BOTH halves need `10#`, not just the fraction. A cap of "08.50" has a leading zero
+  # in the WHOLE part too, and bash reads a bare 08 as octal and aborts the script under
+  # `set -u`-adjacent arithmetic. Caught by testing the exact value this comment claims
+  # to support.
+  printf '%s' "$(( 10#${whole:-0} * 100 + 10#${frac} ))"
+}
 
 say() { printf '%s  WATCH %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*" >> "$LOG"; }
 
@@ -270,6 +298,71 @@ say "root causes CHANGED — a build may be warranted"
 
 # ── 3. BUILD. Guarded, because this is the expensive stage. ──────────────────────────
 TODAY="$(date -u +%F)"
+
+# SPEND GATE, ahead of the count gates because money is the bound that actually matters.
+#
+# IT BOUNDS THE CRON, NEVER A PERSON. Owner ruling 2026-08-28: "my healing should not be
+# compromised, but token consumption should be smart and optimized." The waste this gate
+# exists to stop is unattended: a loop spending money every ten minutes with nobody
+# watching. A human clicking "Heal now" is the opposite situation — they are standing
+# there, they have decided, and they will see the result.
+#
+# The first version of this gate applied to manual runs too, and that was wrong twice
+# over. It would have re-created the defect this file already records — 2026-08-19,
+# "where i am expecting to start it immediately", and 2026-08-24, "i clicked on Heal Now
+# but it didnt build it why?" — and `heal-now.sh` had no way to override it, so even
+# `--force` would have been refused. Manual runs already carry their own bound
+# (MAX_MANUAL_DAY).
+#
+# A WAIVER IS ALWAYS LOGGED. No silent pass and no silent skip: whichever way this gate
+# resolves over the cap, `say` records it. A guard that waives quietly is indistinguishable
+# from a guard that is broken.
+#
+# READ NEXEO_WATCH_MANUAL DIRECTLY, not $MANUAL — that variable is not assigned until ~30
+# lines below this gate, and under `set -u` referencing it here would kill the script
+# outright. That is exactly how a manual run died once before, on an unbound $NOW.
+#
+# FAILS OPEN. If the accounting cannot be read, the build proceeds and the log says so.
+# A broken accountant must not become an outage.
+SPENT_CENTS="$(python3 - "$ORCH/logs" "$TODAY" <<'PY' 2>/dev/null || true
+import glob, json, os, sys, datetime
+day, total = sys.argv[2], 0.0
+for f in glob.glob(os.path.join(sys.argv[1], "iter-*-build.jsonl")):
+    try:
+        if datetime.datetime.utcfromtimestamp(os.path.getmtime(f)).strftime("%Y-%m-%d") != day:
+            continue
+        for line in open(f, errors="replace"):
+            if '"total_cost_usd"' in line:
+                v = json.loads(line).get("total_cost_usd")
+                if isinstance(v, (int, float)):
+                    total += v
+    except Exception:
+        continue
+print(int(round(total * 100)))
+PY
+)"
+CAP_CENTS="$(usd_to_cents "$MAX_USD_DAY")"
+case "$SPENT_CENTS" in
+  ''|*[!0-9]*)
+    say "spend accounting unreadable — spend gate SKIPPED (failing open), count caps still apply"
+    ;;
+  *)
+    if [ "$SPENT_CENTS" -ge "$CAP_CENTS" ]; then
+      SPENT_FMT="$((SPENT_CENTS/100)).$(printf '%02d' $((SPENT_CENTS%100)))"
+      if [ "${NEXEO_WATCH_MANUAL:-0}" = "1" ]; then
+        say "daily SPEND cap reached (\$$SPENT_FMT / \$$MAX_USD_DAY today) — WAIVED, a person asked: healing is never refused for cost. Manual budget still applies"
+      elif [ "${NEXEO_WATCH_FORCE:-0}" = "1" ]; then
+        say "daily SPEND cap reached (\$$SPENT_FMT / \$$MAX_USD_DAY today) — OVERRIDDEN by NEXEO_WATCH_FORCE=1"
+      else
+        say "daily SPEND cap reached (\$$SPENT_FMT / \$$MAX_USD_DAY today) — unattended run, analysis recorded, build deferred"
+        finish_pulse "deferred-spend-cap"
+        phase "BUILD" "exit=skip (deferred: spent \$$SPENT_FMT of \$$MAX_USD_DAY today)"
+        exit 0
+      fi
+    fi
+    ;;
+esac
+
 STAMP_DAY="$(cut -d' ' -f1 "$BUILD_COUNT" 2>/dev/null || echo '')"
 COUNT="$(cut -d' ' -f2 "$BUILD_COUNT" 2>/dev/null || echo 0)"
 [ "$STAMP_DAY" = "$TODAY" ] || COUNT=0

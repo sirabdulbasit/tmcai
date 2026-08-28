@@ -74,8 +74,11 @@ fi
 #
 # The concurrency guard is still NOT waived. One builder in one tree, ever.
 if [ "$BUILD_ANYWAY" = "1" ]; then
-  echo "heal-now: FORCE — will build even if the ranking is unchanged, and the manual cap is lifted"
-  export NEXEO_WATCH_ALWAYS_BUILD=1 NEXEO_WATCH_MAX_MANUAL=99
+  echo "heal-now: FORCE — will build even if the ranking is unchanged, and the manual and spend caps are lifted"
+  # NEXEO_WATCH_FORCE=1 lifts the daily SPEND cap as well. --force means "build anyway",
+  # and a hatch that some caps ignore is not a hatch. The spend gate already waives for
+  # any manual run; this covers the case where that gate is ever tightened again.
+  export NEXEO_WATCH_ALWAYS_BUILD=1 NEXEO_WATCH_MAX_MANUAL=99 NEXEO_WATCH_FORCE=1
 fi
 
 echo "heal-now: starting a conversational pulse (auto caps waived — manual budget applies)"

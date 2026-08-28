@@ -49,7 +49,7 @@ if ( cd "$ROOT" && "$CLAUDE_BIN" -p "$PROMPT" \
       --permission-mode dontAsk \
       --disallowed-tools 'Write,Edit,NotebookEdit' \
       --add-dir "$ROOT" \
-      --max-turns 40 ) > "$LOG" 2>&1; then
+      --max-turns "${NEXEO_ANALYSIS_MAX_TURNS:-12}" ) > "$LOG" 2>&1; then
   # Only overwrite the ranking on a non-trivial answer. A truncated or empty reply that
   # replaced a good ranking would quietly erase the loop's only account of what is
   # wrong — and it would look like "the analysis ran".

@@ -342,7 +342,28 @@ FORMATTER="$ROOT/scripts/orchestrator/format-stream.py"
 builder_session_id() {
   # 1. already persisted — the normal path
   if [ -s "$BUILDER_SESSION_FILE" ]; then
-    cat "$BUILDER_SESSION_FILE"; return 0
+    local cur; cur="$(cat "$BUILDER_SESSION_FILE")"
+    # ROTATE ON SIZE. Every turn in a resumed session re-sends the whole transcript,
+    # so a seat's lifetime cache-read cost grows with the SQUARE of its turn count.
+    # Left alone this one grows without bound — the same shape that made the
+    # interactive editor sessions expensive (measured 2026-08-28: eight of them held
+    # 86% of 9.20B cache-read tokens, against 4% for this seat).
+    #
+    # Read ONCE, here, where a run picks up its id — never mid-run, so a live turn is
+    # never pulled out from under itself. Retiring the id is the whole mechanism:
+    # run_claude opens a fresh session whenever the transcript for an id is absent, so
+    # the replacement takes the existing --session-id path with nothing else changed.
+    local tx="/root/.claude/projects/-var-www-tmcai/$cur.jsonl"
+    local cap="${NEXEO_BUILDER_MAX_MB:-8}"
+    local mb=0
+    [ -f "$tx" ] && mb="$(du -m "$tx" 2>/dev/null | cut -f1)"
+    if [ "${mb:-0}" -ge "$cap" ] 2>/dev/null; then
+      printf '%s %s %sMB\n' "$(date -u +%FT%TZ)" "$cur" "$mb" >> "$STATE/builder-session-retired"
+      say "BUILD  retiring \"$BUILDER_NAME\" $cur — transcript ${mb}MB >= ${cap}MB"
+      : > "$BUILDER_SESSION_FILE"
+    else
+      printf '%s' "$cur"; return 0
+    fi
   fi
   # 2. a live session already wears the name (e.g. the owner made it by hand)
   local found=""
