@@ -87,28 +87,37 @@ export interface TransitionSpec {
 }
 
 /**
- * The 32 transitions. Count is exact — any change requires documenting why.
+ * The 33 transitions. Count is exact — any change requires documenting why.
  *
- * DEF-236 added 3: the three exits from `DRAFT`. Nothing enters DRAFT — the gate creates items
- * there — so there is no way in to declare.
+ * DEF-236 added 3: exits from `DRAFT`. DEF-251 added the 4th — `DRAFT → CLOSED`, evidence-
+ * guarded, because completed work was unrecordable on a draft (S23, the payroll item).
+ * Nothing enters DRAFT — the gate creates items there — so there is no way in to declare.
  *
  * DEF-129 added 8: seven ways INTO `CANCELLED` (every non-terminal state) and
  * one way back out of it. `CLOSED -> CANCELLED` is deliberately absent —
  * cancelling completed work would rewrite history rather than record a decision.
  */
 export const TRANSITIONS: readonly TransitionSpec[] = [
-  // From DRAFT (3) — DEF-236.
+  // From DRAFT (4) — DEF-236, completed by DEF-251.
   //
-  // Three, and only three, because a draft can do exactly three things: become a real item
-  // once its slots are filled, be abandoned, or be picked up directly. There is no way INTO
-  // DRAFT: the gate creates items there, it is where a life starts.
+  // DEF-236 said "three, and only three" — become a real item, be abandoned, or be picked
+  // up directly — and the enumeration missed the fourth thing that happens to real drafts:
+  // THE WORK GETS DONE while the item still sits in DRAFT. Owner, S23 (2026-08-27 07:57):
+  // "I replied to Arshad on this emai" → "I wasn't able to close the item about the
+  // Pakistan payroll because it's still in draft." The payroll answer existed; the record
+  // could not say so, because completion had no exit from DRAFT. The same wall blocked
+  // DEF-250's reconciliation close on precisely the item class most likely to be resolved
+  // by a thread reply — email-derived drafts with unfilled slots.
   //
-  // CANCELLED and not CLOSED for the abandon path — the DEF-129 rule, and the whole reason
-  // that status exists. CLOSED would record work as completed that never happened, which is
-  // the fabricated-completion class written into the data instead of into a sentence.
+  // CANCELLED (not CLOSED) remains the ABANDON path — the DEF-129 rule stands: closing
+  // unfinished work fabricates completion into the data. DRAFT → CLOSED is the opposite
+  // case and carries the opposite proof: the `resolution_reason` guard demands completion
+  // evidence, exactly as TRIAGED → CLOSED does. An honest abandon has no resolution to
+  // state; a real completion does — the guard is the line between them.
   { from: 'DRAFT', to: 'TRIAGED', guards: [], requiresApproval: false, description: 'Slots filled — the draft became a real item (openItemDraftAskJob or update_open_item)' },
   { from: 'DRAFT', to: 'CANCELLED', guards: [], requiresApproval: false, description: 'Owner removed a draft he never completed — reversible, and never recorded as done' },
   { from: 'DRAFT', to: 'IN_PROGRESS', guards: ['is_owner_or_agent'], requiresApproval: false, description: 'Owner started work on it without completing the slots first' },
+  { from: 'DRAFT', to: 'CLOSED', guards: ['resolution_reason'], requiresApproval: false, description: 'DEF-251 — the work was completed while the item was still a draft (owner said so, or a thread reply fulfilled it); evidence required, never an abandon shortcut' },
   // From NEW (4)
   { from: 'NEW', to: 'TRIAGED', guards: [], requiresApproval: false, description: 'Curator/Triage classified the item' },
   { from: 'NEW', to: 'IN_PROGRESS', guards: ['is_owner_or_agent'], requiresApproval: false, description: 'Owner picked it up directly without triage' },
@@ -212,7 +221,13 @@ export function allFromTransitions(from: ItemStatus): TransitionSpec[] {
  * DEF-236 raised it to 32: the three exits from `DRAFT`, a status the matrix had
  * never listed while `openItemDraftAskJob` ran over it daily. This guard caught
  * that change on the first test run too, exactly as designed.
+ *
+ * DEF-251 raised it to 33: `DRAFT → CLOSED`, evidence-guarded — completed work
+ * was unrecordable on a draft (S23, the payroll item: "I wasn't able to close
+ * the item… because it's still in draft" after the owner had already answered
+ * it). Caught by this guard on the first run, third time in a row it has done
+ * its job.
  */
-if (TRANSITIONS.length !== 32) {
-  throw new Error(`transitionMatrix: expected 32 transitions, found ${TRANSITIONS.length}`);
+if (TRANSITIONS.length !== 33) {
+  throw new Error(`transitionMatrix: expected 33 transitions, found ${TRANSITIONS.length}`);
 }

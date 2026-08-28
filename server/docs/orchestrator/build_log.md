@@ -1383,3 +1383,87 @@ and "why is this still open?" stops being a question he has to ask. What would p
 me wrong: the falsifier above, or the model's `fulfils` judgement proving too eager on
 politeness replies ("thanks, will do") — the `advances`/`unrelated` distinction and
 the refused-close fallback are the two brakes, and Codex should probe both.
+
+## Iteration 47 — 2026-08-28
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/itemLifecycle/transitionMatrix.ts`,
+`server/tests/def251DraftCompletesWithEvidence.test.ts` (new, 5 tests), plus two
+superseded assertions updated in `server/tests/def236DraftIsInTheLifecycle.test.ts`.
+**This turn ships DEF-251 — the deck's ONE open tag, closed at the lifecycle floor.**
+
+**The live hit (S23, 08-27 07:57, pre-deploy of DEF-250):** "I replied to Arshad on
+this emai" → "I wasn't able to close the item about the Pakistan payroll because it's
+still in draft." The analyst ranked this #1: six sessions of draft dead-ends where
+Brain both denies drafts exist and blocks on them. The delete half was DEF-236
+(VERIFIED LIVE); the CLOSE half remained: DEF-236's "three, and only three" exits from
+DRAFT missed the fourth thing that happens to real drafts — **the work gets done while
+the item still sits in DRAFT.** The payroll answer existed; the record could not say
+so. The same wall refused DEF-250's reconciliation close on exactly the item class
+most likely to be resolved by a thread reply: email-derived drafts with unfilled slots.
+
+**The change:** `DRAFT → CLOSED` joins the matrix (32 → 33), guarded by
+`resolution_reason` — completion evidence required, mirroring `TRIAGED → CLOSED`. The
+line DEF-236 defended survives intact: an ABANDON must never be written as completion
+(`DRAFT → CANCELLED` stays evidence-free), and the guard is the line between the two
+cases. The matrix's load-time count tripwire caught the change on the first run —
+third consecutive time it has done its job — and was updated with reasoning, per its
+own contract. Guardrail named: **no-claim-without-a-receipt** — a CLOSED write now
+carries its completion evidence in the same call.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **2999 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 3028)
+- Lifecycle suites (def251 + def236 + def129 + def127): **77 passed | 0 failed**. The
+  S23 payroll fixture runs through the REAL lifecycle service: closes WITH evidence
+  (status write + ledger row), REFUSED without (no status write; the refusal itself is
+  ledgered `rejected` — DEF-127's design, which my first assertion got wrong and the
+  test now documents correctly).
+- **Mutation RUN and killed:** evidence guard stripped → 3 tests fail across two
+  suites; restore grep-verified. The load-time tripwire independently kills the
+  remove-the-transition mutant at collection.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+
+**Governing docs (rule 5 verdict): CIRCLING, answered structurally** — the draft class
+is six sessions deep across `fabricated-status` (6) and `guard-destroys-the-answer`
+(8); this completes the lifecycle floor DEF-236 started rather than patching the
+payroll sentence, and both the manual close path and DEF-250's reconciliation read the
+ONE matrix. DEF-251 row written with the capability block and the named residual.
+
+**CAPABILITY:** Authorized Action
+**PREDICTED:** completed work is recordable on a draft; S23's refusal shape becomes
+inexpressible; DEF-250's fulfils-close now works on email-derived drafts — the payroll
+and DAL cases compose.
+**MECHANISM:** the completion exit exists, gated on evidence, in the single matrix
+every close path reads.
+**FALSIFIER:** any post-deploy "still in draft" refusal of an evidenced close; or a
+draft CLOSED with no resolution reason in its ledger row.
+
+**Symptom tag:** `Asked to delete drafts, sometimes told drafts don't exist, sometimes
+blocked because it IS a draft` — named verbatim; the delete half shipped as DEF-236,
+this ships the close half. RESIDUAL named, not hidden: whether the owner's OUTBOUND
+reply to Arshad is ingested as a same-thread feed event (DEF-250's standing falsifier)
+is an ingestion gap this lifecycle fix does not touch — it removes the wall the close
+would have hit AFTER ingestion.
+
+**Deployability note:** the one undeployed commit at turn start (OPT-004, a cost fix,
+another session) has no review findings against it (the review log is unchanged at 216
+lines — the remediation pointer names a review that was never re-run, fourteenth
+statement; ruling stands: (a) known limitation). Matrix green at HEAD + this commit;
+nothing in the tree blocks `deploy.sh`.
+
+**What I did NOT do, named:** the outbound-reply ingestion gap (DEF-250's falsifier —
+a feeds change, next fresh turn's candidate alongside the gchat consumer); the
+over-skip watch (analyst #4 — needs live thread evidence, not a build); the
+two-implementations class unifier (#5 — bigger than a night turn, still declined
+rather than smuggled).
+
+**Honest prediction:** after deploy, "mark the payroll item done — I answered Arshad"
+closes it with the reason ledgered, and the next thread reply that fulfils a draft
+item closes it through DEF-250 instead of bouncing off the lifecycle. What would prove
+me wrong: the falsifier above, or Codex judging that evidence-guarded completion on an
+unconfirmed draft still risks fabricated closure — the counterargument on the record
+is that the guard demands exactly the receipt the fabrication class lacks.

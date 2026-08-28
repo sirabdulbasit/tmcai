@@ -36,10 +36,20 @@ describe('DEF-236 — DRAFT is a first-class status', () => {
     expect(isAllowed('DRAFT', 'CANCELLED')).toBe(true);
   });
 
-  it('is cancelled, never closed — DONE would claim work that never happened', () => {
-    // The DEF-129 rule, and the reason CANCELLED exists at all: CLOSED on an abandoned draft
-    // writes the fabricated-completion class into the data rather than into a sentence.
-    expect(isAllowed('DRAFT', 'CLOSED')).toBe(false);
+  it('ABANDON is cancelled, never closed; COMPLETION closes with evidence — DEF-251 split the two cases', () => {
+    // This test used to pin `isAllowed('DRAFT','CLOSED') === false` — the DEF-129 rule
+    // read as "a draft can never close". S23 (2026-08-27) proved the enumeration wrong
+    // from the other side: the payroll work WAS done ("I replied to Arshad") and the
+    // record could not say so — "I wasn't able to close the item… because it's still in
+    // draft". The rule's real content is narrower and survives: an ABANDON must never be
+    // written as completion. DEF-251 encodes exactly that: DRAFT→CLOSED now exists but
+    // demands `resolution_reason` (completion evidence), while DRAFT→CANCELLED remains
+    // the evidence-free abandon path.
+    expect(isAllowed('DRAFT', 'CLOSED')).toBe(true);
+    const t = TRANSITIONS.find((x) => x.from === 'DRAFT' && x.to === 'CLOSED');
+    expect(t?.guards).toContain('resolution_reason');
+    const abandon = TRANSITIONS.find((x) => x.from === 'DRAFT' && x.to === 'CANCELLED');
+    expect(abandon?.guards ?? []).not.toContain('resolution_reason');
   });
 
   it('can graduate to a real item once its slots are filled', () => {
@@ -59,9 +69,12 @@ describe('DEF-236 — DRAFT is a first-class status', () => {
       .toEqual([]);
   });
 
-  it('exits to exactly three states, all of them declared', () => {
+  it('exits to exactly four states, all of them declared', () => {
+    // DEF-251 added the fourth: CLOSED, evidence-guarded — "three, and only
+    // three" missed the case where the work gets DONE while the item is still
+    // a draft (S23, the payroll item).
     const out = TRANSITIONS.filter((t) => t.from === 'DRAFT').map((t) => t.to).sort();
-    expect(out).toEqual(['CANCELLED', 'IN_PROGRESS', 'TRIAGED']);
+    expect(out).toEqual(['CANCELLED', 'CLOSED', 'IN_PROGRESS', 'TRIAGED']);
     for (const t of TRANSITIONS.filter((x) => x.from === 'DRAFT')) {
       expect(t.description.length, `${t.from}->${t.to} needs a description`).toBeGreaterThan(20);
     }
