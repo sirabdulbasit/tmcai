@@ -2939,6 +2939,43 @@ model TriageDecisionCache {
   @@map("triage_decision_cache")
 }
 
+/// Build & Heal spend — the ORCHESTRATOR's token consumption on Claude Code.
+///
+/// Kept apart from `LlmSpend`, which records what the APPLICATION spends on Gemini/Claude
+/// through llmRouter. Two providers, two budgets; a combined total would mean nothing.
+///
+/// One row per run. Ingested from the jsonl logs because those are not durable — every
+/// `retired-*` directory from the four orchestrator resets holds zero jsonl, and iteration
+/// numbers recycle, so a file is not an identity.
+model OrchestratorSpend {
+  id                  BigInt   @id @default(autoincrement())
+  /// sha256(sessionId || startedAt || seat || iteration) — stable across resets.
+  runUid              String   @unique @map("run_uid") @db.Char(64)
+  /// build | heal | review | score
+  seat                String   @db.VarChar(16)
+  /// Informational only; recycles across resets, never a key.
+  iteration           Int?
+  sessionId           String?  @map("session_id") @db.VarChar(64)
+  model               String?  @db.VarChar(80)
+  startedAt           DateTime @map("started_at")
+  durationMs          Int?     @map("duration_ms")
+  numTurns            Int?     @map("num_turns")
+  inputTokens         BigInt   @default(0) @map("input_tokens")
+  outputTokens        BigInt   @default(0) @map("output_tokens")
+  cacheCreationTokens BigInt   @default(0) @map("cache_creation_tokens")
+  /// 96% of all tokens on this host — every turn of a resumed session re-sends the transcript.
+  cacheReadTokens     BigInt   @default(0) @map("cache_read_tokens")
+  /// The CLI's own total_cost_usd, stored as reported and never recomputed.
+  totalCostUsd        Decimal  @default(0) @map("total_cost_usd") @db.Decimal(10, 6)
+  subtype             String?  @db.VarChar(24)
+  sourceFile          String?  @map("source_file")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([startedAt(sort: Desc)], map: "orchestrator_spend_when_ix")
+  @@index([seat, startedAt(sort: Desc)], map: "orchestrator_spend_seat_ix")
+  @@map("orchestrator_spend")
+}
+
 /// Brain Maturity — the daily record behind the morning WhatsApp report.
 ///
 /// Owner ruling 2026-08-10: a maturity report every morning comparing with

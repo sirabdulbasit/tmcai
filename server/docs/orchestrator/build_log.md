@@ -1555,3 +1555,75 @@ concrete and checkable in one query. What would prove me wrong: the falsifier ab
 or chat smalltalk volume overwhelming the shared batch cap and starving gmail (the
 cap is shared by design for spend; if chat noise crowds out email, per-channel caps
 are the named follow-up).
+
+## Iteration 51-b — 2026-08-29
+
+**File named in the first two tool calls and changed:**
+`server/src/services/orchestratorSpendService.ts` — plus the rest of the stranded
+feature it belongs to, landed whole. **This turn ships DEF-254: the release gate was
+RED, and the cause was a complete, tested, uncommitted feature.**
+
+**What the scoreboard's "tsc RED" actually was:** one error at
+`orchestratorSpendService.ts:303` — an un-annotated `?? { …, bySeat: [] }` literal
+inferring `never[]`, collapsing the union's `.push` parameter to `never`. The file was
+UNTRACKED: a previous session built the owner's own ask (08-20: "my main concern is
+token consumption") as a full feature — service, admin route, idempotent migration,
+15-test suite, client tab, app.ts mount — and died before committing. Its tracked
+edits (`schema.prisma`, `app.ts`) made the tree undeployable, and the type error made
+the gate red, blocking every deploy behind it, including DEF-253's gchat consumer.
+
+**The change:** two contextual type annotations
+(`OrchestratorSpendReport['series'][number]` / `['seats'][number]`) — tsc 1 → 0, the
+compiler itself is the A/B — and the stranded feature committed WHOLE, because
+half-landing it is precisely what broke the gate: `OrchestratorSpend` schema model
+(kept apart from `LlmSpend` — two providers, two budgets, a combined total would mean
+nothing), the hand-written idempotent migration (3× IF NOT EXISTS, grep-verified), the
+service, route, mount, the author's 15 tests, and the client tab. The migration's
+docblock records the durability argument: the jsonl logs already lost $606 of history
+across four orchestrator resets, and iteration numbers recycle.
+
+**Verification (from `server/`, after the last edit, leaked key stripped per the
+Iteration-27 disclosure):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0** (was RED with 1 error at turn
+  start — the scoreboard's own line)
+- `env -u GEMINI_API_KEY npx vitest run` → **3019 passed | 0 failed** (7 expected fail |
+  21 skipped | 1 todo, of 3048) — includes the feature's own suite, **15 passed**.
+- `git diff --check` → clean (after this entry)
+- `npm run build` NOT run — dist immutable (CLAUDE.md); `--noEmit` is the build check.
+  The migration ships for the deploy phase to apply by its own shape-detection
+  protocol.
+
+**Governing docs (rule 5): progressing** — the root cause (a dead session stranding
+tracked edits plus untracked files, turning the gate red with work nobody owned) is
+new; DEF-231 was the gate red on resources, this is the gate red on orphaned WIP.
+DEF-254 row written with the capability block.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 — admin/oversight tooling; nothing Brain says to the owner changes.
+What changes for the owner AS OPERATOR: his token-spend question gets a durable,
+per-seat, per-bucket answer in the admin UI instead of ephemeral jsonl. And the
+release gate is green, so the deploy debt (DEF-250/251/253) can ship.
+**MECHANISM:** contextual typing heals the inference; committing the whole feature
+removes the stranded-WIP dirt that blocked `deploy.sh`.
+**FALSIFIER:** tsc non-zero at this HEAD; or the spend tab's totals disagreeing with
+the jsonl it ingested.
+
+**Symptom tag:** none exists (the deck is empty, and this is a build-gate defect, not
+an owner conversation) — said plainly. **Continuation divergence declared:** the
+directive says "go deeper on Thinking"; a red release gate outranks any capability
+target because it blocks all of them — the deployability clause is explicit that this
+is the turn's only job, and it was.
+
+**What I did NOT do, named:** deploy (the orchestrator's; three Brain commits —
+DEF-250/251/253 — plus this one now wait on one `deploy.sh` run, and the analyst's
+"the owed work is one deploy" stands doubly); the payroll outbound-reply ingestion
+(analyst #2); any Thinking-targeted work (divergence above). Escalation ruling
+restated: (a) known limitation — sixteenth statement on the never-re-run pointer.
+
+**Honest prediction:** the deploy phase's own matrix now passes at HEAD, and the next
+deploy carries gchat's consumer, thread reconciliation, draft completion, and the
+spend tab in one artifact. What would prove me wrong: the deploy-phase tsc differing
+from mine (environment drift — the DEF-231 shape), or Codex finding the landed
+feature's queries tenant-unscoped (it is orchestrator-global BY DESIGN — spend rows
+have no tenant; the route is admin-mounted — named so the reviewer judges that
+reading rather than discovering it).

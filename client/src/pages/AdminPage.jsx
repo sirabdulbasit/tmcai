@@ -6,6 +6,7 @@ import TierManagementTab from './admin/TierManagementTab';
 import ConfigTab from './admin/ConfigTab';
 import WhatsAppMergedTab from './admin/WhatsAppMergedTab';
 import LlmSpendTab from './admin/LlmSpendTab';
+import OrchestratorSpendTab from './admin/OrchestratorSpendTab';
 import ConnectorsAdminTab from './admin/ConnectorsAdminTab';
 
 /**
@@ -76,6 +77,11 @@ export default function AdminPage() {
     { key: 'clients',  label: 'Clients' },
     { key: 'tiers',    label: 'User Tiers' },
     { key: 'llm',      label: 'LLM Spend' },
+    // A SEPARATE tab, not a section of LLM Spend. That one is what the application spends on
+    // Gemini/Claude per user; this is what Claude Code bills for building and healing the
+    // product. Two providers, two bills, no user dimension — one page would invite a combined
+    // total that means nothing.
+    { key: 'build',    label: 'Build & Heal Spend' },
   ];
 
   // Client-scoped. Order is setup-order: what the client IS, then how it talks, then what it
@@ -154,6 +160,9 @@ export default function AdminPage() {
         )}
         {activeTab === 'overall' && overallSub === 'llm' && (
           <LlmSpendTab user={user} />
+        )}
+        {activeTab === 'overall' && overallSub === 'build' && (
+          <OrchestratorSpendTab />
         )}
 
         {/* ── Client Specific — everything scoped to one client ────────────────── */}

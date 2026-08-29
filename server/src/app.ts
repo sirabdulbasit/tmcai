@@ -50,6 +50,7 @@ import whatsappNotifierRoutes from './routes/admin/whatsappNotifierRoutes';
 import clientDriveRoutes from './routes/admin/clientDriveRoutes';
 import clientConnectorRoutes from './routes/admin/clientConnectorRoutes';
 import llmSpendRoutes from './routes/admin/llmSpendRoutes';
+import orchestratorSpendRoutes from './routes/admin/orchestratorSpendRoutes';
 import delegationMatrixRoutes from './routes/admin/delegationMatrixRoutes';
 import costDashboardRoutes from './routes/admin/costDashboardRoutes';
 import riskRadarRoutes from './routes/riskRadarRoutes';
@@ -205,6 +206,10 @@ v1.use('/admin', whatsappNotifierRoutes);
 v1.use('/admin', clientDriveRoutes);
 v1.use('/admin', clientConnectorRoutes);
 v1.use('/admin', llmSpendRoutes);
+// Separate mount, deliberately. `llmSpendRoutes` reports what the APPLICATION spends on
+// Gemini/Claude; this reports what the ORCHESTRATOR spends on Claude Code. Two providers,
+// two bills — sharing a router would invite a combined total that means nothing.
+v1.use('/admin', orchestratorSpendRoutes);
 v1.use('/admin/delegation-matrix', delegationMatrixRoutes);
 v1.use('/admin', costDashboardRoutes);
 v1.use('/risk-radar', riskRadarRoutes);
