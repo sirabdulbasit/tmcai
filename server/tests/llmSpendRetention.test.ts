@@ -89,19 +89,42 @@ describe('every reader goes through the view, never the bare table', () => {
 });
 
 describe('the retention sweep', () => {
-  it('rolls up BEFORE deleting, and does both in ONE transaction', async () => {
-    // The ordering is the whole safety property. A delete that could run without its rollup
-    // would destroy that day's spend — the failure this design exists to prevent, not a milder
-    // version of it. Asserting they arrive as one array to $transaction pins both facts at once.
-    tx.mockImplementation(async (ops: any[]) => ops.map(() => 1));
-    exec.mockImplementation((sql: string) => sql);
+  /**
+   * The CALLBACK form is required, and this test exists because the array form shipped first and
+   * failed on its first production run.
+   *
+   * `db/prisma.ts` wraps `$executeRawUnsafe` to attribute DEF-085's raw-query failures, and a
+   * wrapped method is no longer a `PrismaPromise`, so `$transaction([p1, p2])` is rejected with
+   * "All elements of the array need to be Prisma Client promises". That same file's
+   * `$transaction` override re-installs the observers only on a `tx` passed to a callback.
+   *
+   * So this asserts the callback shape, not just the ordering — the ordering was already right
+   * in the version that did not work at all.
+   */
+  const txRunner = () => {
+    tx.mockImplementation(async (fn: any) => {
+      if (typeof fn !== 'function') throw new Error('array form is rejected by the wrapped client');
+      return fn({ $executeRawUnsafe: (...a: any[]) => exec(...a) });
+    });
+    exec.mockImplementation(async (sql: string) => (String(sql).includes('INSERT') ? 1129 : 2382156));
+  };
 
-    await sweepLlmSpendRetention(30);
+  it('passes a FUNCTION to $transaction, not an array of promises', async () => {
+    txRunner();
+    const out = await sweepLlmSpendRetention(30);
 
     expect(tx).toHaveBeenCalledTimes(1);
-    const ops = tx.mock.calls[0][0];
-    expect(Array.isArray(ops)).toBe(true);
-    expect(ops).toHaveLength(2);
+    expect(typeof tx.mock.calls[0][0]).toBe('function');
+    // Proof it actually ran rather than failing open to zeroes.
+    expect(out.rolledRows).toBe(1129);
+    expect(out.deletedRows).toBe(2382156);
+  });
+
+  it('rolls up BEFORE deleting, on the transaction client', async () => {
+    // The ordering is the safety property: a delete that could run without its rollup would
+    // destroy that day's spend outright.
+    txRunner();
+    await sweepLlmSpendRetention(30);
 
     const [first, second] = exec.mock.calls.map((c) => String(c[0]));
     expect(first).toContain('INSERT INTO llm_spend_daily');
@@ -111,9 +134,7 @@ describe('the retention sweep', () => {
   });
 
   it('deletes and rolls up at the SAME cutoff, so no day can fall between them', async () => {
-    tx.mockImplementation(async (ops: any[]) => ops.map(() => 1));
-    exec.mockImplementation((sql: string) => sql);
-
+    txRunner();
     await sweepLlmSpendRetention(30);
 
     const [insert, del] = exec.mock.calls.map((c) => String(c[0]));
@@ -125,9 +146,7 @@ describe('the retention sweep', () => {
   it('refuses a nonsensical retention window instead of deleting everything', async () => {
     // A 0 or negative window would mean "archive today and delete it", which would empty the raw
     // table on every pass and hand the anomaly check nothing to compare against.
-    tx.mockImplementation(async (ops: any[]) => ops.map(() => 1));
-    exec.mockImplementation((sql: string) => sql);
-
+    txRunner();
     for (const bad of [0, -5, Number.NaN]) {
       exec.mockClear();
       await sweepLlmSpendRetention(bad as number);

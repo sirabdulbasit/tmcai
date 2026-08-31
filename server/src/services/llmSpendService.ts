@@ -484,9 +484,22 @@ export async function sweepLlmSpendRetention(
   // to the rollup the moment it appears there — would then hide the raw half. Whole days only.
   const days = Number.isFinite(retainDays) && retainDays >= 1 ? Math.floor(retainDays) : 30;
 
+  // CALLBACK FORM, NOT THE ARRAY FORM — and this is not a style choice.
+  //
+  // `db/prisma.ts` wraps `$executeRawUnsafe` to give DEF-085's raw-query failures a call site,
+  // and a wrapped method no longer returns a `PrismaPromise`. So `$transaction([p1, p2])` is
+  // rejected outright:
+  //
+  //   All elements of the array need to be Prisma Client promises.
+  //
+  // The array form was what the first cut used, and the sweep failed closed on its very first
+  // production run — rolled 0, deleted 0, data untouched — which is the one outcome that made
+  // that mistake cheap. The same file's `$transaction` override re-installs the observers on the
+  // `tx` handed to a CALLBACK, precisely because the array form has no client to wrap. So the
+  // callback form is both the working path and the attributed one.
   try {
-    const [rolled, deleted] = await prisma.$transaction([
-      prisma.$executeRawUnsafe(
+    const { rolled, deleted } = await prisma.$transaction(async (tx) => {
+      const rolledRows = await (tx as any).$executeRawUnsafe(
         `INSERT INTO llm_spend_daily
                (day, client_number, user_id, provider, model, purpose,
                 calls, input_tokens, output_tokens, est_usd)
@@ -505,11 +518,13 @@ export async function sweepLlmSpendRetention(
                 output_tokens = EXCLUDED.output_tokens,
                 est_usd       = EXCLUDED.est_usd,
                 rolled_at     = now()`,
-      ),
-      prisma.$executeRawUnsafe(
+      );
+      // Only after the rollup has landed in this same transaction.
+      const deletedRows = await (tx as any).$executeRawUnsafe(
         `DELETE FROM llm_spend WHERE created_at < (CURRENT_DATE - (INTERVAL '1 day' * ${days}))`,
-      ),
-    ]);
+      );
+      return { rolled: rolledRows as number, deleted: deletedRows as number };
+    });
 
     const cutoff = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
     if (rolled > 0 || deleted > 0) {
