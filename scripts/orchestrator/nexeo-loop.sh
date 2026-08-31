@@ -124,6 +124,17 @@ mkdir -p "$STATE" "$LOGS" "$SCORES"
 # ── logging ─────────────────────────────────────────────────────────────────
 ts()  { date '+%Y-%m-%d %H:%M:%S %Z'; }
 say() { printf '%s  %s\n' "$(ts)" "$*" | tee -a "$ORCH/loop.log"; }
+# STDOUT-SAFE say. `say` tees to STDOUT, so calling it inside a function whose
+# stdout is the RETURN VALUE silently prepends the log line to that value. That
+# is not hypothetical: on 2026-08-31 `builder_session_id` did exactly this, the
+# captured id became "…  BUILD  no "Brain Builder" session found — creating
+# <uuid>\n<uuid>", and every build turn died on `Error: Invalid session ID. Must
+# be a valid UUID.` — so the Brain Builder seat never opened and never appeared
+# in the session list, which is the owner's 2026-08-11 complaint recurring
+# through a different mechanism. Use `saye` in any function that PRINTS a value.
+# Both loop.out and the watchdog capture stderr (`>> loop.out 2>&1`), so nothing
+# is lost by logging there.
+saye() { say "$@" >&2; }
 die() { say "FATAL: $*"; exit 1; }
 
 [ -x "$CLAUDE_BIN" ] || die "claude CLI not executable at $CLAUDE_BIN"
@@ -359,7 +370,7 @@ builder_session_id() {
     [ -f "$tx" ] && mb="$(du -m "$tx" 2>/dev/null | cut -f1)"
     if [ "${mb:-0}" -ge "$cap" ] 2>/dev/null; then
       printf '%s %s %sMB\n' "$(date -u +%FT%TZ)" "$cur" "$mb" >> "$STATE/builder-session-retired"
-      say "BUILD  retiring \"$BUILDER_NAME\" $cur — transcript ${mb}MB >= ${cap}MB"
+      saye "BUILD  retiring \"$BUILDER_NAME\" $cur — transcript ${mb}MB >= ${cap}MB"
       : > "$BUILDER_SESSION_FILE"
     else
       printf '%s' "$cur"; return 0
@@ -370,13 +381,13 @@ builder_session_id() {
   [ -x "$RESOLVER" ] && found="$("$RESOLVER" "$BUILDER_NAME" --cwd "$ROOT" 2>/dev/null || true)"
   if [ -n "$found" ]; then
     printf '%s' "$found" > "$BUILDER_SESSION_FILE"
-    say "BUILD  adopted existing \"$BUILDER_NAME\" session $found"
+    saye "BUILD  adopted existing \"$BUILDER_NAME\" session $found"
     printf '%s' "$found"; return 0
   fi
   # 3. none exists — create one and record it, so it is the same seat forever
   local sid; sid="$(cat /proc/sys/kernel/random/uuid)"
   printf '%s' "$sid" > "$BUILDER_SESSION_FILE"
-  say "BUILD  no \"$BUILDER_NAME\" session found — creating $sid"
+  saye "BUILD  no \"$BUILDER_NAME\" session found — creating $sid"
   printf '%s' "$sid"
 }
 
