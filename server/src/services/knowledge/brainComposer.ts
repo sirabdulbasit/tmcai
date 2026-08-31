@@ -91,6 +91,11 @@ export interface ComposeResult {
    *  was designed to catch legacy LLM hallucinations, not reasoning's
    *  legitimate questions and preview templates. */
   source?: 'reasoning' | 'legacy';
+  /** DEF-256 — the model's judgement of how this reply should be DELIVERED
+   *  (voice note, and in which language), taken verbatim from reasoning's
+   *  reply_delivery field. The WhatsApp transport executes it; nothing in
+   *  code decides it. Absent/null = channel default (mirror the input). */
+  replyDelivery?: { medium: 'voice'; languageCode?: string } | null;
 }
 
 /** The chat composer's structured action surface. Keep this list tight —
@@ -3057,6 +3062,11 @@ export async function compose(
             ...envelope,
             answer: finaliseUserVisibleProse(envelope.answer, personaForReasoning),
             source: 'reasoning',
+            // DEF-256 — carry the model's delivery judgement out to the
+            // transport. Only this exit: an intercepted answer is a marker
+            // and the act path's reply is a dispatch receipt, neither of
+            // which should be voiced on the strength of this turn's ask.
+            replyDelivery: result.replyDelivery ?? null,
           };
         }
         // For act: short-circuit the legacy LLM round-trip. The

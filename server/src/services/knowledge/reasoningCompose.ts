@@ -94,6 +94,13 @@ export interface ReasoningResult {
   } | null;
   answerText?: string | null;
   declineReason?: string | null;
+  /** DEF-256 — how the reply should be DELIVERED, judged by the model from the
+   *  user's own words ("send me a voice note", "voice note in urdu"). Code
+   *  executes this; it never decides it. Absent/null = the channel's default
+   *  (mirror the input medium). `medium` is only ever 'voice' — text needs no
+   *  directive. `languageCode` is BCP-47 (ur-PK, en-US) and is a HINT for the
+   *  synthesiser; the answer text itself carries the language. */
+  replyDelivery?: { medium: 'voice'; languageCode?: string } | null;
   confidence: number;
   rationale: string;
 }
@@ -182,6 +189,7 @@ Output strictly this JSON shape — no prose outside the object, no markdown fen
   ] | null,
   "question": { "text": "<the clarifying question>", "slotBeingFilled": "<canonical slot name>", "contextTokens": ["<tokens that identify what we're resolving>"] } | null,
   "answer_text": "<THE ONLY OWNER-FACING FIELD — what he actually reads. Second person, your own voice. Required for decision=answer AND decision=decline; OPTIONAL AND ENCOURAGED for decision=ask, where it is what you know already and the question follows it>" | null,
+  "reply_delivery": { "medium": "voice", "languageCode": "<BCP-47 like ur-PK or en-US>" } | null,
   "decline_reason": "<INTERNAL one-line note on why you declined — he never sees this; do not write it as a reply>" | null,
   "confidence": <0..1>,
   "rationale": "<one short sentence on how you decided>"
@@ -212,6 +220,14 @@ Many messages arrive as voice-note transcripts, and short recordings get clipped
 - remove_open_item DELETES an item from the user's list. Use it whenever they say remove, delete, drop, get rid of, or "I don't want this any more". Do NOT use mark_open_item_done for that — DONE claims the work was completed, which is false and which the user will read as you lying about what happened. Removal sets the item to CANCELLED and is reversible. Pass titleRef (or openItemId) plus a short reason.
 - When the user asks to remove SEVERAL items ("remove all the meaningless ones"), emit one remove_open_item per item. Removing one and describing the rest is a half-done instruction.
 - ALWAYS include titleRef on update_open_item: the item's title as the user referred to it. titleRef NEVER renames anything — it only says WHICH item you mean, so the server can still find it when the id you were given has gone stale. Omitting it means a stale id becomes a dead end and the user is asked to repeat something they already said.
+
+# Reply-delivery contract (you CAN send voice notes — never deny it)
+
+You can deliver any reply as a WhatsApp VOICE NOTE: the transport synthesises your answer_text to speech, and it has real voices for BOTH English and Urdu (Urdu script). This is a fact about your capabilities — never tell the user you "can't generate audio", that your "speech components don't support Urdu", or any other invented technical limit. (Observed 2026-08-31: "can you give me voice note in urdu?" was answered with exactly that fabricated denial while the Urdu voice sat unused.)
+
+- When the user EXPLICITLY asks for the reply as a voice note / audio ("send me a voice note", "voice note in urdu", "bol ke batao"), set "reply_delivery" to { "medium": "voice", "languageCode": <the language you are writing answer_text in> } and write answer_text as SPEAKABLE prose — no bullets, no markdown, no bracketed anything.
+- When they name a language for the reply ("in urdu", "urdu mein"), write answer_text ENTIRELY in that language (Urdu → Urdu script). An explicit per-turn language request outranks any standing reply-language preference — honor it for THIS reply, then return to the standing preference.
+- Otherwise leave reply_delivery null. Null means the channel's default: a voice message gets a voice reply, a typed message gets text. Do not set it speculatively.
 
 # Provided-identifier contract (a given phone/email is contact data, not a task)
 
@@ -349,7 +365,7 @@ function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset
   return parts.join('\n\n');
 }
 
-function parseReasoningOutput(raw: string): ReasoningResult | null {
+export function parseReasoningOutput(raw: string): ReasoningResult | null {
   try {
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
     const obj = JSON.parse(cleaned);
@@ -379,6 +395,16 @@ function parseReasoningOutput(raw: string): ReasoningResult | null {
       actionPlan: actionPlan && actionPlan.length > 0 ? actionPlan : null,
       question: obj.question ?? null,
       answerText: obj.answer_text ?? null,
+      // DEF-256 — only 'voice' is a directive (text is the default and needs
+      // none); anything else the model emits here is dropped, not obeyed.
+      replyDelivery: (obj.reply_delivery && obj.reply_delivery.medium === 'voice')
+        ? {
+            medium: 'voice' as const,
+            languageCode: typeof obj.reply_delivery.languageCode === 'string'
+              ? obj.reply_delivery.languageCode.trim() || undefined
+              : undefined,
+          }
+        : null,
       declineReason: obj.decline_reason ?? null,
       confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.5,
       rationale: typeof obj.rationale === 'string' ? obj.rationale : '',

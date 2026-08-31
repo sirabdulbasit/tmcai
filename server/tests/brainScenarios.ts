@@ -38,6 +38,7 @@ import { looksLikeAnswer } from '../src/services/brainPrompts/promptReplyHandler
 import { parseRelevanceVerdict, mayConsumeAsAnswer, RELEVANCE_CONFIDENCE_THRESHOLD } from '../src/services/brainPrompts/promptReplyRelevance';
 import { listCapabilities } from '../src/services/knowledge/brainCapabilityRegistry';
 import { detectAudioMime } from '../src/services/voiceService';
+import { parseReasoningOutput } from '../src/services/knowledge/reasoningCompose';
 import { classifyWebjsSendResult } from '../src/services/whatsapp/sendReceipt';
 import { whatsappPhoneVariants } from '../src/services/whatsapp/inboundIdentity';
 import { downloadInboundMedia } from '../src/services/whatsapp/inboundMedia';
@@ -582,6 +583,52 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(code.indexOf('no dispatcher for this action')).toBeLessThan(code.indexOf('renderPlanPreview'));
       // One shared update implementation, not a second copy.
       expect(code).toContain("await import('../openItems/applyOpenItemUpdate')");
+    },
+  },
+  {
+    id: 'chat18',
+    date: '2026-08-31',
+    userMessage: 'can you give me voice note in urdu? … why can\'t you generate audio in urdu?',
+    observedFailure:
+      'Brain denied a capability it has, with an invented mechanism: "I can\'t generate audio replies in any language right now" / "The components I use for generating speech don\'t have support for Urdu yet" — while textToVoiceNote() has carried the Google TTS ur-IN-Standard-A Urdu voice since it was written. Three gates cornered the model: voice-out was hardwired to voice-in (typed asks had no TTS path), the reasoning JSON contract had no delivery field, and the persona language pin was an absolute that forbade writing Urdu at all.',
+    symptomTags: ['capability-fabrication', 'fabricated-status'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      // 1. The model's delivery judgement survives the parse — real parser, real JSON.
+      const parsed = parseReasoningOutput(JSON.stringify({
+        decision: 'answer',
+        answer_text: 'جی، یہ رہا آپ کا وائس نوٹ۔',
+        reply_delivery: { medium: 'voice', languageCode: 'ur-PK' },
+        confidence: 0.95,
+        rationale: 'explicit voice-note-in-urdu request',
+      }));
+      expect(parsed?.replyDelivery).toEqual({ medium: 'voice', languageCode: 'ur-PK' });
+      // 2. Only 'voice' is a directive; junk media are dropped, never obeyed.
+      const junk = parseReasoningOutput(JSON.stringify({
+        decision: 'answer', answer_text: 'x',
+        reply_delivery: { medium: 'carrier-pigeon' }, confidence: 0.9, rationale: '',
+      }));
+      expect(junk?.replyDelivery).toBeNull();
+      // 3. The prompt CONTRACT names the capability and the field, so the model
+      //    can never again be cornered into denying it.
+      const rc = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'reasoningCompose.ts'), 'utf-8');
+      expect(rc).toContain('# Reply-delivery contract');
+      expect(rc).toContain('"reply_delivery"');
+      // 4. The chokepoint EXECUTES the judgement and fails OPEN to text —
+      //    every WhatsApp reply passes through sendReply, so this is the one
+      //    place voice delivery can no longer be hardwired to voice input.
+      const inbound = readFileSync(join(__dirname, '..', 'src', 'services', 'whatsapp', 'WhatsAppInbound.ts'), 'utf-8');
+      expect(inbound).toContain("delivery?.medium === 'voice'");
+      expect(inbound).toContain('voiceDelivered');
+      // 5. The denied capability is REAL: the Urdu voice exists in code.
+      const vs = readFileSync(join(__dirname, '..', 'src', 'services', 'voiceService.ts'), 'utf-8');
+      expect(vs).toContain('ur-IN-Standard-A');
+      // 6. The language pin is a default with an explicit per-turn override,
+      //    not an absolute the model must break to obey the owner.
+      const persona = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainPersonaService.ts'), 'utf-8');
+      expect(persona).toContain('Explicit request overrides the language rule');
     },
   },
 ];

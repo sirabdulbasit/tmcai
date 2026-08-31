@@ -92,7 +92,7 @@ export async function answerAsBrain(
   question: string,
   history: BrainHistoryTurn[] = [],
   opts: { steeringHint?: string | null; channel?: 'web' | 'whatsapp' } = {},
-): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string; panel?: import('../services/knowledge/channelRenderer').PanelDirective | null; artifact?: BrainArtifactForCaller | null }> {
+): Promise<{ answer: string; sources: Array<{ type: string; id: any; snippet: string }>; gaps?: string[]; intent?: string; panel?: import('../services/knowledge/channelRenderer').PanelDirective | null; artifact?: BrainArtifactForCaller | null; replyDelivery?: { medium: 'voice'; languageCode?: string } | null }> {
   // Trim history to the last 24 turns. Wider window than before so
   // role='artifact' entries from earlier in the session reach the
   // composer for cancel/reschedule resolution; conversation messages
@@ -370,6 +370,9 @@ export async function answerAsBrain(
     intent: plan.intent,
     panel,
     artifact,
+    // DEF-256 — the composer's delivery judgement, for transports that can
+    // honor it (WhatsApp voice notes). Web callers ignore it.
+    replyDelivery: result.replyDelivery ?? null,
   };
 }
 

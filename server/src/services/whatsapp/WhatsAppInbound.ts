@@ -643,8 +643,10 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
     // Non-fatal — WhatsApp reply still sent
   }
 
-  // Send reply
-  await sendReply(params, responseText);
+  // Send reply. DEF-256 — the composer may have judged, from the owner's own
+  // words, that this reply should arrive as a voice note (and in which
+  // language). That judgement rides along; sendReply executes it.
+  await sendReply(params, responseText, (!degraded && r) ? r.replyDelivery ?? null : null);
   log.info('Inbound processing completed', {
     userId, messageId: params.waMessageId, type: params.messageType,
     elapsedMs: Date.now() - startedAt,
@@ -653,7 +655,15 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
 // ─── Send reply via provider or direct replyFn ────────────────────────────────
 
-async function sendReply(params: InboundParams, text: string): Promise<void> {
+async function sendReply(
+  params: InboundParams,
+  text: string,
+  // DEF-256 — the MODEL's judgement (reasoningCompose reply_delivery) that the
+  // owner asked for this reply as a voice note, and in which language. This
+  // function only executes it. Null = channel default (replyFn mirrors a voice
+  // input; otherwise text).
+  delivery?: { medium: 'voice'; languageCode?: string } | null,
+): Promise<void> {
   // ── DEF-102: the ONE place a machine marker can be caught ────────────────
   //
   // On 2026-08-08 02:43 the owner asked to set a deadline and received the
@@ -731,8 +741,62 @@ async function sendReply(params: InboundParams, text: string): Promise<void> {
   let status: 'sent' | 'sent_unconfirmed' | 'failed' = 'sent_unconfirmed';
   let messageId: string | null = null;
   let sendError: string | null = null;
+  // DEF-256 — model-directed voice delivery. Until now voice-out was hardwired
+  // to voice-in (the webhook's replyFn), so a TYPED "can you give me voice note
+  // in urdu?" had no path to the Urdu voice that has existed in textToVoiceNote
+  // since day one — and Brain invented a technical excuse for the gap
+  // (`capability-fabrication`). The judgement WHO gets voice now belongs to the
+  // model; this block only synthesises and sends. Fails OPEN to the text paths
+  // below: a reply must never be lost to a TTS or media-delivery failure.
+  let voiceDelivered = false;
+  if (delivery?.medium === 'voice') {
+    try {
+      const { textToVoiceNote } = await import('../voiceService');
+      const audioBuf = await textToVoiceNote(clean, delivery.languageCode);
+      if (audioBuf) {
+        const { sendTenantWhatsAppVoiceNote } = await import('../notifications/tenantWhatsappSender');
+        const voice = await sendTenantWhatsAppVoiceNote(
+          params.clientNumber, params.fromNumber, audioBuf, clean, logUserId ?? 0,
+        );
+        if (voice.ok) {
+          messageId = voice.waMessageId ?? null;
+          status = messageId ? 'sent' : 'sent_unconfirmed';
+          voiceDelivered = true;
+          // Readable copy only when a voice bubble really went out — same
+          // rule as the webhook's voice-in path (the voice primitive already
+          // falls back to text itself when media delivery is unavailable).
+          if (voice.deliveredAs === 'voice') {
+            const { sendTenantWhatsAppText } = await import('../notifications/tenantWhatsappSender');
+            const readable = await sendTenantWhatsAppText(
+              params.clientNumber, params.fromNumber, clean, logUserId ?? 0,
+            );
+            if (!readable.ok) {
+              log.warn('model-directed voice reply readable copy failed', {
+                clientNumber: params.clientNumber, error: readable.error,
+              });
+            }
+          }
+        } else {
+          log.warn('model-directed voice send failed — falling back to text', {
+            clientNumber: params.clientNumber, error: voice.error,
+          });
+        }
+      } else {
+        log.warn('model-directed voice TTS returned no audio — falling back to text', {
+          clientNumber: params.clientNumber, languageCode: delivery.languageCode ?? null,
+        });
+      }
+    } catch (err: any) {
+      log.warn('model-directed voice delivery failed — falling back to text', {
+        clientNumber: params.clientNumber, error: err?.message,
+      });
+    }
+  }
+
   try {
-    if (params.replyFn) {
+    if (voiceDelivered) {
+      // Delivered above; skip the default transports.
+    } else if (params.replyFn) {
       const outcome = await params.replyFn(clean);
       if (outcome && !outcome.success) throw new Error(outcome.error ?? 'reply provider rejected send');
       messageId = outcome?.messageId ?? null;

@@ -606,3 +606,52 @@ something that cannot run.
 against the dispatcher's real `case` labels in BOTH directions — a phantom
 capability or an unreachable dispatcher fails CI. Live acceptance = dictate a
 multi-item priority/deadline batch and receive real "Updated …" lines.
+
+## Chat 18 — 2026-08-31 05:53 PKT (Urdu voice note denied with an invented technical reason)
+
+**Channel:** WhatsApp (typed text, and voice earlier in the same session).
+**User did:** asked, in text, *"can you give me voice note in urdu?"*, then
+pressed: *"why can't you generate audio in urdu?"*.
+
+**Observed failure:**
+```
+I can only reply in English text. I can't generate audio replies in any
+language right now
+…
+The components I use for generating speech don't have support for Urdu yet
+```
+Both sentences are fabricated. `textToVoiceNote()` has synthesised Urdu via
+Google TTS `ur-IN-Standard-A` since it was written (`voiceService.ts`). Brain
+denied a capability it has, and invented a technical mechanism for the denial —
+the `fabricated-status` class, denial arm (`capability-fabrication`), same shape
+as DEF-130.
+
+**Root cause — three gates, all in code or prompt, none the model's judgement:**
+1. Voice-out was hardwired to voice-in: `webhookRoutes.ts` builds a
+   voice-capable `replyFn` only when `inputWasVoice`; a typed ask had NO path to
+   TTS at all.
+2. The model had no channel to request voice delivery — `reasoningCompose`'s
+   JSON contract had no delivery field, so even a model that wanted to send
+   audio could only emit text.
+3. The persona language pin ("ALWAYS ENGLISH — NON-NEGOTIABLE") was written as
+   an absolute, so the model was prompt-forbidden from writing the Urdu text
+   the Urdu voice needs — an explicit per-turn request had no standing.
+Cornered by all three, the model invented an explanation.
+
+**Fix (DEF-256):** the delivery decision moved to the model. `reasoningCompose`
+gains `reply_delivery` ({medium:'voice', languageCode}) plus a reply-delivery
+contract naming the TRUE capability (voice notes exist; English and Urdu voices
+exist; denying it is fabrication); `ComposeResult`/`answerAsBrain` carry it;
+`sendReply` (the one chokepoint every WhatsApp reply passes) executes it via
+`textToVoiceNote(clean, languageCode)` + `sendTenantWhatsAppVoiceNote`, failing
+OPEN to text. The language pin is now a standing DEFAULT with an explicit
+per-turn override clause. No keyword list decides anything in code.
+
+**Symptom tags:** `capability-fabrication`, `fabricated-status`.
+
+**Verification:** `def256ModelDirectedVoiceReply.test.ts` + scenario `chat18` pin
+the parse path (reply_delivery voice/ur-PK survives, junk media are dropped),
+the prompt contract's presence, the chokepoint's execution branch and its
+fail-open, and the Urdu voice's existence in `voiceService.ts`. Live acceptance
+= type "can you give me voice note in urdu?" on production and receive an Urdu
+voice bubble.
