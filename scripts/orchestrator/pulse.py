@@ -2040,11 +2040,24 @@ def collect():
             caps = [{"name": c["name"], "nexeo": c["nexeo"],
                      "professional": c["professional"], "delta": c.get("delta", 0)}
                     for c in d["capabilities"]]
-            nn = round(sum(c["nexeo"] for c in caps) / len(caps), 1)
-            pro = round(sum(c["professional"] for c in caps) / len(caps), 1)
+            # TWO DECIMALS, NOT ONE — owner, 2026-08-31: "recalculate total score".
+            #
+            # The overall figure is the plain mean of whatever capabilities the scorecard
+            # holds, and after the nine-to-eight merge that is 428/8 = 53.5 and 738/8 =
+            # 92.25. `round(92.25, 1)` returns 92.2: Python rounds half to EVEN, and this
+            # mean lands exactly on a half. So the deck showed a benchmark of 92.2 and a
+            # gap of 38.7 while brain_evaluation_chart.md recorded 92.25 and 38.75 — the
+            # UI and the documents disagreeing about the same number, which is the drift
+            # this scorecard exists to prevent.
+            #
+            # Two decimals is enough for a mean of eight integers (eighths are exact at
+            # three decimals at worst, and .125 steps only arise for sums not divisible by
+            # 8 — those already rounded). 53.5 stays 53.5; nothing gains false precision.
+            nn = round(sum(c["nexeo"] for c in caps) / len(caps), 2)
+            pro = round(sum(c["professional"] for c in caps) / len(caps), 2)
             brain = {
-                "nexeo": nn, "professional": pro, "gap": round(pro - nn, 1),
-                "move": round(sum(c["delta"] for c in caps) / len(caps), 1),
+                "nexeo": nn, "professional": pro, "gap": round(pro - nn, 2),
+                "move": round(sum(c["delta"] for c in caps) / len(caps), 2),
                 "scored_by": (d.get("history") or [{}])[-1].get("scored_by",
                                                                "orchestrator"),
             }

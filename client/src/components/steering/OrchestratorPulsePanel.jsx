@@ -261,14 +261,15 @@ const CAP_MAP_SLOTS = [
   { name: 'Self-Pruning',           left: 75.6, top: 85.6, above: true,  cap: 'SELF PRUNING' },
 ];
 
-/* THE RETIRED BOX. The artwork has NINE painted boxes and there are eight capabilities,
-   so bottom-left — captioned "SIMPLE & SMART" in the pixels — has no score to show.
-   Leaving it blank reads as a broken deck: a labelled box with nothing in it looks like
-   a number that failed to load. So it is labelled for what it is. This is the honest
-   version of the compromise; the clean version is artwork with eight boxes, and until
-   that exists the retired box says why it is empty rather than pretending it is not
-   there. */
-const CAP_MAP_RETIRED_SLOT = { left: 25.0, top: 85.6, was: 'Simple & Smart', into: 'Self-Pruning' };
+/* THE NINTH BOX IS NOW THE TOTAL — owner, 2026-08-31: "replace simple & smart with total".
+   The artwork has NINE painted boxes and there are eight capabilities, so bottom-left was
+   spare. Putting the overall figure there is strictly better than the "merged into
+   Self-Pruning" annotation it replaces: the box gets a real number instead of an apology,
+   and the total moves out of the dark band under the chin where it had to stay narrow to
+   avoid running through the two captions either side of it.
+   `mask` covers the baked "SIMPLE & SMART" caption below the box — the pixels cannot be
+   edited, so the stale word is hidden behind the label that now belongs there. */
+const CAP_MAP_TOTAL_SLOT = { left: 25.0, top: 85.6, mask: { left: 25.5, top: 93.6 } };
 
 const CAP_MAP_SRC = '/nexeo-capability-map.jpg';
 
@@ -407,34 +408,33 @@ function CapabilityMap({ data }) {
             </div>
           );
         })}
-        {/* The ninth painted box, which no longer has a capability. Named, not blank. */}
-        <div
-          className="orch-capmap-retired"
-          style={{ left: `${CAP_MAP_RETIRED_SLOT.left}%`, top: `${CAP_MAP_RETIRED_SLOT.top}%` }}
-          title={`${CAP_MAP_RETIRED_SLOT.was} was merged into ${CAP_MAP_RETIRED_SLOT.into} on 2026-08-31 — simplicity is the result of pruning, not a separate capability. This box is painted into the artwork and has no score of its own.`}
-        >
-          <span className="orch-capmap-retired-arrow">↘</span>
-          <span className="orch-capmap-retired-lbl">merged into<br />Self-Pruning</span>
-        </div>
-        {/* TOTAL, on the picture. Owner, 2026-08-14: "place total brain capability
-            beautifully". It sits in the one genuinely empty part of his artwork —
-            the dark band below the chin, centred between SIMPLE & SMART and SELF
-            PRUNING — so it reads as part of the composition rather than covering
-            the face or the brain. Positioned against the FRAME like the nine box
-            figures, so it tracks the image at every width. */}
+        {/* THE TOTAL, in the ninth painted box. The baked caption under it still reads
+            "SIMPLE & SMART" in the pixels, so it is masked and relabelled — a stale word
+            left visible under the headline number would be worse than the empty box was. */}
         {data.brain && (
-          <div className="orch-capmap-total"
-               title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap}`}>
-            {/* Owner, 2026-08-17: the box overlapped SIMPLE & SMART and SELF
-                PRUNING. It was two stacked lines — "TOTAL BRAIN CAPABILITY" over
-                "of 91.9 professional" — and that width, centred in the bottom band,
-                ran straight through the labels either side of it. One short line
-                instead; the benchmark and the gap stay in the hover title, which is
-                where a detail belongs when the space is contested. */}
-            <span className="orch-capmap-total-lbl">TOTAL</span>
-            <span className="orch-capmap-total-num">{data.brain.nexeo}%</span>
-          </div>
+          <>
+            <div
+              className="orch-capmap-slot orch-capmap-slot-total"
+              style={{ left: `${CAP_MAP_TOTAL_SLOT.left}%`, top: `${CAP_MAP_TOTAL_SLOT.top}%` }}
+              title={`Brain overall ${data.brain.nexeo} vs professional ${data.brain.professional} · gap ${data.brain.gap} — the mean of ${(data.capabilities || []).length} capabilities`}
+            >
+              <span className="orch-capmap-pct">{data.brain.nexeo}%</span>
+              <span className="orch-capmap-pro">of {data.brain.professional}</span>
+            </div>
+            <div className="orch-capmap-totmask"
+                 style={{ left: `${CAP_MAP_TOTAL_SLOT.mask.left}%`, top: `${CAP_MAP_TOTAL_SLOT.mask.top}%` }}
+                 aria-hidden="true">
+              TOTAL
+            </div>
+          </>
         )}
+        {/* The floating TOTAL chip that used to sit in the dark band below the chin is
+            GONE — the total now occupies the ninth painted box above. That band was only
+            ever a compromise: it is where the total went when every box was taken, and it
+            forced the label onto one cramped line because two lines ran straight through
+            the SIMPLE & SMART and SELF PRUNING captions either side of it (owner,
+            2026-08-17). A real box has room for the number AND its benchmark, which is why
+            "of N" is back on the total for the first time since that collision. */}
       </div>
     </div>
   );

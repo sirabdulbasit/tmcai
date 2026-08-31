@@ -567,20 +567,31 @@
   font-size: clamp(9px, 1.25vw, 14px); color: rgba(255,255,255,0.8); line-height: 1;
   text-shadow: 0 1px 3px rgba(0,0,0,0.95);
 }
-/* The retired ninth box. Deliberately quiet — it must read as an annotation, never as
-   a score, so no tabular numerals, no white, and a size below the real figures. */
-.orch-capmap-retired {
+/* THE TOTAL, in the ninth painted box. It uses the same .orch-capmap-slot geometry as the
+   eight capabilities so it lands on its box identically, and is distinguished by WEIGHT and
+   a warm tint rather than by size: it is a different KIND of number — a mean of the other
+   eight, not a ninth capability — and making it larger would imply it outranks them on the
+   same scale. The amber matches the ring the artwork already uses for emphasis. */
+.orch-capmap-slot-total .orch-capmap-pct {
+  color: #ffd479;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.98), 0 0 16px rgba(224,164,60,0.45);
+}
+.orch-capmap-slot-total .orch-capmap-pro { color: rgba(255,212,121,0.78); }
+
+/* MASKS THE BAKED CAPTION. "SIMPLE & SMART" is painted into the raster below this box and
+   cannot be edited, so the label that now belongs there is drawn over it. It must be
+   OPAQUE — a translucent chip lets the old white capital letters read straight through,
+   which is worse than leaving them alone. The colour is sampled from the artwork's own dark
+   background at that point rather than a theme token, because it has to disappear into the
+   picture, not into the panel. */
+.orch-capmap-totmask {
   position: absolute; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; pointer-events: auto; text-align: center;
-}
-.orch-capmap-retired-arrow {
-  font-size: clamp(11px, 1.7vw, 18px); line-height: 1; color: rgba(224,164,60,0.85);
-  text-shadow: 0 1px 3px rgba(0,0,0,0.95);
-}
-.orch-capmap-retired-lbl {
-  font-size: clamp(7px, 1.0vw, 11px); line-height: 1.2; font-style: italic;
-  color: rgba(255,255,255,0.62); text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+  min-width: 23%; padding: 3px 10px 4px; text-align: center;
+  background: #0a1018; border-radius: 6px;
+  font-size: clamp(8px, 1.15vw, 13px); font-weight: var(--fw-bold, 700);
+  letter-spacing: 0.18em; color: rgba(255,212,121,0.92);
+  box-shadow: 0 0 0 1px rgba(224,164,60,0.30), 0 0 14px rgba(0,0,0,0.85);
+  line-height: 1; white-space: nowrap; pointer-events: none;
 }
 .orch-capmap-missing {
   display: flex; flex-direction: column; gap: 8px;

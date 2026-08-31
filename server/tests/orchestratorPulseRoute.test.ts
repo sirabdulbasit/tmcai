@@ -200,6 +200,27 @@ describe('pulse.py --json contract (what the dashboard reads by name)', () => {
       expect(typeof c.nexeo).toBe('number');
       expect(typeof c.professional).toBe('number');
     }
+
+    // THE TOTAL MUST BE THE EXACT MEAN OF THE CAPABILITIES IT IS SERVED WITH.
+    //
+    // Owner, 2026-08-31: "recalculate total score". Nothing was stale — the figure is
+    // derived on every collect — but it was rounded to ONE decimal, and after the
+    // nine-to-eight merge the professional mean is 738/8 = 92.25, which lands exactly on
+    // a half. Python rounds half to EVEN, so the deck served 92.2 and a gap of 38.7 while
+    // brain_evaluation_chart.md recorded 92.25 and 38.75: the UI and the documents
+    // disagreeing about one number, with nothing watching.
+    //
+    // Asserted against the capabilities in the SAME frame rather than against literals,
+    // so this stays true as scores move and as the capability count changes again.
+    if (d.brain && d.capabilities.length > 0) {
+      const n = d.capabilities.length;
+      const meanNexeo = d.capabilities.reduce((s: number, c: any) => s + c.nexeo, 0) / n;
+      const meanPro = d.capabilities.reduce((s: number, c: any) => s + c.professional, 0) / n;
+      // Tight tolerance: this is a rounding guard, so it has to fail on a 0.05 slip.
+      expect(d.brain.nexeo).toBeCloseTo(meanNexeo, 2);
+      expect(d.brain.professional).toBeCloseTo(meanPro, 2);
+      expect(d.brain.gap).toBeCloseTo(meanPro - meanNexeo, 2);
+    }
     expect(Array.isArray(d.trend.iterations)).toBe(true);
     expect(Array.isArray(d.trend.rows)).toBe(true);
     expect(Array.isArray(d.trend.unmoved)).toBe(true);
