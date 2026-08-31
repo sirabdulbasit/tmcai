@@ -79,3 +79,137 @@ defect:
 
 The test: **does it decide, or does it execute?** A decision goes to the model. A mechanic
 stays in the script, deterministic and auditable.
+
+---
+
+## Self-Pruning (capability 9) — what it is, and the standing inventory
+
+**Self-Pruning is not disk cleanup. It is the removal of PARALLEL OWNERSHIP.**
+
+Measured on 2026-08-31 at `d144edf`: the tree is 3.1 GB and the database 810 MB, but live
+application source is **~14 MB**. Almost none of the weight is code, and almost none of the
+harm is weight. The harm is that several concerns have **two or more live owners** — two Brain
+composition paths, four morning briefs, three wiki linters, three WhatsApp senders, two contact
+tables. Every one of those is a place where a fix can land on the side nobody is running.
+
+That is why this capability sits beside Self-Healing rather than under housekeeping: a system
+that cannot say which of its two implementations is authoritative cannot heal either of them.
+
+### The four classes — a candidate is worthless until it is classified
+
+Nothing is deletable because it *looks* unused. Every candidate belongs to exactly one class,
+and the class decides the procedure.
+
+**Class 1 — confirmed dead: zero static, dynamic, registry, script, or runtime references.**
+
+- Client pages: `ClientConfigPage`, `SystemConfigPage`, `TenantPage`, `KnowledgePage`.
+- Client components: `BrainAvatar` (owner, 2026-08-24: *"remove it from all pages"*),
+  `CustomActionTab`, `ActionForms`, `ActionExecutionTab`, `WikiTab`.
+- Server: `pipeline/hybridSearch.ts`, `pipeline/queryRewriter.ts`, `pipeline/reranker.ts`,
+  **`pipeline/chunker.ts`**, `slaMonitorService.ts`, `middleware/pubsubHandler.ts`,
+  `artifactService.ts` (with `general_artifacts` / `user_artifacts`, both 0 rows).
+- Routes mounted but unreachable from the rail: `/chat-legacy`, `/brain/memory`, `/thoughts`,
+  `/welcome`. Rail pages standing on 0 rows: `/agents`, `/schedules`.
+
+Unmount the route before deleting the page, and remove the emitted artifact with the source —
+`tsc` does not delete output for a deleted input, so a stale `.js` outlives its `.ts`.
+
+**Class 2 — dead product still executing.** ~400 KB of source that costs **CPU and LLM calls,
+not disk**: the legacy TMC chat stack (`chatRoutes`, `conversationRoutes`, most of
+`controllers/`, `promptService`, `memoryService`, `newsService`, `knowledgeBaseService`); the
+vendor services no Brain path calls (`groqService`, `openaiService`, `openrouterService`,
+`domainLLMService`, and the second `controllers/chat/llmRouter.ts`); empty work still on a
+timer (`index_events` every 10 s, hourly `proactive_alerts`, the 4 am `chunks` backfill, the
+agent scheduler on 0 rows); and jobs with no production timer (`openItemFollowUpJob`,
+`delegationFollowUpJob`, `junkContactCleanupJob`, `gmailFeedPoller.pollAllActiveUsers`,
+`embeddingBackfill`, both follow-up workers). **Kill the switch first, delete the files
+second** — two of those workers send outbound mail, so dropping them silently changes Self
+Follow-Up.
+
+**Class 3 — redundant but load-bearing: COLLAPSE, never delete.** Both sides are live, so
+deleting either removes behaviour. Pick one owner, migrate every reader and writer to it, prove
+the other has no live use, then retire it.
+
+- **Compose:** `reasoningCompose` + `brainTools` is production; the `brainComposer` legacy tail
+  is the `BRAIN_USE_REASONING=never` rollback; `agenticReader` is a **third** path that skips
+  compose, preview and dispatch entirely.
+- Wiki lint ×3, morning brief ×4, reflection ×2 — each writes a *different* table, so none is
+  a no-op deletion.
+- WhatsApp: `tenantWhatsappSender` is canonical, but the notification drain still goes through
+  `whatsappAdapter` → `whatsappService`. That is a genuine dual path, not a wrapper.
+- Feature-flag constants that gate nothing — only `ADK_AGENTS` is ever read. **Deleting the
+  unused constants is cleanup; deleting the systems they name is not.**
+
+**Class 4 — never pruned.** Everything under `server/src/services/knowledge/` is imported;
+there is no dead Brain file. `server/dist` is the immutable deployed artifact (`chattr +i`).
+WhatsApp session directories, `.env` and tokens, migration history already applied, audit and
+receipt tables (empty is not unused), unique/foreign-key/tenant indexes, and **other pm2 apps
+on this box**.
+
+### Two corrections, because a wrong "safe to delete" here causes an outage
+
+This section is a governing document. Both were verified by execution on 2026-08-31, and both
+contradict a self-pruning audit that called them safe.
+
+1. **`agents/.venv` (728 MB) is NOT unused — it is a running production service.** pm2
+   `tmcai-agents` executes `/var/www/tmcai/agents/.venv/bin/uvicorn` (3 days uptime, 0
+   restarts), it answers on `127.0.0.1:8080`, and `healthRoutes.ts:307` polls it through
+   `AGENT_WORKER_URL`. `feature_adk_agents` gates whether **Brain delegates work** to the
+   fleet — it does not gate whether the service exists. Deleting the venv deletes the
+   interpreter the app is running from. This single item was 728 MB of an 866 MB slice labelled
+   *"Risk: None"*; the real safe total there is ~138 MB.
+2. **`server/src/pipeline/*` is not wholly dead.** 9 of its 13 files are referenced
+   (`embedder`, `piiService`, `gcpRetrieval`, `retriever`, `vectorStore`,
+   `vertexVectorSearch`, `sectionRetriever`, `contentSanitizer`, `outputSanitizer`). Only four
+   have zero references, and the fourth — `chunker.ts` — was missed by the audit that found the
+   other three.
+
+The lesson generalises: **a feature flag defaulting false does not mean the code behind it is
+idle, and a directory is not a unit of deadness.** Classify per file, per process, per timer.
+
+### Where the size actually is, so effort goes where it pays
+
+Deleting source barely moves either number. Measured 2026-08-31:
+
+| | Now | The lever |
+|---|---|---|
+| Disk 3.1 GB | `node_modules` 1008 MB · WhatsApp sessions 967 MB · `agents/.venv` 728 MB (live) · `.git` 117 MB | Four `dist.pre-*` snapshots (77 MB) and retired orchestrator logs (~61 MB) are the only safe disk wins |
+| DB 810 MB | `llm_spend` **561 MB / 2,614,296 rows**, 91% older than 30 days · `wiki_pages` 124 MB (live) | **Retention, not deletion** — archiving `llm_spend` past 30 days takes the DB to ~300 MB |
+
+`llm_spend` is 69% of the database and is the live cost ledger, not junk. Its size is a
+retention policy that was never written, and the spend page must keep range-querying after any
+archive or it will under-report the way `system_config` did (OPT-001).
+
+### The order of operations
+
+1. Establish that a candidate has **no** static, dynamic, registry, script or runtime reference.
+2. Remove Class 1 — the old search pipeline, the unused SLA service, the Pub/Sub middleware.
+3. Retire the empty artifact subsystem whole: service, seed code, test exemptions, and its two
+   tables in one idempotent migration.
+4. Remove unused packages (the superseded Google AI SDKs) after checking emitted JS, scripts and
+   configuration-driven loading.
+5. **Consolidate the duplicate reasoning paths BEFORE deleting the legacy composer** — instrument
+   every real fallthrough from reasoning to legacy, close each reason at its class, and prove
+   zero fallthrough across text, voice, image, confirmation, action and failure turns.
+6. Remove expired API aliases and superseded pollers only after checking access logs and
+   schedulers.
+7. Archive retired orchestrator logs, old snapshots and dated backups out of the repository.
+8. Drop empty snapshot tables through hand-written idempotent migrations; remove duplicate
+   indexes while preserving every constraint-owning and tenant-scope index.
+9. Clean generated builds before rebuilding, so stale compiled files cannot survive their source.
+
+Never batch a Class 2 or Class 3 change with a Brain messaging-path change.
+
+### What governs a deletion
+
+The ruling above applies here unchanged: **does it decide, or does it execute?**
+
+Whether something is dead is a **judgement on evidence** — imports, timers, row counts, access
+logs, live process identity — and it belongs to the model reading that evidence, never to a
+hard-coded list of filenames. What stays deterministic is the *proof*: `npx tsc --noEmit`,
+`npx vitest run`, the build, `git diff --check`, and live acceptance for anything on a
+messaging path. **A deletion that compiles is not a verified deletion**, and a test that fails
+if a retired module or alias is reintroduced is part of the removal, not an optional extra.
+
+Keep, always: active sessions, audit and receipt data, migration history, and any uncommitted
+work in the tree that belongs to the owner or another agent.
