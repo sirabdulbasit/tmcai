@@ -12,7 +12,9 @@
 the production commands himself on the box — `git pull --ff-only`, migrations, `npm run build`,
 `pm2 restart tmcai-server` — instead of handing Basit a block to run. This supersedes every
 earlier "Basit executes every production command" / "hand him the block, do not run it for him"
-clause in this file, in `CLAUDE.md`, and in `HANDOFF_2026-08-07.md` §1/§3/§5.
+clause in this file, in `CLAUDE.md`, and in `HANDOFF_2026-08-07.md` §1/§3/§5. (That handoff
+doc was deleted on 2026-08-31 along with the other superseded handoffs — it is named here for
+the historical record, not as a document to go and read; nothing in it survives this §0.)
 
 What did **not** change, and is the price of the authority:
 

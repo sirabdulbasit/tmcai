@@ -1,12 +1,12 @@
 {
   "_provenance": "History cleared 2026-08-17 on the owner's reset. The nine scores are Grok's current reading and are carried forward; the previous 10 history entries spanned three runs whose iteration numbers collided after the counter was reset, and are archived at retired-2026-08-17-reset2/capability_scorecard.json",
   "_rules": "Evidence-based capability judgements, NOT test-pass percentages. Every score change must name the iteration and the evidence that moved it. Green tests alone never raise a score. Anything unexercised or unfalsifiable in production is UNVERIFIED and does not raise it either.",
-  "as_of_iteration": 31,
-  "as_of_head": "ac08af5",
+  "as_of_iteration": 54,
+  "as_of_head": "d144edf",
   "capabilities": [
     {
       "name": "Simple & Smart",
-      "nexeo": 33,
+      "nexeo": 36,
       "professional": 92,
       "delta": 0,
       "basis": "code-read",
@@ -14,9 +14,9 @@
     },
     {
       "name": "Thinking",
-      "nexeo": 40,
+      "nexeo": 42,
       "professional": 94,
-      "delta": 4,
+      "delta": 0,
       "basis": "doc-read",
       "evidence": "DEF-161 OPEN (brain_change_log.md): under explicit authority grant Brain still menus instead of acting \u2014 confirm-misfires 7th in brain_evaluation_chart.md \u00a73. DEF-038 named as structural fix, not done. No deliberation-path change in this reset baseline."
     },
@@ -30,23 +30,23 @@
     },
     {
       "name": "Accurate Communication",
-      "nexeo": 90,
+      "nexeo": 91,
       "professional": 94,
-      "delta": 1,
+      "delta": 0,
       "basis": "code-read",
       "evidence": "DEF-169 systemMarker provenance (systemMarker.ts) and answerSanitizer.ts:225-360 curated/whole-marker path block raw internal markers. DEF-171 ACCEPTED residual text-inference still live. Pack: 0 provider receipts; worker send bodies not stored \u2014 wording/delivery quality unconfirmed on chase path."
     },
     {
       "name": "Authorized Action",
-      "nexeo": 59,
+      "nexeo": 61,
       "professional": 91,
-      "delta": 3,
+      "delta": 0,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: action_lifecycle_follow_up 51, action_lifecycle_escalated 42; 86 of 2577 require approval; 0 provider receipts. central_action_governor (server.ts:208-220) and actionLifecycleWorker.ts fire. Handlers declare confirmationCapability. Deployed SHA e356d42; later branch AA reliability not credited as owner-facing."
     },
     {
       "name": "Self Follow-Up",
-      "nexeo": 56,
+      "nexeo": 58,
       "professional": 96,
       "delta": 0,
       "basis": "live-evidence",
@@ -62,7 +62,7 @@
     },
     {
       "name": "Self-Healing",
-      "nexeo": 34,
+      "nexeo": 38,
       "professional": 89,
       "delta": 0,
       "basis": "code-read",
@@ -70,9 +70,9 @@
     },
     {
       "name": "Self-Pruning",
-      "nexeo": 54,
+      "nexeo": 61,
       "professional": 89,
-      "delta": 6,
+      "delta": 0,
       "basis": "live-evidence",
       "evidence": "Production pack 2026-08-17 09:33 UTC: open_items CLOSED 275, CANCELLED 3, DELEGATED 4; 1 illegal status; 5 test-fixture items. inboundNoiseLedger measures only; digestPolicy exists but behaviorConfig.ts:196-198 digest_enabled def 0 so owner does not receive quieter multi-push behaviour."
     }
@@ -3867,6 +3867,1586 @@
           "nexeo": 54,
           "professional": 89,
           "delta": 6
+        }
+      ]
+    },
+    {
+      "iteration": 34,
+      "head": "e423ca5",
+      "overall": 52.0,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved this iteration. The one new Brain change, DEF-242 (commit c0a161f, selfpruning.withdrawal_notice_enabled 0->1), FAILED to deploy: loop.log 13:08:31 'DEPLOY iter=34 ABORT: tests RED at deploy commit ... did not ship'. deployed-sha remains 10f66f8; production pack 13:08 is identical to 12:35. Overall holds at 52.0 (the iter-31 gains are already banked).",
+      "what_did_not": "DEF-242's withdrawal-notice unblock did not move Self-Pruning because it is undeployed (deploy aborted on red tests) and, even if shipped, its own build_log entry states zero owed rows exist so it announces nothing retroactively. All other capabilities were untouched this iteration; the iter-31 deployed cluster is unchanged.",
+      "unverifiable": "Whether DEF-242 improves Self-Pruning for the owner \u2014 undeployed and would only fire on a future withdrawal. Why the deploy-commit matrix went RED while the builder's matrix reported 2899 passed (a deploy-shell discrepancy, unresolved in the log). The iter-31 deployed fixes (DEF-034(b)/239/240) remain deployed-but-not-yet-live-exercised. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "notes_for_builder": "DEF-242 is a sound increment-3 unblock blocked by a deploy-commit test failure the builder's own green matrix did not reproduce \u2014 resolving that deploy-shell discrepancy is the gating step, after which a single real withdrawal would make increment 3 observable and let Self-Pruning move again. The largest untouched gaps remain Simple & Smart (33, image/COMM deployed but unexercised), Learn (42, pending_approval only), and Self-Healing (34, rung 1 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. Deployed SHA unchanged at 10f66f8; no new deploy this iteration. Image reading (b97225f) and COMM ingestion (fbd096a) remain deployed-but-unexercised (image=0 inbound). behaviorConfig.ts image/simple surfaces unchanged.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit under 10f66f8; nothing new deployed this iteration (DEF-242 is Self-Pruning and did not ship).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-24 13:08 UTC: brain_memory table absent, 21771 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b) ledger-read-before-denial (brainComposer.ts:1229-1249) and DEF-241/238 remain live under 10f66f8 from last card; no new AC deploy this iteration. deployed-sha unchanged.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain live under 10f66f8; no new deploy. Production pack 2026-08-24 13:08 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-24 13:08 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). No learning change deployed this iteration.",
+        "Self-Healing +0 [code-read/medium]: HOLD 34. Rung 1 (detect + truthful alert with receipt) live-confirmed prior card; rungs 2-4 absent per owner 2026-08-14 definition (capability_contract.md). The iteration-34 deploy itself ABORTED on red tests (loop.log 13:08:31) \u2014 the loop still cannot ship a repair cleanly, let alone Brain self-deploying.",
+        "Self-Pruning +0 [code-read/medium]: HOLD 54. DEF-236 lifecycle remains live-verified from last card. DEF-242 (commit c0a161f) flips selfpruning.withdrawal_notice_enabled 0->1 to open increment-3's announce path \u2014 a real unblock \u2014 BUT the deploy ABORTED on red tests (loop.log 13:08:31 'did not ship'), deployed-sha still 10f66f8; and per its build_log entry zero owed rows exist so it would announce nothing until a future withdrawal. Nothing reached the owner."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 34,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 54,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 39,
+      "head": "c225259",
+      "overall": 52.0,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. New Brain commits DEF-243 (c225259) and the still-undeployed DEF-242 (c0a161f) did not ship: the iter-39 deploy ABORTED on red tests (loop.log 14:32:41 tests=RED 1 failed; 14:34:16 'did not ship'). deployed-sha remains 10f66f8 and the production pack 14:34 is identical to 13:08. Overall holds at 52.0.",
+      "what_did_not": "DEF-242 (Self-Pruning notice) and DEF-243 (Accurate Communication feed-receipt truth) did not move their capabilities because both are undeployed behind a genuinely red test (commImageSeam.test.ts) that the deploy phase caught for the second iteration running. No other capability was touched; the iter-31 deployed cluster is unchanged.",
+      "unverifiable": "Whether DEF-242 and DEF-243 improve their capabilities for the owner \u2014 both undeployed; deployment is blocked by a failing commImageSeam.test.ts. The iter-31 deployed fixes (DEF-034(b)/239/240) remain deployed-but-not-yet-live-exercised. Provider receipts remain 0, so no send is delivery-confirmed. Whether the red test is a real regression or an environment/ordering artefact cannot be judged from the loop log alone.",
+      "notes_for_builder": "Deployment, not authoring, is the binding constraint: two consecutive deploys (iter-34, iter-39) aborted on a red test (commImageSeam.test.ts), stranding DEF-242 (Self-Pruning) and DEF-243 (Accurate Communication) in the branch. Green that test and ship; then a single real withdrawal (DEF-242) and a feed-claim turn (DEF-243) would let those capabilities move. Largest untouched gaps remain Simple & Smart (33), Learn (42, pending_approval only), Self-Healing (34, rung 1 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. deployed-sha unchanged at 10f66f8; iter-39 deploy ABORTED on red tests (loop.log 14:34:16). Image reading (b97225f) and COMM ingestion (fbd096a) remain deployed-but-unexercised (image=0 inbound). No owner-facing simple-surface change.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit under 10f66f8; nothing new deployed (iter-39 deploy aborted).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-24 14:34 UTC: brain_memory table absent, 21771 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work deployed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b) ledger-read-before-denial (brainComposer.ts:1229-1249) and DEF-241/238 remain the live credit under 10f66f8. DEF-243 (commit c225259, feed-receipt truth) is a real AC fix but UNDEPLOYED \u2014 iter-39 deploy aborted on red tests (loop.log 14:34:16). deployed-sha unchanged.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain live under 10f66f8; no new deploy. Production pack 2026-08-24 14:34 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-24 14:34 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). No learning change deployed this iteration.",
+        "Self-Healing +0 [code-read/medium]: HOLD 34. Rung 1 (detect + truthful alert with receipt) live-confirmed prior card; rungs 2-4 absent per owner 2026-08-14 definition (capability_contract.md). Reinforced: the loop's deploy phase ABORTED on red tests twice running (iter-34 13:08 and iter-39 14:34) \u2014 it cannot cleanly ship a repair, let alone Brain self-deploying. afcb2e4 'Heal now builds' is a deck/orchestrator fix.",
+        "Self-Pruning +0 [code-read/medium]: HOLD 54. DEF-236 lifecycle remains live-verified from a prior card. DEF-242 (commit c0a161f, withdrawal_notice_enabled 0->1) is still committed-but-UNDEPLOYED \u2014 iter-39 deploy aborted again on red tests (loop.log 14:34:16), deployed-sha still 10f66f8. Pack 14:34 UTC CLOSED 239 unchanged; nothing reached the owner."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 34,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 54,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 39,
+      "head": "c225259",
+      "overall": 52.0,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. HEAD unchanged at c225259, deployed-sha still 10f66f8; no new commit and no new deploy since my last card (loop.log 02:35:16 'ITERATION 39 REPEATS'). DEF-242 and DEF-243 remain stranded undeployed. Overall holds at 52.0.",
+      "what_did_not": "DEF-242 (Self-Pruning) and DEF-243 (Accurate Communication) still did not move their capabilities: both remain committed-but-undeployed behind the unresolved red test, deployed-sha frozen at 10f66f8. No other capability was touched; the iter-31 deployed cluster is unchanged. The 02:34 benchmark (overall 92.4) is not read as capability.",
+      "unverifiable": "Whether DEF-242/DEF-243 help the owner \u2014 both undeployed, deployment blocked by the failing test. The iter-31 deployed fixes (DEF-034(b)/239/240) remain deployed-but-not-yet-live-exercised. Provider receipts remain 0, so no send is delivery-confirmed. The benchmark's C6 weakness cannot be read as a capability figure.\", \"movement_attribution\": \"NONE\"}",
+      "notes_for_builder": "Deployment remains the binding constraint: DEF-242 (Self-Pruning) and DEF-243 (Accurate Communication) sit undeployed behind a red test that blocked two prior deploys. Greening it and shipping is the single highest-value action; then a real withdrawal and a feed-claim turn would let those capabilities move. Largest untouched gaps remain Simple & Smart (33), Learn (42, pending_approval only), Self-Healing (34, rung 1 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. HEAD unchanged at c225259, deployed-sha still 10f66f8 (no new deploy). Image reading (b97225f) and COMM ingestion (fbd096a) remain deployed-but-unexercised (image=0 inbound). No owner-facing simple-surface change.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit under 10f66f8; nothing new deployed \u2014 iteration 39 repeats on the identical tree.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-25 02:35 UTC: brain_memory table absent, 21771 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work deployed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b) ledger-read-before-denial (brainComposer.ts:1229-1249) and DEF-241/238 remain the live credit under 10f66f8. DEF-243 (commit c225259, feed-receipt truth) is still UNDEPLOYED \u2014 deployed-sha unchanged at 10f66f8, the carrying deploy having aborted on a red test.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain live under 10f66f8; no new deploy. Production pack 2026-08-25 02:35 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-25 02:35 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). No learning change deployed.",
+        "Self-Healing +0 [code-read/medium]: HOLD 34. Rung 1 (detect + truthful alert with receipt) live-confirmed prior card; rungs 2-4 absent per owner 2026-08-14 definition (capability_contract.md). The loop still cannot cleanly ship a repair (two aborted deploys on red tests iter-34/39); deployed-sha frozen at 10f66f8.",
+        "Self-Pruning +0 [code-read/medium]: HOLD 54. DEF-236 lifecycle remains live-verified from a prior card. DEF-242 (commit c0a161f, withdrawal_notice_enabled 0->1) is still committed-but-UNDEPLOYED \u2014 deployed-sha still 10f66f8. Pack 2026-08-25 02:35 UTC CLOSED 239 unchanged; nothing reached the owner."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 34,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 54,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 39,
+      "head": "f2d4241",
+      "overall": 52.4,
+      "movement": 0.4,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Self-Healing 34->38: DEF-244 deployed this iteration (deployed-sha now f2d4241, deploy-history iter 39 02:56:23) climbs the connector class from detect-and-nag to RUNG 2 \u2014 staleConnectorPing probes and attempts the Google-grant refresh before nagging, healing when alive and receipting the attempt when dead. The red test that blocked two prior deploys was resolved, shipping DEF-242/243/244. Overall 52.0->52.4.",
+      "what_did_not": "DEF-242 (Self-Pruning notice, now deployed and armed) did not move Self-Pruning because zero owed rows exist so it announces nothing retroactively and no withdrawal has fired. DEF-243 (Accurate Communication feed-receipt guard, now deployed) did not move AC because it is unverified-live and AC is already high on the DEF-034(b) cluster. Simple & Smart, Thinking, Memory, Authorized Action, Self Follow-Up, Learn were untouched by this deploy.",
+      "unverifiable": "DEF-244's probe-heal has not yet been observed on a live stale grant (deployed 02:56 today); DEF-242's notice has not fired; DEF-243 has not met a live feed-claim turn. All three are deployed-but-not-yet-live-exercised. Provider receipts remain 0, so no worker send is delivery-confirmed. Self-Healing rungs 3-4 (fix underlying defect, self-deploy) cannot be credited \u2014 they are absent.",
+      "notes_for_builder": "DEF-244 reached Self-Healing rung 2 for one class; the highest-leverage next steps are (a) generalise probe-before-nag beyond the connector class and pursue rungs 3-4 (Brain fixing/shipping its own repair), and (b) let the three just-deployed fixes be exercised live (a stale grant, a withdrawal, a feed-claim) to convert deployed credit into live-verified credit. Largest untouched gaps remain Simple & Smart (33), Learn (42, pending_approval only), and Thinking (40).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. Newly deployed f2d4241 carries DEF-242/243/244, none of which touch the simple-answer surface. Image reading (b97225f) and COMM ingestion (fbd096a) remain deployed-but-unexercised (image=0 inbound). No owner-facing simple-surface change.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit; the just-deployed DEF-242/243/244 are Self-Pruning / Accurate Communication / Self-Healing, not reasoning.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-25 02:56 UTC: brain_memory table absent, 21771 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work deployed.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b) ledger-read-before-denial (brainComposer.ts:1229-1249) and DEF-241/238 remain the live credit. DEF-243 (commit c225259) is now DEPLOYED under f2d4241 \u2014 a real feed-receipt fail-closed anti-fabrication guard \u2014 but narrow and unverified-live (needs a feed-claim turn); not inflating AC toward the professional 94 on an unexercised guard.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain the live credit. DEF-244's receipt-of-attempt is action-adjacent but scored under Self-Healing. Production pack 2026-08-25 02:56 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-25 02:56 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Nothing in the f2d4241 deploy is auto-apply of corrections or learned preferences.",
+        "Self-Healing +4 [code-read/medium]: 34->38. DEF-244 (commit f2d4241, DEPLOYED 2026-08-25 02:56) climbs to RUNG 2 for the connector class: staleConnectorPing.ts now probes via getAuthenticatedClient and ATTEMPTS the Google-grant refresh before nagging \u2014 grant alive heals and suppresses the nag, grant dead ships the nag WITH metadata.healAttempt receipt (5 tests, mutation killed). Directly addresses the ~14 detect-only nags the owner received. Tempered to +4: one class, deployed-not-yet-live-verified, and rungs 3-4 (fix underlying defect, self-deploy) remain absent per capability_contract.md.",
+        "Self-Pruning +0 [code-read/medium]: HOLD 54. DEF-236 lifecycle remains live-verified. DEF-242 (commit c0a161f, withdrawal_notice_enabled 0->1) is now DEPLOYED under f2d4241 \u2014 armed \u2014 but per its build_log entry zero owed rows exist so it announces NOTHING retroactively, and no withdrawal has fired since. Pack 2026-08-25 02:56 UTC CLOSED 239 unchanged; nothing reached the owner."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 4
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 54,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 40,
+      "head": "62f199e",
+      "overall": 52.8,
+      "movement": 0.3,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Self-Pruning 54->57: the DEF-245 contact-identity cluster deployed (deployed-sha now 62f199e; dist.pre-56f6f70 backup 08-25 07:53). Prune now runs on the store the Contacts page renders, a LID guard stops WhatsApp LIDs being stored as phones, a production migration relocated 26 LID phones and grouped 19 rows into 9 persons, and the nightly now reports what it pruned. Overall 52.4->52.8.",
+      "what_did_not": "DEF-245's identity half did not move Accurate Communication or Memory beyond a note: it is partial (19 of 773 rows grouped; all 773 still had linked_person_id NULL before the migration), the owner's own six-row example (Muhammad Yousuf) is deliberately unmerged, and the Contacts-page render-union that shows one email twice is unfixed. Six other capabilities were untouched this interval.",
+      "unverifiable": "Whether the owner perceives a cleaner Contacts page \u2014 only 19 of 773 rows were unified and his named example (Yousuf) is unchanged. DEF-244's probe-heal, DEF-242's withdrawal notice and DEF-243's feed guard remain deployed-but-not-yet-live-exercised. Provider receipts remain 0. The deploy-history file was not appended for 62f199e (state file and dist backup confirm the deploy), a minor logging gap.",
+      "notes_for_builder": "DEF-245 laid the identity-spine mechanism but only linked 19 of 773 rows; the highest-value next step is safely grouping the remaining ~487 real humans (persons has 974 rows / 1,953 facets) without over-merging, and fixing the Contacts-page union that renders one email twice \u2014 that would let Self-Pruning and Accurate Communication move materially. Largest untouched gaps remain Simple & Smart (33), Learn (42, pending_approval only), and Thinking (40).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 33. The DEF-245 contact-identity cluster (62f199e) does not touch the simple-answer surface. Image reading (b97225f) and COMM ingestion (fbd096a) remain deployed-but-unexercised (image=0 inbound). No owner-facing simple-surface change.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit; DEF-245 is contact identity/pruning, not reasoning.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. DEF-245 (brain_change_log.md row 80) wires linked_person_id for 19 contact rows into 9 person groups and adds entities.wa_lid \u2014 a narrow durable-identity slice, not the personal-memory store the score tracks. Pack 2026-08-26 02:34 UTC: brain_memory absent, 21773 turns.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b)/241/238/243 remain the live credit. DEF-245's identity resolution fixes contact naming for the migrated 19 rows + future WhatsApp contacts (LID guard), but the headline CL-037 case (Muhammad Yousuf's 6 rows) is deliberately NOT merged and the render-union duplicate is unfixed; AC already high. Not moved.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain the live credit; DEF-245 adds no authority/dispatch. Pack 2026-08-26 02:34 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-26 02:34 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). DEF-245 is contact hygiene, not auto-apply of corrections or learned preferences.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit (staleConnectorPing.ts probe-before-nag) banked last iteration and remains live under the deploy; no new self-heal work this interval, and it is still not observed probe-healing a live stale grant. Rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +3 [code-read/medium]: 54->57. DEF-245 (deployed 62f199e) makes contact dedup/prune operate on the store the Contacts page actually renders (was effectively a no-op on the UI store \u2014 protection-with-two-implementations), adds a LID guard against recurrence (createEntity files entities.wa_lid), ran a production migration relocating 26 LID phones and grouping 19 rows into 9 persons, and made the nightly REPORT what it pruned instead of pruning silently. Tempered to +3: partial \u2014 19 of 773 rows, Yousuf and the render-union still open (brain_change_log.md row 80)."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 33,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 57,
+          "professional": 89,
+          "delta": 3
+        }
+      ]
+    },
+    {
+      "iteration": 40,
+      "head": "02fa82a",
+      "overall": 53.1,
+      "movement": 0.3,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Simple & Smart 33->36: DEF-246 deployed this iteration (deployed-sha now 02fa82a, 'DEPLOY iter=40 dist relocked' 02:58:34) builds the email->item consumer the owner asked for twice and never had \u2014 gmail was 2,621 received / 0 ever processed, and now the model derives actionable items through the canonical gate. Overall 52.8->53.1.",
+      "what_did_not": "DEF-246 did not earn more than +3 because no email has yet been derived into an item post-deploy and its live window may be empty while the Gmail grant (dead ~08-15) is un-reauthed. Eight other capabilities were untouched this interval; DEF-243/244/245 credit is already banked. Authorized Action and Self Follow-Up did not move because DEF-246 reuses the existing gate and adds sources rather than dispatch or chase behaviour.",
+      "unverifiable": "Whether DEF-246 actually turns an arriving email into an item for the owner \u2014 deployed minutes ago, falsifier pending, and dependent on live gmail feed_events that require the owner to re-auth the expired Gmail grant. DEF-244's probe-heal, DEF-242's withdrawal notice, DEF-243's feed guard, and DEF-245's identity spine all remain deployed-but-not-yet-live-exercised. Provider receipts remain 0.",
+      "notes_for_builder": "DEF-246 finally builds the top explicit ask (email->item) but its live payoff is blocked by the dead Gmail grant \u2014 the single highest-value action is getting that grant re-authed (owner-side) so the just-shipped DEF-244/246 pair can actually fire and be verified. After that, the derived-item pipeline plus DEF-245's identity spine are the next places Simple & Smart and Self-Pruning can move materially. Largest untouched gaps remain Learn (42, pending_approval only) and Thinking (40).",
+      "evidence": [
+        "Simple & Smart +3 [code-read/medium]: 33->36. DEF-246 (commit 02fa82a, DEPLOYED 2026-08-26 02:58) builds emailItemDerivationJob.ts: the model judges each inbound gmail email's actionability and creates an open item via gateOpenItemCreate with sourceFeedEventId + idempotency key, 48h window, batch-capped. Fills a 100%-absent, twice-requested capability (gmail was 2,621 received / 0 ever processed, brain_change_log.md row 75). Tempered to +3: deployed minutes ago and unverified-live, single-channel, and firing is gated on the Gmail grant that died ~08-15 (DEF-244/Iteration 27) \u2014 no new gmail events until re-auth.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit; DEF-246 is an email-ingestion consumer, not a reasoning/confirmation change.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-26 02:58 UTC: brain_memory table absent, 21773 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); DEF-246 stores derived items, not durable personal recall.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b)/241/238/243 remain the live credit. DEF-246 'flips DEF-243's licensed gmail claim truthful the moment it runs' (brain_change_log.md row 75) \u2014 a small reinforcement contingent on the job firing; AC already high on the DEF-034(b) cluster. Not moved.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain the live credit; DEF-246 creates items through the EXISTING gate (gateOpenItemCreate), adding no new authority/dispatch. Pack 2026-08-26 02:58 UTC: 0 provider receipts, 86 of 2583 approval \u2014 unchanged.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-26 02:58 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 9, escalations 47 (latest 2026-08-19), outbound sends 37 (33 accepted, 4 failed), receipts 0. DEF-246 adds item SOURCES, not new chase behaviour.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). DEF-246 is email item derivation, not auto-apply of corrections or learned preferences.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit (staleConnectorPing.ts probe-before-nag) banked and remains live; no new self-heal work this interval, and still not observed probe-healing a live stale grant. Rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 57. DEF-245 contact-identity/prune credit (deployed 62f199e: prune on rendered store, LID guard, migration grouping 19 rows, nightly reports what it pruned) banked last iteration; no new pruning work this interval. Pack 2026-08-26 02:58 UTC CLOSED 239 unchanged."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 3
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 57,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 42,
+      "head": "05e0fee",
+      "overall": 53.1,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved numerically, but the key change is evidentiary: DEF-246 is now LIVE-VERIFIED \u2014 pack 2026-08-26 10:14 UTC shows 16 DRAFT + 5 NEW open items derived from arriving email, confirming the twice-requested email->item capability fires in production (Simple & Smart basis upgraded to live-evidence). deployed-sha advanced 02fa82a->7a36f03 (DEF-246 newsletter fix). Overall holds at 53.1.",
+      "what_did_not": "Simple & Smart did not rise despite live-verification because DEF-246 fired noisily \u2014 a no-reply/newsletter became a to-do (CL-038) \u2014 and the class fix DEF-247 did not deploy (iter-42 deploy aborted on red tests, third abort of the campaign). Self-Pruning did not move because DEF-247 is undeployed. The live-verification gain and the noise regression offset each other.",
+      "unverifiable": "How many of the 16 DRAFT items are genuinely actionable vs newsletter noise \u2014 the pack gives counts, not content. Whether DEF-244's probe-heal (vs an owner re-auth) is what restored the Gmail grant that let DEF-246 fire. Whether the just-deployed newsletter fix stopped the leak or whether items are still leaking pending DEF-247. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "notes_for_builder": "DEF-246 works in production but leaks noise into the owner's list, and its fix (DEF-247) keeps failing the deploy-commit test \u2014 greening that test and shipping DEF-247 is the highest-value next step, since it directly protects the 'surface only what needs him' promise the derived-item pipeline just started violating. After that, triage of the 16 DRAFT items and the gchat derivation channel are the next increments. Largest untouched gaps remain Learn (42, pending_approval only) and Thinking (40).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36, basis now live-evidence. DEF-246 (emailItemDerivationJob) FIRED in production: pack 2026-08-26 10:14 UTC shows DRAFT 16 + NEW 5 open items (previously absent) \u2014 the twice-requested email->item capability demonstrably works and the Gmail path is alive. BUT it fired noisily: a no-reply/newsletter became a to-do (CL-038, build_log Iteration 42), and the class fix DEF-247 is undeployed. Live-verification and the noise regression offset \u2014 held, not raised.",
+        "Thinking +0 [code-read/medium]: HOLD 40. DEF-239 (confirm-misfires, brainComposer.ts:5966+) and DEF-240 (ground-or-ask, :2784-2785) remain the live judgement-gate credit; this iteration's work (DEF-247 sender-quality gate) is Self-Pruning, not reasoning.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-26 10:14 UTC: brain_memory table absent, 21841 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b)/241/238/243 remain the live credit. DEF-246 firing makes DEF-243's licensed gmail claim truthful (claim and feed state one source) \u2014 a small reinforcement; AC already high on the DEF-034(b) cluster. Not moved.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain the live credit; DEF-246's derived-item creation goes through the EXISTING gate, adding no new authority. Pack 2026-08-26 10:14 UTC: 0 provider receipts, 86 of 2587 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-26 10:14 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 13 (was 9), escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0. The uptick is more items to chase (DEF-246 sources), not new chase behaviour.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). No learning change this iteration.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; DEF-246 firing implies the Gmail path is alive (possibly DEF-244's probe-heal worked live) but the pack gives no connector metric to confirm which. No new self-heal work; rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 57. DEF-245 contact-prune credit banked. DEF-247 (05e0fee, 'junk stops becoming work at the minting point' \u2014 sender-quality enforced at gateOpenItemCreate) is CLAIMED Self-Pruning but UNDEPLOYED: iter-42 deploy ABORTED on red tests (loop.log 10:14:58), deployed-sha 7a36f03. The deployed newsletter fix (7a36f03) is partial. Pack 10:14 UTC now shows DRAFT 16 (junk-plus-real awaiting triage), not a pruning gain."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 40,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 57,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 43,
+      "head": "d5a082e",
+      "overall": 53.6,
+      "movement": 0.4,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Two deployed fixes closed owner-reported gaps (deployed-sha now d5a082e): DEF-248 makes the owner's configured Rules reach the live reasoning path (Thinking 40->42), and DEF-247 shipped after its red test was fixed, enforcing sender-quality at gateOpenItemCreate so junk email stops becoming to-do items (Self-Pruning 57->59). Overall 53.1->53.6.",
+      "what_did_not": "Both moves were held to +2 because both are deployed-but-not-yet-live-verified: DEF-248's rules block is present but obedience is unobserved ('set a rule and see it obeyed'), and DEF-247's zero-noise claim has not been re-measured live. Simple & Smart did not rise (the noise fix is credited under Self-Pruning, not double-counted); Memory, AC, Authorized Action, Self Follow-Up, Learn, Self-Healing were untouched.",
+      "unverifiable": "Whether the model actually OBEYS the now-present configured rules in a live reply (DEF-248) \u2014 presence is necessary, not sufficient. Whether DEF-247 has driven automated-sender items to zero post-deploy (the leak query is owed). Whether the DRAFT count rising to 17 is a real actionable item or residual noise. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "notes_for_builder": "Both just-shipped fixes need one live turn each to convert deployed credit into verified credit: set a Rule and confirm it changes a reply (DEF-248), and re-run the automated-sender query to confirm zero noise items (DEF-247). The recurring 'wired in one place, absent where it mattered' pattern (identity spine, LID guard, isLikelyAutomated, now rules) is itself worth a structural pass. Largest untouched gaps remain Learn (42, pending_approval only, configured != learned) and Self-Healing (38, rung 2 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36. DEF-246 email->item still firing live (pack 2026-08-27 02:34 UTC: DRAFT 17, was 16). Last iteration's noise offset (CL-038) is now being closed by the newly-deployed DEF-247, so 36 is firmer \u2014 but that noise fix is credited under Self-Pruning to avoid double-counting; the derive capability itself is unchanged.",
+        "Thinking +2 [code-read/medium]: 40->42. DEF-248 (commit d5a082e, DEPLOYED) makes the owner's configured Rules reach the live reasoning path: reasoningCompose now fetches active instructions and appends the rendered block to the system prompt, where before rules were absent from every reply (traced brainComposer.ts:2599/2735; block only used on a legacy path no env var enables). Tempered to +2: deployed-not-yet-live-verified ('set a rule and see it obeyed'), and presence != model obedience (DEF-222/223 caveat).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-27 02:34 UTC: brain_memory table absent, 22022 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b)/241/238/243 remain the live credit. DEF-248 also fixes the 'my operating rules come from my...' trail-off signature (on that path they came from nowhere) \u2014 a small truthfulness reinforcement; AC already high on the DEF-034(b) cluster. Not moved.",
+        "Authorized Action +0 [code-read/medium]: HOLD 59. DEF-240/DEF-232/DEF-034(b)/canonical action id (325af10) remain the live credit; nothing this iteration adds authority/dispatch. Pack 2026-08-27 02:34 UTC: 0 provider receipts, 86 of 2587 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-27 02:34 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 13, escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). DEF-248 applies CONFIGURED rules, not LEARNED corrections, so it is not Learn.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work this iteration. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +2 [code-read/medium]: 57->59. DEF-247 (commit 05e0fee) is now DEPLOYED under d5a082e: sender-quality enforced at gateOpenItemCreate so automated-sender email no longer becomes a to-do item, across all creators (openItemGate.ts step 1) \u2014 closes noise-becomes-actionable at the class (build_log Iteration 42). Tempered to +2: defensive rather than active pruning, partly cleans DEF-246's own regression, and live-verification owed (re-run the leak query post-deploy)."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 2
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 59,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 59,
+          "professional": 89,
+          "delta": 2
+        }
+      ]
+    },
+    {
+      "iteration": 43,
+      "head": "234fdce",
+      "overall": 53.8,
+      "movement": 0.2,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Authorized Action 59->61: DEF-249 deployed this iteration (deployed-sha now 234fdce, 'DEPLOY iter=43 dist relocked' 03:02:23) runs the ground-or-ask guard before the single-action confirmation, so a confirmed action can no longer be refused for a target the preview already held \u2014 closing the newest live failure S22 (delegate confirmed twice, then refused). Overall 53.6->53.8.",
+      "what_did_not": "DEF-249 was held to +2 because it is deployed-but-not-yet-live-verified (falsifier pending a post-deploy confirmed-then-refused turn) and extends DEF-240's existing grounding mechanism to a sibling path rather than adding a new capability. Eight other capabilities were untouched; the DEF-246/247/248 credit is already banked.",
+      "unverifiable": "Whether DEF-249 actually prevents the confirm-then-refuse on a live owner turn (S22 shape) \u2014 deployed minutes ago, falsifier pending. The DEF-248 rules-reach-reply and DEF-247 noise-gate fixes still await their own live acceptance. Provider receipts remain 0, so no send is delivery-confirmed. Whether DRAFT 17 items are genuinely actionable or residual noise.",
+      "notes_for_builder": "The confirm/dispatch grounding is now symmetric across plan and single-action paths (DEF-240 + DEF-249); the next verification win is a live delegate-by-name turn confirming S22's shape is gone. The recurring 'protection-with-two-implementations' pattern (now 4+ instances closed one sibling at a time) argues for a structural sweep that derives every creator/confirm path from a single authority rather than patching pairs. Largest untouched gaps remain Learn (42, pending_approval only) and Self-Healing (38, rung 2 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36. DEF-246 email->item still firing live (pack 2026-08-27 03:02 UTC: DRAFT 17 steady, NEW 5). DEF-249 this iteration is target-grounding for dispatch, not a derive-path or simple-answer change.",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked last iteration; DEF-249 is grounding-before-confirm on the dispatch path, credited under Authorized Action to avoid double-crediting the confirm-misfires lineage. No new reasoning-gate change.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-27 03:02 UTC: brain_memory table absent, 22042 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 90. DEF-034(b)/241/238/243/248 remain the live credit. DEF-249 renders a by-name ask at preview time (curated), a minor phrasing benefit, but its substance is dispatch grounding; AC already high. Not moved.",
+        "Authorized Action +2 [code-read/medium]: 59->61. DEF-249 (commit 234fdce, DEPLOYED 2026-08-27 03:02) runs verifyActionTargets BEFORE startPending on the single-action path (brainComposer.ts preview branch), so a confirmed action can no longer be refused for a target the preview already held \u2014 closing live failure S22 ('delegate to Madeeha Rahat' confirmed twice then refused). Extends DEF-240's plan-step grounding to the sibling path. Tempered to +2: unverified-live (falsifier pending) and an extension of an existing mechanism. Pack 03:02: 0 receipts, 86 of 2587 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. Production pack 2026-08-27 03:02 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 13, escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0. No deployed chase-policy change.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Nothing this iteration is auto-apply of corrections or learned preferences.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work this iteration. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 59. DEF-247 (sender-quality at the gate) and DEF-245 (contact prune) credit banked; no new pruning work this iteration. Production pack 2026-08-27 03:02 UTC CLOSED 239, DRAFT 17."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 90,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 2
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 59,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 45,
+      "head": "72ba4c8",
+      "overall": 53.9,
+      "movement": 0.1,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Accurate Communication 90->91: DEF-249-date deployed (deployed-sha now 71c1352) moves the sane-due-window guard onto the model's-answer path (actionLifecycleService.ts:208), so an invented year \u2014 he wrote '28th October', the model supplied 2024 \u2014 no longer reaches him with a duplicate item and a false 'overdue' nudge. Overall 53.8->53.9.",
+      "what_did_not": "DEF-250 (a later email reconciles/closes the item \u2014 Self Follow-Up + Self-Pruning) did not move anything: its deploy ABORTED on red tests (loop.log 06:25:30), deployed-sha stays 71c1352. The DEF-249-date fix was held to +1 because it is one narrow grounding guard, unverified-live, on an already-near-professional AC. Seven other capabilities were untouched.",
+      "unverifiable": "Whether DEF-249-date is exercised on a live turn (deployed, falsifier pending). Whether DEF-250 would help \u2014 undeployed, blocked by a failing test. The recurring red-test-at-deploy pattern (iter-34/39/42/45 all aborted at least once) suggests a fragile suite the file-reader cannot diagnose. Provider receipts remain 0; DRAFT 18 items unverified as actionable vs residual noise.",
+      "notes_for_builder": "DEF-250 (thread reconciliation) is the substantive capability this iteration and it is stuck behind another red-test deploy abort \u2014 the fourth abort of the campaign; the fragile deploy-commit test suite is now the recurring bottleneck and deserves a structural fix so shipped code stops stranding. After that, DEF-250 would let Self Follow-Up and Self-Pruning move (Brain stops chasing already-delivered items). Largest untouched gaps remain Learn (42, pending_approval only) and Self-Healing (38, rung 2 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36. DEF-246 email->item still firing live (pack 2026-08-27 06:25 UTC: DRAFT 18, was 17). This iteration's deployed work (DEF-249 date-grounding) is not a derive-path or simple-answer change.",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; DEF-249-date grounds a model-supplied deadline against a sane window, credited under Accurate Communication rather than Thinking. No new reasoning-gate change.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-27 06:25 UTC: brain_memory table absent, 22119 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +1 [code-read/medium]: 90->91. DEF-249-date (commit 71c1352, DEPLOYED 2026-08-27) moves withinSaneDueWindow onto the model's-answer path (actionLifecycleService.ts:208) so an invented year no longer reaches the owner: he wrote '28th October', the model supplied 2024, and he got a wrong deadline + duplicate item + false 'overdue' nudge \u2014 now guarded. Tempered to +1: AC already near-professional, unverified-live, and this is one instance of the recurring fabrication class.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview (grounding before the single-action confirm) and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-27 06:25 UTC: 0 provider receipts, 86 of 2588 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 56. DEF-250 (a later email on a thread reconciles/closes the item \u2014 the capability that would catch 'Brain chased an already-delivered API') is UNDEPLOYED: iter-45 deploy ABORTED on red tests (loop.log 06:25:30). Pack 2026-08-27 06:25 UTC: follow-ups 43, owner-routed 14, escalations 47, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Nothing this iteration is auto-apply of corrections or learned preferences.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work this iteration. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 59. DEF-247 (sender-quality gate) and DEF-245 (contact prune) credit banked. DEF-250's auto-reconcile/close (transitionStatus CLOSED on a fulfilled thread) is Self-Pruning-relevant but UNDEPLOYED (deploy aborted on red tests). Pack 2026-08-27 06:25 UTC CLOSED 239, DRAFT 18."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 1
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 56,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 59,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 47,
+      "head": "4beb7ca",
+      "overall": 54.1,
+      "movement": 0.2,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Self Follow-Up 56->58: DEF-250 (commit 72ba4c8) finally deployed (ancestor of deployed-sha 1df10c1) after its red test cleared \u2014 thread reconciliation now runs first in the email-derivation job, so Brain recognizes a thread already answered and stops chasing something delivered (the DAL 'API was provided in a later email' case). First deployed quality gain to follow-up. Overall 53.9->54.1.",
+      "what_did_not": "The interval's other commits did not move a capability: LLM-spend reporting (3a78d15/d8f712c/1df10c1) and the deck move (e71339f) are admin/observability tooling, and OPT-004 (triage cost optimization) is efficiency and undeployed at HEAD. DEF-250 was held to +2 as unverified-live and scoped to the email-item path, not the whole chase surface. Self-Pruning was not separately moved to avoid double-counting DEF-250's auto-close.",
+      "unverifiable": "Whether DEF-250 has reconciled a real thread live (deployed, falsifier pending). Whether the rising follow-up counts (owner-routed 14->16, action_lifecycle_follow_up 57->59) reflect DEF-250/246 activity or normal traffic \u2014 the pack gives counts, not causes. Provider receipts remain 0. The DRAFT 20 items remain unverified as actionable vs residual noise.",
+      "notes_for_builder": "DEF-250 gives follow-up a fulfilment check but only on the email-derived path; extending reconciliation to the delegatee-chase worker (where the bulk of Self Follow-Up fires) is the next material move. A live delegate/thread turn confirming DEF-250 reconciles would convert its +2 to verified. Largest untouched gaps remain Learn (42, still pending_approval only \u2014 the one capability with no deployed movement all campaign) and Self-Healing (38, rung 2 of 4).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36. DEF-246 email->item still firing live (pack 2026-08-28 02:34 UTC: DRAFT 20, was 18; NEW 6). This iteration's deployed capability work is DEF-250 (thread reconciliation) and spend/admin tooling, neither a derive-path or simple-answer change.",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no new reasoning-gate work deployed this interval (DEF-250 is follow-up reconciliation; the spend commits are admin tooling).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-28 02:34 UTC: brain_memory table absent, 22450 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy this interval. deployed-sha advanced to 1df10c1 but the new content is DEF-250 (follow-up) plus spend tooling.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview (grounding before the single-action confirm) and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-28 02:34 UTC: 0 provider receipts, 86 of 2590 approval.",
+        "Self Follow-Up +2 [code-read/medium]: 56->58. DEF-250 (commit 72ba4c8) is now DEPLOYED (ancestor of deployed-sha 1df10c1): reconciliation runs first in the email-derivation job \u2014 a same-thread ACTIVE-item check, then the model judges fulfils/advances/unrelated, so Brain stops chasing a thread already answered (DAL: 'in a later email that API was provided and brain didnt get it'). Tempered to +2: unverified-live, and scoped to the email-derived-item path, not the delegatee-chase worker (pack: 43 follow-ups, owner-routed 16).",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). The interval's spend/OPT-004 work is cost/observability, not auto-apply of corrections.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work this interval. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 59. DEF-247 (sender-quality gate) and DEF-245 (contact prune) credit banked. DEF-250's auto-close (transitionStatus CLOSED on a fulfilled thread) is Self-Pruning-relevant but credited once under Self Follow-Up (the owner-facing harm was the false chase) to avoid double-counting. Pack 2026-08-28 02:34 UTC CLOSED 239, DRAFT 20."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 2
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 59,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 47,
+      "head": "90826f9",
+      "overall": 54.3,
+      "movement": 0.2,
+      "verdict": "PROGRESSIVE",
+      "scored_by": "grok",
+      "what_moved": "Self-Pruning 59->61: DEF-251 deployed (deployed-sha now 90826f9) adds the evidence-guarded DRAFT->CLOSED completion exit, closing the deck's one open draft tag (S23 'couldn't close the payroll item because it's still in draft') and letting the 20 piled-up DRAFT items be closed when done, while unblocking DEF-250's reconciliation-close on email-derived drafts. Overall 54.1->54.3.",
+      "what_did_not": "OPT-004 (triage stops re-reasoning unchanged email) deployed but is a cost optimization, not a capability. DEF-251 was held to +2 as deployed-but-unverified-live with a named ingestion residual (the owner's own outbound reply may not be ingested as a same-thread event, so auto-close may not yet fire). Seven other capabilities were untouched; Authorized Action did not move because DEF-251's lifecycle exit is credited under Self-Pruning, not double-counted.",
+      "unverifiable": "Whether DEF-251's DRAFT->CLOSED and DEF-250's reconciliation actually close a live draft \u2014 deployed, falsifiers pending, and the outbound-reply ingestion gap may block the auto path. Whether the 20 DRAFT items are genuinely actionable vs residual noise. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "notes_for_builder": "The draft lifecycle floor is now complete (DEF-236 cancel + DEF-251 close) and the deck's last open tag is closed, but the whole email->item->reconcile->close chain still hinges on the unfixed outbound-reply ingestion gap (DEF-250's falsifier) \u2014 closing that is the highest-value next step to make the DEF-246/250/251 chain verifiable end-to-end. Learn (42) remains the standout untouched capability: it has had no deployed movement all campaign because correctionDistiller stays pending_approval-only (DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [live-evidence/medium]: HOLD 36. DEF-246 email->item still firing live (pack 2026-08-28 02:59 UTC: DRAFT 20, NEW 6). This iteration's deployed work is DEF-251 (draft lifecycle) and OPT-004 (triage cost), neither a derive-path or simple-answer change.",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no new reasoning-gate work deployed this interval (DEF-251 is item lifecycle; OPT-004 is triage caching).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-28 02:59 UTC: brain_memory table absent, 22454 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy this interval.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit. DEF-251 is filed by the builder as Authorized Action, but credited under Self-Pruning (lifecycle-floor family with DEF-236); no separate authority/dispatch mechanism changed. Pack 2026-08-28 02:59 UTC: 0 receipts, 86 of 2590 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked last iteration; DEF-251 unblocks its close on email-derived drafts but the reconciliation capability itself is unchanged. Pack 2026-08-28 02:59 UTC: follow-ups 43, owner-routed 16, escalations 47, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work this interval. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +2 [code-read/medium]: 59->61. DEF-251 (commit 90826f9, DEPLOYED 2026-08-28 02:59) adds the evidence-guarded DRAFT->CLOSED completion exit (transitionMatrix.ts 32->33, guards:['resolution_reason']), closing the deck's ONE open draft tag (S23: 'couldn't close the payroll item because it's still in draft') and letting the 20-item draft pile be closed when done, plus unblocking DEF-250's fulfils-close on email-derived drafts. Tempered to +2: deployed-unverified-live, and the named ingestion residual (owner's outbound reply may not be ingested) means auto-close may not yet trigger from his own reply."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 2
+        }
+      ]
+    },
+    {
+      "iteration": 51,
+      "head": "441bdd7",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. The new Brain work \u2014 DEF-253 (gchat item-derivation) \u2014 FAILED to deploy: iter-51 deploy ABORTED on red tests (loop.log 07:31:10, '1 failed 3024 passed'), the fifth abort of the campaign. deployed-sha remains 90826f9 and the production pack is unchanged. DEF-252 is a defect recorded but deliberately not fixed. Overall holds at 54.3.",
+      "what_did_not": "DEF-253's gchat channel expansion did not move Simple & Smart because it is undeployed behind a red test. DEF-252 changes no capability (a raw-query error recorded, deliberately left unfixed). fcfa912 is orchestrator loop-bounds infra, not a Brain capability. Every capability held; the iter-40..47 deployed cluster is unchanged.",
+      "unverifiable": "Whether DEF-253 would extend the derive capability to Google Chat \u2014 undeployed, blocked by the recurring red deploy-commit test. Whether the previously-deployed DEF-250/251 draft-close chain has fired live (falsifiers still pending; the outbound-reply ingestion gap remains). Provider receipts remain 0; the 20 DRAFT items remain unverified as actionable vs noise.",
+      "notes_for_builder": "The red-test-at-deploy has now aborted five deploys this campaign (iter-34/39/42/45/51); it is the dominant bottleneck and warrants a structural fix to the deploy-commit test suite so shipped code stops stranding. DEF-253 (gchat) would extend the working email->item pipeline to a second channel once it can ship. Learn (42) remains the sole capability with zero deployed movement all campaign \u2014 correctionDistiller stays pending_approval-only (DEF-149 OPEN) \u2014 and is the clearest place a genuinely new capability could open.",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. DEF-253 (commit 441bdd7, gchat item-derivation extending the DEF-246/247 email consumer to Google Chat) is UNDEPLOYED \u2014 iter-51 deploy ABORTED on red tests (loop.log 07:31:10). DEF-246 still firing (pack 2026-08-28 07:31 UTC: DRAFT 20, NEW 6). No new deployed derive/simple change.",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no new reasoning-gate work deployed this interval (DEF-253 undeployed, DEF-252 is a recorded-not-fixed defect).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-28 07:31 UTC: brain_memory table absent, 22576 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy this interval (deployed-sha unchanged at 90826f9).",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-28 07:31 UTC: 0 provider receipts, 86 of 2591 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up work deployed. Pack 2026-08-28 07:31 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 17, escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked. DEF-252 (ccb5522) records the 22021 raw-query error that filled a 583 MB log but DELIBERATELY does not fix it \u2014 Brain notices, does not repair, consistent with the rung-1/2 ceiling; rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED completion exit) and DEF-247/245 credit banked; no new pruning work deployed this interval. Pack 2026-08-28 07:31 UTC CLOSED 239, DRAFT 20."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 51,
+      "head": "c06f6d9",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. deployed-sha is unchanged at 90826f9 and this run just repeats iteration 51 (loop.log 02:34:15 'ITERATION 51 REPEATS'). The only new commit since my last card, c06f6d9, is orchestrator chat-analysis tooling, not a Brain capability. DEF-253 (gchat) remains undeployed behind the red test. Overall holds at 54.3.",
+      "what_did_not": "DEF-253's gchat channel expansion still did not reach the owner: undeployed, deployed-sha frozen at 90826f9. No capability moved because no Brain code deployed. DRAFT held at 20 across iterations suggests the deployed DEF-250/251 reconcile-and-close chain is not yet firing live (the outbound-reply ingestion residual), though the pack cannot confirm cause.",
+      "unverifiable": "Whether the deployed DEF-250/251 draft reconcile-and-close chain has fired live \u2014 DRAFT stuck at 20 hints it has not, but the pack gives counts not causes, and new derivations could be masking closes. Whether DEF-253 would extend derivation to gchat \u2014 undeployed. Provider receipts remain 0; DRAFT 20 items unverified as actionable vs noise.",
+      "notes_for_builder": "Two things worth the owner's/loop's attention: the red-test deploy bottleneck keeps DEF-253 (gchat) stranded, and the DRAFT-item count stuck at 20 suggests the deployed reconcile/close chain (DEF-250/251) is not firing live because of the unfixed outbound-reply ingestion gap \u2014 closing that gap would validate the whole DEF-246/250/251 chain end-to-end. Learn (42) remains the sole capability with zero deployed movement all campaign (correctionDistiller pending_approval-only, DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. deployed-sha unchanged at 90826f9; DEF-253 (gchat item-derivation) still UNDEPLOYED behind the red test. The only new commit c06f6d9 is chat-analysis tooling, not a Brain path. DEF-246 still firing (pack 2026-08-29 02:34 UTC: DRAFT 20, NEW 6).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no new reasoning-gate work deployed. deployed-sha still 90826f9.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-29 02:34 UTC: brain_memory table absent, 22954 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy (deployed-sha unchanged at 90826f9).",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-29 02:34 UTC: 0 provider receipts, 86 of 2593 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up work deployed. Pack 2026-08-29 02:34 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 19, escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. DEF-252's 22021 raw-query error stays recorded-not-fixed (undeployed anyway). Rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED completion exit) and DEF-247/245 credit banked; no new pruning work deployed. Pack 2026-08-29 02:34 UTC CLOSED 239, DRAFT still 20 (auto-close chain not visibly firing, consistent with the named ingestion residual)."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 51,
+      "head": "656f02d",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing among the nine moved. deployed-sha advanced 90826f9->656f02d, clearing the red gate (DEF-254 committed a stranded orchestrator-spend feature that had reddened tsc) and shipping the batch, but DEF-254 is RELIABILITY-ONLY operator tooling (spend visibility, not a Brain capability), DEF-253's gchat derive is deployed-but-unexercised, and DEF-252 is a recorded-not-fixed defect. Overall holds at 54.3.",
+      "what_did_not": "DEF-253 (gchat channel) did not move Simple & Smart: deployed but no evidence gchat carries traffic for the owner, so nothing new confirmed reaching him \u2014 held like the unexercised image channel. DEF-254's spend visibility helps the owner as OPERATOR but is not one of the nine capabilities. The red-test bottleneck turned out to be a stranded uncommitted feature, now resolved.",
+      "unverifiable": "Whether the owner uses Google Chat at all, so whether DEF-253's gchat derive ever fires for him (no gchat metric in the pack; the Google-family grant that gated Gmail may gate it too). Whether the deployed DEF-250/251 draft reconcile-and-close chain fires live (DRAFT stuck at 20). Provider receipts remain 0; the 20 DRAFT items unverified as actionable vs noise.",
+      "notes_for_builder": "With the gate cleared, the whole email->item->reconcile->close chain (DEF-246/250/251) and now gchat (DEF-253) are deployed; the missing evidence is live exercise: does gchat carry owner traffic, and does the reconcile/close chain actually fire (DRAFT stuck at 20 says maybe not, pending the outbound-reply ingestion fix). Confirming those converts a lot of deployed-but-unverified credit into verified. Learn (42) remains the sole capability with zero deployed movement all campaign (correctionDistiller pending_approval-only, DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. DEF-253 (gchat item-derivation, commit 441bdd7) is now DEPLOYED under 656f02d, extending the DEF-246/247 email consumer to Google Chat. Held because there is no evidence gchat carries traffic for him (unlike email's 2,621 messages) \u2014 deployed-but-unexercised, consistent with how image reading (DEF-110/113) is held. DEF-246 still firing (pack 2026-08-29 02:54 UTC: DRAFT 20).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no new reasoning-gate work this interval. DEF-254 is admin spend tooling, DEF-252 recorded-not-fixed.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-29 02:54 UTC: brain_memory table absent, 22956 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy this interval (the batch shipped was gchat derive + spend tooling + a recorded-not-fixed defect).",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-29 02:54 UTC: 0 provider receipts, 86 of 2593 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up work deployed. Pack 2026-08-29 02:54 UTC: delegatee follow-ups 43 (latest 2026-08-19), owner-routed 19, escalations 47, outbound sends 37 (33 accepted, 4 failed), receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. DEF-252's 22021 raw-query error deployed as recorded-not-fixed \u2014 Brain notices, does not repair. Rungs 3-4 absent (capability_contract.md).",
+        "Self-Pruning +0 [code-read/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED completion exit) and DEF-247/245 credit banked; no new pruning work deployed. Pack 2026-08-29 02:54 UTC CLOSED 239, DRAFT still 20."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 52,
+      "head": "656f02d",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. No code changed since 656f02d (loop.log 02:30 'MEASURE skipped \u2014 no server/src or server/prisma change since 656f02d'; 'ITERATION 52 REPEATS'). DEF-254 was scored last iteration. The pack shows only live activity \u2014 DRAFT 20->28, escalations 47->49 (latest 08-30), turns 22956->23891 \u2014 not a capability change. Overall holds at 54.3.",
+      "what_did_not": "No capability moved because no Brain code deployed this interval. The growing DRAFT pile (20->28) is a live signal that the deployed DEF-250/251 reconcile-and-close chain is not reducing derived items \u2014 reinforcing the ingestion-residual caveat \u2014 but it is not a code change and does not by itself move Self-Pruning up or down. gchat (DEF-253) remains deployed-but-unexercised.",
+      "unverifiable": "Whether the DEF-250/251 reconcile/close chain fires live \u2014 DRAFT climbing to 28 suggests it is not keeping pace, but the pack gives counts, not causes (new derivations could outrun real closes). Whether the 28 DRAFT items are genuinely actionable or clutter the owner must triage. Whether gchat (DEF-253) carries owner traffic. Provider receipts remain 0.",
+      "notes_for_builder": "The live DRAFT pile is now growing (20->28) while none visibly close \u2014 the email->item->reconcile->close chain is deriving but not reconciling, most likely the unfixed outbound-reply ingestion gap; closing that gap is the highest-value next step and would let the piling drafts actually resolve. Learn (42) remains the sole capability with zero deployed movement all campaign (correctionDistiller pending_approval-only, DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. No code change since 656f02d (loop.log 02:30 'MEASURE skipped \u2014 no server/src change'). DEF-253 gchat derive deployed-but-unexercised; DEF-246 still minting items (pack 2026-08-30 02:31 UTC: DRAFT 28, NEW 8 \u2014 up from 20/6).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no code change since 656f02d, no new reasoning-gate work.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-30 02:31 UTC: brain_memory table absent, 23891 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy (deployed-sha unchanged at 656f02d).",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-30 02:31 UTC: 0 provider receipts, 86 of 2596 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up code. Pack 2026-08-30 02:31 UTC: delegatee follow-ups 43, owner-routed 20, escalations 49 (latest 2026-08-30 \u2014 worker firing fresh), outbound sends 37 (33 accepted, 4 failed), receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED) and DEF-247/245 credit banked; no new pruning code. Live signal to watch: pack 2026-08-30 02:31 UTC DRAFT 28 (up from 20) \u2014 the derive pipeline mints faster than the deployed reconcile/close chain reduces, reinforcing the unverified-live caveat, not a code change to move the score."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 52,
+      "head": "656f02d",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. No code changed since 656f02d (loop.log 2026-08-31 02:30 'MEASURE skipped \u2014 no server/src or server/prisma change since 656f02d'; 'ITERATION 52 REPEATS'). The pack shows only live activity \u2014 owner-routed 20->23, escalations 49->50, turns 23891->24863, DRAFT steady at 28 \u2014 not a capability change. Overall holds at 54.3.",
+      "what_did_not": "No capability moved because no Brain code deployed this interval. DRAFT holding at 28 (not shrinking) continues to signal the deployed DEF-250/251 reconcile/close chain is not reducing derived items \u2014 the ingestion-residual caveat stands, but it is not a code change to move Self-Pruning. gchat (DEF-253) remains deployed-but-unexercised.",
+      "unverifiable": "Whether the DEF-250/251 reconcile/close chain fires live (DRAFT stuck at 28). Whether gchat (DEF-253) carries owner traffic. Whether the 28 DRAFT items are genuinely actionable or clutter awaiting triage. Provider receipts remain 0, so no send is delivery-confirmed.",
+      "notes_for_builder": "Two campaign-long open items still gate real movement: the outbound-reply ingestion gap keeps the email->item->reconcile->close chain from resolving the DRAFT pile (28 and not shrinking), and Learn (42) has had zero deployed movement all campaign because correctionDistiller stays pending_approval-only (DEF-149 OPEN). Both are the clearest places the next deployed work could actually lift a capability.",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. No code change since 656f02d (loop.log 2026-08-31 02:30 'MEASURE skipped \u2014 no server/src or server/prisma change since 656f02d'). DEF-253 gchat derive deployed-but-unexercised; DEF-246 still minting items (pack 2026-08-31 02:30 UTC: DRAFT 28, NEW 8).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; no code change since 656f02d, no new reasoning-gate work.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-31 02:30 UTC: brain_memory table absent, 24863 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; no new AC deploy (deployed-sha unchanged at 656f02d).",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-31 02:30 UTC: 0 provider receipts, 89 of 2603 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up code. Pack 2026-08-31 02:30 UTC: delegatee follow-ups 43, owner-routed 23, escalations 50 (latest 2026-08-30 \u2014 worker firing fresh), action_lifecycle_follow_up 66, outbound sends 37, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED) and DEF-247/245 credit banked; no new pruning code. Pack 2026-08-31 02:30 UTC: DRAFT steady at 28 (no longer climbing, still not shrinking) \u2014 the deployed reconcile/close chain still not visibly reducing the pile."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 52,
+      "head": "656f02d",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. HEAD and deployed-sha both unchanged at 656f02d; despite loop.log's 'post-build scoring' line, git shows no committed or deployed change reached the tree (a dead or reverted build). The pack is unchanged (DRAFT 28, escalations 50, turns 24865). Overall holds at 54.3.",
+      "what_did_not": "No capability moved because no Brain code committed or deployed this interval. DRAFT holding at 28 continues to signal the DEF-250/251 reconcile/close chain is not reducing the pile; gchat (DEF-253) remains deployed-but-unexercised. Neither is a code change to move a score.",
+      "unverifiable": "Whether the DEF-250/251 reconcile/close chain fires live (DRAFT stuck at 28). Whether gchat (DEF-253) carries owner traffic. Whether the 28 DRAFT items are actionable or clutter. Provider receipts remain 0. What loop.log's 'the build changed code' refers to when git HEAD is unchanged cannot be resolved from the file view.",
+      "notes_for_builder": "The two campaign-long open items still gate real movement: the outbound-reply ingestion gap (keeps the email->item->reconcile->close chain from resolving the 28-item DRAFT pile) and Learn (42, zero deployed movement all campaign because correctionDistiller stays pending_approval-only, DEF-149 OPEN). Closing either would let a stuck capability finally move.",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. HEAD and deployed-sha both unchanged at 656f02d; no committed/deployed change reached the tree this iteration. DEF-253 gchat derive deployed-but-unexercised; DEF-246 still minting items (pack 2026-08-31 02:40 UTC: DRAFT 28, NEW 8).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; HEAD unchanged at 656f02d, no new reasoning-gate work.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-31 02:40 UTC: brain_memory table absent, 24865 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; deployed-sha unchanged at 656f02d, no new AC deploy.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-31 02:40 UTC: 0 provider receipts, 89 of 2603 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up code. Pack 2026-08-31 02:40 UTC: delegatee follow-ups 43, owner-routed 23, escalations 50 (latest 2026-08-30), action_lifecycle_follow_up 66, outbound sends 37, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED) and DEF-247/245 credit banked; no new pruning code. Pack 2026-08-31 02:40 UTC: DRAFT steady at 28 \u2014 the deployed reconcile/close chain still not visibly reducing the pile."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 53,
+      "head": "656f02d",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. The iter-53 build returned non-zero with 2 red tests and produced no commit; HEAD and deployed-sha both unchanged at 656f02d (loop.log 06:16 'already deployed 656f02d \u2014 nothing to do'). Only live activity changed: DRAFT 28->31, turns 24865->25011. Overall holds at 54.3.",
+      "what_did_not": "No capability moved because no Brain code committed or deployed. The DRAFT pile climbing to 31 with zero new closes is accumulating live evidence that the deployed DEF-250/251 reconcile/close chain is not functioning end-to-end (the outbound-reply ingestion residual) \u2014 but it is not a code change to move Self-Pruning this iteration. gchat (DEF-253) remains deployed-but-unexercised.",
+      "unverifiable": "Whether the DEF-250/251 reconcile/close chain fires live at all \u2014 DRAFT rising to 31 while CLOSED stays 239 increasingly suggests not, but the pack gives counts, not causes. Whether the 31 DRAFT items are actionable or clutter. Whether gchat (DEF-253) carries owner traffic. Provider receipts remain 0.",
+      "notes_for_builder": "The DRAFT pile is now growing monotonically (20->28->31) with zero closes \u2014 the clearest live signal of the campaign that the email->item->reconcile->close chain derives but never resolves, almost certainly the unfixed outbound-reply ingestion gap. Fixing that is the single highest-value next step and would also let the DEF-250/251 credit become verified. Learn (42) remains the sole capability with zero deployed movement all campaign (correctionDistiller pending_approval-only, DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. Dead build \u2014 HEAD and deployed-sha both unchanged at 656f02d (loop.log 06:16 'already deployed 656f02d \u2014 nothing to do', tests RED 2 failed). DEF-253 gchat derive deployed-but-unexercised; DEF-246 still minting items (pack 2026-08-31 06:16 UTC: DRAFT 31, NEW 8).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; HEAD unchanged at 656f02d, no new reasoning-gate work.",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-31 06:16 UTC: brain_memory table absent, 25011 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; deployed-sha unchanged at 656f02d, no new AC deploy.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit; no new authority/dispatch work. Pack 2026-08-31 06:16 UTC: 0 provider receipts, 89 of 2603 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up code. Pack 2026-08-31 06:16 UTC: delegatee follow-ups 43, owner-routed 23, escalations 50 (latest 2026-08-30), action_lifecycle_follow_up 66, outbound sends 37, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 61. DEF-251 (DRAFT->CLOSED) and DEF-247/245 credit banked; no new pruning code. Pack 2026-08-31 06:16 UTC: DRAFT climbing to 31 (from 20->28->31) while CLOSED flat at 239 \u2014 the deployed reconcile/close chain is not reducing the pile; held (no code change) but flagged as a persistent live gap."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
+        }
+      ]
+    },
+    {
+      "iteration": 54,
+      "head": "d144edf",
+      "overall": 54.3,
+      "movement": 0.0,
+      "verdict": "NEUTRAL",
+      "scored_by": "grok",
+      "what_moved": "Nothing moved. DEF-255 (commit 7899ac7, email-mute directive on the chat path) was committed to HEAD d144edf but did NOT ship (loop.log 06:38 'DEPLOY iter=54 did not ship'), deployed-sha still 656f02d. There is also uncommitted WIP in brainComposer/persona/reasoningCompose/WhatsAppInbound not in HEAD. Overall holds at 54.3.",
+      "what_did_not": "DEF-255's mute-directive fix did not move any capability because it is undeployed. The uncommitted WIP is not even in HEAD, so it cannot count. DRAFT holding at 31 with zero closes continues to signal the deployed DEF-250/251 reconcile/close chain is not reducing the pile \u2014 a live gap, not a code change this iteration.",
+      "unverifiable": "Whether DEF-255 would reduce noise/derivations from muted senders \u2014 undeployed. Whether the DEF-250/251 reconcile/close chain fires live (DRAFT stuck at 31). Whether gchat (DEF-253) carries owner traffic. What the uncommitted working-tree changes to brainComposer/reasoningCompose intend. Provider receipts remain 0.",
+      "notes_for_builder": "DEF-255 (email-mute on the chat path) is a good lever against the exact noise driving the DRAFT pile, but it is stuck undeployed while the deploy phase keeps failing to ship. The dominant campaign bottleneck remains: deploys are not landing (dead builds / did-not-ship for several iterations) and the DRAFT pile (31, zero closes) shows the deployed reconcile/close chain not firing. Learn (42) remains the sole capability with zero deployed movement all campaign (DEF-149 OPEN).",
+      "evidence": [
+        "Simple & Smart +0 [code-read/medium]: HOLD 36. DEF-255 (commit 7899ac7, email-mute lands on the chat path) is UNDEPLOYED \u2014 loop.log 06:38 'DEPLOY iter=54 did not ship', deployed-sha still 656f02d. DEF-253 gchat derive deployed-but-unexercised; DEF-246 still minting items (pack 2026-08-31 06:38 UTC: DRAFT 31, NEW 8).",
+        "Thinking +0 [code-read/medium]: HOLD 42. DEF-248 (rules reach the reasoning path) credit banked; deployed-sha unchanged at 656f02d, no new reasoning-gate work live (uncommitted WIP in reasoningCompose.ts not in HEAD).",
+        "Memory +0 [live-evidence/medium]: HOLD 60. Production pack 2026-08-31 06:38 UTC: brain_memory table absent, 25041 conversation turns. Score remains wiki/embed plus history (MEM-005/DEF-118); no durable-memory work.",
+        "Accurate Communication +0 [code-read/medium]: HOLD 91. DEF-034(b)/241/238/243/248/249-date remain the live credit; deployed-sha unchanged at 656f02d, no new AC deploy.",
+        "Authorized Action +0 [code-read/medium]: HOLD 61. DEF-249-preview and DEF-240/DEF-232/DEF-034(b) remain the live credit. DEF-255 (mute-directive dispatch, one dispatcher both channels) is Authorized-Action-relevant but UNDEPLOYED ('did not ship'). Pack 2026-08-31 06:38 UTC: 0 receipts, 89 of 2603 approval.",
+        "Self Follow-Up +0 [live-evidence/high]: HOLD 58. DEF-250 reconciliation credit banked; no new follow-up code deployed. Pack 2026-08-31 06:38 UTC: delegatee follow-ups 43, owner-routed 23, escalations 50 (latest 2026-08-30), action_lifecycle_follow_up 66, outbound sends 37, receipts 0.",
+        "Learn +0 [code-read/high]: HOLD 42. learningService / correctionDistiller remain pending_approval only; DEF-149 OPEN (brain_change_log.md). Still the one capability with no deployed movement across the campaign.",
+        "Self-Healing +0 [code-read/medium]: HOLD 38. DEF-244 rung-2 connector-heal credit banked; no new self-heal work. Rungs 3-4 (fix underlying defect, self-deploy) absent per owner 2026-08-14 definition (capability_contract.md).",
+        "Self-Pruning +0 [live-evidence/medium]: HOLD 61. DEF-251/247/245 credit banked; no new pruning code deployed. DEF-255 would suppress muted-sender noise but is undeployed. Pack 2026-08-31 06:38 UTC: DRAFT holds at 31, CLOSED flat at 239 \u2014 close chain still not reducing the pile."
+      ],
+      "snapshot": [
+        {
+          "name": "Simple & Smart",
+          "nexeo": 36,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Thinking",
+          "nexeo": 42,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Memory",
+          "nexeo": 60,
+          "professional": 92,
+          "delta": 0
+        },
+        {
+          "name": "Accurate Communication",
+          "nexeo": 91,
+          "professional": 94,
+          "delta": 0
+        },
+        {
+          "name": "Authorized Action",
+          "nexeo": 61,
+          "professional": 91,
+          "delta": 0
+        },
+        {
+          "name": "Self Follow-Up",
+          "nexeo": 58,
+          "professional": 96,
+          "delta": 0
+        },
+        {
+          "name": "Learn",
+          "nexeo": 42,
+          "professional": 90,
+          "delta": 0
+        },
+        {
+          "name": "Self-Healing",
+          "nexeo": 38,
+          "professional": 89,
+          "delta": 0
+        },
+        {
+          "name": "Self-Pruning",
+          "nexeo": 61,
+          "professional": 89,
+          "delta": 0
         }
       ]
     }

@@ -101,11 +101,54 @@ server/docs/nexeo_self_learning&development.md
 # artefact worth versioning — it is only a hazard: one `git add -A` away from a
 # 19 MB commit, and AGENTS.md forbids that add for exactly this reason (BLD-001,
 # where a directory add committed an owner-owned file).
-dist.bak-*/
-server/dist.bak-*/
+#
+# Widened 2026-08-31 from `dist.bak-*` to any `dist.*` sibling: the deploy path
+# also writes `server/dist.pre-<sha>.<ts>/`, and four of those put 10,362 files
+# into Source Control. VS Code caps its decoration provider at 10,000 events, so
+# the git provider logged "CAPPING events from decorations provider vscode.git
+# 10003" on every extension-host start and starved the Claude Code webview into
+# rendering blank. Ignoring the prefix alone would leave the next prefix to
+# rediscover this, so ignore the class: any sibling copy of the build output.
+dist.*/
+server/dist.*/
 
 # Editor settings are per-machine, not per-project.
 .vscode/
 
 # Harvested production conversations — real message bodies, never committed.
 server/docs/orchestrator/state/recent-chats.md
+node_modules
+.claude/settings.local.json
+
+# ── Orchestrator run artefacts ────────────────────────────────────────────────
+#
+# The campaign loop regenerates all of this on every iteration: run logs, a
+# per-iteration score card, ~40 scratch files of watermarks/hashes/session ids,
+# and a `retired-*` archive each time a campaign is reset. Together that is
+# ~4.2 MB across 150+ paths, and it has never been committed — only left
+# uncommitted, which is the same hazard the dist.bak block above describes: one
+# `git add -A` away from a junk commit, and AGENTS.md forbids that add for
+# exactly this reason (BLD-001). It also floods Source Control, which is what
+# the decoration-provider cap above is about.
+#
+# IGNORED, NOT DELETED. The retired-* archives and the ledger are the only
+# record of past campaign resets, and `state/` holds live loop state — deleting
+# them destroys history nothing else holds and would interrupt a running loop.
+# They stay on disk; they just stop being git's business.
+#
+# Deliberately still TRACKED, because the campaign and the evaluation chart read
+# them as current pointers rather than as run output: state/campaign.json,
+# state/capability_scorecard.json, state/deployed-sha, state/builder-session-id,
+# and scores/proactive-iter-*.json (cited by evaluation chart §2.2 and §2.3).
+# The negations below say so out loud, so the next reset does not re-litigate it.
+server/docs/orchestrator/*.log
+server/docs/orchestrator/*.out
+server/docs/orchestrator/ledger.jsonl
+server/docs/orchestrator/orchestrator_ledger.md
+server/docs/orchestrator/retired-*/
+server/docs/orchestrator/scores/iter-*.json
+server/docs/orchestrator/state/*
+!server/docs/orchestrator/state/builder-session-id
+!server/docs/orchestrator/state/campaign.json
+!server/docs/orchestrator/state/capability_scorecard.json
+!server/docs/orchestrator/state/deployed-sha
