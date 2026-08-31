@@ -1627,3 +1627,121 @@ from mine (environment drift — the DEF-231 shape), or Codex finding the landed
 feature's queries tenant-unscoped (it is orchestrator-global BY DESIGN — spend rows
 have no tenant; the route is admin-mounted — named so the reviewer judges that
 reading rather than discovering it).
+
+## Iteration 56 — 2026-08-31
+
+**File named in the first two tool calls and changed:**
+`server/src/services/selfpruning/pushHistoryBlock.ts` (+ its suite,
+`server/tests/def197PushHistoryBlock.test.ts`). **REMEDIATION TURN, attempt 2 of 3,
+on the Iteration-2 WRONG review** — remediation wins on scope, so this turn closes
+that review's open findings rather than the Self-Pruning campaign increment or the
+deck's `whatsapp-quoted-text-not-read` tag. Both divergences declared below.
+
+**The reviewer's findings, taken in severity order — where each one stands:**
+
+1. **CRITICAL — live cross-subject status fabrication (B12 selects unrelated subject).**
+   CLOSED BY ATTEMPT 1, on the record: `f50e1cf` (DEF-200) replaced prompt-only
+   selection with code scoping — `selectSubjectsForConversation` runs before render
+   and unmatched subjects never reach the prompt. The reviewer's directive-2 fixture
+   is an executable test through the REAL builder: `def197PushHistoryBlock.test.ts:598`
+   ("THE ACCEPTANCE CASE") builds with conversation=Fujairah, record=ShireMe+Vision
+   Metric, and asserts neither unrelated title, key, count nor timestamp reaches the
+   prompt. Mutation property holds by construction: removing the scoping re-exposes
+   the titles and the test fails on content, not on an instruction string.
+2. **HIGH — "absence can still be asserted from an incomplete identity partition."
+   THIS TURN'S FIX (DEF-257), because attempt 1 only half-closed it.** `f50e1cf` did
+   add `unattributed`/`floods` to `absenceIsInformative` (the reviewer's directive 3)
+   — but the always-rendered NAME-AN-ITEM paragraph still said, unconditionally,
+   *"If the item he means is not listed below, say it was not pushed more than once"*.
+   So a degraded render carried BOTH the refusal and the authorization; the model was
+   free to obey either, and every existing test matched the gated branch's wording
+   rather than the property, so the second copy passed all of them. That is
+   `protection-with-two-implementations` inside a single prompt block.
+3. **MEDIUM — "see the ⚠ flags above" on line-cap-only degradation.** CLOSED BY
+   ATTEMPT 1: `6dcc5c2` (DEF-201) makes each incompleteness reason name itself;
+   pinned at `def197PushHistoryBlock.test.ts:621`.
+4. **Directive 4 — window-bound absence claims.** CLOSED BY ATTEMPT 1: `6dcc5c2`,
+   pinned at `def197PushHistoryBlock.test.ts:642`.
+
+**What I changed, by file:line, and why it is the mechanism:**
+
+- `pushHistoryBlock.ts:269-291` — the NAME-AN-ITEM paragraph no longer rules on
+  absence at all. It DEFERS by name: *"the ABSENCE RULE further down decides what you
+  may say about that — nothing in this paragraph does."* The absence claim now has
+  exactly ONE implementation, the gated, window-bound one. The mechanism is removal
+  of a contradiction, not a new guard: when two instructions disagree, prompt
+  obedience is a coin flip (the reviewer's own `examples-outvote-the-instruction`
+  reading); when only one instruction exists, there is nothing to outvote.
+- `pushHistoryBlock.ts:296,310` — both absence branches are now labelled
+  `ABSENCE RULE`, so the deferral has a target in every render state.
+- `pushHistoryBlock.ts:313-314` — the garbled incomplete-state sentence ("Say that
+  for that subject is incomplete") is a real sentence again: *"Say that what you can
+  see for that subject is incomplete for this window."*
+- `def197PushHistoryBlock.test.ts:657-731` — a DEF-257 suite that asserts the
+  PROPERTY over the whole rendered block, not an instruction string: in all SEVEN
+  degraded states (truncated, canonicalisation, unresolved threads, unattributed,
+  floods, line-cap slice, scoped B12 no-match) the block matches no at-most-once
+  authorization anywhere; the complete state authorizes it in exactly ONE place; the
+  deferral itself is pinned. Re-adding the unconditional sentence fails all seven.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3072 passed | 0 failed** (254 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3101). The touched
+  suite alone: **60 passed | 0 failed**.
+- `git diff --check` → exit 0, clean
+- `npm run build` NOT run — `server/dist` is immutable (`chattr +i`, CLAUDE.md);
+  `--noEmit` is the build check. A build happens only inside the deploy phase.
+
+**Tenant/fail-closed audit of this diff:** it touches no query and no write — the
+only functions changed render strings from an already-fetched summary. The one query
+in the module (`resolveSubjectTitles`, `pushHistoryBlock.ts:90-92`) is untouched and
+remains scoped by `id IN … AND clientNumber AND userId`, pinned by the existing test
+"constrains the read by id AND clientNumber AND userId".
+
+**Governing docs (rule 5), verdict said out loud: CIRCLING at the class** —
+`protection-with-two-implementations` is the chart §3 dominant shape and
+`fabricated-status` is 7 deep. Accordingly the fix is structural in the only sense
+available to a prompt block: it removes the duplicate implementation rather than
+strengthening either copy, and the new tests assert the single-implementation
+property so a second copy cannot ship green again. DEF-257 row written.
+
+**CAPABILITY:** Accurate Communication
+**PREDICTED:** +0 measurable this turn — this closes the reviewer's HIGH by making
+the fabrication-authorizing instruction unreachable; no score claim.
+**MECHANISM:** single-sourcing the absence rule so the model cannot be told two
+contradictory things about the same claim in one block.
+**FALSIFIER:** any rendered block in a degraded state containing an at-most-once
+authorization (the DEF-257 suite greps the whole block for exactly this); or a
+post-deploy reply asserting "only pushed once" while the block named its list
+incomplete.
+
+**Symptom tag:** none closed on the deck — said plainly. The deck's one open tag is
+`whatsapp-quoted-text-not-read` (quoted-message ingest, the analyst's #2); this turn
+is a mandated remediation of the Iteration-2 WRONG review and does not touch it.
+**Campaign divergence declared:** the assigned target is Self-Pruning (attempt 8);
+remediation wins on scope per the standing rule, and the file IS the Self-Pruning
+campaign's owner-facing surface, but the capability moved is Accurate Communication
+and I am not claiming otherwise.
+
+**What I did NOT do, named:** (1) the reviewer's directive-2 demand to run BOTH
+composers end-to-end to the final answer — `assembleSystemPrompt` is module-private
+in `brainComposer.ts:1692` and `reasoningCompose` requires a live model; exporting
+prompt assembly for tests is a refactor I judged out of remediation scope. What
+stands instead: the exact fixture through the REAL `buildPushHistoryBlock` asserting
+rendered content, plus the existing wiring tests proving both call sites
+(`brainComposer.ts:2823,3534`) pass conversation+question verbatim into that builder.
+If the reviewer holds that composer execution is required, that is a fair next turn
+and I have named the obstacle. (2) The scoped no-match branch always renders
+`rulesFor(false, …)` even when the record is genuinely complete — conservative in
+the safe direction (it refuses a true at-most-once claim rather than risking a false
+one), but its stated incompleteness reason ("cut to 12 lines") is then inaccurate;
+named, not fixed. (3) `whatsapp-quoted-text-not-read`, the campaign increment, and
+the dirty orchestrator-spend WIP in the tree (another session's; not mine to commit).
+
+**Honest prediction:** the reviewer's HIGH and the garbled-sentence half of the
+prompt should be judged closed; B12 itself is governed by the CRITICAL fix from
+attempt 1 and stays whatever it was. What would prove me wrong: a degraded-state
+render that still authorizes an absence claim through wording my regex missed — the
+AUTHORISES pattern covers the two phrasings that have ever existed, and a third
+phrasing would evade it.

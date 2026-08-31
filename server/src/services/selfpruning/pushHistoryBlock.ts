@@ -266,13 +266,24 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
     'switching subjects is worse than admitting you cannot find his, because the count and the times',
     'will look authoritative while describing something he never asked about.',
   ];
+  // DEF-257 — THE ABSENCE CLAIM HAS EXACTLY ONE IMPLEMENTATION, and it is the
+  // gated one below. This paragraph used to also say "if the item he means is
+  // not listed below, say it was not pushed more than once" — unconditionally,
+  // in every render, including the ones whose ABSENCE RULE was simultaneously
+  // forbidding that exact sentence because the list was incomplete. Two rules,
+  // one gated and one not, and the model free to obey either: that is
+  // `protection-with-two-implementations` inside a single prompt block, and it
+  // is how Codex's HIGH ("absence can still be asserted from an incomplete
+  // identity partition") stayed alive after the gate was built. This paragraph
+  // now DEFERS; only the ABSENCE RULE decides what absence means.
   const read = [
     'These are rows with timestamps, not recollection. For the subject he means, name the producers',
     'and the times, and say the count.',
     '',
     'NAME AN ITEM ONLY FROM A TITLE PRINTED IN THIS LIST. Every subject below carries the owner\'s own',
-    'title for it, in quotes. If the item he means is not listed below, say it was not pushed more than once',
-    'push for that item — do NOT take a title from another block (open items, the day brief, the',
+    'title for it, in quotes. If the item he means is not listed below, the ABSENCE RULE further down',
+    'decides what you may say about that — nothing in this paragraph does. And never fill the gap',
+    'yourself: do NOT take a title from another block (open items, the day brief, the',
     'transcript) and attach these counts to it. That is how a true count becomes a false statement:',
     'the number and the time stay correct while the thing they describe is something he never asked',
     'about, and he cannot tell from the reply that the join was guessed. A subject marked',
@@ -282,8 +293,8 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
   // one state and a guess in the other.
   const absence = absenceInformative
     ? [
-      'A subject pushed only once is NOT listed here individually — so if he asks about a repeat and',
-      'the subject is absent below, it was pushed at most once and you should say exactly that',
+      'ABSENCE RULE — a subject pushed only once is NOT listed here individually, so if he asks about',
+      'a repeat and the subject is absent below, it was pushed at most once and you should say exactly that',
       'rather than agreeing that it went twice.',
       '',
       // DEF-201, Codex iteration-2 directive 4 — this record is a WINDOW, not a
@@ -296,11 +307,11 @@ function rulesFor(absenceInformative: boolean, reasons: string[] = [], windowHou
       'could predate the window, say the window is what you can see.',
     ]
     : [
-      'THIS LIST IS INCOMPLETE, for a reason that is stated rather than implied:',
+      'ABSENCE RULE — THIS LIST IS INCOMPLETE, for a reason that is stated rather than implied:',
       ...reasons.map((r) => `  • ${r}`),
       'Absence proves NOTHING here: a subject can be missing below and still have been pushed many',
-      'times. You may NOT say "at most one push" for a subject you cannot find. Say that for',
-      'that subject is incomplete for this window, and never agree to a count you did not read.',
+      'times. You may NOT say "at most one push" for a subject you cannot find. Say that what you can',
+      'see for that subject is incomplete for this window, and never agree to a count you did not read.',
     ];
   // DEF-213 — STATE THE FACT, NOT THE BOOKKEEPING.
   //

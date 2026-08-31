@@ -654,6 +654,74 @@ describe('DEF-201 — the incompleteness reason names itself, and the claim is w
 });
 
 /**
+ * DEF-257 — the absence claim has ONE implementation, and it is the gated one.
+ *
+ * Codex, re-reviewing iteration 2 (HIGH): *"absence can still be asserted from
+ * an incomplete identity partition."* The gate (DEF-198/200) was real — and next
+ * to it, the always-rendered NAME-AN-ITEM paragraph still said "if the item he
+ * means is not listed below, say it was not pushed more than once", in EVERY
+ * state, including the ones whose ABSENCE RULE was simultaneously forbidding
+ * that sentence. Two rules, one gated and one not, in the same prompt — the
+ * model free to obey either. That is `protection-with-two-implementations`
+ * inside a single block, and it survived every test above because those tests
+ * matched the ABSENCE branch's wording, not the property. These assert the
+ * PROPERTY over the whole rendered block.
+ */
+describe('DEF-257 — no render state authorises an absence claim outside the gated ABSENCE RULE', () => {
+  // The two phrasings that ever authorised the at-most-once read. Matching the
+  // WHOLE block means a second implementation added anywhere dies here.
+  const AUTHORISES = /pushed at most once|not pushed more than once/i;
+  const one = () => [subject({ subjectKey: 'item:a', reached: 3 })];
+
+  const degraded: Array<[string, () => string]> = [
+    ['rows were truncated', () =>
+      renderPushHistoryBlock(summary({ truncated: true, subjects: one() }))],
+    ['canonicalisation failed', () =>
+      renderPushHistoryBlock(summary({ canonicalisationFailed: true, subjects: one() }))],
+    ['a thread never resolved to an item', () =>
+      renderPushHistoryBlock(summary({ unresolvedSubjects: ['thread:t1'], subjects: one() }))],
+    ['unattributed pushes exist', () =>
+      renderPushHistoryBlock(summary({ subjects: one(),
+        unattributed: [{ senderKey: 'unknown:+92300', subjectClass: 'nudge' }] as any }))],
+    ['floods exist', () =>
+      renderPushHistoryBlock(summary({ subjects: one(),
+        floods: [{ senderKey: 'unknown:+92300', reached: 10 }] as any }))],
+    ['the list was sliced to the line cap', () =>
+      renderPushHistoryBlock(summary({
+        subjects: Array.from({ length: 20 }, (_, i) => subject({ subjectKey: `item:s${i}`, reached: 3 })),
+      }))],
+    ['scoping withheld every subject (the B12 no-match state)', () =>
+      renderPushHistoryBlock(
+        summary({ subjects: one() }),
+        new Map([['item:a', 'ShireMe Recruiting Portal Application Testing']]),
+        'Why did you remind me about the Fujairah pricing twice?',
+      )],
+  ];
+
+  for (const [label, render] of degraded) {
+    it(`the WHOLE block carries no at-most-once authorisation when ${label}`, () => {
+      // Mutation: re-adding the unconditional "say it was not pushed more than
+      // once" to the NAME-AN-ITEM paragraph dies on every one of these.
+      expect(render()).not.toMatch(AUTHORISES);
+    });
+  }
+
+  it('the complete state authorises it in exactly ONE place — the ABSENCE RULE', () => {
+    const out = renderPushHistoryBlock(summary({ subjects: one() }));
+    const hits = out.match(new RegExp(AUTHORISES.source, 'gi')) ?? [];
+    expect(hits).toHaveLength(1);
+    expect(out).toMatch(/ABSENCE RULE — a subject pushed only once/);
+  });
+
+  it('the NAME-AN-ITEM paragraph defers to the ABSENCE RULE instead of ruling on absence', () => {
+    const out = renderPushHistoryBlock(summary({ truncated: true, subjects: one() }));
+    // Mutation: deleting the deferral (or moving the decision back into the
+    // paragraph) dies here.
+    expect(out).toMatch(/the ABSENCE RULE further down\s+decides what you may say/);
+  });
+});
+
+/**
  * DEF-203 — the regression guard fired on `B03-pronoun-followup`, and it was my
  * change that caused it.
  *
