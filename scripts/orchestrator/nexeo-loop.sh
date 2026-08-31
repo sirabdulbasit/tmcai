@@ -502,7 +502,21 @@ run_chat_analyst() {
   # NO resume, deliberately: this is a different question from the diff review, and
   # sharing a thread is how the reviewer's context leaked into it once already.
   # Write tools denied — the analyst establishes what is wrong, it does not edit.
+  #
+  # AND NO TRANSCRIPT ON DISK. No-resume was intentional; the litter it produced was
+  # not. Every -p run mints a fresh session id and still persists a transcript, so the
+  # conversational cron wrote one session file every ten minutes — 76 of them by
+  # 2026-08-31, against 31 real human conversations in the same directory. The owner
+  # went looking for a session and could not find one in the flood (the same complaint
+  # as 2026-08-11, arriving this time by volume rather than by name).
+  #
+  # Nothing is lost: this seat's output is ALREADY captured independently, to
+  # iter-NN-chat-last.txt and copied to iter-NN-chat.jsonl below, which is what the
+  # builder and the evidence packages actually read. The copy under
+  # ~/.claude/projects was pure duplication, and it is the one nobody can resume
+  # anyway — this seat never resumes by design.
   "$CLAUDE_BIN" -p "$prompt" \
+    --no-session-persistence \
     --model "${NEXEO_CHAT_MODEL:-claude-opus-4-8}" \
     --fallback-model claude-opus-4-8 \
     --output-format text \
