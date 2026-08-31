@@ -87,8 +87,13 @@ export async function captureMaturitySnapshot(
           WHERE client_number = $1 AND surface <> 'calibration' AND evaluated_at::date = $2::date`,
         clientNumber, day),
       prisma.$queryRawUnsafe<Array<any>>(
-        `SELECT count(*)::int AS n, round(sum(est_usd)::numeric,2) AS usd
-           FROM llm_spend WHERE client_number = $1 AND created_at::date = $2::date`,
+        // llm_spend_unified, not llm_spend: this report is run for a NAMED DAY, including days
+        // older than the 30-day raw-retention window, where the rows live in the rollup. Against
+        // the bare table it would have started reporting 0 calls / $0.00 for any older day the
+        // moment retention began — a silent wrong answer, not an error. SUM(calls) rather than
+        // count(*) for the same reason as everywhere else: a view row is many calls.
+        `SELECT COALESCE(sum(calls), 0)::int AS n, round(COALESCE(sum(est_usd), 0)::numeric,2) AS usd
+           FROM llm_spend_unified WHERE client_number = $1 AND day = $2::date`,
         clientNumber, day),
       prisma.$queryRawUnsafe<Array<any>>(
         `SELECT count(*) FILTER (WHERE status = 'sent')::int AS sent,

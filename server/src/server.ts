@@ -345,6 +345,18 @@ const server = app.listen(env.port, async () => {
       const { sweepTriageDecisionCache } = await import('./services/triage/triageReasoner');
       const sweptTriage = await sweepTriageDecisionCache();
       if (sweptTriage.deleted > 0) console.log(`[triageCache] evicted ${sweptTriage.deleted} stale entries`);
+
+      // OPT-001 — the table the comment above has been citing as the cautionary tale now has
+      // the retention it was missing. `llm_spend` was 561 MB of an 811 MB database, 91% of it
+      // older than 30 days. Rows past the window are COLLAPSED into `llm_spend_daily` and then
+      // deleted, in one transaction, so the day-grain history the cost page renders survives and
+      // only the per-call detail goes. This is not an eviction like the two above it: nothing
+      // reachable is discarded, which is why it is safe to run unattended every hour.
+      const { sweepLlmSpendRetention } = await import('./services/llmSpendService');
+      const sweptSpend = await sweepLlmSpendRetention();
+      if (sweptSpend.deletedRows > 0) {
+        console.log(`[llmSpend] rolled ${sweptSpend.rolledRows} day-rows, deleted ${sweptSpend.deletedRows} raw rows older than ${sweptSpend.cutoff}`);
+      }
       const r = await runSelfHealPass();
       const healed = Object.entries(r).flatMap(([id, os]) => os.filter((o) => o === 'healed').map(() => id));
       if (healed.length > 0) console.log(`[selfHeal] healed: ${healed.join(', ')}`);

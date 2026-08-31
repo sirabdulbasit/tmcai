@@ -571,11 +571,28 @@ run_codex() {
                    --permission-mode dontAsk
                    --disallowed-tools 'Write,Edit,NotebookEdit'
                    --max-turns 60)
+  # `opened` exists because testing `[ -z "$stored" ]` a second time CANNOT WORK, and that is
+  # what the capture block below used to do. In the open branch `stored` is assigned a uuid, and
+  # in the resume branch it was non-empty by definition — so the id-capture block was
+  # UNREACHABLE on every path, the CLI's real session id was never recorded, and whatever uuid
+  # this function minted stayed in the file permanently.
+  #
+  # THAT IS WHY THE REVIEWER HAS BEEN DEAD SINCE 2026-08-25. The stored id
+  # 019ff185-597b-7333-927a-75b7a0a182a5 names a session that does not exist on disk, so every
+  # nightly review resumed nothing and exited `error_during_execution` in about one second with
+  # 0 turns and $0.00 — six consecutive iterations (Aug 25, 26, 27, 28, 29, 31), each of which
+  # reported itself as a completed phase. Found by the spend deck: a seat billing $0.00 against
+  # 186M tokens is not a cheap seat, it is a seat that never ran.
+  #
+  # Same class as the Builder seat in 378673f, where `say()` wrote into the session id. A seat
+  # that cannot open looks exactly like a seat with nothing to say.
+  local opened=0
   if [ -z "$stored" ]; then
     stored="$(cat /proc/sys/kernel/random/uuid)"
     printf '%s' "$stored" > "$CODEX_SESSION_FILE"
     say "REVIEW iter=$iter claude opening a new session $stored on $REVIEW_MODEL"
     cmd=("$CLAUDE_BIN" -p "$prompt" --session-id "$stored" "${common[@]}")
+    opened=1
   else
     say "REVIEW iter=$iter claude resuming session $stored on $REVIEW_MODEL"
     cmd=("$CLAUDE_BIN" -p "$prompt" --resume "$stored" "${common[@]}")
@@ -593,11 +610,34 @@ run_codex() {
   # the reviewer's status, NOT tee's or the formatter's.
   rc=${PIPESTATUS[0]}
 
+  # ── SELF-HEAL A DEAD SESSION POINTER ────────────────────────────────────────
+  # Fixing the unreachable capture above stops NEW stale ids being created; it does not clear
+  # one already on disk, and without this the seat would stay dead until someone deleted the
+  # file by hand — which is how it survived six nights unnoticed.
+  #
+  # The CLI is explicit about this failure ("No conversation found with session ID: …"), so it
+  # is safe to detect and recover from rather than guess at. One retry with a FRESH session: the
+  # review still happens tonight instead of being lost until tomorrow. The retry deliberately
+  # does not resume anything — the thread it wanted is gone, and a review of this diff with no
+  # prior context is worth incomparably more than no review at all.
+  if grep -q 'No conversation found with session ID' "$raw" 2>/dev/null; then
+    say "REVIEW iter=$iter stored session $stored no longer exists — resetting and retrying ONCE with a fresh session"
+    stored="$(cat /proc/sys/kernel/random/uuid)"
+    printf '%s' "$stored" > "$CODEX_SESSION_FILE"
+    opened=1
+    ( cd "$ROOT" && "$CLAUDE_BIN" -p "$prompt" --session-id "$stored" "${common[@]}" 2>&1 ) \
+      | tee "$raw" \
+      | python3 "$FORMATTER" --prefix \
+      | tee -a "$log" \
+      | sed -u 's/^/REVIEW │ /'
+    rc=${PIPESTATUS[0]}
+  fi
+
   # Capture the thread id from the first run so later iterations resume THIS
   # thread, not whatever else ran last in this directory. codex-cli 0.147.0
   # emits it as "thread_id"; the other two spellings are accepted in case a
   # future version renames it.
-  if [ -z "$stored" ]; then
+  if [ "$opened" = 1 ]; then
     local sid
     # Read the RAW event stream, not the formatted log. Once the output started
     # going through the formatter, `"thread_id":"…"` no longer appears in $log —

@@ -1,28 +1,32 @@
 /**
- * MyOS — LLM spend tracker.
+ * Nexeo — LLM spend tracker. What the APPLICATION spends on Gemini and Claude through
+ * `llmRouter`: triage, criticality, composition. Kept entirely apart from
+ * `orchestratorSpendService`, which records what Claude Code bills for BUILDING the product.
+ * Two providers, two bills, never summed.
  *
- * Logs every LLM call's token usage per (user, purpose, provider) into
- * system_config as a compact daily rollup. Admins can read it via
- * /admin/llm-spend to spot runaway costs, rate-limited users, or users
- * hitting thresholds.
+ * WRITE PATH — one row per call, into `llm_spend`, with `est_usd` priced at call time so a later
+ * edit to the price table cannot silently rewrite history.
  *
- * Why system_config (not a dedicated table): avoids a migration for a
- * POC; the JSON structure is tiny (<10KB per tenant per day) and reads
- * are rare. If spend analysis becomes central later, promote to a real
- * `llm_spend_daily` table.
+ * READ PATH — every reader goes through the `llm_spend_unified` VIEW, never the table. Two rules
+ * come with it and both are load-bearing:
  *
- * Shape stored at system_config.value (JSON):
- *   {
- *     "2026-04-22": {
- *       "5": {                        // userId
- *         "gemini":       { in: 12345, out: 678, calls: 42 },
- *         "gemini-flash": { in: ..., out: ..., calls: ... },
- *         "claude":       { in: ..., out: ..., calls: ... },
- *         "byPurpose": { "triage": 12, "chat": 5, ... }
- *       }
- *     }
- *   }
- *   Keyed at system_config.key = 'llm_spend'.
+ *   1. `SUM(calls)`, never `COUNT(*)`. A view row over an archived day stands for many calls
+ *      (2110 of them on average), so COUNT(*) would count dimension tuples and under-report by
+ *      three orders of magnitude — green, plausible, and wrong.
+ *   2. The grain is a DAY (`day`, a date), not a timestamp. Fixed calendar ranges are unaffected;
+ *      rolling `days = N` windows now cover N WHOLE days rather than cutting the oldest one at
+ *      the current clock time.
+ *
+ * WHY A VIEW AT ALL. `llm_spend` was 2,614,564 rows / 561 MB of an 811 MB database, 91% of it
+ * older than 30 days (OPT-001). Raw rows beyond the retention window are collapsed into
+ * `llm_spend_daily` — 2,382,156 rows became 1,129, because the dimensions barely vary — and the
+ * view serves the rollup for archived days and the table for recent ones.
+ *
+ * Nothing is DELETED from the record, only collapsed, and that distinction is the whole point.
+ * This page's predecessor was a `system_config` JSON blob that pruned to 62 days; when the owner
+ * asked for Jan-to-Aug grouped by month he got ONE row, and the blob disagreed with the table by
+ * half on the month they both covered ($289.98 vs $587.19). Retention that loses history is how
+ * that happened. See `prisma/migrations/20260831_llm_spend_retention/migration.sql`.
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
@@ -62,8 +66,6 @@ function today(): string { return new Date().toISOString().slice(0, 10); }
 
 export async function recordLlmSpend(p: SpendParams): Promise<void> {
   const clientNumber = p.clientNumber ?? 'SYSTEM';
-  const userKey = String(p.userId ?? 0);
-  const day = today();
   const usd = estimatedCostUsd(p);
 
   // 1) New time-series row in `llm_spend` (cost dashboard reads from
@@ -110,48 +112,21 @@ export async function recordLlmSpend(p: SpendParams): Promise<void> {
   // succeeds. The rollup is a per-TENANT view, and a call with no tenant has
   // no rollup to belong to — writing it under a placeholder was always
   // meaningless, which is why the constraint rejected it.
-  if (!p.clientNumber) return;
-
-  try {
-    const existing = await prisma.systemConfig.findUnique({
-      where: { clientNumber_key: { clientNumber, key: 'llm_spend' } },
-      select: { value: true },
-    }).catch(() => null);
-
-    const db: any = existing?.value ? safeParse(existing.value) : {};
-    if (!db[day]) db[day] = {};
-    if (!db[day][userKey]) db[day][userKey] = { byPurpose: {} };
-    const bucket = db[day][userKey];
-    if (!bucket[p.provider]) bucket[p.provider] = { in: 0, out: 0, calls: 0 };
-    bucket[p.provider].in += p.inputTokens;
-    bucket[p.provider].out += p.outputTokens;
-    bucket[p.provider].calls += 1;
-    bucket.byPurpose[p.purpose] = (bucket.byPurpose[p.purpose] ?? 0) + 1;
-
-    // Prune to keep the blob small — 62 days, not 14. Owner, 2026-08-27: "i need this daily,
-    // weekly, monthly and with date range etc". Monthly was not a missing view, it was missing
-    // DATA: at 14 days the month before yesterday had already been deleted, so no UI could have
-    // answered it. Measured before changing: 15 days occupied 5.1 KB, i.e. ~0.34 KB/day, so 62
-    // days costs about 21 KB — enough for "this month" and "last month" side by side.
-    //
-    // NOT longer, deliberately. Every LLM call read-modify-writes this whole row; a year of
-    // history (~124 KB) rewritten hundreds of times a day is the wrong shape, and the answer
-    // there is a real table, not a bigger blob. 62 days is where the view the owner asked for
-    // becomes answerable without pretending the store is something it is not.
-    const RETAIN_DAYS = 62;
-    const cutoff = new Date(Date.now() - RETAIN_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    for (const d of Object.keys(db)) {
-      if (d < cutoff) delete db[d];
-    }
-
-    await prisma.systemConfig.upsert({
-      where: { clientNumber_key: { clientNumber, key: 'llm_spend' } },
-      create: { clientNumber, key: 'llm_spend', value: JSON.stringify(db) },
-      update: { value: JSON.stringify(db) },
-    });
-  } catch (err: any) {
-    log.warn('spend record (legacy) failed', { error: err.message });
-  }
+  // ...and it is GONE as of 2026-08-31, which retires the DEF-112 warning above with it.
+  //
+  // It was a SECOND COPY OF THE DATA, read-modify-written on every LLM call: load a ~21 KB JSON
+  // blob, mutate one counter, write the whole row back, hundreds of times a day. A grep for the
+  // `llm_spend` system_config key found exactly one reader — this function, reading what it had
+  // just written. Write-only state, paid for per call.
+  //
+  // It was also the store that UNDER-REPORTED. It pruned to 62 days, so the owner's Jan-to-Aug
+  // monthly query returned ONE row, and it disagreed with the table by half on the month they
+  // both covered ($289.98 vs $587.19). Its comment said it was "kept until the dashboard cuts
+  // over fully" — the dashboard has cut over. Deleting the writer removes the last path by which
+  // that halved number can reappear.
+  //
+  // `llm_spend` (recent, exact) plus `llm_spend_daily` (archived, collapsed) is now the whole
+  // record, read through `llm_spend_unified`.
 }
 
 // ─── Cost dashboard aggregations ──────────────────────────────────
@@ -171,13 +146,15 @@ export interface TimelinePoint {
  *  this as a stacked bar / line chart on the dashboard. */
 export async function getTimeline(clientNumber: string, days = 30): Promise<TimelinePoint[]> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
-            COUNT(*)::int AS calls,
+    // READS THE VIEW, NOT THE TABLE — see the note above `recordLlmSpend`. SUM(calls), never
+    // COUNT(*): one view row stands for many calls on an archived day.
+    `SELECT to_char(day, 'YYYY-MM-DD') AS day,
+            COALESCE(SUM(calls), 0)::int AS calls,
             COALESCE(SUM(input_tokens + output_tokens), 0)::bigint AS tokens,
             COALESCE(SUM(est_usd), 0)::numeric AS usd
-       FROM llm_spend
+       FROM llm_spend_unified
       WHERE client_number = $1
-        AND created_at >= NOW() - (INTERVAL '1 day' * $2)
+        AND day >= (CURRENT_DATE - (INTERVAL '1 day' * $2))::date
       GROUP BY 1
       ORDER BY 1 ASC`,
     clientNumber, days,
@@ -203,13 +180,13 @@ export async function getByUser(clientNumber: string, days = 30, limit = 10): Pr
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT s.user_id::text AS key,
             COALESCE(u.name, '(deleted)') AS label,
-            COUNT(*)::int AS calls,
+            COALESCE(SUM(s.calls), 0)::int AS calls,
             COALESCE(SUM(s.input_tokens + s.output_tokens), 0)::bigint AS tokens,
             COALESCE(SUM(s.est_usd), 0)::numeric AS usd
-       FROM llm_spend s
+       FROM llm_spend_unified s
        LEFT JOIN users u ON u.id = s.user_id
       WHERE s.client_number = $1
-        AND s.created_at >= NOW() - (INTERVAL '1 day' * $2)
+        AND s.day >= (CURRENT_DATE - (INTERVAL '1 day' * $2))::date
         AND s.user_id IS NOT NULL
       GROUP BY s.user_id, u.name
       ORDER BY usd DESC
@@ -225,12 +202,12 @@ export async function getByUser(clientNumber: string, days = 30, limit = 10): Pr
 export async function getByPurpose(clientNumber: string, days = 30, limit = 10): Promise<BreakdownRow[]> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT COALESCE(purpose, '(unknown)') AS key,
-            COUNT(*)::int AS calls,
+            COALESCE(SUM(calls), 0)::int AS calls,
             COALESCE(SUM(input_tokens + output_tokens), 0)::bigint AS tokens,
             COALESCE(SUM(est_usd), 0)::numeric AS usd
-       FROM llm_spend
+       FROM llm_spend_unified
       WHERE client_number = $1
-        AND created_at >= NOW() - (INTERVAL '1 day' * $2)
+        AND day >= (CURRENT_DATE - (INTERVAL '1 day' * $2))::date
       GROUP BY 1
       ORDER BY usd DESC
       LIMIT $3`,
@@ -245,12 +222,12 @@ export async function getByPurpose(clientNumber: string, days = 30, limit = 10):
 export async function getByProvider(clientNumber: string, days = 30): Promise<BreakdownRow[]> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT provider AS key,
-            COUNT(*)::int AS calls,
+            COALESCE(SUM(calls), 0)::int AS calls,
             COALESCE(SUM(input_tokens + output_tokens), 0)::bigint AS tokens,
             COALESCE(SUM(est_usd), 0)::numeric AS usd
-       FROM llm_spend
+       FROM llm_spend_unified
       WHERE client_number = $1
-        AND created_at >= NOW() - (INTERVAL '1 day' * $2)
+        AND day >= (CURRENT_DATE - (INTERVAL '1 day' * $2))::date
       GROUP BY 1
       ORDER BY usd DESC`,
     clientNumber, days,
@@ -268,10 +245,13 @@ export async function getByProvider(clientNumber: string, days = 30): Promise<Br
  */
 export async function getAnomaly(clientNumber: string): Promise<{ today: number; trailingAvg: number; multiple: number }> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
+    // Today is always inside the retention window, so this half is never served by the rollup.
+    // The trailing week is whole days by construction now, which is what "daily average"
+    // always meant anyway.
     `SELECT
-        COALESCE(SUM(CASE WHEN created_at >= date_trunc('day', NOW()) THEN est_usd END), 0)::numeric AS today_usd,
-        COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '7 days' AND created_at < date_trunc('day', NOW()) THEN est_usd END), 0)::numeric / 7.0 AS trailing_avg
-     FROM llm_spend
+        COALESCE(SUM(CASE WHEN day >= CURRENT_DATE THEN est_usd END), 0)::numeric AS today_usd,
+        COALESCE(SUM(CASE WHEN day >= CURRENT_DATE - 7 AND day < CURRENT_DATE THEN est_usd END), 0)::numeric / 7.0 AS trailing_avg
+     FROM llm_spend_unified
      WHERE client_number = $1`,
     clientNumber,
   ).catch(() => [{ today_usd: 0, trailing_avg: 0 }] as any[]);
@@ -286,11 +266,11 @@ export async function getAnomaly(clientNumber: string): Promise<{ today: number;
 export async function getPerTenant(days = 30): Promise<Array<{ clientNumber: string; calls: number; tokens: number; usd: number }>> {
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT client_number,
-            COUNT(*)::int AS calls,
+            COALESCE(SUM(calls), 0)::int AS calls,
             COALESCE(SUM(input_tokens + output_tokens), 0)::bigint AS tokens,
             COALESCE(SUM(est_usd), 0)::numeric AS usd
-       FROM llm_spend
-      WHERE created_at >= NOW() - (INTERVAL '1 day' * $1)
+       FROM llm_spend_unified
+      WHERE day >= (CURRENT_DATE - (INTERVAL '1 day' * $1))::date
       GROUP BY client_number
       ORDER BY usd DESC`,
     days,
@@ -301,7 +281,8 @@ export async function getPerTenant(days = 30): Promise<Array<{ clientNumber: str
   }));
 }
 
-function safeParse(s: string): any { try { return JSON.parse(s); } catch { return {}; } }
+// `safeParse` lived here to decode the legacy system_config JSON blob. The blob's last writer
+// and only reader are both gone, so it went with them.
 
 export interface SpendReport {
   clientNumber: string;
@@ -356,44 +337,52 @@ export async function getSpendReport(
   // later edit to the price table cannot silently rewrite history.
   const lo = from <= to ? from : to;
   const hi = from <= to ? to : from;
-  const loTs = `${lo} 00:00:00`;
-  const hiTs = `${hi} 23:59:59.999`;
+  // `lo`/`hi` are passed as dates now. They used to be widened to
+  // `${lo} 00:00:00` / `${hi} 23:59:59.999` for a timestamp comparison against `created_at`;
+  // the view is day-grain, so the date bounds cover the identical span with no fencepost to get
+  // wrong. The old millisecond-precision upper bound was itself a latent gap — a call landing in
+  // the final half-millisecond of the range was excluded.
 
   // date_trunc('week') is ISO — it starts MONDAY, which is what the route's period boundaries
   // use. The two must agree, or a Week row and the Week button cover different days.
   const trunc = groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
 
   const rows: any[] = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT to_char(date_trunc('${trunc}', created_at), 'YYYY-MM-DD') AS bucket,
+    // EXACTLY equivalent to the old raw-table query, and that matters more here than anywhere
+    // else in this file. `loTs`/`hiTs` already spanned whole days (00:00:00 → 23:59:59.999), so
+    // `day BETWEEN lo AND hi` covers the identical set of calls — no boundary shifts on the page
+    // OPT-001 is named after. Verified against a pre-refactor snapshot across seven windows,
+    // including three that straddle the retention cutoff.
+    `SELECT to_char(date_trunc('${trunc}', day), 'YYYY-MM-DD') AS bucket,
             user_id,
-            COUNT(*)::int                           AS calls,
+            COALESCE(SUM(calls), 0)::int            AS calls,
             COALESCE(SUM(input_tokens), 0)::bigint  AS in_tokens,
             COALESCE(SUM(output_tokens), 0)::bigint AS out_tokens,
             COALESCE(SUM(est_usd), 0)::float8       AS usd
-       FROM llm_spend
-      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+       FROM llm_spend_unified
+      WHERE client_number = $1 AND day >= $2::date AND day <= $3::date
       GROUP BY 1, 2
       ORDER BY 1`,
-    clientNumber, loTs, hiTs,
+    clientNumber, lo, hi,
   ).catch(() => [] as any[]);
 
   const providerRows: any[] = await prisma.$queryRawUnsafe<any[]>(
     `SELECT user_id, provider,
-            COUNT(*)::int AS calls,
+            COALESCE(SUM(calls), 0)::int AS calls,
             COALESCE(SUM(input_tokens), 0)::bigint  AS in_tokens,
             COALESCE(SUM(output_tokens), 0)::bigint AS out_tokens
-       FROM llm_spend
-      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+       FROM llm_spend_unified
+      WHERE client_number = $1 AND day >= $2::date AND day <= $3::date
       GROUP BY 1, 2`,
-    clientNumber, loTs, hiTs,
+    clientNumber, lo, hi,
   ).catch(() => [] as any[]);
 
   const purposeRows: any[] = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT user_id, COALESCE(purpose, 'unknown') AS purpose, COUNT(*)::int AS calls
-       FROM llm_spend
-      WHERE client_number = $1 AND created_at >= $2::timestamp AND created_at <= $3::timestamp
+    `SELECT user_id, COALESCE(purpose, 'unknown') AS purpose, COALESCE(SUM(calls), 0)::int AS calls
+       FROM llm_spend_unified
+      WHERE client_number = $1 AND day >= $2::date AND day <= $3::date
       GROUP BY 1, 2`,
-    clientNumber, loTs, hiTs,
+    clientNumber, lo, hi,
   ).catch(() => [] as any[]);
 
   const labelFor = (bucket: string) => {
@@ -465,4 +454,72 @@ export async function getSpendReport(
     users,
     totals: { calls: totCalls, tokens: totTokens, usd: Math.round(totUsd * 10000) / 10000 },
   };
+}
+
+/**
+ * Retention sweep — collapse raw calls older than `retainDays` into `llm_spend_daily`, then
+ * delete them. OPT-001.
+ *
+ * ROLL UP FIRST, DELETE SECOND, ONE TRANSACTION. If the delete could ever run without the
+ * insert, that day's spend would be gone from the record — which is the defect this whole design
+ * exists to avoid, not a smaller version of it. The two statements share a transaction so a
+ * failure between them rolls the delete back.
+ *
+ * The transaction is belt to the view's braces rather than the only guard: `llm_spend_unified`
+ * serves a day from the rollup once it exists there, whether or not the raw rows are gone. So a
+ * crash after the insert leaves totals correct and merely leaves rows to delete next time, and
+ * re-running is always safe.
+ *
+ * SPACE IS NOT RETURNED TO THE OS BY THIS. A DELETE marks tuples dead and autovacuum makes the
+ * space reusable by future inserts, which is what stops the table growing without bound — the
+ * actual goal here. Shrinking the file on disk needs VACUUM FULL, which takes an ACCESS
+ * EXCLUSIVE lock and is therefore deliberately NOT run from a recurring job. It was run once by
+ * hand for the initial 561 MB reclaim.
+ */
+export async function sweepLlmSpendRetention(
+  retainDays = Number(process.env.LLM_SPEND_RETAIN_DAYS ?? 30),
+): Promise<{ rolledRows: number; deletedRows: number; cutoff: string }> {
+  // A day is the unit, so the cutoff is a DATE. Using a timestamp would let half of the boundary
+  // day be rolled up while the other half stayed raw, and the view — which resolves a whole day
+  // to the rollup the moment it appears there — would then hide the raw half. Whole days only.
+  const days = Number.isFinite(retainDays) && retainDays >= 1 ? Math.floor(retainDays) : 30;
+
+  try {
+    const [rolled, deleted] = await prisma.$transaction([
+      prisma.$executeRawUnsafe(
+        `INSERT INTO llm_spend_daily
+               (day, client_number, user_id, provider, model, purpose,
+                calls, input_tokens, output_tokens, est_usd)
+         SELECT date_trunc('day', created_at)::date,
+                client_number, user_id, provider, model, purpose,
+                COUNT(*)::int,
+                COALESCE(SUM(input_tokens), 0)::bigint,
+                COALESCE(SUM(output_tokens), 0)::bigint,
+                COALESCE(SUM(est_usd), 0)::numeric(14,6)
+           FROM llm_spend
+          WHERE created_at < (CURRENT_DATE - (INTERVAL '1 day' * ${days}))
+          GROUP BY 1, 2, 3, 4, 5, 6
+             ON CONFLICT (day, client_number, user_id, provider, model, purpose) DO UPDATE
+            SET calls         = EXCLUDED.calls,
+                input_tokens  = EXCLUDED.input_tokens,
+                output_tokens = EXCLUDED.output_tokens,
+                est_usd       = EXCLUDED.est_usd,
+                rolled_at     = now()`,
+      ),
+      prisma.$executeRawUnsafe(
+        `DELETE FROM llm_spend WHERE created_at < (CURRENT_DATE - (INTERVAL '1 day' * ${days}))`,
+      ),
+    ]);
+
+    const cutoff = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+    if (rolled > 0 || deleted > 0) {
+      log.info('llm_spend retention swept', { rolledRows: rolled, deletedRows: deleted, cutoff, retainDays: days });
+    }
+    return { rolledRows: rolled, deletedRows: deleted, cutoff };
+  } catch (err: any) {
+    // Never throw into the caller's job loop: a failed sweep must leave the data untouched and
+    // be visible, not take down the pass it runs on.
+    log.warn('llm_spend retention sweep failed — nothing rolled or deleted', { error: err?.message });
+    return { rolledRows: 0, deletedRows: 0, cutoff: '' };
+  }
 }

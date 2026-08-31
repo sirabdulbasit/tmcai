@@ -16,6 +16,10 @@
  * Nothing was lost — the primary llm_spend row (write 1) succeeds — but the
  * failure was four log lines per conversation turn, and it is what made this FK
  * look like a feature-flag problem on first inspection.
+ *
+ * THE WRITE ITSELF IS NOW GONE (2026-08-31) — see the second describe block. The guard tests
+ * below are kept because they still describe real behaviour (a tenant-less call touches no
+ * config), and the tenant-path tests are inverted into a guard against the blob returning.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs';
@@ -58,29 +62,44 @@ describe('a tenant-less call no longer writes an impossible rollup', () => {
   });
 });
 
-describe('a real tenant still gets its rollup', () => {
-  it('writes system_config for TMC-0001', async () => {
+/**
+ * RESOLVED BY DELETION, 2026-08-31 — and these assertions are inverted rather than removed.
+ *
+ * DEF-112 guarded a write that should not have existed at all. The legacy `system_config` JSON
+ * rollup was a SECOND COPY of the spend data, read-modify-written on every LLM call: load a
+ * ~21 KB blob, bump one counter, write the whole row back. A grep for its `llm_spend`
+ * system_config key found exactly one reader — the function that had just written it.
+ *
+ * It was also the store that UNDER-REPORTED, because it pruned to 62 days: the owner's
+ * Jan-to-Aug monthly query returned ONE row, and the blob disagreed with the table by half on
+ * the month they both covered ($289.98 against $587.19).
+ *
+ * So the tenant guard is moot — there is no rollup write left to guard. What still matters is
+ * that the blob never comes BACK, because reintroducing it would reintroduce both the halved
+ * number and the per-call write amplification. That is what these now assert. Deleting the two
+ * obsolete tests instead would have left nothing watching the space they occupied.
+ */
+describe('the legacy system_config rollup stays gone', () => {
+  it('writes NOTHING to system_config, even for a real tenant', async () => {
     await recordLlmSpend({ ...CALL, clientNumber: 'TMC-0001' });
-    expect(configUpsert).toHaveBeenCalledTimes(1);
-    const arg = configUpsert.mock.calls[0][0];
-    expect(arg.where.clientNumber_key.clientNumber).toBe('TMC-0001');
-    expect(arg.where.clientNumber_key.key).toBe('llm_spend');
+    expect(configUpsert).not.toHaveBeenCalled();
+    expect(configFindUnique).not.toHaveBeenCalled();
   });
 
-  it('records the primary row for a tenant call too', async () => {
+  it('still records the primary row for a tenant call — the real record is untouched', async () => {
     await recordLlmSpend({ ...CALL, clientNumber: 'TMC-0001' });
     expect(spendCreate).toHaveBeenCalledTimes(1);
+    expect(spendCreate.mock.calls[0][0].data.clientNumber).toBe('TMC-0001');
   });
-});
 
-describe('the guard is a real early return, not a swallowed error', () => {
-  const SRC = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'services', 'llmSpendService.ts'), 'utf8');
-
-  it('returns before the upsert rather than catching its failure', () => {
-    const guardAt = SRC.indexOf('if (!p.clientNumber) return;');
-    const upsertAt = SRC.indexOf('await prisma.systemConfig.upsert(');
-    expect(guardAt).toBeGreaterThan(-1);
-    expect(guardAt).toBeLessThan(upsertAt);
+  it('names no system_config key in the source, so the blob cannot creep back in', () => {
+    const SRC = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'services', 'llmSpendService.ts'), 'utf8');
+    // Comments explaining the removal are fine and wanted; executable references are not.
+    const code = SRC.split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
+    expect(code).not.toContain('systemConfig');
+    expect(code).not.toContain("key: 'llm_spend'");
   });
 });
