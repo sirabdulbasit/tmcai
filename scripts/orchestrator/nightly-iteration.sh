@@ -63,7 +63,11 @@ RUN_STARTED="$(date -u +%s)"
 say "starting ONE iteration · deploy=1 · priority='${NEXEO_TARGET_CAPABILITY:-${PRIORITY:-by headroom}}'"
 
 cd "$ROOT" || exit 1
-NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 \
+# NEXEO_TRIGGER names the SCHEDULE for the spend deck's cron cut. Every seat this iteration
+# opens — build, chat, review — writes it beside its run log, so the deck can answer "what did
+# the nightly cron cost" separately from a loop someone ran by hand. Unset means manual, so
+# this is the only place the nightly attribution can come from.
+NEXEO_MAX_ITER=1 NEXEO_DEPLOY=1 NEXEO_TRIGGER='cron:nightly-iteration' \
   bash "$ROOT/scripts/orchestrator/nexeo-loop.sh" >> "$ORCH/loop.out" 2>&1
 rc=$?
 

@@ -24,11 +24,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const raw = vi.fn();
+const upsert = vi.fn();
 vi.mock('../src/db/prisma', () => ({
-  default: { $queryRawUnsafe: (...a: any[]) => raw(...a), orchestratorSpend: { upsert: vi.fn() } },
+  default: { $queryRawUnsafe: (...a: any[]) => raw(...a), orchestratorSpend: { upsert: (...a: any[]) => upsert(...a) } },
 }));
 
-import { parseRunLog, getOrchestratorSpendReport } from '../src/services/orchestratorSpendService';
+import { mkdtemp, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { parseRunLog, getOrchestratorSpendReport, ingestOrchestratorSpend } from '../src/services/orchestratorSpendService';
 
 const MTIME = new Date('2026-08-28T09:00:00.000Z');
 
@@ -146,10 +150,22 @@ const row = (bucket: string, seat: string, over: Record<string, any> = {}) => ({
 describe('the report the deck reads', () => {
   beforeEach(() => raw.mockReset());
 
-  const mock = (rows: any[], models: any[] = []) => {
+  // THREE queries now, in order: the seat/bucket grid, the distinct models, and the cron cut.
+  // The third is not optional padding — an exhausted mock returns `undefined`, and the service
+  // calls `.catch()` on what it gets back, so a missing stub fails as a TypeError inside the
+  // service rather than as a readable assertion.
+  const mock = (rows: any[], models: any[] = [], triggers: any[] = []) => {
     raw.mockReset();
-    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models);
+    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers);
   };
+
+  /** A row from the cron cut — same bigint-from-SUM() hazard as the seat rows. */
+  const trig = (trigger: string | null, over: Record<string, any> = {}) => ({
+    trigger, runs: 1,
+    in_tokens: BigInt(36), out_tokens: BigInt(27_809),
+    cache_read: BigInt(10_304_886), cache_create: BigInt(556_609),
+    usd: 22.827876, seats: ['build'], ...over,
+  });
 
   it('counts cache reads in the total — they are 96% of this workload and they are billed', async () => {
     mock([row('2026-08-27', 'build')]);
@@ -203,6 +219,129 @@ describe('the report the deck reads', () => {
     const r = await getOrchestratorSpendReport('2026-01-01', '2026-01-02');
     expect(r.totals).toEqual({ runs: 0, tokens: 0, usd: 0, cacheReadTokens: 0 });
     expect(r.series).toEqual([]);
+    expect(r.triggers).toEqual([]);
     expect(r.unmeasured).toEqual(['build', 'heal', 'review', 'score']);
+  });
+});
+
+/**
+ * The cron cut — the owner's *"daily, weekly, monthly and cron wise"*.
+ *
+ * A seat is NOT a schedule, which is the whole reason this is a separate dimension: the nightly
+ * cron opens build AND review AND score seats, and `heal` is opened by both the ten-minute cron
+ * and the nightly loop's own chat stage. Deriving one from the other would have to nominate a
+ * parent and would be wrong in both directions.
+ */
+describe('cron attribution', () => {
+  beforeEach(() => raw.mockReset());
+
+  const mock = (rows: any[], models: any[] = [], triggers: any[] = []) => {
+    raw.mockReset();
+    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers);
+  };
+  const trig = (trigger: string | null, over: Record<string, any> = {}) => ({
+    trigger, runs: 1,
+    in_tokens: BigInt(36), out_tokens: BigInt(27_809),
+    cache_read: BigInt(10_304_886), cache_create: BigInt(556_609),
+    usd: 22.827876, seats: ['build'], ...over,
+  });
+
+  it('reports spend per cron, counting cache in the total like the seat cut does', async () => {
+    mock([row('2026-08-27', 'build')], [], [
+      trig('cron:nightly-iteration', { usd: 22.827876, runs: 3 }),
+      trig('cron:watch-conversations', { usd: 4.5, runs: 40, seats: ['heal'] }),
+    ]);
+    const r = await getOrchestratorSpendReport('2026-08-27', '2026-08-27');
+    expect(r.triggers.map((t) => t.trigger))
+      .toEqual(['cron:nightly-iteration', 'cron:watch-conversations']);
+    expect(r.triggers[0].runs).toBe(3);
+    expect(r.triggers[0].tokens).toBe(36 + 27_809 + 10_304_886 + 556_609);
+    expect(r.triggers[1].seats).toEqual(['heal']);
+  });
+
+  it('keeps an unattributed run as NULL and never launders it into "manual"', async () => {
+    // The 42 rows ingested before trigger recording existed have no schedule on file. Calling
+    // them manual would invent an answer for most of the August campaign, which was hand-run.
+    mock([row('2026-08-27', 'build')], [], [trig(null, { runs: 42 })]);
+    const r = await getOrchestratorSpendReport('2026-08-27', '2026-08-27');
+    expect(r.triggers[0].trigger).toBeNull();
+    expect(r.triggers.map((t) => t.trigger)).not.toContain('manual');
+  });
+
+  it('converts bigint sums to numbers, so the deck never prints "[object BigInt]"', async () => {
+    mock([row('2026-08-27', 'build')], [], [trig('cron:nightly-iteration')]);
+    const r = await getOrchestratorSpendReport('2026-08-27', '2026-08-27');
+    expect(typeof r.triggers[0].tokens).toBe('number');
+    expect(typeof r.triggers[0].inTokens).toBe('number');
+    expect(Number.isFinite(r.triggers[0].usd)).toBe(true);
+  });
+});
+
+/**
+ * Reading the standalone analyst — the run the ten-minute cron actually produces.
+ *
+ * It has no iteration to be numbered by, so it is named by timestamp instead. Before this the
+ * ingest filter only accepted `iter-NN-*.jsonl`, so the highest-frequency spender on the box
+ * could not have been recorded even once it started emitting usage.
+ */
+describe('the standalone chat analyst', () => {
+  it('reads chat-analysis-<stamp>.jsonl and books it to the heal seat', () => {
+    const run = parseRunLog([init, result()].join('\n'), 'chat-analysis-20260831T120000.jsonl', MTIME)!;
+    expect(run.seat).toBe('heal');
+    expect(run.iteration).toBeNull();
+    expect(run.totalCostUsd).toBe(22.827876);
+  });
+
+  it('still ignores the analyst LOG, so the prose is never mistaken for an event stream', () => {
+    // .log is the extracted answer and .err is stderr; only the .jsonl carries usage.
+    expect(parseRunLog([init, result()].join('\n'), 'chat-analysis-20260831T120000.log', MTIME)).toBeNull();
+    expect(parseRunLog([init, result()].join('\n'), 'chat-analysis-notastamp.jsonl', MTIME)).toBeNull();
+  });
+
+  it('carries the trigger through from the sidecar, defaulting to null and not to manual', () => {
+    const withTrigger = parseRunLog(
+      [init, result()].join('\n'), 'chat-analysis-20260831T120000.jsonl', MTIME, 'cron:watch-conversations',
+    )!;
+    expect(withTrigger.triggeredBy).toBe('cron:watch-conversations');
+
+    const without = parseRunLog([init, result()].join('\n'), 'iter-31-build.jsonl', MTIME)!;
+    expect(without.triggeredBy).toBeNull();
+  });
+
+  it('picks up the .trigger sidecar written beside the run log', async () => {
+    upsert.mockReset();
+    const dir = await mkdtemp(join(tmpdir(), 'orchspend-'));
+    await writeFile(join(dir, 'chat-analysis-20260831T120000.jsonl'), [init, result()].join('\n'));
+    await writeFile(join(dir, 'chat-analysis-20260831T120000.trigger'), 'cron:watch-conversations');
+
+    const out = await ingestOrchestratorSpend(dir);
+    expect(out).toEqual({ scanned: 1, ingested: 1, skipped: 0 });
+    expect(upsert.mock.calls[0][0].create.triggeredBy).toBe('cron:watch-conversations');
+    expect(upsert.mock.calls[0][0].create.seat).toBe('heal');
+  });
+
+  it('never UNSETS a recorded trigger when the same log is re-ingested without its sidecar', async () => {
+    // The sidecar is a small file next to a log the pruning backlog wants to delete. If a
+    // re-read could write null over a known cron, a tidy-up would silently turn attributed
+    // history back into "unattributed" — losing the answer this whole feature exists to give.
+    upsert.mockReset();
+    const dir = await mkdtemp(join(tmpdir(), 'orchspend-'));
+    await writeFile(join(dir, 'iter-31-build.jsonl'), [init, result()].join('\n'));
+
+    await ingestOrchestratorSpend(dir);
+    const args = upsert.mock.calls[0][0];
+    expect(args.create.triggeredBy).toBeNull();
+    expect(args.update).not.toHaveProperty('triggeredBy');
+  });
+
+  it('gives two analyst runs distinct ids even though neither has an iteration number', () => {
+    // Both land on iteration `null`; only session and start time separate them.
+    const a = parseRunLog([init, result()].join('\n'), 'chat-analysis-20260831T120000.jsonl', MTIME)!;
+    const b = parseRunLog(
+      [JSON.stringify({ ...JSON.parse(init), session_id: 'later', timestamp: '2026-08-31T12:10:00.000Z' }),
+        result({ session_id: 'later' })].join('\n'),
+      'chat-analysis-20260831T121000.jsonl', MTIME,
+    )!;
+    expect(a.runUid).not.toBe(b.runUid);
   });
 });

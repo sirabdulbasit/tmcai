@@ -198,9 +198,59 @@ export default function OrchestratorSpendTab() {
             </div>
           )}
 
-          {/* NOT MEASURED ≠ FREE. The healing analyst runs with `--output-format text` and so
-              emits no usage at all. Printing it as a $0.00 row would be a false reading of the
-              bill; naming it here is the true one. */}
+          {/* PER CRON — the owner's "cron wise", and a genuinely different cut from Seat above.
+              A seat is not a schedule: `build` comes from the nightly cron AND from a loop run
+              by hand, and `heal` comes from both the ten-minute cron and the nightly loop's own
+              chat stage. So this is its own query, not a regroup of the seat rows.
+
+              UNATTRIBUTED IS ITS OWN ROW, never folded into "manual". Runs recorded before
+              trigger capture existed have no schedule on file, and calling them manual would
+              invent an answer for the whole August campaign. */}
+          {report.triggers?.length > 0 && (
+            <div style={{ marginTop: 16, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-2)' }}>
+                    <th style={th}>Cron / trigger</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Runs</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Tokens in</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Tokens out</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Total tokens</th>
+                    <th style={th}>Seats</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.triggers.map((t) => (
+                    <tr key={t.trigger ?? '∅'} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ ...td, fontWeight: 600 }}>
+                        {t.trigger ?? (
+                          <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontStyle: 'italic' }}>
+                            unattributed
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ ...td, ...numTd }}>{fmt(t.runs)}</td>
+                      <td style={{ ...td, ...numTd }}>{fmt(t.inTokens)}</td>
+                      <td style={{ ...td, ...numTd }}>{fmt(t.outTokens)}</td>
+                      <td style={{ ...td, ...numTd }}>{fmt(t.tokens)}</td>
+                      <td style={{ ...td, fontSize: 11, color: 'var(--text-muted)' }}>{t.seats.join(' · ')}</td>
+                      <td style={{ ...td, ...numTd, fontWeight: 600, color: '#cc6b4a' }}>{fmtUsd(t.usd)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {report.triggers.some((t) => t.trigger == null) && (
+                <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
+                  <em>unattributed</em> runs predate trigger recording — the schedule that launched
+                  them was never written down. Unknown, not manual.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* NOT MEASURED ≠ FREE. A seat that ran but emitted no usage events is named here
+              rather than printed as a $0.00 row, which would be a false reading of the bill. */}
           {report.unmeasured?.length > 0 && (
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
               <strong style={{ color: '#f59e0b' }}>Not measured:</strong>{' '}

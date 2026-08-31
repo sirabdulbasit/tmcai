@@ -430,6 +430,11 @@ run_claude() {
   #
   # The alias resolves to claude-fable-5 (haiku is the CLI's own auxiliary model).
   # REVIEWER and SCORER seats are unchanged — the ruling is about building.
+  #
+  # Written BEFORE the turn so a build that is killed mid-flight is still attributed to the
+  # schedule that started it. `build` runs from the nightly cron AND from a hand-run loop
+  # during a campaign, so the seat can never imply the schedule.
+  printf '%s' "${NEXEO_TRIGGER:-manual}" > "$LOGS/iter-$n-build.trigger" 2>/dev/null || true
   printf '%s' "$prompt" | IS_SANDBOX=1 "$CLAUDE_BIN" -p \
     "${session_args[@]}" \
     --name "$BUILDER_NAME" \
@@ -511,21 +516,36 @@ run_chat_analyst() {
   # as 2026-08-11, arriving this time by volume rather than by name).
   #
   # Nothing is lost: this seat's output is ALREADY captured independently, to
-  # iter-NN-chat-last.txt and copied to iter-NN-chat.jsonl below, which is what the
-  # builder and the evidence packages actually read. The copy under
-  # ~/.claude/projects was pure duplication, and it is the one nobody can resume
-  # anyway — this seat never resumes by design.
+  # iter-NN-chat-last.txt — which is what the builder and the evidence packages actually
+  # read. The copy under ~/.claude/projects was pure duplication, and it is the one nobody
+  # can resume anyway — this seat never resumes by design.
+  #
+  # AND IT IS NOW BILLABLE. Under `--output-format text` this seat emitted no usage at all, so
+  # `iter-NN-chat.jsonl` was a copy of the prose rather than an event stream and the `heal` seat
+  # has read "never measured" on the spend deck since the deck was built. stream-json is the
+  # format the build seat already records 34 runs in, so the same parser reads it unchanged.
+  # The prose the builder and the evidence packages consume is extracted back out below, so
+  # iter-NN-chat-last.txt keeps exactly the contents it always had.
+  printf '%s' "${NEXEO_TRIGGER:-manual}" > "$LOGS/iter-$n-chat.trigger" 2>/dev/null || true
   "$CLAUDE_BIN" -p "$prompt" \
     --no-session-persistence \
     --model "${NEXEO_CHAT_MODEL:-claude-opus-4-8}" \
     --fallback-model claude-opus-4-8 \
-    --output-format text \
+    --output-format stream-json --verbose \
     --permission-mode dontAsk \
     --disallowed-tools 'Write,Edit,NotebookEdit' \
     --add-dir "$ROOT" \
-    --max-turns 40 > "$last" 2>&1
+    --max-turns 40 > "$raw" 2>"$LOGS/iter-$n-chat.err"
   local rc=$?
-  cp "$last" "$raw" 2>/dev/null || true
+  python3 "$ROOT/scripts/orchestrator/extract-result.py" "$raw" > "$last" 2>/dev/null || true
+  # A claude turn that exited 0 but yielded no extractable answer must NOT be reported as a
+  # successful analysis. Before stream-json the prose WAS the file and an exit-0 run always
+  # left one; now the answer is a field, and a stream that ends without a result event would
+  # otherwise hand the loop an empty ranking while claiming the stage completed.
+  if [ "$rc" -eq 0 ] && [ ! -s "$last" ]; then
+    rc=1
+    say "CHAT   iter=$iter claude exit=0 but no result event — treating as failure ($(basename "$raw"))"
+  fi
   say "CHAT   iter=$iter claude exit=$rc ($(basename "$last"))"
   return $rc
 }
@@ -538,6 +558,8 @@ run_codex() {
   local last="$LOGS/iter-$n-review-last.txt"
   local stored="" rc=0
   local -a cmd
+
+  printf '%s' "${NEXEO_TRIGGER:-manual}" > "$LOGS/iter-$n-review.trigger" 2>/dev/null || true
 
   [ -s "$CODEX_SESSION_FILE" ] && stored="$(cat "$CODEX_SESSION_FILE")"
 

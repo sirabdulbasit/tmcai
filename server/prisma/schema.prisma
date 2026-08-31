@@ -2969,10 +2969,16 @@ model OrchestratorSpend {
   totalCostUsd        Decimal  @default(0) @map("total_cost_usd") @db.Decimal(10, 6)
   subtype             String?  @db.VarChar(24)
   sourceFile          String?  @map("source_file")
+  /// What LAUNCHED the run: `cron:<script>`, `manual`, or NULL when it predates trigger
+  /// recording. A seat is not a schedule — `build` runs from both the nightly cron and a
+  /// hand-run loop — so this is recorded by the launching process, never inferred. NULL
+  /// renders as "unattributed" and is never counted as manual.
+  triggeredBy         String?  @map("triggered_by") @db.VarChar(48)
   createdAt           DateTime @default(now()) @map("created_at")
 
   @@index([startedAt(sort: Desc)], map: "orchestrator_spend_when_ix")
   @@index([seat, startedAt(sort: Desc)], map: "orchestrator_spend_seat_ix")
+  @@index([triggeredBy, startedAt(sort: Desc)], map: "orchestrator_spend_trigger_ix")
   @@map("orchestrator_spend")
 }
 

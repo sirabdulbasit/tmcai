@@ -215,7 +215,12 @@ printf '%s' "$NEWEST" > "$WATERMARK"
 
 PREV_HASH="$(cat "$ROOTS_HASH" 2>/dev/null || echo none)"
 phase "CHAT" "started reading the live conversations (all tenants, last 14 days)"
-if ! timeout 900 bash "$ROOT/scripts/orchestrator/run-chat-analysis.sh" >> "$LOG" 2>&1; then
+# NEXEO_TRIGGER names the SCHEDULE for the spend deck's cron cut — this is the ten-minute
+# conversational cron, the highest-frequency spender on the box and the one that was entirely
+# unmeasured until the analyst moved to stream-json. Unset would mean `manual`, so the
+# attribution can only come from here.
+if ! NEXEO_TRIGGER='cron:watch-conversations' \
+     timeout 900 bash "$ROOT/scripts/orchestrator/run-chat-analysis.sh" >> "$LOG" 2>&1; then
   say "analysis failed — the previous ranking stands"
   finish_pulse "analysis-failed"
   phase "CHAT" "exit=1 (analysis failed — the previous ranking stands)"
