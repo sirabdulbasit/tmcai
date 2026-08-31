@@ -266,16 +266,12 @@ const RAW_SQL_EXCEPTIONS: { file: string; reason: string; linePattern: string }[
   // integration: filtered by user_id
   { file: 'integrationService.ts', reason: 'Filtered by user_id — globally unique PK', linePattern: 'FROM users WHERE id' },
   { file: 'integrationService.ts', reason: 'Update by user_id PK', linePattern: 'UPDATE users SET' },
-  // seedArtifacts: seed script — inserts global artifact templates (not tenant-scoped)
-  { file: 'seedArtifacts.ts', reason: 'Seed script — global artifact templates, not tenant-scoped', linePattern: 'INSERT INTO general_artifacts' },
-  // artifactService: general_artifacts is a global template table (not tenant-scoped)
-  { file: 'artifactService.ts', reason: 'Global artifact templates — not tenant-scoped', linePattern: 'SELECT * FROM general_artifacts' },
-  { file: 'artifactService.ts', reason: 'Global artifact lookup by key', linePattern: 'SELECT id FROM general_artifacts' },
-  { file: 'artifactService.ts', reason: 'Global artifact insert', linePattern: 'INSERT INTO general_artifacts' },
-  // artifactService: user_artifacts filtered by user_id
-  { file: 'artifactService.ts', reason: 'Filtered by user_id', linePattern: 'user_artifacts WHERE user_id' },
-  { file: 'artifactService.ts', reason: 'Insert with client_number param', linePattern: 'INSERT INTO user_artifacts' },
-  { file: 'artifactService.ts', reason: 'Update with user_id filter', linePattern: 'UPDATE user_artifacts SET' },
+  // RETIRED 2026-08-31: artifactService.ts and seeds/seedArtifacts.ts are gone, and with them
+  // seven raw-SQL exemptions. They were the ONLY readers and writers of `general_artifacts`
+  // and `user_artifacts`, both of which held 0 rows and are dropped in
+  // 20260831_retire_artifact_subsystem. Nothing in production imported the service.
+  // NOT to be confused with `brain_action_artifacts` (232 rows, a live Prisma model,
+  // untouched) — the two subsystems share only a word.
   // dataManagementService: SA-only data management — intentionally cross-tenant
   { file: 'dataManagementService.ts', reason: 'SA-only: table info with optional client_number filter', linePattern: 'SELECT COUNT' },
   { file: 'dataManagementService.ts', reason: 'SA-only: purge with optional client_number filter', linePattern: 'DELETE FROM' },
@@ -380,8 +376,6 @@ describe('Cross-Tenant Isolation', () => {
       'services/tierService.ts',
       'services/integrationService.ts',
       'services/chatHistoryService.ts',
-      'seeds/seedArtifacts.ts',
-      'services/artifactService.ts',
       'services/dataManagementService.ts',
       'services/welcomeService.ts',
       'services/slaMonitorService.ts',

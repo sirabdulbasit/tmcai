@@ -1,0 +1,49 @@
+-- Retire the artifact subsystem — the DEAD half of it, and only that half.
+--
+-- `general_artifacts` and `user_artifacts` were reachable only from
+-- `services/artifactService.ts` (212 lines) and `seeds/seedArtifacts.ts`. Neither had a single
+-- production importer: the one place either name appeared outside its own file was
+-- tenantIsolation.test.ts, and only as an allowlist of raw-SQL patterns exempted from the
+-- tenant-scope audit. Both tables held 0 rows. Both source files are deleted in the same
+-- commit, along with those seven exemptions.
+--
+-- WHAT THIS DOES **NOT** TOUCH, and the reason this migration is narrow. The handoff's
+-- self-pruning inventory read *"retire the artifact subsystem — both tables 0 rows, no runtime
+-- callers"*. There are **six** tables with `artifact` in the name, not two:
+--
+--     general_artifacts                            0 rows   ← dropped here
+--     user_artifacts                               0 rows   ← dropped here
+--     brain_action_artifacts                     232 rows   ← LIVE. Prisma model
+--                                                             BrainActionArtifact. NOT dropped.
+--     brain_action_artifacts_wipe_2026_05_23       2 rows   ← orphan, left alone (see below)
+--     brain_action_artifacts_wipe_2_1779550117977  6 rows   ← orphan, left alone
+--     brain_action_artifacts_wipe_3_1779552436088  0 rows   ← orphan, left alone
+--
+-- `brain_action_artifacts` is a different subsystem that happens to share a word. Dropping it
+-- would have taken 232 live rows and a mapped model with it. This is the same shape of error as
+-- the audit that called the 728 MB `agents/.venv` "Risk: None" while pm2 was running out of it
+-- (handoff landmine 1) — a name matched, a dependency was not checked.
+--
+-- The three `_wipe_*` tables are abandoned snapshots from May, unmapped and unreferenced, and
+-- they are deliberately NOT dropped here: together they hold 8 rows whose provenance nobody has
+-- established, and the disk they occupy is negligible. Dropping data to reclaim nothing is not
+-- a trade worth making silently. They are reported to the owner instead.
+--
+-- Idempotent and hand-written per AGENTS.md. `IF EXISTS` means a re-run is a no-op, and
+-- `RESTRICT` is deliberate over `CASCADE`: if anything has taken a dependency on these tables
+-- since this was written, the migration must FAIL LOUDLY rather than quietly drop whatever else
+-- is attached to them.
+--
+-- ORDER MATTERS, and RESTRICT is what proved it. Dropping the parent first fails:
+--
+--   ERROR 2BP01: cannot drop table general_artifacts because other objects depend on it
+--   DETAIL: constraint user_artifacts_source_general_id_fkey on table user_artifacts
+--
+-- `user_artifacts.source_general_id` is a foreign key into `general_artifacts`, so the CHILD
+-- goes first and the parent second. The tempting fix was `CASCADE`, and it would have worked —
+-- which is exactly why it is the wrong instinct here. CASCADE would also have silently removed
+-- any OTHER dependent object that had appeared since this was written, without naming it.
+-- Ordering two DROPs correctly costs one line and keeps the guard.
+
+DROP TABLE IF EXISTS user_artifacts RESTRICT;
+DROP TABLE IF EXISTS general_artifacts RESTRICT;
