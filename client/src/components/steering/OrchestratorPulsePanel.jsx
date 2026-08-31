@@ -252,14 +252,29 @@ const CAP_MAP_SLOTS = [
   { name: 'Learn',                  left: 90.3, top: 44.6, above: false, cap: 'LEARN' },
   { name: 'Memory',                 left: 13.0, top: 66.6, above: false, cap: 'MEMORY' },
   { name: 'Self-Healing',           left: 88.2, top: 66.6, above: false, cap: 'SELF HEALING' },
-  { name: 'Simple & Smart',         left: 25.0, top: 85.6, above: true,  cap: 'SIMPLE & SMART' },
-  { name: 'Self-Pruning',           left: 75.6, top: 85.6, above: true,  cap: 'SELF PRUNING' },
+  // EIGHT since 2026-08-31: 'Simple & Smart' (was bottom-left, 25.0/85.6) merged
+  // INTO Self-Pruning, which moves to bottom-CENTRE and mirrors ACTION at the top.
+  // Eight points now sit symmetrically around the head.
+  { name: 'Self-Pruning',           left: 50.4, top: 85.6, above: true,  cap: 'SELF-PRUNING (INCL. SIMPLE & SMART)' },
 ];
 
 const CAP_MAP_SRC = '/nexeo-capability-map.jpg';
 
+/* THE SHIPPED ARTWORK IS STALE AS OF 2026-08-31 AND CANNOT BE EDITED HERE.
+   nexeo-capability-map.jpg is a raster with NINE boxes and their captions baked
+   into the pixels — including "SIMPLE & SMART", a capability that no longer
+   exists after the merge into Self-Pruning. Overlaying eight numbers on nine
+   baked boxes leaves one box captioned with a retired capability and holding no
+   number, which reads as a broken deck rather than a merged one.
+
+   So the drawn map takes over until new artwork arrives. It is data-driven from
+   the scorecard, so it is right by construction at any capability count. Drop a
+   replacement at client/public/nexeo-capability-map.jpg with EIGHT boxes, flip
+   this to false, and the photograph returns with the overlay landing correctly. */
+const CAP_MAP_ARTWORK_IS_STALE = true;
+
 function CapabilityMap({ data }) {
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState(CAP_MAP_ARTWORK_IS_STALE);
   const byName = new Map((data.capabilities || []).map((c) => [c.name, c]));
 
   /* THE OWNER'S OWN ARTWORK IS NOT ON THIS BOX AND CANNOT BE PUT THERE FROM A
@@ -278,7 +293,7 @@ function CapabilityMap({ data }) {
     return (
       <div className="orch-capmap">
         <svg viewBox="0 0 960 1120" className="orch-capmap-svg" role="img"
-             aria-label="Nexeo capability map: nine capabilities and their current scores">
+             aria-label="Nexeo capability map: eight capabilities and their current scores">
           <defs>
             <radialGradient id="capHead" cx="50%" cy="40%" r="60%">
               <stop offset="0%" stopColor="#31557a" />
@@ -335,8 +350,11 @@ function CapabilityMap({ data }) {
           })}
         </svg>
         <div className="orch-section-note orch-capmap-note">
-          Drawn by Nexeo in the owner's arrangement — his own artwork replaces it automatically
-          if dropped at <code>client/public/nexeo-capability-map.png</code>.
+          Drawn by Nexeo in the owner's arrangement, from the live scorecard. The shipped
+          artwork is held back because it has nine boxes painted in, one of them captioned
+          with <em>Simple &amp; Smart</em> — merged into Self-Pruning on 2026-08-31. Drop a
+          replacement with eight boxes at <code>client/public/nexeo-capability-map.jpg</code>
+          and clear <code>CAP_MAP_ARTWORK_IS_STALE</code> to bring the photograph back.
         </div>
       </div>
     );
@@ -478,14 +496,16 @@ function CapabilityBars({ data }) {
  *
  * The integrity number is Grok's overall (47.4), NOT the benchmark's 95. Those
  * two have been confused all week and they measure different things — the
- * benchmark scores twelve conversational replies and cannot see seven of the nine
+ * benchmark scores twelve conversational replies and cannot see six of the eight
  * capabilities below.
  */
 const BRAIN_ZONES = [
   // Stylised lobes. Position is layout, not neuroanatomy — each blob is one
   // capability, arranged so the label ring around the outside stays readable.
-  { name: 'Simple & Smart',        d: 'M96,54 C118,40 150,42 164,58 C150,74 118,78 96,70 Z', lx: 130, ly: 26, anchor: 'middle' },
-  { name: 'Thinking',              d: 'M168,58 C190,44 218,50 226,70 C210,84 182,84 168,74 Z', lx: 236, ly: 46, anchor: 'start' },
+  // 'Simple & Smart' held the top lobe until 2026-08-31, when it merged INTO
+  // Self-Pruning. Thinking takes the vacated crown position rather than leaving a
+  // bald patch, and the remaining lobes keep their coordinates.
+  { name: 'Thinking',              d: 'M96,54 C118,40 150,42 164,58 C150,74 118,78 96,70 Z', lx: 130, ly: 26, anchor: 'middle' },
   { name: 'Memory',                d: 'M62,78 C84,66 112,72 120,88 C104,102 76,100 62,92 Z',  lx: 24,  ly: 66, anchor: 'end' },
   { name: 'Accurate Communication',d: 'M124,86 C150,74 180,80 190,98 C172,114 142,112 124,100 Z', lx: 158, ly: 128, anchor: 'middle' },
   { name: 'Authorized Action',     d: 'M194,92 C216,82 238,90 242,108 C226,120 202,118 194,106 Z', lx: 252, ly: 100, anchor: 'start' },

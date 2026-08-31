@@ -29,7 +29,6 @@
           "name": {
             "type": "string",
             "enum": [
-              "Simple & Smart",
               "Thinking",
               "Memory",
               "Accurate Communication",

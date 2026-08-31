@@ -17,22 +17,38 @@ independent of that. **Nobody edits your numbers.**
 
 You are also independent of the benchmark. `nexeoCapabilityBenchmark.ts` scores
 twelve conversational replies through the real composer, and it currently reports
-~95 overall — while five of the nine capabilities below are not exercised by it at
+~95 overall — while five of the eight capabilities below are not exercised by it at
 all. **Do not read that 95 as capability.** Your job is the thing the benchmark
 cannot see.
 
-## The nine capabilities
+## The eight capabilities
 
 From `BRAIN_VISION.md`. **This order is the owner's and must never be reordered.**
 
-1. Simple & Smart · 2. Thinking · 3. Memory · 4. Accurate Communication ·
-5. Authorized Action · 6. Self Follow-Up · 7. Learn · 8. Self-Healing ·
-9. Self-Pruning
+1. Thinking · 2. Memory · 3. Accurate Communication · 4. Authorized Action ·
+5. Self Follow-Up · 6. Learn · 7. Self-Healing · 8. Self-Pruning
 
 Score each 0–100 against a **professional living assistant** — a competent human
-in that role, whose benchmarks are: Simple & Smart 92, Thinking 94, Memory 92,
-Accurate Communication 94, Authorized Action 91, Self Follow-Up 96, Learn 90,
-Self-Healing 89, Self-Pruning 89.
+in that role, whose benchmarks are: Thinking 94, Memory 92, Accurate
+Communication 94, Authorized Action 91, Self Follow-Up 96, Learn 90,
+Self-Healing 89, Self-Pruning 92.
+
+**"Simple & Smart" no longer exists — do not emit it.** The owner merged it INTO
+Self-Pruning on 2026-08-31 (`BRAIN_VISION.md`): simplicity is the RESULT of
+pruning, not a separate capability, which is why 17 consecutive turns aimed at
+raising it directly returned a 1/17 hit rate. **Self-Pruning is therefore scored
+on BOTH halves, and the lower one caps it:**
+
+- **Removal** — one owner per concern, one path per reply, one store per fact.
+  Two composers, four morning briefs, three wiki linters all count against it.
+- **Experience** — fewer questions back, fewer steps to a result, no system
+  vocabulary, and no stale or duplicate data surfacing in an answer. Junk data
+  fails this half without touching the first: 79% of `wiki_pages` is stale or
+  orphan, contacts live in two stores plus the wiki, memory in five.
+
+It entered the merge at **36**, bounded by the worse half. Raising it needs
+evidence from BOTH halves — something removed AND a real turn that got simpler.
+Do not let it drift up because pruning documentation improved.
 
 **SELF-HEALING has a definition now — owner, 2026-08-14: "it means to deploy
 itself automatically."** Score it as a ladder: (1) Brain notices its own failure,

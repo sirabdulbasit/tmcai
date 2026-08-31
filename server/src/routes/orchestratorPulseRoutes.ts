@@ -122,14 +122,19 @@ router.get('/pulse', requireAdmin, async (_req: Request, res: Response) => {
  *    line — `force` and `capability` are the only inputs, and both are validated below,
  *    because a capability name interpolated into a shell is a command-injection hole on a
  *    box that deploys to production.
- *  • `capability` is checked against the nine names, not sanitised. An allow-list cannot be
+ *  • `capability` is checked against the eight names, not sanitised. An allow-list cannot be
  *    escaped; a sanitiser can.
  *  • detached + unref: a healing pulse takes ~15 minutes and must not be tied to the
  *    lifetime of an HTTP request. The response says "started", never "finished" — claiming
  *    a result we have not observed is the exact class this deck exists to expose.
  */
-const NINE_CAPABILITIES = new Set([
-  'Simple & Smart', 'Thinking', 'Memory', 'Accurate Communication',
+// EIGHT since 2026-08-31: the owner merged 'Simple & Smart' INTO 'Self-Pruning'
+// (BRAIN_VISION.md) — simplicity is the RESULT of pruning, not a separate
+// capability. The old name is deliberately NOT kept as an alias: a heal request
+// naming a capability that no longer exists should fail loudly here rather than
+// start a 15-minute pulse against a target the scorer can no longer emit.
+const CAPABILITY_NAMES = new Set([
+  'Thinking', 'Memory', 'Accurate Communication',
   'Authorized Action', 'Self Follow-Up', 'Learn', 'Self-Healing', 'Self-Pruning',
 ]);
 
@@ -149,8 +154,8 @@ router.post('/heal', requireAdmin, (req: Request, res: Response) => {
   if (req.body?.force === true) args.push('--build-anyway');
   const cap = typeof req.body?.capability === 'string' ? req.body.capability.trim() : '';
   if (cap) {
-    if (!NINE_CAPABILITIES.has(cap)) {
-      res.status(400).json({ error: `not one of the nine capabilities: ${cap}` });
+    if (!CAPABILITY_NAMES.has(cap)) {
+      res.status(400).json({ error: `not one of the eight capabilities: ${cap}` });
       return;
     }
     args.push(cap);
