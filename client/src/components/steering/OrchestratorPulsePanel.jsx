@@ -252,26 +252,41 @@ const CAP_MAP_SLOTS = [
   { name: 'Learn',                  left: 90.3, top: 44.6, above: false, cap: 'LEARN' },
   { name: 'Memory',                 left: 13.0, top: 66.6, above: false, cap: 'MEMORY' },
   { name: 'Self-Healing',           left: 88.2, top: 66.6, above: false, cap: 'SELF HEALING' },
-  // EIGHT since 2026-08-31: 'Simple & Smart' (was bottom-left, 25.0/85.6) merged
-  // INTO Self-Pruning, which moves to bottom-CENTRE and mirrors ACTION at the top.
-  // Eight points now sit symmetrically around the head.
-  { name: 'Self-Pruning',           left: 50.4, top: 85.6, above: true,  cap: 'SELF-PRUNING (INCL. SIMPLE & SMART)' },
+  // EIGHT since 2026-08-31: 'Simple & Smart' merged INTO Self-Pruning.
+  //
+  // Self-Pruning stays on the artwork's OWN 'SELF PRUNING' box (bottom-right). It was
+  // briefly moved to bottom-centre for the drawn stand-in, where eight points sit
+  // symmetrically — but the photograph has no box there, and the TOTAL chip already
+  // occupies that band. On the picture the number has to sit where the painted box is.
+  { name: 'Self-Pruning',           left: 75.6, top: 85.6, above: true,  cap: 'SELF PRUNING' },
 ];
+
+/* THE RETIRED BOX. The artwork has NINE painted boxes and there are eight capabilities,
+   so bottom-left — captioned "SIMPLE & SMART" in the pixels — has no score to show.
+   Leaving it blank reads as a broken deck: a labelled box with nothing in it looks like
+   a number that failed to load. So it is labelled for what it is. This is the honest
+   version of the compromise; the clean version is artwork with eight boxes, and until
+   that exists the retired box says why it is empty rather than pretending it is not
+   there. */
+const CAP_MAP_RETIRED_SLOT = { left: 25.0, top: 85.6, was: 'Simple & Smart', into: 'Self-Pruning' };
 
 const CAP_MAP_SRC = '/nexeo-capability-map.jpg';
 
-/* THE SHIPPED ARTWORK IS STALE AS OF 2026-08-31 AND CANNOT BE EDITED HERE.
-   nexeo-capability-map.jpg is a raster with NINE boxes and their captions baked
-   into the pixels — including "SIMPLE & SMART", a capability that no longer
-   exists after the merge into Self-Pruning. Overlaying eight numbers on nine
-   baked boxes leaves one box captioned with a retired capability and holding no
-   number, which reads as a broken deck rather than a merged one.
+/* THE PHOTOGRAPH IS BACK — owner's call, 2026-08-31: *"restore the picture behind the
+   score and make it more prominent and remove the text showing at bottom"*.
 
-   So the drawn map takes over until new artwork arrives. It is data-driven from
-   the scorecard, so it is right by construction at any capability count. Drop a
-   replacement at client/public/nexeo-capability-map.jpg with EIGHT boxes, flip
-   this to false, and the photograph returns with the overlay landing correctly. */
-const CAP_MAP_ARTWORK_IS_STALE = true;
+   It was held back because the raster carries NINE boxes with their captions baked into
+   the pixels, "SIMPLE & SMART" among them, and that capability no longer exists. That
+   objection has not gone away; it is handled instead of avoided. Self-Pruning sits on the
+   artwork's own bottom-right box, and the orphaned bottom-left box is explicitly labelled
+   as merged (CAP_MAP_RETIRED_SLOT) rather than left blank, because a captioned box holding
+   nothing reads as a number that failed to load.
+
+   The drawn SVG below is NOT deleted. It is still the automatic fallback if the image is
+   missing or fails to load, and it remains right by construction at any capability count —
+   so replacement artwork with eight boxes makes the retired-box label redundant and nothing
+   else needs to change. */
+const CAP_MAP_ARTWORK_IS_STALE = false;
 
 function CapabilityMap({ data }) {
   const [failed, setFailed] = useState(CAP_MAP_ARTWORK_IS_STALE);
@@ -349,12 +364,14 @@ function CapabilityMap({ data }) {
             );
           })}
         </svg>
+        {/* FALLBACK ONLY. The photograph is the normal render since 2026-08-31; this branch
+            is reached when the image is missing or fails to load, so the note says THAT
+            rather than the old "artwork held back" text, which is no longer true and would
+            have been actively misleading on the one screen where it still appears. */}
         <div className="orch-section-note orch-capmap-note">
-          Drawn by Nexeo in the owner's arrangement, from the live scorecard. The shipped
-          artwork is held back because it has nine boxes painted in, one of them captioned
-          with <em>Simple &amp; Smart</em> — merged into Self-Pruning on 2026-08-31. Drop a
-          replacement with eight boxes at <code>client/public/nexeo-capability-map.jpg</code>
-          and clear <code>CAP_MAP_ARTWORK_IS_STALE</code> to bring the photograph back.
+          Drawn by Nexeo from the live scorecard, because
+          <code> {CAP_MAP_SRC}</code> could not be loaded. The photograph returns on its own
+          as soon as that file is served again.
         </div>
       </div>
     );
@@ -390,6 +407,15 @@ function CapabilityMap({ data }) {
             </div>
           );
         })}
+        {/* The ninth painted box, which no longer has a capability. Named, not blank. */}
+        <div
+          className="orch-capmap-retired"
+          style={{ left: `${CAP_MAP_RETIRED_SLOT.left}%`, top: `${CAP_MAP_RETIRED_SLOT.top}%` }}
+          title={`${CAP_MAP_RETIRED_SLOT.was} was merged into ${CAP_MAP_RETIRED_SLOT.into} on 2026-08-31 — simplicity is the result of pruning, not a separate capability. This box is painted into the artwork and has no score of its own.`}
+        >
+          <span className="orch-capmap-retired-arrow">↘</span>
+          <span className="orch-capmap-retired-lbl">merged into<br />Self-Pruning</span>
+        </div>
         {/* TOTAL, on the picture. Owner, 2026-08-14: "place total brain capability
             beautifully". It sits in the one genuinely empty part of his artwork —
             the dark band below the chin, centred between SIMPLE & SMART and SELF
