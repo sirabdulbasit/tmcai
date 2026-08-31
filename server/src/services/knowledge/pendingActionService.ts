@@ -70,6 +70,13 @@ export type PendingActionKind =
   | 'mark_contact_inactive'
   | 'archive_wiki_page'
   | 'delete_wiki_page'
+  // DEF-255 — the dispatcher-bridged intents (mute a sender, record a standing rule). They
+  // dispatch through `dispatchPendingDirect`'s tail bridge into the instruction dispatcher
+  // rather than a per-kind case; named here so the compiler holds this union to
+  // COMPOSER_DISPATCHED_TYPES the same way it held the DEF-234 four.
+  | 'mute_sender'
+  | 'unmute_sender'
+  | 'standing_instruction'
   // Compound plan (2026-07-14): several outbound steps previewed and
   // confirmed TOGETHER ("send followup on email AND whatsapp" → one
   // preview, one "send", both dispatch). slots = { steps: [{kind,

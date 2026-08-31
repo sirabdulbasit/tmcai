@@ -66,11 +66,16 @@ export async function dispatchInstruction(args: {
         : channel === 'whatsapp'
         ? id.replace(/[^\d+]/g, '')
         : id;
+      // DEF-255: the stored reason used to be the literal 'Voice instruction' on every
+      // path. Now that chat can mute too, that string would be a false record of WHY a
+      // sender is muted — and the mute row is what the owner reads when he asks. The
+      // caller's own reason wins; the old literal survives only as the fallback.
+      const muteReason = ix.params.reason?.trim() || 'Voice instruction';
       try {
         await prisma.mutedSender.upsert({
           where: { userId_channel_identifier: { userId, channel, identifier: normalised } } as any,
-          create: { clientNumber, userId, channel, identifier: normalised, reason: 'Voice instruction' } as any,
-          update: { reason: 'Voice instruction' } as any,
+          create: { clientNumber, userId, channel, identifier: normalised, reason: muteReason } as any,
+          update: { reason: muteReason } as any,
         });
         return { ok: true, message: `Muted ${id}. Future ${channel} from them won't appear in My Attention.` };
       } catch (err: any) {

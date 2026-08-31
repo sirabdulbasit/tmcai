@@ -409,6 +409,68 @@ export const ACTIONS: Seed[] = [
     requiresCapability: null,
     isHumanFacing: false,
   },
+  // DEF-255 — the three dispatcher-bridged intents. They were executable from the
+  // voice/WhatsApp path since A8 (2026-07-08) and absent from this file, so
+  // `brainCapabilityLive` generated a truth-table that did not contain them: the model was
+  // never told it could mute a sender or record a standing rule, and offered the two wrong
+  // mechanisms it HAD been told about. Seeding is half the fix (DEF-130's lesson — a
+  // capability nobody declares is a capability Brain truthfully denies); the chat-path
+  // bridge in brainComposer is the other half.
+  {
+    type: 'mute_sender',
+    displayName: 'Mute a sender',
+    description: 'Stop a sender\'s messages from surfacing in My Attention. Reversible with unmute_sender.',
+    schema: {
+      type: 'object',
+      required: ['senderIdentifier'],
+      properties: {
+        senderIdentifier: { type: 'string' },
+        senderChannel: { type: 'string', enum: ['email', 'whatsapp'] },
+        reason: { type: 'string' },
+      },
+    },
+    handlerModule: 'instructionDispatcher',
+    handlerFunction: 'dispatchInstruction',
+    operationalMetadata: { external: false },
+    requiresCapability: null,
+    isHumanFacing: false,
+  },
+  {
+    type: 'unmute_sender',
+    displayName: 'Unmute a sender',
+    description: 'Let a previously muted sender surface again.',
+    schema: {
+      type: 'object',
+      required: ['senderIdentifier'],
+      properties: {
+        senderIdentifier: { type: 'string' },
+        senderChannel: { type: 'string', enum: ['email', 'whatsapp'] },
+      },
+    },
+    handlerModule: 'instructionDispatcher',
+    handlerFunction: 'dispatchInstruction',
+    operationalMetadata: { external: false },
+    requiresCapability: null,
+    isHumanFacing: false,
+  },
+  {
+    type: 'standing_instruction',
+    displayName: 'Record a standing instruction',
+    description: 'Persist a durable "from now on, do X" rule that reaches every future prompt.',
+    schema: {
+      type: 'object',
+      required: ['instructionText'],
+      properties: {
+        instructionText: { type: 'string' },
+        summary: { type: 'string' },
+      },
+    },
+    handlerModule: 'instructionDispatcher',
+    handlerFunction: 'dispatchInstruction',
+    operationalMetadata: { external: false },
+    requiresCapability: null,
+    isHumanFacing: false,
+  },
 ];
 
 /**

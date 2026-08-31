@@ -21,6 +21,7 @@ import { getRecentTenantLog } from './tenantLogService';
 import { getSystemCapabilities, renderCapabilitiesBlock } from './systemCapabilitiesService';
 import { getLearnedPreferences, renderPreferencesBlock } from './preferenceLearnerService';
 import { getActiveInstructions, renderInstructionsBlock } from './instructionService';
+import type { InstructionIntent } from '../instructions/instructionExtractor';
 import { renderMatrixBlock as renderDelegationMatrixBlock } from './delegationMatrixService';
 import { getLatestForUser as getLatestRiskFlagDoc } from '../brain/riskRadarService';
 import { TENANT_SHARED_PAGE_TYPES } from './tenantIndexService';
@@ -148,7 +149,20 @@ export type ComposedAction =
   // narrates anyway is worse than one it refuses.
   | { type: 'create_contact'; name: string; email?: string; phone?: string; note?: string }
   | { type: 'update_contact'; contactCandidateId: string; newEmail?: string; newPhone?: string; newName?: string; nameHint?: string }
-  | { type: 'record_preference'; key: string; value: unknown; description?: string };
+  | { type: 'record_preference'; key: string; value: unknown; description?: string }
+  // DEF-255 (`trigger-instruction-as-task`, S22 2026-08-29): "Ignore all emails from
+  // Anthropic and HR announcement" had NOWHERE to land on the chat path. The voice/WhatsApp
+  // dispatcher could mute a sender and persist a standing rule since A8 (2026-07-08); chat
+  // could not, so the model — knowing only set_contact_scope/mark_contact_inactive — asked
+  // which of two wrong mechanisms to use, twice. Same capability, two channels, one
+  // implementation missing: `protection-with-two-implementations`. These three types carry
+  // the instruction to the SAME dispatcher WhatsApp uses (see the bridge at the dispatch
+  // chain's tail); they exist here so the planner can emit them, not as a second
+  // implementation. Typed against InstructionIntent via DISPATCHER_BRIDGED_TYPES below, so
+  // the dispatcher dropping an intent fails the build instead of stranding a chat action.
+  | { type: 'mute_sender'; senderIdentifier: string; senderChannel?: 'email' | 'whatsapp'; reason?: string }
+  | { type: 'unmute_sender'; senderIdentifier: string; senderChannel?: 'email' | 'whatsapp' }
+  | { type: 'standing_instruction'; instructionText: string; summary?: string };
 
 /** Internal, reversible actions that apply immediately. They do not
  * contact another person and must never enter the outbound preview /
@@ -195,6 +209,24 @@ export function actionReachesACounterpart(act: ComposedAction): boolean {
     && !!((act as any).delegateeCandidateId || (act as any).delegateeAdHocEmail);
 }
 
+/**
+ * DEF-255 — a planned action as the instruction dispatcher's input shape.
+ *
+ * Pure and generic on purpose: the per-type mapping knowledge lives in ONE place — the
+ * dispatcher's own switch — and this function only reshapes. The field spread means a
+ * bridged type needs no bespoke branch in the dispatch chain: `senderIdentifier` lands in
+ * `params.senderIdentifier` because the ComposedAction member and the dispatcher case were
+ * written against the same intent, which the `DISPATCHER_BRIDGED_TYPES` `satisfies` check
+ * holds together at compile time.
+ */
+export function actionAsInstruction(act: ComposedAction & Record<string, unknown>): {
+  intent: string; confidence: number; summary: string; params: Record<string, unknown>;
+} {
+  const a = act as Record<string, unknown>;
+  const summary = String(a.summary ?? a.instructionText ?? a.title ?? a.senderIdentifier ?? '').trim();
+  return { intent: act.type, confidence: 1, summary, params: { ...a } };
+}
+
 export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']> = new Set([
   'add_open_item',
   // DEF-058: saving a contact contacts nobody. Under the owner's rule
@@ -207,7 +239,30 @@ export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']
   'update_contact',
   'set_brain_name',
   'record_preference',
+  // DEF-255: muting is reversible (unmute_sender exists), a standing rule is deletable, and
+  // none of the three contacts another person — under the owner's rule (confirm only when
+  // abnormal or risky) an explicit "ignore emails from X" is itself the authorization, and
+  // S22's complaint was precisely the extra round-trip.
+  'mute_sender',
+  'unmute_sender',
+  'standing_instruction',
 ]);
+
+/**
+ * DEF-255 — the chat-plannable subset of the instruction dispatcher's intents.
+ *
+ * `satisfies readonly InstructionIntent[]` is the point: each member must be a REAL intent
+ * of `dispatchInstruction`'s switch (via the union `instructionExtractor` declares), so the
+ * dispatcher renaming or dropping one breaks compilation here — the registry advertising a
+ * capability the dispatcher cannot run (`registry-vs-dispatcher-drift`, Chat 17) becomes a
+ * build failure instead of a live "no dispatcher" refusal. Deliberately NOT all ten intents:
+ * `draft_reply`/`delegate`/`set_window` duplicate existing composer actions
+ * (send_email/delegate_open_item), and advertising near-duplicates is how the model gets a
+ * choice of two mechanisms and asks which — the S22 failure shape itself.
+ */
+export const DISPATCHER_BRIDGED_TYPES = [
+  'mute_sender', 'unmute_sender', 'standing_instruction',
+] as const satisfies readonly InstructionIntent[];
 
 /** Every ComposedAction type the composer can actually dispatch.
  *  MUST stay in sync with the union above (and its dispatch branches) —
@@ -222,6 +277,7 @@ export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
   'set_brain_name', 'archive_wiki_page', 'delete_wiki_page',
   'set_contact_scope', 'mark_contact_inactive', 'update_contact', 'create_contact',
   'record_preference',
+  ...DISPATCHER_BRIDGED_TYPES,
 ]);
 
 /**
@@ -4693,6 +4749,32 @@ ${calLines.join('\n')}`;
           actionResult = { ok: false, message: `[send_email failed: ${e?.message ?? 'unknown'}]` };
           answer = actionResult.message;
         }
+      } else if ((DISPATCHER_BRIDGED_TYPES as readonly string[]).includes(act.type)) {
+        // DEF-255 — the chain used to END at send_email, so the three bridged intents fell
+        // out with `actionResult` untouched and the model's prose standing: a silent dead
+        // drop. They now reach the instruction dispatcher — the SAME one the WhatsApp path
+        // uses — so mute_sender upserts muted_senders (which the open-item gate already
+        // honours) and a standing rule is persisted, never merely acked (A8).
+        //
+        // Deliberately an `else if` on the bridged set and NOT a catch-all `else`: a
+        // catch-all would send any future unmatched type to the dispatcher's default, which
+        // persists ANY textful intent as a standing instruction and answers "Noted" — a
+        // capability that silently degrades into a note is `fabricated-status` with extra
+        // steps. Drift keeps its old, honest silence here and is caught at compile time by
+        // the `satisfies` on DISPATCHER_BRIDGED_TYPES instead.
+        const res = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: actionAsInstruction(act as any) as any,
+        });
+        if (res.ok || res.message) {
+          actionResult = { ok: res.ok, artifactId: (res as any).artifactId, message: res.message };
+          answer = res.ok ? res.message : `[${act.type} failed: ${res.message}]`;
+        } else {
+          // Dispatcher 'none'-shaped outcome (ok:false, empty message): nothing to apply,
+          // nothing claimed — leave the model's answer standing.
+          actionResult = { ok: false, message: `[${act.type}: nothing to dispatch]` };
+        }
       }
     } catch (e: any) {
       actionResult = { ok: false, message: `Action dispatch failed: ${e?.message ?? e}` };
@@ -7373,6 +7455,26 @@ export async function dispatchPendingDirect(
         delegateeAdHocEmail: typeof slots.delegateeAdHocEmail === 'string' ? slots.delegateeAdHocEmail : undefined,
         note: slots.note != null ? String(slots.note) : undefined,
       });
+    // DEF-255 — the same bridge the immediate chain has, for the CONFIRMED-plan path. Named
+    // cases, not a tail catch-all: chat17's lock (`planStepDispatchability`) requires a real
+    // `case` per declared kind precisely so a declared capability cannot be a phantom, and a
+    // catch-all would also swallow genuine drift — the kind that must still die loudly on
+    // the line below, as `update_open_item` did on 2026-08-04.
+    case 'mute_sender':
+    case 'unmute_sender':
+    case 'standing_instruction': {
+      try {
+        const { dispatchInstruction } = await import('../instructions/instructionDispatcher');
+        const bridged = await dispatchInstruction({
+          clientNumber,
+          userId,
+          instruction: actionAsInstruction({ type: pending.actionKind, ...(slots as any) } as any) as any,
+        });
+        return { ok: bridged.ok, artifactId: bridged.artifactId, message: bridged.message };
+      } catch (e: any) {
+        return { ok: false, message: `[${pending.actionKind} failed: ${e?.message ?? 'unknown'}]` };
+      }
+    }
   }
   return { ok: false, message: `[Unknown pending action kind: ${pending.actionKind}]` };
 }
@@ -7880,6 +7982,21 @@ export function normaliseAction(raw: unknown): ComposedAction | null {
     // character (probably a typo or wrong-field misuse).
     if (!cleared && (!name || name.length < 2)) return null;
     return { type: 'set_brain_name', name };
+  }
+  // DEF-255 — the dispatcher-bridged intents, so the legacy path can emit them too and the
+  // capability is one implementation on both composer paths, not reasoning-only.
+  if (type === 'mute_sender' || type === 'unmute_sender') {
+    const senderIdentifier = typeof r.senderIdentifier === 'string' ? r.senderIdentifier.trim() : '';
+    if (!senderIdentifier) return null;
+    const senderChannel = r.senderChannel === 'whatsapp' ? 'whatsapp' as const : 'email' as const;
+    return type === 'mute_sender'
+      ? { type, senderIdentifier, senderChannel, reason: typeof r.reason === 'string' ? r.reason : undefined }
+      : { type, senderIdentifier, senderChannel };
+  }
+  if (type === 'standing_instruction') {
+    const instructionText = typeof r.instructionText === 'string' ? r.instructionText.trim() : '';
+    if (!instructionText) return null;
+    return { type: 'standing_instruction', instructionText, summary: typeof r.summary === 'string' ? r.summary : undefined };
   }
   return null;
 }
