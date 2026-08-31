@@ -1,8 +1,16 @@
 # Nexeo Brain Vision
 
-**Simple & Smart - Thinking - Memory - Communicates (Accurately & Meaningfully) - Action (Authorized to Do Everything) - Self Follow-Up - Learn - Self-Healing - Self-Pruning**
+**Thinking - Memory - Communicates (Accurately & Meaningfully) - Action (Authorized to Do Everything) - Self Follow-Up - Learn - Self-Healing - Self-Pruning (incl. Simple & Smart)**
 
-## How the nine are governed (owner ruling, 2026-08-19)
+> **Owner ruling, 2026-08-31: "Simple & Smart" is merged INTO Self-Pruning. Nine become
+> eight.** They were never two capabilities. Simplicity is not a thing Brain has; it is the
+> *result* of pruning — of one owner per concern, one path per reply, one store per fact. A
+> system carrying two composers, four morning briefs and 10,143 dead wiki pages cannot be made
+> simple by trying harder to be simple. It becomes simple when the duplicates are gone.
+> **Self-Pruning is therefore scored on both: what has been removed, and how simple what
+> remains is to use.**
+
+## How the capabilities are governed (owner ruling, 2026-08-19)
 
 **Every capability is governed by the model. Code holds guardrails only.**
 
@@ -75,16 +83,41 @@ defect:
 - the verification matrix (`npx tsc --noEmit`, `npx vitest run`, `git diff --check`) and its
   exact numbers;
 - the four guardrails above;
-- the nine capability names, which are this document.
+- the eight capability names, which are this document.
 
 The test: **does it decide, or does it execute?** A decision goes to the model. A mechanic
 stays in the script, deterministic and auditable.
 
 ---
 
-## Self-Pruning (capability 9) — what it is, and the standing inventory
+## Self-Pruning (capability 8, absorbing Simple & Smart) — what it is, and the standing inventory
 
-**Self-Pruning is not disk cleanup. It is the removal of PARALLEL OWNERSHIP.**
+**Self-Pruning is not disk cleanup. It is the removal of PARALLEL OWNERSHIP — and, since
+2026-08-31, it is also where SIMPLICITY is scored.**
+
+### Why the merge, and the one way it must not be abused
+
+Simple & Smart scored **36** — the lowest of the nine, and the orchestrator's declared target
+for 17 consecutive turns with a hit rate of **1/17**. Self-Pruning scored **61**. Those two
+numbers describe the same illness from two ends: the system is hard to use *because* it carries
+two of everything, and every attempt to raise "simplicity" directly failed because simplicity
+is not an ingredient you add.
+
+**The merged capability must not inherit 61.** A merge that quietly launders a 36 into a 61 is
+the most expensive thing in this document: it would retire the loop's only honest signal that
+the product is hard to use. The merged score is bounded by the WORSE half until re-measured
+against both halves — what was removed, *and* whether a real turn got simpler.
+
+The two halves, and neither alone is the capability:
+
+- **Removal** — one owner per concern, one path per reply, one store per fact.
+- **Experience** — fewer questions back, fewer steps to a result, no system vocabulary, no
+  stale or duplicate data surfacing in an answer.
+
+Junk data fails the second half without touching the first. **A contact that exists twice, a
+memory that contradicts itself, and a wiki page that has been dead for months are not disk
+problems — they are wrong answers waiting to be retrieved.** That is why data pruning belongs
+here and not in housekeeping.
 
 Measured on 2026-08-31 at `d144edf`: the tree is 3.1 GB and the database 810 MB, but live
 application source is **~14 MB**. Almost none of the weight is code, and almost none of the
@@ -166,6 +199,66 @@ contradict a self-pruning audit that called them safe.
 
 The lesson generalises: **a feature flag defaulting false does not mean the code behind it is
 idle, and a directory is not a unit of deadness.** Classify per file, per process, per timer.
+
+### Data pruning — Contacts, Wiki, Memory (the half that reaches the owner)
+
+Code pruning makes the tree smaller. **Data pruning changes what Brain says.** Every row below
+is reachable by retrieval, so junk here is not inert — it is a candidate answer. Measured
+2026-08-31.
+
+**Wiki — the worst of the three, by a distance.**
+
+| Status | Pages | Share |
+|---|---:|---:|
+| `active` | 2,766 | **21%** |
+| `stale` | 5,373 | 42% |
+| `orphan` | 4,770 | 37% |
+| **Total** | **12,909** (124 MB) | |
+
+**10,143 of 12,909 pages — 79% — are stale or orphan**, and `wiki_pages` is the corpus Brain
+actually retrieves from (`brainRetrievalPlanner` + `wikiEmbeddingService`). Four in five
+candidates for any wiki-grounded answer are dead. This is the single largest quality risk in
+the product, and it is invisible in every disk and token measurement.
+
+Pruning rules: an **orphan** (nothing links to it, nothing sourced it) is a deletion candidate
+once its source is confirmed gone; a **stale** page is a *re-derivation* candidate, not a
+deletion — the subject may still be live while the page rotted. Never bulk-delete by status
+alone: three linters disagree about what stale means (§ Class 3), and `wikiStaleness.ts` exists
+precisely because they once disagreed 60 vs 90 days. **Fix the one-owner problem before running
+any mass wiki prune**, or two linters will re-create what the third removed.
+
+**Contacts — duplication across two stores plus a third copy in the wiki.**
+
+`entities` **916** · `persons` **974** + `person_facets` **1,953**. Neither is a subset of the
+other, and the wiki holds entity/sender pages as a third representation. Live junk today:
+**24 entities with neither email nor phone** (unreachable — they can be named in an answer but
+never acted on, which is how a delegation resolves to a dead target) and **24 duplicate names**
+(the same person answering twice, so the model picks one and the owner sees the wrong history).
+
+The resolver reads `persons`; the Contacts UI reads `entities`. **Pick one source of truth
+before pruning either** — deleting from the store the resolver does not read removes the
+evidence and leaves the fault. Junk removal itself is safe and should be continuous: no
+identifier, no activity, no link, and no wiki page = prune, with the merge of duplicates
+preferred over deletion so history survives.
+
+**Memory — small in rows, dangerous in contradiction.**
+
+`user_memories` **13** · `user_learning` **11** · `governed_brain_memories` **2** ·
+`clarification_memory` **0** · `user_profile_memory` **0**.
+
+Twenty-six live rows across **five stores**, and the `UserMemory` schema comment is stale — it
+says the model was replaced by `user_profile_memory`, after which `user_memories` was re-added.
+Both exist. **Here the pruning target is not volume, it is contradiction and provenance:** a
+memory with no source turn, a memory contradicted by a later one, and a memory duplicated
+across two stores are each a wrong answer with full confidence behind it. Prune on: superseded
+by a newer statement, never re-confirmed after N surfacing opportunities, or no traceable
+origin. Collapse the five stores to one owner; until then, a "forget that" from the owner must
+delete from **all** of them or the fact returns.
+
+**The standing rule for all three:** junk data is pruned **continuously and by evidence**, not
+in a one-off sweep — and every prune is reversible for one retention window before it is final,
+because a deleted contact, memory or wiki page is indistinguishable to the owner from Brain
+having forgotten.
 
 ### Where the size actually is, so effort goes where it pays
 
