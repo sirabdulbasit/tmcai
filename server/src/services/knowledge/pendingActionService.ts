@@ -56,6 +56,8 @@ export type PendingActionKind =
   // and from the dispatcher, "delete all open items" died AFTER the owner's
   // "confirm delete all 7 items" (S33, 2026-08-19).
   | 'remove_open_item'
+  // DEF-264 — the bulk sibling. Confirmed like any destructive action, then dispatched by SCOPE.
+  | 'remove_open_items_bulk'
   | 'mark_open_item_done'
   | 'record_preference'
   | 'set_brain_name'

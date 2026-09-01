@@ -54,6 +54,101 @@ export interface InternalActionResult {
  * and the transition goes THROUGH the lifecycle matrix — guards, ledger and
  * event publish included.
  */
+/**
+ * DEF-264 — remove EVERY active open item, by scope rather than by id list.
+ *
+ * He said *"delete all"*, was asked to confirm, confirmed, and nothing happened. The reason was
+ * structural, not a dropped dispatch: the only delete capability was `remove_open_item`, whose
+ * own description says *"When the user asks to remove several items, emit one action per item"* —
+ * and the item block is paginated at `OPEN_ITEMS_PAGE = 30` (`brainComposer.ts:2262`). With 39
+ * active items the model held 30 ids and said so in the same breath as the count. **It could not
+ * express the instruction it had just been authorised to perform**, so it emitted nothing.
+ *
+ * A gate cannot fix an absent capability (DEF-255's lesson, and this is the third member of
+ * `trigger-instruction-as-task`). So the dependency is REMOVED rather than guarded: this action
+ * carries a SCOPE, the server enumerates the set, and the model never needs to hold an id at all.
+ * Pagination therefore cannot bound a bulk operation again.
+ *
+ * CANCELLED, not deleted, for the same reason as the singular path (DEF-106/DEF-129): DONE would
+ * claim work was completed that never was, and CANCELLED is reversible (CANCELLED → TRIAGED).
+ * "Permanent" in the confirmation prompt is about his list, not about the rows.
+ *
+ * EVERY ITEM GOES THROUGH `transitionStatus`, one at a time. A bulk `updateMany` would be faster
+ * and would bypass the lifecycle matrix, the audit trail and the per-item guards — the same
+ * bypass that BLD-005 shipped a duplicate-send path through. Slower and accountable wins.
+ *
+ * The count it reports is a READ-BACK of what actually transitioned, never the count it intended.
+ * A partial failure returns the real numbers and names the failures.
+ */
+export async function executeRemoveOpenItemsBulk(
+  clientNumber: string,
+  userId: number,
+  input: { scope?: string; reason?: string },
+): Promise<InternalActionResult> {
+  const ACTIVE = ['NEW', 'TRIAGED', 'IN_PROGRESS', 'DELEGATED', 'WAITING_INFO', 'SNOOZED', 'DRAFT'];
+  try {
+    // `all` is the only scope accepted today. An unrecognised scope FAILS rather than
+    // defaulting to everything — a bulk destructive action must never widen on a typo.
+    const scope = (input.scope ?? 'all').trim().toLowerCase();
+    if (scope !== 'all') {
+      return {
+        ok: false,
+        message: itemOutcomeMarker({
+          verb: 'removed', ok: false,
+          why: `scope "${scope}" is not recognised — only "all" is supported, and a bulk removal must not widen on an unrecognised scope`,
+        }),
+      };
+    }
+
+    const targets = await prisma.openItem.findMany({
+      where: { clientNumber, userId, status: { in: ACTIVE } },
+      select: { id: true, title: true },
+    });
+
+    if (targets.length === 0) {
+      return {
+        ok: true,
+        message: itemOutcomeMarker({ verb: 'removed', ok: true, title: 'nothing to remove — the list is already empty' }),
+      };
+    }
+
+    const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+    const failed: string[] = [];
+    let removed = 0;
+    for (const t of targets) {
+      const r = await transitionStatus(t.id, 'CANCELLED', {
+        clientNumber,
+        actor: `user:${userId}`,
+        reason: input.reason ? `${input.reason}`.slice(0, 500) : 'Bulk removal via Brain Chat',
+      });
+      if (r.ok) removed += 1;
+      else failed.push(t.title);
+    }
+
+    // Read back, then report. Naming the survivors matters more than the total: an owner told
+    // "37 of 39 removed" with no names cannot act on the two that stayed.
+    if (failed.length > 0) {
+      return {
+        ok: removed > 0,
+        message: itemOutcomeMarker({
+          verb: 'removed', ok: false,
+          why: `${removed} of ${targets.length} removed — these were refused by the lifecycle: ${failed.slice(0, 5).map((f) => `"${f}"`).join(', ')}${failed.length > 5 ? ` and ${failed.length - 5} more` : ''}`,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      message: itemOutcomeMarker({ verb: 'removed', ok: true, title: `all ${removed} open items` }),
+    };
+  } catch (e: any) {
+    console.warn('[brain-chat] remove_open_items_bulk failed', { error: e?.message, userId });
+    return {
+      ok: false,
+      message: itemOutcomeMarker({ verb: 'removed', ok: false, why: e?.message ?? 'the bulk removal failed' }),
+    };
+  }
+}
+
 export async function executeRemoveOpenItem(
   clientNumber: string,
   userId: number,

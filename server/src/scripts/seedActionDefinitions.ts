@@ -102,6 +102,24 @@ export const ACTIONS: Seed[] = [
     isHumanFacing: false,
   },
   {
+    type: 'remove_open_items_bulk',
+    displayName: 'Remove ALL open items',
+    description: "Remove EVERY active open item at once, when the user says 'delete all', 'clear my list', 'remove everything' or similar. Use THIS, never many remove_open_item actions: the item list shown to you is paginated, so you may not hold every id, and emitting one action per item would silently miss the ones you cannot see. This action takes a scope, not ids — the server enumerates the set. Sets every item to CANCELLED (reversible), never DONE. Destructive and set-sized, so it is confirmed with the user before it runs.",
+    schema: {
+      type: 'object',
+      required: [],
+      properties: {
+        scope: { type: 'string', description: "Which set to remove. Only 'all' is supported today; an unrecognised scope is refused rather than widened." },
+        reason: { type: 'string', description: "Short note on why, e.g. 'owner said delete all'" },
+      },
+    },
+    handlerModule: 'internalActionExecutors',
+    handlerFunction: 'executeRemoveOpenItemsBulk',
+    operationalMetadata: { external: false },
+    requiresCapability: 'manage_open_items',
+    isHumanFacing: false,
+  },
+  {
     type: 'remove_open_item',
     displayName: 'Remove open item',
     description: "Remove an item from the user's list when they say remove, delete, drop, or 'I don't want this any more'. Sets the item to CANCELLED — NOT done. Marking it DONE would claim work was completed that never happened, which the user reads as a lie about what occurred. CANCELLED is honest and reversible. Reference by openItemId, or by titleRef when the id may be stale. When the user asks to remove several items, emit one action per item.",

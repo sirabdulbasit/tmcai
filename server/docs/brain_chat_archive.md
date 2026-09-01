@@ -712,3 +712,60 @@ DEF-262 (interventions carry no dedup key and repeated verbatim 24h apart), DEF-
 lost 19 seconds after Brain's own message; *"yes"* answered as though it were an offer). And the
 substance behind his question stands: **238 of his 278 items — 86% — are calendar-derived.**
 Seeing them is now possible; bulk-acting on them is not yet built.
+
+## Chat 20
+
+**Date:** 2026-09-01 · **Register:** CL-042 · **DEF:** DEF-264 ·
+**Symptom tags:** `trigger-instruction-as-task`, `confirm-never-dispatches`
+
+**What happened**
+
+> *"how many open items you have?"*
+> → *"You have 39 active open items, though my current view only shows the 30 most recent.
+>    Of those, 1 is critical, 28 are high priority, and 10 are medium."*
+> *"delete all"*
+> → *"I can do that, but deleting all 39 open items is a permanent action and can't be undone.
+>    Are you sure you want me to proceed?"*
+> *"yes"*
+> → *"Go ahead and I'll verify first."*
+
+**39 active items were still present afterwards** — 1 critical, 28 high, 10 medium, nothing
+updated in the hour. Verified on the box, not inferred from the transcript.
+
+**Why it happened, and why it is not a dropped dispatch**
+
+The only delete capability was `remove_open_item`, **singular**, whose own seeded description
+says *"When the user asks to remove several items, emit one action per item."* The item block is
+paginated at `OPEN_ITEMS_PAGE = 30` (`openItemsCompleteness.ts:29`, applied at
+`brainComposer.ts:2262`). With 39 active items the model held **30 ids** — and said so in the
+same message as the count.
+
+**It could not express the instruction it had just been authorised to perform.** So the
+confirmation gate fired correctly, the owner consented, and the turn produced conversational
+filler because there was no action to emit. The *"my current view only shows the 30 most
+recent"* clause was not a caveat; it was the failure, announced one message early.
+
+Third member of `trigger-instruction-as-task`. DEF-237 closed the promise half; DEF-255
+established that **a gate cannot fix an absent capability, only declaring and wiring it can**.
+This is that lesson again in a new shape — a bulk verb with no bulk action.
+
+**The fix removes the dependency rather than guarding it**
+
+`remove_open_items_bulk` carries a **scope, never an id list**. The server enumerates the set, so
+the model never holds an id and pagination cannot bound a bulk operation again. Sets every item
+to `CANCELLED` — reversible, and honest in a way `DONE` would not be (DEF-106/DEF-129).
+
+Deliberate choices: per-item `transitionStatus` rather than a bulk `updateMany`, because the
+bulk path would skip the transition matrix, the audit trail and the per-item guards — the shape
+BLD-005 shipped a duplicate-send path through. An unrecognised scope is **refused, not widened**,
+because a destructive set operation must never grow on a typo. The reported count is a read-back
+of what transitioned, naming the survivors on partial failure.
+
+Registering it in the action union failed the build until it was added to `PendingActionKind` —
+DEF-255's containment working as intended: a half-wired capability is a compile error, not a
+live "no dispatcher".
+
+**Still open from the same conversation:** DEF-265 (a bare *"yes"* answered as though the owner
+had offered to act — 2nd occurrence in two days), DEF-266 (message content quoted then denied
+two minutes later; a storage gap narrated as a transport gap), DEF-267 (the 30-vs-39 sentence,
+and WhatsApp quoted-replies carrying no context to the model).

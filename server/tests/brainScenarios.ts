@@ -632,7 +632,7 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const persona = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainPersonaService.ts'), 'utf-8');
       expect(persona).toContain('Explicit request overrides the language rule');
     },
-  },,
+  },
   {
     id: 'chat19',
     date: '2026-09-01',
@@ -682,6 +682,53 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
         if (realFindMany) client.openItem.findMany = realFindMany;
         if (realEntityFindMany) client.entity.findMany = realEntityFindMany;
       }
+    },
+  },
+  {
+    id: 'chat20',
+    date: '2026-09-01',
+    userMessage: 'how many open items you have? … delete all … yes',
+    observedFailure:
+      'The owner ordered a bulk deletion, was asked to confirm ("deleting all 39 open items is a permanent action and can\'t be undone"), confirmed with "yes", received "Go ahead and I\'ll verify first." — and 39 active items were still present afterwards. Not a dropped dispatch: the only delete capability was remove_open_item (singular), whose description says to emit one action per item, while the item block is paginated at OPEN_ITEMS_PAGE=30. Holding 30 of 39 ids, the model could not express the instruction it had just been authorised to perform.',
+    symptomTags: ['trigger-instruction-as-task', 'confirm-never-dispatches'],
+    fixCommits: ['this-commit'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+
+      // 1. A BULK LANDING PLACE EXISTS. DEF-255: a gate cannot fix an absent capability, so the
+      //    presence of the action is the fix, not a guard around its absence.
+      const composer = readFileSync(join(root, 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      expect(composer).toContain("| { type: 'remove_open_items_bulk'");
+      expect(composer).toContain("case 'remove_open_items_bulk'");
+
+      // 2. IT IS SEEDED, so brainCapabilityLive tells the model it exists. An unseeded action is
+      //    one the model will never emit however well it is implemented (DEF-130/DEF-255).
+      const seed = readFileSync(join(root, 'scripts', 'seedActionDefinitions.ts'), 'utf-8');
+      expect(seed).toContain("type: 'remove_open_items_bulk'");
+      expect(seed).toContain('executeRemoveOpenItemsBulk');
+      // The description must tell the model WHY not to loop the singular action instead.
+      expect(seed).toContain('paginated');
+
+      // 3. IT IS REGISTERED AS A PENDING KIND, or the confirmed plan cannot dispatch it. This is
+      //    the registration whose absence failed the build while the fix was being wired.
+      const pending = readFileSync(join(root, 'services', 'knowledge', 'pendingActionService.ts'), 'utf-8');
+      expect(pending).toContain("'remove_open_items_bulk'");
+
+      // 4. SCOPE, NEVER IDS. The moment this takes an id list, the 30-of-39 bug is reachable
+      //    again — the model would once more be asked for something the context cannot hold.
+      const exec = readFileSync(join(root, 'services', 'knowledge', 'internalActionExecutors.ts'), 'utf-8');
+      const fn = exec.slice(exec.indexOf('export async function executeRemoveOpenItemsBulk'));
+      const params = fn.slice(0, fn.indexOf('): Promise<'));
+      expect(params).toContain('scope');
+      expect(params).not.toContain('openItemIds');
+
+      // 5. CANCELLED, and through the lifecycle. DONE would claim work that never happened, and
+      //    an updateMany would bypass the transition matrix, audit trail and per-item guards.
+      const body = fn.slice(0, fn.indexOf('\n}\n'));
+      expect(body).toContain("'CANCELLED'");
+      expect(body).not.toContain('updateMany');
     },
   },
 ];

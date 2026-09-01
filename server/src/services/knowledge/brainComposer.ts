@@ -129,6 +129,9 @@ export type ComposedAction =
   // `titleRef` mirrors update_open_item (DEF-103): it says WHICH item, never
   // renames anything, and rescues the case where the id has gone stale.
   | { type: 'remove_open_item'; openItemId?: string; titleRef?: string; reason?: string }
+  // DEF-264 — a BULK verb needs a bulk landing place. Carries a SCOPE, never an id list, so a
+  // paginated item block can no longer bound what the owner is allowed to ask for.
+  | { type: 'remove_open_items_bulk'; scope?: string; reason?: string }
   | { type: 'delegate_open_item'; openItemId: string; delegateeCandidateId?: string; delegateeAdHocEmail?: string; note?: string }
   | { type: 'schedule_meeting'; title: string; whenRaw: string; durationMin?: number; attendeeCandidateIds: string[]; attendeeAdHocEmails?: string[]; note?: string }
   | { type: 'cancel_meeting'; eventId: string; titleHint?: string; reason?: string }
@@ -241,6 +244,7 @@ export const IMMEDIATE_INTERNAL_ACTION_TYPES: ReadonlySet<ComposedAction['type']
   'update_open_item',
   'mark_open_item_done',
   'remove_open_item',
+  'remove_open_items_bulk',
   'update_contact',
   'set_brain_name',
   'record_preference',
@@ -276,7 +280,7 @@ export const DISPATCHER_BRIDGED_TYPES = [
  *  allow-list OR its type is listed here. Locked against the seeded
  *  registry by tests/capabilityDiscovery.test.ts (registry-parity). */
 export const COMPOSER_DISPATCHED_TYPES: ReadonlySet<string> = new Set([
-  'add_open_item', 'update_open_item', 'mark_open_item_done', 'remove_open_item', 'delegate_open_item',
+  'add_open_item', 'update_open_item', 'mark_open_item_done', 'remove_open_item', 'remove_open_items_bulk', 'delegate_open_item',
   'schedule_meeting', 'cancel_meeting', 'reschedule_meeting',
   'send_email', 'notify_via_whatsapp',
   'set_brain_name', 'archive_wiki_page', 'delete_wiki_page',
@@ -7104,6 +7108,13 @@ export async function dispatchPendingDirect(
     // branch calls — one implementation, two callers — and
     // `tests/def232ConfirmedPlanExecutesInternalKinds.test.ts` pins the
     // invariant that every immediately-dispatchable kind is plan-dispatchable.
+    case 'remove_open_items_bulk': {
+      const { executeRemoveOpenItemsBulk } = await import('./internalActionExecutors');
+      return executeRemoveOpenItemsBulk(clientNumber, userId, {
+        scope: slots.scope != null ? String(slots.scope) : 'all',
+        reason: slots.reason != null ? String(slots.reason) : undefined,
+      });
+    }
     case 'remove_open_item': {
       const { executeRemoveOpenItem } = await import('./internalActionExecutors');
       return executeRemoveOpenItem(clientNumber, userId, {
