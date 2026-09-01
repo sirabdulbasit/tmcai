@@ -734,7 +734,7 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
   {
     id: 'chat21',
     title: 'eight messages from one person, and every relay called them an unknown sender',
-    fixCommits: ['61217ec'],
+    fixCommits: ['af0a0c8'],
     symptomTags: ['capability-denial', 'identity-withheld-by-transport'],
     assert: () => {
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
