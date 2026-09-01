@@ -48,6 +48,17 @@ export default function OrchestratorSpendTab() {
   };
   useEffect(() => { load(); }, [period, day, from, to, groupBy]);
 
+  // A reading with no age reads as "now". These figures can be days old, so they carry theirs.
+  const ageOf = (iso) => {
+    if (!iso) return null;
+    const ms = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    const h = ms / 3600000;
+    if (h < 1) return { text: `${Math.max(1, Math.round(ms / 60000))}m ago`, stale: false };
+    if (h < 24) return { text: `${Math.round(h)}h ago`, stale: h >= 12 };
+    return { text: `${Math.round(h / 24)}d ago`, stale: true };
+  };
+
   const fmt = (n) => Number(n ?? 0).toLocaleString();
   const fmtUsd = (n) => `$${Number(n ?? 0).toFixed(2)}`;
   const fmtUsd4 = (n) => `$${Number(n ?? 0).toFixed(4)}`;
@@ -99,13 +110,103 @@ export default function OrchestratorSpendTab() {
 
       {report && (
         <>
+          {/* TOKENS LEAD, COST FOLLOWS — owner, 2026-09-01: "for build/heal the most important
+              thing is token consumption then cost". The subscription is metered in tokens and
+              throttles in tokens; the dollar figure is a consequence, not the constraint. So
+              TOTAL TOKENS is highlighted and moved first, and Cost keeps its place but loses
+              the emphasis it had. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
+            <StatCard label="Total tokens" value={fmt(totals.tokens)} sub={cacheShare != null ? `${cacheShare}% cache reads` : null} highlight />
             <StatCard label="Runs" value={fmt(totals.runs)} />
-            <StatCard label="Total tokens" value={fmt(totals.tokens)} sub={cacheShare != null ? `${cacheShare}% cache reads` : null} />
-            <StatCard label="Cost" value={fmtUsd(totals.usd)} highlight />
-            <StatCard label="Per run" value={perRun == null ? '—' : fmtUsd(perRun)} />
             <StatCard label="Per turn" value={perTurn == null ? '—' : fmtUsd4(perTurn)} />
+            <StatCard label="Per run" value={perRun == null ? '—' : fmtUsd(perRun)} />
+            <StatCard label="Cost" value={fmtUsd(totals.usd)} />
           </div>
+
+          {/* AGAINST THE SUBSCRIPTION — the owner's actual worry, 2026-09-01: "my concern is to
+              review either we are over consuming tokens then my claude subscription limit?"
+
+              These windows roll from NOW and ignore the range picker above, because "am I about
+              to be throttled" is a question about this moment. Answering it with a month's total
+              would be a different question answered quietly.
+
+              WHAT THIS DOES NOT CLAIM. Anthropic publishes no window size, so there is no
+              "X of Y tokens left" to show and inventing one would be the worst kind of number on
+              a page like this. The share is derived from a MARGINAL rate measured on this box,
+              and it is our contribution only — the same subscription also carries the owner's own
+              sessions, so the real utilisation is always higher than our share. */}
+          {report.subscription?.windows?.length > 0 && (
+            <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ ...breakHead, padding: '8px 12px', margin: 0, background: 'var(--bg-2)' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Against the Claude subscription</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>rolling from now — not the range above</span>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: 'var(--bg-2)' }}>
+                    <th style={th}>Window</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Our runs</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Our tokens</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Our share</th>
+                    <th style={th}>Claude reported</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.subscription.windows.map((w) => {
+                    const rep = (report.limits || []).find((l) => l.type === w.type)
+                      || (w.type === 'seven_day' && (report.limits || []).find((l) => l.type === 'seven_day_overage_included'));
+                    const hot = w.sharePoints != null && w.sharePoints >= 15;
+                    return (
+                      <tr key={w.type} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{w.label}</td>
+                        <td style={{ ...td, ...numTd }}>{fmt(w.runs)}</td>
+                        <td style={{ ...td, ...numTd, fontWeight: 600 }}>{fmt(w.tokens)}</td>
+                        <td style={{ ...td, ...numTd, color: hot ? '#f59e0b' : 'var(--text)' }}>
+                          {w.sharePoints == null
+                            ? <span style={{ color: 'var(--text-muted)' }}>not measurable</span>
+                            : `~${w.sharePoints}%`}
+                        </td>
+                        <td style={{ ...td, fontSize: 12 }}>
+                          {!rep ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
+                            <>
+                              <span style={{
+                                color: rep.status === 'rejected' ? '#ef4444'
+                                  : rep.status === 'allowed_warning' ? '#f59e0b' : 'var(--text-muted)',
+                                fontWeight: rep.status === 'allowed' ? 400 : 600,
+                              }}>{rep.status || '—'}</span>
+                              {' · '}
+                              {rep.utilization == null
+                                ? <span style={{ color: 'var(--text-muted)' }}>under 75% (not reported)</span>
+                                : <strong>{Math.round(rep.utilization * 100)}% used</strong>}
+                              {rep.rejectedRuns > 0 && (
+                                <span style={{ color: '#ef4444' }}>{` · ${rep.rejectedRuns} run${rep.rejectedRuns === 1 ? '' : 's'} blocked`}</span>
+                              )}
+                              {/* HOW OLD THE READING IS. Claude only speaks when it is past its
+                                  warning threshold, so the last figure can be days old — the
+                                  seven-day "82%" on this box was five days stale when this was
+                                  written. A percentage with no timestamp reads as "now", and a
+                                  stale one would be the most misleading number on the page. */}
+                              {ageOf(rep.observedAt) && (
+                                <span style={{ color: ageOf(rep.observedAt).stale ? '#f59e0b' : 'var(--text-muted)' }}>
+                                  {` · read ${ageOf(rep.observedAt).text}`}
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
+                Share is <strong>ours only</strong>, from a marginal rate of {fmt(report.subscription.tokensPerPoint)} tokens
+                per point measured on this box — your own sessions use the same subscription, so real
+                utilisation is higher. Claude reports an exact figure only above its 75% warning
+                threshold; below that it says nothing, which is shown as <em>under 75%</em> and never as 0%.
+              </div>
+            </div>
+          )}
 
           {/* CONSUMPTION OVER TIME — the same shape as LLM Spend, so the two decks read alike.
               Cache reads get their own column because they are the workload here; folding them

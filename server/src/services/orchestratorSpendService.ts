@@ -46,6 +46,28 @@ const CHAT_LOG = /^chat-analysis-\d{8}T\d{6}\.jsonl$/;
 const isRunLog = (f: string) => ITER_LOG.test(f) || CHAT_LOG.test(f);
 
 /**
+ * Tokens the orchestrator adds per 1 percentage point of the SEVEN-DAY subscription window.
+ *
+ * MEASURED ON THIS BOX, not taken from documentation. Six consecutive `rate_limit_info`
+ * readings on 2026-08-17/18 ticked utilisation up a point at a time; the tokens we spent
+ * between each pair were 15.9M, 14.4M, 13.9M, 13.5M and 16.1M (a sixth reading jumped two
+ * points at once and was dropped as a rounding artefact). Mean ~14.8M, spread under ±10%.
+ *
+ * IT TRACKS TOTAL TOKENS. Output tokens across the same readings ranged 19.5k to 37.1k — very
+ * nearly 2x — so output is not what the limit counts. Cache reads dominate the total and
+ * evidently count toward the window.
+ *
+ * A MARGINAL RATE, NOT A QUOTA, and the deck must never present it as one. This is what WE
+ * add; the baseline utilisation (78% at the first reading) belongs to everything else on the
+ * same subscription, the owner's own Claude Code sessions included. Anthropic does not publish
+ * the window size, so "X of Y tokens remaining" would be invented. A share of the window is
+ * the strongest claim the data actually supports.
+ *
+ * Re-derive it if the plan changes: the readings are in the `iter-*-build.jsonl` streams.
+ */
+const TOKENS_PER_POINT = 14_800_000;
+
+/**
  * What launched a run, read from the `.trigger` sidecar the launching script writes.
  *
  * RECORDED, NEVER INFERRED. A `build` row can come from the nightly cron or from someone
@@ -80,6 +102,17 @@ export interface OrchestratorRun {
   sourceFile: string;
   /** What launched the run. `null` = unattributed, never "manual". See `readTrigger`. */
   triggeredBy: string | null;
+  /**
+   * The subscription-limit state the CLI reported as this run ended.
+   *
+   * `utilization` is NULL unless the window passed its 0.75 warning threshold — the CLI simply
+   * does not send a number below that. So null means "not reported", which on an `allowed` row
+   * means "below the threshold" and NEVER means zero. Anything that renders it must say so.
+   */
+  limitStatus: string | null;
+  limitType: string | null;
+  limitUtilization: number | null;
+  limitResetsAt: Date | null;
 }
 
 /**
@@ -117,6 +150,11 @@ export function parseRunLog(
   let resultUsage: any = null;
   let sawUsage = false;
   let firstTs: string | null = null;
+  // LAST one wins. `rate_limit_info` rides on many events through a run and the window moves
+  // while the run is in flight — utilisation climbs, and a five-hour window can reset mid-run.
+  // The parting state is the one worth keeping: it is what was true when the run stopped, and
+  // it is what predicts whether the NEXT run will be throttled.
+  let rateLimit: any = null;
 
   const usageOf = (ev: any) => {
     const u = ev?.usage ?? ev?.message?.usage;
@@ -132,6 +170,7 @@ export function parseRunLog(
     if (!sessionId && typeof ev.session_id === 'string') sessionId = ev.session_id;
     if (!model && typeof ev.model === 'string') model = ev.model;
     if (!firstTs && typeof ev.timestamp === 'string') firstTs = ev.timestamp;
+    if (ev.rate_limit_info && typeof ev.rate_limit_info === 'object') rateLimit = ev.rate_limit_info;
 
     const usage = usageOf(ev);
     if (usage) {
@@ -192,6 +231,16 @@ export function parseRunLog(
     inputTokens: inTok, outputTokens: outTok,
     cacheCreationTokens: cacheCreate, cacheReadTokens: cacheRead,
     totalCostUsd: cost, subtype, sourceFile: fileName, triggeredBy,
+    limitStatus: typeof rateLimit?.status === 'string' ? rateLimit.status : null,
+    limitType: typeof rateLimit?.rateLimitType === 'string' ? rateLimit.rateLimitType : null,
+    // Guarded rather than coerced: `Number(undefined)` is NaN and `Number(null)` is 0, and 0
+    // here would read as "used none of the subscription" on a run that was never told.
+    limitUtilization: typeof rateLimit?.utilization === 'number' && Number.isFinite(rateLimit.utilization)
+      ? rateLimit.utilization
+      : null,
+    limitResetsAt: typeof rateLimit?.resetsAt === 'number' && Number.isFinite(rateLimit.resetsAt)
+      ? new Date(rateLimit.resetsAt * 1000)   // the CLI sends UNIX SECONDS, not milliseconds
+      : null,
   };
 }
 
@@ -230,6 +279,8 @@ export async function ingestOrchestratorSpend(dir: string = LOGS_DIR): Promise<{
           cacheReadTokens: BigInt(run.cacheReadTokens),
           totalCostUsd: run.totalCostUsd, subtype: run.subtype, sourceFile: run.sourceFile,
           triggeredBy: run.triggeredBy,
+          limitStatus: run.limitStatus, limitType: run.limitType,
+          limitUtilization: run.limitUtilization, limitResetsAt: run.limitResetsAt,
         },
         // A run still in flight grows between ingests, so the newer read wins.
         //
@@ -244,6 +295,13 @@ export async function ingestOrchestratorSpend(dir: string = LOGS_DIR): Promise<{
           cacheReadTokens: BigInt(run.cacheReadTokens),
           totalCostUsd: run.totalCostUsd, sourceFile: run.sourceFile,
           ...(run.triggeredBy ? { triggeredBy: run.triggeredBy } : {}),
+          // A run still in flight gains limit events, so the newer read is the better one —
+          // but only when it actually carries a state. Same rule as `triggeredBy`: never
+          // overwrite something recorded with a null.
+          ...(run.limitStatus ? {
+            limitStatus: run.limitStatus, limitType: run.limitType,
+            limitUtilization: run.limitUtilization, limitResetsAt: run.limitResetsAt,
+          } : {}),
         },
       });
       ingested++;
@@ -285,6 +343,60 @@ export interface OrchestratorSpendReport {
     inTokens: number; outTokens: number; seats: string[];
   }>;
   totals: { runs: number; tokens: number; usd: number; cacheReadTokens: number };
+  /**
+   * Where the SUBSCRIPTION stands — owner, 2026-08-31: show "token consumption as per available
+   * limit of subscription".
+   *
+   * One entry per limit window the CLI has reported (`five_hour`, `seven_day`,
+   * `seven_day_overage_included`), carrying the NEWEST state seen and whether anything was
+   * rejected in this report's range.
+   *
+   * `utilization` is `null` whenever the CLI declined to say, which it does below the 0.75
+   * warning threshold. That is reported as "under 75%", NEVER as 0% — the number is unknown,
+   * not small, and this deck already has one lesson about zeros that meant "never measured".
+   */
+  limits: Array<{
+    type: string;
+    status: string | null;
+    utilization: number | null;
+    resetsAt: string | null;
+    rejectedRuns: number;
+    observedAt: string | null;
+  }>;
+  /**
+   * WHERE WE STAND AGAINST THE SUBSCRIPTION — the owner's actual question, 2026-09-01:
+   * *"my concern is to review either we are over consuming tokens then my claude subscription
+   * limit?"*. Tokens first; cost is the secondary reading.
+   *
+   * These windows are ROLLING FROM NOW, deliberately independent of the report's date range.
+   * "Am I about to be throttled" is a question about this moment, not about whichever month is
+   * selected above, and tying it to the range would answer a different question silently.
+   */
+  subscription: {
+    /**
+     * Tokens we add per 1 percentage point of the seven-day window.
+     *
+     * MEASURED, NOT ASSUMED — from six consecutive `rate_limit_info` readings on 2026-08-17/18
+     * where utilisation ticked up one point at a time. Samples: 15.9M, 14.4M, 13.5M, 13.9M,
+     * 16.1M per point (one 2-point reading dropped as a rounding artefact). It tracks TOTAL
+     * tokens: output tokens over the same readings varied about 2x, so they are not the driver.
+     *
+     * THIS IS A MARGINAL RATE, NOT A QUOTA. It is what the orchestrator adds; the baseline
+     * utilisation belongs to whatever else uses the same subscription, including the owner's
+     * own sessions. Anthropic does not publish the window size, so a "X of Y tokens" reading
+     * would be invented. A share of the window is the strongest honest claim available.
+     */
+    tokensPerPoint: number;
+    windows: Array<{
+      type: 'five_hour' | 'seven_day';
+      label: string;
+      since: string;
+      runs: number;
+      tokens: number;
+      /** Our estimated share of that window, in percentage points. Null for the 5h window. */
+      sharePoints: number | null;
+    }>;
+  };
   /** Seats that exist in the loop but recorded nothing — stated, never shown as zero cost. */
   unmeasured: string[];
 }
@@ -432,6 +544,84 @@ export async function getOrchestratorSpendReport(
   const measured = new Set(seats.map((s) => s.seat));
   const unmeasured = Object.values(SEAT_BY_SUFFIX).filter((s) => !measured.has(s));
 
+  // WHAT CLAUDE LAST TOLD US, and how often it actually blocked a run.
+  //
+  // NOT bounded by the report's date range, unlike everything above it, and that asymmetry is
+  // deliberate: this pairs with the rolling subscription windows, and "what is the limit state"
+  // is a question about now. Range-scoping it meant a September range showed no seven-day
+  // reading at all — the row went blank precisely when the reader wanted it most.
+  //
+  // The rejection count IS windowed, each type against its own window (5h against five hours,
+  // the seven-day variants against seven days), because "runs blocked" only means something
+  // inside the window that blocked them.
+  const limitRows: any[] = await prisma.$queryRawUnsafe<any[]>(
+    `WITH latest AS (
+       SELECT DISTINCT ON (limit_type)
+              limit_type, limit_status, limit_utilization, limit_resets_at, started_at
+         FROM orchestrator_spend
+        WHERE limit_type IS NOT NULL
+        ORDER BY limit_type, started_at DESC
+     ), rejected AS (
+       SELECT limit_type, COUNT(*)::int AS n
+         FROM orchestrator_spend
+        WHERE limit_status = 'rejected'
+          AND started_at >= NOW() - (CASE WHEN limit_type = 'five_hour'
+                                          THEN INTERVAL '5 hours' ELSE INTERVAL '7 days' END)
+        GROUP BY limit_type
+     )
+     SELECT l.limit_type, l.limit_status, l.limit_utilization, l.limit_resets_at, l.started_at,
+            COALESCE(r.n, 0) AS rejected_runs
+       FROM latest l LEFT JOIN rejected r ON r.limit_type = l.limit_type
+      ORDER BY l.limit_type`,
+  ).catch(() => [] as any[]);
+
+  const limits = limitRows.map((l) => ({
+    type: l.limit_type,
+    status: l.limit_status ?? null,
+    // Number() would turn a Prisma Decimal into a number but a NULL into 0, and 0 here reads as
+    // "none of the subscription used". Kept null so the UI can say "under 75%" instead.
+    utilization: l.limit_utilization == null ? null : Number(l.limit_utilization),
+    resetsAt: l.limit_resets_at ? new Date(l.limit_resets_at).toISOString() : null,
+    rejectedRuns: num(l.rejected_runs),
+    observedAt: l.started_at ? new Date(l.started_at).toISOString() : null,
+  }));
+
+  // ── SUBSCRIPTION WINDOWS, rolling from NOW ──────────────────────────────────────────────
+  // Deliberately NOT bounded by the report's date range: "am I about to be throttled" is a
+  // question about this moment. A month-scoped answer to it would be quietly wrong.
+  const windowRows: any[] = await prisma.$queryRawUnsafe<any[]>(
+    `SELECT 'five_hour' AS win, COUNT(*)::int AS runs,
+            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::bigint AS tokens
+       FROM orchestrator_spend WHERE started_at >= NOW() - INTERVAL '5 hours'
+      UNION ALL
+     SELECT 'seven_day', COUNT(*)::int,
+            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::bigint
+       FROM orchestrator_spend WHERE started_at >= NOW() - INTERVAL '7 days'`,
+  ).catch(() => [] as any[]);
+
+  const byWin = new Map(windowRows.map((w) => [w.win, w]));
+  const mk = (type: 'five_hour' | 'seven_day', label: string, since: string) => {
+    const r = byWin.get(type);
+    const tokens = num(r?.tokens);
+    return {
+      type, label, since, runs: num(r?.runs), tokens,
+      // Only the seven-day rate was measured, so only it gets a share. Reusing that rate for
+      // the five-hour window would be arithmetic dressed up as measurement — the two windows
+      // are different sizes and the burst limit binds first, which is why the one REJECTION on
+      // this box was a five_hour one.
+      sharePoints: type === 'seven_day' && tokens > 0
+        ? Math.round((tokens / TOKENS_PER_POINT) * 10) / 10
+        : null,
+    };
+  };
+  const subscription = {
+    tokensPerPoint: TOKENS_PER_POINT,
+    windows: [
+      mk('five_hour', 'Last 5 hours', new Date(Date.now() - 5 * 3600_000).toISOString()),
+      mk('seven_day', 'Last 7 days', new Date(Date.now() - 7 * 86400_000).toISOString()),
+    ],
+  };
+
   const triggers = triggerRows.map((t) => ({
     trigger: t.trigger ?? null,
     runs: num(t.runs),
@@ -445,7 +635,7 @@ export async function getOrchestratorSpendReport(
   }));
 
   return {
-    from: lo, to: hi, days: series.length, groupBy, series, seats, triggers,
+    from: lo, to: hi, days: series.length, groupBy, series, seats, triggers, limits, subscription,
     totals: {
       runs: totRuns, tokens: totTokens,
       usd: Math.round(totUsd * 10000) / 10000,

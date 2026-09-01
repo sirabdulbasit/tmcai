@@ -2974,11 +2974,21 @@ model OrchestratorSpend {
   /// hand-run loop — so this is recorded by the launching process, never inferred. NULL
   /// renders as "unattributed" and is never counted as manual.
   triggeredBy         String?  @map("triggered_by") @db.VarChar(48)
+  /// Subscription-limit state the CLI reported as this run ended: `allowed`,
+  /// `allowed_warning` or `rejected`, for a `five_hour` / `seven_day` /
+  /// `seven_day_overage_included` window.
+  limitStatus         String?  @map("limit_status") @db.VarChar(24)
+  limitType           String?  @map("limit_type") @db.VarChar(32)
+  /// Fraction of that window consumed (0-1). NULL means the CLI did not report it — on an
+  /// `allowed` row that means BELOW the 0.75 warning threshold, never zero.
+  limitUtilization    Decimal? @map("limit_utilization") @db.Decimal(5, 4)
+  limitResetsAt       DateTime? @map("limit_resets_at")
   createdAt           DateTime @default(now()) @map("created_at")
 
   @@index([startedAt(sort: Desc)], map: "orchestrator_spend_when_ix")
   @@index([seat, startedAt(sort: Desc)], map: "orchestrator_spend_seat_ix")
   @@index([triggeredBy, startedAt(sort: Desc)], map: "orchestrator_spend_trigger_ix")
+  @@index([limitType, startedAt(sort: Desc)], map: "orchestrator_spend_limit_ix")
   @@map("orchestrator_spend")
 }
 

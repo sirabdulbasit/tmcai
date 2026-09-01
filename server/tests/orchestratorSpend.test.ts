@@ -150,13 +150,18 @@ const row = (bucket: string, seat: string, over: Record<string, any> = {}) => ({
 describe('the report the deck reads', () => {
   beforeEach(() => raw.mockReset());
 
-  // THREE queries now, in order: the seat/bucket grid, the distinct models, and the cron cut.
-  // The third is not optional padding — an exhausted mock returns `undefined`, and the service
+  // FIVE queries now, in the order the service issues them: the seat/bucket grid, the distinct
+  // models, the cron cut, the subscription-limit state, and the rolling windows.
+  //
+  // The trailing stubs are not padding — an exhausted mock returns `undefined`, and the service
   // calls `.catch()` on what it gets back, so a missing stub fails as a TypeError inside the
-  // service rather than as a readable assertion.
-  const mock = (rows: any[], models: any[] = [], triggers: any[] = []) => {
+  // service rather than as a readable assertion. Adding a query to the service without adding a
+  // stub here turns every report test red at once, which is the intended warning.
+  const mock = (rows: any[], models: any[] = [], triggers: any[] = [],
+                limits: any[] = [], windows: any[] = []) => {
     raw.mockReset();
-    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers);
+    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers)
+       .mockResolvedValueOnce(limits).mockResolvedValueOnce(windows);
   };
 
   /** A row from the cron cut — same bigint-from-SUM() hazard as the seat rows. */
@@ -235,9 +240,11 @@ describe('the report the deck reads', () => {
 describe('cron attribution', () => {
   beforeEach(() => raw.mockReset());
 
-  const mock = (rows: any[], models: any[] = [], triggers: any[] = []) => {
+  const mock = (rows: any[], models: any[] = [], triggers: any[] = [],
+                limits: any[] = [], windows: any[] = []) => {
     raw.mockReset();
-    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers);
+    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers)
+       .mockResolvedValueOnce(limits).mockResolvedValueOnce(windows);
   };
   const trig = (trigger: string | null, over: Record<string, any> = {}) => ({
     trigger, runs: 1,
@@ -343,5 +350,80 @@ describe('the standalone chat analyst', () => {
       'chat-analysis-20260831T121000.jsonl', MTIME,
     )!;
     expect(a.runUid).not.toBe(b.runUid);
+  });
+});
+
+/**
+ * Subscription limits — the owner's question, 2026-09-01: *"my concern is to review either we
+ * are over consuming tokens then my claude subscription limit?"*
+ *
+ * The dangerous field here is `utilization`, because the CLI reports it ONLY above its 0.75
+ * warning threshold. Below that it sends nothing, and "nothing" must survive all the way to the
+ * screen as "not reported" rather than becoming 0. A 0% would say "we have used none of the
+ * subscription" on exactly the runs where we simply were not told — the same shape of lie as a
+ * $0.00 seat that never ran (DEF-258), on a page whose whole purpose is answering "am I close
+ * to the ceiling".
+ */
+describe('subscription limit capture', () => {
+  const withLimit = (ri: any) => JSON.stringify({
+    type: 'result', subtype: 'success', session_id: 's-lim', num_turns: 4,
+    duration_ms: 1000, total_cost_usd: 1.5,
+    usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 900, cache_creation_input_tokens: 50 },
+    rate_limit_info: ri,
+  });
+
+  it('captures status, type, utilisation and reset time from the stream', () => {
+    const run = parseRunLog([init, withLimit({
+      status: 'allowed_warning', rateLimitType: 'seven_day',
+      utilization: 0.81, resetsAt: 1787328000,
+    })].join('\n'), 'iter-31-build.jsonl', MTIME)!;
+
+    expect(run.limitStatus).toBe('allowed_warning');
+    expect(run.limitType).toBe('seven_day');
+    expect(run.limitUtilization).toBe(0.81);
+    // resetsAt is UNIX SECONDS. Reading it as milliseconds would date the reset to 1970.
+    expect(run.limitResetsAt?.toISOString()).toBe(new Date(1787328000 * 1000).toISOString());
+  });
+
+  it('leaves utilisation NULL when the CLI did not report it — never 0', () => {
+    // This is the `allowed` case, which is the majority of runs and carries no number.
+    const run = parseRunLog([init, withLimit({
+      status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1788192600,
+    })].join('\n'), 'iter-31-build.jsonl', MTIME)!;
+
+    expect(run.limitStatus).toBe('allowed');
+    expect(run.limitUtilization).toBeNull();
+    expect(run.limitUtilization).not.toBe(0);
+  });
+
+  it('keeps the LAST limit state in the stream, because the window moves during a run', () => {
+    const text = [
+      init,
+      JSON.stringify({ type: 'assistant', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' } }),
+      JSON.stringify({ type: 'assistant', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.9 } }),
+      withLimit({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1787902200 }),
+    ].join('\n');
+    const run = parseRunLog(text, 'iter-31-build.jsonl', MTIME)!;
+    // The parting state predicts whether the NEXT run gets through; an early 'allowed' does not.
+    expect(run.limitStatus).toBe('rejected');
+    expect(run.limitUtilization).toBeNull();
+  });
+
+  it('records nothing rather than guessing when the stream carries no limit info at all', () => {
+    const run = parseRunLog([init, result()].join('\n'), 'iter-31-build.jsonl', MTIME)!;
+    expect(run.limitStatus).toBeNull();
+    expect(run.limitType).toBeNull();
+    expect(run.limitUtilization).toBeNull();
+    expect(run.limitResetsAt).toBeNull();
+  });
+
+  it('ignores a malformed utilisation instead of coercing it to a number', () => {
+    // Number(undefined) is NaN and Number(null) is 0; both would reach the screen as a figure.
+    for (const bad of [null, undefined, 'high', {}, NaN]) {
+      const run = parseRunLog([init, withLimit({
+        status: 'allowed', rateLimitType: 'five_hour', utilization: bad,
+      })].join('\n'), 'iter-31-build.jsonl', MTIME)!;
+      expect(run.limitUtilization).toBeNull();
+    }
   });
 });
