@@ -55,3 +55,41 @@ describe('DEF-276 — the probe cleans up after itself', () => {
     await expect(cleanUpProbeMessage(never, 30)).resolves.toBe('failed');
   });
 });
+
+/**
+ * DEF-276c — the second live failure, and the reason the echo is now the primary handle.
+ *
+ * The promise-based version logged `probe_cleaned outcome=skipped_no_message`: on this client
+ * `client.sendMessage()` resolves with a FALSY value, so there was never a message object to
+ * delete. The surrounding code had been writing `sent?.id?._serialized` for months — the hint was
+ * there and I did not read it. The echoed message is a real Message object and a pass guarantees
+ * it exists, because the echo is what makes it a pass.
+ */
+describe('DEF-276c — the echo is the handle that actually exists', () => {
+  it('deletes the ECHOED message even when the send resolves falsy', async () => {
+    // The exact live failure: sendMessage resolved with undefined.
+    const del = vi.fn().mockResolvedValue(undefined);
+    const r = await cleanUpProbeMessage(Promise.resolve(undefined), 10_000, msg(del));
+    expect(r).toBe('deleted');
+    expect(del).toHaveBeenCalledWith(true);
+  });
+
+  it('prefers the echo over the send result, so it never waits on the transport', async () => {
+    const echoDel = vi.fn().mockResolvedValue(undefined);
+    const sendDel = vi.fn().mockResolvedValue(undefined);
+    const never = new Promise(() => { /* a wedged send must not matter */ });
+    expect(await cleanUpProbeMessage(never, 50, msg(echoDel))).toBe('deleted');
+    expect(echoDel).toHaveBeenCalledTimes(1);
+    expect(sendDel).not.toHaveBeenCalled();
+  });
+
+  it('reports failed — not deleted — when deleting the echo throws', async () => {
+    const boom = vi.fn().mockRejectedValue(new Error('revoke window passed'));
+    expect(await cleanUpProbeMessage(Promise.resolve(undefined), 10_000, msg(boom))).toBe('failed');
+  });
+
+  it('still falls back to the send result when there is no echo', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    expect(await cleanUpProbeMessage(Promise.resolve(msg(del)), 10_000, null)).toBe('deleted');
+  });
+});

@@ -856,12 +856,15 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // early echo, which beats `sendMessage` resolving, so a variable read from the result is
       // still null when the pass branch runs. That WAS the live bug.
       expect(provider).toContain('probeSendPromise');
-      expect(provider).toContain('cleanUpProbeMessage(probeSendPromise)');
+      expect(provider).toContain('cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)');
+      // DEF-276c: the ECHO is the handle that actually exists — `sendMessage` resolves falsy on
+      // this client, which is why the promise-only version logged `skipped_no_message` live.
+      expect(provider).toContain('probeEchoMessage = msg;');
       expect(provider).not.toContain('sentProbeMessage');
 
       // Cleanup runs on the PASS path only — a degraded episode's evidence must survive.
       const passIdx = provider.indexOf("event: 'probe_pass'");
-      const cleanIdx = provider.indexOf('cleanUpProbeMessage(probeSendPromise)');
+      const cleanIdx = provider.indexOf('cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)');
       expect(passIdx).toBeGreaterThan(0);
       expect(cleanIdx).toBeGreaterThan(passIdx);
 

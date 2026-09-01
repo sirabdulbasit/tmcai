@@ -297,7 +297,21 @@ export function logLivenessTransition(clientNumber: string, detail: Record<strin
 export async function cleanUpProbeMessage(
   sendPromise: Promise<any> | null | undefined,
   timeoutMs = 10_000,
+  echoed?: any,
 ): Promise<'deleted' | 'skipped_no_message' | 'skipped_undeletable' | 'failed'> {
+  // PREFER THE ECHO. DEF-276c, found live: the first promise-based version logged
+  // `skipped_no_message` because `client.sendMessage()` resolves with a falsy value on this
+  // client — the surrounding code has always written `sent?.id?._serialized`, which was the hint
+  // I should have read. The echoed message, by contrast, is a real Message object AND is
+  // guaranteed to exist whenever the probe passed, because the echo is what makes it a pass.
+  if (echoed && typeof echoed.delete === 'function') {
+    try {
+      await echoed.delete(true);
+      return 'deleted';
+    } catch {
+      return 'failed';
+    }
+  }
   if (!sendPromise) return 'skipped_no_message';
   try {
     const sent = await Promise.race([

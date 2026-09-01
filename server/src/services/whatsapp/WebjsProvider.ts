@@ -176,6 +176,9 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
   // still null when the pass branch runs. That is DEF-276b, found live — `probe_pass` with no
   // `probe_cleaned` and no error at all.
   let probeSendPromise: Promise<any> | null = null;
+  // DEF-276c — the echoed message object. `sendMessage` resolves falsy on this client, so the
+  // echo is the only handle on the probe's own message; a pass guarantees it exists.
+  let probeEchoMessage: any = null;
 
   const outcome = await new Promise<'pass' | 'fail'>((resolve) => {
     let settled = false;
@@ -198,6 +201,7 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
         // WhatsApp, whatever the identity gate then decides.
         if (msg?.fromMe === true && String(msg?.body ?? '') === buildProbeMarker(nonce)) {
           ownEchoSeen = true;
+          probeEchoMessage = msg;         // DEF-276c: the handle cleanup actually needs
         }
         const match = matchProbeEcho(session, {
           fromMe: msg?.fromMe === true,
@@ -265,7 +269,7 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     // and the owner seeing the evidence of it is correct — silence would be worse than litter.
     // Always logged, including when it skips — a cleanup that silently does nothing is exactly
     // how DEF-276b survived, and `probe_cleaned` with an outcome is the falsifier.
-    void cleanUpProbeMessage(probeSendPromise)
+    void cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)
       .then((outcome) => logLivenessTransition(clientNumber, { event: 'probe_cleaned', outcome, generation }))
       .catch(() => undefined);
     return;
