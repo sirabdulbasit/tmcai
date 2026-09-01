@@ -792,7 +792,7 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
   {
     id: 'chat22',
     title: 'it refused to show content it was holding, and ate his answer to its own question',
-    fixCommits: ['pending'],
+    fixCommits: ['d85d4a8'],
     symptomTags: ['pending-prompt-eats-command', 'capability-denial', 'prompt-contradicts-itself'],
     assert: () => {
       const { readFileSync } = require('node:fs') as typeof import('node:fs');
