@@ -1855,3 +1855,95 @@ now has either a shipped fix with a named commit or an on-the-record boundary
 statement; the review should be closeable. What would prove me wrong: the reviewer
 reading directive 2 as requiring a live model execution in tests — in which case the
 remaining step is a deploy-phase live turn, which the Builder cannot run.
+
+## Iteration 60 — 2026-09-01
+
+**EARLY-EXIT CLAUSE INVOKED, with the evidence that makes it the correct call.** The
+mandate this turn was single: MAKE HEAD DEPLOYABLE. I am not naming a file to change
+because **HEAD needs no code change to be deployable, and I can prove it** — and under
+this turn's own override ("no campaign increment, no new defect, no refactor, no
+opportunistic fix"), inventing a change to satisfy the name-a-file rule would be the
+exact surface-adding failure three consecutive turns died of.
+
+**HEAD (`aae6ac9`) verified in a CLEAN ROOM, not on shared disk:**
+- `git worktree add /tmp/tmcai-head-check HEAD` (node_modules symlinked), because the
+  working tree is being edited by a LIVE concurrent session and cannot measure HEAD.
+  Proof that this mattered: my first `tsc` run against shared disk failed with
+  `brainComposer.ts(5978,22): 'await' only allowed within async functions` — a broken
+  intermediate of that session's in-flight DEF-268 work, on disk for under a minute,
+  **never in HEAD** (`git show HEAD` has no DEF-268 block; the file went `M` in
+  `git status` between my two runs). A dirty-shared-disk matrix this turn would have
+  reported a false RED and triggered a wrong "fix".
+- In the worktree at exactly `aae6ac9`:
+  `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+  `env -u GEMINI_API_KEY npx vitest run` → **3123 passed | 0 failed** (256 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3152)
+  — iteration 57's 10 foreign spend-test failures are GONE at this HEAD (that WIP was
+  committed and deployed in `64ebc56`).
+- The undeployed range `64ebc56..HEAD` carries **no prisma migration** — the deploy is
+  `npm run build` + restart only. It spans 4 src files (`brainComposer.ts`,
+  `internalActionExecutors.ts`, `pendingActionService.ts`, `seedActionDefinitions.ts`),
+  3 test files, and the governing docs: exactly the DEF-260 + DEF-264 work.
+- Worktree removed after measurement; nothing mutated.
+
+**What still blocks the deploy — all three are PROCESS, none are code, and I am naming
+the owner of each rather than absorbing them:**
+1. **`572c3d3` and `aae6ac9` are unreviewed** (the reviewer's seat produced nothing for
+   iterations 58/59). DEPLOY_ON='sound' therefore needs the ARBITRATION path — the
+   newest review's own directive 2 says exactly this, and it is the orchestrator's move.
+2. **The tree is dirty with a live session's WIP** — `brainComposer.ts` (+21/-4,
+   DEF-268 timezone work, mid-flight), `brain_change_log.md`/`brain_chat_log.md`
+   (CL-043, DEF-268..271 rows, filed within the hour), untracked `product_size_*.md`
+   at the repo root. `deploy.sh`'s dirty-tree refusal will correctly fire until that
+   session commits. Committing another session's half-written work is how BLD-001
+   happened; I did not touch it.
+3. **The benchmark measured nothing** (`iter-57-post-build.json`: 0/12, every case
+   "judge returned nothing") — the newest review's directive 1, explicitly assigned to
+   the orchestrator (the harness env, not Brain code). I add one datum: my matrix runs
+   use `env -u GEMINI_API_KEY` only in the child shell (iteration-27 leaked-key
+   precedent); that cannot leak into the orchestrator's separate benchmark process, so
+   the missing-key suspect is the benchmark runner's own environment.
+
+**Reviewer's directives, accounted for one by one:** #1 measurement — orchestrator's,
+named above, one diagnostic datum contributed. #2 deploy the backlog — this entry IS
+the builder's half: HEAD certified green in isolation, range enumerated, no migration;
+the arbitration and `deploy.sh` run are the orchestrator's. #3 Self-Pruning attempt 10
+— the review itself says "do NOT attempt this while the benchmark cannot score";
+deferred on the reviewer's own instruction, not silently.
+
+**Governing docs (rule 5):** no Brain change was made, so no DEF row moves — stated
+per the contract rather than minting a row to look productive. Verdict on the mandate
+itself: *progressing* — the blocker inventory for the 63-iteration deploy drought is
+now three named process items with owners, not an unknown.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 from this turn. What changes for the owner when the orchestrator
+acts on it: DEF-264 ("delete all" executes) and DEF-260 (item source answered
+truthfully) reach him — the two top items on his deck.
+**MECHANISM:** a clean-room verification that removes the last code-side doubt from
+the deploy decision.
+**FALSIFIER:** the deploy-phase matrix at `aae6ac9` disagreeing with these numbers
+(environment drift, the DEF-231 shape); or a migration surfacing in the range that
+`git diff --name-only` did not show.
+
+**Symptom tag:** none closed by me this turn — said plainly. `Told Brain to delete
+all his open items, confirmed, and nothing was deleted` and the item-source tag are
+closed by DEPLOYING `aae6ac9`/`572c3d3`, which this entry certifies ready; the tags
+belong to those commits' rows, not to this verification.
+
+**ATTEMPT-10 OBSTACLE STATEMENT (required):** unchanged from iterations 56/57 and now
+proven rather than believed — **the obstacle is not the building; it is that built
+work does not ship and the loop cannot see.** HEAD is green in a clean room, carries
+the owner's two top deck items, and has sat undeployed while the review seat was dead
+and the benchmark returned null. Nothing in `server/src` can move Self-Pruning until
+the pipe between HEAD and production is unblocked.
+
+**What I did NOT do:** touch any src/test/prisma file (mandate override, evidence
+above); commit the live session's dirty files (named, theirs); run `npm run build`
+(dist immutable, CLAUDE.md — `--noEmit` is the build check); deploy (never mine).
+
+**Honest prediction:** `deploy.sh` at `aae6ac9`, run after the concurrent session
+commits, passes its matrix and ships both deck items. What would prove me wrong: a
+runtime-only failure the suite cannot see (the live acceptance for "delete all" is a
+production WhatsApp turn — that check is the deploy report's, and it must be stated
+there as VERIFIED or NOT VERIFIED, never assumed from this green).
