@@ -1947,3 +1947,84 @@ commits, passes its matrix and ships both deck items. What would prove me wrong:
 runtime-only failure the suite cannot see (the live acceptance for "delete all" is a
 production WhatsApp turn — that check is the deploy report's, and it must be stated
 there as VERIFIED or NOT VERIFIED, never assumed from this green).
+
+## Iteration 62 — 2026-09-01
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/whatsapp/WebjsProvider.ts` and
+`server/src/services/whatsapp/WhatsAppInbound.ts` (+ new suite
+`server/tests/def267QuotedTextReachesTheModel.test.ts`). **Deck objective taken:
+`whatsapp-quoted-text-not-read`** — the run's single listed tag, DEF-267(b),
+owner-demanded verbatim (*"build. your ability so you can read txt from quoted
+message"*), located by the analyst at the `WebjsProvider.ts` ingest and confirmed
+before coding: only `quotedStanzaID` was captured; `quotedBody` existed nowhere.
+
+**The class fix, at the transport boundary so no consumer can arrive bare:**
+- `WebjsProvider.ts:1700` — `extractQuotedBody()`: the quoted BODY from the same
+  defensive `_data` shapes the id capture has always used; `caption` fallback for
+  quoted media; capped at 500; empty → absent (never `""`). Exported for tests.
+- `WebjsProvider.ts:1122` — the capture site populates `quotedBody` beside
+  `quotedProviderId`. The id is a delegation-correlation key; the body is the
+  referent his words point at.
+- `WhatsAppInbound.ts:33` — `InboundParams.quotedBody` carries it across the
+  boundary; `:78` `composeQuotedReplyTurn()` renders the model-visible turn: his
+  words FIRST (downstream consumers key on the start of the turn), the quoted text
+  after, verbatim, as a labelled observation — the `[image received — contents:]`
+  idiom this path already uses for what arrived alongside what was said; `:206`
+  wires it into `queryText`. The audit insert keeps the RAW body on purpose.
+- Governance: evidence provision, not authority movement — the model still judges
+  everything; the guardrail served is **target grounding**. No user-facing sentence
+  is hardcoded: the marker is model-facing input; wording stays the model's.
+
+**INCIDENT, stated before anyone else finds it: half this change was committed by
+the concurrent session, not by me.** A live session (DEF-273/274/276) and I were in
+this tree simultaneously. My WebjsProvider hunks were on disk when it committed
+`d85d4a8` at 14:57, and its `git add` of that file swept them in — its commit
+message does not name them, and `extractQuotedBody` shipped without its declared
+`InboundParams.quotedBody` counterpart, leaving HEAD dependent on my then-uncommitted
+half. This commit completes the pair. Attribution for the WebjsProvider half
+therefore lives HERE, not in `d85d4a8`'s message. (Iteration 60 named this exact
+hazard — "a WIP migration sitting in the tree ships with the next deploy if git add
+is not disciplined" — and it has now happened in the code path. The orchestrator
+should treat single-tree dual-builder turns as the root cause; I could not have
+staged around a commit that happened between my edits.)
+
+**Verification (from `server/`, re-run AFTER the last edit and AFTER the concurrent
+session's commits `d85d4a8`/`8d75e77` moved HEAD under me):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3189 passed | 0 failed** (262 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3218). New suite:
+  **11 passed | 0 failed** — capture shapes (body / caption fallback / absent /
+  whitespace / cap), turn composition (verbatim quote, words-first pinned, identity
+  when bare, cap), three wiring pins labelled as pins.
+- `git diff --check` → exit 0. `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: no query, no write touched; pure capture + string
+  composition on an existing path.
+
+**Governing docs (rule 5): progressing** — first fix commit against this class; the
+capture gap is a NEW root cause (a field never captured), not a recurrence of a
+guard or wording defect. DEF-267 row updated: (b) CODE-COMPLETE with numbers, (a)
+still OPEN, said plainly.
+
+**CAPABILITY:** Memory
+**PREDICTED:** a reply-to now carries its referent into the turn, so "I'm not sure
+which item you're asking about" against a quoted message becomes unnecessary; no
+score claim — the change is unmeasured until a live reply-to turn.
+**MECHANISM:** capture at the transport boundary, one extractor + one composer,
+both exported and tested; every downstream consumer inherits the referent.
+**FALSIFIER:** any post-deploy reply-to where Brain cannot say what was quoted; or
+a `[replying to:]` marker leaking into an outbound reply.
+
+**What I did NOT do, named:** DEF-267(a) (the 30-of-39 count sentence — separate
+wording defect, separate turn); the regression pairing (archive Chat + `chatN`
+scenario) for Session 17 — OWED, recorded in the DEF row; the corpus files were the
+live session's for most of this turn and I did not race it twice. Self-Pruning
+attempt 11 divergence declared: the deck section names this tag as THE objective of
+this run, and it is the analyst's #5 owed debt; the campaign's own increments remain
+untouched and I say so rather than dressing this as Self-Pruning.
+
+**Honest prediction:** deployed, his exact Session-17 ask works — he replies to a
+Brain message and Brain answers about the quoted line. What would prove me wrong: a
+WA Web build whose `_data.quotedMsg` carries neither `body` nor `caption` (the
+extractor returns absent and the turn arrives bare, the pre-fix behaviour — visible
+as a reply-to turn with no `[replying to:]` in the composed context).

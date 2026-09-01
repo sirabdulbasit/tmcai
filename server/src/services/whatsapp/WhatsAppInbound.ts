@@ -25,6 +25,12 @@ export interface InboundParams {
   /** Provider id of the message this inbound quotes/replies to, when
    *  the transport exposes it — preferred delegation correlation key. */
   quotedProviderId?: string;
+  /** DEF-267(b) — the TEXT of the message this inbound quotes/replies to,
+   *  when the transport exposes it. The id above is a correlation key; this
+   *  is the referent the sender's words point at. Without it a reply-to
+   *  reaches the model as a bare message and "which item do you mean?" is
+   *  the only honest answer it can give. */
+  quotedBody?: string;
   /** DEF-075 — the RAW WhatsApp sender id, e.g. `255043747987458@lid`.
    *  `fromNumber` may be a SYNTHETIC phone derived from a LID when neither
    *  getContact() nor the mapping API could resolve the real number. The
@@ -54,6 +60,26 @@ export function inboundDedupKey(params: Pick<InboundParams, 'waMessageId' | 'fro
   return params.waMessageId
     ? `id:${params.waMessageId}`
     : `fallback:${params.fromNumber}:${params.messageBody}`;
+}
+
+/**
+ * DEF-267(b) — `whatsapp-quoted-text-not-read`. Compose the model-visible turn
+ * for a reply-to: the sender's own words FIRST (several downstream consumers
+ * key on the start of the turn), then the quoted text as a labelled
+ * observation — the same idiom `[image received — contents:]` and
+ * `[voice note]` already use to carry what arrived alongside what was said.
+ * This is evidence formatting, not a reply: the marker is model-facing input,
+ * the wording of every answer stays the model's.
+ *
+ * The quoted text is included VERBATIM in quotes so the model can ground
+ * pronouns against it ("from where you took this?" has its antecedent in the
+ * same turn), and capped because a quote is a referent, not a payload.
+ */
+export function composeQuotedReplyTurn(messageBody: string, quotedBody?: string | null): string {
+  const quoted = String(quotedBody ?? '').trim();
+  if (!quoted) return messageBody;
+  const capped = quoted.length > 500 ? `${quoted.slice(0, 500)}…` : quoted;
+  return `${messageBody}\n\n[replying to: "${capped}"]`;
 }
 
 
@@ -173,7 +199,11 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
 
   const userId = resolvedIdentity.userId;
   const userName = resolvedIdentity.displayName || resolvedIdentity.userName || 'there';
-  let queryText = params.messageBody;
+  // DEF-267(b) — a reply-to arrives with its referent attached, never as a
+  // bare message. The audit insert below deliberately keeps the RAW body:
+  // the quoted text belongs to the turn the model reads, not to the record
+  // of what the sender typed.
+  let queryText = composeQuotedReplyTurn(params.messageBody, params.quotedBody);
 
   // Now that registration is confirmed, log the inbound to
   // whatsapp_messages with the resolved user_id (no more SA fallback).
