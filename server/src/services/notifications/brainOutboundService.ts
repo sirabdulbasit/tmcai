@@ -352,30 +352,61 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     'brain_health_alert', 'brain_daily_digest', 'deploy_report',
     'self_upgrade', 'unnotified_answered_ask', 'connector_stale',
   ]);
-  if (DIAGNOSTIC_KINDS.has(req.kind)) {
+
+  // DEF-271 — HOUSEKEEPING gets a slice too, for the same reason and by the same rule.
+  //
+  // Owner, 2026-09-01: *"it sent multple messages and brain only notify me 2 messages"*. Four
+  // people's messages were relayed and two were suppressed. Not dedup — all four carried
+  // distinct dedup keys AND distinct content hashes. It was this cap, with 18 of 20 already
+  // spent, and the breakdown is the point:
+  //
+  //     10  open_item_draft_ask      <- asking him for deadlines
+  //      5  brain_prompt
+  //      2  wa_counterpart_message   <- actual human beings
+  //      1  day_brief
+  //
+  // Half his daily budget went on asking for a deadline on items like "Join Google Meet call",
+  // and real people were dropped to pay for it. The diagnostic tier above already states the
+  // principle — "never more useful than the reminder they would displace" — and a nag is never
+  // more useful than a message from a person. It was simply not in a tier.
+  const HOUSEKEEPING_KINDS = new Set([
+    'open_item_draft_ask', 'brain_prompt', 'open_item_overdue',
+  ]);
+
+  // ONE tier mechanism, two tiers. Copy-pasting the diagnostic block for housekeeping would
+  // make this the 11th `protection-with-two-implementations` in a codebase that has recorded ten
+  // — and the two would drift the moment either budget rule changed.
+  const TIERS: Array<{ kinds: Set<string>; configKey: string; defaultPct: number; label: string }> = [
+    { kinds: DIAGNOSTIC_KINDS, configKey: 'notify.diagnostic_budget_pct', defaultPct: 25, label: 'diagnostic' },
+    { kinds: HOUSEKEEPING_KINDS, configKey: 'notify.housekeeping_budget_pct', defaultPct: 50, label: 'housekeeping' },
+  ];
+
+  for (const tier of TIERS) {
+    if (!tier.kinds.has(req.kind)) continue;
     const { getBehaviorValue } = await import('../behaviorConfig');
-    const pct = await getBehaviorValue('notify.diagnostic_budget_pct', {
+    const pct = await getBehaviorValue(tier.configKey, {
       userId: user.id, clientNumber: user.clientNumber,
-    }).catch(() => 25);
-    const diagnosticCap = Math.max(1, Math.floor((dailyCap * pct) / 100));
-    const diagnosticsToday = await prisma.brainUserMessage.count({
+    }).catch(() => tier.defaultPct);
+    const tierCap = Math.max(1, Math.floor((dailyCap * pct) / 100));
+    const tierToday = await prisma.brainUserMessage.count({
       where: {
         clientNumber: user.clientNumber,
         userId: user.id,
         createdAt: { gte: since24h },
         status: { in: ['sent', 'partial'] },
-        kind: { in: [...DIAGNOSTIC_KINDS] },
+        kind: { in: [...tier.kinds] },
       },
     }).catch(() => 0);
-    if (diagnosticsToday >= diagnosticCap) {
-      log.warn('diagnostic_budget_exceeded', {
-        userId: user.id, kind: req.kind, diagnosticsToday, diagnosticCap, dailyCap,
+    if (tierToday >= tierCap) {
+      log.warn('tier_budget_exceeded', {
+        userId: user.id, kind: req.kind, tier: tier.label, tierToday, tierCap, dailyCap,
       });
       return await record({
         ...req, user, channel: 'text', urgency,
         status: 'suppressed', summary: req.summary,
-      }, `diagnostic_budget_exceeded (${diagnosticsToday}/${diagnosticCap} of ${dailyCap})`);
+      }, `${tier.label}_budget_exceeded (${tierToday}/${tierCap} of ${dailyCap})`);
     }
+    break;   // a kind belongs to at most one tier; the first match decides
   }
 
   if (sentToday >= dailyCap) {

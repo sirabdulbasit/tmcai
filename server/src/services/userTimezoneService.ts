@@ -191,6 +191,29 @@ export function formatInZone(tz: string, asOf: Date): string {
   }
 }
 
+/**
+ * DEF-268 — an HOUR in the owner's zone, for timestamps that go INTO the prompt.
+ *
+ * The clock line this module also builds promises the model: *"Every date and time above and
+ * below is already in that zone… do NOT convert, shift or re-render an hour."* Three blocks in
+ * brainComposer were handing it `toISOString()` + ' UTC' instead, so the model obeyed the
+ * instruction, did not convert, and told the owner 12:58 when it was 17:58. The promise has to
+ * be made true at the source rather than argued with in a prompt.
+ *
+ * ON FAILURE IT LABELS, never guesses. An unresolvable zone returns the UTC hour WITH the
+ * marker, because an unlabelled hour is exactly what the clock line forbids — and a wrong hour
+ * wearing the owner's timezone is the shape that produced "Are u traveling back to time?".
+ */
+export function formatTimeInZone(tz: string, at: Date): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(at);
+  } catch {
+    return at.toISOString().slice(11, 16) + ' UTC';
+  }
+}
+
 /** Signed offset minutes east of UTC for a zone at an instant
  *  (e.g. Karachi +300, New York −300 in winter / −240 in summer). */
 export function offsetMinutesInZone(tz: string, at: Date): number {

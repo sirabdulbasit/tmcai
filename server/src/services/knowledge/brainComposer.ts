@@ -30,7 +30,7 @@ import type { RetrievalPlan } from './brainRetrievalPlanner';
 // C-3 — Brain's own push record. Statically imported because it is needed on
 // both composer paths; the module is read-only and cheap to load.
 import { buildPushHistoryBlock } from '../selfpruning/pushHistoryBlock';
-import { renderOwnerClockLine } from '../userTimezoneService';
+import { renderOwnerClockLine, formatTimeInZone, formatInZone, resolveUserTimezone } from '../userTimezoneService';
 import { actionReceiptMarker, lastBrainQuestion, answerThenAsk, actionAppliedMarker, appliedChanges, outstandingSlots, ledgerReadbackMarker } from './actionReceipt';
 import { PERSON_REFERENCE_RULE, statesPersonReferenceRule } from './personReference';
 import { renderOpenItemsHeader, OPEN_ITEMS_PAGE } from './openItemsCompleteness';
@@ -5369,6 +5369,8 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
     clientNumber, userId, max,
   ).catch(() => [] as any[]);
   if (rows.length === 0) return '# Recent emails (last 24h)\n(no emails received in the last 24 hours)';
+  // One resolution per block — the zone cannot differ between rows of the same list.
+  const ownerTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const lines = rows.map((r) => {
     const fromEmail = r.sender_email
       ? (r.sender_email.match(/<([^>]+)>/)?.[1] ?? r.sender_email)
@@ -5376,7 +5378,11 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
     const fromName = r.sender_name?.trim() || '';
     const subj = String(r.raw_payload?.subject ?? r.raw_payload?.headers?.subject ?? '').slice(0, 120) || '(no subject)';
     const snippet = String(r.raw_payload?.snippet ?? '').replace(/\s+/g, ' ').slice(0, 140);
-    const when = new Date(r.created_at).toISOString().slice(11, 16) + ' UTC';
+    // DEF-268 — the owner's zone, not UTC. The clock line built by userTimezoneService promises
+    // the model "every date and time above and below is already in that zone… do NOT convert",
+    // and this line used to hand it `12:58 UTC`. The model obeyed the promise, did not convert,
+    // and told him 12:58 when it was 17:58. Made true at the source instead of argued with.
+    const when = formatTimeInZone(ownerTz, new Date(r.created_at));
     return `- [${when}] From: ${fromName ? `${fromName} <${fromEmail}>` : fromEmail} · Subject: ${subj}${snippet ? `\n    ${snippet}` : ''}`;
   });
   // DEF-204 — "10 of last 10" reads as complete but is the CAP. The block now
@@ -5450,11 +5456,17 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     ).catch(() => [] as any[]);
     for (const w of wikiRows) known.set(w.phone, w.title);
   }
+  // One resolution per block — the zone cannot differ between rows of the same list.
+  const ownerTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const lines = rows.map((r) => {
     const phone = (r.sender_phone ?? '').replace(/[^\d+]/g, '');
     const sender = known.get(phone) ?? r.sender_name?.trim() ?? '(unknown sender)';
     const body = String(r.raw_payload?.body ?? r.raw_payload?.text ?? '').replace(/\s+/g, ' ').slice(0, 200);
-    const when = new Date(r.created_at).toISOString().slice(11, 16) + ' UTC';
+    // DEF-268 — the owner's zone, not UTC. The clock line built by userTimezoneService promises
+    // the model "every date and time above and below is already in that zone… do NOT convert",
+    // and this line used to hand it `12:58 UTC`. The model obeyed the promise, did not convert,
+    // and told him 12:58 when it was 17:58. Made true at the source instead of argued with.
+    const when = formatTimeInZone(ownerTz, new Date(r.created_at));
     const knownTag = known.has(phone) ? '' : ' [not in your contacts]';
     return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
   });
@@ -5958,11 +5970,16 @@ async function buildCalendarSnapshot(
   });
 
   const label = today ? 'today' : tomorrow ? 'tomorrow' : thisWeek ? 'this week' : 'next 14 days';
+  // DEF-268 — resolved ONCE, outside the formatter. The zone cannot differ between meetings in
+  // one list, and awaiting inside a synchronous map is what made "Office starting at 5:00 AM"
+  // (05:00 UTC = 10:00 PKT) reachable in the first place.
+  const ownerTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const fmt = (m: Meeting) => {
     const start = new Date(m.startIso);
     const when = m.allDay
       ? start.toISOString().slice(0, 10)
-      : start.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      // Same rule as the message blocks: the owner's zone, or an explicit label.
+      : formatInZone(ownerTz, start);
     const who = m.attendees.slice(0, 6).join(', ') + (m.attendees.length > 6 ? `, +${m.attendees.length - 6}` : '');
     const extras: string[] = [];
     if (m.location) extras.push(`at ${m.location}`);
