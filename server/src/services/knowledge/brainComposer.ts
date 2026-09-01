@@ -5438,7 +5438,64 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
       LIMIT $3`,
     clientNumber, userId, max,
   ).catch(() => [] as any[]);
-  if (rows.length === 0) return `${degradedHeader}# Recent WhatsApp messages (last 24h)\n(no WhatsApp messages received in the last 24 hours)`;
+
+  // ── DEF-270: THE RELAY LOG IS ALSO A RECORD OF MESSAGES RECEIVED ────────────────────────
+  // Unregistered senders' bodies are deliberately kept out of feed_events (owner ruling
+  // 2026-06-10), and Section 35 (2026-08-04) relays them to him anyway. Reading only
+  // feed_events therefore made Brain answer *"I don't see any new messages in the last hour"*
+  // fourteen minutes after relaying one — and repeat it when challenged. True of the store it
+  // read; false about the world.
+  //
+  // So the relays are read too, and labelled for what they are: announced, not retained. This
+  // reverses neither ruling — it reports Brain's own outbound, which this table already audits.
+  const relays = await prisma.$queryRawUnsafe<Array<{ created_at: Date; status: string; metadata: any; dedup_key: string | null }>>(
+    `SELECT created_at, status, metadata, dedup_key
+       FROM brain_user_messages
+      WHERE client_number = $1 AND user_id = $2
+        AND kind = 'wa_counterpart_message'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY created_at DESC
+      LIMIT 40`,
+    clientNumber, userId,
+  ).catch(() => [] as any[]);
+
+  const relayTz = await resolveUserTimezone(userId).catch(() => 'UTC');
+  const relayBlock = relays.length === 0 ? '' :
+    `\n\n# Messages relayed from unregistered senders (last 24h — ${relays.length})\n`
+    + 'These arrived and were forwarded to the user. Their bodies are NOT retained in the message '
+    + 'log by policy, so this relay record is the only account of them — treat it as evidence the '
+    + 'messages EXIST. If asked whether anyone messaged, these count. A `suppressed` row means the '
+    + 'message arrived and the notification was withheld by a budget, NOT that nothing arrived.\n'
+    + relays.map((r) => {
+      // LEGACY FALLBACK, read-only, for rows written before `relayedBody` existed.
+      // The dedup key is `wa_counterpart:<identity>:<first 40 chars of body>`, so the text of
+      // an older relay is recoverable from it. This is NOT the dedup key being used as a data
+      // store — new relays carry `relayedBody`, and this branch only reads what is already
+      // there rather than leaving the owner told "text not recorded" about the very messages
+      // he is asking after.
+      const legacy = r.metadata?.relayedBody
+        ? ''
+        : String(r.dedup_key ?? '').split(':').slice(2).join(':');
+      const body = String(r.metadata?.relayedBody ?? legacy).replace(/\s+/g, ' ').slice(0, 200);
+      const when = formatTimeInZone(relayTz, new Date(r.created_at));
+      // An older relay predates `relayedBody`; say so rather than rendering an empty quote as
+      // though the sender had sent nothing.
+      // A legacy body is truncated at 40 chars by the key's own shape; say so rather than
+      // presenting a cut sentence as the whole message.
+      const truncated = !r.metadata?.relayedBody && body.length >= 40;
+      const what = body
+        ? `"${body}"${truncated ? ' (truncated — pre-metadata relay)' : ''}`
+        : '(text not recorded for this relay)';
+      return `- [${when}] from an unregistered sender · relay ${r.status} · ${what}`;
+    }).join('\n');
+
+  if (rows.length === 0) {
+    return `${degradedHeader}# Recent WhatsApp messages (last 24h)\n`
+      + (relays.length === 0
+        ? '(no WhatsApp messages received in the last 24 hours)'
+        : '(none from registered senders — but see the relayed messages below, which DID arrive)')
+      + relayBlock;
+  }
   // Resolve known names by phone match against entity_person rows the
   // user can see — keeps the rule "only people in your contacts get
   // named" honest while still surfacing the raw phone for unknowns.
@@ -5471,7 +5528,8 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
   });
   return `${degradedHeader}# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`
-    + `\n${completenessLine(rows.length, rows.length >= max, 'message')}`;
+    + `\n${completenessLine(rows.length, rows.length >= max, 'message')}`
+    + relayBlock;
 }
 
 /** Contact provenance block — ONLY built when the user's question

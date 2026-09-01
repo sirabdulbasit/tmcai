@@ -447,6 +447,25 @@ async function relayToOwner(
       `I have not replied to them.`,
     urgency: 'normal',
     dedupKey: `wa_counterpart:${params.fromNumber}:${params.body.slice(0, 40)}`,
+    // DEF-270 — WHAT WE TOLD HIM, recorded completely.
+    //
+    // Owner asked *"did any body message you in last hour?"* fourteen minutes after a relay and
+    // was told *"I don't see any new messages in the last hour"* — twice. It was true of every
+    // store the retrieval path reads: the 2026-06-10 ruling keeps unregistered senders' bodies
+    // out of `whatsapp_messages`, `whatsapp_sessions` and `feed_events`, and Section 35 (2026-08-04)
+    // then started ANNOUNCING those messages. Two correct rules, one system that reports messages
+    // it is forbidden to remember.
+    //
+    // This does NOT reverse the June ruling. The inbound is still never stored. What is recorded
+    // here is BRAIN'S OWN OUTBOUND — the relay it already sent him — which this table exists to
+    // audit and already held, truncated to 40 characters inside a dedup key. Parsing a dedup key
+    // as a data store is an accident waiting to happen, so the text gets a named home instead.
+    metadata: {
+      relayedBody: params.body.slice(0, 500),
+      // The stable identity, so a later "who was that?" can resolve through the alias table
+      // rather than through a string that merely looks like a phone number (DEF-269).
+      senderRef: (params as any).rawSenderId ?? params.fromNumber,
+    },
   } as any).catch((error: any) => {
     log.warn('counterpart relay to owner failed', { error: error?.message });
   });
