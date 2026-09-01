@@ -117,7 +117,20 @@ describe('DEF-276d — the echo is not deletable immediately', () => {
   it('gives up with a named failure rather than retrying forever', async () => {
     const del = vi.fn().mockRejectedValue(new Error('permanently gone'));
     expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('failed');
-    expect(del.mock.calls.length).toBe(PROBE_CLEANUP_BACKOFF_MS.length);
+    // two strategies per attempt: revoke-for-everyone, then delete-for-me
+    expect(del.mock.calls.length).toBe(PROBE_CLEANUP_BACKOFF_MS.length * 2);
+  });
+
+  it('falls back to delete-for-me when revoke-for-everyone is refused', async () => {
+    // In the account's own chat there is nobody to revoke for; removing it from his view is
+    // delete(false). This is the strategy that matters for the owner's screenshot.
+    const del = vi.fn().mockImplementation(async (everyone: boolean) => {
+      if (everyone) throw new Error('canSenderRevokeMsg is false');
+      return undefined;
+    });
+    expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('deleted');
+    expect(del).toHaveBeenNthCalledWith(1, true);
+    expect(del).toHaveBeenNthCalledWith(2, false);
   });
 
   it('does not sleep at all when the first attempt works', async () => {

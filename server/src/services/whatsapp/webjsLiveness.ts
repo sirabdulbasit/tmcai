@@ -322,15 +322,25 @@ export async function cleanUpProbeMessage(
     // The reason is LOGGED now. Both earlier versions of this fix failed silently in production
     // and were caught only because the outcome was named; a bare 'failed' repeats that mistake
     // one level down.
+    // TWO STRATEGIES, and the second is the semantically correct one for a self-chat.
+    // `delete(true)` revokes for everyone, which needs `canSenderRevokeMsg` to hold; in the
+    // account's OWN chat there is no one else to revoke for, and the goal here is only to remove
+    // it from the owner's view — which is exactly `delete(false)`, delete-for-me.
+    //
+    // The reason is logged at WARN. It was at `debug` for one deploy and therefore invisible:
+    // production filters debug out, so the third version of this fix diagnosed nothing either.
+    // Three silent failures in a row is enough — this line has to be readable.
     for (const waitMs of PROBE_CLEANUP_BACKOFF_MS) {
       if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
-      try {
-        await echoed.delete(true);
-        return 'deleted';
-      } catch (err: any) {
-        log.debug('probe message delete attempt failed', {
-          afterMs: waitMs, error: String(err?.message ?? err).slice(0, 160),
-        });
+      for (const everyone of [true, false]) {
+        try {
+          await echoed.delete(everyone);
+          return 'deleted';
+        } catch (err: any) {
+          log.warn('probe message delete attempt failed', {
+            afterMs: waitMs, everyone, error: String(err?.message ?? err).slice(0, 200),
+          });
+        }
       }
     }
     return 'failed';
