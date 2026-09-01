@@ -1745,3 +1745,113 @@ attempt 1 and stays whatever it was. What would prove me wrong: a degraded-state
 render that still authorizes an absence claim through wording my regex missed — the
 AUTHORISES pattern covers the two phrasings that have ever existed, and a third
 phrasing would evade it.
+
+## Iteration 57 — 2026-09-01
+
+**Files named in the first two tool calls and changed:**
+`server/src/services/knowledge/brainComposer.ts`,
+`server/src/services/selfpruning/pushHistoryBlock.ts` (+
+`server/src/services/knowledge/reasoningCompose.ts` and the suite,
+`server/tests/def197PushHistoryBlock.test.ts`). **REMEDIATION TURN, attempt 3 of 3,
+on the Iteration-2 WRONG review.** No new review section exists (the review seat has
+been dead since 08-25 — DEF-258), so the same findings govern. Iteration 56 closed
+the HIGH (DEF-257, `b643016`) and named exactly two residues on the record; this
+turn is those two residues, nothing else. DEF-259.
+
+**Residue 1 — Codex directive 2, now closed at the real assemblers.** The directive:
+*"Test the final owner-visible path, not instruction strings … Run both reasoning
+and legacy composition through the rendered answer and assert neither unrelated
+title/count appears. Mutation: remove subject scoping and both tests must fail."*
+Iteration 56 named the obstacle: both assemblers were module-private.
+
+- `brainComposer.ts:1692-1696` — `assembleSystemPrompt` EXPORTED (no behaviour
+  change; every internal read it performs is already try/catch-degraded, which is
+  what makes it runnable in a test with a stub database).
+- `reasoningCompose.ts:319-324` — `renderUserMessage` EXPORTED (no behaviour
+  change; the `parseReasoningOutput`/DEF-256 precedent for both).
+- `def197PushHistoryBlock.test.ts:807` — the Fujairah/ShireMe/Vision fixture runs
+  through the REAL `assembleSystemPrompt` and the REAL `renderUserMessage` to the
+  final prompt each model receives, asserting the withheld titles, keys, counts and
+  timestamps never appear and the scoped block does.
+- **The reviewer's own mutation criterion, EXECUTED and recorded:** scoping removed
+  (`matched = allRepeats`) → **14 of 67 fail, and the two final-path tests are among
+  them by name** ("LEGACY path —…", "REASONING path —…"). Restored; grep-verified
+  0 mutants; 67/67 green.
+- Honest boundary, stated: the MODEL itself is still not executed — its output is
+  stochastic and cannot be asserted deterministically. The final prompt it is handed
+  is now the tested artifact on both paths. If the reviewer reads "through the
+  rendered answer" as requiring a live model turn, that is a live-acceptance step,
+  not a unit test, and it belongs to the deploy phase's verification.
+
+**Residue 2 — the scoped no-match refusal stated a FALSE reason.**
+`pushHistoryBlock.ts:415-436`: the branch reused `incompletenessReasons(s, 0, …)`,
+whose first bullet says "the list was cut to 12 lines" — a line-cap that never
+happened; the subjects were withheld by title scoping. The block now states the true
+reason (N repeat subjects exist but none of their titles matches this conversation —
+and the item under discussion may be one of them under different words), keeps the
+genuine ⚠ reasons alongside, and drops the lie. The refusal itself STANDS whenever
+anything was withheld — title matching is conservative, so the discussed item may be
+IN the record under words he did not repeat, and authorising "at most once" there
+would be the B12 fabrication in reverse. Only the provably-safe state (zero repeat
+subjects exist AND the record is complete — nothing withheld, so no title-match
+uncertainty exists) now authorises the window-bound read, still through the single
+gated ABSENCE RULE, so DEF-257's one-implementation property holds — extended by
+test to the new state ("authorises … exactly ONCE window-bound", suite line 735).
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3087 passed | 10 failed** (7 expected
+  fail | 21 skipped | 1 todo, of 3126). **ALL 10 failures are in
+  `tests/orchestratorSpend.test.ts`, at `orchestratorSpendService.ts:514` — a line
+  inside 93 UNCOMMITTED insertions from a concurrent session** (`git diff --stat
+  HEAD` shows +93/-1 on that file; `git show HEAD:…` does not contain the failing
+  code). Not mine, not fixed by me, stated rather than absorbed — the iteration
+  51-b precedent. Excluding that one WIP file:
+  `npx vitest run --exclude tests/orchestratorSpend.test.ts` → **3073 passed |
+  0 failed**. My touched suite: **67 passed | 0 failed**.
+- `git diff --check` → exit 0, clean
+- `npm run build` NOT run — `server/dist` is immutable (CLAUDE.md); `--noEmit` is
+  the build check.
+
+**Tenant/fail-closed audit of this diff:** no query and no write touched. Two
+export keywords, one string-building branch, tests. The module's one query
+(`resolveSubjectTitles`) remains scoped by `id AND clientNumber AND userId`.
+
+**Governing docs (rule 5), verdict: circling at the class, and the fix is the
+class's own medicine** — the false reason was `protection-with-two-implementations`'
+cousin: a reason function written for one state applied to a state whose true cause
+it cannot name. The fix makes the reason state-specific rather than patching the
+sentence. DEF-259 row written.
+
+**CAPABILITY:** Accurate Communication
+**PREDICTED:** +0 — closes the review's last open directive and removes a false
+sentence from the model's instructions; no score claim.
+**MECHANISM:** the final prompt is now the tested artifact on both composer paths,
+and the refusal's stated reason is true in every state.
+**FALSIFIER:** a composed prompt on either path containing a withheld title; or a
+scoped no-match block still claiming a line cap; or a degraded state authorising
+an at-most-once read.
+
+**Symptom tag:** none closed on the deck — said plainly. The deck's three open tags
+(delete-by-source fabrication, `whatsapp-quoted-text-not-read`, invented rule
+sources) are untouched; a mandated remediation turn cannot also chase them.
+**Campaign divergence declared:** target was Self-Pruning (attempt 9); remediation
+wins on scope. **On the attempt-9 question the harness asked directly: I believe the
+REAL obstacle is not the building — it is that NOTHING SHIPS AND NOTHING IS
+REVIEWED.** 62 iterations deployed nothing; the review seat has been dead since
+08-25 (DEF-258); DEF-253/257/259 and the C-3 surface itself sit CODE-COMPLETE and
+unreviewed while Grok scores what production shows. That is a finding for the
+orchestrator, not a build task: the loop needs a deploy of the reviewed-or-arbitrated
+backlog and a live review seat more than it needs a tenth attempt at new Self-Pruning
+code from me.
+
+**What I did NOT do, named:** the other session's spend-service failures (theirs,
+uncommitted, quarantined by exclusion and reported); any deck symptom tag; any new
+Self-Pruning increment (divergence above); operator directives beyond this scope —
+none newer than what iteration 56 already addressed was found in the tail.
+
+**Honest prediction:** every numbered risk and directive of the Iteration-2 review
+now has either a shipped fix with a named commit or an on-the-record boundary
+statement; the review should be closeable. What would prove me wrong: the reviewer
+reading directive 2 as requiring a live model execution in tests — in which case the
+remaining step is a deploy-phase live turn, which the Builder cannot run.

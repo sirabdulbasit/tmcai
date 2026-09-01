@@ -316,7 +316,12 @@ function renderActionsBlock(actions: any[]): string {
   return lines.join('\n');
 }
 
-function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset: string }): string {
+// DEF-259 — exported so the FINAL reasoning-path prompt is testable through the
+// real assembler (Codex iteration-2 directive 2: "test the final owner-visible
+// path, not instruction strings"). Same precedent as `parseReasoningOutput`,
+// exported for DEF-256 so the real parser is tested rather than a
+// re-implementation. No behaviour change.
+export function renderUserMessage(input: ReasoningInput, tzAnchor: { tz: string; offset: string }): string {
   const parts: string[] = [];
   // Today's date + the user's timezone — needed so reasoning can
   // resolve relative phrases ("monday", "tomorrow at 6pm", "next

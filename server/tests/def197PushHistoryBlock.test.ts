@@ -722,6 +722,169 @@ describe('DEF-257 — no render state authorises an absence claim outside the ga
 });
 
 /**
+ * DEF-259 — the scoped no-match refusal must state a TRUE reason.
+ *
+ * Named as unfinished in iteration 56's own build entry: the scoped no-match
+ * branch passed `incompletenessReasons(s, 0, allRepeats.length)`, whose first
+ * bullet reads "the list was cut to 12 lines" — a line-cap that never happened.
+ * The subjects were withheld by SCOPING. The refusal is correct (title matching
+ * is conservative; the item he means may be in the record under words he did
+ * not repeat), but a false reason in the sentence that explains the refusal
+ * teaches the model to distrust the block exactly where it must obey it.
+ */
+describe('DEF-259 — the scoped no-match refusal states the true reason', () => {
+  const withheldState = () => renderPushHistoryBlock(
+    summary({ subjects: [subject({ subjectKey: 'item:a', reached: 3 })] }),
+    new Map([['item:a', 'ShireMe Recruiting Portal Application Testing']]),
+    'Why did you remind me about the Fujairah pricing twice?',
+  );
+
+  it('names SCOPING as the reason, not a line cap that never happened', () => {
+    const out = withheldState();
+    expect(out).toMatch(/1 repeat-pushed subject\(s\) exist in this window but none of their titles\s+matches this conversation/);
+    // Mutation: restoring the old `incompletenessReasons(s, 0, …)` call dies here.
+    expect(out).not.toMatch(/the list was cut to 12 lines/);
+  });
+
+  it('says plainly that the withheld subject may be HIS item under different words', () => {
+    const out = withheldState();
+    expect(out).toMatch(/may be\s+one of them under different words/);
+    // And therefore still refuses — the DEF-257 property holds in this state.
+    expect(out).not.toMatch(/pushed at most once|not pushed more than once/i);
+  });
+
+  it('keeps the genuine ⚠ reasons alongside the scoping reason', () => {
+    const out = renderPushHistoryBlock(
+      summary({ truncated: true, subjects: [subject({ subjectKey: 'item:a', reached: 3 })] }),
+      new Map([['item:a', 'ShireMe Recruiting Portal Application Testing']]),
+      'Why did you remind me about the Fujairah pricing twice?',
+    );
+    expect(out).toMatch(/none of their titles\s+matches this conversation/);
+    expect(out).toMatch(/rows were truncated before they were read/);
+  });
+
+  it('AUTHORISES window-bound absence when NOTHING was withheld and the record is complete', () => {
+    // Zero repeat subjects exist, record complete: scoping withheld nothing, so
+    // the title-matching caveat is empty and "at most once in the window" is
+    // true for every subject — including the one under discussion.
+    const out = renderPushHistoryBlock(
+      summary({ windowHours: 36, subjects: [subject({ subjectKey: 'item:solo', reached: 1 })] }),
+      new Map([['item:solo', 'Send the revised Fujairah pricing to Latif']]),
+      'Why did you remind me about the Q3 headcount plan twice?',
+    );
+    const hits = out.match(/pushed at most once|not pushed more than once/gi) ?? [];
+    expect(hits).toHaveLength(1);               // still exactly ONE implementation
+    expect(out).toMatch(/IN THE LAST\s+36 HOURS/);
+  });
+
+  it('REFUSES even the nothing-withheld state when the record is degraded', () => {
+    const out = renderPushHistoryBlock(
+      summary({ truncated: true, subjects: [] }),
+      new Map(),
+      'Why did you remind me about the Q3 headcount plan twice?',
+    );
+    expect(out).not.toMatch(/pushed at most once|not pushed more than once/i);
+  });
+});
+
+/**
+ * DEF-259 — Codex iteration-2 directive 2, closed at the real assemblers.
+ *
+ * "Test the final owner-visible path, not instruction strings. … Run both
+ * reasoning and legacy composition through the rendered answer and assert
+ * neither unrelated title/count appears. Mutation: remove subject scoping and
+ * both tests must fail."
+ *
+ * Iteration 56 named the obstacle: both assemblers were module-private. They
+ * are now exported (the `parseReasoningOutput` precedent from DEF-256), so the
+ * fixture runs through the REAL `assembleSystemPrompt` (legacy) and the REAL
+ * `renderUserMessage` (reasoning) to the final prompt each model receives.
+ * What is deliberately NOT executed is the model itself — its output is
+ * stochastic and cannot be asserted deterministically; the prompt it is handed
+ * can be, and is. Mutation: removing `selectSubjectsForConversation` from the
+ * renderer re-exposes the titles and BOTH tests fail on content.
+ */
+describe('DEF-259 — the fixture through BOTH final prompt assemblies', () => {
+  const FUJAIRAH = 'Send the revised Fujairah pricing to Latif';
+  const SHIREME = 'ShireMe Recruiting Portal Application Testing';
+  const VISION = "Vision Metric's service sales package video";
+  const QUESTION = 'Why did you remind me about that one twice?';
+
+  beforeEach(() => { vi.resetModules(); });
+
+  async function buildBlock(): Promise<string> {
+    vi.doMock('../src/db/prisma', () => ({
+      default: {
+        openItem: {
+          findMany: async () => [
+            { id: 'shireme', title: SHIREME },
+            { id: 'vision', title: VISION },
+          ],
+        },
+      },
+    }));
+    vi.doMock('../src/services/selfpruning/inboundNoiseLedger', () => ({
+      summariseInboundNoise: async () => ({
+        clientNumber: 'TMC-0001', userId: 2, windowHours: 36,
+        since: new Date('2026-08-16T00:00:00Z'), until: new Date('2026-08-17T12:00:00Z'),
+        totalReached: 4, totalActed: 0, totalIgnored: 4,
+        truncated: false, canonicalisationFailed: false, unresolvedSubjects: [],
+        burstMaxSpanMinutes: 1440, bursts: [], unattributed: [], floods: [],
+        subjects: ['shireme', 'vision'].map((id) => ({
+          subjectKey: `item:${id}`,
+          producers: [{ producer: 'preactive_due_nudge', reached: 2, acted: 0 }],
+          reached: 2, acted: 0, ignored: 2, ignoredShare: 1,
+          firstAt: new Date('2026-08-17T06:01:00Z'), lastAt: new Date('2026-08-17T10:11:00Z'),
+          spanMinutes: 250, burst: false, samples: [],
+        })),
+      }),
+    }));
+    const { buildPushHistoryBlock } = await import('../src/services/selfpruning/pushHistoryBlock');
+    return buildPushHistoryBlock(2, 'TMC-0001', `Remind me to ${FUJAIRAH}\n${QUESTION}`, QUESTION);
+  }
+
+  it('LEGACY path — the final assembled system prompt carries the scoped block, never the withheld titles', async () => {
+    const block = await buildBlock();
+    const { assembleSystemPrompt } = await import('../src/services/knowledge/brainComposer');
+    const prompt = await assembleSystemPrompt({
+      intent: 'factual', isActionTurn: false,
+      persona: { systemPreamble: 'You are Nexeo.' }, schema: '',
+      capsBlock: '', overlayBlock: '', delegationMatrixBlock: '', radarBlock: '',
+      instructionsBlock: '', prefsBlock: '', memoriesBlock: '', replyContextBlock: '',
+      openItemsBlock: '', todayCalendarBlock: '', attentionBlock: '', candidatesBlock: '',
+      personIndexBlock: '', artifactsBlock: '', recentLog: '', openedBlock: '',
+      steeringHint: null, channel: 'web', todayDate: '2026-08-17',
+      pushHistoryBlock: block,
+    });
+    expect(prompt).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR THE ITEM UNDER DISCUSSION');
+    expect(prompt).not.toContain(SHIREME);
+    expect(prompt).not.toContain(VISION);
+    expect(prompt).not.toContain('item:shireme');
+    expect(prompt).not.toContain('2 pushes delivered');
+    expect(prompt).not.toContain('06:01');
+  });
+
+  it('REASONING path — the final user message carries the scoped block, never the withheld titles', async () => {
+    const block = await buildBlock();
+    const { renderUserMessage } = await import('../src/services/knowledge/reasoningCompose');
+    const msg = renderUserMessage({
+      userId: 2, clientNumber: 'TMC-0001',
+      question: QUESTION,
+      history: [{ role: 'user', text: `Remind me to ${FUJAIRAH}` }] as any,
+      channel: 'web', systemPrompt: '',
+      dataBlocks: { pushHistory: block },
+    }, { tz: 'UTC', offset: '+00:00' });
+    expect(msg).toContain('YOUR PUSH RECORD HAS NO ENTRY FOR THE ITEM UNDER DISCUSSION');
+    expect(msg).toContain(QUESTION);            // the conversation IS in front of the model
+    expect(msg).not.toContain(SHIREME);
+    expect(msg).not.toContain(VISION);
+    expect(msg).not.toContain('item:shireme');
+    expect(msg).not.toContain('2 pushes delivered');
+    expect(msg).not.toContain('06:01');
+  });
+});
+
+/**
  * DEF-203 — the regression guard fired on `B03-pronoun-followup`, and it was my
  * change that caused it.
  *

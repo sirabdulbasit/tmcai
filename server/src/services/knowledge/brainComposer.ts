@@ -1689,7 +1689,11 @@ For casual / small-talk turns: cites=[], gaps=[], action=null. Answer from perso
  *  Always returns a complete prompt; never throws. Dynamic blocks (open
  *  items, candidates, opened pages, etc.) are passed in as strings;
  *  empty strings are skipped. */
-async function assembleSystemPrompt(args: {
+// DEF-259 — exported so the FINAL legacy-path prompt is testable through the
+// real assembler (Codex iteration-2 directive 2). No behaviour change; every
+// internal read it performs is already try/catch-degraded, so a test can run
+// it with a stub database and still receive the assembled prompt.
+export async function assembleSystemPrompt(args: {
   intent: 'casual' | 'factual' | 'introspective' | 'day_brief' | string;
   isActionTurn: boolean;
   persona: { systemPreamble: string };

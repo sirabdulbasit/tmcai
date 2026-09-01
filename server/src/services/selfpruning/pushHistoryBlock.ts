@@ -412,7 +412,27 @@ export function renderPushHistoryBlock(
     lines.push('NOT listed here because they are not what he asked about — do not name one, and do not');
     lines.push('take a title from another block.');
     lines.push('');
-    lines.push(rulesFor(false, incompletenessReasons(s, 0, allRepeats.length), s.windowHours));
+    // DEF-259 — the refusal is right, the stated REASON was false. This call
+    // used to pass `incompletenessReasons(s, 0, allRepeats.length)`, whose
+    // first bullet reads "the list was cut to 12 lines" — a line-cap that never
+    // happened; the subjects were withheld by SCOPING. A false reason in the
+    // one sentence that explains the refusal teaches the model to distrust the
+    // block exactly where it must obey it. The refusal itself stands whenever
+    // anything was withheld, because title matching is conservative: the item
+    // he means may be IN the record under words he did not repeat verbatim, so
+    // authorising "at most once" here would be the B12 fabrication in reverse.
+    // Only when NOTHING was withheld (no repeat subjects exist at all) and the
+    // record is complete is absence genuinely informative in this branch.
+    const scopedInformative = allRepeats.length === 0 && absenceIsInformative(s, 0, 0);
+    const withheldReasons = [
+      ...(allRepeats.length > 0
+        ? [`${allRepeats.length} repeat-pushed subject(s) exist in this window but none of their titles`
+          + ' matches this conversation, so they are withheld — and the item under discussion may be'
+          + ' one of them under different words']
+        : []),
+      ...incompletenessReasons(s, allRepeats.length, allRepeats.length),
+    ];
+    lines.push(rulesFor(scopedInformative, withheldReasons, s.windowHours));
     return lines.join('\n');
   }
 
