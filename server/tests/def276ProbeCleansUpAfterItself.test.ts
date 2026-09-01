@@ -103,15 +103,19 @@ describe('DEF-276c — the echo is the handle that actually exists', () => {
  * because cleanup runs entirely off the critical path — the verdict is already recorded.
  */
 describe('DEF-276d — the echo is not deletable immediately', () => {
-  it('retries and succeeds when the first attempt loses the store race', async () => {
+  it('retries across the configured backoff when a later attempt succeeds', async () => {
+    // Kept as a property of the loop, but PROBE_CLEANUP_BACKOFF_MS is now [0] — the store-race
+    // hypothesis this was written for was disproved live: every attempt failed identically, so
+    // the failure is deterministic and the backoff only added noise. The loop still works if a
+    // future WA Web build makes the race real again.
     let calls = 0;
     const del = vi.fn().mockImplementation(async () => {
       calls += 1;
-      if (calls < 3) throw new TypeError("Cannot read properties of undefined (reading 'id')");
+      if (calls < 2) throw new TypeError("Cannot read properties of undefined (reading 'id')");
       return undefined;
     });
     expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('deleted');
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);   // revoke-for-everyone fails, delete-for-me succeeds
   });
 
   it('gives up with a named failure rather than retrying forever', async () => {

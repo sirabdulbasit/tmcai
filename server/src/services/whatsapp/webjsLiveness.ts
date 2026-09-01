@@ -23,7 +23,13 @@ export type LivenessStatus = 'connected_unverified' | 'connected' | 'liveness_fa
 export const PROBE_TIMEOUT_MS = 20_000;
 export const PROBE_MARKER_PREFIX = '[nexeo-liveness ';
 /** DEF-276d — waits before each delete attempt. Off the critical path, so patience is free. */
-export const PROBE_CLEANUP_BACKOFF_MS = [0, 500, 1_500, 4_000];
+/**
+ * DEF-276e — ONE attempt, not a backoff. The retries were added for a store-race hypothesis
+ * that the evidence then disproved: with `[0, 500, 1500, 4000]` every attempt failed
+ * identically, so the failure is deterministic and retrying only wrote eight warn lines and
+ * held a promise for six seconds per reconnect.
+ */
+export const PROBE_CLEANUP_BACKOFF_MS = [0];
 /** Total probe attempts per DEGRADATION EPISODE (lock 4): after this,
  *  no more self-messages until manual repair or a probe pass opens a
  *  new episode. */
@@ -337,8 +343,12 @@ export async function cleanUpProbeMessage(
           await echoed.delete(everyone);
           return 'deleted';
         } catch (err: any) {
+          // The message is a minified page-side throw (`"r"`), because `Message.delete()` runs
+          // its work inside `pupPage.evaluate` against WhatsApp Web's own modules. Logged whole
+          // anyway: when this starts working, this line is how we will know.
           log.warn('probe message delete attempt failed', {
             afterMs: waitMs, everyone, error: String(err?.message ?? err).slice(0, 200),
+            note: 'known upstream: whatsapp-web.js Message.delete() vs WA Web 2.3000.x',
           });
         }
       }
