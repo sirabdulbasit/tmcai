@@ -789,4 +789,75 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(write).toContain('findFirst');
     },
   },
+  {
+    id: 'chat22',
+    title: 'it refused to show content it was holding, and ate his answer to its own question',
+    fixCommits: ['pending'],
+    symptomTags: ['pending-prompt-eats-command', 'capability-denial', 'prompt-contradicts-itself'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+
+      // ── DEF-273: the evidence block must not argue about policy ────────────────────────
+      // It supplied all ten bodies AND told the model they were restricted "by policy"; the
+      // model generalised that into "I can't show you the message content for privacy reasons".
+      // Comments are stripped first — BLD-009: my own comment broke my own guard, twice, and
+      // this file's comment necessarily quotes the very words being banned.
+      const composerRaw = readFileSync(join(root, 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      const composer = composerRaw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+      const header = composer.slice(composer.indexOf('# Messages relayed from unregistered senders'));
+      const relayHeader = header.slice(0, header.indexOf('relays.map('));
+      expect(relayHeader).not.toMatch(/NOT retained|by policy|privacy/i);
+      // and it still says the two things the model MUST know
+      expect(relayHeader).toContain('these count');
+      expect(relayHeader).toContain('NOT that nothing arrived');
+
+      // ── DEF-274: a live conversation outranks a queued prompt ──────────────────────────
+      const handler = readFileSync(join(root, 'services', 'brainPrompts', 'promptReplyHandler.ts'), 'utf-8');
+      expect(handler).toContain('brainJustAskedAConversationalQuestion');
+
+      // Declined BEFORE the classifier — DEF-241's shape. If the check moves below the
+      // relevance call, a confident verdict can override it and the bug returns.
+      const declineAt = handler.indexOf('DEF-274: a live conversation outranks a queued prompt');
+      const classifyAt = handler.indexOf('await classifyPromptReplyRelevance(');
+      expect(declineAt).toBeGreaterThan(0);
+      expect(classifyAt).toBeGreaterThan(0);
+      expect(declineAt).toBeLessThan(classifyAt);
+
+      // The entry point must swallow a failure rather than throw into the reply path. `.catch()`
+      // alone did not: a call that is missing altogether throws synchronously, before there is a
+      // promise to attach to, and the DEF-241 suite caught it escaping.
+      const entry = handler.slice(handler.indexOf('async function brainJustAskedAConversationalQuestion'));
+      expect(entry.slice(0, entry.indexOf('\n}\n'))).toContain('try {');
+
+      // NO fourth narrowing of the classifier. The guard comment in this very file warned that
+      // a third would produce a fifth occurrence, so the fix must add a claimant, not a gate.
+      const fn = handler.slice(handler.indexOf('async function findBrainsLiveQuestion'));
+      const body = fn.slice(0, fn.indexOf('\n}\n'));
+      expect(body).not.toContain('looksLikeAnswer');
+      expect(body).not.toContain('classifyPromptReplyRelevance');
+
+      // The cure must not starve the queue: a prompt is ALSO delivered as an outbound question,
+      // so deliveries are told apart by TIME, never by text (the model owns prompt wording).
+      expect(body).toContain('sentAt');
+      const bodyNoComments = body.split('\n').filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//') && !l.trim().startsWith('/*')).join('\n');
+      expect(bodyNoComments).not.toContain('question:');
+      expect(body).toContain('clientNumber');   // tenant-scoped, invariant #1
+
+      // ── DEF-276: the liveness probe cleans up after itself ─────────────────────────────
+      const provider = readFileSync(join(root, 'services', 'whatsapp', 'WebjsProvider.ts'), 'utf-8');
+      expect(provider).toContain('sentProbeMessage');
+      // Cleanup happens on the PASS path only — a degraded episode's evidence must survive.
+      const passIdx = provider.indexOf("event: 'probe_pass'");
+      // The CALL, not the `typeof … === 'function'` guard beside it — matching the guard made
+      // this assertion survive a mutation that deleted the call itself.
+      const cleanIdx = provider.indexOf('sentProbeMessage.delete(true)');
+      expect(passIdx).toBeGreaterThan(0);
+      expect(cleanIdx).toBeGreaterThan(passIdx);
+      // ...and it can never fail the probe.
+      const cleanupSeg = provider.slice(cleanIdx - 400, cleanIdx + 400);
+      expect(cleanupSeg).toContain('.catch(');
+    },
+  },
 ];

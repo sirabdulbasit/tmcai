@@ -109,6 +109,97 @@ async function findCandidates(input: HandleReplyInput) {
  */
 const OBSERVATION_MARKER = /\[image received\s*[—-]\s*contents:\]|\[voice note\]|\[transcript\]/i;
 
+/**
+ * DEF-274 — the claimant that was missing.
+ *
+ * `pending-prompt-eats-command`, 4th occurrence. The previous three fixes all narrowed WHICH
+ * replies may be consumed: a `looksLikeAnswer` prefilter, then an LLM relevance gate, then
+ * DEF-241's evidence rule. The guard comment below says in writing that *"a third narrowing of
+ * the classifier would produce a fifth occurrence"* — so this adds no gate and touches no
+ * classifier. It adds the bidder that never existed.
+ *
+ * CL-044: Brain asked *"Which numbers are you asking for, Sir?"* at 19:32:33; the owner said
+ * *"yes"* at 19:32:42; a prompt DELIVERED SEVEN HOURS EARLIER consumed it and replied *"Okay,
+ * I've noted that."* Both prompts were legitimately answerable — genuinely sent, inside the
+ * lookback. Nothing about them was wrong. The hole is that Brain's own question, nine seconds
+ * old, was not a candidate at all, so the queue was the only bidder for that reply.
+ *
+ * A queued prompt is a question the owner may answer WHENEVER. A question Brain just asked in
+ * conversation is one he is answering NOW. When both want the same reply, the live conversation
+ * wins — and it must win before the classifier, where no confidence score can override it.
+ */
+const CONVERSATION_WINDOW_MINUTES = 10;
+/**
+ * A prompt is delivered to the owner as an ordinary outbound WhatsApp message, and it ends in a
+ * question mark like any other. So "the last turn was a question" cannot be the whole test: it
+ * would decline the answer to the very prompt that asked it and break the queue entirely.
+ *
+ * Prompt deliveries are distinguished by TIME, not text — text is deliberately not comparable,
+ * because the model owns the wording of every prompt it sends. If a prompt was sent within
+ * seconds of that outbound turn, the turn IS that prompt, and the queue keeps its claim.
+ */
+const PROMPT_DELIVERY_TOLERANCE_MS = 90_000;
+
+async function brainJustAskedAConversationalQuestion(
+  input: HandleReplyInput,
+  text: string,
+): Promise<{ asked: string } | null> {
+  // Whole body guarded, and NOT with a per-call `.catch`. This declines consumption, so if it
+  // cannot tell what happened it must return null and leave the queue exactly as it was —
+  // never throw into the reply path and cost the owner his answer entirely.
+  //
+  // `.catch()` was not enough and the DEF-241 suite proved it: a promise-returning call that is
+  // missing altogether throws SYNCHRONOUSLY, before there is a promise for `.catch` to attach
+  // to. My own "falls through safely" test used a rejected promise and sailed past the gap.
+  try {
+    return await findBrainsLiveQuestion(input, text);
+  } catch (err: any) {
+    log.debug('could not read the conversation — leaving the queue untouched', {
+      error: String(err?.message ?? err).slice(0, 120),
+    });
+    return null;
+  }
+}
+
+async function findBrainsLiveQuestion(
+  input: HandleReplyInput,
+  text: string,
+): Promise<{ asked: string } | null> {
+  const norm = (v: string) => String(v ?? '').replace(/\s+/g, ' ').trim();
+  const rows = await prisma.$queryRawUnsafe<Array<{ direction: string; content: string; created_at: Date }>>(
+    `SELECT direction, content, created_at
+       FROM whatsapp_messages
+      WHERE client_number = $1 AND user_id = $2
+        AND created_at >= NOW() - ($3 || ' minutes')::interval
+      ORDER BY created_at DESC
+      LIMIT 6`,
+    input.clientNumber, input.userId, String(CONVERSATION_WINDOW_MINUTES),
+  ).catch(() => [] as any[]);
+
+  // The turn being handled may already be stored; it is not its own predecessor.
+  const before = rows.filter((r) => norm(r.content) !== norm(text));
+  const last = before[0];
+  if (!last || last.direction !== 'outbound') return null;
+  const asked = norm(last.content);
+  if (!asked.endsWith('?')) return null;
+
+  const delivery = await prisma.brainPromptQueue.findFirst({
+    where: {
+      // Tenant-scoped, invariant #1 — a bare timestamp lookup is how cross-tenant reads happen.
+      clientNumber: input.clientNumber,
+      userId: input.userId,
+      sentAt: {
+        gte: new Date(new Date(last.created_at).getTime() - PROMPT_DELIVERY_TOLERANCE_MS),
+        lte: new Date(new Date(last.created_at).getTime() + PROMPT_DELIVERY_TOLERANCE_MS),
+      },
+    },
+    select: { id: true },
+  }).catch(() => null);
+  if (delivery) return null;   // that outbound WAS a prompt; the queue may answer it
+
+  return { asked: asked.slice(0, 140) };
+}
+
 export async function handlePromptReply(input: HandleReplyInput): Promise<HandleReplyResult> {
   const text = input.text.trim();
   if (!text) return { handled: false };  // empty body — let normal flow ignore it
@@ -161,6 +252,19 @@ export async function handlePromptReply(input: HandleReplyInput): Promise<Handle
   // judgement (owner ruling: no hardcoded judgement).
   const candidates = await findCandidates(input);
   if (candidates.length === 0) return { handled: false };
+
+  // DEF-274 — a question Brain asked moments ago outranks any queued prompt. Declined here,
+  // BEFORE the classifier, so no confidence score can override it (DEF-241's shape).
+  const live = await brainJustAskedAConversationalQuestion(input, text);
+  if (live) {
+    log.info('declined prompt consumption — the user is answering Brain\'s own question', {
+      userId: input.userId,
+      asked: live.asked,
+      candidates: candidates.length,
+      reason: 'DEF-274: a live conversation outranks a queued prompt',
+    });
+    return { handled: false };   // straight to the composer, in context
+  }
 
   // Each candidate gets the SAME two gates the single-candidate path always
   // had — the `looksLikeAnswer` prefilter, then the LLM relevance verdict. The

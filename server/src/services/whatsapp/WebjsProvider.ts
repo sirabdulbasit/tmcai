@@ -169,6 +169,10 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
   // archaeology. Capture the discriminator at the source.
   let sendError: string | null = null;
   let ownEchoSeen = false;
+  // DEF-276 — kept so the probe can remove its own message once the echo has been observed.
+  // Hoisted out of the send closure for that reason alone; nothing about the probe verdict
+  // reads it.
+  let sentProbeMessage: any = null;
 
   const outcome = await new Promise<'pass' | 'fail'>((resolve) => {
     let settled = false;
@@ -210,6 +214,7 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     void (async () => {
       try {
         const sent = await client.sendMessage(selfId, buildProbeMarker(nonce));
+        sentProbeMessage = sent;
         const reconciled = reconcileProbeProviderId(session, sent?.id?._serialized ?? null);
         if (reconciled === 'matched') settle('pass');
         else if (reconciled === 'failed') settle('fail');
@@ -238,6 +243,30 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
       clientNumber,
     ).catch(() => undefined);
     logLivenessTransition(clientNumber, { event: 'probe_pass', latencyMs, generation });
+
+    // ── DEF-276: the probe cleans up after itself ────────────────────────────────────────
+    // The owner screenshotted six `[nexeo-liveness …]` messages piling up in his own
+    // "Message yourself" chat — one per reconnect, kept forever, including one from the D-81
+    // restart. Self-chat is the RIGHT place to probe (it cannot disturb a third party) and the
+    // module header accepts the traffic as visible, so the mechanism stays; what was missing is
+    // that nothing ever removed it.
+    //
+    // Deleting HERE is safe in the way that matters: the echo has already been observed and the
+    // pass already recorded, so the claim boundary is untouched — this runs after the verdict,
+    // never as part of reaching it. Deliberately NOT awaited into the probe result and wrapped
+    // so it cannot throw: a probe that failed on cleanup would take the WhatsApp channel down
+    // over cosmetics.
+    //
+    // On FAILURE the message is left in place on purpose. A degraded episode is a real fault,
+    // and the owner seeing the evidence of it is correct — silence would be worse than litter.
+    if (sentProbeMessage && typeof sentProbeMessage.delete === 'function') {
+      void Promise.resolve()
+        .then(() => sentProbeMessage.delete(true))   // true = for everyone, incl. his devices
+        .then(() => logLivenessTransition(clientNumber, { event: 'probe_cleaned', generation }))
+        .catch((err: any) => log.debug('probe message cleanup failed — cosmetic only', {
+          clientNumber, error: String(err?.message ?? err).slice(0, 120),
+        }));
+    }
     return;
   }
 
@@ -1083,6 +1112,14 @@ export class WebjsProvider implements IWhatsAppProvider {
           // internals vary across WA Web builds.
           quotedProviderId: (message as any)?._data?.quotedStanzaID
             ?? (message as any)?._data?.quotedMsg?.id?._serialized ?? undefined,
+          // DEF-267(b) — `whatsapp-quoted-text-not-read`. The line above has
+          // captured the quoted message's ID since Section 33a; the TEXT he
+          // replied to was dropped here, which is why "build your ability so
+          // you can read txt from quoted message" was ever a thing he had to
+          // say. The id is a correlation key for delegation; the body is the
+          // referent his words point at, and without it every reply-to
+          // reaches the model as a bare message.
+          quotedBody: extractQuotedBody(message),
           timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
           _resolvedUserId: resolvedIdentity?.userId,
           _resolvedIdentity: resolvedIdentity,
@@ -1649,4 +1686,25 @@ export class WebjsProvider implements IWhatsAppProvider {
       init: getWebjsInitHealth(clientNumber),
     };
   }
+}
+
+/**
+ * DEF-267(b) — the quoted-message BODY, read defensively from webjs internals
+ * (the same `_data` shapes the `quotedProviderId` capture above has always
+ * used; they vary across WA Web builds, so every access is optional). A
+ * quoted image/video carries its text in `caption` rather than `body`.
+ * Capped, because a quote of a long message is a referent, not a payload.
+ * Exported for tests: the capture must be provable against the raw shapes
+ * without standing up a WhatsApp client.
+ */
+export function extractQuotedBody(message: any): string | undefined {
+  const quoted = message?._data?.quotedMsg;
+  const raw = typeof quoted?.body === 'string' && quoted.body.trim()
+    ? quoted.body
+    : typeof quoted?.caption === 'string' && quoted.caption.trim()
+      ? quoted.caption
+      : '';
+  const text = raw.trim();
+  if (!text) return undefined;
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }

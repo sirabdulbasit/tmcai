@@ -5462,10 +5462,16 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
   const relayTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const relayBlock = relays.length === 0 ? '' :
     `\n\n# Messages relayed from unregistered senders (last 24h — ${relays.length})\n`
-    + 'These arrived and were forwarded to the user. Their bodies are NOT retained in the message '
-    + 'log by policy, so this relay record is the only account of them — treat it as evidence the '
-    + 'messages EXIST. If asked whether anyone messaged, these count. A `suppressed` row means the '
-    + 'message arrived and the notification was withheld by a budget, NOT that nothing arrived.\n'
+    // DEF-273: this header says what the data IS and NOTHING about what may be done with it.
+    // The previous version explained that the bodies are "NOT retained in the message log by
+    // policy" — true, and about STORAGE — and the model turned it into a DISCLOSURE rule,
+    // telling the owner "I can't show you the message content for privacy reasons" while these
+    // very lines held all ten bodies. A block that supplies evidence must not also argue about
+    // policy: the two claims contradict each other and the prose won. The storage caveat was
+    // for my benefit, not the model's, so it now lives here in a comment where it belongs.
+    + 'These arrived and were forwarded to the user, and the text below is what was forwarded. '
+    + 'If asked whether anyone messaged, these count. A `suppressed` row means the message '
+    + 'arrived and the notification was withheld by a budget, NOT that nothing arrived.\n'
     + relays.map((r) => {
       // LEGACY FALLBACK, read-only, for rows written before `relayedBody` existed.
       // The dedup key is `wa_counterpart:<identity>:<first 40 chars of body>`, so the text of

@@ -827,3 +827,91 @@ Everything interesting about it is a refusal:
 
 **Still open from the same conversation:** DEF-267 (WhatsApp quoted-replies carry only a message
 id, never the quoted text, so "reply to this" loses its referent) and DEF-265.
+
+## Chat 22
+
+**Date:** 2026-09-01 19:31–19:33 PKT · **Register:** CL-044 · **DEF:** DEF-273, DEF-274, DEF-275, DEF-276 ·
+**Symptom tags:** `pending-prompt-eats-command`, `capability-denial`, `prompt-contradicts-itself`
+
+**What happened — and the first half is the fix working**
+
+> *"did anybody message you in the last 2 hours"*
+> → *"Yes, several messages have come in from unregistered senders on WhatsApp in the last two
+>    hours. I've been holding most of them to avoid interrupting you, but I did notify you about
+>    two of them."*
+
+Yesterday the same question returned *"I don't see any new messages in the last hour"* while it
+held the receipts. **DEF-270's falsifier passed**, five minutes after the deploy. Later in the
+same exchange it gave the exact figure — *"In the last 24 hours, I've received 10 messages from
+unregistered senders"* — which matches the ten relay rows exactly.
+
+Then three faults, and the sharpest is in the fix that had just shipped.
+
+**DEF-273 — it refused to show content it was holding**
+
+> *"I can't show you the message content for privacy reasons, but I can confirm they arrived."*
+
+**All ten bodies were rendered in its context.** The block I shipped in `90ec39e` opened with
+*"Their bodies are NOT retained in the message log by policy"* — and then listed every body
+verbatim. I wrote that sentence to be scrupulous about the 2026-06-10 storage ruling; the model
+read a **storage** fact as a **disclosure** rule, turned *"by policy"* into *"for privacy
+reasons"*, and obeyed the prose over the data beneath it.
+
+DEF-268's root cause, one commit earlier, was literally *"THE PROMPT CONTRADICTS ITSELF, and the
+model obeyed the wrong half."* I reproduced it in the next commit.
+
+The fix deletes the argument rather than adding a counter-instruction. Appending *"you MAY show
+these"* would leave two policy claims in one block and let the next model pick either. **A block
+whose job is to supply evidence states what the data IS and nothing about what may be done with
+it.** The storage caveat was for my benefit, not the model's, so it now lives in a code comment.
+
+**DEF-274 — Brain asked him a question, then ate his answer to it**
+
+> *"can you list the the numbers?"* → *"Which numbers are you asking for, Sir?"*
+> → *"yes"* → **"Okay, I've noted that."**
+> → *"not me, who messaged you"* → **`[blocker recorded — intervention flagged]`**
+
+Confirmed from data: prompts **#487** and **#491** carry `answered_at` at 19:32:49 and 19:32:58,
+nine and twenty-three seconds after Brain's own question at 19:32:33.
+
+**Both prompts were legitimately answerable** — genuinely delivered (10:09 and 12:11), inside the
+lookback, past both existing gates. I checked whether they had been suppressed-but-answerable
+and they had not; `getAnswerableQuestions` already requires `sentAt` to be non-null, so the 18
+undelivered prompts sitting in the queue were never candidates. Nothing about the prompts was
+wrong.
+
+**The hole is that Brain's own question was never a claimant at all.** A queued prompt is a
+question he may answer whenever; a question Brain just asked is one he is answering *now*. When
+both want the same reply the live conversation must win — and the queue was the only bidder.
+
+Fourth `pending-prompt-eats-command`. The previous three fixes all narrowed *which* replies may
+be consumed, and the guard comment in the file states in writing that *"a third narrowing of the
+classifier would produce a fifth occurrence"* — so this adds no gate and touches no classifier.
+It adds the missing bidder, declined **before** the classifier so no confidence score can
+override it (DEF-241's shape).
+
+The subtle part is what stops the cure being worse: a prompt is delivered as an ordinary outbound
+message ending in *"?"*, so a naive *"last turn was a question"* rule would decline the answer to
+the very prompt that asked it and break the queue entirely. Prompt deliveries are therefore
+distinguished by **time, not text** — text is deliberately not comparable, because the model owns
+the wording of every prompt it sends. That is the test that matters most in the pair.
+
+**DEF-275 — the bracketed marker, deliberately NOT changed**
+
+`[blocker recorded — intervention flagged]` is a hardcoded string at `promptReplyHandler.ts:739`.
+It looks like an obvious defect and I did not fix it, because `composeAck`'s own comment cites an
+owner ruling — *"don't hardcode anything this is the crime in building AI"* — and argues these
+bracketed markers are the deliberate alternative to fake-Brain *"Got it"* replies: clearly
+machine status, not Brain speaking. Fixing DEF-274 removes this occurrence, since the string only
+reached him because his sentence was misrouted. Whether the markers should exist at all is a
+product question for the owner, not a call to make inside a defect fix.
+
+**DEF-276 — the probe litters his own chat**
+
+Six `[nexeo-liveness …]` messages in *"Message yourself"*, one per reconnect, kept forever,
+including one from the D-81 restart. The module header accepts the traffic as visible and the
+probe is load-bearing (`@lid` recurrence #2 was a liveness probe comparing its echo against one
+Wid spelling), so the mechanism stays. What was missing is that nothing removed it. The probe now
+deletes its own message **after** the echo is observed and the pass recorded — so the claim
+boundary is untouched — guarded so cleanup can never fail the probe, and **left in place on
+failure**, because a degraded episode is a real fault and the evidence should survive.
