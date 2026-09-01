@@ -48,6 +48,20 @@ export default function OrchestratorSpendTab() {
   };
   useEffect(() => { load(); }, [period, day, from, to, groupBy]);
 
+  /* SAFE / WATCH / HIGH, coloured — owner, 2026-09-01: the deck should say whether a day, week
+     or month "is safe/optimized or we need to see it".
+
+     Calibrated from the three weeks on record, NOT picked: ~1% of the seven-day window passed
+     with no warnings, ~9.8% still took a rejection and a 93% peak, ~15.4% drove utilisation
+     from 78 to 85 with twelve warnings. So 10% is the throttled week, not the safe one, and the
+     bands sit below it. Amber and red are reserved for the two states worth acting on; safe is
+     deliberately quiet green rather than a badge, so the eye goes to the exceptions. */
+  const VERDICT = {
+    safe:  { label: 'safe',   color: '#3fb950', bg: 'rgba(63,185,80,0.10)' },
+    watch: { label: 'watch',  color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
+    high:  { label: 'HIGH',   color: '#ef4444', bg: 'rgba(239,68,68,0.14)' },
+  };
+
   // A reading with no age reads as "now". These figures can be days old, so they carry theirs.
   const ageOf = (iso) => {
     if (!iso) return null;
@@ -200,6 +214,14 @@ export default function OrchestratorSpendTab() {
                 </tbody>
               </table>
               <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
+                {report.subscription.windows.some((w) => w.approxRunsExcluded > 0) && (
+                  <div style={{ marginBottom: 4, color: '#f59e0b' }}>
+                    {report.subscription.windows.reduce((n, w) => Math.max(n, w.approxRunsExcluded), 0)}
+                    {' '}run(s) excluded from these totals: they ended without a result event, so their
+                    token counts are per-turn fallbacks that overstate by roughly 2.3x. Counting them
+                    would inflate the share rather than measure it.
+                  </div>
+                )}
                 Share is <strong>ours only</strong>, from a marginal rate of {fmt(report.subscription.tokensPerPoint)} tokens
                 per point measured on this box — your own sessions use the same subscription, so real
                 utilisation is higher. Claude reports an exact figure only above its 75% warning
@@ -237,6 +259,7 @@ export default function OrchestratorSpendTab() {
                       <th style={numTh}>Tokens out</th>
                       <th style={numTh}>Cache reads</th>
                       <th style={numTh}>Total tokens</th>
+                      <th style={numTh}>Of 7d window</th>
                       <th style={numTh}>Cost</th>
                       <th>Seats</th>
                     </tr>
@@ -249,17 +272,49 @@ export default function OrchestratorSpendTab() {
                         <td style={numTd}>{fmt(b.inTokens)}</td>
                         <td style={numTd}>{fmt(b.outTokens)}</td>
                         <td style={{ ...numTd, color: 'var(--text-muted)' }}>{fmt(b.cacheReadTokens)}</td>
-                        <td style={numTd}>{fmt(b.tokens)}</td>
+                        <td style={{ ...numTd, fontWeight: 600 }}>{fmt(b.tokens)}</td>
+                        {/* The verdict colours the SHARE, not the raw token count: 6M tokens in a
+                            day and 6M in a month are the same number and completely different
+                            situations. The share is already normalised to a weekly equivalent. */}
+                        <td style={numTd}>
+                          {b.verdict == null ? <span style={{ color: 'var(--text-muted)' }}>—</span> : (
+                            <span style={{
+                              display: 'inline-block', padding: '1px 8px', borderRadius: 999,
+                              color: VERDICT[b.verdict].color, background: VERDICT[b.verdict].bg,
+                              fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+                            }} title={`~${b.sharePoints}% of a 7-day subscription window, normalised to a weekly equivalent — ${VERDICT[b.verdict].label}`
+                              + (b.approxRunsExcluded
+                                ? ` · ${b.approxRunsExcluded} run(s) excluded from this share: no result event, so their tokens are per-turn fallbacks that overstate ~2.3x`
+                                : '')}>
+                              ~{b.sharePoints}% {VERDICT[b.verdict].label}
+                            </span>
+                          )}
+                          {/* An asterisk, because otherwise the share looks too low for the token
+                              count beside it and there is no way to tell why. */}
+                          {b.approxRunsExcluded > 0 && (
+                            <span style={{ color: '#f59e0b', marginLeft: 4 }}
+                                  title={`${b.approxRunsExcluded} run(s) excluded — token counts not vouched for by a result event`}>*</span>
+                          )}
+                        </td>
                         <td style={{ ...numTd, color: 'var(--accent, #c2410c)' }}>{fmtUsd(b.usd)}</td>
                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                           {b.bySeat.map((s) => `${s.seat} ${fmtUsd(s.usd)}`).join(' · ')}
                         </td>
                       </tr>
                     ))}
-                  </tbody>
+                    </tbody>
                 </table>
               </div>
             )}
+            {/* The bands, stated. A colour with no legend is a mood, not a measurement. */}
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+              Share is each bucket normalised to a <strong>weekly equivalent</strong> and measured
+              against the seven-day subscription window, so a day, a week and a month are
+              comparable. <span style={{ color: VERDICT.safe.color }}>safe &lt; 5%</span>
+              {' · '}<span style={{ color: VERDICT.watch.color }}>watch 5–12%</span>
+              {' · '}<span style={{ color: VERDICT.high.color }}>HIGH ≥ 12%</span>. Calibrated on
+              this box: the week that ran at ~9.8% still took a rejection and a 93% peak.
+            </div>
           </div>
 
           {/* PER SEAT — the orchestrator's equivalent of the per-user split. There is no user

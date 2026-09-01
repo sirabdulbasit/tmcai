@@ -68,6 +68,46 @@ const isRunLog = (f: string) => ITER_LOG.test(f) || CHAT_LOG.test(f);
 const TOKENS_PER_POINT = 14_800_000;
 
 /**
+ * When is a bucket's consumption safe? CALIBRATED FROM THE THREE WEEKS ON RECORD, not chosen.
+ *
+ *   week of 08-31   ~1.0% of the 7-day window   no warnings at all
+ *   week of 08-24   ~9.8%                       peak utilisation 93%, ONE RUN REJECTED
+ *   week of 08-17  ~15.4%                       utilisation climbed 78->85%, 12 warnings
+ *
+ * So ~10% is NOT safe — it is the week that got throttled. The bands are set below that
+ * rather than around it. Three weeks is thin evidence and these will want revisiting, which
+ * is why they live here as named constants with their derivation attached.
+ *
+ * A bucket is normalised to a WEEKLY EQUIVALENT before it is judged, so a day, a week and a
+ * month are all measured against the same seven-day window the subscription actually uses.
+ * Comparing a month's raw total to a week's would flag every month and no day.
+ */
+const SHARE_SAFE_BELOW = 5;    // % of a 7-day window, weekly-equivalent
+const SHARE_WATCH_BELOW = 12;
+
+export type SpendVerdict = 'safe' | 'watch' | 'high';
+const verdictFor = (sharePoints: number | null): SpendVerdict | null =>
+  sharePoints == null ? null
+    : sharePoints < SHARE_SAFE_BELOW ? 'safe'
+      : sharePoints < SHARE_WATCH_BELOW ? 'watch' : 'high';
+
+/**
+ * Calendar days a bucket covers, counting only days that have HAPPENED.
+ *
+ * The current day/week/month is incomplete, and dividing a part-week's tokens by seven would
+ * report it as comfortably safe right up until the moment it is not. Elapsed days is the
+ * honest denominator; a finished bucket uses its full length.
+ */
+function bucketElapsedDays(bucket: string, groupBy: 'day' | 'week' | 'month', now = new Date()): number {
+  const start = new Date(`${bucket}T00:00:00Z`);
+  const full = groupBy === 'day' ? 1
+    : groupBy === 'week' ? 7
+      : new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+  const elapsed = Math.floor((now.getTime() - start.getTime()) / 86400_000) + 1;
+  return Math.max(1, Math.min(full, elapsed));
+}
+
+/**
  * What launched a run, read from the `.trigger` sidecar the launching script writes.
  *
  * RECORDED, NEVER INFERRED. A `build` row can come from the nightly cron or from someone
@@ -323,6 +363,13 @@ export interface OrchestratorSpendReport {
     inTokens: number; outTokens: number; cacheReadTokens: number; cacheCreationTokens: number;
     tokens: number; usd: number;
     bySeat: Array<{ seat: string; runs: number; tokens: number; usd: number }>;
+    /** Weekly-equivalent share of the 7-day subscription window, and its verdict. */
+    sharePoints: number | null;
+    verdict: SpendVerdict | null;
+    /** Tokens the CLI vouched for — the basis of `sharePoints`. May be below `tokens`. */
+    tokensAuthoritative: number;
+    /** Runs in this bucket whose tokens are per-turn fallbacks and are excluded from the share. */
+    approxRunsExcluded: number;
   }>;
   seats: Array<{
     seat: string; runs: number; turns: number;
@@ -395,6 +442,8 @@ export interface OrchestratorSpendReport {
       tokens: number;
       /** Our estimated share of that window, in percentage points. Null for the 5h window. */
       sharePoints: number | null;
+      /** Runs left out because their tokens came from the per-turn fallback, not a result event. */
+      approxRunsExcluded: number;
     }>;
   };
   /** Seats that exist in the loop but recorded nothing — stated, never shown as zero cost. */
@@ -430,7 +479,13 @@ export async function getOrchestratorSpendReport(
             COALESCE(SUM(output_tokens), 0)::bigint             AS out_tokens,
             COALESCE(SUM(cache_read_tokens), 0)::bigint         AS cache_read,
             COALESCE(SUM(cache_creation_tokens), 0)::bigint     AS cache_create,
-            COALESCE(SUM(total_cost_usd), 0)::float8            AS usd
+            COALESCE(SUM(total_cost_usd), 0)::float8            AS usd,
+            -- Authoritative half, for the SHARE. See the note on the window query: a run with
+            -- no result event carries per-turn sums that overstate ~2.3x, and one page must not
+            -- print two different percentages for the same week.
+            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)
+                     FILTER (WHERE num_turns IS NOT NULL), 0)::bigint AS tokens_ok,
+            COUNT(*) FILTER (WHERE num_turns IS NULL)::int            AS approx_runs
        FROM orchestrator_spend
       WHERE started_at >= $1::timestamp AND started_at <= $2::timestamp
       GROUP BY 1, 2
@@ -475,7 +530,12 @@ export async function getOrchestratorSpendReport(
     return bucket;
   };
 
-  const buckets = new Map<string, OrchestratorSpendReport['series'][number]>();
+  // The ACCUMULATOR, not the finished row. `sharePoints` and `verdict` are derived once per
+  // bucket after the totals are in, so typing this as the report row would demand two fields
+  // that cannot be known yet and would have to be seeded with placeholder nulls — placeholders
+  // that could then survive to the screen if the derivation were ever skipped.
+  type BucketAcc = Omit<OrchestratorSpendReport['series'][number], 'sharePoints' | 'verdict'>;
+  const buckets = new Map<string, BucketAcc>();
   const perSeat = new Map<string, OrchestratorSpendReport['seats'][number]>();
   let totRuns = 0; let totTokens = 0; let totUsd = 0; let totCacheRead = 0;
 
@@ -491,14 +551,15 @@ export async function getOrchestratorSpendReport(
     // `bySeat: []` infers `never[]`, the union's `.push` parameter collapses
     // to `never`, and tsc goes red — which is exactly how this file sat
     // uncommitted and blocked the release gate.
-    const b: OrchestratorSpendReport['series'][number] = buckets.get(r.bucket) ?? {
+    const b: BucketAcc = buckets.get(r.bucket) ?? {
       bucket: r.bucket, label: labelFor(r.bucket), runs: 0,
       inTokens: 0, outTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
-      tokens: 0, usd: 0, bySeat: [],
+      tokens: 0, usd: 0, bySeat: [], tokensAuthoritative: 0, approxRunsExcluded: 0,
     };
     b.runs += r.runs; b.inTokens += inT; b.outTokens += outT;
     b.cacheReadTokens += cr; b.cacheCreationTokens += cc;
     b.tokens += tokens; b.usd += usd;
+    b.tokensAuthoritative += num(r.tokens_ok); b.approxRunsExcluded += num(r.approx_runs);
     b.bySeat.push({ seat: r.seat, runs: r.runs, tokens, usd: Math.round(usd * 10000) / 10000 });
     buckets.set(r.bucket, b);
 
@@ -523,11 +584,22 @@ export async function getOrchestratorSpendReport(
 
   const series = [...buckets.values()]
     .sort((a, b) => (a.bucket < b.bucket ? -1 : 1))
-    .map((b) => ({
-      ...b,
-      usd: Math.round(b.usd * 10000) / 10000,
-      bySeat: b.bySeat.sort((x, y) => y.usd - x.usd),
-    }));
+    .map((b) => {
+      // Normalise to a weekly equivalent so a day, a week and a month are all judged against
+      // the same seven-day window the subscription meters on.
+      const days = bucketElapsedDays(b.bucket, groupBy);
+      // AUTHORITATIVE tokens only, matching the subscription panel exactly. `tokens` above stays
+      // the full recorded figure because that is what the seat table reports; the SHARE is the
+      // claim about the subscription, and it must rest on figures the CLI actually vouched for.
+      const sharePoints = Math.round(((b.tokensAuthoritative * (7 / days)) / TOKENS_PER_POINT) * 10) / 10;
+      return {
+        ...b,
+        usd: Math.round(b.usd * 10000) / 10000,
+        bySeat: b.bySeat.sort((x, y) => y.usd - x.usd),
+        sharePoints,
+        verdict: verdictFor(sharePoints),
+      };
+    });
 
   const seats = [...perSeat.values()]
     .map((s) => ({ ...s, usd: Math.round(s.usd * 10000) / 10000 }))
@@ -590,12 +662,27 @@ export async function getOrchestratorSpendReport(
   // Deliberately NOT bounded by the report's date range: "am I about to be throttled" is a
   // question about this moment. A month-scoped answer to it would be quietly wrong.
   const windowRows: any[] = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT 'five_hour' AS win, COUNT(*)::int AS runs,
-            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::bigint AS tokens
+    // `num_turns IS NOT NULL` is the test for an AUTHORITATIVE token count: num_turns is only
+    // ever set from the run's own `result` event, which is also where the trustworthy usage
+    // figures live. A run cut off before its result falls back to SUMMING every per-turn usage
+    // event, and that overstates by ~2.27x because each streamed message re-reports the context
+    // its turn read. Two such runs (review iterations 1 and 2) carry 186,083,460 tokens — 32.5%
+    // of everything on record — at $0.00, and left in they inflated the week of 08-17 from a
+    // real ~15.4% to a reported ~28%. A fallback number is defensible for "what did this run
+    // roughly do"; it is not defensible for "how much of the subscription have we used", so it
+    // is excluded here and COUNTED so the exclusion is visible rather than silent.
+    `SELECT 'five_hour' AS win,
+            COUNT(*) FILTER (WHERE num_turns IS NOT NULL)::int AS runs,
+            COUNT(*) FILTER (WHERE num_turns IS NULL)::int AS approx_runs,
+            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)
+                     FILTER (WHERE num_turns IS NOT NULL), 0)::bigint AS tokens
        FROM orchestrator_spend WHERE started_at >= NOW() - INTERVAL '5 hours'
       UNION ALL
-     SELECT 'seven_day', COUNT(*)::int,
-            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0)::bigint
+     SELECT 'seven_day',
+            COUNT(*) FILTER (WHERE num_turns IS NOT NULL)::int,
+            COUNT(*) FILTER (WHERE num_turns IS NULL)::int,
+            COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)
+                     FILTER (WHERE num_turns IS NOT NULL), 0)::bigint
        FROM orchestrator_spend WHERE started_at >= NOW() - INTERVAL '7 days'`,
   ).catch(() => [] as any[]);
 
@@ -605,6 +692,7 @@ export async function getOrchestratorSpendReport(
     const tokens = num(r?.tokens);
     return {
       type, label, since, runs: num(r?.runs), tokens,
+      approxRunsExcluded: num(r?.approx_runs),
       // Only the seven-day rate was measured, so only it gets a share. Reusing that rate for
       // the five-hour window would be arithmetic dressed up as measurement — the two windows
       // are different sizes and the burst limit binds first, which is why the one REJECTION on

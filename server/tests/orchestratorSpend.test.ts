@@ -427,3 +427,81 @@ describe('subscription limit capture', () => {
     }
   });
 });
+
+/**
+ * Is this bucket safe? — owner, 2026-09-01: the deck should say whether day/week/month
+ * consumption "is safe/optimized or we need to see it".
+ *
+ * TWO THINGS ARE EASY TO GET WRONG HERE AND BOTH MISLEAD QUIETLY.
+ *
+ * 1. JUDGING RAW TOKENS. 6M in a day and 6M in a month are the same number and completely
+ *    different situations. Every bucket is normalised to a WEEKLY EQUIVALENT before it is
+ *    judged, against the same seven-day window the subscription meters on.
+ *
+ * 2. COUNTING TOKENS THE CLI NEVER VOUCHED FOR. A run that ended without a `result` event
+ *    falls back to summing per-turn usage, which overstates ~2.3x. Two such runs hold 32.5%
+ *    of everything recorded on this box. Including them made the week of 08-17 read 28% in
+ *    the series while the subscription panel said 15.4% — one page, one week, two answers.
+ */
+describe('per-bucket subscription verdict', () => {
+  beforeEach(() => raw.mockReset());
+
+  const mock = (rows: any[], models: any[] = [], triggers: any[] = [],
+                limits: any[] = [], windows: any[] = []) => {
+    raw.mockReset();
+    raw.mockResolvedValueOnce(rows).mockResolvedValueOnce(models).mockResolvedValueOnce(triggers)
+       .mockResolvedValueOnce(limits).mockResolvedValueOnce(windows);
+  };
+  /** A bucket row carrying `n` tokens, all of them vouched for by a result event. */
+  const tokRow = (bucket: string, n: number, over: Record<string, any> = {}) => ({
+    bucket, seat: 'build', runs: 1, turns: BigInt(10),
+    in_tokens: BigInt(n), out_tokens: BigInt(0),
+    cache_read: BigInt(0), cache_create: BigInt(0),
+    usd: 1, tokens_ok: BigInt(n), approx_runs: 0, ...over,
+  });
+
+  // A finished WEEK, so the weekly-equivalent is just the bucket total. 14.8M = 1 point.
+  const WEEK = ['2026-08-17', '2026-08-23', 'week'] as const;
+
+  it('calls a quiet week SAFE', async () => {
+    mock([tokRow('2026-08-17', 14_800_000 * 3)]);        // ~3%
+    const r = await getOrchestratorSpendReport('2026-08-17', '2026-08-23', 'week');
+    expect(r.series[0].sharePoints).toBeCloseTo(3, 1);
+    expect(r.series[0].verdict).toBe('safe');
+  });
+
+  it('calls the week that actually got throttled WATCH, not safe', async () => {
+    // The real week of 08-24 sat at ~9.8% and still took a rejection and a 93% peak. If the
+    // bands ever drift such that this reads "safe", they are wrong.
+    mock([tokRow('2026-08-17', 144_426_938)]);
+    const r = await getOrchestratorSpendReport(...WEEK);
+    expect(r.series[0].verdict).toBe('watch');
+    expect(r.series[0].verdict).not.toBe('safe');
+  });
+
+  it('calls a heavy week HIGH', async () => {
+    mock([tokRow('2026-08-17', 227_897_111)]);           // the real authoritative 08-17 week
+    const r = await getOrchestratorSpendReport(...WEEK);
+    expect(r.series[0].sharePoints).toBeCloseTo(15.4, 1);
+    expect(r.series[0].verdict).toBe('high');
+  });
+
+  it('bases the share on AUTHORITATIVE tokens, not the raw total', async () => {
+    // 414M recorded, but only 228M vouched for. The share must follow the 228M — this is the
+    // exact case where the series and the subscription panel disagreed.
+    mock([tokRow('2026-08-17', 413_980_571, { tokens_ok: BigInt(227_897_111), approx_runs: 2 })]);
+    const r = await getOrchestratorSpendReport(...WEEK);
+    expect(r.series[0].tokens).toBe(413_980_571);          // still reported in full
+    expect(r.series[0].tokensAuthoritative).toBe(227_897_111);
+    expect(r.series[0].sharePoints).toBeCloseTo(15.4, 1);  // NOT ~28
+    expect(r.series[0].approxRunsExcluded).toBe(2);
+  });
+
+  it('normalises a DAY to a weekly equivalent, so a day and a week are comparable', async () => {
+    // One finished day at 14.8M is a seventh of a week's tokens but SEVEN points if sustained.
+    mock([tokRow('2026-08-17', 14_800_000)]);
+    const r = await getOrchestratorSpendReport('2026-08-17', '2026-08-17', 'day');
+    expect(r.series[0].sharePoints).toBeCloseTo(7, 1);
+    expect(r.series[0].verdict).toBe('watch');
+  });
+});
