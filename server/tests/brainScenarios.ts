@@ -846,18 +846,29 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(body).toContain('clientNumber');   // tenant-scoped, invariant #1
 
       // ── DEF-276: the liveness probe cleans up after itself ─────────────────────────────
+      // Behaviour lives in `def276ProbeCleansUpAfterItself.test.ts`, because DEF-276b proved
+      // shape assertions cannot see this class: the first fix looked perfectly correct in the
+      // source and did nothing in production. What is asserted HERE is only the wiring that the
+      // unit test cannot reach.
       const provider = readFileSync(join(root, 'services', 'whatsapp', 'WebjsProvider.ts'), 'utf-8');
-      expect(provider).toContain('sentProbeMessage');
-      // Cleanup happens on the PASS path only — a degraded episode's evidence must survive.
+
+      // The PROMISE is handed to cleanup, never the resolved message: the probe passes on the
+      // early echo, which beats `sendMessage` resolving, so a variable read from the result is
+      // still null when the pass branch runs. That WAS the live bug.
+      expect(provider).toContain('probeSendPromise');
+      expect(provider).toContain('cleanUpProbeMessage(probeSendPromise)');
+      expect(provider).not.toContain('sentProbeMessage');
+
+      // Cleanup runs on the PASS path only — a degraded episode's evidence must survive.
       const passIdx = provider.indexOf("event: 'probe_pass'");
-      // The CALL, not the `typeof … === 'function'` guard beside it — matching the guard made
-      // this assertion survive a mutation that deleted the call itself.
-      const cleanIdx = provider.indexOf('sentProbeMessage.delete(true)');
+      const cleanIdx = provider.indexOf('cleanUpProbeMessage(probeSendPromise)');
       expect(passIdx).toBeGreaterThan(0);
       expect(cleanIdx).toBeGreaterThan(passIdx);
-      // ...and it can never fail the probe.
-      const cleanupSeg = provider.slice(cleanIdx - 400, cleanIdx + 400);
-      expect(cleanupSeg).toContain('.catch(');
+
+      // Every outcome is logged, including a skip. Silence is what hid DEF-276b.
+      const cleanupSeg = provider.slice(cleanIdx, cleanIdx + 300);
+      expect(cleanupSeg).toContain("event: 'probe_cleaned'");
+      expect(cleanupSeg).toContain('outcome');
     },
   },
 ];

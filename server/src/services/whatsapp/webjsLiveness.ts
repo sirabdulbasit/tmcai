@@ -276,3 +276,39 @@ export function isSendCapableStatus(status: string): boolean {
 export function logLivenessTransition(clientNumber: string, detail: Record<string, unknown>): void {
   log.info('liveness transition', { clientNumber, ...detail });
 }
+
+/**
+ * DEF-276b — remove the probe's own message, correctly, after a pass.
+ *
+ * The first version of this read a `sentProbeMessage` variable assigned when `client.sendMessage`
+ * resolved — and then did nothing at all in production. The probe passes on the EARLY ECHO,
+ * which on a healthy connection beats the send promise: the observed pass took 162ms and the
+ * cleanup branch found `null`, silently. `probe_pass` with no `probe_cleaned` and no error was
+ * the only trace.
+ *
+ * So cleanup takes the send PROMISE, not its result, and waits for it here — off the critical
+ * path, where waiting costs nothing. The verdict has already been reached and recorded before
+ * this runs, so the claim boundary is untouched either way.
+ *
+ * Returns what it did rather than throwing, because a probe must never fail on cosmetics — and
+ * because "skipped" has to be observable. A cleanup that silently does nothing is how this
+ * defect survived its own tests.
+ */
+export async function cleanUpProbeMessage(
+  sendPromise: Promise<any> | null | undefined,
+  timeoutMs = 10_000,
+): Promise<'deleted' | 'skipped_no_message' | 'skipped_undeletable' | 'failed'> {
+  if (!sendPromise) return 'skipped_no_message';
+  try {
+    const sent = await Promise.race([
+      sendPromise,
+      new Promise((_r, reject) => setTimeout(() => reject(new Error('send did not resolve')), timeoutMs)),
+    ]);
+    if (!sent) return 'skipped_no_message';
+    if (typeof (sent as any).delete !== 'function') return 'skipped_undeletable';
+    await (sent as any).delete(true);   // true = for everyone, including the owner's devices
+    return 'deleted';
+  } catch {
+    return 'failed';
+  }
+}

@@ -139,6 +139,7 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     newProbeSession, matchProbeEcho, reconcileProbeProviderId, buildProbeMarker,
     generateProbeNonce, recordProbePass, recordProbeFailure, mayReprobe,
     noteProbeAttempt, shouldAlertDegradation, PROBE_TIMEOUT_MS, logLivenessTransition,
+    cleanUpProbeMessage,
   } = await import('./webjsLiveness');
 
   if (probeInFlightMap.get(clientNumber)) return;              // single in-flight
@@ -169,10 +170,12 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
   // archaeology. Capture the discriminator at the source.
   let sendError: string | null = null;
   let ownEchoSeen = false;
-  // DEF-276 — kept so the probe can remove its own message once the echo has been observed.
-  // Hoisted out of the send closure for that reason alone; nothing about the probe verdict
-  // reads it.
-  let sentProbeMessage: any = null;
+  // DEF-276 — the send PROMISE, so the probe can remove its own message after a pass.
+  // Deliberately the promise and not its result: the probe passes on the early echo, which beats
+  // `sendMessage` resolving on a healthy connection, so a variable assigned from the result is
+  // still null when the pass branch runs. That is DEF-276b, found live — `probe_pass` with no
+  // `probe_cleaned` and no error at all.
+  let probeSendPromise: Promise<any> | null = null;
 
   const outcome = await new Promise<'pass' | 'fail'>((resolve) => {
     let settled = false;
@@ -213,8 +216,9 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     timer = setTimeout(() => settle('fail'), PROBE_TIMEOUT_MS);
     void (async () => {
       try {
-        const sent = await client.sendMessage(selfId, buildProbeMarker(nonce));
-        sentProbeMessage = sent;
+        const sendPromise = client.sendMessage(selfId, buildProbeMarker(nonce));
+        probeSendPromise = sendPromise;
+        const sent = await sendPromise;
         const reconciled = reconcileProbeProviderId(session, sent?.id?._serialized ?? null);
         if (reconciled === 'matched') settle('pass');
         else if (reconciled === 'failed') settle('fail');
@@ -259,14 +263,11 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     //
     // On FAILURE the message is left in place on purpose. A degraded episode is a real fault,
     // and the owner seeing the evidence of it is correct — silence would be worse than litter.
-    if (sentProbeMessage && typeof sentProbeMessage.delete === 'function') {
-      void Promise.resolve()
-        .then(() => sentProbeMessage.delete(true))   // true = for everyone, incl. his devices
-        .then(() => logLivenessTransition(clientNumber, { event: 'probe_cleaned', generation }))
-        .catch((err: any) => log.debug('probe message cleanup failed — cosmetic only', {
-          clientNumber, error: String(err?.message ?? err).slice(0, 120),
-        }));
-    }
+    // Always logged, including when it skips — a cleanup that silently does nothing is exactly
+    // how DEF-276b survived, and `probe_cleaned` with an outcome is the falsifier.
+    void cleanUpProbeMessage(probeSendPromise)
+      .then((outcome) => logLivenessTransition(clientNumber, { event: 'probe_cleaned', outcome, generation }))
+      .catch(() => undefined);
     return;
   }
 
