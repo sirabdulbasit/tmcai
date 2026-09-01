@@ -769,3 +769,61 @@ live "no dispatcher".
 had offered to act — 2nd occurrence in two days), DEF-266 (message content quoted then denied
 two minutes later; a storage gap narrated as a transport gap), DEF-267 (the 30-vs-39 sentence,
 and WhatsApp quoted-replies carrying no context to the model).
+
+## Chat 21
+
+**Date:** 2026-09-01 · **Register:** CL-043 · **DEF:** DEF-269 ·
+**Symptom tags:** `capability-denial`, `identity-withheld-by-transport`
+
+**What happened**
+
+Eight messages arrived from one person over roughly four hours — *"Hlo"*, *"Kya halll hai"*,
+*"Ma thak"*, *"Kdr ho"*, *"G"*, *"Kadr chal ga ho"*, and two more. Every relay to the owner
+described them the same way: **an unknown sender whose number WhatsApp did not share.** The
+owner asked, twice: *"why brain don't know who sent message? number or name from contacts?"*
+and then *"is brain not reading message it is receving? is brain don't know who sent it
+message?"*
+
+**What was NOT wrong, and why that governs the fix**
+
+It was reading them. All eight are in `brain_user_messages`, relayed within seconds, sender
+policy `allowed`, same `@lid` identity continuously since 2026-08-06. Nothing was dropped.
+
+It was also **one** person, not several. An earlier draft of this row said four strangers were
+being collapsed into one identity; that was wrong and is corrected here. The synthetic
+`+`-prefixed value is *derived from* that sender, so one identity means one human.
+
+And the anonymity is not a bug in our code. WhatsApp withholds the phone number for `@lid`
+senders. `identifySender` correctly refuses to invent one — an earlier version displayed a
+fabricated 15-digit number, and **a fabricated number is worse than no number, because it looks
+actionable** (DEF-121). Refusing to guess is the correct behaviour and stays.
+
+So the honest diagnosis is narrower than the complaint: **the alias lookup is empty, and only
+the owner can fill it.** The mechanism already works — 2 of 778 contacts carry a `waLid`, and
+those two senders *are* named in relays. Nobody had ever been asked to add a third.
+
+**The fix asks, once**
+
+After a sender has written several times (`MIN_MESSAGES = 3`), one routine prompt goes out
+quoting their message: *who are they?* The answer writes the `waLid` onto a contact, and every
+later message from that identity is named.
+
+Everything interesting about it is a refusal:
+
+- **Not on the first message.** DEF-271 was fixed the same day for housekeeping asks crowding
+  out real messages; earning the ask over several messages is the difference between resolving
+  an identity and inventing a new nag.
+- **`routine`, never `high`.** `high` escalates to a voice note or a call. A stranger saying
+  *"Hlo"* must not ring the owner's phone.
+- **Keyed on the `@lid`, not the message**, so a chatty sender produces one ask, not eight.
+- **The answer must be a NAME.** `looksLikeAnswer` fell through to `default`, which accepts any
+  text under 200 characters — so the next unrelated thing the owner typed would have been
+  written into a contact name. A sentence, a link, an address, a typed phone number and `skip`
+  are all refused. A contact called *"remind me to check the lease"* would be worse than the
+  anonymity this fixes.
+- **No phone is stored.** The transport withheld it; inventing one is the defect above.
+- **An existing contact is aliased, never duplicated.** A second copy of a person costs more
+  than an unresolved identity.
+
+**Still open from the same conversation:** DEF-267 (WhatsApp quoted-replies carry only a message
+id, never the quoted text, so "reply to this" loses its referent) and DEF-265.

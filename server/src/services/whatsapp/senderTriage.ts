@@ -218,6 +218,99 @@ export async function identifySender(
 }
 
 /**
+ * DEF-269 — ASK THE OWNER WHO AN ALLOWED-BUT-ANONYMOUS SENDER IS, ONCE.
+ *
+ * Owner, 2026-09-01: *"is brain don't know who sent it message?"* — after eight messages from
+ * one person over four hours. Brain knew it was ONE consistent sender (same `@lid` since
+ * 08-06, policy `allowed`) and had no name for them, so every relay said *"an unknown sender
+ * whose number WhatsApp did not share"*.
+ *
+ * That is not a code defect. WhatsApp genuinely withholds the number for these senders, and
+ * `identifySender` correctly refuses to invent one — the earlier version showed a fabricated
+ * 15-digit São Tomé number, and *"a fabricated number is worse than no number: it looks
+ * actionable"*. The alias table is the ONE path that resolves them, and it works: 2 of 778
+ * contacts have a `waLid` alias and those senders ARE named.
+ *
+ * So the gap is an empty lookup, and the owner is the only one who can fill it. This asks him
+ * once per identity, using the same queue, dedup and side-effect machinery as the allow/ignore
+ * triage — not a parallel path.
+ *
+ * WHY IT ASKS ONLY AFTER SEVERAL MESSAGES. A single "Hlo" from a wrong number does not deserve
+ * a question; that would be a new nag, on the day DEF-271 was fixed for exactly that. The ask
+ * is earned by a sender who keeps writing.
+ */
+export async function maybeAskWhoSenderIs(params: {
+  clientNumber: string;
+  fromNumber: string;
+  rawSenderId: string | null;
+  ownerUserId: number;
+  body: string;
+}): Promise<{ asked: boolean; reason?: string }> {
+  const lid = (params.rawSenderId ?? '').trim();
+  // Only for senders whose number the transport withheld. A real phone needs no alias — the
+  // contact lookup already names it, or the owner can read the number.
+  if (!lid.endsWith('@lid')) return { asked: false, reason: 'not_a_lid_sender' };
+
+  // Already named? Then nothing to ask.
+  const known = await prisma.entity.findFirst({
+    where: {
+      clientNumber: params.clientNumber, entityType: 'contact',
+      metadata: { path: ['waLid'], equals: lid } as any,
+    },
+    select: { id: true },
+  }).catch(() => null);
+  if (known) return { asked: false, reason: 'already_aliased' };
+
+  // Earned by volume. Counted from the relay log, which is the only record of these messages
+  // (DEF-270) — so the threshold measures real traffic rather than a single stray "Hlo".
+  const MIN_MESSAGES = 3;
+  const seen = await prisma.brainUserMessage.count({
+    where: {
+      clientNumber: params.clientNumber, userId: params.ownerUserId,
+      kind: 'wa_counterpart_message',
+      dedupKey: { startsWith: `wa_counterpart:${params.fromNumber}:` },
+    },
+  }).catch(() => 0);
+  if (seen < MIN_MESSAGES) return { asked: false, reason: `only_${seen}_messages` };
+
+  // ONE ask per identity, EVER — including asks the owner already answered, skipped or let
+  // expire. `enqueueBrainPrompt`'s own dedup covers only `queued`/`awaiting_reply` rows, so
+  // relying on it would re-ask on every later message once he replied "skip": the nag DEF-271
+  // was fixed to stop, rebuilt by the fix meant to avoid it. A terminal ask is still an ask.
+  const askedBefore = await prisma.brainPromptQueue.findFirst({
+    where: {
+      clientNumber: params.clientNumber, userId: params.ownerUserId,
+      dedupKey: `wa_sender_alias:${lid}`,
+    },
+    select: { id: true },
+  }).catch(() => null);
+  if (askedBefore) return { asked: false, reason: 'already_asked' };
+
+  const { enqueueBrainPrompt } = await import('../brainPrompts/brainPromptQueueService');
+  await enqueueBrainPrompt({
+    userId: params.ownerUserId,
+    clientNumber: params.clientNumber,
+    question:
+      `Someone has messaged you ${seen} times on WhatsApp and the transport does not share their `
+      + `number, so I cannot name them. Their latest was "${params.body.slice(0, 80)}". `
+      + `Who are they? Reply with a name and I will recognise them from now on, or "skip".`,
+    // 'routine', for the same reason the triage ask is: channelForCriticality escalates high to
+    // a voice note or a call, and a question about a stranger must never ring the owner.
+    criticality: 'routine',
+    // ONE ask per identity, ever. Keyed on the @lid rather than the message, so a chatty sender
+    // cannot turn this into the nag DEF-271 was fixed to stop.
+    dedupKey: `wa_sender_alias:${lid}`,
+    sideEffect: {
+      kind: 'wa_sender_alias_capture',
+      data: { waLid: lid, clientNumber: params.clientNumber, ownerUserId: params.ownerUserId },
+    },
+    metadata: { source: 'sender_alias', lid },
+  });
+  log.info('owner asked who an anonymous sender is', { lid, seen });
+  return { asked: true };
+}
+
+/**
  * Interpret the owner's answer to the triage ask. Strict unambiguous
  * forms are accepted directly (fast prefilter); anything else goes to the
  * LLM classifier — the regex is never the final boundary for an unclear
@@ -419,7 +512,12 @@ export async function triageUnregisteredInbound(params: {
 /** Surface an allowed sender's message to the owner (Phase 2 replaces
  *  this relay with the scoped counterpart conversation). */
 async function relayToOwner(
-  params: { clientNumber: string; fromNumber: string; body: string },
+  // `rawSenderId` is DECLARED here rather than reached through `as any`. It arrives from
+  // `triageUnregisteredInbound`, which arrives from `WhatsAppInbound`, and three things now
+  // depend on it: DEF-121's identity display, DEF-270's `senderRef`, and DEF-272's alias ask.
+  // A cast would let a refactor drop it silently and leave all three quietly inert — which is
+  // how DEF-258 kept a dead reviewer green for six days.
+  params: { clientNumber: string; fromNumber: string; body: string; rawSenderId?: string | null },
   ownerUserId: number,
   evidence: string[],
   senderName: string | null,
@@ -428,7 +526,7 @@ async function relayToOwner(
   // DEF-121: resolve the identity instead of printing whatever string the
   // transport handed us — which for an @lid sender was a fabricated phone.
   const who = await identifySender(
-    params.clientNumber, params.fromNumber, (params as any).rawSenderId, senderName,
+    params.clientNumber, params.fromNumber, params.rawSenderId, senderName,
   ).catch(() => describeSender(params.fromNumber, senderName));
 
   await brainContactsUser({
@@ -464,9 +562,19 @@ async function relayToOwner(
       relayedBody: params.body.slice(0, 500),
       // The stable identity, so a later "who was that?" can resolve through the alias table
       // rather than through a string that merely looks like a phone number (DEF-269).
-      senderRef: (params as any).rawSenderId ?? params.fromNumber,
+      senderRef: params.rawSenderId ?? params.fromNumber,
     },
   } as any).catch((error: any) => {
     log.warn('counterpart relay to owner failed', { error: error?.message });
   });
+
+  // DEF-269 — having relayed it, consider asking who they are. Deliberately AFTER the relay and
+  // never in its way: a failure here must not cost the owner the message itself.
+  await maybeAskWhoSenderIs({
+    clientNumber: params.clientNumber,
+    fromNumber: params.fromNumber,
+    rawSenderId: params.rawSenderId ?? null,
+    ownerUserId,
+    body: params.body,
+  }).catch((error: any) => log.warn('sender alias ask failed', { error: error?.message }));
 }

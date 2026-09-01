@@ -731,4 +731,62 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(body).not.toContain('updateMany');
     },
   },
+  {
+    id: 'chat21',
+    title: 'eight messages from one person, and every relay called them an unknown sender',
+    fixCommits: ['61217ec'],
+    symptomTags: ['capability-denial', 'identity-withheld-by-transport'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+      const triage = readFileSync(join(root, 'services', 'whatsapp', 'senderTriage.ts'), 'utf-8');
+
+      // 1. THE ASK EXISTS AND IS WIRED. The alias mechanism already worked; what was missing was
+      //    anyone ever being asked to populate it. An unwired helper fixes nothing (DEF-255).
+      expect(triage).toContain('export async function maybeAskWhoSenderIs');
+      const relay = triage.slice(triage.indexOf('counterpart relay to owner failed'));
+      expect(relay).toContain('maybeAskWhoSenderIs(');
+
+      // 2. AFTER THE RELAY, never before it. A failure in the ask must not cost the owner the
+      //    message itself — the message is the thing that matters.
+      expect(relay.indexOf('maybeAskWhoSenderIs(')).toBeGreaterThan(0);
+
+      // 3. EARNED, not on the first message. DEF-271 was fixed the same day for housekeeping
+      //    asks starving the channel; asking about every stray 'Hlo' would re-create it.
+      expect(triage).toMatch(/MIN_MESSAGES\s*=\s*[2-9]/);
+
+      // 4. ROUTINE. 'high' escalates to a voice note or a call: a stranger must never ring.
+      const ask = triage.slice(triage.indexOf('export async function maybeAskWhoSenderIs'));
+      const body = ask.slice(0, ask.indexOf('\n}\n'));
+      expect(body).toContain("criticality: 'routine'");
+      expect(body).not.toContain("criticality: 'high'");
+
+      // 5. ONE ASK PER IDENTITY. Keyed on the @lid, so eight messages produce one prompt.
+      expect(body).toContain('wa_sender_alias:${lid}');
+
+      // 6. ONE ASK PER IDENTITY *EVER*, not merely one live ask. enqueueBrainPrompt's dedup
+      //    covers only queued/awaiting_reply, so without a state-free check the ask fires again
+      //    on every later message once the owner replies 'skip' — DEF-271's nag, rebuilt by the
+      //    fix meant to avoid it.
+      expect(body).toContain('brainPromptQueue.findFirst');
+      const prior = body.slice(body.indexOf('brainPromptQueue.findFirst'));
+      expect(prior.slice(0, prior.indexOf('select:'))).not.toContain('state');
+
+      // 7. THE ANSWER MUST BE A NAME. Without a shape case looksLikeAnswer falls through to
+      //    `default`, which accepts any text under 200 chars — the next unrelated message the
+      //    owner sent would become a contact name.
+      const handler = readFileSync(join(root, 'services', 'brainPrompts', 'promptReplyHandler.ts'), 'utf-8');
+      expect(handler).toContain("case 'wa_sender_alias_capture'");
+
+      // 8. NO PHONE IS INVENTED. The transport withheld it; a fabricated number looks
+      //    actionable and is worse than none (DEF-121).
+      const kase = handler.slice(handler.indexOf("case 'wa_sender_alias_capture': {"));
+      const write = kase.slice(0, kase.indexOf("case 'wa_sender_policy_decision'"));
+      expect(write).toContain('waLid');
+      expect(write).not.toContain('phoneNumber');
+      // 9. And an existing contact is aliased rather than duplicated.
+      expect(write).toContain('findFirst');
+    },
+  },
 ];

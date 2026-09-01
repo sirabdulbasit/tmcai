@@ -50,6 +50,9 @@ export interface EnqueueTxClient {
 export interface SideEffect {
   /** What to do with the user's answer. */
   kind: 'set_due_date' | 'assign_owner' | 'free_form_note' | 'action_status_update'
+      // DEF-269 — the owner naming a WhatsApp sender whose number the transport withheld.
+      // Writes the `waLid` alias so the SAME person is recognised by name from then on.
+      | 'wa_sender_alias_capture'
       | 'wa_sender_policy_decision' | 'noop';
   /** Most side-effects target an open item. */
   openItemId?: string;

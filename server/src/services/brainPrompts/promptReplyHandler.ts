@@ -320,7 +320,9 @@ interface SideEffectOutcome {
   detail?: string;
 }
 
-async function applySideEffect(
+// Exported for tests. The alias-capture case writes a DURABLE identity binding and spends the
+// owner's single ask doing it, so its failure paths have to be exercised rather than read.
+export async function applySideEffect(
   side: { kind?: string; openItemId?: string; data?: Record<string, unknown> } | null,
   answer: string,
   fallbackOpenItemId: string | null,
@@ -395,6 +397,76 @@ async function applySideEffect(
       await prisma.openItem.update({ where: { id: openItemId }, data: { notes: notes as any } })
         .catch((err) => log.warn('free_form_note update failed', { err: err.message }));
       return { status: 'applied' };
+    }
+
+    case 'wa_sender_alias_capture': {
+      // DEF-272 — the owner naming a sender whose number WhatsApp withheld. Writes the `waLid`
+      // alias that `identifySender` already reads, so the SAME person is named from then on.
+      const waLid = String(side?.data?.waLid ?? '');
+      const clientNumber = String(side?.data?.clientNumber ?? '');
+      if (!waLid || !clientNumber) return { status: 'failed', detail: 'missing_lid' };
+
+      // "skip" is a real answer and must not become a contact called "skip".
+      const name = answer.trim();
+      if (!name || /^(skip|no|nope|ignore|dunno|don'?t know|not sure)$/i.test(name)) {
+        return { status: 'applied', detail: 'declined' };
+      }
+      // A name, not a sentence. Anything long is the owner talking, not naming — and writing a
+      // paragraph into a contact name would be worse than leaving the sender anonymous.
+      if (name.length > 80) return { status: 'failed', detail: 'answer_not_a_name' };
+
+      // Prefer an EXISTING contact — the owner naming someone he already has on file must not
+      // create a second copy of them. `entities` already carries 778 contacts and a duplicate
+      // identity costs more than an unresolved one (MEM-003's stated trade).
+      const existing = await prisma.entity.findFirst({
+        where: {
+          clientNumber, entityType: 'contact',
+          name: { equals: name, mode: 'insensitive' },
+        },
+        select: { id: true, metadata: true },
+      }).catch(() => null);
+
+      if (existing) {
+        // Never REBIND an alias. If this contact already answers to a different `@lid`,
+        // overwriting would silently un-name the other identity — and DEF-162 records that a
+        // wrong identity bind is durable and misroutes that person indefinitely. Refuse loudly.
+        const priorLid = (existing.metadata as any)?.waLid;
+        if (priorLid && priorLid !== waLid) {
+          log.warn('refused to rebind a waLid alias', { name, priorLid, waLid });
+          return { status: 'failed', detail: 'contact_has_a_different_wa_identity' };
+        }
+        // The write is the whole fix, so its failure must NOT be reported as success. Returning
+        // `applied` here would tell the owner the person is named while the ask is spent and
+        // never repeats — BLD-011: an error handler that returns a success is claiming a fact.
+        try {
+          await prisma.entity.update({
+            where: { id: existing.id },
+            data: { metadata: { ...((existing.metadata as any) ?? {}), waLid } as any },
+          });
+        } catch (err: any) {
+          log.warn('waLid alias write failed', { err: err?.message });
+          return { status: 'failed', detail: 'alias_write_failed' };
+        }
+        return { status: 'applied', detail: `aliased_existing:${name}` };
+      }
+
+      // No such contact. Create one carrying ONLY what the owner actually told us — a name and
+      // the alias. No phone: the transport withheld it and inventing one is the defect DEF-121
+      // exists to prevent.
+      try {
+        await prisma.entity.create({
+          data: {
+            clientNumber, entityType: 'contact', name,
+            metadata: { waLid, source: 'owner_named_wa_sender' } as any,
+          } as any,
+        });
+      } catch (err: any) {
+        // Same reason as above: the write IS the fix. A swallowed failure here spends the
+        // owner's one ask and leaves the sender anonymous forever, while telling him otherwise.
+        log.warn('contact create for waLid failed', { err: err?.message });
+        return { status: 'failed', detail: 'alias_write_failed' };
+      }
+      return { status: 'applied', detail: `aliased_new:${name}` };
     }
 
     case 'wa_sender_policy_decision': {
@@ -644,6 +716,15 @@ export function looksLikeAnswer(text: string, sideEffectKind: string): boolean {
       const tokens = t.split(/\s+/);
       if (tokens.length >= 1 && tokens.length <= 4 && tokens.every((w) => /^[A-Z][a-z'\-]{1,}\.?$/.test(w) || /^[A-Z][A-Z]+$/.test(w))) return true;
       return false;
+    }
+    case 'wa_sender_alias_capture': {
+      // DEF-269 — a NAME, and nothing else. The `default` branch accepts any text under 200
+      // chars, which here would write whatever the owner happened to type next into a contact
+      // name. Names are short and few-token; a sentence is the owner talking, not naming.
+      const tokens = t.split(/\s+/);
+      if (tokens.length > 4 || t.length > 60) return false;
+      if (/[@:;/\\?!]|https?:/i.test(t)) return false;
+      return tokens.every((w) => /^[A-Za-z][A-Za-z'\-.]*$/.test(w));
     }
     case 'free_form_note':
       // Anything that isn't a new-chat trigger (layer 1 already filtered).
