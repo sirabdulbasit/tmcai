@@ -26,11 +26,13 @@
  * a judgement miss becomes a caught "ask", not a silent wrong action.
  */
 import { expect } from 'vitest';
+import prisma from '../src/db/prisma';
 import {
   claimsCompletion,
   normaliseAction,
   classifyTurnIntent,
   shouldInterceptCompletionClaim,
+  buildOpenItemsBlockForReasoning,
   IMMEDIATE_INTERNAL_ACTION_TYPES,
 } from '../src/services/knowledge/brainComposer';
 import { sanitizeAnswerForUser } from '../src/services/knowledge/answerSanitizer';
@@ -629,6 +631,57 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       //    not an absolute the model must break to obey the owner.
       const persona = readFileSync(join(__dirname, '..', 'src', 'services', 'knowledge', 'brainPersonaService.ts'), 'utf-8');
       expect(persona).toContain('Explicit request overrides the language rule');
+    },
+  },,
+  {
+    id: 'chat19',
+    date: '2026-09-01',
+    userMessage: 'Attend Presentation Alignment Call, from where you get this?? … why are you not storing the source or background of items?',
+    observedFailure:
+      'Brain told the owner it does not store where an open item came from — "The source isn\'t stored in a way I can filter by", "I don\'t save a permanent, filterable link back to the specific calendar event or email that triggered it", "I can\'t fix my own architecture, but I can log this as a specific design flaw" — and he said yes to logging a flaw that does not exist. open_items carries source_feed, source_ref and an INDEXED source_feed_event_id, populated on 278 of 278 production rows. The field was absent from buildOpenItemsBlockForReasoning\'s select while the live items block rendered "via gmail" all along, so the model conflated "not in my context" with "not in the database".',
+    symptomTags: ['capability-denial', 'protection-with-two-implementations'],
+    fixCommits: ['this-commit'],
+    assert: async () => {
+      // Against the REAL builder, with prisma mocked only at the driver boundary — the thing
+      // under test is the select and the rendering, and both are this function's own work.
+      const client = prisma as any;
+      const realFindMany = client.openItem?.findMany;
+      const realEntityFindMany = client.entity?.findMany;
+      const ITEM = {
+        id: 'oi_pac', title: 'Attend Presentation Alignment Call', status: 'NEW',
+        priority: 'medium', dueDate: null, delegateeName: null, delegateeEmail: null,
+        metadata: {}, delegationFollowupCount: 0, createdAt: new Date('2026-08-26'),
+        sourceFeed: 'gmail', sourceRef: '1a0044f1ac537b2b',
+      };
+      let captured: any = null;
+      try {
+        client.openItem = client.openItem ?? {};
+        client.entity = client.entity ?? {};
+        client.openItem.findMany = async (args: any) => { captured = args; return [ITEM]; };
+        client.entity.findMany = async () => [];
+
+        const block = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+        // 1. The columns are FETCHED. They cannot be rendered if they are never selected, and
+        //    this is the exact omission that made the false sentence reachable.
+        expect(captured?.select?.sourceFeed).toBe(true);
+        expect(captured?.select?.sourceRef).toBe(true);
+
+        // 2. The provenance reaches the model — "where did this come from" becomes answerable
+        //    from context rather than denied.
+        expect(block).toContain('source=gmail');
+        expect(block).toContain('source_ref=1a0044f1ac537b2b');
+
+        // 3. Absence stays absent. An item with no recorded origin must not read as one whose
+        //    origin is the string "null" — the same lie as a $0.00 seat that never ran.
+        client.openItem.findMany = async () => [{ ...ITEM, sourceFeed: null, sourceRef: null }];
+        const blank = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+        expect(blank).toContain('title="Attend Presentation Alignment Call"');
+        expect(blank).not.toContain('source=');
+      } finally {
+        if (realFindMany) client.openItem.findMany = realFindMany;
+        if (realEntityFindMany) client.entity.findMany = realEntityFindMany;
+      }
     },
   },
 ];

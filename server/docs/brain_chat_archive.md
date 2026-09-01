@@ -655,3 +655,60 @@ the prompt contract's presence, the chokepoint's execution branch and its
 fail-open, and the Urdu voice's existence in `voiceService.ts`. Live acceptance
 = type "can you give me voice note in urdu?" on production and receive an Urdu
 voice bubble.
+
+## Chat 19
+
+**Date:** 2026-09-01 · **Register:** CL-041 · **DEF:** DEF-260 ·
+**Symptom tags:** `capability-denial`, `protection-with-two-implementations`
+
+**What he asked**
+
+> *"Attend Presentation Alignment Call, from where you get this??"*
+> *"why are you creating item based on invitations?"*
+> *"why are you not storing the source or background of items?"*
+
+**What Brain said**
+
+> *"I can't identify which items came from invitations without going through them one by one.
+> The source isn't stored in a way I can filter by."*
+>
+> *"Honest answer: you're right, I should be. It's a limitation in my current design. When an
+> item is created, I record what it is, but I don't save a permanent, filterable link back to
+> the specific calendar event or email that triggered it… I have to look at each item's title
+> and notes and guess, which is unreliable. I agree this is a gap. I can't fix my own
+> architecture, but I can log this as a specific design flaw to be addressed."*
+
+He said **"yes"**. Nothing was logged.
+
+**Why it is wrong**
+
+Every sentence is false, and one query disproves all of them. `open_items` carries
+`source_feed`, `source_ref`, `connector_id`, `metadata` and `source_feed_event_id` — the last
+one **indexed**. Measured on production the same day: **278 items, 278 with `source_feed`, 276
+with `source_ref`**. The filter he was told was impossible,
+`prisma.openItem.count({ where: { sourceFeed: 'meeting' } })`, returns **238 rows in 175 ms**,
+and `routes/openItemsRoutes.ts` already reads the column.
+
+**Root cause — located, not inferred.** The field was never missing from the database; it was
+missing from the block the model reads on a reasoning turn.
+`brainComposer.buildOpenItemsBlockForReasoning` selected `id, title, status, priority, dueDate,
+delegatee*, metadata, delegationFollowupCount, createdAt` and stopped there, while the LIVE
+items block in the same file has rendered `via gmail` since it was written. **Two renderings of
+open items with different field sets**, and which one had run decided whether Brain could answer
+him. It conflated *"not in my context"* with *"not in the database"* — and then offered to log a
+design flaw that does not exist.
+
+**The fix is the context, not a rule.** `sourceFeed`/`sourceRef` are now selected and rendered as
+`source=gmail source_ref=1a0044f1ac537b2b`. A prompt rule asserting *"you do have provenance"*
+was deliberately rejected: this file already carries ten recorded members of
+`protection-with-two-implementations`, and a sentence claiming a fact the context does not carry
+is how that class is born.
+
+Provenance is emitted only when present — an item with no recorded origin says nothing rather
+than `source=null`, because an unknown origin must not read as an origin named "null".
+
+**Still open from the same conversation:** DEF-261 (the deadline nag repeats daily forever),
+DEF-262 (interventions carry no dedup key and repeated verbatim 24h apart), DEF-263 (referent
+lost 19 seconds after Brain's own message; *"yes"* answered as though it were an offer). And the
+substance behind his question stands: **238 of his 278 items — 86% — are calendar-derived.**
+Seeing them is now possible; bulk-acting on them is not yet built.

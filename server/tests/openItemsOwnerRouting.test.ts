@@ -103,3 +103,85 @@ describe('buildOpenItemsBlockForReasoning — owner routing', () => {
     expect(arg.where.name.in).toEqual(expect.arrayContaining(['Muhammad Yousaf', 'Asad Ahmed Taj']));
   });
 });
+
+/**
+ * DEF-260 — the reasoning block must carry WHERE AN ITEM CAME FROM.
+ *
+ * Owner, 2026-09-01, asked why items were being created from calendar invites and was told:
+ * *"The source isn't stored in a way I can filter by"*, *"I don't save a permanent, filterable
+ * link back to the specific calendar event or email that triggered it"*, and — having offered
+ * to log it as a design flaw — *"I can't fix my own architecture"*.
+ *
+ * None of that was true. `open_items.source_feed` and `source_ref` were populated on 278 of 278
+ * production rows, `source_feed_event_id` is indexed, and the LIVE items block has rendered
+ * `via gmail` since it was written. The field was missing from THIS block — the one the
+ * reasoning turn reads — so on the turn he actually asked, the model had no provenance in front
+ * of it and reported that absence as the field not existing.
+ *
+ * That is why these assert on the BLOCK rather than on the model's wording. A prompt rule
+ * telling it "you do have provenance" would be a second implementation of a fact the context
+ * should simply carry; the durable fix is that the fact is there, and the durable test is that
+ * it stays there.
+ */
+describe('DEF-260 — item provenance reaches the reasoning turn', () => {
+  const ITEM = {
+    id: 'oi_pac', title: 'Attend Presentation Alignment Call', status: 'NEW', priority: 'medium',
+    dueDate: null, delegateeName: null, delegateeEmail: null, metadata: {},
+    delegationFollowupCount: 0, createdAt: new Date('2026-08-26'),
+    sourceFeed: 'gmail', sourceRef: '1a0044f1ac537b2b',
+  };
+
+  it('SELECTS the source columns — they cannot be rendered if they are never fetched', async () => {
+    findManyOpenItems.mockResolvedValue([ITEM]);
+    findManyEntities.mockResolvedValue([]);
+    await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+    const select = findManyOpenItems.mock.calls[0][0].select;
+    expect(select.sourceFeed).toBe(true);
+    expect(select.sourceRef).toBe(true);
+  });
+
+  it('renders the feed and the originating ref, so "where did this come from" is answerable', async () => {
+    findManyOpenItems.mockResolvedValue([ITEM]);
+    findManyEntities.mockResolvedValue([]);
+    const block = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+    expect(block).toContain('source=gmail');
+    expect(block).toContain('source_ref=1a0044f1ac537b2b');
+  });
+
+  it('distinguishes a calendar-derived item from an emailed one — the owner\'s actual question', async () => {
+    // 238 of his 278 items are source_feed='meeting'. Telling those apart from the rest IS the
+    // ask; a block that renders both identically cannot support it however the model is prompted.
+    findManyOpenItems.mockResolvedValue([
+      { ...ITEM, id: 'oi_cal', title: 'Join Google Meet call', sourceFeed: 'meeting', sourceRef: 'evt_9912' },
+      ITEM,
+    ]);
+    findManyEntities.mockResolvedValue([]);
+    const block = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+    expect(block).toContain('source=meeting');
+    expect(block).toContain('source=gmail');
+  });
+
+  it('says NOTHING when provenance is genuinely absent — never source=null', async () => {
+    // An item whose origin is unknown must not read as one whose origin is the string "null".
+    // That is the same lie as a $0.00 seat that never ran: a placeholder presented as a fact.
+    findManyOpenItems.mockResolvedValue([{ ...ITEM, sourceFeed: null, sourceRef: null }]);
+    findManyEntities.mockResolvedValue([]);
+    const block = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+    expect(block).toContain('title="Attend Presentation Alignment Call"');
+    expect(block).not.toContain('source=');
+    expect(block).not.toContain('null');
+  });
+
+  it('omits only the ref when the feed is known but the ref is not', async () => {
+    findManyOpenItems.mockResolvedValue([{ ...ITEM, sourceRef: null }]);
+    findManyEntities.mockResolvedValue([]);
+    const block = await buildOpenItemsBlockForReasoning(2, 'TMC-0001');
+
+    expect(block).toContain('source=gmail');
+    expect(block).not.toContain('source_ref=');
+  });
+});

@@ -2245,6 +2245,18 @@ export async function buildOpenItemsBlockForReasoning(
           delegateeName: true, delegateeEmail: true, metadata: true,
           delegationFollowupCount: true, delegationLastFollowupAt: true,
           createdAt: true,
+          // DEF-260 — WHERE THE ITEM CAME FROM, because he asked and was told it is not stored.
+          //
+          // It always was. `open_items.source_feed` and `source_ref` are populated on 278 of 278
+          // rows (276 for source_ref), `source_feed_event_id` is indexed, and the live block a few
+          // thousand lines below this one has been rendering `via gmail` the whole time. What was
+          // missing was HERE: this select, which feeds the reasoning turn — so on the turn he
+          // actually asked, the model had no source field in front of it and reported that as the
+          // field not existing.
+          //
+          // Two renderings of open items with different field sets is the shape that made a false
+          // sentence reachable: the answer depended on which block had run.
+          sourceFeed: true, sourceRef: true,
         } as any,
         orderBy: { createdAt: 'desc' },
         take: OPEN_ITEMS_PAGE,
@@ -2328,7 +2340,15 @@ export async function buildOpenItemsBlockForReasoning(
       }
       const followups = (r.delegationFollowupCount ?? 0) > 0 ? ` followups_sent=${r.delegationFollowupCount}` : '';
       const missStr = missing.length > 0 ? ` missing=${missing.join('+')}` : '';
-      return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}`;
+      // DEF-260. `source=` is the feed the item was derived from (gmail | meeting | gchat |
+      // whatsapp | chat | erp | okr | manual); `source_ref` is the originating thread or event id.
+      // Emitted only when present, so an item with no recorded provenance says nothing rather
+      // than claiming `source=null` — an item whose origin is genuinely unknown must not read as
+      // one whose origin is the string "null".
+      const src = r.sourceFeed
+        ? ` source=${r.sourceFeed}${r.sourceRef ? ` source_ref=${r.sourceRef}` : ''}`
+        : '';
+      return `- id=${r.id} title="${r.title}" status=${r.status} priority=${r.priority} due=${due}${deleg}${followups}${missStr}${src}`;
     });
     // DEF-221 attached the person-reference rule here; DEF-222 moved it to the
     // core conversational rules so it rides on every turn from one place.
