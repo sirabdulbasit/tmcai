@@ -14,7 +14,7 @@
  * see it. So cleanup takes the send PROMISE and every outcome is named and returned.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { cleanUpProbeMessage } from '../src/services/whatsapp/webjsLiveness';
+import { cleanUpProbeMessage, PROBE_CLEANUP_BACKOFF_MS } from '../src/services/whatsapp/webjsLiveness';
 
 const msg = (del: any = vi.fn().mockResolvedValue(undefined)) => ({ delete: del });
 
@@ -91,5 +91,39 @@ describe('DEF-276c — the echo is the handle that actually exists', () => {
   it('still falls back to the send result when there is no echo', async () => {
     const del = vi.fn().mockResolvedValue(undefined);
     expect(await cleanUpProbeMessage(Promise.resolve(msg(del)), 10_000, null)).toBe('deleted');
+  });
+});
+
+/**
+ * DEF-276d — the third live failure: `outcome: "failed"`, 43ms after the pass.
+ *
+ * `Message.delete()` runs inside the page and looks the message up in WhatsApp Web's own
+ * collections before reading `msg.id.remote`. That early the message is often not in that store,
+ * so the lookup returns undefined and the property read throws. Retrying is the right shape
+ * because cleanup runs entirely off the critical path — the verdict is already recorded.
+ */
+describe('DEF-276d — the echo is not deletable immediately', () => {
+  it('retries and succeeds when the first attempt loses the store race', async () => {
+    let calls = 0;
+    const del = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      if (calls < 3) throw new TypeError("Cannot read properties of undefined (reading 'id')");
+      return undefined;
+    });
+    expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('deleted');
+    expect(calls).toBe(3);
+  });
+
+  it('gives up with a named failure rather than retrying forever', async () => {
+    const del = vi.fn().mockRejectedValue(new Error('permanently gone'));
+    expect(await cleanUpProbeMessage(null, 10_000, msg(del))).toBe('failed');
+    expect(del.mock.calls.length).toBe(PROBE_CLEANUP_BACKOFF_MS.length);
+  });
+
+  it('does not sleep at all when the first attempt works', async () => {
+    // The common case must stay instant; patience is only for the race.
+    const started = Date.now();
+    expect(await cleanUpProbeMessage(null, 10_000, msg())).toBe('deleted');
+    expect(Date.now() - started).toBeLessThan(120);
   });
 });

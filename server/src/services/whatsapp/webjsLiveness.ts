@@ -22,6 +22,8 @@ export type LivenessStatus = 'connected_unverified' | 'connected' | 'liveness_fa
 // omitted until production evidence justifies tuning).
 export const PROBE_TIMEOUT_MS = 20_000;
 export const PROBE_MARKER_PREFIX = '[nexeo-liveness ';
+/** DEF-276d — waits before each delete attempt. Off the critical path, so patience is free. */
+export const PROBE_CLEANUP_BACKOFF_MS = [0, 500, 1_500, 4_000];
 /** Total probe attempts per DEGRADATION EPISODE (lock 4): after this,
  *  no more self-messages until manual repair or a probe pass opens a
  *  new episode. */
@@ -305,12 +307,33 @@ export async function cleanUpProbeMessage(
   // I should have read. The echoed message, by contrast, is a real Message object AND is
   // guaranteed to exist whenever the probe passed, because the echo is what makes it a pass.
   if (echoed && typeof echoed.delete === 'function') {
-    try {
-      await echoed.delete(true);
-      return 'deleted';
-    } catch {
-      return 'failed';
+    // DEF-276d — RETRY, and say why it failed.
+    //
+    // The echo fires ~50ms after the send and `Message.delete()` runs inside the page, looking
+    // the message up by id in WhatsApp Web's own collections (`Msg.get(msgId) || …`) and then
+    // reading `msg.id.remote`. That early, the message is often not in that store yet, so the
+    // lookup returns undefined and the property read throws. Observed live: `probe_cleaned
+    // outcome=failed`, 43ms after the pass.
+    //
+    // Retrying is the right shape rather than a longer single wait: this runs entirely off the
+    // critical path — the verdict is already recorded — so a few hundred milliseconds cost
+    // nothing, and the store either catches up quickly or the message is genuinely gone.
+    //
+    // The reason is LOGGED now. Both earlier versions of this fix failed silently in production
+    // and were caught only because the outcome was named; a bare 'failed' repeats that mistake
+    // one level down.
+    for (const waitMs of PROBE_CLEANUP_BACKOFF_MS) {
+      if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+      try {
+        await echoed.delete(true);
+        return 'deleted';
+      } catch (err: any) {
+        log.debug('probe message delete attempt failed', {
+          afterMs: waitMs, error: String(err?.message ?? err).slice(0, 160),
+        });
+      }
     }
+    return 'failed';
   }
   if (!sendPromise) return 'skipped_no_message';
   try {
