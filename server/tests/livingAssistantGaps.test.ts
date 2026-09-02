@@ -17,7 +17,7 @@ const callLlmMock = vi.fn(async () => ({ text: 'Your 2:30 with Haseeb — the EX
 
 vi.mock('../src/db/prisma', () => ({
   default: {
-    brainPromptQueue: { findFirst: (...a: any[]) => promptFindFirst(...a) },
+    brainPromptQueue: { findFirst: (...a: any[]) => promptFindFirst(...a), findMany: vi.fn(async () => []),},
     openItem: { findMany: (...a: any[]) => openItemsFindMany(...a) },
     feedEvent: { findMany: (...a: any[]) => feedFindMany(...a) },
     user: { findMany: (...a: any[]) => usersFindMany(...a), findFirst: vi.fn(async () => ({ email: 'basit.ahmed@tmcltd.ai', integrationEmail: 'basit.ahmed@tmcltd.com' })) },

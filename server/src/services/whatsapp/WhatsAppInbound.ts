@@ -31,6 +31,10 @@ export interface InboundParams {
    *  reaches the model as a bare message and "which item do you mean?" is
    *  the only honest answer it can give. */
   quotedBody?: string;
+  /** DEF-291 — the sender's own WhatsApp display name (`notifyName`). Optional because the
+   *  transport does not always supply one; absent falls back to the anonymous label rather
+   *  than to a guess. */
+  senderDisplayName?: string | null;
   /** DEF-075 — the RAW WhatsApp sender id, e.g. `255043747987458@lid`.
    *  `fromNumber` may be a SYNTHETIC phone derived from a LID when neither
    *  getContact() nor the mapping API could resolve the real number. The
@@ -187,6 +191,8 @@ export async function handleInboundMessage(params: InboundParams): Promise<void>
       // DEF-121: the raw @lid is what distinguishes a real number from one the
       // transport invented. Without it the relay shows the owner a fake phone.
       rawSenderId: params.rawSenderId ?? null,
+      // DEF-291 — hand the display name to triage, which already knows what to do with one.
+      senderDisplayName: params.senderDisplayName ?? null,
     });
     log.info('Unregistered number — triaged', {
       from: params.fromNumber,

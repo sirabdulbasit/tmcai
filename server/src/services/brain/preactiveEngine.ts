@@ -212,6 +212,37 @@ async function dueSoonPass(clientNumber: string, userId: number): Promise<number
     }).catch(() => null);
     if (already) continue;
 
+    // DEF-261 — silence is an answer. The per-day dedup above only ever stopped a SECOND ask on
+    // the same day; an item nobody answers was asked about again tomorrow, and the day after,
+    // indefinitely (two items reached 8 consecutive days with zero replies, one reached 10).
+    // The gap now widens with each unanswered ask and resets when he replies.
+    // try/catch, not `.catch` — a missing or failing method throws SYNCHRONOUSLY, before there
+    // is a promise to attach to. That is DEF-274's lesson from earlier today, and it bit again
+    // here. On any failure we ASK: an unreadable history must not silence a real deadline, so
+    // the fail-safe direction is the behaviour we already had.
+    let priorNudges: Array<{ state: string; queuedAt: Date }> = [];
+    let historyReadable = true;
+    try {
+      priorNudges = await prisma.brainPromptQueue.findMany({
+        where: { userId, clientNumber, dedupKey: { startsWith: `due-nudge:${it.id}:` } },
+        select: { state: true, queuedAt: true },
+        orderBy: { queuedAt: 'desc' },
+        take: 20,
+      }) as Array<{ state: string; queuedAt: Date }>;
+    } catch (err: any) {
+      historyReadable = false;
+      log.warn('could not read nudge history — asking rather than going silent', {
+        item: it.id, error: String(err?.message ?? err).slice(0, 120),
+      });
+    }
+    const verdict = historyReadable ? mayNudgeNow(priorNudges) : { may: true, reason: 'history unreadable', gapDays: 0, unanswered: 0 };
+    if (!verdict.may) {
+      log.info('due-nudge withheld — backing off', {
+        item: it.id, unanswered: verdict.unanswered, reason: verdict.reason,
+      });
+      continue;
+    }
+
     const due = new Date(it.dueDate);
     const overdue = due.getTime() < Date.now();
     const question = await narrateDueNudge(clientNumber, userId, it.title, due, overdue, it.delegateeName);
@@ -282,4 +313,70 @@ export async function runPreactiveForAllUsers(): Promise<{ users: number; preps:
   }
   if (preps > 0 || nudges > 0) log.info('preactive sweep', { users: users.length, preps, nudges });
   return { users: users.length, preps, nudges };
+}
+
+/**
+ * DEF-261 — the deadline nag repeated every day, forever.
+ *
+ * Measured 2026-09-02: 71 due-nudges across 17 items, **16 ever answered**. Two items had been
+ * nagged **8 days running with zero responses** (08-26 → 09-02); one reached 10. The dedup key is
+ * `due-nudge:<item>:<today>`, so "one per item per day" was the only limit and an item nobody
+ * answers is asked about again tomorrow, and the day after, indefinitely.
+ *
+ * That is not merely irritating. Those nudges are `high` when overdue, and DEF-277 established
+ * that the outbound queue drains roughly one prompt per in-flight cycle — so ~13 self-replenishing
+ * nags per day consumed the entire channel, starving every `routine` prompt (the identity ask sat
+ * unsent for hours) and, on 2026-09-01, pushing two of the owner's real relayed messages out of
+ * the daily cap entirely.
+ *
+ * SILENCE IS AN ANSWER. Asking a ninth time is not persistence, it is noise, and it costs the
+ * messages that matter. So the gap widens with each unanswered ask — 1, 2, 4, then weekly — and
+ * **resets the moment he replies**, because an answered item has re-earned the right to a prompt
+ * cadence.
+ *
+ * It backs OFF rather than stopping: a deadline that genuinely matters must not go silent because
+ * the owner was on holiday for a fortnight. A weekly floor keeps it alive at a cost the channel
+ * can carry.
+ */
+export const MAX_NUDGE_GAP_DAYS = 7;
+
+export function nudgeGapDays(consecutiveUnanswered: number): number {
+  if (consecutiveUnanswered <= 0) return 0;             // never asked — ask now
+  return Math.min(2 ** (consecutiveUnanswered - 1), MAX_NUDGE_GAP_DAYS);
+}
+
+/**
+ * Count unanswered asks back from the most recent, stopping at the first answer. Consecutive,
+ * not total: a reply is the owner re-engaging, and the cadence should start over rather than
+ * hold his past silence against him forever.
+ */
+export function consecutiveUnansweredNudges(
+  prior: Array<{ state: string; queuedAt: Date }>,
+): number {
+  const newestFirst = [...prior].sort((a, b) => b.queuedAt.getTime() - a.queuedAt.getTime());
+  let n = 0;
+  for (const row of newestFirst) {
+    if (row.state === 'answered') break;
+    n += 1;
+  }
+  return n;
+}
+
+export function mayNudgeNow(
+  prior: Array<{ state: string; queuedAt: Date }>,
+  now = new Date(),
+): { may: boolean; reason: string; gapDays: number; unanswered: number } {
+  const unanswered = consecutiveUnansweredNudges(prior);
+  const gapDays = nudgeGapDays(unanswered);
+  if (prior.length === 0) return { may: true, reason: 'never asked', gapDays, unanswered };
+  const newest = [...prior].sort((a, b) => b.queuedAt.getTime() - a.queuedAt.getTime())[0]!;
+  const daysSince = (now.getTime() - newest.queuedAt.getTime()) / 86_400_000;
+  if (daysSince >= gapDays) {
+    return { may: true, reason: `${daysSince.toFixed(1)}d since last, gap ${gapDays}d`, gapDays, unanswered };
+  }
+  return {
+    may: false,
+    reason: `${unanswered} unanswered — next in ${(gapDays - daysSince).toFixed(1)}d`,
+    gapDays, unanswered,
+  };
 }

@@ -73,7 +73,10 @@ describe('DEF-060 — the queue is no longer a single point of silence', () => {
     // Both were scoped inside the try, so at the moment they were needed the
     // code could not answer "who do I tell, and about whom?".
     expect(CODE).toMatch(/let ownerUserId: number \| null = null/);
-    expect(CODE).toMatch(/let senderName: string \| null = null/);
+    // DEF-291 seeded this from the transport's display name, so the initialiser is no longer
+    // `null`. What DEF-060 actually guards is that the declaration is HOISTED above the try —
+    // pinning its initial value tested the wrong half.
+    expect(CODE).toMatch(/let senderName: string \| null =/);
     expect(CODE).not.toMatch(/const \[evidence, senderName\]/); // no shadowing
   });
 

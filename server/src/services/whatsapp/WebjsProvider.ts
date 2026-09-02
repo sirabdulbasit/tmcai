@@ -1196,6 +1196,24 @@ export class WebjsProvider implements IWhatsAppProvider {
           // referent his words point at, and without it every reply-to
           // reaches the model as a bare message.
           quotedBody: extractQuotedBody(message),
+          // DEF-291 — the sender's own WhatsApp display name.
+          //
+          // Owner, 2026-09-02: *"brain still not recognizing the sender, can't it save the number
+          // from where message has received?"* The NUMBER genuinely is not there — an `@lid` is
+          // WhatsApp's privacy identifier and carries no phone, which is why four attempts to
+          // resolve one through the provider all failed (`@lid` recurrence #4). But the DISPLAY
+          // NAME usually is, and we were throwing it away: `identifySender` has taken a
+          // `pushName` argument since DEF-121 and renders *"‹name› — WhatsApp did not share their
+          // number"*, and **nothing has ever populated it** — so every relay fell to the
+          // anonymous branch.
+          //
+          // Read defensively from the same `_data` the quoted capture above uses. Absent means
+          // exactly what it means today, so this cannot regress anything; present means he gets
+          // a name instead of "an unknown sender".
+          senderDisplayName: (() => {
+            const n = String((message as any)?._data?.notifyName ?? '').trim();
+            return n && n.length <= 80 ? n : null;
+          })(),
           timestamp: message.timestamp ? Number(message.timestamp) * 1000 : Date.now(),
           _resolvedUserId: resolvedIdentity?.userId,
           _resolvedIdentity: resolvedIdentity,

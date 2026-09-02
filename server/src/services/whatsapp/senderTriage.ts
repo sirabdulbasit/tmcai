@@ -212,8 +212,11 @@ export async function identifySender(
   // Unresolved. Give the owner what is TRUE and useful — their WhatsApp display
   // name if the transport supplied one — and be explicit that the number is
   // hidden, rather than handing him a fake one to act on.
-  return pushName
-    ? `${pushName} — WhatsApp did not share their number`
+  // DEF-291: trimmed, because whitespace is not a name. A blank `notifyName` must reach the
+  // anonymous branch rather than render as " — WhatsApp did not share their number".
+  const supplied = String(pushName ?? '').trim();
+  return supplied
+    ? `${supplied} — WhatsApp did not share their number`
     : 'an unknown sender whose number WhatsApp did not share';
 }
 
@@ -380,12 +383,17 @@ export async function triageUnregisteredInbound(params: {
    * that cannot be called. This is the only way to tell the two apart.
    */
   rawSenderId?: string | null;
+  /** DEF-291 — the sender's own WhatsApp display name, when the transport supplies one. */
+  senderDisplayName?: string | null;
 }): Promise<TriageOutcome> {
   // Hoisted out of the try so the DEF-060 fallback below can still reach the
   // owner when the main path throws. Scoping them inside the try is what made
   // "who do I tell?" unanswerable at the moment it mattered most.
   let ownerUserId: number | null = null;
-  let senderName: string | null = null;
+  // DEF-291 — start from the name WhatsApp itself supplied. A saved contact still wins below
+  // (a name the owner chose beats one the sender chose), but an unknown sender is no longer
+  // anonymous just because we never looked.
+  let senderName: string | null = params.senderDisplayName?.trim() || null;
   try {
     ownerUserId = await resolveOwner(params.clientNumber);
     if (!ownerUserId) return { action: 'no_owner', policy: null };
