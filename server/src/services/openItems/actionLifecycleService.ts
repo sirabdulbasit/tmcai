@@ -289,11 +289,44 @@ export async function recordActionLifecycleReply(input: {
   // source evidence. A future promise ("will finish") is never accepted.
   if (interpreted.outcome === 'completed' && interpreted.completionEvidence && interpreted.confidence >= 0.7 && !threadCapture) {
     const { transitionStatus } = await import('../itemLifecycle/lifecycleService');
+
+    // ── DEF-281 — the owner's own completion IS the approval ────────────────────────────────
+    //
+    // `{ from: 'NEW', to: 'CLOSED', requiresApproval: true }` exists to stop an AGENT closing an
+    // untriaged item unilaterally, and this call passed `actor: 'agent:action_lifecycle'` with no
+    // `approvalId` for every source. So when the owner replied "Done" to a prompt whose own words
+    // offered to close the item, `lifecycleService` rejected it — `approval required` — and he was
+    // told *"Actually, it looks like that still needs approval before it can be closed."*
+    //
+    // He is the approving authority. There is no one above him to ask, no approver was named, and
+    // when he asked *"which approval?"* Brain word-matched the term against two unrelated items
+    // titled "Approve new team members". A governance guard was narrated to him as a business
+    // fact he could act on, and he could not: the owner was locked out of closing his own item.
+    //
+    // So an explicit instruction from the owner supplies the approval, and RECORDS it — who
+    // approved and which instruction did it — which is more auditable than the status quo, where
+    // the transition was simply impossible.
+    //
+    // Deliberately ONLY `source: 'user'`. A delegatee reporting completion over WhatsApp or email
+    // still requires the owner's approval to close an untriaged item; that is the case the guard
+    // was written for and it is untouched. There is a named test for exactly that.
+    const ownerApproved = input.source === 'user' || input.source === 'chat';
     const transition = await transitionStatus(item.id, 'CLOSED', {
       clientNumber: item.clientNumber,
-      actor: 'agent:action_lifecycle',
-      reason: `Responsible party reported completion: ${interpreted.summary}`,
-      metadata: { source: input.source, sourceId: input.sourceId, evidence: interpreted.completionEvidence },
+      actor: ownerApproved ? `user:${item.userId}` : 'agent:action_lifecycle',
+      // There is no approvals table: `approvalId` is a presence token the guard checks and the
+      // event carries, never a foreign key. So the id is the APPROVING USER's id — meaningful
+      // rather than arbitrary — and the auditable detail (which instruction, from which source)
+      // goes in `reason` and `metadata`, which are the fields actually persisted to
+      // `item_status_history`.
+      approvalId: ownerApproved ? item.userId : undefined,
+      reason: ownerApproved
+        ? `Owner reported completion and thereby approved the close (${input.source}${input.sourceId ? `:${input.sourceId}` : ''}): ${interpreted.summary}`
+        : `Responsible party reported completion: ${interpreted.summary}`,
+      metadata: {
+        source: input.source, sourceId: input.sourceId, evidence: interpreted.completionEvidence,
+        approvedBy: ownerApproved ? `user:${item.userId}` : null,
+      },
     });
     closed = transition.ok || String(item.status).toUpperCase() === 'CLOSED';
     phase = closed ? 'completed' : 'verification';
