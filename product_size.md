@@ -29,7 +29,7 @@ Measured on the running box, `release/cmp-2026-08-16`. Sizes are point-in-time.
 | `server/whatsapp-sessions` | **1016 MB** | 853 MB live + **163 MB stale backup** — see §3 |
 | `server/node_modules` | 1008 MB | Required to run |
 | `agents/.venv` | 728 MB | Required by `tmcai-agents` |
-| `server/docs` | 73 MB | 72 MB of it is `orchestrator/` — see §3 |
+| `server/docs` | **46 MB** | Was 73 MB; orchestrator logs compressed (§2b) |
 | `server/.wwebjs_cache` | 68 MB | Chromium runtime cache |
 | `client/node_modules` | 68 MB | Required to build the UI |
 | `server/dist` | 20 MB | Deployed artifact (immutable, `chattr +i`) |
