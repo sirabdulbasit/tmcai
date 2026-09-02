@@ -163,11 +163,8 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
   // through to probing on purpose: the fail-safe direction is to SEND a probe, not to skip one.
   try {
     const { getConfig } = await import('../configService');
-    const prev = await prisma.$queryRawUnsafe<Array<{ status: string }>>(
-      `SELECT status FROM whatsapp_config WHERE client_number = $1 LIMIT 1`, clientNumber,
-    ).catch(() => [] as any[]);
     const lastPassAt = await getConfig(clientNumber, PROBE_LAST_PASS_KEY).catch(() => null);
-    const verdict = mayTrustRecentPass(prev[0]?.status, lastPassAt);
+    const verdict = mayTrustRecentPass(lastPassAt);
     if (verdict.trust) {
       statusMap.set(clientNumber, 'connected');
       initHealth.set(clientNumber, {
@@ -343,6 +340,14 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
 
   const action = recordProbeFailure(clientNumber);
   const failedStatus = action === 'bounded_reinit' ? 'liveness_failed' : 'degraded';
+  // DEF-286 — INVALIDATE the stored pass. This is what makes the trust safe: the timestamp means
+  // "verified, and nothing has invalidated it since", so a failure must erase it or the next
+  // restart would trust a channel we have just proven broken.
+  void (async () => {
+    const { setConfig } = await import('../configService');
+    await setConfig(clientNumber, PROBE_LAST_PASS_KEY, '', false,
+      'DEF-286 — cleared: the last probe failed, so no restart may trust it');
+  })().catch((err: any) => log.warn('could not clear the stored probe pass', { clientNumber, error: err?.message }));
   // REQ-009: name the failure mode. `send_threw` = transport is genuinely
   // broken. `echo_unmatched` = the send left the process but the echo did
   // not satisfy the identity gate (the @lid class). `no_echo` = sent, but

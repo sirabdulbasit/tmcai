@@ -429,14 +429,22 @@ export const PROBE_TRUST_WINDOW_MS = 15 * 60_000;
 export const PROBE_LAST_PASS_KEY = 'whatsapp.liveness.last_pass_at';
 
 export function mayTrustRecentPass(
-  previousStatus: string | null | undefined,
   lastPassAtIso: string | null | undefined,
   now = Date.now(),
   windowMs = PROBE_TRUST_WINDOW_MS,
 ): { trust: boolean; reason: string; ageMs?: number } {
-  if (previousStatus !== 'connected') {
-    return { trust: false, reason: `previous status was ${previousStatus ?? 'unknown'}` };
-  }
+  // NO STATUS CHECK — and its absence is the fix, not an omission.
+  //
+  // The first version gated on `whatsapp_config.status === 'connected'`, and the live falsifier
+  // killed it immediately: `probe_required — previous status was connected_unverified`. The
+  // `ready` handler WRITES `connected_unverified` before the probe runs, so the check was reading
+  // the value this very restart had just set, and could never be true. A condition that cannot
+  // hold is worse than no condition: it looks like a safety property and enforces nothing.
+  //
+  // The stored timestamp already carries the fact. It is written ONLY on a pass and CLEARED on
+  // any failure or degradation, so its presence means "verified at T, and nothing has invalidated
+  // it since" — which is exactly what the status check was reaching for, without depending on a
+  // field the restart mutates underneath it.
   if (!lastPassAtIso) return { trust: false, reason: 'no recorded pass' };
   const at = Date.parse(String(lastPassAtIso));
   if (Number.isNaN(at)) return { trust: false, reason: 'unparseable pass timestamp' };

@@ -24,40 +24,50 @@ import {
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
 
 describe('DEF-286 — when a previous pass may be trusted', () => {
-  it('trusts a pass from minutes ago on a previously connected channel', () => {
-    const v = mayTrustRecentPass('connected', iso(60_000));
+  it('trusts a pass from minutes ago', () => {
+    const v = mayTrustRecentPass(iso(60_000));
     expect(v.trust).toBe(true);
     expect(v.ageMs).toBeGreaterThan(0);
   });
 
   it('refuses a pass older than the window', () => {
-    const v = mayTrustRecentPass('connected', iso(PROBE_TRUST_WINDOW_MS + 60_000));
+    const v = mayTrustRecentPass(iso(PROBE_TRUST_WINDOW_MS + 60_000));
     expect(v.trust).toBe(false);
     expect(v.reason).toContain('old');
   });
 
-  it('THE SAFETY PROPERTY: never trusts a channel that was not already good', () => {
-    // This is the entire population the change could hurt. A degraded or failed channel must be
-    // re-proved on every single restart, however recent the last pass looks.
-    for (const status of ['degraded', 'liveness_failed', 'connected_unverified', 'connecting', null, undefined]) {
-      const v = mayTrustRecentPass(status as any, iso(1_000));
-      expect(v.trust, String(status)).toBe(false);
-    }
+  it('THE SAFETY PROPERTY: a failed probe erases the record, so nothing can trust it', () => {
+    // The first version gated on whatsapp_config.status === 'connected' and the LIVE falsifier
+    // killed it: the `ready` handler writes 'connected_unverified' BEFORE the probe runs, so the
+    // check read the value the restart had just set and could never be true. A condition that
+    // cannot hold is worse than none — it looks like a safety property and enforces nothing.
+    //
+    // The guarantee now lives in the record itself: written only on a pass, cleared on any
+    // failure. So an invalidated channel presents as no record, which is refused.
+    expect(mayTrustRecentPass('').trust).toBe(false);
+    expect(mayTrustRecentPass(null).trust).toBe(false);
+
+    // ...and the provider must actually do the clearing, or the guarantee is a comment.
+    const { readFileSync } = require('node:fs') as typeof import('node:fs');
+    const { join } = require('node:path') as typeof import('node:path');
+    const provider = readFileSync(join(__dirname, '..', 'src', 'services', 'whatsapp', 'WebjsProvider.ts'), 'utf-8');
+    const failPath = provider.slice(provider.indexOf('const action = recordProbeFailure('));
+    expect(failPath.slice(0, 1400)).toContain('PROBE_LAST_PASS_KEY');
   });
 
   it('probes when there is no record at all', () => {
-    expect(mayTrustRecentPass('connected', null).trust).toBe(false);
-    expect(mayTrustRecentPass('connected', undefined).trust).toBe(false);
+    expect(mayTrustRecentPass(null).trust).toBe(false);
+    expect(mayTrustRecentPass(undefined).trust).toBe(false);
   });
 
   it('probes when the record is unreadable rather than trusting it', () => {
     // Fail-safe direction: garbage must never be read as "recently verified".
-    expect(mayTrustRecentPass('connected', 'not-a-date').trust).toBe(false);
-    expect(mayTrustRecentPass('connected', '').trust).toBe(false);
+    expect(mayTrustRecentPass('not-a-date').trust).toBe(false);
+    expect(mayTrustRecentPass('').trust).toBe(false);
   });
 
   it('refuses a timestamp from the future — that is a clock fault, not a verification', () => {
-    const v = mayTrustRecentPass('connected', new Date(Date.now() + 600_000).toISOString());
+    const v = mayTrustRecentPass(new Date(Date.now() + 600_000).toISOString());
     expect(v.trust).toBe(false);
     expect(v.reason).toContain('future');
   });
@@ -69,8 +79,8 @@ describe('DEF-286 — when a previous pass may be trusted', () => {
   });
 
   it('exactly at the window boundary it still trusts, and just past it does not', () => {
-    expect(mayTrustRecentPass('connected', iso(PROBE_TRUST_WINDOW_MS - 1_000)).trust).toBe(true);
-    expect(mayTrustRecentPass('connected', iso(PROBE_TRUST_WINDOW_MS + 1_000)).trust).toBe(false);
+    expect(mayTrustRecentPass(iso(PROBE_TRUST_WINDOW_MS - 1_000)).trust).toBe(true);
+    expect(mayTrustRecentPass(iso(PROBE_TRUST_WINDOW_MS + 1_000)).trust).toBe(false);
   });
 
   it('stores the pass under a namespaced key, not a bare word', () => {
