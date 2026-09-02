@@ -95,7 +95,29 @@ describe('DEF-277 — waiting earns priority', () => {
     expect(String(H.brainContactsUser.mock.calls[0][0].body)).toContain('critical thing');
   });
 
-  it('the cap holds at ANY age — a 60-day-old routine prompt still yields to a fresh TOP', async () => {
+  it('DEF-277b: a long-waiting routine prompt beats a MAXED-OUT high one — the real guarantee', async () => {
+    // The first version of this fix capped the bonus per prompt, which fixed nothing: aging
+    // applies to `high` too, so maxed routine (3) still lost to maxed high (4). With 13 aged
+    // high prompts outstanding and DEF-261 re-queueing more daily, #517 would have waited
+    // forever behind them — deployed, plausible-looking, and still starving.
+    queue([
+      prompt({ id: 'aliasAsk', criticality: 'routine', question: 'Who are they?', queuedAt: hoursAgo(24 * 4) }),
+      prompt({ id: 'agedNag', criticality: 'high', question: 'deadline please', queuedAt: hoursAgo(24 * 3) }),
+    ]);
+    await sendNextPrompt(2, 'TMC-0001');
+    expect(String(H.brainContactsUser.mock.calls[0][0].body)).toContain('Who are they?');
+  });
+
+  it('but high still leads for its first day of waiting', async () => {
+    queue([
+      prompt({ id: 'r', criticality: 'routine', question: 'Who are they?', queuedAt: hoursAgo(20) }),
+      prompt({ id: 'h', criticality: 'high', question: 'deadline please', queuedAt: hoursAgo(14) }),
+    ]);
+    await sendNextPrompt(2, 'TMC-0001');
+    expect(String(H.brainContactsUser.mock.calls[0][0].body)).toContain('deadline please');
+  });
+
+  it('the ceiling holds at ANY age — a 60-day-old routine prompt still yields to a fresh TOP', async () => {
     // `top: 100` alone is not enough: uncapped, 60 days of aging earns 120 tiers and would
     // overtake it. Both guards are needed, and this is the age at which the cap is the one doing
     // the work — the previous test passes with the cap removed, which is why this one exists.

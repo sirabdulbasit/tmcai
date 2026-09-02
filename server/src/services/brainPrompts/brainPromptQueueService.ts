@@ -610,7 +610,19 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
   // what waiting can earn. 12h means a routine prompt queued this morning is competing with
   // `high` by tonight and can lead by tomorrow, rather than never.
   const PROMPT_AGING_HOURS_PER_TIER = 12;
-  const PROMPT_AGING_MAX_TIERS = 2;
+  // DEF-277b — a SHARED ceiling for the non-top tiers, not a per-prompt bonus cap.
+  //
+  // The first version capped the bonus at 2 tiers, which quietly failed to fix anything: aging
+  // applies to `high` too, so a maxed `routine` reached 3 and a maxed `high` reached 4, and
+  // `routine` could still never win. With 13 aged `high` prompts outstanding and DEF-261
+  // re-queueing more every day, #517 would have waited behind them forever — the fix would have
+  // deployed, looked right, and starved exactly as before. I caught it by doing the arithmetic
+  // on the live queue instead of trusting the shape of the change.
+  //
+  // A shared ceiling means both tiers converge, and past that point the `queuedAt` tie-break
+  // decides — so the oldest waiting prompt wins regardless of tier, which is the actual
+  // anti-starvation guarantee. `high` still leads for its first day; nothing waits forever.
+  const PROMPT_AGED_CEILING = 4;
   const backoffIds = await promptsInBackoff(userId, clientNumber);
   const candidates = await prisma.brainPromptQueue.findMany({
     // DEF-105: a prompt in backoff is still 'queued' — it simply is not due
@@ -770,8 +782,10 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
   const agedWeight = (c: { criticality: string; queuedAt: Date }): number => {
     const base = CRIT_WEIGHT[c.criticality] ?? 0;
     const waitedHours = (now - c.queuedAt.getTime()) / 3_600_000;
+    // `top` is categorically first and exempt: it must not be pulled DOWN to the shared ceiling.
+    if (base >= (CRIT_WEIGHT.top ?? Infinity)) return base;
     const earned = Math.floor(Math.max(0, waitedHours) / PROMPT_AGING_HOURS_PER_TIER);
-    return base + Math.min(PROMPT_AGING_MAX_TIERS, earned);
+    return Math.min(base + earned, PROMPT_AGED_CEILING);
   };
   sendable.sort((a, b) => {
     const wa = agedWeight(a);
