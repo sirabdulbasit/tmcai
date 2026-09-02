@@ -1024,6 +1024,24 @@ export async function maybeSendSuppressionDigest(
     });
     if (held.length === 0) return;
 
+    // Codex iteration-62 §3 (a) — the model call must not run once the
+    // window's digest is already delivered. The hook fires on EVERY budget
+    // hold, and before this check a 40-hold burst would spend ~39 compose
+    // calls for the one digest dedup would deliver. Same read the dedup gate
+    // performs later, done BEFORE composition; `sent`/`partial` only, so a
+    // quiet-hours or office-hours hold still retries with a fresh compose.
+    const alreadySent = await prisma.brainUserMessage.findFirst({
+      where: {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        kind: SUPPRESSION_DIGEST_KIND,
+        createdAt: { gte: since },
+        status: { in: ['sent', 'partial'] },
+      },
+      select: { id: true },
+    });
+    if (alreadySent) return;
+
     const byKind = new Map<string, number>();
     for (const h of held) byKind.set(h.kind, (byKind.get(h.kind) ?? 0) + 1);
     const counts = [...byKind.entries()].map(([k, n]) => `${k}: ${n}`).join(', ');
@@ -1061,11 +1079,14 @@ export async function maybeSendSuppressionDigest(
       summary: `suppression digest: ${held.length} held in the last 24h`,
       body,
       urgency: 'low',
-      // One per day BY CONSTRUCTION: the key is the date bucket and the window
-      // spans it. Quiet hours still hold it (dedup counts only sent/partial,
-      // so a quiet-hours hold retries later in the day rather than burning
-      // the key).
-      dedupKey: `suppression-digest:${new Date().toISOString().slice(0, 10)}`,
+      // Codex iteration-62 §3 (b) — the key is CONSTANT, and the 24h dedup
+      // window is what bounds it. The first version keyed on the calendar
+      // date, which re-arms at midnight: a 23:00 digest could be followed by
+      // an 01:00 digest re-counting the same rolling-24h holds. A constant
+      // key + the rolling window make it once per rolling 24h by
+      // construction. Quiet hours still hold it (dedup counts only
+      // sent/partial, so a hold retries rather than burning the window).
+      dedupKey: 'suppression-digest',
       dedupWindowMs: 24 * 60 * 60 * 1000,
       metadata: { heldCount: held.length, byKind: Object.fromEntries(byKind) },
     });

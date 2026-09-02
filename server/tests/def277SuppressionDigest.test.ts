@@ -27,6 +27,8 @@ const state = vi.hoisted(() => ({
   created: [] as any[],
   // dedup hit for the digest kind
   dedupDup: false,
+  // a digest already sent inside the rolling 24h window (the pre-compose check)
+  digestAlreadySent: false,
   llmThrows: false,
   llmText: 'I held a few notifications today — your volume budget filled. Nothing was dropped; ask me and I will show you any of them.',
   llmCalls: 0,
@@ -37,6 +39,12 @@ vi.mock('../src/db/prisma', () => {
     findFirst: async ({ where }: any) => {
       if (where?.dedupKey) {
         return state.dedupDup ? { id: 'dup', createdAt: new Date(Date.now() - 60 * 60_000) } : null;
+      }
+      // The pre-compose already-sent read AND the per-kind rate limit both
+      // query by kind without a dedupKey; the flag serves both, which is
+      // correct — an already-sent digest should stop the send either way.
+      if (where?.kind === 'suppressed_pushes_digest') {
+        return state.digestAlreadySent ? { id: 'sent-1', createdAt: new Date(Date.now() - 2 * 60 * 60_000) } : null;
       }
       return null; // no fingerprint dup, no recent same-kind send
     },
@@ -128,6 +136,7 @@ beforeEach(() => {
   state.sentToday = 0;
   state.created = [];
   state.dedupDup = false;
+  state.digestAlreadySent = false;
   state.llmThrows = false;
   state.llmCalls = 0;
 });
@@ -195,6 +204,30 @@ describe('DEF-277 — the hold triggers ONE digest through the real chokepoint',
     await new Promise((r) => setTimeout(r, 300)); // nothing SHOULD happen; give it room to happen wrongly
     // Exactly one audit row for the digest attempt; nothing cascaded.
     expect(state.created.filter((r) => r.kind === SUPPRESSION_DIGEST_KIND)).toHaveLength(1);
+  });
+
+  it('a burst spends ZERO model calls once the window digest is delivered — Codex iteration-62 §3(a)', async () => {
+    // Every budget hold fires the hook; before the pre-compose check a
+    // 40-hold burst spent ~39 wasted compose calls for the one digest dedup
+    // would deliver. The check runs BEFORE callLLM, so the model is not
+    // consulted at all.
+    state.digestAlreadySent = true;
+    state.heldRows = [{ kind: 'brain_prompt', summary: 'x' }];
+    await maybeSendSuppressionDigest({ id: 2, clientNumber: 'TMC-0001' });
+    expect(state.llmCalls).toBe(0);   // mutation: moving the check below callLLM dies here
+    expect(waSent).toHaveLength(0);
+  });
+
+  it('the dedup key is CONSTANT — once per ROLLING 24h, not per calendar date — Codex iteration-62 §3(b)', async () => {
+    // A date-bucket key re-arms at midnight: a 23:00 digest could be followed
+    // two hours later by an 01:00 digest re-counting the same holds. The
+    // constant key + the 24h dedup window close that seam by construction.
+    state.heldRows = [{ kind: 'brain_prompt', summary: 'x' }];
+    await maybeSendSuppressionDigest({ id: 2, clientNumber: 'TMC-0001' });
+    expect(waSent).toHaveLength(1);
+    const row = state.created.find((r) => r.kind === SUPPRESSION_DIGEST_KIND);
+    expect(row.dedupKey).toBe('suppression-digest');
+    expect(row.dedupKey).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('nothing held → no digest, no send, no row', async () => {

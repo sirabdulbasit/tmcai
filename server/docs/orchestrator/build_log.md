@@ -2228,3 +2228,89 @@ turn. What would prove me wrong: a provenance question routed through a path tha
 does not receive the instructions block at all (e.g. an intercepted answer) — the
 block cannot license what it never reaches; if Codex finds such a path, that is the
 next increment, not a flaw in this one.
+
+## Iteration 66 — 2026-09-02
+
+**Files named early and changed:**
+`server/src/services/notifications/brainOutboundService.ts` +
+`server/tests/def277SuppressionDigest.test.ts`. **MANDATE TURN: make HEAD deployable
+for the six-commit D-84 batch.** The newest review (Iteration 62, on DEF-277) is the
+governing input, and its findings decompose cleanly:
+
+**Release blockers: NONE.** Verdict **SOUND, ROLLBACK: no** — the reviewer's own
+words: "nothing in it is dangerous live", both §3 findings LOW, "none
+dangerous-while-live". Nothing in the review blocks D-84.
+
+**The reviewer's directives, accounted for one by one:**
+1. **The benchmark scored 0/12 for the second consecutive iteration** — explicitly
+   orchestrator-owned ("nothing else matters until it produces a number"). Not mine;
+   iteration 60's diagnostic datum stands (my matrix `env -u` affects only the child
+   shell and cannot starve the orchestrator's benchmark process of a key).
+2. **"Commit the DEF-277 work and write its build_log entry" — ALREADY DONE, with the
+   commit and line to judge:** `a1ab27a` (iteration 63), build_log `## Iteration 63`.
+   The review was written against the pre-63 tree state; the gap it names closed two
+   iterations ago.
+3. **The two LOW refinements "while it is fresh" — DONE THIS TURN**, conditional
+   "only if directives 1–2 are clear" being satisfied (1 is not mine, 2 is done):
+   - `brainOutboundService.ts` (`maybeSendSuppressionDigest`) — a pre-compose
+     already-sent read now returns BEFORE `callLLM`: a burst of N budget holds spends
+     zero model calls once the window's digest is delivered (was ~N−1 wasted calls at
+     12s timeout / 300 tok each). `sent`/`partial` only, so a quiet-hours or
+     office-hours hold still retries with a fresh compose.
+   - The dedup key is now CONSTANT (`'suppression-digest'`) with the rolling 24h
+     dedup window as the bound — the calendar-date key re-armed at midnight and could
+     produce two digests two hours apart re-counting the same holds. Once per rolling
+     24h by construction now, which is also strictly closer to the campaign's
+     "one digest per window" contract.
+   - §2 correction the reviewer asked for is on the record in the DEF-277 row
+     (↻ DEF-277c): `record()` always persisted `metadata`; only the positional
+     `reason` string was unpersisted — the fix rides the existing channel, which is
+     why it works.
+
+**Verification (from `server/`, re-run AFTER the last edit — this certifies the
+D-84 batch at HEAD+this commit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3254 passed | 0 failed** (270 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3283). DEF-277 suite:
+  **10 passed | 0 failed** — two new tests: zero model calls once the window digest
+  is delivered (mutation: moving the check below `callLLM` dies there), and the
+  constant key asserted with the date pattern asserted absent.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tree state: clean of builder work after this commit; only the reviewer's dirty
+  `review_log.md` and three untracked root files (flagged by the review itself as
+  BLD-001 hazards for the deploy's staging — not mine, not committed).
+- Tenant/fail-closed audit: the one added read is scoped
+  `(clientNumber, userId, kind)`; no write touched; the helper still never throws.
+
+**Governing docs (rule 5): progressing** — both findings are first-occurrence
+refinements of a mechanism ruled SOUND, not recurrences. DEF-277 row updated
+(↻ DEF-277c) with the fixes, the numbers, and the reviewer's correction.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 — cost and duplicate-noise hardening of an already-sound receipt;
+nothing the owner receives changes except the removal of a possible midnight double.
+**MECHANISM:** the compose is gated by the same fact the dedup gate enforces, read
+earlier; the once-per-window bound moves from a date label to the window itself.
+**FALSIFIER:** any burst producing more than one digest inside a rolling 24h; or
+`callLLM` invoked for a hold when a window digest already exists (observable as
+compose latency/log lines on the 2nd+ holds).
+
+**Symptom tag:** none closed — said plainly. The deck's three open tags (DEF-282
+continuity, DEF-278/279 ack, DEF-260 source-deflection) all have their fixes IN the
+undeployed D-84 batch (DEF-278 `bd7768d`, DEF-281 `be5dbcc`, DEF-284 `166a1f3`) or
+await diagnosis; the analyst's own bottom line — "the one action that changes what
+he receives is the deploy, not another line of code" — is this turn's finding too.
+**ATTEMPT-15 OBSTACLE STATEMENT:** identical, now with the reviewer concurring on
+the record: production is frozen at D-83 while six Brain commits wait; the owner was
+locked out of closing his own item seven minutes after its fix committed. The pipe,
+not the building.
+
+**What I did NOT do, named:** any new defect or campaign increment (mandate forbids
+both); the gcal consumer; the DEF-282/280/285 diagnoses (OPEN, undiagnosed, next
+build turns); touching the benchmark env (orchestrator's).
+
+**Honest prediction:** D-84 at this HEAD passes the deploy-phase matrix and ships
+the fabrication batch; the two refinements survive review as exactly what directive
+3 prescribed. What would prove me wrong: the deploy matrix diverging from mine
+(environment drift, the DEF-231 shape), or the reviewer reading the constant dedup
+key as changing the campaign's "per window" semantics rather than implementing it.
