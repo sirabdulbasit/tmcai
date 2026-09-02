@@ -139,7 +139,7 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     newProbeSession, matchProbeEcho, reconcileProbeProviderId, buildProbeMarker,
     generateProbeNonce, recordProbePass, recordProbeFailure, mayReprobe,
     noteProbeAttempt, shouldAlertDegradation, PROBE_TIMEOUT_MS, logLivenessTransition,
-    cleanUpProbeMessage,
+    cleanUpProbeMessage, mayTrustRecentPass, PROBE_LAST_PASS_KEY,
   } = await import('./webjsLiveness');
 
   if (probeInFlightMap.get(clientNumber)) return;              // single in-flight
@@ -149,6 +149,41 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     logLivenessTransition(clientNumber, { event: 'probe_withheld', reason: gate.reason });
     return;
   }
+  // ── DEF-286 — a recent pass survives a fast restart ─────────────────────────────────────
+  //
+  // One probe per `ready` means one per restart, and the owner watched his own self-chat fill
+  // with them; nine on 2026-09-02 were mine, deploying minutes apart. They cannot be deleted
+  // afterwards — DEF-276 established over seven attempts that this library cannot address a sent
+  // message against WA Web 2.3000.x, and the npm registry is unreachable here so there is no
+  // upgrade to take. So do not MAKE the ones that add nothing: a restart minutes after a pass
+  // restarts the process, not WhatsApp. The session, the pairing and the transport are the same
+  // ones that pass just verified.
+  //
+  // Every condition lives in `mayTrustRecentPass`, which is pure and tested. Read failures fall
+  // through to probing on purpose: the fail-safe direction is to SEND a probe, not to skip one.
+  try {
+    const { getConfig } = await import('../configService');
+    const prev = await prisma.$queryRawUnsafe<Array<{ status: string }>>(
+      `SELECT status FROM whatsapp_config WHERE client_number = $1 LIMIT 1`, clientNumber,
+    ).catch(() => [] as any[]);
+    const lastPassAt = await getConfig(clientNumber, PROBE_LAST_PASS_KEY).catch(() => null);
+    const verdict = mayTrustRecentPass(prev[0]?.status, lastPassAt);
+    if (verdict.trust) {
+      statusMap.set(clientNumber, 'connected');
+      initHealth.set(clientNumber, {
+        ...(initHealth.get(clientNumber) as any), state: 'connected', requiresRepair: false,
+        probeGeneration: generation, probeTrustedFrom: lastPassAt,
+      } as any);
+      logLivenessTransition(clientNumber, {
+        event: 'probe_skipped_recent_pass', reason: verdict.reason, ageMs: verdict.ageMs ?? null, generation,
+      });
+      return;
+    }
+    logLivenessTransition(clientNumber, { event: 'probe_required', reason: verdict.reason, generation });
+  } catch (err: any) {
+    log.warn('could not evaluate a recent pass — probing', { clientNumber, error: String(err?.message ?? err).slice(0, 120) });
+  }
+
   (client as any).__livenessGeneration = generation;
   probeInFlightMap.set(clientNumber, true);
   noteProbeAttempt(clientNumber);
@@ -251,6 +286,13 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
       clientNumber,
     ).catch(() => undefined);
     logLivenessTransition(clientNumber, { event: 'probe_pass', latencyMs, generation });
+    // Persist the pass so the NEXT process can trust it (DEF-286). Best-effort: a failed write
+    // only means the next restart probes, which is the behaviour we already had.
+    void (async () => {
+      const { setConfig } = await import('../configService');
+      await setConfig(clientNumber, PROBE_LAST_PASS_KEY, new Date().toISOString(), false,
+        'DEF-286 — last WhatsApp liveness probe pass; a restart within the trust window skips the probe');
+    })().catch((err: any) => log.debug('could not persist probe pass', { error: err?.message }));
 
     // ── DEF-276: the probe cleans up after itself ────────────────────────────────────────
     // The owner screenshotted six `[nexeo-liveness …]` messages piling up in his own

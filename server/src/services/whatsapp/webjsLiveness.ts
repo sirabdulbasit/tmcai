@@ -398,3 +398,51 @@ export async function cleanUpProbeMessage(
     return 'failed';
   }
 }
+
+/**
+ * DEF-286 — a recent pass survives a fast restart.
+ *
+ * The owner screenshotted his self-chat filling with `[nexeo-liveness …]` tokens. One is sent per
+ * `ready`, so one per restart — and on 2026-09-02 nine of them were mine, deploying fixes minutes
+ * apart. Deleting them afterwards is impossible: DEF-276 established over seven attempts that
+ * `whatsapp-web.js@1.34.7` cannot address a sent message against WA Web 2.3000.x (the message
+ * resolves in the page's `Msg` collection by no handle the library offers), and the npm registry
+ * is unreachable from this box so there is no upgrade to take.
+ *
+ * So stop MAKING them when they add nothing. A probe proves the outbound limb and the local echo
+ * limb are working. A restart minutes later restarts the process, not WhatsApp: the session, the
+ * pairing and the transport are the same ones a pass just verified.
+ *
+ * WHAT THIS TRADES, stated plainly because it is a real cost: for up to
+ * `PROBE_TRUST_WINDOW_MS` after a pass, a restart trusts that pass instead of re-proving the
+ * channel. If WhatsApp broke inside that window the discovery is delayed to the connection
+ * watchdog's next sweep rather than being immediate.
+ *
+ * THREE CONDITIONS, all required, and each one is why this is not simply "probe less":
+ *  1. the previous status was `connected` — a channel that was degraded or liveness_failed is
+ *     never trusted, which is the whole population this could otherwise hurt;
+ *  2. the pass is younger than the window;
+ *  3. the stored value parses. Anything unreadable falls through to probing, because the
+ *     fail-safe direction here is to send a probe, not to skip one.
+ */
+export const PROBE_TRUST_WINDOW_MS = 15 * 60_000;
+export const PROBE_LAST_PASS_KEY = 'whatsapp.liveness.last_pass_at';
+
+export function mayTrustRecentPass(
+  previousStatus: string | null | undefined,
+  lastPassAtIso: string | null | undefined,
+  now = Date.now(),
+  windowMs = PROBE_TRUST_WINDOW_MS,
+): { trust: boolean; reason: string; ageMs?: number } {
+  if (previousStatus !== 'connected') {
+    return { trust: false, reason: `previous status was ${previousStatus ?? 'unknown'}` };
+  }
+  if (!lastPassAtIso) return { trust: false, reason: 'no recorded pass' };
+  const at = Date.parse(String(lastPassAtIso));
+  if (Number.isNaN(at)) return { trust: false, reason: 'unparseable pass timestamp' };
+  const ageMs = now - at;
+  // A pass from the FUTURE is a clock problem, not a verification. Refuse it.
+  if (ageMs < 0) return { trust: false, reason: 'pass timestamp is in the future' };
+  if (ageMs > windowMs) return { trust: false, reason: `pass is ${Math.round(ageMs / 60_000)}m old`, ageMs };
+  return { trust: true, reason: `pass ${Math.round(ageMs / 1000)}s ago`, ageMs };
+}
