@@ -600,7 +600,17 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
   // ('routine' / 'high' / 'top') and alphabetical desc would put
   // 'top' > 'routine' > 'high' — wrong. Fetch the small candidate set
   // and sort by explicit weight in Node.
-  const CRIT_WEIGHT: Record<string, number> = { top: 3, high: 2, routine: 1 };
+  // DEF-277: `top` is deliberately far out of reach of the aging bonus below, rather than
+  // relying on that bonus's cap to hold it. With the old adjacent values (3/2/1) a routine
+  // prompt that earned two tiers TIED `top` at 3 and then won the age tie-break — so a month
+  // -old question about a stranger could lead a critical one. `top` means first, categorically;
+  // `high` over `routine` is a preference that waiting is allowed to overturn.
+  const CRIT_WEIGHT: Record<string, number> = { top: 100, high: 2, routine: 1 };
+  // DEF-277: how long a prompt must wait to earn one tier of sort weight, and the ceiling on
+  // what waiting can earn. 12h means a routine prompt queued this morning is competing with
+  // `high` by tonight and can lead by tomorrow, rather than never.
+  const PROMPT_AGING_HOURS_PER_TIER = 12;
+  const PROMPT_AGING_MAX_TIERS = 2;
   const backoffIds = await promptsInBackoff(userId, clientNumber);
   const candidates = await prisma.brainPromptQueue.findMany({
     // DEF-105: a prompt in backoff is still 'queued' — it simply is not due
@@ -736,10 +746,37 @@ export async function sendNextPrompt(userId: number, clientNumber: string): Prom
     : [...freshCandidates]);
   if (sendable.length === 0) return null;
 
+  // ── DEF-277 — the routine tier was a write-only queue ──────────────────────────────────
+  //
+  // `CRIT_WEIGHT` never changed with age, and one prompt goes per in-flight cycle. So while any
+  // `high` prompt is queued, no `routine` one can be picked — and the `high` queue REFILLS every
+  // day, because DEF-261's deadline nags re-queue themselves. Measured 2026-09-02: 13 high and
+  // 13 routine outstanding for one user, the oldest routine waiting since 08-31 12:05, two days
+  // unsent. Textbook starvation.
+  //
+  // I walked into it with DEF-272: that fix set `criticality: 'routine'` so a question about a
+  // stranger could never ring the owner's phone — correct for the CHANNEL — and I never checked
+  // what it meant for the ORDER. Its ask sat queued for five hours while the owner asked, twice,
+  // why Brain still could not name the sender.
+  //
+  // Waiting therefore earns weight, one tier per `PROMPT_AGING_HOURS_PER_TIER`, capped so it can
+  // reach the front but never invert `top` against a fresh `top`.
+  //
+  // THE CAP IS NOT THE SAFETY PROPERTY — this is. Promotion applies to the SORT WEIGHT ONLY and
+  // never to the stored `criticality`, because the delivery channel is derived from that field
+  // (`channelForCriticality(next.criticality, …)`), and `high` escalates. Promoting the field
+  // would make a two-day-old question about an unknown sender ring the owner's phone — exactly
+  // the harm DEF-272 chose `routine` to avoid. There is a named test for it.
+  const agedWeight = (c: { criticality: string; queuedAt: Date }): number => {
+    const base = CRIT_WEIGHT[c.criticality] ?? 0;
+    const waitedHours = (now - c.queuedAt.getTime()) / 3_600_000;
+    const earned = Math.floor(Math.max(0, waitedHours) / PROMPT_AGING_HOURS_PER_TIER);
+    return base + Math.min(PROMPT_AGING_MAX_TIERS, earned);
+  };
   sendable.sort((a, b) => {
-    const wa = CRIT_WEIGHT[a.criticality] ?? 0;
-    const wb = CRIT_WEIGHT[b.criticality] ?? 0;
-    if (wa !== wb) return wb - wa;             // higher weight first
+    const wa = agedWeight(a);
+    const wb = agedWeight(b);
+    if (wa !== wb) return wb - wa;             // higher effective weight first
     return a.queuedAt.getTime() - b.queuedAt.getTime();  // older first
   });
   const next = sendable[0]!;
