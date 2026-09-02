@@ -357,6 +357,13 @@ const server = app.listen(env.port, async () => {
       if (sweptSpend.deletedRows > 0) {
         console.log(`[llmSpend] rolled ${sweptSpend.rolledRows} day-rows, deleted ${sweptSpend.deletedRows} raw rows older than ${sweptSpend.cutoff}`);
       }
+      // Same shape as the spend sweep above, and same justification: bounded by what any reader
+      // can actually ask for. `/metrics` hard-caps at 90 days, so older firings are unreachable.
+      const { sweepGateRuleFiringRetention } = await import('./services/triage/ruleEngineService');
+      const sweptFirings = await sweepGateRuleFiringRetention();
+      if (sweptFirings.deletedRows > 0) {
+        console.log(`[gateFirings] deleted ${sweptFirings.deletedRows} firings older than ${sweptFirings.cutoff}`);
+      }
       const r = await runSelfHealPass();
       const healed = Object.entries(r).flatMap(([id, os]) => os.filter((o) => o === 'healed').map(() => id));
       if (healed.length > 0) console.log(`[selfHeal] healed: ${healed.join(', ')}`);
@@ -527,7 +534,24 @@ const server = app.listen(env.port, async () => {
                   kind: 'wiki_lint',
                   subject: `Wiki health: ${findings.pageCount} pages, ${findings.suggestions.length} suggestions`,
                   body: findings.suggestions.join('\n'),
-                  findings,
+                  // COUNTS, not the findings object. Spreading `findings` here stored the full
+                  // per-page arrays — every stale page of 7,415 — as a 1.65 MB payload to
+                  // deliver a 225-byte message, every night, in rows that are already `sent`.
+                  // Measured 2026-09-02: 29 such rows held 18 MB of the 304 MB database and grew
+                  // ~655 kB/day (~240 MB/year). Nothing reads `payload.findings` — verified
+                  // across server and client — and the findings are recomputed nightly anyway,
+                  // so storing them was pure accumulation.
+                  summary: {
+                    pageCount: findings.pageCount,
+                    suggestions: findings.suggestions.length,
+                    orphans: findings.orphans.length,
+                    stale: findings.stale.length,
+                    contradicted: findings.contradicted.length,
+                    unsourced: findings.unsourced.length,
+                    brokenLinks: findings.brokenLinks.length,
+                    draftStuck: findings.draftStuck.length,
+                    generatedAt: findings.generatedAt,
+                  },
                 },
               }).catch(() => {});
             }

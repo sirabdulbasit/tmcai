@@ -358,3 +358,42 @@ async function recordFiring(input: FiringInput): Promise<void> {
     log.warn('record firing failed', { ruleId: input.ruleId, error: err.message });
   }
 }
+
+/**
+ * Retention for `gate_rule_firings` — the table this service appends to on every gate decision.
+ *
+ * Measured 2026-09-02: 107,542 rows spanning 2026-05-03 → today, 19 MB, **never once vacuumed**,
+ * and no retention anywhere. It is an append-only audit log of a hot path, so it only grows.
+ *
+ * The window is not a guess and not a preference: the ONLY reader is
+ * `gateRulesRoutes.ts` `/metrics`, which computes
+ * `Math.min(parseInt(days ?? '30'), 90)` — a hard cap of 90 days it cannot be asked to exceed.
+ * Rows older than that are unreachable by any code path in the product, so deleting them
+ * discards nothing anyone can observe. If that cap ever rises, this constant must rise first.
+ *
+ * Deletes in bounded batches so a first run against a large backlog cannot hold a long
+ * transaction on a table the triage path writes to synchronously.
+ */
+export const GATE_FIRING_RETENTION_DAYS = 90;
+const GATE_FIRING_SWEEP_BATCH = 10_000;
+
+export async function sweepGateRuleFiringRetention(
+  retentionDays = GATE_FIRING_RETENTION_DAYS,
+): Promise<{ deletedRows: number; cutoff: string }> {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  let deletedRows = 0;
+  // Bounded loop, not `while (true)`: a runaway sweep on the triage write path is worse than a
+  // backlog that takes a few hours to drain across successive runs.
+  for (let batch = 0; batch < 20; batch += 1) {
+    const deleted: number = await (prisma as any).$executeRawUnsafe(
+      `DELETE FROM gate_rule_firings
+        WHERE id IN (
+          SELECT id FROM gate_rule_firings WHERE fired_at < $1 LIMIT ${GATE_FIRING_SWEEP_BATCH}
+        )`,
+      cutoff,
+    );
+    deletedRows += Number(deleted ?? 0);
+    if (Number(deleted ?? 0) < GATE_FIRING_SWEEP_BATCH) break;
+  }
+  return { deletedRows, cutoff: cutoff.toISOString().slice(0, 10) };
+}
