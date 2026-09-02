@@ -359,7 +359,15 @@ export async function cleanUpProbeMessage(
         for (const everyone of [true, false]) {
           try {
             const target = await attempt.get();
-            if (!target || typeof target.delete !== 'function') continue;
+            if (!target || typeof target.delete !== 'function') {
+              // LOG THE SKIP. This `continue` was silent for one deploy and hid the fact that
+              // `getMessageById` returns null here — the third time in this one fix that a quiet
+              // no-op cost a diagnosis. A skip is a finding.
+              log.warn('probe message delete skipped — no deletable handle', {
+                via: attempt.label, afterMs: waitMs, got: target === null ? 'null' : typeof target,
+              });
+              continue;
+            }
             await target.delete(everyone);
             log.info('probe message deleted', { via: attempt.label, everyone, afterMs: waitMs });
             return 'deleted';

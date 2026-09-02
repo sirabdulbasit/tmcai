@@ -275,11 +275,23 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
       // the likeliest to resolve inside the page when the raw `message_create` payload does not.
       // Guarded: cleanup must never throw into the probe (that lesson cost four deploys).
       async () => {
-        const id = probeEchoMessage?.id?._serialized
-          ?? (await Promise.resolve(probeSendPromise).catch(() => null))?.id?._serialized
-          ?? null;
-        if (!id) return null;
-        return await (client as any).getMessageById(id).catch(() => null);
+        // DEF-276g — BY CHAT, not by id. The evidence from DEF-276f: `getMessageById` returns
+        // null for this very message, so its id does not resolve in the page's `Msg` collection —
+        // and `Message.delete()` works by looking the id up in exactly that collection. Anything
+        // id-based is therefore dead on arrival, which is why re-fetching by id changed nothing.
+        //
+        // A message taken from `chat.fetchMessages()` is built FROM that collection, so it
+        // resolves by construction. Matched on the probe marker, which is unique per probe.
+        const marker = buildProbeMarker(nonce);
+        const id = probeEchoMessage?.id?._serialized ?? null;
+        try {
+          const byId = id ? await (client as any).getMessageById(id).catch(() => null) : null;
+          if (byId) return byId;
+          const chat = await (client as any).getChatById(selfId).catch(() => null);
+          if (!chat?.fetchMessages) return null;
+          const recent = await chat.fetchMessages({ limit: 10 }).catch(() => []);
+          return (recent ?? []).find((m: any) => String(m?.body ?? '') === marker) ?? null;
+        } catch { return null; }
       },
     )
       .then((outcome) => logLivenessTransition(clientNumber, { event: 'probe_cleaned', outcome, generation }))

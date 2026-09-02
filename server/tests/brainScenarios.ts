@@ -873,7 +873,9 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
 
       // Every outcome is logged, including a skip. Silence is what hid DEF-276b.
       // Window widened for DEF-276f's re-fetch closure — the logging sits after it now.
-      const cleanupSeg = provider.slice(cleanIdx, cleanIdx + 1200);
+      // Anchored on the logging itself rather than a byte window — DEF-276g grew the call
+      // again and the window kept needing widening, which is churn, not a regression.
+      const cleanupSeg = provider.slice(cleanIdx, provider.indexOf('return;', cleanIdx));
       expect(cleanupSeg).toContain("event: 'probe_cleaned'");
       expect(cleanupSeg).toContain('outcome');
     },
