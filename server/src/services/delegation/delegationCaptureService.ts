@@ -712,8 +712,32 @@ async function bootstrapLidBinding(
       // The identity is still returned — routing and display must not diverge
       // over a failed write (Codex iteration-16 HIGH #2).
       else log.warn('lid alias write failed; identity inferred but not durable', { lid, phone });
+    } else if (meta.waLid !== lid) {
+      // ── DEF-290 — THE CANDIDATE ALREADY ANSWERS TO A DIFFERENT `@lid` ───────────────────
+      //
+      // Owner, 2026-09-02: *"it is wrong, that message was not from Hamna"*. Brain had told him
+      // **`Hamna Latif Bhutta replied: "Ab karo bata"`**. The message came from
+      // `239487846228094@lid`; Hamna's alias is `255043747987458@lid`. Different person.
+      //
+      // This branch is how. The bootstrap infers identity from "exactly one counterpart was
+      // messaged recently", Brain had recently messaged only her, and the inference won — even
+      // though her contact **already carried a different `waLid`**, which is stored evidence that
+      // this is somebody else. It then set `bindingDurable = true` ("already bound by someone
+      // else"), so the system reported a durable identity while nothing linked this id to her,
+      // and — because the write was skipped — left no record. The same wrong guess would repeat
+      // on every message from that sender, indefinitely, invisibly.
+      //
+      // A contact with a KNOWN alias is the strongest possible evidence that an unknown one is
+      // not them. Refuse: the reply still routes on its own synthetic token (invariant #6,
+      // DEF-064 — a reply is never thrown away), and the owner is shown the fail-closed label
+      // instead of a name we do not have (DEF-159's rule). DEF-272's ask is how the real name
+      // gets in — from him, once, rather than from a guess.
+      log.info('lid bootstrap declined — candidate already answers to a different lid', {
+        lid, candidateLid: String(meta.waLid), contact: contact.name,
+      });
+      return null;
     } else {
-      bindingDurable = true; // already bound by someone else
+      bindingDurable = true; // this exact lid is already bound to them
     }
   }
 
