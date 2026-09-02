@@ -586,3 +586,86 @@ async function relayToOwner(
     body: params.body,
   }).catch((error: any) => log.warn('sender alias ask failed', { error: error?.message }));
 }
+
+/**
+ * DEF-292 — always save who a message came from.
+ *
+ * Owner, 2026-09-02: *"whenever you receive any message from anyone always save the sender
+ * number, can you do this??"*
+ *
+ * Yes, with one honest carve-out. We cannot invent a phone number on a message where WhatsApp
+ * withholds it — DEF-291 traced that to WhatsApp's own code: for an `@lid` sender it asks its
+ * contact store, queries its servers, asks again, and returns nothing until a relationship
+ * exists. But everything it DOES give us is now kept, on every message, permanently:
+ *
+ *   - the raw identifier, which is the stable key for that human;
+ *   - the display name WhatsApp supplies, which until DEF-291 was read and thrown away;
+ *   - **the real number the first moment WhatsApp ever supplies one.**
+ *
+ * That last one is the point of this function. The number is unknowable on first contact but
+ * often becomes available later — most obviously once the owner saves them in his contacts — and
+ * until now nothing watched for that moment or kept the answer. Every inbound re-checks, and the
+ * first time WhatsApp answers, the number lands on an identity that already carries the whole
+ * history.
+ *
+ * Best-effort by construction: a failure to record must never cost the owner the message. This is
+ * called after the message is already in hand, and every error is swallowed deliberately.
+ */
+export async function rememberSender(params: {
+  clientNumber: string;
+  ownerUserId: number | null;
+  /** The synthetic or real phone we key policy on — unchanged, so existing rows still match. */
+  phone: string;
+  /** The untouched WhatsApp identifier (`…@lid` / `…@c.us`). */
+  rawSenderId?: string | null;
+  /** WhatsApp's own display name for the sender, when supplied. */
+  displayName?: string | null;
+  /** A REAL phone number, when one has become resolvable. Never the synthetic. */
+  resolvedPhone?: string | null;
+}): Promise<void> {
+  try {
+    const raw = (params.rawSenderId ?? '').trim() || null;
+    const name = (params.displayName ?? '').trim().slice(0, 120) || null;
+    // Guard against ever storing the synthetic as if it were a real number — that is DEF-121's
+    // whole point, and a fabricated number is worse than none because it looks actionable.
+    const syntheticDigits = raw?.endsWith('@lid') ? raw.replace('@lid', '') : null;
+    const candidate = (params.resolvedPhone ?? '').trim() || null;
+    const realPhone = candidate && candidate.replace(/[^0-9]/g, '') !== syntheticDigits
+      ? candidate
+      : null;
+
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO wa_sender_policy
+         (client_number, phone, owner_user_id, policy, decided_by, evidence,
+          first_seen_at, last_inbound_at, raw_sender_id, display_name,
+          resolved_phone, resolved_phone_at, inbound_count)
+       VALUES ($1, $2, $3, 'pending', 'auto_seen', '[]'::jsonb,
+               NOW(), NOW(), $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END, 1)
+       ON CONFLICT (client_number, phone) DO UPDATE SET
+         last_inbound_at = NOW(),
+         inbound_count   = wa_sender_policy.inbound_count + 1,
+         -- COALESCE keeps what we already knew: a message that arrives without a name must not
+         -- erase the name an earlier one supplied.
+         raw_sender_id   = COALESCE(EXCLUDED.raw_sender_id, wa_sender_policy.raw_sender_id),
+         display_name    = COALESCE(EXCLUDED.display_name,  wa_sender_policy.display_name),
+         -- The number is written ONCE and never overwritten. The first real answer WhatsApp
+         -- gives is the durable one; a later blank must not undo it, and a later DIFFERENT
+         -- number would mean the identity changed underneath us, which DEF-162 says to refuse
+         -- rather than silently rebind.
+         resolved_phone    = COALESCE(wa_sender_policy.resolved_phone, EXCLUDED.resolved_phone),
+         resolved_phone_at = CASE
+           WHEN wa_sender_policy.resolved_phone IS NULL AND EXCLUDED.resolved_phone IS NOT NULL
+             THEN NOW() ELSE wa_sender_policy.resolved_phone_at END`,
+      params.clientNumber, params.phone, params.ownerUserId, raw, name, realPhone,
+    );
+
+    if (realPhone) {
+      log.info('sender number resolved and saved', {
+        rawSenderId: raw, hadNameFromWhatsApp: !!name,
+      });
+    }
+  } catch (error: any) {
+    // Never costs the owner a message.
+    log.warn('could not record sender identity', { error: String(error?.message ?? error).slice(0, 140) });
+  }
+}

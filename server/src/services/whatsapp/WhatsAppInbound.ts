@@ -110,6 +110,29 @@ async function sayMarker(params: InboundParams, marker: string, userId?: number)
 
 export async function handleInboundMessage(params: InboundParams): Promise<void> {
   const startedAt = Date.now();
+
+  // ── DEF-292 — record who this came from, on EVERY message ────────────────────────────────
+  //
+  // Owner ruling 2026-09-02: *"whenever you receive any message from anyone always save the
+  // sender number"*. Placed at the top of the single inbound funnel so it covers registered and
+  // unregistered senders alike — the previous record only existed for strangers who reached
+  // triage, and stored the synthetic in place of a number.
+  //
+  // `fromNumber` is the REAL number whenever the provider managed to resolve one, and the
+  // synthetic `'+' + lid-digits` when it did not; `rememberSender` tells them apart and refuses
+  // to store the synthetic as a number (DEF-121). Fire-and-forget: identity bookkeeping must
+  // never delay or fail the message itself.
+  void (async () => {
+    const { rememberSender } = await import('./senderTriage');
+    await rememberSender({
+      clientNumber: params.clientNumber,
+      ownerUserId: params._resolvedUserId ?? null,
+      phone: params.fromNumber,
+      rawSenderId: params.rawSenderId ?? null,
+      displayName: params.senderDisplayName ?? null,
+      resolvedPhone: params.fromNumber,
+    });
+  })().catch(() => undefined);
   // Dedup check
   const dedupKey = inboundDedupKey(params);
   const now = Date.now();
