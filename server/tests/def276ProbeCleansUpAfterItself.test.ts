@@ -144,3 +144,45 @@ describe('DEF-276d — the echo is not deletable immediately', () => {
     expect(Date.now() - started).toBeLessThan(120);
   });
 });
+
+/**
+ * DEF-276f — the fifth attempt, and this one diagnoses instead of guessing.
+ *
+ * Four fixes have failed. The only evidence any of them produced was `error: "r"` — a minified
+ * page-side throw naming nothing — because `err.message` is the wrong field to read on a
+ * Puppeteer page error. The name and first stack frame say whether the page threw a TypeError
+ * (our message id did not resolve in WhatsApp Web's own collections) or an internal WA error
+ * (the delete was genuinely refused). Those need opposite fixes, and telling them apart is the
+ * whole point of this deploy.
+ *
+ * Tested alongside it: a re-fetched message. `Message.delete()` looks the id up in the page's
+ * collections before touching it, and the echo object comes straight off a `message_create`
+ * event. A message fetched by id is the row the library builds for itself.
+ */
+describe('DEF-276f — a second strategy, and evidence when both fail', () => {
+  it('falls back to the re-fetched message when the echo will not delete', async () => {
+    const echoDel = vi.fn().mockRejectedValue(new TypeError("Cannot read properties of undefined"));
+    const freshDel = vi.fn().mockResolvedValue(undefined);
+    const r = await cleanUpProbeMessage(null, 10_000, msg(echoDel), async () => msg(freshDel));
+    expect(r).toBe('deleted');
+    expect(echoDel).toHaveBeenCalled();      // the echo was tried first
+    expect(freshDel).toHaveBeenCalledWith(true);
+  });
+
+  it('does not re-fetch when the echo deletes cleanly — no wasted page call', async () => {
+    const refetch = vi.fn(async () => msg());
+    expect(await cleanUpProbeMessage(null, 10_000, msg(), refetch)).toBe('deleted');
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  it('survives a re-fetch that throws or returns nothing', async () => {
+    const echoDel = vi.fn().mockRejectedValue(new Error('nope'));
+    expect(await cleanUpProbeMessage(null, 10_000, msg(echoDel), async () => { throw new Error('gone'); }))
+      .toBe('failed');
+    expect(await cleanUpProbeMessage(null, 10_000, msg(echoDel), async () => null)).toBe('failed');
+  });
+
+  it('still works with no re-fetch supplied at all', async () => {
+    expect(await cleanUpProbeMessage(null, 10_000, msg())).toBe('deleted');
+  });
+});

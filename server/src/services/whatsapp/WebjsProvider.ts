@@ -269,7 +269,19 @@ async function runLivenessProbe(clientNumber: string, client: any, generation: s
     // and the owner seeing the evidence of it is correct — silence would be worse than litter.
     // Always logged, including when it skips — a cleanup that silently does nothing is exactly
     // how DEF-276b survived, and `probe_cleaned` with an outcome is the falsifier.
-    void cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)
+    void cleanUpProbeMessage(
+      probeSendPromise, 10_000, probeEchoMessage,
+      // DEF-276f — a message re-fetched by id is the row the library builds for itself, and is
+      // the likeliest to resolve inside the page when the raw `message_create` payload does not.
+      // Guarded: cleanup must never throw into the probe (that lesson cost four deploys).
+      async () => {
+        const id = probeEchoMessage?.id?._serialized
+          ?? (await Promise.resolve(probeSendPromise).catch(() => null))?.id?._serialized
+          ?? null;
+        if (!id) return null;
+        return await (client as any).getMessageById(id).catch(() => null);
+      },
+    )
       .then((outcome) => logLivenessTransition(clientNumber, { event: 'probe_cleaned', outcome, generation }))
       .catch(() => undefined);
     return;

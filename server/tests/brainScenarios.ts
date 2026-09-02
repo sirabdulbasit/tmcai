@@ -856,7 +856,10 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // early echo, which beats `sendMessage` resolving, so a variable read from the result is
       // still null when the pass branch runs. That WAS the live bug.
       expect(provider).toContain('probeSendPromise');
-      expect(provider).toContain('cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)');
+      // Asserted on the call OPENING, not its full argument list — DEF-276f added a fourth
+      // argument and broke this scenario, which is churn rather than a regression.
+      expect(provider).toContain('cleanUpProbeMessage(');
+      expect(provider).toContain('probeSendPromise, 10_000, probeEchoMessage');
       // DEF-276c: the ECHO is the handle that actually exists — `sendMessage` resolves falsy on
       // this client, which is why the promise-only version logged `skipped_no_message` live.
       expect(provider).toContain('probeEchoMessage = msg;');
@@ -864,12 +867,13 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
 
       // Cleanup runs on the PASS path only — a degraded episode's evidence must survive.
       const passIdx = provider.indexOf("event: 'probe_pass'");
-      const cleanIdx = provider.indexOf('cleanUpProbeMessage(probeSendPromise, 10_000, probeEchoMessage)');
+      const cleanIdx = provider.indexOf('cleanUpProbeMessage(');
       expect(passIdx).toBeGreaterThan(0);
       expect(cleanIdx).toBeGreaterThan(passIdx);
 
       // Every outcome is logged, including a skip. Silence is what hid DEF-276b.
-      const cleanupSeg = provider.slice(cleanIdx, cleanIdx + 300);
+      // Window widened for DEF-276f's re-fetch closure — the logging sits after it now.
+      const cleanupSeg = provider.slice(cleanIdx, cleanIdx + 1200);
       expect(cleanupSeg).toContain("event: 'probe_cleaned'");
       expect(cleanupSeg).toContain('outcome');
     },

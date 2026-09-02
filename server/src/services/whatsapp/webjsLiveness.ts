@@ -306,6 +306,8 @@ export async function cleanUpProbeMessage(
   sendPromise: Promise<any> | null | undefined,
   timeoutMs = 10_000,
   echoed?: any,
+  /** Re-fetch the sent message by id — see DEF-276f. */
+  refetch?: () => Promise<any>,
 ): Promise<'deleted' | 'skipped_no_message' | 'skipped_undeletable' | 'failed'> {
   // PREFER THE ECHO. DEF-276c, found live: the first promise-based version logged
   // `skipped_no_message` because `client.sendMessage()` resolves with a falsy value on this
@@ -336,20 +338,39 @@ export async function cleanUpProbeMessage(
     // The reason is logged at WARN. It was at `debug` for one deploy and therefore invisible:
     // production filters debug out, so the third version of this fix diagnosed nothing either.
     // Three silent failures in a row is enough — this line has to be readable.
+    // DEF-276f — DIAGNOSE, then fix. Four attempts have failed and the only evidence any of
+    // them produced was `error: "r"`, a minified page-side throw naming nothing — because
+    // `err.message` is the wrong field to read on a Puppeteer page error. The NAME and the first
+    // stack frame say whether the page threw a TypeError (our id did not resolve in WhatsApp
+    // Web's collections) or an internal WA error (the delete was genuinely refused). Those need
+    // opposite fixes, and this is what tells them apart.
+    //
+    // A re-fetched message is tested alongside the echo, because `delete()` looks the id up in
+    // the page's own collections first, and a message fetched by id is the row the library
+    // builds for itself rather than a raw `message_create` payload.
+    const attempts: Array<{ label: string; get: () => Promise<any> }> = [
+      { label: 'echo', get: async () => echoed },
+    ];
+    if (refetch) attempts.push({ label: 'refetched', get: refetch });
+
     for (const waitMs of PROBE_CLEANUP_BACKOFF_MS) {
       if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
-      for (const everyone of [true, false]) {
-        try {
-          await echoed.delete(everyone);
-          return 'deleted';
-        } catch (err: any) {
-          // The message is a minified page-side throw (`"r"`), because `Message.delete()` runs
-          // its work inside `pupPage.evaluate` against WhatsApp Web's own modules. Logged whole
-          // anyway: when this starts working, this line is how we will know.
-          log.warn('probe message delete attempt failed', {
-            afterMs: waitMs, everyone, error: String(err?.message ?? err).slice(0, 200),
-            note: 'known upstream: whatsapp-web.js Message.delete() vs WA Web 2.3000.x',
-          });
+      for (const attempt of attempts) {
+        for (const everyone of [true, false]) {
+          try {
+            const target = await attempt.get();
+            if (!target || typeof target.delete !== 'function') continue;
+            await target.delete(everyone);
+            log.info('probe message deleted', { via: attempt.label, everyone, afterMs: waitMs });
+            return 'deleted';
+          } catch (err: any) {
+            log.warn('probe message delete attempt failed', {
+              via: attempt.label, afterMs: waitMs, everyone,
+              name: err?.name ?? null,
+              error: String(err?.message ?? err).slice(0, 200),
+              stack: String(err?.stack ?? '').split('\n')[1]?.trim().slice(0, 160) ?? null,
+            });
+          }
         }
       }
     }
