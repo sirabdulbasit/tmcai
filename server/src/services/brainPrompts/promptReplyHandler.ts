@@ -609,6 +609,27 @@ export async function applySideEffect(
       if (result.closed) return { status: 'applied', detail: 'completed' };
       if (result.newDueDate) return { status: 'applied', detail: `new_due:${result.newDueDate}` };
       if (result.needsUserIntervention) return { status: 'applied', detail: 'intervention_recorded' };
+      // ── DEF-284 — `result.outcome` is what the USER REPORTED, not what the system DID ──────
+      //
+      // 2026-09-02 15:10: he replied "Extension received, so close it" and was told
+      // **"[completion recorded and item closed]"**. The item is still `NEW`, and
+      // `item_status_history` records the transition as REJECTED — `approval required, none
+      // provided`. Nothing closed.
+      //
+      // The mechanism is this line. `outcome` is the interpretation of his sentence
+      // ('completed' | 'blocked' | 'in_progress'); falling through to it means a rejected close
+      // returns `detail: 'completed'`, and `composeAck` matches that exact string to
+      // "[completion recorded and item closed]". **His own claim was echoed back as an
+      // accomplished fact** — 9th `fabricated-status`, and the narrowest one yet: one identifier
+      // doing duty for two different questions.
+      //
+      // So a reported completion that did NOT close says so, and carries the reason out with it.
+      if (result.outcome === 'completed') {
+        return {
+          status: 'applied',
+          detail: `completion_reported_not_closed:${result.closeBlocked ?? 'the item did not close'}`,
+        };
+      }
       return { status: 'applied', detail: result.outcome ?? 'status_recorded' };
     }
 
@@ -758,6 +779,12 @@ function composeAck(
         return `[new deadline recorded: ${outcome.detail.slice('new_due:'.length, 'new_due:'.length + 10)}]`;
       }
       if (outcome.detail === 'intervention_recorded') return `[blocker recorded — intervention flagged]`;
+      // DEF-284: never report a close that did not happen. The reason travels with it so the
+      // next question — "which approval?" — has an answer in the same message.
+      if (outcome.detail?.startsWith('completion_reported_not_closed')) {
+        const why = outcome.detail.slice('completion_reported_not_closed:'.length);
+        return `[noted that it is complete — but the item is still OPEN: ${why}]`;
+      }
       return outcome.status === 'applied' ? `[status update recorded]` : `[status update could not be applied]`;
     case 'noop':
     default:

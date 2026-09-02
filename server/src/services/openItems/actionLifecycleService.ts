@@ -257,7 +257,7 @@ export async function recordActionLifecycleReply(input: {
    *  THREAD's business (resolved_pending_owner) — the open item is not
    *  closed here. */
   mode?: 'legacy' | 'thread_capture';
-}): Promise<{ handled: boolean; outcome?: string; closed?: boolean; newDueDate?: string; needsUserIntervention?: boolean }> {
+}): Promise<{ handled: boolean; outcome?: string; closed?: boolean; closeBlocked?: string | null; newDueDate?: string; needsUserIntervention?: boolean }> {
   const threadCapture = input.mode === 'thread_capture';
   if (threadCapture && !input.interpretation) return { handled: false };
   const item = await prisma.openItem.findFirst({ where: { id: input.openItemId, clientNumber: input.clientNumber } });
@@ -284,6 +284,7 @@ export async function recordActionLifecycleReply(input: {
   let phase: ActionLifecyclePhase = 'awaiting_commitment';
   let nextFollowUpAt: string | null = new Date(now.getTime() + DAY_MS).toISOString();
   let closed = false;
+  let closeBlocked: string | null = null;
 
   // An explicit completion statement from the responsible person is durable
   // source evidence. A future promise ("will finish") is never accepted.
@@ -329,6 +330,16 @@ export async function recordActionLifecycleReply(input: {
       },
     });
     closed = transition.ok || String(item.status).toUpperCase() === 'CLOSED';
+    // DEF-284/DEF-282 — carry the REFUSAL out of here. Without it the caller can only tell that
+    // the item is not closed, not why, and the owner asking "which approval?" gets a keyword
+    // search instead of an answer.
+    if (!closed) {
+      closeBlocked = transition.approvalRequired
+        ? 'it needs an approval this reply did not carry'
+        : (transition.guardsFailed?.length
+          ? `the transition is missing: ${transition.guardsFailed.join(', ')}`
+          : (transition.error ?? 'the status change was refused'));
+    }
     phase = closed ? 'completed' : 'verification';
     nextFollowUpAt = closed ? null : new Date(now.getTime() + DAY_MS).toISOString();
   } else if (interpreted.outcome === 'blocked') {
@@ -397,6 +408,8 @@ export async function recordActionLifecycleReply(input: {
     handled: true,
     outcome: interpreted.outcome,
     closed,
+    /** Why the close was refused, when one was attempted and did not take. */
+    closeBlocked,
     newDueDate: interpreted.newDeadline?.toISOString(),
     needsUserIntervention: lifecycle.needsUserIntervention,
   };
