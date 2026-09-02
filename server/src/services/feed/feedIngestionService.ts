@@ -57,7 +57,7 @@ export interface RawEventInput {
 }
 
 export interface IngestResult {
-  status: 'new' | 'duplicate' | 'error';
+  status: 'new' | 'duplicate' | 'error' | 'self_echo';
   feedEventId?: string;
   contentHash: string;
   publishedMessageId?: string;
@@ -76,6 +76,35 @@ export interface IngestResult {
  */
 export async function ingest(input: RawEventInput): Promise<IngestResult> {
   const contentHash = computeHash(input.sourceType, input.sourceId, input.payload);
+
+  // ── DEF-287 — BRAIN MUST NOT INGEST ITS OWN OUTBOUND AS INBOUND ────────────────────────────
+  //
+  // 2026-09-02 17:12, owner-reported: *"I did see a notification that Hamna Latif Bhutta sent an
+  // email with the subject \"Hlo\" at 11:53 AM today."* **Hamna sent no email.** The 11:53 row is:
+  //
+  //   from:    Basit Ahmed <basit.ahmed@tmcltd.com>
+  //   to:      basit.ahmed@tmcltd.com
+  //   subject: [brain_prompt] Hamna Latif Bhutta replied: "Hlo"
+  //
+  // That is BRAIN'S OWN notification to the owner, delivered by email, re-collected by the Gmail
+  // connector, stored as an inbound `feed_event`, and hours later cited back to him as evidence
+  // of an incoming message from a named person. A closed loop: Brain reads its own voice and
+  // reports it as someone else's.
+  //
+  // This is invariant #5 — the owner told in confident prose that someone he knows wrote words
+  // they never wrote — and it is the DEF-159 class, arriving by a route nothing was watching.
+  // Measured at the time: 14 such rows since 08-03, of 145 gmail events whose sender is the
+  // owner himself.
+  //
+  // BOTH conditions are required, and neither alone would be safe. The bracket prefix is Brain's
+  // own stamp, so matching it is recognising our own handwriting rather than guessing — but a
+  // forwarded or quoted notification from a third party would carry it too, which is why the
+  // message must ALSO be self-addressed. Genuine self-notes the owner emails himself are common
+  // and are untouched, because they do not carry the stamp.
+  if (input.sourceType === 'gmail' && isOwnOutboundEcho(input.payload)) {
+    console.log(`[feedIngest] refused Brain's own notification as inbound — ${input.clientNumber} ${String((input.payload as any)?.subject ?? '').slice(0, 70)}`);
+    return { status: 'self_echo', contentHash };
+  }
   const traceId = input.traceId ?? crypto.randomUUID();
   const eventType: FeedEventType = input.eventType ?? inferEventType(input.sourceType, input.payload);
   const sender = input.sender ?? inferSender(input.sourceType, input.payload);
@@ -668,4 +697,27 @@ function canonicalize(obj: unknown): string {
   if (Array.isArray(obj)) return `[${obj.map(canonicalize).join(',')}]`;
   const keys = Object.keys(obj as Record<string, unknown>).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize((obj as any)[k])}`).join(',')}}`;
+}
+
+/**
+ * DEF-287 — is this Gmail payload Brain's own notification coming back?
+ *
+ * Exported because the rule is the fix: a guard buried inside `ingest` could only be tested by
+ * standing up the whole ingestion path, and this needs to be provable against the exact payload
+ * shape that caused the misattribution.
+ */
+export function isOwnOutboundEcho(payload: Record<string, unknown> | null | undefined): boolean {
+  const subject = String((payload as any)?.subject ?? '').trim();
+  // Brain's own stamp. A REPLY would read "Re: [brain_prompt] …" and is deliberately not matched:
+  // a human answering the notification is a real inbound event.
+  if (!/^\[brain[a-z_]*\]/i.test(subject)) return false;
+
+  const addr = (v: unknown): string => {
+    const m = String(v ?? '').match(/<([^>]+)>/);
+    return (m ? m[1] : String(v ?? '')).trim().toLowerCase();
+  };
+  const from = addr((payload as any)?.from);
+  const to = addr((payload as any)?.to);
+  if (!from || !to) return false;
+  return from === to;
 }
