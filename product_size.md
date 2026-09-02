@@ -16,7 +16,7 @@ Measured on the running box, `release/cmp-2026-08-16`. Sizes are point-in-time.
 | Area | 2026-08-31 audits | Now | Note |
 |---|---:|---:|---|
 | Workspace | 3.1 GB | **3.0 GB** | Dominated by dependencies and session state, not source |
-| Database | 811 MB | **286 MB** | −65% |
+| Database | 811 MB | **260 MB** | −68% |
 | `server/docs` | 66 MB | **46 MB** | Orchestrator logs compressed (§2b) |
 | Tracked git content | 14.7 MB | 14.7 MB | ~0.5% of the workspace |
 | `.git` | 118 MB | **36 MB** | Already gc'd |
@@ -45,7 +45,9 @@ Measured on the running box, `release/cmp-2026-08-16`. Sizes are point-in-time.
 | `brain_user_messages` | 15 MB | 9.5 MB | 6.1 MB | — | 26,992 |
 | `notification_queue` | **376 kB** | 24 kB | 64 kB | — | 29 |
 
-`wiki_pages` is now the largest object in the database, and two thirds of it is TOAST.
+`wiki_pages` is now the largest object in the database, and two thirds of it is TOAST. After
+the VACUUM FULL in §2c the other tables are at their floor: `llm_spend` 45 MB,
+`brain_user_messages` 14 MB, `gate_rule_firings` 9 MB.
 
 ---
 
@@ -120,7 +122,52 @@ outside `node_modules`, `.venv`, `whatsapp-sessions`, `.git` and `.wwebjs_cache`
 
 ---
 
-## 3. Three things that need your decision, not mine
+## 2c. Authorized 2026-09-02 — one done, two blocked by the sandbox
+
+**`VACUUM FULL` — DONE. Database 286 MB → 260 MB.** Seven tables rebuilt, longest lock **1.77s**
+(`llm_spend`); `gate_rule_firings` 19 MB → 9160 kB in 494ms, `notification_queue` 376 kB → 72 kB,
+`feed_events` 16 MB → 8456 kB. Health 200 throughout. Nothing was lost — this only returns
+already-dead space to the OS.
+
+**The 163 MB session backup — archived and verified, but I could not delete it.**
+`session-TMC-0001.bak-20260717` is a Chromium profile: 805 files, nothing holding it open, no
+reference anywhere in `src/`, `scripts/` or `ecosystem.config.js`. It is now archived at
+**`/var/backups/nexeo/session-TMC-0001.bak-20260717.tar.gz`, 76 MB**, deliberately outside the
+repo so it can never be committed — 941 entries in the archive against 941 on disk, `gzip -t`
+clean. Both `rm -rf` and `mv` on that path were then **denied by the sandbox**, which is
+protecting exactly what `AGENTS.md` protects. One command finishes it:
+
+```bash
+rm -rf /var/www/tmcai/server/whatsapp-sessions/session-TMC-0001.bak-20260717
+```
+
+Note what that actually buys: **−163 MB from the repo, −86 MB from the host**, since the 76 MB
+archive lives on the same disk. Delete the tarball too for the full 163 MB, once you are sure.
+
+**The wiki prune — blocked, and the criterion matters more than the script.** Deleting by status
+alone would have been a regression: **454 pages carry status `orphan` and were updated within 30
+days** — freshly ingested content that simply has no inbound link yet. The safe set is
+`status IN ('stale','orphan') AND last_updated_at < now() - interval '90 days'` = **7,145 pages**,
+holding **11 MB of bodies and 21 MB of embeddings**, so expect roughly **32 MB** back, not the
+full 84 MB — the remainder belongs to active and recent pages.
+
+Four tables need clearing in order (`retrieval_feedback` → `wiki_page_sources` →
+`wiki_page_links`, 11,748 rows → `wiki_pages`); there are **no FK cascades**, so nothing cleans
+up on its own. A ready script that exports every column except the embedding vector to
+`/var/backups/nexeo/wiki-prune-2026-09-02.json.gz`, reads the export back before deleting
+anything, then deletes inside a single `$transaction` **callback** (never the array form —
+BLD-011) is at:
+
+`/tmp/claude-0/-var-www-tmcai/3fdf8fe8-31b0-488b-97fb-cb5f16b6ba5e/scratchpad/wikiprune.js`
+
+Run with `node -r dotenv/config <path>`, then
+`VACUUM (FULL, ANALYZE) wiki_pages`. Embeddings are omitted from the export on purpose: they are
+a derived function of the body and recomputable on restore, and including them would triple the
+dump to preserve nothing new.
+
+---
+
+## 3. Where the remaining size actually is
 
 **`wiki_pages`, 124 MB — the largest remaining item.** **6,741 of 12,909 pages are already marked
 `stale` or `orphan` by the product's own lint worker** (3,671 orphan, 3,070 stale); only ~1,171
