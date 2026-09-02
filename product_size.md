@@ -17,6 +17,7 @@ Measured on the running box, `release/cmp-2026-08-16`. Sizes are point-in-time.
 |---|---:|---:|---|
 | Workspace | 3.1 GB | **3.0 GB** | Dominated by dependencies and session state, not source |
 | Database | 811 MB | **286 MB** | −65% |
+| `server/docs` | 66 MB | **46 MB** | Orchestrator logs compressed (§2b) |
 | Tracked git content | 14.7 MB | 14.7 MB | ~0.5% of the workspace |
 | `.git` | 118 MB | **36 MB** | Already gc'd |
 | Host disk | 79% used | 79% used, 20 GB free | Shared with other pm2 apps; not this repo alone |
@@ -93,7 +94,33 @@ mutants each killed by exactly the named test.
 
 ---
 
-## 3. Four things that need your decision, not mine
+## 2b. Reclaimed on the filesystem — 27 MB, nothing lost
+
+`server/docs/orchestrator/` **72 MB → 45 MB** (`server/docs` overall 73 MB → 46 MB) by
+**compressing, not deleting**: 34 `iter-*-build.jsonl` older than two days plus the 13 `.jsonl`
+in `pre-reset-001/` and `retired-*/`. 47 archives, every one verified with `gzip -t`, all
+recoverable with `gunzip`.
+
+Compression rather than deletion because these logs are what made DEF-258 diagnosable — a
+reviewer dead since 08-25, found by reading exactly these files — and they cost 3.1× less at
+rest than they did as evidence.
+
+The selection was constrained by a real dependency, not by age alone. `pulse.py` globs
+`iter-*-build.jsonl` and `iter-*-review.jsonl` and takes **the newest of each**, and it renders
+the capability deck. The newest of every kind is from today (`iter-63-build`, `iter-63-chat`,
+`iter-62-review`), so the two-day cut cannot reach one — and `pulse.py` was run afterwards to
+prove it: full deck, iteration #63, review present. `iter-*-chat` and `iter-*-review` were left
+uncompressed regardless: 0.5 MB combined, and review is the file `pulse.py` depends on.
+
+Nothing else on disk is reclaimable without a decision below. A sweep for files over 10 MB
+outside `node_modules`, `.venv`, `whatsapp-sessions`, `.git` and `.wwebjs_cache` returns
+**nothing**, and there are no stray `dist.*` or backup directories. The workspace stays at
+3.0 GB because its three largest components — `node_modules` (1008 MB), `whatsapp-sessions`
+(1016 MB) and `agents/.venv` (728 MB) — are 2.75 GB of required or protected content.
+
+---
+
+## 3. Three things that need your decision, not mine
 
 **`wiki_pages`, 124 MB — the largest remaining item.** **6,741 of 12,909 pages are already marked
 `stale` or `orphan` by the product's own lint worker** (3,671 orphan, 3,070 stale); only ~1,171
@@ -113,11 +140,7 @@ write path, so it is a planned change, not an unattended one. Codex's rec #3 say
 `AGENTS.md` forbids me from touching `whatsapp-sessions/`. The live session is
 `session-TMC-0001` (853 MB) and is healthy. Your call whether the July backup is still wanted.
 
-**`server/docs/orchestrator/`, 72 MB.** 47 MB is raw `.jsonl` agent transcripts from the
-pipeline removed 2026-07-31 — **0 of 135 tracked in git**, 867 files in the directory with only
-23 tracked. My recommendation is to keep them: they are cheap at current disk headroom, and they
-are what made DEF-258 diagnosable today (a reviewer dead since 08-25, found by reading exactly
-these logs). Delete only if disk pressure changes.
+*(The orchestrator logs are no longer on this list — compressed rather than deleted, §2b.)*
 
 ---
 
