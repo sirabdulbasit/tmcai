@@ -2314,3 +2314,83 @@ the fabrication batch; the two refinements survive review as exactly what direct
 3 prescribed. What would prove me wrong: the deploy matrix diverging from mine
 (environment drift, the DEF-231 shape), or the reviewer reading the constant dedup
 key as changing the campaign's "per window" semantics rather than implementing it.
+
+## Iteration 67 — 2026-09-02
+
+**EARLY-EXIT CLAUSE INVOKED, with evidence — the iteration-60 precedent under the
+same mandate.** The turn's only job is MAKE HEAD DEPLOYABLE for the one-commit batch
+(`c9162d0`, DEF-287 — the self-echo ingestion guard the analyst calls the highest-
+value undeployed item). **HEAD needs no code change to be deployable, and here is
+the proof; inventing a change under a mandate that forbids "no new defect, no
+opportunistic fix" would add review surface, which is the named way three turns
+died.**
+
+**HEAD (`c9162d0`) verified in place** — legitimately this time, unlike iterations
+60/62: `git status` shows NO dirty file under `server/src`, `server/tests` or
+`server/prisma`, so the working tree IS HEAD for everything the matrix measures.
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3272 passed | 0 failed** (272 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3301) — includes
+  DEF-287's own `def287NoSelfEcho.test.ts`.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- `c9162d0` is a COMPLETE commit: the `feedIngestionService.ts` guard (+54), its
+  suite (+82), and both governing-doc rows in the same commit — nothing stranded,
+  no migration in the range. The deploy is build + restart only.
+
+**No review finding blocks release.** The review seat's newest output — two
+sections (Iteration 57 on DEF-259: **SOUND**, "nothing here deserves WEAK";
+Iteration 62 on DEF-277: **SOUND**, closed by iteration 66's `78b1cd7`) — sits
+UNCOMMITTED in the tree (+378 lines, file quiet since 03:05). Neither reviews
+`c9162d0`, and neither names a blocker. One correction from the 57 review adopted
+on the record: the review seat is NOT dead — it produced these reviews; DEF-258's
+"dead since 08-25" describes the prior window.
+
+**What actually blocks the deploy — all orchestrator-owned, each named with its
+evidence:**
+1. **`state/deployed-sha` is DIRTY, already reading `c9162d0`, uncommitted** — a
+   deploy of HEAD appears to be mid-flight or already executed with its state
+   commit pending. The orchestrator must reconcile production identity before (or
+   as) it runs D-85: if the box already runs `c9162d0`, the remaining step is the
+   state commit and the report; if not, the stale state file would make the NEXT
+   iteration believe it deployed. I did not touch it — orchestrator state.
+2. **The +378 stranded reviewer lines in `review_log.md`** — the review seat's own
+   output, uncommitted for ~9 hours; it will trip the dirty-tree refusal and it is
+   the record two verdicts depend on. The orchestrator should land it.
+3. **The three untracked root files** (`product_size_*.md`, the jpeg) — flagged in
+   iterations 60, 62 and 66; still BLD-001 staging hazards.
+
+**Governing docs (rule 5):** no Brain change made, so no DEF row moves — stated per
+the contract. DEF-287's row shipped in its own commit. Verdict on the mandate:
+*progressing* — the blocker inventory is three named orchestrator items, one of
+which (the half-recorded deploy) is new information this turn surfaced.
+
+**CAPABILITY:** RELIABILITY-ONLY
+**PREDICTED:** +0 from this turn. When the orchestrator completes D-85, the owner
+stops being told a named person wrote words she never wrote (DEF-287's guard live).
+**MECHANISM:** clean-room-grade certification of the batch (in place, because the
+code tree is exactly HEAD) plus the reconciliation finding the deploy needs.
+**FALSIFIER:** the deploy-phase matrix at `c9162d0` disagreeing with these numbers;
+or production identity showing a SHA that is neither `af36b30` nor `c9162d0`.
+
+**Symptom tag:** none closed by me — said plainly. The deck's two open tags
+(DEF-261 day-7 nag, DEF-282 continuity) are OPEN builds for the next unsuspended
+turn; the analyst ranks DEF-261's producer first and I concur — it is the binding
+constraint on the prompt queue.
+**ATTEMPT-16 OBSTACLE STATEMENT:** the pipe again, with a new specific: this turn
+found a deploy half-executed — state updated, nothing committed. Until deploy
+completion is atomic (state + log land with the restart), every "N undeployed
+commits" premise the harness computes is one crash away from being wrong in either
+direction.
+
+**What I did NOT do:** touch `deployed-sha` or `review_log.md` (orchestrator's);
+verify production identity by probing the box (rule 2 — and a restart-adjacent
+probe under a mid-flight deploy is exactly when not to); DEF-261/DEF-288 (next
+turn's builds, named).
+
+**Honest prediction:** D-85 at `c9162d0` passes its matrix and ships the DEF-287
+guard; the falsifier the analyst wrote ("a self-addressed [brain_prompt] echo still
+surfaces as an inbound message from a named person") is then live-testable. What
+would prove me wrong: the box already running `c9162d0` with the guard NOT holding
+(14 pre-existing echo rows re-surfacing through a read path the funnel guard does
+not cover — the guard stops NEW ingestion; historical rows are a separate sweep the
+DEF-287 row should own if they resurface).
