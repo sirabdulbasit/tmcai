@@ -401,20 +401,39 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       log.warn('tier_budget_exceeded', {
         userId: user.id, kind: req.kind, tier: tier.label, tierToday, tierCap, dailyCap,
       });
-      return await record({
+      // DEF-277 — the row says WHY it was suppressed. `record`'s reason arg is
+      // logged and returned but never persisted, so before this stamp the audit
+      // trail could not tell a budget hold from a dedup skip — and the digest
+      // below needs exactly that distinction to count what the owner is owed.
+      const res = await record({
         ...req, user, channel: 'text', urgency,
         status: 'suppressed', summary: req.summary,
+        metadata: { ...(req.metadata ?? {}), suppressedBy: 'budget', suppressReason: `${tier.label}_budget_exceeded` },
       }, `${tier.label}_budget_exceeded (${tierToday}/${tierCap} of ${dailyCap})`);
+      if (req.kind !== SUPPRESSION_DIGEST_KIND) void maybeSendSuppressionDigest(user);
+      return res;
     }
     break;   // a kind belongs to at most one tier; the first match decides
   }
 
-  if (sentToday >= dailyCap) {
+  // DEF-277 (C-3 increment 2) — the digest is the cap's own RECEIPT and is the
+  // one kind exempt from the cap, because a cap that silences its own receipt
+  // is CL-043 verbatim: four humans' messages arrived, two were held, and the
+  // owner had to ask where they went. Bounded BY CONSTRUCTION, not by promise:
+  // one send per (user, day) via its dedupKey, plus the per-kind 60s limit,
+  // quiet hours and the opt-in gate, all of which still apply. This is not a
+  // capability allow-list — it is the suppression mechanism's single receipt
+  // kind. Guardrail served: no-claim-without-a-receipt, applied to the claim
+  // "I am managing your notification volume".
+  if (sentToday >= dailyCap && req.kind !== SUPPRESSION_DIGEST_KIND) {
     log.warn('daily_cap_exceeded', { userId: user.id, sentToday, dailyCap });
-    return await record({
+    const res = await record({
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
+      metadata: { ...(req.metadata ?? {}), suppressedBy: 'budget', suppressReason: 'daily_cap_exceeded' },
     }, `daily_cap_exceeded (${sentToday}/${dailyCap} in last 24h)`);
+    void maybeSendSuppressionDigest(user);
+    return res;
   }
 
   // ── Content-fingerprint dedup ──────────────────────────────────────
@@ -957,4 +976,102 @@ function escapeHtml(s: string): string {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ─── DEF-277 · C-3 increment 2 — a held notification leaves a receipt ────────
+//
+// CL-043, measured: four people's messages arrived in one morning; two were
+// relayed and two were suppressed by the daily cap, silently. The owner had to
+// ask *"it sent multple messages and brain only notify me 2 messages"* — the
+// budget machinery was working and the silence around it was the defect. A
+// professional assistant may hold notifications; it may not hold them without
+// saying so. This digest is that receipt: ONE message per (user, day) naming
+// how many were held and of what kinds, sent the first time the window's
+// budget actually holds something back.
+//
+// Reversibility and retrievability are already true and are relied on, not
+// re-implemented: every held push is a `brain_user_messages` row (status
+// `suppressed`, now stamped with WHY), counterpart bodies stay readable via
+// the relay record (DEF-270/273), and the model can quote any of it when the
+// owner asks. This function adds the one missing piece — the owner learning
+// that there is something to ask about.
+
+/** The one kind exempt from the caps it reports on. Exported for tests and
+ *  for the exemption check in `brainContactsUser`. */
+export const SUPPRESSION_DIGEST_KIND = 'suppressed_pushes_digest';
+
+/** Exported for tests: the digest must be provable through the real outbound
+ *  chokepoint, not a re-implementation. Never throws — a failed digest leaves
+ *  the suppression exactly as it was (silent), which is the pre-DEF-277 state,
+ *  never a broken send path. */
+export async function maybeSendSuppressionDigest(
+  user: { id: number; clientNumber: string },
+): Promise<void> {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const held = await prisma.brainUserMessage.findMany({
+      where: {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        createdAt: { gte: since },
+        status: 'suppressed',
+        kind: { not: SUPPRESSION_DIGEST_KIND },
+        // Only BUDGET holds. A dedup-suppressed duplicate cost the owner
+        // nothing and does not belong in a "you missed something" count.
+        metadata: { path: ['suppressedBy'], equals: 'budget' },
+      },
+      select: { kind: true, summary: true },
+    });
+    if (held.length === 0) return;
+
+    const byKind = new Map<string, number>();
+    for (const h of held) byKind.set(h.kind, (byKind.get(h.kind) ?? 0) + 1);
+    const counts = [...byKind.entries()].map(([k, n]) => `${k}: ${n}`).join(', ');
+    const samples = held.slice(0, 3).map((h) => `- ${String(h.summary).slice(0, 100)}`).join('\n');
+    const facts = `${held.length} notification(s) in the last 24h were HELD by the volume budget `
+      + `rather than sent. Counts by kind: ${counts}. Sample summaries:\n${samples}`;
+
+    // Wording belongs to the model (owner ruling 2026-08-19). The curated
+    // fallback below carries the same FACTS and is used only when the model is
+    // unreachable — the one case the ruling allows a fixed string.
+    let body: string;
+    try {
+      const { callLLM } = await import('../llmRouter');
+      const r = await callLLM(
+        'You are Nexeo, writing ONE short WhatsApp message to your owner. Say plainly, in your '
+        + 'own words: some notifications were held today because his volume budget filled; how '
+        + 'many and of what kinds (keep the numbers exactly as given); and that nothing was '
+        + 'dropped — everything held is kept and he can ask to see any of it. Under 400 '
+        + 'characters, no markdown, no apology.',
+        facts,
+        { maxTokens: 300, timeoutMs: 12_000 },
+      );
+      body = String((r as any)?.text ?? '').trim();
+      if (!body) throw new Error('empty completion');
+    } catch {
+      body = `Held today instead of sent (volume budget full): ${held.length} notification(s) — `
+        + `${counts}. Nothing was dropped; everything held is kept, and you can ask to see any of it.`;
+    }
+
+    await brainContactsUser({
+      userId: user.id,
+      clientNumber: user.clientNumber,
+      kind: SUPPRESSION_DIGEST_KIND,
+      provenance: 'brain_prose',
+      summary: `suppression digest: ${held.length} held in the last 24h`,
+      body,
+      urgency: 'low',
+      // One per day BY CONSTRUCTION: the key is the date bucket and the window
+      // spans it. Quiet hours still hold it (dedup counts only sent/partial,
+      // so a quiet-hours hold retries later in the day rather than burning
+      // the key).
+      dedupKey: `suppression-digest:${new Date().toISOString().slice(0, 10)}`,
+      dedupWindowMs: 24 * 60 * 60 * 1000,
+      metadata: { heldCount: held.length, byKind: Object.fromEntries(byKind) },
+    });
+  } catch (e: any) {
+    log.warn('suppression digest failed — held pushes stay silent this window', {
+      userId: user.id, error: e?.message,
+    });
+  }
 }

@@ -2028,3 +2028,101 @@ Brain message and Brain answers about the quoted line. What would prove me wrong
 WA Web build whose `_data.quotedMsg` carries neither `body` nor `caption` (the
 extractor returns absent and the turn arrives bare, the pre-fix behaviour — visible
 as a reply-to turn with no `[replying to:]` in the composed context).
+
+## Iteration 63 — 2026-09-02
+
+**File named in the first two tool calls and changed (landed):**
+`server/src/services/notifications/brainOutboundService.ts` +
+`server/tests/def277SuppressionDigest.test.ts`. **This turn COMMITS DEF-277 — C-3
+increment 2, built to code-complete in iteration 62, whose session died between the
+change-log row and the commit.** The analyst's debt #3 names exactly this
+("code-complete, uncommitted for a second consecutive turn"), and it is the DEF-254
+stranded-WIP shape: work nobody owns, dirtying the tree, blocking every deploy behind
+it. Landing it IS the campaign increment; starting anything new on top of it would
+compound the debt.
+
+**What DEF-277 is (recap for the reviewer; full detail in the DEF row and iteration
+62's entry):** CL-043 measured — four people's messages in one morning, two relayed,
+two suppressed by the daily cap, silently; the owner had to ask. The budget machinery
+was correct; the silence was the defect.
+
+- `brainOutboundService.ts:404-436` — both budget-suppression sites (tier + daily
+  cap) stamp `metadata.suppressedBy='budget'` + `suppressReason` on their audit row
+  (`record`'s reason arg was logged but never persisted — "an audit row saying why"
+  did not exist for the why), and fire the digest hook off the caller's path.
+- `brainOutboundService.ts:981-1075` — `maybeSendSuppressionDigest`: ONE message per
+  (user, day) naming how many were held and of what kinds, through the SAME
+  `brainContactsUser` chokepoint. Exempt from the caps it reports on and from
+  NOTHING else — dedup (date-bucket key → once/day by construction), per-kind 60s
+  limit, quiet hours, office hours (a night hold retries in office hours because
+  dedup counts only sent/partial) and opt-in all still bind. Not an allow-list: the
+  suppression mechanism's own single receipt kind. Guardrail:
+  **no-claim-without-a-receipt**. Wording is the model's (`callLLM` composes from the
+  facts); the curated fallback carries the same counts and fires only when the model
+  is unreachable — the one case the ruling allows.
+- Suite: **8 passed | 0 failed**, through the real chokepoint (def174 harness): the
+  hold carries its why; the CL-043 fixture produces exactly one digest (heldCount 3,
+  per-kind breakdown); the digest passes the full cap and only that; a dedup hit
+  holds the second digest with no recursion; zero held → zero sends; model words
+  when reachable, exact counts in the fallback when not. Test-debug findings from
+  iteration 62, on the record: the office-hours gate correctly held the low-urgency
+  digest in a night test run (the tests open the office rather than weaken the
+  gate), and the sender mock had to return the real `{ ok, waMessageId }` shape.
+
+**Verification (from `server/`, re-run THIS TURN — not iteration 62's figures):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3211 passed | 0 failed** (264 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3240)
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md)
+- Tenant/fail-closed audit: the digest's one read is scoped
+  `(clientNumber, userId)` (`brainOutboundService.ts:1013-1021`); the send reports
+  through `record` like every other outbound; `maybeSendSuppressionDigest` never
+  throws — a failed digest degrades to the pre-DEF-277 silence, never a broken send
+  path.
+
+**Governing docs (rule 5): circling at the class, structural fix given** —
+`fabricated-status`/silent-hold is the recurring family (CL-043's "brain only notify
+me 2 messages"); the fix is not a patch on the reported sentence but the receipt
+mechanism at the single chokepoint every outbound already passes. DEF-277 row was
+written in iteration 62 (verified this turn: 1 insertion, only that row); this entry
+completes rule 2's "every change moves a row" pairing with the commit.
+
+**CAPABILITY:** Self-Pruning (the assigned target — no divergence)
+**PREDICTED:** the campaign's increment-2 exit evidence becomes producible: a real
+burst on production yields one digest naming the held count. No score claim until
+Grok reads it and a live burst exercises it.
+**MECHANISM:** suppression sites stamp why; the chokepoint emits its own bounded
+receipt; retrievability already existed (audit rows + relay record) and is relied
+on, not re-implemented.
+**FALSIFIER:** any post-deploy budget hold with no digest inside office hours that
+day; or two digests in one day; or a digest sent when nothing was held.
+
+**Symptom tag:** the deck's one open tag is `Asked Brain where a rule or notification
+came from and was given an invented source` (DEF-248) — **NOT closed this turn, said
+plainly, and here is the divergence declaration the rule demands:** landing the
+stranded campaign increment outranks opening a new defect while uncommitted work
+blocks the deploy pipe; the D-19 abort condition counts a committed increment,
+not an intention. DEF-248 is the next build after this ships. The tag DEF-277
+partially addresses on the analyst's own signature table is
+`Several WhatsApp messages arrived and Brain only told him about some of them,
+silently holding the rest` — keyed there as DEF-277 itself.
+
+**ATTEMPT-13 OBSTACLE STATEMENT (required):** unchanged and now three turns
+deep in evidence — the obstacle is the pipe, not the building: increment 2 was
+code-complete within one turn of being scheduled, then sat uncommitted while the
+loop spent two more iterations. The loop needs the deploy of D-83 (this commit +
+DEF-249 + DEF-253, all code-complete) more than it needs attempt 14.
+
+**What I did NOT do:** DEF-248 (declared above); live verification of anything
+(builder does not deploy); the analyst's ledger-lag fixes (DEF-267b row status,
+§3 trigger-instruction count — bookkeeping that must not pad a code turn);
+committing the reviewer's dirty `review_log.md` or the untracked root files
+(not mine).
+
+**Honest prediction:** this commit survives review as the campaign increment —
+the mechanism is bounded by construction and every gate that should bind it still
+does. What would prove me wrong: Codex finding a path where the digest fires
+without a budget hold (I know of none — the hook is called only from the two
+stamped suppression sites), or the office-hours interaction holding EVERY digest
+for a user whose office hours never open (config-degenerate, named here rather
+than discovered).
