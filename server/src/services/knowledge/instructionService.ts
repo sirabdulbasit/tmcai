@@ -226,6 +226,11 @@ export interface ActiveInstructionRow {
   action: string | null;
   originalText: string;
   createdAt: string;
+  /** DEF-248 — `authoredBy` (`user:<id>`) has been persisted on every rule
+   *  since creation and was never selected or shown. Optional because rows
+   *  written before the field existed legitimately lack it — the renderer
+   *  says so rather than guessing. */
+  authoredBy?: string | null;
 }
 
 /**
@@ -249,7 +254,8 @@ export async function getActiveInstructions(
             metadata->>'subject' AS subject, metadata->>'dueAt' AS "dueAt",
             metadata->>'condition' AS condition, metadata->>'action' AS action,
             metadata->>'originalText' AS "originalText",
-            metadata->>'createdAt' AS "createdAt"
+            metadata->>'createdAt' AS "createdAt",
+            metadata->>'authoredBy' AS "authoredBy"
        FROM wiki_pages
       WHERE client_number = $1
         AND page_type = 'instruction'
@@ -279,13 +285,48 @@ export function renderInstructionsBlock(rows: ActiveInstructionRow[]): string {
   lines.push('## Standing instructions (non-negotiable)');
   lines.push('These are explicit orders. Respect every one in your answer and any action you take. Client rules are organizational policy and override conflicting user preferences.');
 
+  // DEF-248 — `Asked Brain where a rule or notification came from and was
+  // given an invented source`. Asked *"from where you got those rules of
+  // brain"*, Brain answered *"My operating rules come from my core
+  // programming"* — and separately told him HE had chosen a notification
+  // style in settings, which he had not. The model was holding a block of
+  // rules with no origin stated, so it invented one; every rule's real
+  // provenance (`authoredBy`, `createdAt`, and `originalText` — the author's
+  // verbatim sentence) had been persisted since creation and simply never
+  // shown. Same mechanism as DEF-199: rules about honesty cannot fix a join
+  // that is absent from the context. So the join is performed here, and the
+  // provenance answer is licensed from it — in the ONE renderer all three
+  // consumers share (legacy composer, reasoning composer, voice context),
+  // so no path can drift.
+  lines.push('');
+  lines.push('WHERE THESE RULES COME FROM — every rule below was stated by a PERSON and recorded');
+  lines.push('verbatim: the quoted sentence is the author\'s own words, and the date is when it was');
+  lines.push('recorded (user rules by this user; client rules by a tenant admin). None of them are');
+  lines.push('"core programming", system defaults, or anything you were born with. If asked where a');
+  lines.push('rule or behaviour came from, answer from THIS list: quote the rule\'s own words and its');
+  lines.push('recorded date. If the behaviour he asks about is NOT in this list, say plainly that you');
+  lines.push('have no recorded rule for it — never attribute it to your programming, and never tell');
+  lines.push('him he chose or configured something unless a recorded rule or a settings block you can');
+  lines.push('actually see says he did. A rule marked "recording date not on file" is still a real,');
+  lines.push('recorded rule — only its date is missing, so quote its words and say the date was not');
+  lines.push('kept.');
+
   const renderRow = (r: ActiveInstructionRow): string => {
     const extras: string[] = [];
     if (r.subject)   extras.push(`subject: ${r.subject}`);
     if (r.condition) extras.push(`condition: ${r.condition}`);
     if (r.action)    extras.push(`action: ${r.action}`);
     if (r.dueAt)     extras.push(`due: ${r.dueAt}`);
-    return `- [${r.kind}] **${r.title}** — ${r.originalText}${extras.length ? `  (${extras.join('; ')})` : ''}`;
+    // DEF-248 — the provenance travels WITH the rule. Date only: `authoredBy`
+    // is a `user:<id>` key the model cannot pronounce, and DEF-199 proved a
+    // bare key invites a borrowed name — scope (already in the section
+    // heading) says who-class, the date says when. A missing date is stated,
+    // never guessed.
+    const recorded = r.createdAt
+      ? `recorded ${String(r.createdAt).slice(0, 10)}`
+      : 'recording date not on file';
+    extras.push(recorded);
+    return `- [${r.kind}] **${r.title}** — ${r.originalText}  (${extras.join('; ')})`;
   };
 
   if (clientRules.length > 0) {

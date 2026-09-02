@@ -2126,3 +2126,105 @@ without a budget hold (I know of none — the hook is called only from the two
 stamped suppression sites), or the office-hours interaction holding EVERY digest
 for a user whose office hours never open (config-degenerate, named here rather
 than discovered).
+
+## Iteration 64 — 2026-09-02
+
+**Files named early and changed:** `server/src/services/knowledge/instructionService.ts`
++ new suite `server/tests/def248RuleProvenance.test.ts`. **Deck objective taken —
+the run's single open tag: `Asked Brain where a rule or notification came from and
+was given an invented source` (DEF-248, deck half → recorded as ↻ DEF-248b in the
+DEF-248 row).**
+
+**The pivot, declared before anything else:** the analyst's debt #1 (commit DEF-278)
+was my first candidate — but `preactiveEngine.ts`, `brainScenarios.ts`,
+`promptReplyRelevance.test.ts` and the def278 suite had mtimes 2–7 minutes old at
+turn start: **a LIVE session is actively building DEF-278 right now.** Landing a
+moving target risks committing a broken intermediate (iteration 62 caught exactly
+that, live, at `brainComposer.ts:5978`), and iteration 62's incident showed what
+happens when two builders share files mid-flight. So DEF-278 stays with its author,
+and this turn took the deck's own objective in a zone nobody is editing. Divergence
+from the campaign target (Self-Pruning) declared likewise: increments 1–2 are
+built/deployed, increment 3 is a new large build that would ALSO have to live
+alongside an active session — the deck tag was the shippable owner-facing choice.
+
+**The defect and the mechanism.** Asked *"from where you got those rules of
+brain"* → *"My operating rules come from my core programming."* Separately, told he
+had *"explicitly chosen to receive this style of notification from the settings"* —
+a choice he never made. One mechanism: the model holds a block of rules with NO
+ORIGIN STATED, so asked for one it invents a plausible one. The real provenance has
+been persisted on every rule since creation — `authoredBy: 'user:<id>'`,
+`createdAt`, and `originalText` (the author's verbatim sentence IS the source) —
+and was never selected or rendered. That is DEF-199's mechanism on a new surface:
+honesty rules cannot fix a join that is absent from the context.
+
+**What changed, by file:line — and why it is the class, not the sentence:**
+- `instructionService.ts:248-260` — the select adds `metadata->>'authoredBy'`;
+  `ActiveInstructionRow` gains optional `authoredBy` (old rows legitimately lack
+  it; optional keeps every existing fixture compiling).
+- `instructionService.ts:281-329` — `renderInstructionsBlock`, the ONE renderer
+  all three consumers share (legacy composer `brainComposer.ts:3331`, reasoning
+  composer `:2723`, `brainVoiceContext.ts:48`), now: (1) carries per-row
+  provenance — `recorded <date>`, with a missing date STATED as a missing DATE,
+  never a missing rule and never a guess; (2) states where rules come from — a
+  person, verbatim, on a date; (3) licenses the provenance answer from the list
+  (quote the rule's own words + recorded date); (4) names "core programming" /
+  system defaults as forbidden attributions and requires honest absence for
+  behaviours not in the list; (5) forbids claiming he chose/configured something
+  unless a recorded rule or a visible settings block says so. The raw `user:<id>`
+  key is deliberately never rendered — DEF-199 proved a bare key invites a
+  borrowed name. One renderer = no path can drift
+  (`protection-with-two-implementations` stays at its count).
+- Governance: no authority moves to code — evidence plus a licensing rule in a
+  block, the pattern already ruled SOUND for pushHistoryBlock. Wording of every
+  answer stays the model's.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3240 passed | 0 failed** (268 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3269 — includes the
+  live session's in-flight DEF-278 work, also green). New suite: **8 passed |
+  0 failed**. The three renderer-adjacent suites (def248RulesReachTheReply,
+  def223ReasoningPathRule, brainVoiceContext): **26 passed | 0 failed**, unmodified.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: the touched query is `getActiveInstructions`, already
+  scoped `client_number = $1 AND (scope='client' OR user_id = $2)` — the added
+  column changes no scoping. No write touched.
+- Staging: the change log is dirty with the live session's CL-046 rows, so my edit
+  was staged MINE-ONLY via hash-object against HEAD (2-line staged diff verified);
+  their rows stay theirs to commit.
+
+**Governing docs (rule 5): circling at the class, structural fix given** — the deck
+tag's family is `capability-fabrication`/invented-source; the fix removes the
+information vacuum that generates the class (provenance joined into the one shared
+renderer), not the reported sentence.
+
+**CAPABILITY:** Accurate Communication
+**PREDICTED:** +0 — asked where a rule came from, Brain quotes the rule's recorded
+words and date instead of inventing an origin; no score claim.
+**MECHANISM:** the provenance join performed where the information already is, in
+the single renderer every path reads, with the answer licensed from it.
+**FALSIFIER:** any post-deploy provenance question answered with "core
+programming"/"you chose it in settings" while no row says so; or a rendered rule
+line missing its recorded-date clause.
+
+**Symptom tag closed (verbatim, in the commit):** `Asked Brain where a rule or
+notification came from and was given an invented source`.
+
+**ATTEMPT-14 OBSTACLE STATEMENT (required):** unchanged — the pipe, not the
+building. DEF-249/255/267b sit code-complete-unshipped, DEF-277's digest is
+git-confirmed deployed but mislabeled, and today's DEF-278 is being built by a
+second live session in the same tree. The loop's constraint is deploys and
+single-writer discipline, not more parallel building.
+
+**What I did NOT do, named:** DEF-278/280 (live session's, above); the analyst's
+ledger-lag fixes (DEF-277 row mislabel, §3 counts — the orchestrator's bookkeeping,
+not a code turn's padding); the notification-config provenance surface (residual,
+named in the row); committing the live session's dirty files or the reviewer's
+review_log.md.
+
+**Honest prediction:** the renderer contract holds everywhere at once because there
+is only one renderer, and the falsifier is directly observable in any provenance
+turn. What would prove me wrong: a provenance question routed through a path that
+does not receive the instructions block at all (e.g. an intercepted answer) — the
+block cannot license what it never reaches; if Codex finds such a path, that is the
+next increment, not a flaw in this one.
