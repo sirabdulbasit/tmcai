@@ -220,7 +220,23 @@ async function dueSoonPass(clientNumber: string, userId: number): Promise<number
       question,
       criticality: overdue ? 'high' : 'routine',
       dedupKey,
-      sideEffect: { kind: 'noop' },
+      // DEF-278 — the side effect its own words promise.
+      //
+      // This was `{ kind: 'noop' }` while `narrateDueNudge` wrote "Let me know if you attended
+      // and I can mark it as done". The owner quote-replied "done" on 2026-09-02: routing was
+      // perfect (prompt #490, confidence 1, referent delivered by DEF-267(b)), the prompt went
+      // to `answered`, he was told "Got it." — and the item stayed `status=NEW`. A promise with
+      // no dispatcher behind it, which is DEF-264 and DEF-255 in a third shape, and the 8th
+      // `fabricated-status`.
+      //
+      // `action_status_update` is not a new capability: it already routes through
+      // `recordActionLifecycleReply`, which closes the item, records a new deadline, or flags an
+      // intervention, and acks with a subject the model can actually render.
+      //
+      // The id is passed on the side effect itself rather than left only in `metadata`. Both are
+      // set: `promptSubjectItemId` reads metadata for DEF-115's staleness guard, and
+      // `applySideEffect` reads `side.openItemId`. Two readers, one fact, so both get it.
+      sideEffect: { kind: 'action_status_update', openItemId: it.id },
       metadata: { source: 'preactive_due_nudge', openItemId: it.id, overdue } as any,
     });
     if (res.status !== 'duplicate') sent += 1;

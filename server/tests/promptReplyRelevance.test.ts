@@ -92,6 +92,20 @@ describe('handlePromptReply integration — gate placement', () => {
     // `awaiting_reply → answered`, and the handler refuses to mutate or ack
     // without that proof. The happy-path mock persists.
     const recordAnswer = vi.fn(async () => true);
+    // This suite exercised `handlePromptReply` against the LIVE DATABASE — `db/prisma` was
+    // never mocked, so the handler's own reads hit production. It passed for as long as it did
+    // by luck about whatever the real conversation happened to contain, and DEF-274 made the
+    // dependency visible: that guard reads the last WhatsApp turn, Brain's genuine last turn on
+    // 2026-09-02 ended in a question, and the handler correctly declined to consume — failing a
+    // test about the relevance gate for reasons that had nothing to do with the relevance gate.
+    // A unit test must not read production conversation state.
+    vi.doMock('../src/db/prisma', () => ({
+      default: {
+        $queryRawUnsafe: vi.fn(async () => []),          // no live conversation
+        brainPromptQueue: { findFirst: vi.fn(async () => null) },
+        openItem: { findFirst: vi.fn(async () => null) },
+      },
+    }));
     // DEF-176: the tenantless fallback (getAwaitingPrompt without a tenant) is
     // deleted; correlation always goes through the tenant-scoped candidate
     // search, so that is what the mock provides.

@@ -874,4 +874,43 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       expect(cleanupSeg).toContain('outcome');
     },
   },
+  {
+    id: 'chat23',
+    title: 'it promised to mark an item done, said "Got it.", and marked nothing',
+    fixCommits: ['pending'],
+    symptomTags: ['fabricated-status', 'trigger-instruction-as-task'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+      const engine = readFileSync(join(root, 'services', 'brain', 'preactiveEngine.ts'), 'utf-8');
+
+      // 1. THE PROMISE HAS A DISPATCHER. The nudge's own words offer to mark the item done, and
+      //    it shipped with `sideEffect: { kind: 'noop' }` — so "done" was consumed, the prompt
+      //    went to `answered`, the owner was told "Got it.", and the item stayed NEW.
+      const at = engine.indexOf("source: 'preactive_due_nudge'");
+      expect(at).toBeGreaterThan(0);
+      const call = engine.slice(engine.lastIndexOf('enqueueBrainPrompt(', at), at);
+      const code = call.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+      expect(code).toContain("kind: 'action_status_update'");
+      expect(code).not.toContain("kind: 'noop'");
+
+      // 2. THE ITEM ID IS ON THE SIDE EFFECT. `applySideEffect` reads `side.openItemId`; leaving
+      //    it only in metadata yields `{ status: 'failed', detail: 'no_open_item' }` — a
+      //    different silent no-op wearing the right kind.
+      expect(call).toContain('openItemId: it.id');
+
+      // 3. THAT SIDE EFFECT REALLY CLOSES SOMETHING, so this is a declared capability and not a
+      //    second promise. DEF-255's lesson: a name is not a mechanism.
+      const handler = readFileSync(join(root, 'services', 'brainPrompts', 'promptReplyHandler.ts'), 'utf-8');
+      const kase = handler.slice(handler.indexOf("case 'action_status_update': {"));
+      const body = kase.slice(0, kase.indexOf('\n    }'));
+      expect(body).toContain('recordActionLifecycleReply');
+      expect(body).toContain("detail: 'completed'");
+
+      // 4. AND THE ACK HAS A SUBJECT (DEF-279). `[noted]` is what made him ask "what you got it?".
+      const ack = handler.slice(handler.indexOf('function composeAck'));
+      expect(ack.slice(0, ack.indexOf('\n}'))).toContain('completion recorded and item closed');
+    },
+  },
 ];

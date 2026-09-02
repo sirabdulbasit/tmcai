@@ -915,3 +915,61 @@ Wid spelling), so the mechanism stays. What was missing is that nothing removed 
 deletes its own message **after** the echo is observed and the pass recorded — so the claim
 boundary is untouched — guarded so cleanup can never fail the probe, and **left in place on
 failure**, because a degraded episode is a real fault and the evidence should survive.
+
+## Chat 23
+
+**Date:** 2026-09-02 14:18–14:39 PKT · **Register:** CL-046 · **DEF:** DEF-278, DEF-279, DEF-280 ·
+**Symptom tags:** `fabricated-status`, `trigger-instruction-as-task`
+
+**What happened**
+
+> *"Hi, just a reminder that the TMC <> InDrive technical kickoff is due soon. **Let me know if
+>    you attended and I can mark it as done.**"*
+> — owner **quote-replies** with the reply function — *"done"*
+> → *"Got it."*
+> *"what you got it?"*
+> → *"I'm not sure which item you're referring to, Sir. In the last few minutes, I've notified you
+>    about several messages from an unknown number on WhatsApp and also reminded you about an open
+>    item, 'Approve new team members for your organization.' Are you asking about the messages
+>    from the unknown number, or the reminder about approving new team members?"*
+
+**The item is still `status=NEW`, `updated_at 12:51`** — before the exchange. Verified on the box.
+
+**His hypothesis was wrong, and the log proves it**
+
+He read it as the reply function losing context: *"i feel when i reply using whatsapp function, it
+didnt pick the context"*. The quoted reply **worked perfectly**:
+
+```
+promptId: "490", relevanceConfidence: 1,
+answerPreview: "done\n\n[replying to: \"Hi, just a reminder that the TMC <> InD"
+```
+
+DEF-267(b) had shipped at 15:04 that same day and delivered the referent; routing to the correct
+prompt was certain *because of it*. Worth recording, because the obvious diagnosis was the wrong
+one and only the log distinguished them.
+
+**What actually failed: `sideEffectKind: "noop"`**
+
+`preactiveEngine.ts:223` enqueued every due-nudge with `sideEffect: { kind: 'noop' }` while
+`narrateDueNudge` wrote *"I can mark it as done"*. So `applySideEffect` had nothing to do,
+`composeAck` returned `[noted]`, and the model rendered that as *"Got it."* The prompt moved to
+`answered`. Nothing touched the item.
+
+**8th `fabricated-status`, and the third shape of a promise with no dispatcher** — after DEF-264
+(*"delete all"* with no bulk action) and DEF-255 (a gate cannot fix an absent capability). The
+id was never missing: it sat in `metadata.openItemId`, which DEF-120 had already taught the
+dispatcher to read for staleness.
+
+The fix declares `action_status_update` with the item id. Not a new capability — that side effect
+already routes through `recordActionLifecycleReply`, which closes the item, records a new
+deadline or flags an intervention, and acks with a subject the model can render. The id goes on
+the side effect **and** stays in metadata, because two readers consult two different places.
+
+**One more thing this exchange shows, and it is my own fix working:** #490 had waited **45 hours**
+behind `housekeeping_budget_exceeded (15/10 of 20)` and only reached him because DEF-277 shipped
+an hour earlier. The starvation fix delivered a prompt whose side effect was a no-op.
+
+**Still open:** DEF-280 — thirty seconds after answering, Brain could not name the item it had
+just answered, and offered two unrelated candidates instead. Not yet diagnosed; the referent
+reached the model on the previous turn, so it is not the quoted-text gap.
