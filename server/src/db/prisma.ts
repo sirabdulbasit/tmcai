@@ -1,6 +1,9 @@
 import { PrismaClient } from '@prisma/client';
 import { currentTenant } from './tenantContext';
-import { installRawQueryObservers, noteObserversInstalled } from './rawQueryObservability';
+import {
+  installRawQueryObservers, noteObserversInstalled, OBSERVED_RAW_OPERATIONS,
+} from './rawQueryObservability';
+import { installRawParamSanitizers } from './rawParamSanitizer';
 
 const base = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
@@ -264,6 +267,22 @@ const prisma = base.$extends({
 noteObserversInstalled('client', installRawQueryObservers(prisma as any, sqlTextOf));
 
 /**
+ * DEF-252 / DEF-289 — the CAUSE of the 22021 the observer above has been
+ * attributing for a month: a U+0000 in a bind parameter, which Postgres `text`
+ * has no representation for. Reproduced against the live database and written
+ * up in `rawParamSanitizer.ts`.
+ *
+ * Installed AFTER the observers, so it wraps outside them: a parameter is
+ * cleaned before the statement is built, and any failure that is NOT about
+ * unrepresentable text still reaches the observer with its call site intact.
+ *
+ * Deliberately not folded into the observer, whose own contract is that it
+ * never alters what it watches. This alters parameters. Two jobs, two modules,
+ * one chokepoint.
+ */
+installRawParamSanitizers(prisma as any, OBSERVED_RAW_OPERATIONS);
+
+/**
  * The transaction path, which the first deploy missed and production proved it
  * missed: after `c769cb4` shipped, 47 anonymous `22021` errors appeared with
  * ZERO attributed lines, because a `tx` handed to a `$transaction` callback is a
@@ -278,6 +297,11 @@ const originalTransaction = (prisma as any).$transaction.bind(prisma);
   if (typeof arg !== 'function') return originalTransaction(arg, ...rest);
   return originalTransaction((tx: Record<string, any>) => {
     installRawQueryObservers(tx, sqlTextOf);
+    // The transaction path needs the sanitizer for the same reason it needed the
+    // observer: a `tx` is a different object Prisma builds internally, and the
+    // first deploy of the observer missed it and production proved it missed —
+    // 47 anonymous failures with zero attributed lines.
+    installRawParamSanitizers(tx, OBSERVED_RAW_OPERATIONS);
     return (arg as (t: unknown) => unknown)(tx);
   }, ...rest);
 };
