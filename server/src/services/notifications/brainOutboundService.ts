@@ -1044,6 +1044,41 @@ function escapeHtml(s: string): string {
  *  for the exemption check in `brainContactsUser`. */
 export const SUPPRESSION_DIGEST_KIND = 'suppressed_pushes_digest';
 
+/**
+ * DEF-297 — the anti-spam mechanism spammed him fifteen times in one second.
+ *
+ * 2026-09-03 12:57:40–41. He asked who had messaged him and received **15 near-identical digests
+ * inside two seconds**, each with a DIFFERENT total: 717, 725, 722, 713, 680, 676, 674, 721, 687,
+ * 716, 719, 714, 732, 715, 668.
+ *
+ * `maybeSendSuppressionDigest` is fired **`void`-style on every budget hold**, so a burst of 37
+ * held draft-asks in one tick starts 37 concurrent calls. Three guards already stand in their
+ * way — a compose-time "already sent?" read, a constant `dedupKey`, and the per-kind 60s limiter
+ * — and **all three are read-then-act**, so the burst defeated all three simultaneously: every
+ * call read "none sent yet" before any of them had written. Each then made its own model call,
+ * which is why the wording differs, and computed `held.length` at its own moment, which is why
+ * the numbers differ.
+ *
+ * The missing guard is not a fourth check of the same kind. It is MUTUAL EXCLUSION. These calls
+ * all originate in one process in the same instant, so an in-process claim collapses the burst to
+ * one attempt; the existing DB checks continue to handle the across-restart and across-window
+ * cases they were written for.
+ *
+ * Deliberately a claim rather than a queue: the others should DROP, not wait and then send. One
+ * digest is the whole point of a digest.
+ */
+const digestInFlight = new Set<string>();
+
+/**
+ * Clear the in-flight digest claims. Tests drive the digest through `brainContactsUser`, which
+ * fires it `void`-style, so an attempt from one test can still hold its claim when the next
+ * begins — module state leaking across tests rather than a production concern (production
+ * releases in `finally`). Same convention as `__resetWaIdentityCacheForTests`.
+ */
+export function __resetSuppressionDigestClaimsForTests(): void {
+  digestInFlight.clear();
+}
+
 /** Exported for tests: the digest must be provable through the real outbound
  *  chokepoint, not a re-implementation. Never throws — a failed digest leaves
  *  the suppression exactly as it was (silent), which is the pre-DEF-277 state,
@@ -1051,6 +1086,12 @@ export const SUPPRESSION_DIGEST_KIND = 'suppressed_pushes_digest';
 export async function maybeSendSuppressionDigest(
   user: { id: number; clientNumber: string },
 ): Promise<void> {
+  // DEF-297 — claim FIRST, before any await. Every guard below is read-then-act, so a burst of
+  // concurrent calls sails past all of them together; this is the only one that cannot be raced,
+  // because the claim and its check happen in a single synchronous step.
+  const claim = `${user.clientNumber}:${user.id}`;
+  if (digestInFlight.has(claim)) return;
+  digestInFlight.add(claim);
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const held = await prisma.brainUserMessage.findMany({
@@ -1138,5 +1179,9 @@ export async function maybeSendSuppressionDigest(
     log.warn('suppression digest failed — held pushes stay silent this window', {
       userId: user.id, error: e?.message,
     });
+  } finally {
+    // Released in `finally` so a throw anywhere above cannot wedge the claim and silence every
+    // future digest — the opposite failure, and a worse one than a duplicate.
+    digestInFlight.delete(claim);
   }
 }

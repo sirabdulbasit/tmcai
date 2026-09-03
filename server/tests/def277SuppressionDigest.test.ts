@@ -118,6 +118,7 @@ vi.mock('../src/services/llmRouter', () => ({
 import {
   brainContactsUser,
   maybeSendSuppressionDigest,
+  __resetSuppressionDigestClaimsForTests,
   SUPPRESSION_DIGEST_KIND,
 } from '../src/services/notifications/brainOutboundService';
 
@@ -131,6 +132,9 @@ const until = async (pred: () => boolean, ms = 8000) => {
 };
 
 beforeEach(() => {
+  // DEF-297 — the digest now takes an in-process claim, and these tests fire it `void`-style,
+  // so an attempt from the previous test can still hold it. Clear it between tests.
+  __resetSuppressionDigestClaimsForTests();
   waSent.length = 0;
   state.heldRows = [];
   state.sentToday = 0;
