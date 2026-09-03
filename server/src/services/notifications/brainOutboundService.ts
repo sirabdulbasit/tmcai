@@ -509,7 +509,26 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // any one `kind` from firing more than once per 60s, no matter what
   // dedupKey the caller sent.
   const KIND_MIN_INTERVAL_MS = 60_000;
-  const rec = !req.bypassRateLimit ? await prisma.brainUserMessage.findFirst({
+  // ── DEF-294 — a relayed human message is not a duplicate notification ────────────────────
+  //
+  // Owner, 2026-09-03: *"i also often see that someone has sent messaged to brain but it didnt
+  // notify"*. Live evidence: `rate-limited kind=wa_counterpart_message ageSec=8 / 55 / 9`.
+  //
+  // This limiter exists for a real reason, stated in the comment above — twin pings of the SAME
+  // notification 60s apart, when a legitimately-changed `dedupKey` let one through twice. But it
+  // keys on `kind`, and **every relayed human message shares one kind**. So a second message
+  // inside a minute is dropped as a duplicate of the first — even when it is a DIFFERENT person.
+  // Two people writing to him a minute apart and he hears about one.
+  //
+  // Relays are exempt because their own protection is stronger and per-message, not per-kind:
+  // each carries a distinct `dedupKey` (`wa_counterpart:<identity>:<body>`) AND a distinct
+  // content hash — verified during DEF-271, where all four relays that day were confirmed
+  // distinct on both. The twin-notification failure this guard was built for cannot arise here.
+  //
+  // Deliberately narrow: every other kind still rate-limits. `open_item_draft_ask` hitting this
+  // limiter is the guard doing its job.
+  const isRelayedHumanMessage = req.kind === 'wa_counterpart_message';
+  const rec = (!req.bypassRateLimit && !isRelayedHumanMessage) ? await prisma.brainUserMessage.findFirst({
     where: {
       clientNumber: user.clientNumber,
       userId: user.id, kind: req.kind,
