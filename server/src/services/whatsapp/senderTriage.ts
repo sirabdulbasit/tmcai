@@ -634,13 +634,19 @@ export async function rememberSender(params: {
       ? candidate
       : null;
 
+    // EVERY use of a parameter is cast the same way. Postgres deduces a parameter's type from
+    // its uses, so mixing a bare `$6` with `$6::text` yields 42P08 "inconsistent types deduced
+    // for parameter" — which is exactly what this statement did in production, three times,
+    // while its tests passed: they mocked Prisma, so the SQL was never executed. The fix was
+    // verified by running this statement against the real database rather than a mock.
     await prisma.$executeRawUnsafe(
       `INSERT INTO wa_sender_policy
          (client_number, phone, owner_user_id, policy, decided_by, evidence,
           first_seen_at, last_inbound_at, raw_sender_id, display_name,
           resolved_phone, resolved_phone_at, inbound_count)
        VALUES ($1, $2, $3, 'pending', 'auto_seen', '[]'::jsonb,
-               NOW(), NOW(), $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END, 1)
+               NOW(), NOW(), $4::text, $5::text, $6::text,
+               CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END, 1)
        ON CONFLICT (client_number, phone) DO UPDATE SET
          last_inbound_at = NOW(),
          inbound_count   = wa_sender_policy.inbound_count + 1,
