@@ -2481,3 +2481,97 @@ and quotes his answer. What would prove me wrong: the reasoning path answering
 from an intercepted/act path that bypasses the ledger block entirely — if Codex
 finds such a path, the class fix needs the block on that path too, not a different
 mechanism.
+
+## Iteration 68 — 2026-09-03
+
+**Files named early and changed:** `server/src/services/whatsapp/WhatsAppInbound.ts`
+(+ new suite `server/tests/def283VoiceInMirrorsVoiceOut.test.ts`, and reasoned pin
+updates in `def256ModelDirectedVoiceReply.test.ts`). **Deck objective taken — the
+run's single open tag, reported in 3 conversations:** `Asked for a voice note and got
+a text reply, or was told audio was impossible for a made-up reason`. Recorded on the
+existing DEF-283 row (its "to establish" question is now answered in code).
+
+**The mechanism, established by reading the chokepoint, not guessed.** CL-047: a
+voice note — correctly transcribed, `Heard: "Through a voice note, tell me all its
+details."` — was answered in TEXT. DEF-256's contract text already promised the
+default ("Null means the channel's default: a voice message gets a voice reply"), and
+DEF-256's chokepoint block can force any reply to voice — but a NULL directive fell
+straight to the text transports: the voice-in mirror lived only inside each
+TRANSPORT's `replyFn` (webjs has one; the Meta webhook grows its own). That is
+`protection-with-two-implementations` on the live messaging path, and any path or
+transport without the mirror answers a voice note in text.
+
+**What changed, by file:line — and why it is the class:**
+- `WhatsAppInbound.ts:810-835` (`sendReply`) — `effectiveDelivery`: the model's
+  explicit judgement when present; else `{ medium: 'voice' }` when
+  `params.messageType === 'voice'`; else null. The voice block executes the DERIVED
+  delivery. This DECIDES nothing new — the policy is DEF-256's own stated default —
+  it moves the execution to the one place every reply passes (DEF-102's argument),
+  where it cannot be forgotten by the next transport. Fails OPEN to text exactly as
+  before; the per-transport mirrors are demoted to fallback, not removed.
+- Verified before coding: `messageType: 'voice'` survives transcription
+  (`WebjsProvider.ts:1090` sets it beside `inputWasVoice`; passed at `:1184`).
+- Governance: no keyword list, no new guard — a typed request for voice remains the
+  MODEL's judgement (`reply_delivery`, DEF-256); only the channel-mirror default,
+  already product policy, is enforced in code. Guardrail served: none needed to be
+  named under the authority test because no authority moved — but in the ruling's
+  terms this line EXECUTES a stated policy, it decides nothing.
+- `def256ModelDirectedVoiceReply.test.ts` — two gate-1 pins updated WITH the
+  reasoning inline (the DEF-248/def223 precedent): they pinned the first
+  implementation's variable name and a title claiming "not on whether the input was
+  voice", which pinned a FACT, not the requirement; the updated pin asserts both
+  halves — the model judgement outranks AND the mirror exists.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3332 passed | 0 failed** (280 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3361). New suite:
+  **6 passed | 0 failed** — labelled source pins per the def256 gate-1 pattern for
+  this private chokepoint (the behavioural halves — TTS synthesis, voice sender,
+  fail-open — are executed by the def256 suite): the mirror, model-outranks,
+  typed-stays-text (pinned so a "default to voice" widening cannot ship silently),
+  derived-delivery-executes, transport-mirrors-as-fallback, transcription preserves
+  the voice fact. def256: **18 passed | 0 failed**.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: no query and no write touched; one derivation over an
+  argument and a field already in `params`; every failure mode falls to the
+  pre-existing text paths.
+
+**Governing docs (rule 5): circling at the class, structural fix given** — the
+voice tag's family (`capability-fabrication` denial arm + ignored-instruction arm)
+kept recurring because the channel policy had one statement and N implementations;
+this collapses it to one implementation at the chokepoint. DEF-283 row updated from
+OPEN to CODE-COMPLETE with the establishment answer.
+
+**CAPABILITY:** Accurate Communication (declared divergence: the campaign names
+Self-Pruning; the deck section makes this tag THE objective of this run — "do not
+work anything else this run" — and the campaign's increment 3 is untouched, said
+plainly).
+**PREDICTED:** +0 claimed — his CL-047 sentence works after deploy: a voice note
+asking for details is answered by voice, plus the readable copy.
+**MECHANISM:** the channel default enforced once, at the chokepoint every reply
+passes; the model's explicit judgement still outranks.
+**FALSIFIER:** any post-deploy voice-note input answered text-only with no
+TTS-failure warn line; or a typed input voiced without a model directive.
+
+**Symptom tag closed (verbatim, in the commit):** `Asked for a voice note and got a
+text reply, or was told audio was impossible for a made-up reason`.
+
+**ATTEMPT-18 OBSTACLE STATEMENT (required):** the pipe is healthy (D-85→D-90 in two
+days) and the loop's constraint is now VERIFICATION LAG plus one standing hazard the
+analyst named: three DEFs (287/290/295) have each closed one route of the same
+"Brain's own voice re-entering as evidence" class — the funnel-level invariant is
+the class fix, and a fourth route should trigger that build, not a fourth patch.
+
+**What I did NOT do, named:** deploying DEF-295 (orchestrator's — the analyst's #1
+action); DEF-288's diagnosis (top open build after this; needs its own turn);
+DEF-289's 22021 loop; live-verifying D-87→D-90 (pulse work). Also named honestly:
+this fix cannot be live-verified from the current transcript — the falsifier needs
+his next voice-note turn after deploy.
+
+**Honest prediction:** deployed, his next voice note gets a voice reply even when
+the model leaves reply_delivery null. What would prove me wrong: CL-047's turn
+having actually flowed through a path that bypasses sendReply entirely (e.g. a
+prompt-queue consumer replying via brainContactsUser) — if Codex traces that, the
+mirror must be enforced at THAT chokepoint too, and this fix still stands for the
+sendReply path.

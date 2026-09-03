@@ -807,11 +807,36 @@ async function sendReply(
   // (`capability-fabrication`). The judgement WHO gets voice now belongs to the
   // model; this block only synthesises and sends. Fails OPEN to the text paths
   // below: a reply must never be lost to a TTS or media-delivery failure.
+  // ── DEF-283 — `Asked for a voice note and got a text reply, or was told
+  // audio was impossible for a made-up reason` ─────────────────────────────
+  //
+  // CL-047: a VOICE NOTE — correctly transcribed, `Heard: "Through a voice
+  // note, tell me all its details."` — was answered in TEXT. The DEF-256
+  // contract already promised the default ("Null means the channel's default:
+  // a voice message gets a voice reply"), but no code at this chokepoint
+  // implemented it: the voice-in mirror lived only inside each TRANSPORT's
+  // replyFn — webjs has one, the Meta webhook grows its own — which is
+  // `protection-with-two-implementations` on the live messaging path, and any
+  // path or transport that forgets the mirror answers a voice note in text.
+  //
+  // So the default moves HERE, the one place every reply already passes
+  // (DEF-102's argument, verbatim): the MODEL's explicit judgement outranks;
+  // when the model is silent and the input was a voice note, the reply
+  // mirrors to voice. This DECIDES nothing new — the policy is DEF-256's own
+  // stated default — it moves the execution to where it cannot be forgotten.
+  // The per-transport mirrors remain only as fallback when this block fails,
+  // and the whole block fails OPEN to text, as it always has.
+  const effectiveDelivery: { medium: 'voice'; languageCode?: string } | null =
+    delivery?.medium === 'voice'
+      ? delivery
+      : params.messageType === 'voice'
+        ? { medium: 'voice' }
+        : null;
   let voiceDelivered = false;
-  if (delivery?.medium === 'voice') {
+  if (effectiveDelivery?.medium === 'voice') {
     try {
       const { textToVoiceNote } = await import('../voiceService');
-      const audioBuf = await textToVoiceNote(clean, delivery.languageCode);
+      const audioBuf = await textToVoiceNote(clean, effectiveDelivery.languageCode);
       if (audioBuf) {
         const { sendTenantWhatsAppVoiceNote } = await import('../notifications/tenantWhatsappSender');
         const voice = await sendTenantWhatsAppVoiceNote(
@@ -842,7 +867,7 @@ async function sendReply(
         }
       } else {
         log.warn('model-directed voice TTS returned no audio — falling back to text', {
-          clientNumber: params.clientNumber, languageCode: delivery.languageCode ?? null,
+          clientNumber: params.clientNumber, languageCode: effectiveDelivery.languageCode ?? null,
         });
       }
     } catch (err: any) {

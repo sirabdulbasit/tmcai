@@ -159,12 +159,22 @@ describe('DEF-256 · gate 2 — the prompt contract names the capability', () =>
 describe('DEF-256 · gate 1 — the chokepoint executes it, and fails open', () => {
   const inbound = read('services', 'whatsapp', 'WhatsAppInbound.ts');
 
-  it('branches on the MODEL judgement, not on whether the input was voice', () => {
-    expect(inbound).toContain("delivery?.medium === 'voice'");
+  it('the MODEL judgement outranks; the voice-in DEFAULT backs it (DEF-283 updated this pin)', () => {
+    // DEF-256's original pin read `delivery?.medium === 'voice'` and its title
+    // said "not on whether the input was voice". That pinned a FACT of the
+    // first implementation, not the requirement: DEF-256's own contract text
+    // always promised "a voice message gets a voice reply" as the null
+    // default, and CL-047 (a voice note answered in text) proved the default
+    // was implemented nowhere on this chokepoint. DEF-283 moved it here. The
+    // REQUIREMENT both DEFs share: the model's explicit judgement is honoured
+    // first, and a typed input with a silent model still gets text.
+    expect(inbound).toContain("delivery?.medium === 'voice'");        // model judgement read first
+    expect(inbound).toContain("effectiveDelivery?.medium === 'voice'"); // ...and it is what executes
+    expect(inbound).toMatch(/params\.messageType === 'voice'\s*\? \{ medium: 'voice' \}\s*: null/);
   });
 
   it('synthesises with the model languageCode and sends through the tenant sender', () => {
-    expect(inbound).toContain('textToVoiceNote(clean, delivery.languageCode)');
+    expect(inbound).toContain('textToVoiceNote(clean, effectiveDelivery.languageCode)');
     expect(inbound).toContain('sendTenantWhatsAppVoiceNote');
   });
 
@@ -174,7 +184,7 @@ describe('DEF-256 · gate 1 — the chokepoint executes it, and fails open', () 
     expect(inbound).toContain('if (voiceDelivered) {');
     // The whole voice attempt sits inside a try/catch that only warns. Bound the
     // block to the voice attempt itself — it ends where the text transports begin.
-    const start = inbound.indexOf("if (delivery?.medium === 'voice')");
+    const start = inbound.indexOf("if (effectiveDelivery?.medium === 'voice')");
     const end = inbound.indexOf('if (voiceDelivered) {', start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
