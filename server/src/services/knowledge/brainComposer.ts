@@ -5459,9 +5459,24 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     clientNumber, userId,
   ).catch(() => [] as any[]);
 
+  // DEF-295 — state HOW MANY PEOPLE, not just how many messages.
+  //
+  // Asked who had messaged him, Brain answered *"19 WhatsApp messages from various unregistered
+  // numbers"*. It was 19 messages from ONE sender. The block listed each message and never said
+  // how many distinct identities they came from, so the model inferred "various" from the count.
+  //
+  // I made the mirror-image mistake myself on 09-01, reading one chatty sender as four strangers
+  // (DEF-269's correction). A number nobody has to infer is a number nobody gets wrong.
+  const relayIdentityCount = new Set(
+    relays.map((r) => String(r.metadata?.senderRef ?? r.dedup_key ?? '')
+      .replace(/^wa_counterpart:/, '').split(':')[0])
+      .filter(Boolean),
+  ).size;
   const relayTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const relayBlock = relays.length === 0 ? '' :
-    `\n\n# Messages relayed from unregistered senders (last 24h — ${relays.length})\n`
+    `\n\n# Messages relayed from unregistered senders (last 24h — ${relays.length} message`
+    + `${relays.length === 1 ? '' : 's'} from ${relayIdentityCount} distinct sender`
+    + `${relayIdentityCount === 1 ? '' : 's'})\n`
     // DEF-273: this header says what the data IS and NOTHING about what may be done with it.
     // The previous version explained that the bodies are "NOT retained in the message log by
     // policy" — true, and about STORAGE — and the model turned it into a DISCLOSURE rule,
