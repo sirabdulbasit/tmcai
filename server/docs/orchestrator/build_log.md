@@ -2759,3 +2759,103 @@ prompts whose `sentAt` is null sorting to the bottom when they are genuinely the
 newest exchange (null-at sorts last by design; named here — if a null-sentAt prompt
 can be the newest real interaction, the sort key needs queuedAt as a fallback,
 which the select does not currently fetch).
+
+## Iteration 73 — 2026-09-03
+
+**Files named early and changed:** `server/src/jobs/emailItemDerivationJob.ts`,
+`server/src/services/behaviorConfig.ts` + new suite
+`server/tests/def307CalendarJoinsTheConsumer.test.ts` (and one reasoned pin update
+in `def246EmailItemDerivation.test.ts`). **Deck objective taken — the run's precise
+tag:** `Told his emails auto-become tasks while whole channels sit unread (email 89%
+never acted on) — DEF-305 fixed the WhatsApp inbox only; email/calendar untouched`.
+Filed as **DEF-307**. This is also the analyst's debt #1 verbatim ("extend the
+DEF-305 shape to email/calendar").
+
+**Scope honesty first, because the tag conflates two channels:** gmail HAS a
+consumer (DEF-246) that runs in-window — its "89%" figure is lifetime backlog plus
+judged-skip receipts, not an un-run pipeline. The genuinely DEAD channel is **gcal:
+55 of 55 in-window events at `status:new`, 0 ever processed, no consumer existed.**
+This turn gives calendar the consumer; it does not pretend to have "fixed" a gmail
+pipeline that already runs.
+
+**The CL-041 tension, resolved by judgement not code:** the owner has ALSO
+complained about items minted from bare invitations ("why are you creating item
+based on invitations?"). Minting from every event would trade one reported defect
+for another. So the judge — the MODEL — carries his rule: an event is actionable
+ONLY if it asks him to do something BEYOND attending; a bare invitation is noise.
+Most events leave `status:new` as SKIPPED with a receipt, and the receipt is the
+point: a reviewed-and-skipped channel is honest; an unread one licenses the
+fabrication (DEF-243's co-existence test).
+
+**What changed, by file:line:**
+- `emailItemDerivationJob.ts:~173` — `gcal` joins the candidates query IN clause
+  (a third per-channel job would be `protection-with-two-implementations`; joining
+  inherits the noise gate, shared batch cap, 48h window — the 800+-row backlog
+  stays untouched — the creation gate, and the receipts).
+- `:~192` — gcal keeps its own kill switch (`comm.gcal_item_derivation_enabled`),
+  registered in `behaviorConfig.ts` def 1 under the owner's 08-24
+  cover-all-communications ruling, with the CL-041 rationale in the registry text.
+- `:~330` — per-channel payload: the judge sees the EVENT's real fields —
+  title|summary, start.dateTime|date, organizer (string or object), attendees
+  (objects or strings), description — the same defensive shapes
+  `buildCalendarSnapshot` reads.
+- `:~75` — the judge prompt honestly names the third input kind and carries the
+  owner's rule verbatim (model judgement; no keyword list, no code deciding).
+- Pin update with reasoning: def246 froze the channel enumeration
+  `['gmail','gchat']` — a fact of the two-channel era, not that test's requirement
+  (the 48h window + status:new), now asserted as containment.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3467 passed | 0 failed** (294 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3496). New suite:
+  **6 passed | 0 failed** — prep-requiring event → item with `sourceFeed='gcal'`
+  and a processed receipt; bare invite → skipped WITH receipt, never an item; the
+  judge told what it judges; the kill switch silences without forging receipts;
+  the def253 mutation lesson applied (the mock emulates the sourceType filter, so
+  dropping gcal from the query fails); defensive payload shapes.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: rows already carry (clientNumber, userId) and the
+  per-tenant cap applies; every exit from `new` writes a receipt; a failed
+  judgement leaves the row `new` for the next tick (inherited).
+
+**Governing docs (rule 5): circling at the class, structural fix given** —
+`fabricated-status` (7-deep) via the co-existence test; the fix makes the claim
+true rather than patching the sentence, and reuses the one consumer rather than
+minting a third implementation. DEF-307 row written.
+
+**CAPABILITY:** Simple & Smart — the channel becomes something Brain reviews
+without being asked, the same attribution DEF-253 carried for gchat (declared
+divergence from the campaign's Self-Pruning: the deck names this tag as the run's
+objective; increment 3 remains untouched, said plainly).
+**PREDICTED:** gcal's processed+skipped count leaves zero within a tick of deploy;
+the "I review every channel" claim becomes licensed rather than forbidden.
+**MECHANISM:** the last dead channel joins the one consumer, receipts either way,
+the owner's own noise rule as model judgement.
+**FALSIFIER:** any in-window gcal event still `new` an hour after a tick with the
+switch on; or a bare-invitation item minted post-deploy (the CL-041 regression).
+
+**Symptom tag closed (verbatim, in the commit):** `Told his emails auto-become
+tasks while whole channels sit unread (email 89% never acted on) — DEF-305 fixed
+the WhatsApp inbox only; email/calendar untouched`.
+
+**ATTEMPT-21 OBSTACLE STATEMENT (required):** the pipe is fast (D-95 within
+minutes of its fix); the constraints are live-acceptance lag on the deployed stack
+and one process fact this turn hit again: a concurrent session committed `cabd7a9`
+(DEF-306) with NO change-log row — rule 2 unmet by that session, named here so the
+row is written before the deploy report needs it; I did not write their narrative
+for them.
+
+**What I did NOT do, named:** gtasks (222 received / 10 processed — has SOME
+processing; next candidate once gcal proves the shape live); any gmail-pipeline
+change (it runs; the tag's 89% conflates backlog with skip receipts — stated in
+scope honesty above); DEF-304/261 (draft-ask ordering); the `capability-fabrication`
+umbrella tag (its recent members are all deployed awaiting live acceptance).
+
+**Honest prediction:** post-deploy, the next tick moves in-window gcal rows to
+processed/skipped and the InDrive-kickoff-shaped invite becomes an item while
+Mentorship placeholders do not. What would prove me wrong: gcal `userId` being
+NULL on most rows (the job skips ownerless rows — "no owner to derive FOR"; if
+calendar ingest does not stamp userId, the channel stays dead with the consumer
+present, and the fix needed is in ingest, not here). Named as the first thing the
+deploy report should check.

@@ -199,9 +199,13 @@ describe('DEF-246 — items derive from arriving email, with receipts', () => {
     const { runEmailItemDerivation } = await import('../src/jobs/emailItemDerivationJob');
     await runEmailItemDerivation();
     const where = state.lastFindManyArgs?.where;
-    // DEF-253 — the consumer is now multi-channel (gmail + gchat) by design;
-    // the window protection this test exists for is unchanged.
-    expect(where.sourceType).toEqual({ in: ['gmail', 'gchat'] });
+    // DEF-253 added gchat; DEF-307 added gcal — the consumer is multi-channel
+    // BY DESIGN, and the exact channel list is a fact of the era, not this
+    // test's requirement. What this test exists for is the window protection
+    // (48h, status:new) and that gmail is never dropped; assert those, not a
+    // frozen enumeration that fails on every rightful channel addition.
+    expect(where.sourceType?.in).toContain('gmail');
+    expect(where.sourceType?.in).toContain('gcal');
     expect(where.status).toBe('new');
     const gte = where.createdAt?.gte as Date;
     const ageHours = (Date.now() - gte.getTime()) / (60 * 60 * 1000);

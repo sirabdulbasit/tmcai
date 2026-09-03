@@ -73,10 +73,14 @@ export async function judgeEmailActionability(email: {
   try {
     const { callGemini } = await import('../services/geminiService');
     const system = [
-      'You judge ONE inbound message (an email, or a chat message from a Google Chat space)',
-      'for a busy owner. Decide whether it asks HIM to do something concrete (reply, decide,',
-      'pay, review, attend, provide something).',
+      'You judge ONE inbound message (an email, a chat message from a Google Chat space, or a',
+      'calendar event/invitation) for a busy owner. Decide whether it asks HIM to do something',
+      'concrete (reply, decide, pay, review, provide something).',
       'Newsletters, receipts, notifications, FYI threads, marketing, and chat smalltalk are NOT actionable.',
+      'A CALENDAR EVENT is actionable ONLY if it asks him to do something BEYOND attending —',
+      'prepare material, make a decision, answer a question, bring or provide something. An',
+      'invitation he can simply attend or decline from his calendar is NOT actionable: the owner',
+      'has said plainly that items minted from bare invitations are noise to him.',
       'Answer STRICT JSON only:',
       '{"actionable": boolean, "title": string (imperative, <=80 chars, only when actionable),',
       ' "description": string (<=200 chars, names the sender and the ask),',
@@ -170,7 +174,15 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
     // receipts are inherited, not re-earned.
     const candidates = await prisma.feedEvent.findMany({
       where: {
-        sourceType: { in: ['gmail', 'gchat'] },
+        // DEF-307 — gcal joins the SAME consumer, the last dead channel: 55 of
+        // 55 in-window events at status:new, 0 EVER processed, while Brain's
+        // standing claim implied it reads every channel (`fabricated-status`
+        // by DEF-243's co-existence test). Same argument as DEF-253 one
+        // comment up: a third per-channel job would be
+        // `protection-with-two-implementations`; joining here inherits the
+        // noise gate, the shared batch cap, the 48h window (the 800+-row
+        // backlog stays untouched), the creation gate and the receipts.
+        sourceType: { in: ['gmail', 'gchat', 'gcal'] },
         status: 'new',
         createdAt: { gte: since },
       },
@@ -191,7 +203,9 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
         // shared, because it bounds LLM spend per tenant, not per channel.
         const enabledKey = row.sourceType === 'gchat'
           ? 'comm.chat_item_derivation_enabled'
-          : 'comm.email_item_derivation_enabled';
+          : row.sourceType === 'gcal'
+            ? 'comm.gcal_item_derivation_enabled'
+            : 'comm.email_item_derivation_enabled';
         const enabled = await getBehaviorValue(enabledKey, { clientNumber: row.clientNumber });
         if (enabled !== 1) continue;
         const batchCap = await getBehaviorValue('comm.email_item_derivation_batch', { clientNumber: row.clientNumber });
@@ -328,13 +342,33 @@ export async function runEmailItemDerivation(): Promise<DerivationSummary> {
         }
 
         const p = (row.rawPayload ?? {}) as Record<string, unknown>;
-        const email = {
-          subject: String(p.subject ?? '(no subject)').slice(0, 300),
-          // gchat has no sender email — the display name carries who spoke.
-          from: String(p.from ?? p.senderDisplayName ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
-          // gchat's full text beats its 200-char snippet; gmail has snippet only.
-          snippet: String((row.sourceType === 'gchat' ? p.text : p.snippet) ?? p.snippet ?? '').slice(0, 1500),
-        };
+        // DEF-307 — a calendar event's meaning lives in different fields (the
+        // same defensive shapes buildCalendarSnapshot reads: title|summary,
+        // start.dateTime|start.date, organizer as string or object, attendees
+        // as objects or strings). The judge is told WHAT it is judging.
+        const gcalOrganizer = (o: unknown): string => (typeof o === 'string'
+          ? o
+          : String((o as any)?.email ?? (o as any)?.displayName ?? ''));
+        const email = row.sourceType === 'gcal'
+          ? {
+            subject: String(p.title ?? p.summary ?? '(untitled event)').slice(0, 300),
+            from: (gcalOrganizer(p.organizer) || String(row.senderEmail ?? '') || '(unknown organizer)').slice(0, 200),
+            snippet: [
+              `Calendar event, starts ${String((p.start as any)?.dateTime ?? (p.start as any)?.date ?? p.start ?? '(no start)').slice(0, 60)}.`,
+              String(p.description ?? '').slice(0, 800),
+              Array.isArray(p.attendees)
+                ? `Attendees: ${(p.attendees as any[]).slice(0, 6)
+                  .map((a) => String(a?.displayName ?? a?.email ?? (typeof a === 'string' ? a : ''))).filter(Boolean).join(', ')}`
+                : '',
+            ].filter(Boolean).join('\n').slice(0, 1500),
+          }
+          : {
+            subject: String(p.subject ?? '(no subject)').slice(0, 300),
+            // gchat has no sender email — the display name carries who spoke.
+            from: String(p.from ?? p.senderDisplayName ?? row.senderEmail ?? '(unknown sender)').slice(0, 200),
+            // gchat's full text beats its 200-char snippet; gmail has snippet only.
+            snippet: String((row.sourceType === 'gchat' ? p.text : p.snippet) ?? p.snippet ?? '').slice(0, 1500),
+          };
 
         perTenantSeen.set(tenantKey, seen + 1);
         out.scanned += 1;
