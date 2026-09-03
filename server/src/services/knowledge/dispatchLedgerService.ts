@@ -24,6 +24,7 @@
  * a fabrication. That is the point: give the model facts it cannot make up.
  */
 import prisma from '../../db/prisma';
+import { promptSubjectItemId } from '../brainPrompts/brainPromptQueueService';
 import { curatedMarkerMeaning } from './answerSanitizer';
 import { isSystemMarker, stripMarkerEnvelope } from './systemMarker';
 import createLogger from '../../utils/logger';
@@ -189,10 +190,13 @@ function shownQuestion(raw: string | null | undefined): string {
 interface RecentInteractions {
   prompts: Array<{
     at: Date | null; question: string; hasItem: boolean; itemTitle: string | null;
+    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null } | null;
     answeredAt: Date | null; answerText: string | null; state: string;
   }> | null;   // null = the read failed (unavailable ≠ none)
   transitions: Array<{
-    at: Date; hasItem: boolean; itemTitle: string | null; fromStatus: string; toStatus: string;
+    at: Date; hasItem: boolean; itemTitle: string | null;
+    itemOrigin: { feed: string | null; ref: string | null; createdAt: Date | null } | null;
+    fromStatus: string; toStatus: string;
     outcome: string; reason: string | null;
   }> | null;
 }
@@ -215,6 +219,10 @@ async function getRecentInteractions(
     select: {
       question: true, openItemId: true, sentAt: true, queuedAt: true,
       answeredAt: true, answerText: true, state: true,
+      // DEF-306 — needed by `promptSubjectItemId`. `preactive_due_nudge` records its subject in
+      // `metadata.openItemId` and writes NOTHING to the column, so a join on the column alone
+      // misses exactly the nudges he replies to.
+      metadata: true,
     },
   })).catch(() => null);
 
@@ -228,19 +236,54 @@ async function getRecentInteractions(
     },
   })).catch(() => null);
 
+  // DEF-306 — read the subject through the ACCESSOR, not off the column.
+  //
+  // He quoted a due-nudge and asked "from where you get it?", and Brain said "The record doesn't
+  // show where it originally came from". Three things were true at once: the item held
+  // `source_feed='gchat'` with a message ref; the open-items block is a 30-row window and that
+  // item ranked 63rd of 93, so it was not in context; and THIS block, which did name the nudge,
+  // joined on `open_item_id` — which is NULL on `preactive_due_nudge` rows because that producer
+  // records its subject in `metadata.openItemId` instead. So the one block that knew the referent
+  // could not resolve it.
+  //
+  // `promptSubjectItemId` was written for precisely this (DEF-120) and reads both places. Using
+  // it here rather than adding a second lookup: its own doc says a guard consulting one place
+  // "protects some producers and silently ignores others", which is what this block was doing.
   const ids = [...new Set([
-    ...(promptRows ?? []).map((p) => p.openItemId),
+    ...(promptRows ?? []).map((p) => promptSubjectItemId(p as any)),
     ...(transitionRows ?? []).map((t) => t.openItemId),
   ].filter((x): x is string => !!x))];
+  // DEF-306 — the referent's PROVENANCE travels with the referent.
+  //
+  // He quoted a nudge and asked "from where you get it?", and Brain answered "The record doesn't
+  // show where it originally came from". The record showed it perfectly well: that item carries
+  // `source_feed='gchat'` with a message ref and a 2026-08-29 date. What happened is that the
+  // open-items block is a WINDOW — `take: OPEN_ITEMS_PAGE` (30), ordered by newest first — and
+  // the item ranked **63rd of 93** active items, so it was never in front of the model. Absence
+  // from a page was reported as absence from the world, which is DEF-037's class exactly, and
+  // DEF-260's own comment predicted the shape: "the answer depended on which block had run".
+  //
+  // Fixed HERE rather than by enlarging the page, because enlarging it only moves the cliff. This
+  // join already resolves the titles of the items Brain recently prompted about — at most ten —
+  // so it is the one place that knows the referent by id. Carrying `sourceFeed`/`sourceRef` on
+  // the same rows puts the provenance next to the thing a follow-up is about, at no extra query.
   const titleRows = ids.length
     ? await Promise.resolve().then(() => prisma.openItem.findMany({
       where: { id: { in: ids }, clientNumber, userId },
-      select: { id: true, title: true },
-    })).catch(() => [] as Array<{ id: string; title: string | null }>)
+      select: { id: true, title: true, sourceFeed: true, sourceRef: true, createdAt: true } as any,
+    })).catch(() => [] as Array<{
+      id: string; title: string | null; sourceFeed?: string | null;
+      sourceRef?: string | null; createdAt?: Date | null;
+    }>)
     : [];
   const titles = new Map(titleRows
     .filter((r) => String(r.title ?? '').trim())
     .map((r) => [r.id, String(r.title).trim()]));
+  const provenance = new Map(titleRows.map((r: any) => [r.id, {
+    feed: r.sourceFeed ? String(r.sourceFeed) : null,
+    ref: r.sourceRef ? String(r.sourceRef) : null,
+    createdAt: r.createdAt ?? null,
+  }]));
 
   return {
     prompts: promptRows === null ? null : promptRows.map((p) => ({
@@ -253,8 +296,9 @@ async function getRecentInteractions(
       // DEF-301 — "no item was involved" and "there is an item but I could not find its title"
       // are different facts and were collapsed into one. Carried separately so the renderer can
       // stop telling the model "you asked about an item" about prompts that had no item.
-      hasItem: !!p.openItemId,
-      itemTitle: p.openItemId ? (titles.get(p.openItemId) ?? null) : null,
+      hasItem: !!promptSubjectItemId(p as any),
+      itemTitle: (() => { const k = promptSubjectItemId(p as any); return k ? (titles.get(k) ?? null) : null; })(),
+      itemOrigin: (() => { const k = promptSubjectItemId(p as any); return k ? (provenance.get(k) ?? null) : null; })(),
       answeredAt: p.answeredAt, answerText: p.answerText ? String(p.answerText).slice(0, 80) : null,
       state: p.state,
     })),
@@ -262,6 +306,7 @@ async function getRecentInteractions(
       at: t.createdAt,
       hasItem: !!t.openItemId,
       itemTitle: t.openItemId ? (titles.get(t.openItemId) ?? null) : null,
+      itemOrigin: t.openItemId ? (provenance.get(t.openItemId) ?? null) : null,
       fromStatus: t.fromStatus, toStatus: t.toStatus,
       outcome: t.outcome, reason: t.reason,
     })),
@@ -397,6 +442,24 @@ export async function buildDispatchLedgerBlock(
    * row. DEF-273 is exactly this lesson: a block that supplies evidence must not also argue about
    * what may be done with it, because the prose wins. The rule now lives in the header only.
    */
+  /**
+   * DEF-306 — where the item came from, rendered beside its name.
+   *
+   * "from where you get it?" is answered from this, and the alternative is what happened: the
+   * item was 63rd of 93 in a 30-row window, so it was absent from context and Brain reported
+   * that as absent from the record.
+   */
+  const originOf = (o: { feed: string | null; ref: string | null; createdAt: Date | null } | null) => {
+    if (!o || (!o.feed && !o.createdAt)) return '';
+    const bits: string[] = [];
+    if (o.feed) bits.push(`came in via ${o.feed}`);
+    if (o.createdAt) bits.push(`first recorded ${when(o.createdAt)}`);
+    // The ref is a thread/message id. Included because it is the actual answer to "from where",
+    // and truncated because it is an identifier, not prose.
+    if (o.ref) bits.push(`ref ${String(o.ref).slice(0, 60)}`);
+    return ` [${bits.join(', ')}]`;
+  };
+
   const nameOf = (r: { hasItem: boolean; itemTitle: string | null }) => {
     if (r.itemTitle) return `"${r.itemTitle}"`;
     if (r.hasItem) return 'an item that is on record but whose title I could not read';
@@ -418,7 +481,7 @@ export async function buildDispatchLedgerBlock(
       : `— ${p.state}, no answer yet`;
     return {
       at: p.answeredAt ?? p.at,
-      line: `- ${when(p.at)} you asked, re ${nameOf(p)}: "${p.question}" ${answered}`,
+      line: `- ${when(p.at)} you asked, re ${nameOf(p)}${originOf(p.itemOrigin)}: "${p.question}" ${answered}`,
     };
   });
   const transitionRows: MergedLine[] | null = ix.transitions === null ? null : ix.transitions.map((t) => {
@@ -427,7 +490,7 @@ export async function buildDispatchLedgerBlock(
       : `REFUSED${t.reason ? ` — recorded reason: ${t.reason}` : ''}`;
     return {
       at: t.at,
-      line: `- ${when(t.at)} status change, ${nameOf(t)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`,
+      line: `- ${when(t.at)} status change, ${nameOf(t)}${originOf(t.itemOrigin)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`,
     };
   });
 
