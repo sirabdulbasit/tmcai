@@ -228,6 +228,55 @@ export async function channelIngestSection(clientNumber: string): Promise<string
   }
 }
 
+// ─── DEF-297 — the connector INVENTORY: what you are connected to, from rows ─
+//
+// Owner, 08:36 (CL-051 window): *"Can u list down connectors u have"* →
+// *"I can connect to your Gmail, Google Calendar, and WhatsApp."* — omitting
+// Google Chat (his MOST-processed channel, 58 of 60 in-window actioned),
+// Google Tasks and Drive. The model did not invent that list; it faithfully
+// summarised the only connector-shaped facts in its context: the ACTION
+// truth-table above names connectors only where an action needs one
+// (send_email→gmail, schedule→google_calendar, notify→tenant_whatsapp), and
+// `getLiveCapabilities` fetches EVERY user connector and then discards the
+// non-action slugs. The read-side sources were invisible, so "what connectors
+// do you have" collapsed to the action set — `fabricated-status` by the
+// co-existence test, same family as not knowing its own number.
+//
+// Same fix shape as everything in this module: derive the claim from rows.
+// This renders whatever `user_connectors` holds — no slug list in code decides
+// what "should" exist, so a connector added next month appears here with NO
+// edit. Fail-closed like DEF-243: unreadable is not license to enumerate from
+// memory.
+export async function connectorInventorySection(clientNumber: string, userId: number): Promise<string> {
+  try {
+    const [rows, waNotifier] = await Promise.all([
+      prisma.userConnector.findMany({
+        where: { userId, clientNumber },
+        select: { status: true, connectorType: { select: { slug: true, name: true } } },
+      }),
+      prisma.tenantWhatsappNotifier.findUnique({
+        where: { clientNumber },
+        select: { isActive: true },
+      }).catch(() => null),
+    ]);
+    const lines = rows
+      .filter((r) => r.connectorType?.slug)
+      .sort((a, b) => String(a.connectorType!.slug).localeCompare(String(b.connectorType!.slug)))
+      .map((r) => {
+        const healthy = isConnectorHealthy({ status: r.status });
+        return `- ${r.connectorType!.name ?? r.connectorType!.slug} (${r.connectorType!.slug}): ${healthy ? 'connected' : `NOT healthy (status: ${r.status})`}`;
+      });
+    if (waNotifier?.isActive) lines.push('- Tenant WhatsApp number (the number people message you on): active');
+    if (lines.length === 0) {
+      return `\nCONNECTED SOURCES: no connector rows exist for this user. Asked what you are connected to, say exactly that — never recite a connector list from memory.\n`;
+    }
+    return `\nCONNECTED SOURCES — YOUR ACTUAL CONNECTOR INVENTORY (live rows, not a list anyone wrote):\n${lines.join('\n')}\n\nAsked what connectors or sources you have, answer from THIS list and nothing else. The\nactions above name only the connectors you can ACT through; you also READ from the\nsources here (what happens to each feed is in the CHANNEL FEEDS section). Reading and\nacting are different sets — state both rather than collapsing to the smaller one. A\nsource not in this list is not connected: say so, never guess.\n`;
+  } catch (e: any) {
+    log.warn('connector inventory read failed — capability block gets the fail-closed line', { clientNumber, error: e?.message });
+    return '\nCONNECTED SOURCES: the connector inventory is unreadable right now. Do not enumerate your connectors from memory while this is unreadable — say you cannot list them reliably.\n';
+  }
+}
+
 export async function renderCapabilityBlockLive(clientNumber: string, userId: number): Promise<string> {
   const key = `${clientNumber}:${userId}`;
   const hit = blockCache.get(key);
@@ -237,6 +286,11 @@ export async function renderCapabilityBlockLive(clientNumber: string, userId: nu
   // it: the conservative block is rendered precisely when discovery failed,
   // which is when an unchecked channel claim would be most dangerous.
   const channels = await channelIngestSection(clientNumber);
+  // DEF-297 — same rule as DEF-243 one line up: fetched before the registry
+  // logic so BOTH return paths carry the inventory. The conservative block is
+  // rendered exactly when discovery failed, which is when reciting a connector
+  // list from memory would be most tempting.
+  const inventory = await connectorInventorySection(clientNumber, userId);
 
   let caps: LiveCapability[];
   try {
@@ -245,11 +299,11 @@ export async function renderCapabilityBlockLive(clientNumber: string, userId: nu
       // Empty registry = seeding hasn't run; render fail-closed rather
       // than an empty CAN list that reads as "I can do nothing".
       log.warn('action registry returned 0 definitions — rendering conservative block', { clientNumber });
-      return conservativeBlock() + channels;
+      return conservativeBlock() + inventory + channels;
     }
   } catch (e: any) {
     log.warn('live capability discovery failed — rendering conservative block', { clientNumber, error: e?.message });
-    return conservativeBlock() + channels;
+    return conservativeBlock() + inventory + channels;
   }
 
   const avail = caps.filter((c) => c.state === 'available');
@@ -271,7 +325,7 @@ ${degraded.length > 0 ? `
 SUPPORTED BUT NOT AVAILABLE RIGHT NOW — say so honestly and offer the remedy; never promise these will succeed:
 
 ${degradedLines}
-` : ''}${channels}
+` : ''}${inventory}${channels}
 WHAT YOU CANNOT DO — say so plainly, and offer the closest supported alternative:
 
 ${limitationLines()}

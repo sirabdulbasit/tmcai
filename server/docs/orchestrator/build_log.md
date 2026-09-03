@@ -2575,3 +2575,93 @@ having actually flowed through a path that bypasses sendReply entirely (e.g. a
 prompt-queue consumer replying via brainContactsUser) — if Codex traces that, the
 mirror must be enforced at THAT chokepoint too, and this fix still stands for the
 sendReply path.
+
+## Iteration 70 — 2026-09-03
+
+**Files named early and changed:**
+`server/src/services/knowledge/brainCapabilityLive.ts` + new suite
+`server/tests/def297ConnectorInventoryFromRows.test.ts`. **Deck objective taken — of
+the run's three open tags, the one diagnosable to a line this turn:** `Asked what
+connectors Brain has and got an incomplete list that leaves out the channels actively
+delivering his data (Google Chat is its most-processed channel yet was omitted)`.
+Filed as **DEF-297**.
+
+**The mechanism, found in code, matching the analyst's hypothesis:** the model did
+not invent the three-connector list — it faithfully summarised the only
+connector-shaped facts in its context. The capability truth-table names connectors
+only where an ACTION requires one, and `getLiveCapabilities` (`:127-145`) fetches
+EVERY user connector, then discards the non-action slugs. The read-side sources
+(gchat, gtasks, gdrive) were invisible, so "what connectors do you have" collapsed
+to the action set. `fabricated-status` by the co-existence test — a partial view
+recited as the whole, which is the exact drift this module's own header documents
+twice.
+
+**What changed, by file:line — and why it is the class:**
+- `brainCapabilityLive.ts` — `connectorInventorySection(clientNumber, userId)`
+  (new, ~50 lines): renders whatever `user_connectors` holds — name, slug, health
+  (an unhealthy connector is STATED with its status, never hidden), plus the tenant
+  WhatsApp notifier — with the licensing text beside the data (DEF-165's rule):
+  answer connector questions from THIS list and nothing else; the actions name only
+  what you can ACT through; reading and acting are different sets, state both; a
+  source not listed is not connected. **No slug enumeration in code** — a connector
+  added next month appears with no edit, which is the anti-allow-list requirement
+  the governance ruling demands. Fail-closed like DEF-243: unreadable forbids
+  enumerating from memory; zero rows renders the honest empty statement.
+- Wired before the registry logic so BOTH render paths carry it (the DEF-243
+  placement rule, cited in-code): the conservative block renders precisely when
+  discovery failed — when reciting from memory would be most tempting.
+- Governance: rows → evidence; wording stays the model's; guardrail served:
+  no-claim-without-a-receipt, applied to Brain's own inventory.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3346 passed | 0 failed** (282 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3375). New suite:
+  **7 passed | 0 failed** — the 08:36 shape (the mutation of re-filtering to action
+  slugs dies on the gchat/gtasks/gdrive assertions), unhealthy-stated, licensing
+  text, honest-empty, fail-closed unreadable, both render paths. Tenant+user scope
+  asserted inside the mock so every test enforces it.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: one read, (clientNumber, userId)-scoped; no write;
+  every failure mode renders a fail-closed line, never a recital.
+
+**Governing docs (rule 5): circling at the class, structural fix given** —
+`fabricated-status` is the chart's deepest family and this module has recorded the
+"hand-written table drifts from reality" shape twice; the fix extends the module's
+own derive-from-rows rule to the one inventory it was still hiding. DEF-297 row
+written.
+
+**CAPABILITY:** Memory — Brain's own operating identity (declared divergence: the
+campaign names Self-Pruning; the deck section makes its tags THE objective and
+increment 3 is untouched, said plainly). Of the deck's other two tags:
+`capability-fabrication` (broad family — this fix closes its 08:36 member), and the
+08:30 record-others'-communications tag needs the Comm-surface build (a campaign-
+scale increment, not a turn), named rather than attempted.
+**PREDICTED:** +0 claimed — his 08:36 sentence works after deploy.
+**MECHANISM:** the inventory derived from rows in the single capability block both
+paths read, licensed beside the data.
+**FALSIFIER:** any post-deploy connector answer omitting a row the inventory holds;
+or a recited connector list while the inventory is unreadable.
+
+**Symptom tag closed (verbatim, in the commit):** `Asked what connectors Brain has
+and got an incomplete list that leaves out the channels actively delivering his data
+(Google Chat is its most-processed channel yet was omitted)`.
+
+**ATTEMPT-19 OBSTACLE STATEMENT (required):** the pipe runs (D-85→D-92 in two
+days); the standing obstacles are the two the analyst names: the change-log
+DEPLOYED columns for DEF-290–296 all read `pending` while all seven shipped (a
+builder reading the log will misjudge what is live — orchestrator bookkeeping), and
+the Comm surface (854 WhatsApp events at `new`) is now owner-reported and needs a
+campaign, not a turn.
+
+**What I did NOT do, named:** the 08:30 tag (Comm-surface build — campaign-scale);
+DEF-293's cross-site synthetic class fix (analyst debt #1 — needs its own turn on
+the picker path); DEF-288/289 diagnoses; reconciling the stale DEPLOYED columns
+(orchestrator's); the own-number half of the self-knowledge family (config-shaped,
+undiagnosed).
+
+**Honest prediction:** deployed, "list down connectors u have" names every
+connected source. What would prove me wrong: the 08:36 answer having been composed
+from a path that does not receive the capability block (an intercepted or
+prompt-queue reply) — if Codex traces that, the inventory needs that path too, and
+this fix still stands for the composed paths.
