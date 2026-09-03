@@ -806,7 +806,13 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // this file's comment necessarily quotes the very words being banned.
       const composerRaw = readFileSync(join(root, 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
       const composer = composerRaw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
-      const header = composer.slice(composer.indexOf('# Messages relayed from unregistered senders'));
+      // Anchored on the STABLE part of the header. DEF-300 renamed it to
+      // "# Messages sent TO MY OWN number, relayed from unregistered senders" to stamp the
+      // provenance the owner asked for, and an exact-match anchor silently sliced to nothing —
+      // the assertion then passed vacuously on an empty string until the next assertion caught it.
+      const anchor = composer.indexOf('relayed from unregistered senders');
+      expect(anchor).toBeGreaterThan(0);
+      const header = composer.slice(anchor);
       const relayHeader = header.slice(0, header.indexOf('relays.map('));
       expect(relayHeader).not.toMatch(/NOT retained|by policy|privacy/i);
       // and it still says the two things the model MUST know
@@ -878,6 +884,55 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       const cleanupSeg = provider.slice(cleanIdx, provider.indexOf('return;', cleanIdx));
       expect(cleanupSeg).toContain("event: 'probe_cleaned'");
       expect(cleanupSeg).toContain('outcome');
+    },
+  },
+  {
+    id: 'chat25',
+    title: 'it mixed messages read from his WhatsApp with messages sent to its own number, and counted itself as a sender',
+    fixCommits: ['pending'],
+    symptomTags: ['prompt-contradicts-itself', 'fabricated-status'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+      const raw = readFileSync(join(root, 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      // Comments stripped: BLD-009, my own comment has broken my own guard more than once, and
+      // this fix's comments necessarily quote the strings being checked.
+      const src = raw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+      // 1. BOTH populations carry their channel. Labelling one and not the other leaves exactly
+      //    the ambiguity he complained about.
+      expect(src).toContain("READ FROM the user\\'s own WhatsApp");
+      expect(src).toContain('sent TO MY OWN number');
+
+      // 2. THE MODEL IS TOLD WHICH QUESTION EACH ANSWERS. The distinction is only useful if it
+      //    changes an answer; "who messaged him" and "who messaged me" are different questions.
+      // Asserted WITHIN single string literals. The header hard-wraps across concatenated
+      // literals, so `who messaged ME` spans a `' + '` boundary in the source and a phrase
+      // crossing it can never match no matter how the whitespace is normalised. That is the
+      // standing weakness of asserting on source text, and the reason the behavioural suite
+      // (`def300TwoInboxesNeverMerge.test.ts`) asserts on the RENDERED block instead.
+      const flat = src.replace(/\s+/g, ' ');
+      expect(flat).toContain('messaged HIM, these count');
+      expect(flat).toContain('messaged ME, they do not');
+
+      // 3. BRAIN IS NOT A SENDER. 149 of 876 rows carried its own number, and none carried a
+      //    fromMe key, so every one counted as inbound.
+      expect(src).toContain('brainOwnNumber');
+      expect(src).toContain("regexp_replace(COALESCE(sender_phone,'')");
+
+      // 4. BY NUMBER, NOT BY NAME. A real person could be called Nexeo; identity is the number.
+      const query = src.slice(src.indexOf("source_type = 'whatsapp'"));
+      expect(query.slice(0, 900)).not.toContain("'Nexeo'");
+
+      // 5. AN EMPTY BLOCK EXPLAINS ITSELF. DEF-019: a status is read, never inferred from
+      //    absence, and his connector is disconnected today.
+      expect(src).toContain('latestSeen');
+      expect(flat).toContain('reading his WhatsApp right now');
+
+      // 6. THE READING CLAIM IS CONDITIONAL. My first version asserted it unconditionally while
+      //    the connector was disconnected — the over-claim DEF-299 exists to prevent.
+      expect(src).toContain("personalStatus === 'connected'");
     },
   },
   {

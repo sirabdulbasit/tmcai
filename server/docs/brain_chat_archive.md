@@ -1006,3 +1006,48 @@ DEF-245** — residue, not a live writer.
 value preserved, re-run updates 0 rows). The class: `scopedContacts.ts` — the sole contact reader
 since DEF-040 — will not hand out a LID-shaped value as a phone, so a stale page, a re-synthesis
 from stale data, or a future writer cannot reach him through the contact path.
+
+## Chat 25
+
+**2026-09-03 13:30 and 13:39, CL-051 — DEF-300 and DEF-302. He said it twice.**
+
+> "The way i am communicating you people are also doing communication with you, u should know
+> what they are talking to you and what u talk to me. Secondly u may have access of my WhatsApp
+> to read it, dont confused with it"
+
+and nine minutes later:
+
+> "So the message u read from that whatsapp should not be messup with those message you received
+> directly on your number"
+
+Brain's reply both times was *"Noted: Record all communications from others and distinguish them
+from our conversations"* — a preference recorded where a structural fact was needed. **That is
+why he had to repeat it.**
+
+**What went RIGHT:** he was describing the product accurately. There really are two populations
+and they really were being conflated.
+
+**What was actually wrong, measured.** The two populations were already in two blocks — one read
+from `feed_events` (`source_type='whatsapp'`, ingested from his own WhatsApp session), one from
+the relay log (`brain_user_messages`, `kind='wa_counterpart_message'`, sent to Brain's own
+number). Neither header said WHICH CHANNEL. The first was titled *"Recent WhatsApp messages"*,
+which reads as *messages you received*, while the rows underneath are his own conversations.
+
+**And a worse thing came out of looking.** Over all **876** whatsapp `feed_events`: **not one
+carries a `fromMe` key**, so the query's `COALESCE(…, FALSE)` defaulted every single row to
+inbound. **149 rows carry Brain's own connected number (`+923274572102`) as the sender, and 75
+carry the sender name "Nexeo".** Asked who had messaged him, Brain could name itself — DEF-287's
+shape (its own voice returning through a connector) on the WhatsApp path, and the likely source
+of CL-050's wrong name. Filed as DEF-302.
+
+**Fixed per his ruling** (stamp the provenance, render two labelled sections): both headers now
+state which channel they are and which question each answers; Brain's own number is excluded at
+the query, by NUMBER rather than display name, because a real person could be called Nexeo; and
+an empty block now says WHY it is empty — his personal connector is `disconnected` and the newest
+message ever read from it is 2026-08-07, so silence is explained rather than reported as "no
+messages".
+
+**One of my own lines had to be corrected before shipping:** the new header first asserted "his
+personal WhatsApp is connected for reading" unconditionally, while that connector is
+disconnected — reintroducing the exact `fabricated-status` over-claim DEF-299 had just avoided
+one block away. Rendering the block and reading it is what caught it.

@@ -5402,7 +5402,11 @@ async function buildRecentEmailsBlock(clientNumber: string, userId: number, max 
  *  Brain would correctly report "no messages" but the user has no
  *  idea WHY — distinguishing "no WA in last 24h" from "WA ingest is
  *  broken, can't see messages" matters for trust. */
-async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, max = 10): Promise<string> {
+// DEF-300 — exported so the two provenance-stamped headers can be asserted through the REAL
+// builder, and so the block can be rendered against live data. Same reason DEF-259 exported
+// `assembleSystemPrompt`: every read in here is already try/catch-degraded, so a test can run it
+// with a stubbed database and still get the assembled block. No behaviour change.
+export async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, max = 10): Promise<string> {
   const prisma = (await import('../../db/prisma')).default;
   // Connector health probe — if WA is degraded, surface that to
   // reasoning as a header on the block so Brain doesn't say
@@ -5422,6 +5426,13 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
                 || 'WhatsApp ingest is currently degraded';
     degradedHeader = `# ⚠️ WhatsApp ingest is DEGRADED right now\n${reason}\nThis means I cannot see WhatsApp messages received after the connector started degrading. When the user asks about recent WhatsApp activity, ALWAYS tell them the ingest is degraded and you can only see messages up to the last-good timestamp shown below. Do NOT say "no messages" without this caveat.\n\n`;
   }
+  // DEF-299/DEF-302 — Brain's own number, read from the one place that already holds it.
+  // Reused via `getSystemCapabilities` (60s cache) rather than a second query, so there is one
+  // answer to "what is my number" in the product.
+  const brainOwnNumber = await getSystemCapabilities(clientNumber, userId)
+    .then((c) => c.waIdentity.brainNumber)
+    .catch(() => null);
+
   const rows = await prisma.$queryRawUnsafe<Array<{
     sender_phone: string | null;
     sender_name: string | null;
@@ -5433,11 +5444,33 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
       WHERE client_number = $1 AND user_id = $2
         AND source_type = 'whatsapp'
         AND COALESCE((raw_payload->>'fromMe')::boolean, FALSE) = FALSE
+        -- DEF-302: Brain's own messages are in this store and were counted as messages
+        -- RECEIVED. Measured 2026-09-03 over all 876 rows: NOT ONE carries a fromMe key, so
+        -- the COALESCE above defaults every single row to inbound; 149 rows carry Brain's own
+        -- connected number as the sender and 75 carry the sender name Nexeo. Asked who had
+        -- messaged him, Brain could therefore name itself. Same shape as DEF-287 (Brain's own
+        -- voice returning through the Gmail connector) on the WhatsApp path, and the likely
+        -- source of CL-050's wrong name. Excluded by NUMBER, which is identity, rather than by
+        -- display name: a display name is chosen by whoever owns the account, and a real
+        -- person could be called Nexeo.
+        AND ($4 = '' OR regexp_replace(COALESCE(sender_phone,''), '[^0-9]', '', 'g')
+                        <> regexp_replace($4, '[^0-9]', '', 'g'))
         AND created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY created_at DESC
       LIMIT $3`,
-    clientNumber, userId, max,
+    clientNumber, userId, max, brainOwnNumber ?? '',
   ).catch(() => [] as any[]);
+
+  // DEF-300 — how stale this store is, so an empty block can say WHY it is empty.
+  // The owner's personal WhatsApp connector is disconnected, and the newest row here is
+  // 2026-08-07. "No messages in the last 24 hours" is true of the store and misleading about
+  // the world; DEF-019's lesson is that a status must be read, never inferred from absence.
+  const lastSeen = await prisma.$queryRawUnsafe<Array<{ latest: Date | null }>>(
+    `SELECT max(created_at) AS latest FROM feed_events
+      WHERE client_number = $1 AND user_id = $2 AND source_type = 'whatsapp'`,
+    clientNumber, userId,
+  ).catch(() => [] as any[]);
+  const latestSeen = lastSeen[0]?.latest ?? null;
 
   // ── DEF-270: THE RELAY LOG IS ALSO A RECORD OF MESSAGES RECEIVED ────────────────────────
   // Unregistered senders' bodies are deliberately kept out of feed_events (owner ruling
@@ -5474,7 +5507,7 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
   ).size;
   const relayTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const relayBlock = relays.length === 0 ? '' :
-    `\n\n# Messages relayed from unregistered senders (last 24h — ${relays.length} message`
+    `\n\n# Messages sent TO MY OWN number, relayed from unregistered senders (last 24h — ${relays.length} message`
     + `${relays.length === 1 ? '' : 's'} from ${relayIdentityCount} distinct sender`
     + `${relayIdentityCount === 1 ? '' : 's'})\n`
     // DEF-273: this header says what the data IS and NOTHING about what may be done with it.
@@ -5484,7 +5517,13 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     // very lines held all ten bodies. A block that supplies evidence must not also argue about
     // policy: the two claims contradict each other and the prose won. The storage caveat was
     // for my benefit, not the model's, so it now lives here in a comment where it belongs.
-    + 'These arrived and were forwarded to the user, and the text below is what was forwarded. '
+    // DEF-300 — the other half of the provenance stamp. These came to Brain's own number; the
+    // block above is what Brain reads out of the user's WhatsApp. Saying which is which HERE,
+    // next to the data, is what DEF-165 found outranks a rule in a rulebook.
+    + 'These were sent TO ME, on my own number, by people who are not the user, and I forwarded '
+    + 'them to him. They are a DIFFERENT population from the messages read out of his own '
+    + 'WhatsApp above — never merge the two when answering who messaged whom. '
+    + 'The text below is what was forwarded. '
     + 'If asked whether anyone messaged, these count. A `suppressed` row means the message '
     + 'arrived and the notification was withheld by a budget, NOT that nothing arrived.\n'
     + relays.map((r) => {
@@ -5510,11 +5549,48 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
       return `- [${when}] from an unregistered sender · relay ${r.status} · ${what}`;
     }).join('\n');
 
+  /**
+   * DEF-300 — the owner asked for this distinction twice in one hour, in his own words:
+   * *"the message u read from that whatsapp should not be messup with those message you
+   * received directly on your number"*. Brain replied *"Noted: … distinguish them from our
+   * conversations"* both times — a preference recorded where a fact was needed, which is
+   * exactly why he had to repeat it.
+   *
+   * These are two different populations and they were already in two different blocks. What
+   * was missing is the one thing that makes them tellable apart: WHICH CHANNEL each arrived
+   * on. The old header said "Recent WhatsApp messages", which reads as "messages you
+   * received" — while the rows underneath are his own conversations, read out of his own
+   * WhatsApp. Stamping the provenance into the header is the whole fix, per his ruling.
+   */
+  // The reading-status clause is CONDITIONAL, and it has to be. My first version of this header
+  // asserted "which I can see because his personal WhatsApp is connected for reading" —
+  // unconditionally, while that connector is in fact `disconnected`. That is the same
+  // `fabricated-status` over-claim DEF-299 was careful to avoid one block away, reintroduced by
+  // me in the fix for it. Caught by rendering the block against live data and reading it.
+  const personalStatus = String(connStatus[0]?.status ?? 'unknown');
+  const readingClause = personalStatus === 'connected'
+    ? 'which I can see because his personal WhatsApp is connected for reading'
+    : `which I can only see while his personal WhatsApp is connected — it is currently ${personalStatus}`;
+  const readFromHeader = '# Messages READ FROM the user\'s own WhatsApp (last 24h'
+    + `${rows.length ? `, newest first — ${rows.length} of last ${max}` : ''})\n`
+    + `These are the USER'S OWN conversations with other people, ${readingClause}.\n`
+    + 'They were NOT sent to me. When he asks who messaged HIM, these count; when he asks who\n'
+    + 'messaged ME, they do not.\n';
+
+  // DEF-300 — an empty store says WHY it is empty. "No messages in the last 24 hours" is true
+  // of the store and misleading about the world when the reason is that the connector is not
+  // reading at all; DEF-019's lesson is that a status is read, never inferred from absence.
+  const stalenessLine = latestSeen
+    ? `(nothing in the last 24h. The newest message I have ever read from his WhatsApp is `
+      + `${new Date(latestSeen).toISOString().slice(0, 10)}, so if that is not recent, I am not `
+      + `reading his WhatsApp right now and must say so rather than implying he had no messages.)`
+    : '(I have never read any message from his personal WhatsApp.)';
+
   if (rows.length === 0) {
-    return `${degradedHeader}# Recent WhatsApp messages (last 24h)\n`
+    return `${degradedHeader}${readFromHeader}`
       + (relays.length === 0
-        ? '(no WhatsApp messages received in the last 24 hours)'
-        : '(none from registered senders — but see the relayed messages below, which DID arrive)')
+        ? stalenessLine
+        : `${stalenessLine}\nNone from his own WhatsApp — but see the messages sent to MY number below, which DID arrive.`)
       + relayBlock;
   }
   // Resolve known names by phone match against entity_person rows the
@@ -5548,7 +5624,7 @@ async function buildRecentWhatsAppBlock(clientNumber: string, userId: number, ma
     const knownTag = known.has(phone) ? '' : ' [not in your contacts]';
     return `- [${when}] From: ${sender}${knownTag} (${phone || 'no phone'}): ${body || '(empty)'}`;
   });
-  return `${degradedHeader}# Recent WhatsApp messages (last 24h, newest first — ${rows.length} of last ${max})\n${lines.join('\n')}`
+  return `${degradedHeader}${readFromHeader}${lines.join('\n')}`
     + `\n${completenessLine(rows.length, rows.length >= max, 'message')}`
     + relayBlock;
 }
