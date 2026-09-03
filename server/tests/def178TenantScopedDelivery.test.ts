@@ -221,11 +221,31 @@ describe("DEF-178 — another tenant's ledger rows influence nothing", () => {
     expect(delivered.length).toBe(0);
   });
 
-  it('own-tenant daily cap still counts', async () => {
+  it('own-tenant volume still counts', async () => {
+    // DEF-308 — the gate that fires here is now the human reserve, not the
+    // daily cap: `critical_bundle` is a non-human kind, so it stops at
+    // `dailyCap - reserve`. What this test is FOR is unchanged and still
+    // proven — the own-tenant rows are the rows counted. Were the scoping
+    // broken, the count would be zero and the send would proceed.
     for (let i = 0; i < 20; i++) seedMsg({ clientNumber: A, kind: `k${i}` });
     const r = await brainContactsUser({
       userId: 2, clientNumber: A,
       kind: 'critical_bundle', summary: 's', body: 'over the cap',
+    });
+    expect(r.sent).toBe(false);
+    expect(r.suppressedBy, 'held by a volume gate reading tenant A rows').toBe('budget');
+    expect(String(r.reason)).toMatch(/^human_reserve_protected/);
+    expect(delivered.length).toBe(0);
+  });
+
+  it('own-tenant DAILY CAP still counts, on the path that can still reach it', async () => {
+    // The daily cap is now reachable only by a human kind (non-human kinds stop
+    // at the reserve first), so the hard rail keeps a tenant-scoped test of its
+    // own rather than losing coverage to DEF-308.
+    for (let i = 0; i < 20; i++) seedMsg({ clientNumber: A, kind: 'wa_counterpart_message' });
+    const r = await brainContactsUser({
+      userId: 2, clientNumber: A,
+      kind: 'wa_counterpart_message', summary: 's', body: 'over the cap',
     });
     expect(r.sent).toBe(false);
     expect(String(r.reason)).toMatch(/^daily_cap_exceeded/);

@@ -3,8 +3,13 @@
  *
  * User decision 2026-05-14: every open item must have priority AND
  * deadline. When either is missing at create, the item is parked as
- * status='DRAFT' (the gate does this). This job runs daily, walks
- * the DRAFT items, and asks the owner via the Nexeo channel
+ * status='DRAFT' (the gate does this). This job TICKS HOURLY
+ * (`draft_slot_completion`, centralActionGovernor) and asks at most
+ * once per item per UTC day; the per-day stamp below, not the
+ * cadence, is what makes the ask daily. Stated precisely because
+ * reading the cadence as daily is what made DEF-304 look like a
+ * single burst when it was 27 passes over the same 79 items.
+ * It walks the DRAFT items and asks the owner via the Nexeo channel
  * (sendViaNotifier — Brain's own identity, never the user's paired
  * channel) to fill in the missing slot(s).
  *
@@ -30,7 +35,8 @@
  * Failure mode: if sendViaNotifier returns ok:false (tenant
  * notifier not configured), the ask is NOT recorded — next tick
  * retries. Once the tenant configures the notifier, the cadence
- * resumes from where it left off.
+ * resumes from where it left off. A BUDGET hold is not that failure
+ * and does not retry within the window: it ends the pass (DEF-304).
  */
 import prisma from '../db/prisma';
 import createLogger from '../utils/logger';
@@ -60,10 +66,49 @@ interface RunResult {
   selfPruned: number;
   recovered: number;
   errors: number;
+  /** DEF-304 — how many eligible drafts this run deliberately did NOT attempt
+   *  because the window's budget was already spent. Non-zero is the normal,
+   *  healthy state on a day with more drafts than slots; it is reported so the
+   *  difference between "nothing to ask" and "no budget to ask with" is
+   *  visible without reading the suppressed rows. */
+  budgetHeld: number;
 }
 
 function dayIndex(createdAt: Date, now: Date): number {
   return Math.floor((now.getTime() - createdAt.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * DEF-304 — WHICH asks he gets, when there are more drafts than slots.
+ *
+ * Measured 09-03: 79 DRAFT items, a 20/day outbound cap with 10 of it
+ * available to housekeeping, and this sweep on an HOURLY cadence attempting
+ * all 79 every hour — 2,133 suppressed audit rows in 24h for at most 10
+ * delivered asks. The volume was contained (the cap held, DEF-296) but the
+ * PRODUCTION was not: the ten he received were whichever ten this loop reached
+ * first, and `findMany` had no `orderBy` at all, so that was Postgres's row
+ * order. Which deadlines Brain chases was decided by physical row layout.
+ *
+ * So rank them. `priority` is a string column, so ordering it in SQL would
+ * sort alphabetically — critical, high, low, medium — which is wrong in the
+ * one position that matters most. The set is bounded (`take: 500`), so the
+ * rank is applied in memory over a query that is itself deterministically
+ * ordered; an arbitrary `take` of an unordered 500 was the same defect one
+ * level up.
+ */
+const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function importanceOrder(a: any, b: any): number {
+  const pa = PRIORITY_RANK[String(a.priority ?? 'medium')] ?? 2;
+  const pb = PRIORITY_RANK[String(b.priority ?? 'medium')] ?? 2;
+  if (pa !== pb) return pa - pb;
+  // A due date is a commitment; an item without one cannot be late, so it
+  // waits behind every item that can.
+  const da = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+  const db = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+  if (da !== db) return da - db;
+  // Then oldest first, so a draft cannot be starved forever by newer arrivals.
+  return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 }
 
 // Phrasing delegated to brainHumanComm.phraseDraftAsk so all
@@ -77,6 +122,7 @@ function dayIndex(createdAt: Date, now: Date): number {
 export async function runOpenItemDraftAsk(): Promise<RunResult> {
   const result: RunResult = {
     scanned: 0, asked: 0, expired: 0, quarantined: 0, selfPruned: 0, recovered: 0, errors: 0,
+    budgetHeld: 0,
   };
   const now = new Date();
   const todayUtcDateStr = now.toISOString().slice(0, 10);
@@ -92,8 +138,15 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
       delegateeEmail: true, notes: true, createdAt: true,
       clientNumber: true, userId: true, metadata: true,
     } as any,
+    // DEF-304 — a deterministic `take`. Ordering the rank itself happens below
+    // (see importanceOrder); this only makes WHICH 500 stable.
+    orderBy: { createdAt: 'asc' },
     take: 500,
   }) as any[];
+
+  // DEF-304 — most important first, so a short budget buys the asks that
+  // matter instead of the ones the table happened to return first.
+  drafts.sort(importanceOrder);
 
   for (const item of drafts) {
     result.scanned += 1;
@@ -197,6 +250,28 @@ export async function runOpenItemDraftAsk(): Promise<RunResult> {
         dedupKey: `draft_ask:${item.id}:${todayUtcDateStr}`,
       });
       if (!dispatchRes.sent) {
+        // DEF-304 — a budget refusal is not a transient failure, and treating
+        // it as one is what produced 2,133 suppressed rows a day.
+        //
+        // The retry rule below is right for the failure it was written for:
+        // `sendViaNotifier` returning ok:false because the tenant notifier is
+        // not configured yet, which the next tick may well resolve. A budget
+        // hold is the opposite — it is a decision that stands for the rest of
+        // the window, so every remaining draft in this pass will be refused
+        // for the same reason, and walking them writes one audit row each to
+        // discover a fact already known.
+        //
+        // `suppressedBy` rather than a substring of `reason` on purpose: the
+        // reason string is prose for a log and has already been reworded once
+        // (DEF-271 turned it into `${tier.label}_budget_exceeded`), which is
+        // exactly how a guard anchored on prose stops guarding silently.
+        if (dispatchRes.suppressedBy === 'budget') {
+          result.budgetHeld = drafts.length - result.scanned + 1;
+          log.info('Draft asks held — window budget spent, stopping this pass', {
+            itemId: item.id, reason: dispatchRes.reason, held: result.budgetHeld,
+          });
+          break;
+        }
         log.warn('Draft ask not sent', { itemId: item.id, reason: dispatchRes.reason });
         result.errors += 1;
         // Do NOT advance asksSentCount or lastAskAt — next tick retries.

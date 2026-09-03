@@ -32,8 +32,19 @@ const noComments = (s: string) =>
 
 describe('DEF-294 — relays are exempt from the per-kind limiter', () => {
   it('a relayed human message skips the limiter', () => {
+    // DEF-308 — this asserted the literal `req.kind === 'wa_counterpart_message'`
+    // until the volume reserve needed the same question answered. Two
+    // protections each deciding independently what "a person wrote this" means
+    // would be the 11th `protection-with-two-implementations` in a codebase
+    // carrying ten, and they would drift the first time a second relay kind was
+    // added: it would gain the reserve and silently keep rate-limiting.
+    //
+    // So the assertion is now the stronger one — the exemption reads the SHARED
+    // set. Pinning the literal would have forbidden exactly the de-duplication
+    // this codebase keeps paying for.
     const code = noComments(src());
-    expect(code).toContain("req.kind === 'wa_counterpart_message'");
+    expect(code).toContain('HUMAN_KINDS.has(req.kind)');
+    expect(code).toContain("export const HUMAN_KINDS = new Set(['wa_counterpart_message'])");
     expect(code).toContain('!isRelayedHumanMessage');
   });
 

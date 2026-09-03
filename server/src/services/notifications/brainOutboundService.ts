@@ -158,6 +158,10 @@ export interface BrainContactRequest {
 export interface BrainContactResult {
   sent: boolean;
   reason?: string;             // when sent=false: 'suppressed' | 'quiet_hours' | 'no_phone' | 'send_failed'
+  /** DEF-304 — WHY it was suppressed, as a value a caller can branch on.
+   *  `reason` above is prose meant for a log; a sweep that has to decide
+   *  "retry next tick or stop for the window?" must not match on prose. */
+  suppressedBy?: string;
   channelsUsed: string[];
   waMessageIds: string[];
   recordId?: string;            // brain_user_messages.id
@@ -174,6 +178,25 @@ const DEFAULT_DEDUP_WINDOW_MS = 20 * 60 * 1000;
  *  this, every send is hard-suppressed and an admin-visible audit row
  *  is recorded. Override per-user via notificationPreferences.brain_channel.dailyCap. */
 const DEFAULT_DAILY_CAP = 20;
+
+/**
+ * DEF-308 — the kinds a PERSON wrote.
+ *
+ * This is the set the volume budget exists to protect, so this is the set that
+ * gets enumerated. Every other kind — including one added tomorrow — is
+ * non-human by default and stops short of the reserve below. Omission fails
+ * CLOSED: a new kind does not have to be listed anywhere to be excluded, and
+ * only an explicit addition here can spend a person's slot.
+ *
+ * Exported so "who is protected?" has exactly one answer, the same reason
+ * `SUPPRESSION_DIGEST_KIND` is exported rather than repeated.
+ */
+export const HUMAN_KINDS = new Set(['wa_counterpart_message']);
+
+/** Share of the daily cap that non-human kinds may never consume: 25% of the
+ *  default 20 = five slots held for people. Override per user with the
+ *  `notify.human_reserve_pct` behaviour key. */
+const DEFAULT_HUMAN_RESERVE_PCT = 25;
 
 /** Content-fingerprint window: identical body text within this window
  *  is dropped even if every other dedup key differs. Catches the
@@ -339,6 +362,34 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
       status: { in: ['sent', 'partial'] },
     },
   }).catch(() => 0);
+
+  // ── DEF-308: the digest's cap exemption, bounded where it cannot be raced ──
+  //
+  // The exemption itself is right — a cap that silences its own receipt is
+  // CL-043 verbatim — and its comment below claims to be bounded "BY
+  // CONSTRUCTION: one send per (user, day)". It was not. On 09-03 at 07:57:41
+  // FIFTEEN digests were sent inside one second, they took 15 of the owner's
+  // 20 daily slots, and ten inbound human messages were refused to pay for it.
+  //
+  // DEF-297 fixed the burst with an in-process claim. That is the right guard
+  // for a burst and it is silent about the two cases only the chokepoint can
+  // cover: a restart mid-burst, and a second process. So the exemption is now
+  // conditional on the thing it always claimed. The FIRST digest of the
+  // rolling window passes the volume gates; a second is capped like any other
+  // kind. Read from sent rows, so nothing can race it — and `catch(() => 1)`
+  // because a failed count must WITHHOLD the exemption, never grant it.
+  const digestExempt = req.kind === SUPPRESSION_DIGEST_KIND
+    ? (await prisma.brainUserMessage.count({
+      where: {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        createdAt: { gte: since24h },
+        status: { in: ['sent', 'partial'] },
+        kind: SUPPRESSION_DIGEST_KIND,
+      },
+    }).catch(() => 1)) === 0
+    : false;
+
   // ── DEF-104: diagnostics must never crowd out the user's own messages ──
   //
   // Measured 2026-08-08: exactly 20 of 20 sent, and 3 of them were mine —
@@ -418,6 +469,73 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     break;   // a kind belongs to at most one tier; the first match decides
   }
 
+  // ── DEF-308: enumerate what is PROTECTED, not what competes with it ──
+  //
+  // Third occurrence of ONE mechanism — Brain's own machinery spends the
+  // channel, and a real person's message is dropped to pay for it:
+  //
+  //   DEF-104, 08-08 — diagnostics took 3 of 20 while 104 of his real overdue
+  //                    reminders were suppressed. Fix: a 25% DIAGNOSTIC ceiling.
+  //   DEF-271, 09-01 — draft-asks took 10 of 20 and 8 human messages were
+  //                    suppressed. Fix: a 50% HOUSEKEEPING ceiling.
+  //   DEF-308, 09-03 — the suppression digest, written 09-02, in no tier and
+  //                    exempt from the cap outright, took 15 of 20. TEN inbound
+  //                    human messages were refused `daily_cap_exceeded`.
+  //
+  // Each fix so far put a ceiling on whichever competitor had just won, and a
+  // ceiling on the competitors cannot close this class, because that set is
+  // OPEN: every kind not yet in a tier is the next occurrence. The digest
+  // became one the day after it was written, which is as fast as this class
+  // can possibly recur.
+  //
+  // DEF-271's own solution column already named the missing piece — "a relayed
+  // human message must outrank a deadline prompt when the budget is short" —
+  // and then shipped ceilings instead of the ranking. This is the ranking, and
+  // it is stated the only way that closes the class: the protected set is
+  // enumerated (see HUMAN_KINDS) and everything else is non-human by default.
+  //
+  // Looser than the tiers above and tighter than the daily cap below, so the
+  // sequence of gates only ever loosens and the most specific reason wins the
+  // audit row.
+  if (!HUMAN_KINDS.has(req.kind) && !digestExempt) {
+    const { getBehaviorValue } = await import('../behaviorConfig');
+    const reservePct = await getBehaviorValue('notify.human_reserve_pct', {
+      userId: user.id, clientNumber: user.clientNumber,
+    }).catch(() => DEFAULT_HUMAN_RESERVE_PCT);
+    // At least one slot for people, and at least one for everything else — a
+    // 0% or 100% config value must not turn either side of this off entirely.
+    const reserve = Math.min(dailyCap - 1, Math.max(1, Math.floor((dailyCap * reservePct) / 100)));
+    const nonHumanCap = dailyCap - reserve;
+    // Counted over NON-HUMAN sends only. Counting everything would make the
+    // reserve self-defeating in the other direction: five real messages would
+    // shrink the machinery's allowance by five, so a busy day of people would
+    // silence his reminders — DEF-104 with the roles swapped.
+    const nonHumanToday = await prisma.brainUserMessage.count({
+      where: {
+        clientNumber: user.clientNumber,
+        userId: user.id,
+        createdAt: { gte: since24h },
+        status: { in: ['sent', 'partial'] },
+        kind: { notIn: [...HUMAN_KINDS] },
+      },
+    }).catch(() => 0);
+    if (nonHumanToday >= nonHumanCap) {
+      log.warn('human_reserve_protected', {
+        userId: user.id, kind: req.kind, nonHumanToday, nonHumanCap, reserve, dailyCap,
+      });
+      const res = await record({
+        ...req, user, channel: 'text', urgency,
+        status: 'suppressed', summary: req.summary,
+        metadata: {
+          ...(req.metadata ?? {}),
+          suppressedBy: 'budget', suppressReason: 'human_reserve_protected',
+        },
+      }, `human_reserve_protected (${nonHumanToday}/${nonHumanCap}; ${reserve} of ${dailyCap} held for people)`);
+      if (req.kind !== SUPPRESSION_DIGEST_KIND) void maybeSendSuppressionDigest(user);
+      return res;
+    }
+  }
+
   // DEF-277 (C-3 increment 2) — the digest is the cap's own RECEIPT and is the
   // one kind exempt from the cap, because a cap that silences its own receipt
   // is CL-043 verbatim: four humans' messages arrived, two were held, and the
@@ -427,14 +545,18 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   // capability allow-list — it is the suppression mechanism's single receipt
   // kind. Guardrail served: no-claim-without-a-receipt, applied to the claim
   // "I am managing your notification volume".
-  if (sentToday >= dailyCap && req.kind !== SUPPRESSION_DIGEST_KIND) {
+  if (sentToday >= dailyCap && !digestExempt) {
     log.warn('daily_cap_exceeded', { userId: user.id, sentToday, dailyCap });
     const res = await record({
       ...req, user, channel: 'text', urgency,
       status: 'suppressed', summary: req.summary,
       metadata: { ...(req.metadata ?? {}), suppressedBy: 'budget', suppressReason: 'daily_cap_exceeded' },
     }, `daily_cap_exceeded (${sentToday}/${dailyCap} in last 24h)`);
-    void maybeSendSuppressionDigest(user);
+    // DEF-308 — guarded now that the digest can actually reach this branch:
+    // unguarded, a refused digest would fire another. The in-process claim
+    // would also stop it, but a recursion blocked in only one caller's memory
+    // is not blocked.
+    if (req.kind !== SUPPRESSION_DIGEST_KIND) void maybeSendSuppressionDigest(user);
     return res;
   }
 
@@ -529,7 +651,14 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
   //
   // Deliberately narrow: every other kind still rate-limits. `open_item_draft_ask` hitting this
   // limiter is the guard doing its job.
-  const isRelayedHumanMessage = req.kind === 'wa_counterpart_message';
+  //
+  // DEF-308 — reads the same HUMAN_KINDS the volume reserve reads, rather than
+  // repeating the literal. Two protections that each decided independently what
+  // "a person wrote this" means would be the 11th `protection-with-two-
+  // implementations` in a codebase carrying ten, and they would drift the first
+  // time a second relay kind is added: it would gain the reserve and silently
+  // keep rate-limiting, or the reverse.
+  const isRelayedHumanMessage = HUMAN_KINDS.has(req.kind);
   const rec = (!req.bypassRateLimit && !isRelayedHumanMessage) ? await prisma.brainUserMessage.findFirst({
     where: {
       clientNumber: user.clientNumber,
@@ -1007,6 +1136,9 @@ async function record(
   return {
     sent: o.status === 'sent' || o.status === 'partial',
     reason,
+    // DEF-304 — surfaced from the row that was just written, so the value the
+    // caller branches on is the value the audit trail recorded.
+    suppressedBy: (o.metadata as any)?.suppressedBy,
     channelsUsed: o.waMessageIds?.length ? [o.channel] : [],
     waMessageIds: o.waMessageIds ?? [],
     recordId: row ? String(row.id) : undefined,
