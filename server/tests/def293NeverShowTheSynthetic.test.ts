@@ -56,6 +56,16 @@ describe('DEF-293 — the synthetic never reaches him', () => {
     }
   });
 
+  it('THE OVER-CORRECTION: a REAL number is shown even for a lid-identified sender', () => {
+    // My first version hid Hamna's +923134199294 too, because her raw id ends in @lid — throwing
+    // away exactly the half he called useful. The synthetic is the lid's OWN digits, so
+    // comparing digits tells them apart precisely.
+    expect(describeSender('+923134199294', 'Hamna Latif Bhutta', '255043747987458@lid'))
+      .toBe('+923134199294 (Hamna Latif Bhutta)');
+    expect(describeSender('+923028000553', 'Muhammad Yousaf', '160838254092493@lid'))
+      .toBe('+923028000553 (Muhammad Yousaf)');
+  });
+
   it('trusts the raw id over the heuristic when both are available', () => {
     // A genuinely long real number, explicitly marked as a phone id, must still be shown.
     expect(describeSender('+123456789012345', 'Long Number', '123456789012345@c.us'))

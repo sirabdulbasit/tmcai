@@ -174,9 +174,24 @@ export function describeSender(
   name: string | null,
   rawSenderId?: string | null,
 ): string {
-  const isSynthetic = rawSenderId
-    ? String(rawSenderId).endsWith('@lid')
-    : looksLikeLidDigits(phone);
+  // Suppress the NUMBER only when the number IS the synthetic — not merely because the sender
+  // was identified by a lid. The first version of this checked `rawSenderId.endsWith('@lid')`
+  // and so hid Hamna's real `+923134199294` too, which threw away exactly the half he called
+  // useful. The synthetic is `'+' + the lid's own digits`, so comparing digits distinguishes
+  // them exactly: equal means we are about to print an id dressed as a number; different means
+  // we have a genuine number for a lid-identified sender, which is the goal.
+  const digitsOf = (v: string | null | undefined) => String(v ?? '').replace(/[^0-9]/g, '');
+  const lidDigits = rawSenderId && String(rawSenderId).endsWith('@lid')
+    ? digitsOf(rawSenderId)
+    : null;
+  const isSynthetic = lidDigits !== null
+    // A lid sender: synthetic only if the number we are about to print IS its digits.
+    ? digitsOf(phone) === lidDigits
+    // An explicit non-lid id (`…@c.us`) is WhatsApp telling us this IS a real phone — that
+    // settles it, and the length heuristic must not overrule an authoritative answer.
+    : rawSenderId
+      ? false
+      : looksLikeLidDigits(phone);
   if (isSynthetic) {
     return name ?? 'an unknown sender whose number WhatsApp did not share';
   }
