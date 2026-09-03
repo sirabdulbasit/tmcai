@@ -25,6 +25,29 @@ export interface SystemCapabilities {
     gaps: number;
     answers: number;
   };
+  /**
+   * DEF-299 / DEF-300 — the two WhatsApp channels, told apart.
+   *
+   * Asked *"What is ur number?"*, Brain said *"I'm Suzi, Sir. I don't have a personal phone
+   * number."* The number was in `whatsapp_config.connected_number` the whole time and appears in
+   * the log on every reconnect. Not missing data — data absent from the reasoning context, the
+   * same shape as DEF-260.
+   *
+   * It is one field short of useful, though, and the owner said why twice in the same hour:
+   * *"the message u read from that whatsapp should not be messup with those message you received
+   * directly on your number"*. Two populations exist and mean different things — messages sent TO
+   * Brain's number, and messages read FROM the owner's own WhatsApp — so both are stated here as
+   * facts, not left as a preference the model is asked to remember. Brain answered that ask with
+   * *"Noted: … distinguish them from our conversations"*, which is why he had to repeat it.
+   */
+  waIdentity: {
+    /** The number people message Brain ON. */
+    brainNumber: string | null;
+    brainStatus: string | null;
+    /** The owner's OWN WhatsApp, which Brain reads rather than receives on. */
+    ownerPersonalNumber: string | null;
+    ownerPersonalStatus: string | null;
+  };
   /** Current Brain prompt queue state for THIS user. Drives runtime
    *  introspection: when the user asks "what's in my queue?" Brain has
    *  the live numbers without re-querying. */
@@ -49,7 +72,8 @@ export async function getSystemCapabilities(clientNumber: string, userId: number
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-  const [userConnectors, driveFolderRow, feedCounts, wikiCounts, queueStats, awaitingRow] = await Promise.all([
+  const [userConnectors, driveFolderRow, feedCounts, wikiCounts, queueStats, awaitingRow,
+         waTenantRow, waPersonalRow] = await Promise.all([
     prisma.userConnector.findMany({
       where: { userId, clientNumber },
       select: {
@@ -104,6 +128,24 @@ export async function getSystemCapabilities(clientNumber: string, userId: number
       where: { userId, state: 'awaiting_reply' },
       select: { question: true, sentAt: true },
     }).catch(() => null),
+    // DEF-299 — the number people message Brain ON. Present in this table on every
+    // reconnect while Brain was telling the owner it had no number.
+    prisma.$queryRawUnsafe<any[]>(
+      `SELECT connected_number, status FROM whatsapp_config WHERE client_number = $1 LIMIT 1`,
+      clientNumber,
+    ).catch(() => [] as any[]),
+    // DEF-300 — the owner's OWN WhatsApp, which Brain READS rather than receives on.
+    // Its status is carried, not just its number: as of today this connector is
+    // `disconnected` for both users, so a block that named the number without the status
+    // would license exactly the over-claim ("I read your WhatsApp") that is not true.
+    prisma.$queryRawUnsafe<any[]>(
+      `SELECT uc.status, uc.metadata->>'connectedNumber' AS connected_number
+         FROM user_connectors uc
+         JOIN connector_types ct ON ct.id = uc.connector_type_id
+        WHERE uc.user_id = $1 AND uc.client_number = $2 AND ct.slug = 'whatsapp_personal'
+        LIMIT 1`,
+      userId, clientNumber,
+    ).catch(() => [] as any[]),
   ]);
 
   const userList = userConnectors.map((c: any) => ({
@@ -158,6 +200,12 @@ export async function getSystemCapabilities(clientNumber: string, userId: number
       gaps: typeCount('gap'),
       answers: typeCount('answer'),
     },
+    waIdentity: {
+      brainNumber: (waTenantRow as any[])[0]?.connected_number ?? null,
+      brainStatus: (waTenantRow as any[])[0]?.status ?? null,
+      ownerPersonalNumber: (waPersonalRow as any[])[0]?.connected_number ?? null,
+      ownerPersonalStatus: (waPersonalRow as any[])[0]?.status ?? null,
+    },
     promptQueue: {
       queued: queuedCount,
       awaitingReplyTitle: awaitingRow ? clipQuestion(awaitingRow.question) : null,
@@ -183,6 +231,32 @@ export function renderCapabilitiesBlock(caps: SystemCapabilities): string {
     const notConnected = caps.userConnectors.filter((c) => c.status !== 'connected').map((c) => `${c.slug} (${c.status})`);
     if (connected.length) lines.push(`- User connectors connected: ${connected.join(', ')}`);
     if (notConnected.length) lines.push(`- User connectors not connected: ${notConnected.join(', ')}`);
+  }
+
+  // DEF-299 / DEF-300 — who Brain is on WhatsApp, and which inbox a message came from.
+  //
+  // Two separate facts, deliberately rendered as two lines rather than one. The owner asked for
+  // the distinction twice in one hour and got *"Noted: … distinguish them"* both times — a
+  // preference recorded instead of a fact supplied. A block that stated only "my number is X"
+  // would answer DEF-299 and leave DEF-300 exactly where it was.
+  const wa = caps.waIdentity;
+  if (wa.brainNumber) {
+    lines.push(`- MY OWN WhatsApp number, the number people message ME on: ${wa.brainNumber}`
+      + `${wa.brainStatus && wa.brainStatus !== 'connected' ? ` (${wa.brainStatus})` : ''}.`
+      + ' A message arriving here was sent TO me — by the user, or by someone else who has this number.');
+  } else {
+    lines.push('- I do not currently have a WhatsApp number of my own connected.');
+  }
+  if (wa.ownerPersonalStatus === 'connected' && wa.ownerPersonalNumber) {
+    lines.push(`- SEPARATELY, the user's own WhatsApp (${wa.ownerPersonalNumber}) is connected for me to READ.`
+      + ' Messages there are the user\'s conversations with other people. They were NOT sent to me,'
+      + ' and they are a different population from the messages above — never merge the two when'
+      + ' answering who messaged whom.');
+  } else if (wa.ownerPersonalNumber || wa.ownerPersonalStatus) {
+    // Stated rather than omitted. Silence here is what let Brain imply it reads his WhatsApp.
+    lines.push(`- The user's own WhatsApp connector exists but is ${wa.ownerPersonalStatus ?? 'not connected'}`
+      + `${wa.ownerPersonalNumber ? ` (${wa.ownerPersonalNumber})` : ''},`
+      + ' so I am currently reading NOTHING from his personal WhatsApp. I must not claim or imply otherwise.');
   }
 
   const gdrive = caps.tenantConnectors.find((t) => t.slug === 'google-drive');
