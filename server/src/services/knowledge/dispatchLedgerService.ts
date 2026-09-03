@@ -24,6 +24,8 @@
  * a fabrication. That is the point: give the model facts it cannot make up.
  */
 import prisma from '../../db/prisma';
+import { curatedMarkerMeaning } from './answerSanitizer';
+import { isSystemMarker, stripMarkerEnvelope } from './systemMarker';
 import createLogger from '../../utils/logger';
 
 const log = createLogger('dispatch-ledger');
@@ -149,13 +151,48 @@ export async function getRecentDispatches(
  * scoped; a FAILED read renders as unavailable, never as a false "none"
  * (DEF-085).
  */
+/**
+ * DEF-301 — what he actually RECEIVED, not the machinery, and expanded BEFORE truncation.
+ *
+ * A notification's stored `question` can be a system marker. The live block was rendering
+ * `[selfpruning_withdrawn: {"count":1,"titles":[...]}]` as though Brain had asked him that. He
+ * never saw those characters — `answerSanitizer` expands the marker into curated prose on the
+ * way out — so the record and the conversation disagreed, and the record is what the model
+ * reasons from. That is how a follow-up gets answered about a string the owner never read.
+ *
+ * TWO THINGS DEFEATED THE OBVIOUS VERSION OF THIS FIX, and both were found by re-rendering the
+ * block against live data rather than by reading it:
+ *
+ *   1. `systemMarker()` prefixes an INVISIBLE sentinel, and `isWholeMarker` /
+ *      `curatedMarkerMeaning` both anchor on `[`. So they silently returned false and null
+ *      against the real stored text. `isSystemMarker` / `stripMarkerEnvelope` are the
+ *      sentinel-aware API the delivery path already uses.
+ *   2. The question was being truncated to 120 chars BEFORE expansion, which cuts the marker's
+ *      closing brace and makes its parser correctly reject it. So the expansion has to happen
+ *      here, on the full text, and the truncation afterwards.
+ *
+ * Reuses the EXISTING expander rather than adding a parallel one, which would drift from the
+ * constructor — `protection-with-two-implementations`, ten occurrences deep here.
+ */
+function shownQuestion(raw: string | null | undefined): string {
+  const text = String(raw ?? '');
+  const bare = isSystemMarker(text) ? stripMarkerEnvelope(text).trim() : text;
+  // No `isWholeMarker` gate. It looked like the right guard and is the WRONG one: its pattern is
+  // `\[[^\]]{2,200}\]`, which excludes `]`, so it returns false for every marker whose JSON body
+  // contains an array — which is most of them, including the one that produced this defect.
+  // `curatedMarkerMeaning` already returns null for anything it does not recognise, so it IS the
+  // gate. Verified both against the real stored string: gate false, meaning correct.
+  const meaning = curatedMarkerMeaning(bare);
+  return (meaning ?? bare).slice(0, 120);
+}
+
 interface RecentInteractions {
   prompts: Array<{
-    at: Date | null; question: string; itemTitle: string | null;
+    at: Date | null; question: string; hasItem: boolean; itemTitle: string | null;
     answeredAt: Date | null; answerText: string | null; state: string;
   }> | null;   // null = the read failed (unavailable ≠ none)
   transitions: Array<{
-    at: Date; itemTitle: string | null; fromStatus: string; toStatus: string;
+    at: Date; hasItem: boolean; itemTitle: string | null; fromStatus: string; toStatus: string;
     outcome: string; reason: string | null;
   }> | null;
 }
@@ -176,7 +213,7 @@ async function getRecentInteractions(
     orderBy: { id: 'desc' },
     take: 10,
     select: {
-      question: true, openItemId: true, sentAt: true,
+      question: true, openItemId: true, sentAt: true, queuedAt: true,
       answeredAt: true, answerText: true, state: true,
     },
   })).catch(() => null);
@@ -207,13 +244,23 @@ async function getRecentInteractions(
 
   return {
     prompts: promptRows === null ? null : promptRows.map((p) => ({
-      at: p.sentAt, question: String(p.question ?? '').slice(0, 120),
+      // DEF-301 — `sentAt` alone left the two most recent lines rendering their date as `?`,
+      // because a prompt can be answered without ever having been marked sent. An undated line
+      // is not a cosmetic problem here: the referent rule below says "the most recent line above
+      // is the thing he means", and an undated line cannot be ordered. `queuedAt` is NOT NULL.
+      at: p.sentAt ?? p.queuedAt,
+      question: shownQuestion(p.question),
+      // DEF-301 — "no item was involved" and "there is an item but I could not find its title"
+      // are different facts and were collapsed into one. Carried separately so the renderer can
+      // stop telling the model "you asked about an item" about prompts that had no item.
+      hasItem: !!p.openItemId,
       itemTitle: p.openItemId ? (titles.get(p.openItemId) ?? null) : null,
       answeredAt: p.answeredAt, answerText: p.answerText ? String(p.answerText).slice(0, 80) : null,
       state: p.state,
     })),
     transitions: transitionRows === null ? null : transitionRows.map((t) => ({
       at: t.createdAt,
+      hasItem: !!t.openItemId,
       itemTitle: t.openItemId ? (titles.get(t.openItemId) ?? null) : null,
       fromStatus: t.fromStatus, toStatus: t.toStatus,
       outcome: t.outcome, reason: t.reason,
@@ -339,9 +386,22 @@ export async function buildDispatchLedgerBlock(
   const since = new Date(Date.now() - hrs * 60 * 60 * 1000);
   const ix = await getRecentInteractions(userId, clientNumber, since);
   const when = (d: Date | null) => (d ? d.toISOString().slice(5, 16).replace('T', ' ') : '?');
-  const nameOf = (t: string | null) => (t
-    ? `"${t}"`
-    : 'an item whose title is not on record — report it as one you cannot name, never borrow a title');
+  /**
+   * DEF-301 — three distinct facts, previously two of them collapsed into one sentence that
+   * asserted the third.
+   *
+   * The old renderer produced "you asked about an item whose title is not on record — report it
+   * as one you cannot name, never borrow a title" for EVERY prompt with no `openItemId`. Most of
+   * those prompts were never about an item at all — they are relayed messages and notifications —
+   * so the line stated a false premise (that an item exists) and then argued policy inside a data
+   * row. DEF-273 is exactly this lesson: a block that supplies evidence must not also argue about
+   * what may be done with it, because the prose wins. The rule now lives in the header only.
+   */
+  const nameOf = (r: { hasItem: boolean; itemTitle: string | null }) => {
+    if (r.itemTitle) return `"${r.itemTitle}"`;
+    if (r.hasItem) return 'an item that is on record but whose title I could not read';
+    return 'nothing on the item list — this was a message or notification, not an item';
+  };
 
   const promptLines = ix.prompts === null
     ? '(this record could not be read — say you cannot tell, do not guess)'
@@ -351,7 +411,7 @@ export async function buildDispatchLedgerBlock(
         const answered = p.answeredAt
           ? `→ HE ANSWERED ${when(p.answeredAt)}${p.answerText ? `: "${p.answerText}"` : ''}`
           : `— ${p.state}, no answer yet`;
-        return `- ${when(p.at)} you asked about ${nameOf(p.itemTitle)}: "${p.question}" ${answered}`;
+        return `- ${when(p.at)} re ${nameOf(p)}: "${p.question}" ${answered}`;
       }).join('\n');
 
   const transitionLines = ix.transitions === null
@@ -362,10 +422,13 @@ export async function buildDispatchLedgerBlock(
         const verdict = t.outcome === 'accepted'
           ? '✓'
           : `REFUSED${t.reason ? ` — recorded reason: ${t.reason}` : ''}`;
-        return `- ${when(t.at)} ${nameOf(t.itemTitle)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`;
+        return `- ${when(t.at)} ${nameOf(t)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`;
       }).join('\n');
 
   const interactions = '\n\n## What you recently ASKED him, and what he answered (from brain_prompt_queue)\n'
+    // DEF-301 — the never-borrow-a-title rule, stated ONCE here instead of inside every row.
+    + 'Where a line names no title, you do not have one: say so rather than borrowing a title\n'
+    + 'from elsewhere in your context.\n'
     + `${promptLines}\n`
     + '\n## Item status changes you attempted (from item_status_history)\n'
     + `${transitionLines}\n`

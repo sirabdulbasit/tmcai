@@ -129,7 +129,14 @@ describe('DEF-293 — DEF-199 and DEF-085 disciplines hold', () => {
     }];
     state.items = []; // title join finds nothing
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toContain('report it as one you cannot name, never borrow a title');
+    // DEF-301 changed the WORDING here, not the rule. The old single sentence
+    // ("an item whose title is not on record — report it as one you cannot name, never borrow a
+    // title") was rendered for prompts that had no item at all, so it asserted a false premise
+    // and carried policy prose inside a data row. It is now two honest cases, and the
+    // never-borrow rule is stated once in the header. Both halves of this test's intent survive:
+    // the missing title is declared unnameable, and the bare id is still never shown.
+    expect(out).toContain('on record but whose title I could not read');
+    expect(out).toContain('borrowing a title');
     expect(out).not.toContain('cmxyz123');
   });
 
