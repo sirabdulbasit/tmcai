@@ -133,7 +133,11 @@ export function callSiteFrom(stack: string | undefined): string {
     if (!line.startsWith('at ')) continue;
     if (line.includes('node_modules')) continue;
     if (line.includes('node:internal')) continue;
-    if (/[\\/]db[\\/](rawQueryObservability|prisma)\./.test(line)) continue;
+    // `rawParamSanitizer` joined this list on 2026-09-03 and had to: it wraps the raw methods
+    // at the same chokepoint, so its frame sits ABOVE the real caller and every attributed
+    // failure started reading `src/db/rawParamSanitizer.ts:162` — destroying the one fact
+    // DEF-085 was built to supply. A layer that wraps here must exclude itself here.
+    if (/[\\/]db[\\/](rawQueryObservability|rawParamSanitizer|prisma)\./.test(line)) continue;
     const m = /\(?([^()\s]+\.(?:ts|js)):(\d+):\d+\)?$/.exec(line);
     if (m) {
       const file = m[1].replace(/^.*?[\\/](src[\\/].*)$/, '$1').replace(/^.*?[\\/](dist[\\/].*)$/, '$1');

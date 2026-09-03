@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sanitizeRawParam, sanitizeRawArgs, installRawParamSanitizers,
 } from '../src/db/rawParamSanitizer';
+import { callSiteFrom } from '../src/db/rawQueryObservability';
 
 const NUL = String.fromCharCode(0);
 
@@ -132,5 +133,20 @@ describe('DEF-252 — the chokepoint is really installed', () => {
     const client: Record<string, any> = { $queryRawUnsafe: () => Promise.reject(boom) };
     installRawParamSanitizers(client, ['$queryRawUnsafe']);
     return expect(client.$queryRawUnsafe('SELECT 1')).rejects.toBe(boom);
+  });
+});
+
+describe('DEF-303 — the sanitizer must not eat the call site it sits above', () => {
+  it('excludes its own frame, so the real caller is still attributed', () => {
+    // I broke this and production showed it within the hour: after the sanitizer shipped, every
+    // attributed 22021 read `src/db/rawParamSanitizer.ts:162` instead of the caller. That is the
+    // single fact DEF-085 was built to supply, destroyed by a layer added at the same chokepoint.
+    const stack = [
+      'Error',
+      '    at captureCallerStack (/app/src/db/rawQueryObservability.ts:326:12)',
+      '    at Object.$queryRawUnsafe (/app/src/db/rawParamSanitizer.ts:162:9)',
+      '    at synthesizePerson (/app/src/services/knowledge/conceptSynthesizerService.ts:97:24)',
+    ].join('\n');
+    expect(callSiteFrom(stack)).toBe('src/services/knowledge/conceptSynthesizerService.ts:97');
   });
 });

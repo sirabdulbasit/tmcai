@@ -13,6 +13,7 @@
  * tenant_log.
  */
 import { Router, Request, Response } from 'express';
+import { toastSafeSnippet } from '../db/toastSafeText';
 import prisma from '../db/prisma';
 import { planRetrieval } from '../services/knowledge/brainRetrievalPlanner';
 import { compose, openPagesForPlan } from '../services/knowledge/brainComposer';
@@ -1202,7 +1203,7 @@ router.get('/wiki', async (req: Request, res: Response) => {
     if (type) ilikeParams.push(type);
     const ilikeHits = await prisma.$queryRawUnsafe<any[]>(
       `SELECT id, title, page_type AS "pageType", user_id AS "userId", scope,
-              SUBSTRING(COALESCE(body_markdown,''), 1, 220) AS snippet,
+              ${toastSafeSnippet('body_markdown', 220)} AS snippet,
               last_updated_at AS "lastUpdatedAt", source_count AS "sourceCount"
          FROM wiki_pages
         WHERE client_number = $1
@@ -1291,7 +1292,7 @@ router.get('/wiki', async (req: Request, res: Response) => {
 
   const items = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, title, page_type AS "pageType", user_id AS "userId", scope,
-            SUBSTRING(COALESCE(body_markdown,''), 1, 220) AS snippet,
+            ${toastSafeSnippet('body_markdown', 220)} AS snippet,
             last_updated_at AS "lastUpdatedAt", source_count AS "sourceCount"
        FROM wiki_pages ${whereBase}
       ORDER BY last_updated_at DESC

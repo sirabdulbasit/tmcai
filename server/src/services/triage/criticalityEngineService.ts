@@ -30,6 +30,7 @@
  *     and the LLM prompt will pick them up without changes here.
  */
 import crypto from 'crypto';
+import { toastSafeSnippet } from '../../db/toastSafeText';
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { callLLM } from '../llmRouter';
@@ -288,7 +289,7 @@ async function gatherKnowledge(input: ScoreInput) {
   // shared types (entity_person, topic, decision, pattern) stay visible.
   const rows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, title, page_type AS "pageType",
-            SUBSTRING(COALESCE(body_markdown,''), 1, 280) AS snippet
+            ${toastSafeSnippet('body_markdown', 280)} AS snippet
        FROM wiki_pages
       WHERE client_number = $1
         AND status = 'active'

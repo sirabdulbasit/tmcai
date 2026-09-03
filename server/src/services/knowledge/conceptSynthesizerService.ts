@@ -27,6 +27,7 @@
  * ~5 min of activity, not per message.
  */
 import prisma from '../../db/prisma';
+import { toastSafeSnippet } from '../../db/toastSafeText';
 import createLogger from '../../utils/logger';
 import { BRAIN_SCHEMA_VERSION } from './brainSchema';
 import { callLLM } from '../llmRouter';
@@ -96,7 +97,7 @@ export async function synthesizePerson(clientNumber: string, entityId: string): 
   // still the same person), so the concept page surfaces every interaction.
   const linkedPages = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, user_id AS "userId", page_type AS "pageType", title,
-            SUBSTRING(COALESCE(body_markdown,''), 1, 800) AS snippet,
+            ${toastSafeSnippet('body_markdown', 800)} AS snippet,
             last_updated_at AS "lastUpdatedAt", source_count AS "sourceCount"
        FROM wiki_pages
       WHERE client_number = $1
@@ -385,7 +386,7 @@ export async function synthesizeTopic(clientNumber: string, topicKey: string): P
   const linked = await prisma.$queryRawUnsafe<any[]>(
     `SELECT id, user_id AS "userId", page_type AS "pageType", title,
             metadata->>'entityId' AS "entityId",
-            SUBSTRING(COALESCE(body_markdown,''), 1, 600) AS snippet,
+            ${toastSafeSnippet('body_markdown', 600)} AS snippet,
             last_updated_at AS "lastUpdatedAt"
        FROM wiki_pages
       WHERE client_number = $1
