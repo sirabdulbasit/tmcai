@@ -24,6 +24,9 @@ import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { whatsappPhoneVariants } from './inboundIdentity';
 import { looksLikeLidDigits } from './waIdentity';
+import {
+  recordInboundToBrain, recordDecision, resolveRelevantUser, decideSubstantive,
+} from './brainInboxService';
 
 const log = createLogger('whatsapp:sender-triage');
 
@@ -429,6 +432,8 @@ export async function triageUnregisteredInbound(params: {
   rawSenderId?: string | null;
   /** DEF-291 — the sender's own WhatsApp display name, when the transport supplies one. */
   senderDisplayName?: string | null;
+  /** DEF-305 — the transport's message id, stored so an inbox row can be traced to the wire. */
+  waMessageId?: string | null;
 }): Promise<TriageOutcome> {
   // Hoisted out of the try so the DEF-060 fallback below can still reach the
   // owner when the main path throws. Scoping them inside the try is what made
@@ -438,6 +443,26 @@ export async function triageUnregisteredInbound(params: {
   // (a name the owner chose beats one the sender chose), but an unknown sender is no longer
   // anonymous just because we never looked.
   let senderName: string | null = params.senderDisplayName?.trim() || null;
+
+  // DEF-305 / CL-052 — RECORD FIRST, before any decision, and outside the try that guards the
+  // rest. Owner ruling 2026-09-03: a message sent to Brain's number is a message FOR BRAIN, and
+  // Brain decides what to do with it. That ruling is only safe if the record and the
+  // notification are separate things: a message Brain chooses not to forward is still a message
+  // it received, and "did anybody message you" has to include it. Before this table, an
+  // unregistered sender's message existed nowhere except the relay notification, so making
+  // notification optional would have deleted the evidence with it — DEF-270 again.
+  //
+  // `recordInboundToBrain` never throws and returns null on failure, so nothing below depends
+  // on it having worked.
+  const inbox = await recordInboundToBrain({
+    clientNumber: params.clientNumber,
+    rawSenderId: params.rawSenderId ?? null,
+    senderPhone: params.fromNumber,
+    senderName,
+    body: params.body,
+    waMessageId: params.waMessageId ?? null,
+  });
+
   try {
     ownerUserId = await resolveOwner(params.clientNumber);
     if (!ownerUserId) return { action: 'no_owner', policy: null };
@@ -457,6 +482,12 @@ export async function triageUnregisteredInbound(params: {
 
     if (policy === 'ignored') {
       log.info('inbound dropped — owner standing ignore', { from: params.fromNumber });
+      // Recorded as a decision, not just dropped. A standing ignore is a choice the owner made
+      // and can revisit, and he can only revisit it if the messages it suppressed are visible.
+      await recordDecision({
+        id: inbox?.id ?? null, decision: 'withheld_ignored_sender',
+        notifyReason: 'standing ignore on this sender, set by the owner',
+      });
       return { action: 'dropped_ignored', policy };
     }
     if (policy === 'pending') {
@@ -467,7 +498,19 @@ export async function triageUnregisteredInbound(params: {
 
     if (policy === 'allowed') {
       const name = await resolveSenderName(params.clientNumber, params.fromNumber);
-      await relayToOwner(params, ownerUserId, ['owner_allowed'], name);
+      // DEF-305 — this used to relay EVERY message from an allowed sender, unconditionally.
+      // Under the new ruling Brain decides: who it concerns, and whether it is worth
+      // interrupting them for.
+      const decided = await decideInboundForBrain({
+        params, inboxId: inbox?.id ?? null, senderName: name, fallbackUserId: ownerUserId,
+      });
+      if (!decided.notify) return { action: 'dropped_ignored', policy };
+      await relayToOwner(params, decided.userId, ['owner_allowed'], name);
+      await recordDecision({
+        id: inbox?.id ?? null, relevantUserId: decided.userId,
+        relevanceReason: decided.relevanceReason, decision: 'notified',
+        notifyReason: decided.why,
+      });
       return { action: 'relayed_allowed', policy };
     }
 
@@ -484,7 +527,19 @@ export async function triageUnregisteredInbound(params: {
         clientNumber: params.clientNumber, phone: params.fromNumber, ownerUserId,
         policy: 'allowed', decidedBy: 'concern_evidence', evidence,
       });
-      await relayToOwner(params, ownerUserId, evidence, senderName);
+      // Concern evidence is itself a reason to pass it on, so this path notifies without
+      // re-judging substance — but it still ROUTES, which is the half of the ruling that
+      // applies here ("brain should know to which user he should notify").
+      const routed = await resolveRelevantUser({
+        clientNumber: params.clientNumber, senderPhone: params.fromNumber,
+        rawSenderId: params.rawSenderId ?? null,
+      });
+      const to = routed.userId ?? ownerUserId;
+      await relayToOwner(params, to, evidence, senderName);
+      await recordDecision({
+        id: inbox?.id ?? null, relevantUserId: to, relevanceReason: routed.reason,
+        decision: 'notified', notifyReason: `concern evidence: ${evidence.join(', ')}`,
+      });
       return { action: 'relayed_allowed', policy: 'allowed', evidence };
     }
 
@@ -521,6 +576,10 @@ export async function triageUnregisteredInbound(params: {
       // catch. A type error here is worth more than a clean-looking call site.
     });
     log.info('owner asked about unknown sender', { from: params.fromNumber });
+    await recordDecision({
+      id: inbox?.id ?? null, relevantUserId: ownerUserId, decision: 'asked_owner',
+      notifyReason: 'unknown sender, so the one-time triage question went out instead',
+    });
     return { action: 'asked_owner', policy: 'pending' };
   } catch (error: any) {
     log.warn('sender triage failed — inbound held', { error: error?.message, from: params.fromNumber });
@@ -561,6 +620,76 @@ export async function triageUnregisteredInbound(params: {
   }
 }
 
+/**
+ * DEF-305 / CL-052 — Brain's decision about a message sent to its own number.
+ *
+ * Owner ruling, 2026-09-03: *"brain will analyze and see to whom it is relevant to notify or
+ * not, brain will decide what to do with messages receiving, if something really important to
+ * notify user then do (but brain should know to which user he should notify)"*.
+ *
+ * Two questions, in this order, because the second cannot be asked without the first: WHO does
+ * this concern, then is it worth interrupting THEM. Importance is not a property of a message
+ * alone — the criticality engine scores against a user's own open items, deadlines and
+ * relationships, so routing has to come first or the score is about the wrong person.
+ *
+ * EVERY FAILURE PATH HERE NOTIFIES. He complained on this same day that a real message did not
+ * notify him, so "Brain decides" must never collapse into "Brain went quiet". `resolveRelevantUser`
+ * falls back to the tenant owner, `decideSubstantive` returns substantive=true when it cannot
+ * judge, and an unattributable message still goes to `fallbackUserId` rather than nowhere.
+ */
+async function decideInboundForBrain(args: {
+  params: { clientNumber: string; fromNumber: string; body: string; rawSenderId?: string | null };
+  inboxId: string | null;
+  senderName: string | null;
+  fallbackUserId: number;
+}): Promise<{ notify: boolean; userId: number; relevanceReason: string; why: string }> {
+  const { params, inboxId, senderName, fallbackUserId } = args;
+
+  const routed = await resolveRelevantUser({
+    clientNumber: params.clientNumber,
+    senderPhone: params.fromNumber,
+    rawSenderId: params.rawSenderId ?? null,
+  });
+
+  // Nobody it can be attributed to. Recorded and not forwarded — but note this is only
+  // reachable with more than one active user, because a single-user tenant always routes.
+  if (routed.userId === null) {
+    await recordDecision({
+      id: inboxId, relevantUserId: null, relevanceReason: routed.reason,
+      decision: 'withheld_no_user',
+      notifyReason: 'recorded, but nothing ties this sender to any active user',
+    });
+    log.info('inbound recorded, not forwarded — no user it belongs to', {
+      from: params.fromNumber, reason: routed.reason,
+    });
+    return { notify: false, userId: fallbackUserId, relevanceReason: routed.reason, why: routed.reason };
+  }
+
+  const substance = await decideSubstantive({
+    clientNumber: params.clientNumber,
+    userId: routed.userId,
+    // The label the scorer sees is a NAME or a real number, never the @lid synthetic — the
+    // same rule DEF-293 and DEF-298 established for anything owner-facing, applied here
+    // because `substantiveWhy` is stored and can be read back to him.
+    senderLabel: describeSender(params.fromNumber, senderName, params.rawSenderId),
+    senderPhone: params.fromNumber,
+    body: params.body,
+  });
+
+  if (!substance.substantive) {
+    await recordDecision({
+      id: inboxId, relevantUserId: routed.userId, relevanceReason: routed.reason,
+      decision: 'withheld_not_substantive', notifyReason: substance.why,
+    });
+    log.info('inbound recorded, not forwarded — judged not worth interrupting', {
+      from: params.fromNumber, userId: routed.userId, why: substance.why,
+    });
+    return { notify: false, userId: routed.userId, relevanceReason: routed.reason, why: substance.why };
+  }
+
+  return { notify: true, userId: routed.userId, relevanceReason: routed.reason, why: substance.why };
+}
+
 /** Surface an allowed sender's message to the owner (Phase 2 replaces
  *  this relay with the scoped counterpart conversation). */
 async function relayToOwner(
@@ -591,8 +720,12 @@ async function relayToOwner(
     // `evidence` is an internal policy vocabulary — 'owner_allowed',
     // 'concern_evidence'. It reached his phone verbatim and meant nothing to
     // him. What he needs is who, what they said, and that Brain did not reply.
+    // DEF-305 — "messaged you" was false. Owner ruling 2026-09-03: *"the message sent to this
+    // number is the message for brain (not for user)"*. These arrive on BRAIN's number, from
+    // people who are not him, and Brain forwards the ones that matter. Saying "you" told him
+    // someone had contacted him directly, which is a different fact about his own week.
     body:
-      `${who} messaged you on WhatsApp:\n\n` +
+      `${who} messaged me on WhatsApp, and I am passing it on:\n\n` +
       `"${params.body.slice(0, 500)}"\n\n` +
       `I have not replied to them.`,
     urgency: 'normal',

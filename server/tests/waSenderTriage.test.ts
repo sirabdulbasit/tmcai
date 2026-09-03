@@ -22,6 +22,24 @@ vi.mock('../src/services/notifications/brainOutboundService', () => ({
   brainContactsUser: (...a: any[]) => contact(...a),
 }));
 
+// DEF-305 — Brain's inbox is mocked out here on purpose. These tests are about DOOR POLICY
+// (ignore / pending / allowed / evidence / ask-once), and the inbox does its own database work,
+// which would consume the ordered `mockResolvedValueOnce` chains below and make every one of
+// them fail for a reason that has nothing to do with the policy being tested. That is exactly
+// what happened when the inbox landed. `tests/def305BrainOwnInbox.test.ts` proves the inbox
+// behaviour against its own mocks; the one thing asserted HERE is the ORDERING — that a message
+// is recorded before any decision is taken about it.
+const recordInbound = vi.fn(async () => ({ id: '1' }));
+const recordDecisionSpy = vi.fn(async () => undefined);
+const resolveRelevant = vi.fn(async () => ({ userId: 2, reason: 'test' }));
+const decideSubstantiveSpy = vi.fn(async () => ({ substantive: true, why: 'test' }));
+vi.mock('../src/services/whatsapp/brainInboxService', () => ({
+  recordInboundToBrain: (...a: any[]) => recordInbound(...a),
+  recordDecision: (...a: any[]) => recordDecisionSpy(...a),
+  resolveRelevantUser: (...a: any[]) => resolveRelevant(...a),
+  decideSubstantive: (...a: any[]) => decideSubstantiveSpy(...a),
+}));
+
 import {
   triageUnregisteredInbound, gatherConcernEvidence, interpretSenderDecision,
   resolveSenderName, describeSender,
@@ -30,7 +48,11 @@ import {
 const OWNER = [{ id: 2 }];
 const PARAMS = { clientNumber: 'TMC-0001', fromNumber: '+923001234567', body: 'AoA, need approval' };
 
-beforeEach(() => { q.mockReset(); x.mockReset(); enqueue.mockReset(); contact.mockReset(); x.mockResolvedValue(1); });
+beforeEach(() => {
+  q.mockReset(); x.mockReset(); enqueue.mockReset(); contact.mockReset(); x.mockResolvedValue(1);
+  recordInbound.mockClear(); recordDecisionSpy.mockClear();
+  resolveRelevant.mockClear(); decideSubstantiveSpy.mockClear();
+});
 
 describe('door policy honors standing decisions', () => {
   it('standing ignore → silent drop, no relay, no re-ask', async () => {
@@ -39,6 +61,11 @@ describe('door policy honors standing decisions', () => {
     expect(r.action).toBe('dropped_ignored');
     expect(enqueue).not.toHaveBeenCalled();
     expect(contact).not.toHaveBeenCalled();
+    // DEF-305 — dropped is not the same as unrecorded. A standing ignore is a decision the
+    // owner can revisit, and he can only revisit it if the suppressed messages are visible.
+    expect(recordInbound).toHaveBeenCalledTimes(1);
+    expect(recordDecisionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: 'withheld_ignored_sender' }));
   });
 
   it('pending → held quietly; ask-once means repeat inbound never re-prompts', async () => {

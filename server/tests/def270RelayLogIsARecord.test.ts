@@ -41,9 +41,16 @@ const block = codeOnly.slice(
   codeOnly.indexOf('async function buildContactProvenanceBlock'));
 
 describe('DEF-270 — the relay log counts as messages received', () => {
-  it('reads the relay log, not only feed_events', () => {
-    expect(block).toContain("kind = 'wa_counterpart_message'");
-    expect(block).toContain('brain_user_messages');
+  it('reads what ARRIVED, not only feed_events', () => {
+    // DEF-305 moved the source. This used to assert `brain_user_messages` /
+    // `kind = 'wa_counterpart_message'` — i.e. Brain's own NOTIFICATIONS — which was a fine
+    // proxy for "what arrived" only while every message was forwarded unconditionally. Now
+    // Brain decides what to forward, so the notification log is no longer the record and the
+    // block reads `brain_inbox_messages` instead. The INTENT of this test is unchanged and is
+    // what matters: messages from unregistered senders must reach the block, not only
+    // feed_events. The 129 rows of relay history were backfilled so this did not become a gap.
+    expect(block).toContain('recentInboxForContext');
+    expect(block).not.toContain("kind = 'wa_counterpart_message'");
   });
 
   it('surfaces relays even when feed_events is EMPTY — the exact failing case', () => {
@@ -92,9 +99,16 @@ describe('DEF-270 — the relay log counts as messages received', () => {
   });
 
   it('declares a legacy relay body as truncated rather than passing it off as whole', () => {
-    // Pre-metadata rows recover their text from the dedup key, which caps at 40 characters. A
-    // cut sentence presented as the full message is the same class of small lie as source=null.
-    expect(SRC).toContain('truncated — pre-metadata relay');
+    // The recovery-from-dedup-key fallback moved from the READ path to the backfill, because
+    // the inbox now stores the body properly and only the historical rows ever needed
+    // recovering. The honesty requirement travelled with it: 100 of the 129 backfilled rows
+    // were recovered from a 40-char dedup key and say so in the body itself.
+    const fsMod = require('node:fs') as typeof import('node:fs');
+    const migration = fsMod.readFileSync(
+      path.join(__dirname, '..', 'prisma', 'migrations', '20260903_brain_own_inbox', 'migration.sql'),
+      'utf8');
+    expect(migration).toContain('truncated at 40 chars');
+    expect(migration).toContain('wa_counterpart:');
   });
 
   it('renders relay times in the owner\'s zone, not UTC (DEF-268 holds here too)', () => {

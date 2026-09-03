@@ -32,6 +32,12 @@ vi.mock('../src/services/knowledge/systemCapabilitiesService', () => ({
   getSystemCapabilities: () => Promise.resolve({ waIdentity: { brainNumber: '+923274572102' } }),
   renderCapabilitiesBlock: () => '',
 }));
+// DEF-305 moved the "sent to my number" data out of `brain_user_messages` and into Brain's own
+// inbox, so it is stubbed at the service rather than by matching SQL.
+const inboxRows = { current: [] as any[] };
+vi.mock('../src/services/whatsapp/brainInboxService', () => ({
+  recentInboxForContext: () => Promise.resolve(inboxRows.current),
+}));
 
 import { buildRecentWhatsAppBlock } from '../src/services/knowledge/brainComposer';
 
@@ -49,9 +55,9 @@ function stub(opts: {
     }
     if (sql.includes('max(created_at)')) return Promise.resolve([{ latest: opts.latest ?? null }]);
     if (sql.includes("source_type = 'whatsapp'")) return Promise.resolve(opts.feedRows ?? []);
-    if (sql.includes("kind = 'wa_counterpart_message'")) return Promise.resolve(opts.relays ?? []);
     return Promise.resolve([]);
   });
+  inboxRows.current = opts.relays ?? [];
 }
 
 describe('DEF-300 — provenance is stamped on both populations', () => {
@@ -66,7 +72,7 @@ describe('DEF-300 — provenance is stamped on both populations', () => {
   });
 
   it('labels the relay block as sent TO Brain\'s own number', async () => {
-    stub({ relays: [{ created_at: new Date(), status: 'suppressed', metadata: { relayedBody: 'hi', senderRef: 'a@lid' }, dedup_key: null }] });
+    stub({ relays: [{ receivedAt: new Date(), senderName: null, senderPhone: null, body: 'hi', decision: 'withheld_not_substantive', notifyReason: 'chit-chat', relevantUserId: 2 }] });
     const block = await buildRecentWhatsAppBlock('TMC-0001', 2);
     expect(block).toContain('sent TO MY OWN number');
     expect(block).toContain('DIFFERENT population');
@@ -83,7 +89,7 @@ describe('DEF-300 — provenance is stamped on both populations', () => {
   it('never merges them into one section', async () => {
     stub({
       feedRows: [{ sender_phone: '+923028000553', sender_name: 'Muhammad Yousaf', raw_payload: { body: 'salam' }, created_at: new Date() }],
-      relays: [{ created_at: new Date(), status: 'sent', metadata: { relayedBody: 'hello' }, dedup_key: null }],
+      relays: [{ receivedAt: new Date(), senderName: 'Yousaf', senderPhone: '+923028000553', body: 'hello', decision: 'notified', notifyReason: 'asked about a live item', relevantUserId: 2 }],
     });
     const block = await buildRecentWhatsAppBlock('TMC-0001', 2);
     const a = block.indexOf("READ FROM the user's own WhatsApp");
@@ -149,5 +155,44 @@ describe('DEF-302 — Brain is not one of the people who messaged him', () => {
     await build('TMC-0001', 2);
     const call = queryRawUnsafe.mock.calls.find((c) => String(c[0]).includes("source_type = 'whatsapp'"))!;
     expect(String(call[0])).toContain("$4 = ''");
+  });
+});
+
+describe('DEF-305/DEF-295 — the sender count is never a false zero', () => {
+  it('counts distinct senders from the raw id, which every row has', async () => {
+    // Rendered against real backfilled data this said "17 messages from 0 distinct senders",
+    // because the count came from name-or-phone and a backfilled row has neither. A false zero
+    // is worse than no count, and DEF-295 is the row about exactly this: state how many PEOPLE
+    // rather than leaving the model to infer it from the message count.
+    stub({
+      relays: [
+        { receivedAt: new Date(), rawSenderId: 'a@lid', senderName: null, senderPhone: null, body: 'one', decision: 'notified', notifyReason: null, relevantUserId: 2 },
+        { receivedAt: new Date(), rawSenderId: 'a@lid', senderName: null, senderPhone: null, body: 'two', decision: 'notified', notifyReason: null, relevantUserId: 2 },
+        { receivedAt: new Date(), rawSenderId: 'b@lid', senderName: null, senderPhone: null, body: 'three', decision: 'notified', notifyReason: null, relevantUserId: 2 },
+      ],
+    });
+    const block = await buildRecentWhatsAppBlock('TMC-0001', 2);
+    expect(block).toContain('3 messages from 2 distinct senders');
+    expect(block).not.toContain('0 distinct');
+  });
+
+  it('renders a withheld message as arrived, with the reason', async () => {
+    // The property the whole ruling depends on: a message Brain chose not to forward is still
+    // a message it received, and it must be able to say so.
+    stub({
+      relays: [{ receivedAt: new Date(), rawSenderId: 'a@lid', senderName: null, senderPhone: null, body: 'salam', decision: 'withheld_not_substantive', notifyReason: 'social chit-chat', relevantUserId: 2 }],
+    });
+    const block = await buildRecentWhatsAppBlock('TMC-0001', 2);
+    expect(block).toContain('[not forwarded: social chit-chat]');
+    expect(block).toMatch(/ALL of these count, including the ones I did not/);
+  });
+
+  it('never prints a 13+ digit synthetic, even though it counts with one', async () => {
+    stub({
+      relays: [{ receivedAt: new Date(), rawSenderId: '255043747987458@lid', senderName: null, senderPhone: null, body: 'x', decision: 'notified', notifyReason: null, relevantUserId: 2 }],
+    });
+    const block = await buildRecentWhatsAppBlock('TMC-0001', 2);
+    expect(block).not.toContain('255043747987458');
+    expect(block).toContain('whose number WhatsApp did not share');
   });
 });

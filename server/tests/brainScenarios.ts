@@ -810,7 +810,11 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
       // "# Messages sent TO MY OWN number, relayed from unregistered senders" to stamp the
       // provenance the owner asked for, and an exact-match anchor silently sliced to nothing —
       // the assertion then passed vacuously on an empty string until the next assertion caught it.
-      const anchor = composer.indexOf('relayed from unregistered senders');
+      // Anchored on 'sent TO MY OWN number', which DEF-300 introduced and DEF-305 kept when it
+      // dropped 'relayed from unregistered senders' — those messages are no longer all relayed,
+      // so the old words became untrue as well as unfindable. Second re-anchor in one day:
+      // an exact-match anchor on prose is a guard that breaks whenever the prose improves.
+      const anchor = composer.indexOf('sent TO MY OWN number');
       expect(anchor).toBeGreaterThan(0);
       const header = composer.slice(anchor);
       const relayHeader = header.slice(0, header.indexOf('relays.map('));

@@ -5474,42 +5474,39 @@ export async function buildRecentWhatsAppBlock(clientNumber: string, userId: num
   ).catch(() => [] as any[]);
   const latestSeen = lastSeen[0]?.latest ?? null;
 
-  // ── DEF-270: THE RELAY LOG IS ALSO A RECORD OF MESSAGES RECEIVED ────────────────────────
-  // Unregistered senders' bodies are deliberately kept out of feed_events (owner ruling
-  // 2026-06-10), and Section 35 (2026-08-04) relays them to him anyway. Reading only
-  // feed_events therefore made Brain answer *"I don't see any new messages in the last hour"*
-  // fourteen minutes after relaying one — and repeat it when challenged. True of the store it
-  // read; false about the world.
+  // ── DEF-305 / CL-052: BRAIN'S OWN INBOX IS THE RECORD, NOT ITS NOTIFICATIONS ────────────
   //
-  // So the relays are read too, and labelled for what they are: announced, not retained. This
-  // reverses neither ruling — it reports Brain's own outbound, which this table already audits.
-  const relays = await prisma.$queryRawUnsafe<Array<{ created_at: Date; status: string; metadata: any; dedup_key: string | null }>>(
-    `SELECT created_at, status, metadata, dedup_key
-       FROM brain_user_messages
-      WHERE client_number = $1 AND user_id = $2
-        AND kind = 'wa_counterpart_message'
-        AND created_at >= NOW() - INTERVAL '24 hours'
-      ORDER BY created_at DESC
-      LIMIT 40`,
-    clientNumber, userId,
-  ).catch(() => [] as any[]);
+  // This read used to come from `brain_user_messages` — i.e. from what Brain had SENT him about
+  // a message. That worked only while every message was forwarded unconditionally (Section 35,
+  // 2026-08-04). Under the owner's ruling of 2026-09-03 Brain decides what to forward, so the
+  // notification log stopped being a record of what ARRIVED: a message Brain judged not worth
+  // interrupting him for would have disappeared from Brain's own memory of receiving it, and
+  // "did anybody message you" would answer from the wrong set. That is DEF-270 arriving by a
+  // new route, and it is the reason `brain_inbox_messages` exists.
+  //
+  // So the block now reads the inbox, INCLUDING the messages Brain chose not to forward, each
+  // with the decision it made. If asked whether anyone messaged, all of them count.
+  const { recentInboxForContext } = await import('../whatsapp/brainInboxService');
+  const relays = await recentInboxForContext({ clientNumber, hours: 24, limit: 40 })
+    .catch(() => [] as Awaited<ReturnType<typeof recentInboxForContext>>);
 
   // DEF-295 — state HOW MANY PEOPLE, not just how many messages.
   //
   // Asked who had messaged him, Brain answered *"19 WhatsApp messages from various unregistered
   // numbers"*. It was 19 messages from ONE sender. The block listed each message and never said
   // how many distinct identities they came from, so the model inferred "various" from the count.
-  //
-  // I made the mirror-image mistake myself on 09-01, reading one chatty sender as four strangers
-  // (DEF-269's correction). A number nobody has to infer is a number nobody gets wrong.
+  // Counted from `rawSenderId` FIRST, because it is the only field every row has. Counting from
+  // name-or-phone rendered "17 messages from 0 distinct senders" against real backfilled data —
+  // a false zero, which is the very thing DEF-295 exists to prevent. The raw id is used for
+  // counting only and never printed: for an @lid sender it is the value he ruled useless.
   const relayIdentityCount = new Set(
-    relays.map((r) => String(r.metadata?.senderRef ?? r.dedup_key ?? '')
-      .replace(/^wa_counterpart:/, '').split(':')[0])
+    relays.map((r) => String(r.rawSenderId ?? r.senderPhone ?? r.senderName ?? '').trim())
       .filter(Boolean),
   ).size;
+
   const relayTz = await resolveUserTimezone(userId).catch(() => 'UTC');
   const relayBlock = relays.length === 0 ? '' :
-    `\n\n# Messages sent TO MY OWN number, relayed from unregistered senders (last 24h — ${relays.length} message`
+    `\n\n# Messages sent TO MY OWN number (last 24h — ${relays.length} message`
     + `${relays.length === 1 ? '' : 's'} from ${relayIdentityCount} distinct sender`
     + `${relayIdentityCount === 1 ? '' : 's'})\n`
     // DEF-273: this header says what the data IS and NOTHING about what may be done with it.
@@ -5517,38 +5514,34 @@ export async function buildRecentWhatsAppBlock(clientNumber: string, userId: num
     // policy" — true, and about STORAGE — and the model turned it into a DISCLOSURE rule,
     // telling the owner "I can't show you the message content for privacy reasons" while these
     // very lines held all ten bodies. A block that supplies evidence must not also argue about
-    // policy: the two claims contradict each other and the prose won. The storage caveat was
-    // for my benefit, not the model's, so it now lives here in a comment where it belongs.
-    // DEF-300 — the other half of the provenance stamp. These came to Brain's own number; the
-    // block above is what Brain reads out of the user's WhatsApp. Saying which is which HERE,
-    // next to the data, is what DEF-165 found outranks a rule in a rulebook.
-    + 'These were sent TO ME, on my own number, by people who are not the user, and I forwarded '
-    + 'them to him. They are a DIFFERENT population from the messages read out of his own '
-    + 'WhatsApp above — never merge the two when answering who messaged whom. '
-    + 'The text below is what was forwarded. '
-    + 'If asked whether anyone messaged, these count. A `suppressed` row means the message '
-    + 'arrived and the notification was withheld by a budget, NOT that nothing arrived.\n'
+    // policy: the two claims contradict each other and the prose won.
+    // DEF-300 — the provenance stamp. These came to Brain's own number; the block above is what
+    // Brain reads out of the user's WhatsApp. Saying which is which HERE, next to the data, is
+    // what DEF-165 found outranks a rule in a rulebook.
+    // DEF-305 — and these are addressed to ME. Every one of them is listed, including the ones
+    // I decided not to forward, each with the decision. That is the whole point of reading the
+    // inbox instead of my own notifications.
+    + 'These were sent TO ME, on my own number, by people who are not the user. They are a '
+    + 'DIFFERENT population from the messages read out of his own WhatsApp above — never merge '
+    + 'the two when answering who messaged whom. '
+    + 'If asked whether anyone messaged, ALL of these count, including the ones I did not '
+    + 'forward: they arrived. `[not forwarded: reason]` means the message arrived and I judged '
+    + 'it did not need his attention, NOT that nothing arrived — if he asks, say it came in and '
+    + 'why I held it.\n'
     + relays.map((r) => {
-      // LEGACY FALLBACK, read-only, for rows written before `relayedBody` existed.
-      // The dedup key is `wa_counterpart:<identity>:<first 40 chars of body>`, so the text of
-      // an older relay is recoverable from it. This is NOT the dedup key being used as a data
-      // store — new relays carry `relayedBody`, and this branch only reads what is already
-      // there rather than leaving the owner told "text not recorded" about the very messages
-      // he is asking after.
-      const legacy = r.metadata?.relayedBody
-        ? ''
-        : String(r.dedup_key ?? '').split(':').slice(2).join(':');
-      const body = String(r.metadata?.relayedBody ?? legacy).replace(/\s+/g, ' ').slice(0, 200);
-      const when = formatTimeInZone(relayTz, new Date(r.created_at));
-      // An older relay predates `relayedBody`; say so rather than rendering an empty quote as
-      // though the sender had sent nothing.
-      // A legacy body is truncated at 40 chars by the key's own shape; say so rather than
-      // presenting a cut sentence as the whole message.
-      const truncated = !r.metadata?.relayedBody && body.length >= 40;
-      const what = body
-        ? `"${body}"${truncated ? ' (truncated — pre-metadata relay)' : ''}`
-        : '(text not recorded for this relay)';
-      return `- [${when}] from an unregistered sender · relay ${r.status} · ${what}`;
+      const body = String(r.body ?? '').replace(/\s+/g, ' ').slice(0, 200);
+      const when = formatTimeInZone(relayTz, new Date(r.receivedAt));
+      // The sender label never carries the @lid synthetic: `sender_phone` is stored NULL for an
+      // @lid sender precisely so this line cannot print one (DEF-293, DEF-298).
+      const who = r.senderName
+        ? `${r.senderName}${r.senderPhone ? ` (${r.senderPhone})` : ''}`
+        : (r.senderPhone ?? 'an unregistered sender whose number WhatsApp did not share');
+      const outcome = r.decision === 'notified'
+        ? 'forwarded to him'
+        : r.decision === 'asked_owner'
+          ? 'unknown sender — I asked him once whether to allow it'
+          : `[not forwarded: ${r.notifyReason || r.decision}]`;
+      return `- [${when}] from ${who} · ${outcome} · "${body || '(empty)'}"`;
     }).join('\n');
 
   /**
