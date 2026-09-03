@@ -973,3 +973,36 @@ an hour earlier. The starvation fix delivered a prompt whose side effect was a n
 **Still open:** DEF-280 — thirty seconds after answering, Brain could not name the item it had
 just answered, and offered two unrelated candidates instead. Not yet diagnosed; the referent
 reached the model on the previous turn, so it is not the quoted-text gap.
+
+## Chat 24
+
+**2026-09-03 13:25, CL-051 — DEF-298. THIRD occurrence.**
+
+Asked who had messaged him, Brain answered with two synthetic identifiers as though they
+were phone numbers:
+
+> "+109526195949711 (Mubarak Jharna Mahandri), or +239324201222348 (Samra Bank Islami BTL)"
+
+He had already ruled on this twice, in his own words:
+
+> "@lid number is useless for me"
+
+> "+255043747987458 ... is useless for me, don't show me this anywhere keep it for your
+> internal referencing or working / where column Name and Number is useful for me"
+
+**What went RIGHT:** the names were correct, and the pairing was correct — these are real
+people he knows, correctly identified. Only the number was wrong.
+
+**What was actually wrong.** DEF-293 guarded `describeSender`, and that guard is deployed and
+verified. It guards the FORMATTER. The defect was in the DATA: 24 `entity_person` pages stored a
+13+ digit LID in `metadata.phone`, the one field every reader treats as a dialable number. Both
+values above are verbatim what those rows held. DEF-245 fixed the write path on 2026-08-25 and
+cleaned the `entities` table (26 rows); it did not clean the same values in `wiki_pages`, and
+nothing re-synthesised those pages. Measured: 24 rows, created 05-23 to 08-07, **zero since
+DEF-245** — residue, not a live writer.
+
+**Fixed in two halves, because one half was what failed last time.** The data:
+`20260903_lid_is_not_a_phone` moves the LID to `waLid` and clears `phone` (verified live, 24 → 0,
+value preserved, re-run updates 0 rows). The class: `scopedContacts.ts` — the sole contact reader
+since DEF-040 — will not hand out a LID-shaped value as a phone, so a stale page, a re-synthesis
+from stale data, or a future writer cannot reach him through the contact path.

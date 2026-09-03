@@ -881,6 +881,50 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
     },
   },
   {
+    id: 'chat24',
+    title: 'it showed him a synthetic @lid number as a phone, for the third time',
+    fixCommits: ['pending'],
+    symptomTags: ['identity-withheld-by-transport', 'protection-with-two-implementations'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const root = join(__dirname, '..', 'src');
+
+      // 1. THE SOLE CONTACT READER REFUSES. DEF-293 guarded the formatter and he was shown one
+      //    anyway, because the LID was in the DATA. The durable guard belongs where the data
+      //    leaves the store, not in a second formatter — that split IS the recurring shape.
+      const accessor = readFileSync(
+        join(root, 'services', 'knowledge', 'scopedContacts.ts'), 'utf-8');
+      expect(accessor).toContain('looksLikeLidDigits');
+      expect(accessor).toContain('withoutLidAsPhone');
+
+      // 2. IT MOVES, IT DOES NOT DELETE. The LID really does identify this person to WhatsApp;
+      //    it just is not a number. DEF-245's rule — file it where a mistake stays reversible.
+      const fn = accessor.slice(
+        accessor.indexOf('function withoutLidAsPhone'),
+        accessor.indexOf('/** Look a contact up'));
+      const body = fn.split('\n').filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//')).join('\n');
+      expect(body).toContain('waLid');
+
+      // 3. EVERY LIMB, NOT ONE. Three lookup limbs; a projection on the id path alone would be
+      //    the same partial coverage that produced this defect.
+      const limbs = accessor.split('withoutLidAsPhone(rows[0])').length - 1;
+      expect(limbs).toBe(3);
+
+      // 4. THE SEND PATH TOO. A LID handed to the WhatsApp resolver means messaging an address
+      //    the owner never chose.
+      expect(accessor).toContain('!looksLikeLidDigits(phone)');
+
+      // 5. THE DATA WAS CLEANED, NOT JUST GUARDED. A guard over 24 live rows that still say a
+      //    LID is a phone leaves the value one unguarded reader away from him.
+      const migration = readFileSync(
+        join(__dirname, '..', 'prisma', 'migrations', '20260903_lid_is_not_a_phone', 'migration.sql'),
+        'utf-8');
+      expect(migration).toContain('waLid');
+      expect(migration).toContain("page_type = 'entity_person'");
+    },
+  },
+  {
     id: 'chat23',
     title: 'it promised to mark an item done, said "Got it.", and marked nothing',
     fixCommits: ['pending'],

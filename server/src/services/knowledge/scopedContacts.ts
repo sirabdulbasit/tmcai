@@ -1,5 +1,6 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
+import { looksLikeLidDigits } from '../whatsapp/waIdentity';
 
 const log = createLogger('scoped-contacts');
 
@@ -49,6 +50,35 @@ export interface ScopedContactPage {
   lastUpdatedAt: Date | null;
 }
 
+/**
+ * DEF-298 — a LID never leaves here wearing a phone number's clothes.
+ *
+ * The owner has been shown a synthetic number THREE times, and said twice that it is useless to
+ * him and must not appear anywhere owner-facing. DEF-293 fixed the FORMATTER and is deployed and
+ * verified. This is the other half: 24 contact pages still STORE a 13+ digit LID in
+ * `metadata.phone`, residue DEF-245 left behind when it cleaned `entities` and not these. The
+ * third occurrence, "+109526195949711 (Mubarak Jharna Mahandri)", is verbatim what that row holds.
+ *
+ * `20260903_lid_is_not_a_phone` moves those 24 values to `waLid`. This is the guard that makes
+ * the class unrepeatable rather than the instance fixed: a stale page, a re-synthesis from stale
+ * data, or a future writer cannot put a LID in front of the owner through the contact path,
+ * because the only reader of that path will not hand one out as a phone.
+ *
+ * Projected at the accessor, deliberately, not added as a second formatter — the audit's own
+ * words, and `protection-with-two-implementations` is ten occurrences deep here. The value is not
+ * destroyed: it moves to `waLid` on the way out, so internal callers that legitimately want the
+ * WhatsApp identity still have it.
+ */
+function withoutLidAsPhone<T extends { metadata: any }>(row: T): T {
+  const phone = row?.metadata?.phone;
+  if (!phone || !looksLikeLidDigits(String(phone))) return row;
+  const { phone: _dropped, ...rest } = row.metadata ?? {};
+  return {
+    ...row,
+    metadata: { ...rest, waLid: row.metadata?.waLid ?? String(phone), phoneWasLid: true },
+  };
+}
+
 /** Look a contact up by wiki page id, email, or phone — scoped to what the requester may see. */
 export async function findScopedContactPage(args: {
   clientNumber: string;
@@ -68,19 +98,19 @@ export async function findScopedContactPage(args: {
     if (args.byId) {
       const rows = await prisma.$queryRawUnsafe<ScopedContactPage[]>(
         `${select} AND id = $4 LIMIT 1`, clientNumber, userId, discoveredBy, args.byId);
-      return rows[0] ?? null;
+      return rows[0] ? withoutLidAsPhone(rows[0]) : null;
     }
     if (args.byEmail) {
       const rows = await prisma.$queryRawUnsafe<ScopedContactPage[]>(
         `${select} AND lower(metadata->>'email') = $4 LIMIT 1`,
         clientNumber, userId, discoveredBy, args.byEmail.toLowerCase());
-      return rows[0] ?? null;
+      return rows[0] ? withoutLidAsPhone(rows[0]) : null;
     }
     if (args.byPhone) {
       const rows = await prisma.$queryRawUnsafe<ScopedContactPage[]>(
         `${select} AND regexp_replace(coalesce(metadata->>'phone',''), '[^0-9+]','','g') = $4 LIMIT 1`,
         clientNumber, userId, discoveredBy, args.byPhone);
-      return rows[0] ?? null;
+      return rows[0] ? withoutLidAsPhone(rows[0]) : null;
     }
     return null;
   } catch (error: any) {
@@ -108,7 +138,9 @@ export async function findScopedContactPhonesByEmail(args: {
           AND lower(metadata->>'email') = $4
           AND status NOT IN ('archived','inactive','deleted','contradicted')`,
       args.clientNumber, args.userId, JSON.stringify([args.userId]), args.email.toLowerCase());
-    return rows.map((r) => r.phone).filter(Boolean);
+    // Same rule for the phone list: a LID is not a number anyone can message, so handing one
+    // to the WhatsApp resolver would produce a send to an address the owner never chose.
+    return rows.map((r) => r.phone).filter((phone) => Boolean(phone) && !looksLikeLidDigits(phone));
   } catch (error: any) {
     log.warn('scoped contact phone lookup failed — returning nothing', {
       error: String(error?.message ?? error).slice(0, 140),
