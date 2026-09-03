@@ -23,6 +23,7 @@
 import prisma from '../../db/prisma';
 import createLogger from '../../utils/logger';
 import { whatsappPhoneVariants } from './inboundIdentity';
+import { looksLikeLidDigits } from './waIdentity';
 
 const log = createLogger('whatsapp:sender-triage');
 
@@ -149,8 +150,36 @@ export async function resolveSenderName(
   }
 }
 
-/** "+92300… (Hamna Latif)" when known, "+92300…" when not. */
-export function describeSender(phone: string, name: string | null): string {
+/**
+ * "+92300… (Hamna Latif)" when known, "+92300…" when not — and NEVER the synthetic.
+ *
+ * DEF-293. Owner ruling, twice now: *"don't show me niumber like +239487846228094, this is your
+ * internal number"* (09-01) and *"first column is useless for me, don't show me this anywhere,
+ * keep it for your internal referencing"* (09-03). DEF-269 recorded the requirement and left the
+ * enforcement open; this is the enforcement.
+ *
+ * The synthetic `'+' + lid-digits` exists for a good reason — it is the routing token that keeps
+ * an unresolved sender's replies from being discarded (`@lid` recurrence #4) — so it stays in the
+ * database and in every internal path. What must stop is it reaching HIM, because it is shaped
+ * like a dialable number and is not one. DEF-121's rule: a fabricated number is worse than no
+ * number, because it looks actionable.
+ *
+ * `rawSenderId` gives an exact answer when the caller has it. Without it, fall back to the digit
+ * length: a real E.164 number is at most 15 digits but in practice ≤12, while a LID is 15. That
+ * trade is deliberate — hiding one unusually long real number costs him a digit string he can
+ * read off the relay anyway; showing a fake one costs him a call to nobody.
+ */
+export function describeSender(
+  phone: string,
+  name: string | null,
+  rawSenderId?: string | null,
+): string {
+  const isSynthetic = rawSenderId
+    ? String(rawSenderId).endsWith('@lid')
+    : looksLikeLidDigits(phone);
+  if (isSynthetic) {
+    return name ?? 'an unknown sender whose number WhatsApp did not share';
+  }
   return name ? `${phone} (${name})` : phone;
 }
 
@@ -453,7 +482,7 @@ export async function triageUnregisteredInbound(params: {
       userId: ownerUserId,
       clientNumber: params.clientNumber,
       question:
-        `${describeSender(params.fromNumber, senderName)} sent me a message: ` +
+        `${describeSender(params.fromNumber, senderName, params.rawSenderId)} sent me a message: ` +
         `"${params.body.slice(0, 120)}". ` +
         `Should I reply to them, or ignore this number? (An ignore stays until you tell me otherwise.)`,
       // DEF-060 (2026-08-05): this said 'normal', which is not a Criticality.
@@ -493,7 +522,7 @@ export async function triageUnregisteredInbound(params: {
     // that says less is worth far more than silence.
     try {
       const { brainContactsUser } = await import('../notifications/brainOutboundService');
-      const who = describeSender(params.fromNumber, senderName);
+      const who = describeSender(params.fromNumber, senderName, params.rawSenderId);
       await brainContactsUser({
         userId: ownerUserId,
         clientNumber: params.clientNumber,
@@ -535,7 +564,7 @@ async function relayToOwner(
   // transport handed us — which for an @lid sender was a fabricated phone.
   const who = await identifySender(
     params.clientNumber, params.fromNumber, params.rawSenderId, senderName,
-  ).catch(() => describeSender(params.fromNumber, senderName));
+  ).catch(() => describeSender(params.fromNumber, senderName, params.rawSenderId));
 
   await brainContactsUser({
     userId: ownerUserId,
