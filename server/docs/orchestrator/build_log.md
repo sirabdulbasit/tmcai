@@ -2394,3 +2394,90 @@ would prove me wrong: the box already running `c9162d0` with the guard NOT holdi
 (14 pre-existing echo rows re-surfacing through a read path the funnel guard does
 not cover — the guard stops NEW ingestion; historical rows are a separate sweep the
 DEF-287 row should own if they resurface).
+
+## Iteration 67 (build) — 2026-09-03
+
+**Files named early and changed:**
+`server/src/services/knowledge/dispatchLedgerService.ts` + new suite
+`server/tests/def293JustActedReferent.test.ts`. **Deck objective taken — the run's
+single open tag, reported in FIVE of his conversations:** `Answered a nudge, then
+asked which item Brain meant; Brain could not name the item it had just acted on and
+offered unrelated items`. Filed as **DEF-293**, closing DEF-280 and DEF-282 as one
+class.
+
+**The mechanism, verified before coding (not carried from the analyst on faith):**
+`brain_prompt_queue` stores the question Brain asked, `answeredAt` and `answerText`;
+`item_status_history` stores every attempted transition with
+`recordHistory(..., 'rejected', reason)` (`lifecycleService.ts:91-107`). Both
+verified by grep this turn. Neither record ever reached the model's context — so
+asked about the thing it had JUST acted on, the model chose from the items it could
+see and offered unrelated ones with confidence. A context-block gap, not a storage
+gap: DEF-037's "did you inform Hamna?" mechanism on a new pair of tables, fixed in
+DEF-037's own place.
+
+**What changed, by file:line — and why it is the class:**
+- `dispatchLedgerService.ts:131-215` — `getRecentInteractions`: the two reads,
+  (clientNumber, userId)-scoped (asserted inside the test mock so every test
+  enforces it), titles joined per DEF-199, each query deferred into the promise
+  chain so even a synchronous throw is caught (the DEF-274 gap, cited in-code).
+  A failed read is `null` — unavailable ≠ none (DEF-085).
+- `dispatchLedgerService.ts:336-385` — the ledger block renders both records every
+  turn: prompts with his answers ("→ HE ANSWERED …: \"done\""), transitions with
+  ✓/REFUSED + the recorded reason; empty windows stated as facts; failures as
+  "(could not be read — say you cannot tell, do not guess)". The referent rule
+  sits BESIDE the data (DEF-165's finding): the most recent line is what a
+  follow-up means; a REFUSED line answers "why isn't it closed" via its recorded
+  reason; offering unrelated items while a line matches the moment is named as the
+  failure. One block, both composer paths, no drift.
+- Governance: evidence provision + target grounding; no authority moves to code;
+  wording stays the model's. No allow-list, no enumeration.
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3314 passed | 0 failed** (277 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3343). New suite:
+  **8 passed | 0 failed** — the CL-046 fixture, the Session-21 refusal with reason,
+  pending-vs-answered, unnameable-title discipline, sync-throw-renders-unavailable,
+  empty-windows-as-facts, and the referent rule beside the referents. The three
+  ledger-adjacent suites (def165, def228, def108b) pass unmodified.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+
+**Governing docs (rule 5): circling at the class, structural fix given** — the
+family (`fabricated-status`-adjacent wrong-referent, DEF-280/282/263 members) kept
+recurring because each fix treated a reply path while the referent was simply
+absent from every path's context. This moves the information to where the decision
+is, once, in the shared block. DEF-293 row written.
+
+**CAPABILITY:** Memory (declared divergence: the header says Thinking, the gap
+table says Self-Pruning — the harness's target is self-contradictory again, and
+the deck section makes this tag THE objective of the run; the campaign's increment
+3 is untouched and said so).
+**PREDICTED:** +0 claimed — a follow-up seconds after an action lands on that
+action; measured only when a live turn exercises it.
+**MECHANISM:** the just-acted record surfaced in the single shared ledger block,
+with the referent licensed from it.
+**FALSIFIER:** any post-deploy "which item did you mean" answered with items
+unrelated to the newest prompt/transition row.
+
+**Symptom tag closed (verbatim, in the commit):** `Answered a nudge, then asked
+which item Brain meant; Brain could not name the item it had just acted on and
+offered unrelated items`.
+
+**ATTEMPT-17 OBSTACLE STATEMENT (required):** materially improved — four deploys
+shipped in 106 minutes yesterday (D-85→D-88), so the pipe is moving again; the
+obstacle now is VERIFICATION LAG: the transcript ends 20 minutes before the first
+of those deploys, so nothing shipped since can be confirmed live, and the score
+cannot move until the owner exercises what he already has.
+
+**What I did NOT do, named:** DEF-288 (the "I haven't done…" hold — the analyst's
+top remaining build; needs its own diagnosis turn); the bootstrapLidBinding class
+fix (analyst debt #3); live-verifying D-85→D-88 (rule 2 — pulse work); DEF-285's
+double-consume; the gcal consumer. Prompt-block token cost noted honestly: the two
+sections add ~15 lines to every composed turn on this block's path; the block was
+already unconditional, and the referent value is the deck's most-reported tag.
+
+**Honest prediction:** the next "what you got it?" after a nudge names the item
+and quotes his answer. What would prove me wrong: the reasoning path answering
+from an intercepted/act path that bypasses the ledger block entirely — if Codex
+finds such a path, the class fix needs the block on that path too, not a different
+mechanism.
