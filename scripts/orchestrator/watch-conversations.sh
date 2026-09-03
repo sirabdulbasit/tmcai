@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 #
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# NOT SCHEDULED as of 2026-09-03. Owner instruction: "stop 10m cron and keep only nightly
+# cron". The `*/10` crontab entry that ran this is commented out, not deleted, and the
+# nightly iteration at 02:30 UTC is the only Nexeo schedule left.
+#
+# The script is kept intact and still works when run by hand. What stopped is the
+# AUTOMATIC path: new conversation turns no longer trigger a build on their own. At the
+# moment it was disabled it had used 4 of its 4 daily builds, so the cut is worth real
+# money — see the cost notes below, which are the reason the guards exist at all.
+# ─────────────────────────────────────────────────────────────────────────────────────────
+#
 # watch-conversations.sh — every 10 minutes: has the owner said anything new to Brain,
 # and if so, is it worth spending a build on?
 #
