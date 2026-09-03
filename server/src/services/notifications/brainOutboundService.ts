@@ -132,7 +132,9 @@ export interface BrainContactRequest {
    * Force a specific channel. Default 'auto' resolves by urgency.
    * Useful for tests and admin tooling.
    */
-  channel?: 'text' | 'voicenote' | 'call_cta' | 'call_business' | 'auto';
+  // DEF-296: 'email' is a real delivery channel (the WhatsApp fallback) and must be
+  // recordable as one — the audit row is what the daily cap and rate limiter read.
+  channel?: 'text' | 'voicenote' | 'call_cta' | 'call_business' | 'auto' | 'email';
   /**
    * Bypass quiet-hours. Default false. Auto-set to true when
    * urgency=emergency.
@@ -694,9 +696,32 @@ export async function brainContactsUser(req: BrainContactRequest): Promise<Brain
     : channelsUsed.length > 0 ? 'partial'
     : 'failed';
 
-  const channelForAudit: 'text' | 'voicenote' | 'call_cta' | 'call_business' | 'auto' =
-    channelsUsed.length > 1 ? 'auto' :
-    (channelsUsed[0] as any) ?? 'text';
+  // ── DEF-296 — the ledger must never be breakable by a value WE chose ─────────────────────
+  //
+  // `channel` carries a CHECK constraint. This line put whatever was in `channelsUsed[0]` into
+  // it, and when the email fallback set `['email']` — a value the constraint did not permit —
+  // the audit INSERT threw and **no row was written**. 31 such failures on 2026-09-02.
+  //
+  // Losing the audit row is not a bookkeeping detail: the daily cap, the per-kind rate limiter
+  // and dedup all read that table. With nothing written, `sentToday` never rose, so **the cap
+  // stopped bounding anything the moment WhatsApp failed** — 30 notifications into his inbox in
+  // three minutes against a cap of 20. The throttle failed exactly when the channel it protects
+  // was already failing, which is the worst possible time.
+  //
+  // 'email' is now permitted (migration 20260903), so the real channel is recorded. This guard
+  // is the other half: a channel name the constraint has never seen must degrade to a value it
+  // accepts, never take the ledger down with it. Loud, because a coercion means code and schema
+  // have drifted and somebody should reconcile them.
+  const AUDIT_CHANNELS = ['text', 'voicenote', 'call_cta', 'call_business', 'auto', 'email'] as const;
+  const rawChannel = channelsUsed.length > 1 ? 'auto' : (channelsUsed[0] as any) ?? 'text';
+  const channelForAudit: (typeof AUDIT_CHANNELS)[number] =
+    (AUDIT_CHANNELS as readonly string[]).includes(rawChannel) ? rawChannel : 'auto';
+  if (channelForAudit !== rawChannel) {
+    log.error('audit channel not permitted by the schema — recorded as auto', {
+      rawChannel, kind: req.kind,
+      note: 'code and the brain_user_messages channel CHECK have drifted; reconcile them',
+    });
+  }
 
   const result = await record({
     ...req, user,
