@@ -86,7 +86,16 @@ describe('DEF-222 — the diagnosis, pinned', () => {
 
 describe('DEF-222 — the rule now ships on every turn', () => {
   it('is part of the core conversational rules, by reference not by copy', () => {
-    expect(composer).toMatch(/^8\. \$\{PERSON_REFERENCE_RULE\}`;$/m);
+    // Anchored on the INTERPOLATION, not on the rule being the last line of the template.
+    // The original pattern required a closing backtick-semicolon straight after rule 8, which
+    // was only ever true because rule 8 happened to end the block; DEF-288 added rules 9 and 10
+    // after it and this went red without anything about rule 8 changing. What matters is that
+    // the rule arrives BY REFERENCE — one definition, interpolated — rather than pasted, which
+    // is the drift DEF-222 exists to prevent.
+    expect(composer).toMatch(/^8\. \$\{PERSON_REFERENCE_RULE\}$/m);
+    const start = composer.indexOf('const CORE_CONVERSATIONAL_RULES');
+    const rules = composer.slice(start, composer.indexOf('const OUTPUT_SHAPE_RULES', start));
+    expect(rules).toContain('${PERSON_REFERENCE_RULE}');
   });
 
   it('the CASUAL prompt gets it too — a small-talk turn can still name someone', () => {

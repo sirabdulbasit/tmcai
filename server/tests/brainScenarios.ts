@@ -887,6 +887,43 @@ export const BRAIN_SCENARIOS: BrainScenario[] = [
     },
   },
   {
+    id: 'chat26',
+    title: 'he quoted a reminder and asked where it came from; it answered the quoted question instead',
+    fixCommits: ['pending'],
+    symptomTags: ['prompt-contradicts-itself', 'pending-prompt-eats-command'],
+    assert: () => {
+      const { readFileSync } = require('node:fs') as typeof import('node:fs');
+      const { join } = require('node:path') as typeof import('node:path');
+      const src = readFileSync(
+        join(__dirname, '..', 'src', 'services', 'knowledge', 'brainComposer.ts'), 'utf-8');
+      const start = src.indexOf('const CORE_CONVERSATIONAL_RULES');
+      const rules = src.slice(start, src.indexOf('const OUTPUT_SHAPE_RULES', start));
+
+      // 1. THE MARKER HAS A MEANING NOW. DEF-267(b) shipped `[replying to: "..."]` with no rule
+      //    attached anywhere in the prompt surface; that absence is the whole defect.
+      expect(rules).toContain('replying to');
+      expect(rules).toMatch(/referent, never the question/i);
+
+      // 2. A QUESTION IN THE QUOTE WAS BRAIN'S OWN. Without saying so, the model cannot tell
+      //    its own words quoted back from something it is being asked.
+      expect(rules).toMatch(/that question was YOURS to HIM/);
+
+      // 3. BOTH ROUTES, ONE CLASS. The same failure arrived via the prompt queue the day
+      //    before ("Hi" answered with "I haven't done anything yet"). Covering one and not the
+      //    other is how a class reaches a third occurrence.
+      expect(rules).toMatch(/Any other question in your context is not/i);
+      expect(rules).toMatch(/A greeting gets a greeting/);
+
+      // 4. REORDER, DO NOT SILENCE. Suppressing Brain's own questions would trade this defect
+      //    for the missed-ask one he also reported on 2026-09-03.
+      expect(rules).toMatch(/ask it AFTER answering what he actually said/);
+
+      // 5. THE ANSWER IS AVAILABLE. If provenance stopped reaching the block, the rule would
+      //    be asking the model to answer from data it does not have.
+      expect(src).toContain('sourceFeed: true, sourceRef: true');
+    },
+  },
+  {
     id: 'chat25',
     title: 'it mixed messages read from his WhatsApp with messages sent to its own number, and counted itself as a sender',
     fixCommits: ['pending'],

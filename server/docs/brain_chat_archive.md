@@ -1051,3 +1051,43 @@ messages".
 personal WhatsApp is connected for reading" unconditionally, while that connector is
 disconnected — reintroducing the exact `fabricated-status` over-claim DEF-299 had just avoided
 one block away. Rendering the block and reading it is what caught it.
+
+## Chat 26
+
+**2026-09-03 17:49 → 18:02, CL-053 — DEF-288, SECOND occurrence in two days.**
+
+Brain, 5:49 PM:
+
+> "Just a reminder that your task "Provide leadership and commercial support for TMC projects"
+> is now overdue. Shall I mark it as done, chase the delegatee, or push the date forward for you?"
+
+He quoted that message at 6:02 PM and asked:
+
+> "from where you get it?"
+
+Brain, 6:02 PM:
+
+> "I haven't taken any action on that task yet; I'd need to verify the status first."
+
+**What went RIGHT:** the quoted text reached the model correctly — DEF-267(b)'s marker did its
+job, his words first and the quote labelled after them. And the 5:59 PM message
+("I've removed "Discuss Ghazanfer's off-track objectives" from the backlog, but I can restore it
+if you need me to") is accurate and well-phrased.
+
+**What was actually wrong.** He asked for the item's PROVENANCE. Brain answered the question
+inside the quote — its own "Shall I mark it as done?" — and reported action status instead.
+
+**Root cause: an absence.** DEF-267(b) added `[replying to: "..."]` to the turn so the model
+could ground pronouns, and never added a rule saying what the marker MEANS. Searched the whole
+prompt surface: before this fix, nothing anywhere described it. So a quoted block ending in a
+question reads as the question to answer.
+
+**The data was never missing.** `open_items.source_feed` is populated on 336 of 336 rows; this
+item carries `source_feed='gchat'` with a message ref and a 2026-08-29 creation date, and the
+open-items block already renders `source=… source_ref=…`. Brain had the answer in front of it.
+This is not DEF-260 recurring.
+
+**Fixed as one class, both routes.** Core rule 9 says the quoted block is a referent and that a
+question inside it was Brain's own; core rule 10 says the same for a question sitting in the
+prompt queue — the route the "Hi" instance took the day before. The rule REORDERS rather than
+silences: an outstanding question may still be asked, after answering what he actually said.
