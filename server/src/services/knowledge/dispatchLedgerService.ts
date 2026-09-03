@@ -403,41 +403,70 @@ export async function buildDispatchLedgerBlock(
     return 'nothing on the item list — this was a message or notification, not an item';
   };
 
-  const promptLines = ix.prompts === null
-    ? '(this record could not be read — say you cannot tell, do not guess)'
-    : ix.prompts.length === 0
-      ? `(you asked him nothing in the last ${hrs}h)`
-      : ix.prompts.map((p) => {
-        const answered = p.answeredAt
-          ? `→ HE ANSWERED ${when(p.answeredAt)}${p.answerText ? `: "${p.answerText}"` : ''}`
-          : `— ${p.state}, no answer yet`;
-        return `- ${when(p.at)} re ${nameOf(p)}: "${p.question}" ${answered}`;
-      }).join('\n');
+  // ↻ DEF-293 (iteration 72) — Codex's LOW finding on the shipped diff, and its
+  // own directive #5: "the most recent line above" used to span TWO separately
+  // sorted sub-blocks (prompts, then transitions), so the single most-recent
+  // interaction could top EITHER block and the model had to compare rendered
+  // timestamps to know which. "Most recent" is now true BY CONSTRUCTION: one
+  // merged list, newest first. A prompt sorts by its newest fact — the answer
+  // when one exists — because "the thing he means" after answering is the
+  // exchange, not the moment the question was queued.
+  type MergedLine = { at: Date | null; line: string };
+  const promptRows: MergedLine[] | null = ix.prompts === null ? null : ix.prompts.map((p) => {
+    const answered = p.answeredAt
+      ? `→ HE ANSWERED ${when(p.answeredAt)}${p.answerText ? `: "${p.answerText}"` : ''}`
+      : `— ${p.state}, no answer yet`;
+    return {
+      at: p.answeredAt ?? p.at,
+      line: `- ${when(p.at)} you asked, re ${nameOf(p)}: "${p.question}" ${answered}`,
+    };
+  });
+  const transitionRows: MergedLine[] | null = ix.transitions === null ? null : ix.transitions.map((t) => {
+    const verdict = t.outcome === 'accepted'
+      ? '✓'
+      : `REFUSED${t.reason ? ` — recorded reason: ${t.reason}` : ''}`;
+    return {
+      at: t.at,
+      line: `- ${when(t.at)} status change, ${nameOf(t)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`,
+    };
+  });
 
-  const transitionLines = ix.transitions === null
-    ? '(this record could not be read — say you cannot tell, do not guess)'
-    : ix.transitions.length === 0
-      ? `(no item status changes attempted in the last ${hrs}h)`
-      : ix.transitions.map((t) => {
-        const verdict = t.outcome === 'accepted'
-          ? '✓'
-          : `REFUSED${t.reason ? ` — recorded reason: ${t.reason}` : ''}`;
-        return `- ${when(t.at)} ${nameOf(t)}: ${t.fromStatus} → ${t.toStatus} ${verdict}`;
-      }).join('\n');
+  // A FAILED read stays distinguishable from an empty one (DEF-085): the
+  // readable half still renders, and the unreadable half is NAMED.
+  const unreadable: string[] = [];
+  if (promptRows === null) unreadable.push('the prompts-you-asked record');
+  if (transitionRows === null) unreadable.push('the item-status-change record');
+  const unreadableNote = unreadable.length
+    ? `\n(${unreadable.join(' and ')} could not be read — for that part say you cannot tell, do not guess)`
+    : '';
 
-  const interactions = '\n\n## What you recently ASKED him, and what he answered (from brain_prompt_queue)\n'
+  const merged = [...(promptRows ?? []), ...(transitionRows ?? [])]
+    .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
+    .map((m) => m.line);
+
+  let interactionBody: string;
+  if (merged.length > 0) {
+    interactionBody = merged.join('\n') + unreadableNote;
+  } else if (unreadable.length === 2) {
+    interactionBody = '(neither record could be read — say you cannot tell, do not guess)';
+  } else if (unreadable.length === 1) {
+    interactionBody = `(nothing in the readable record for the last ${hrs}h)${unreadableNote}`;
+  } else {
+    interactionBody = `(you asked him nothing and attempted no status change in the last ${hrs}h)`;
+  }
+
+  const interactions = '\n\n## Your recent interactions with him — NEWEST FIRST (prompts you asked, from brain_prompt_queue; status changes you attempted, from item_status_history)\n'
     // DEF-301 — the never-borrow-a-title rule, stated ONCE here instead of inside every row.
     + 'Where a line names no title, you do not have one: say so rather than borrowing a title\n'
     + 'from elsewhere in your context.\n'
-    + `${promptLines}\n`
-    + '\n## Item status changes you attempted (from item_status_history)\n'
-    + `${transitionLines}\n`
+    + `${interactionBody}\n`
     // The referent rule lives NEXT TO the referents, per DEF-165's finding that
     // a constraint beside the data outranks one in a rulebook. This is target
     // grounding, not wording: what he means is a fact these rows carry.
     + '\nWHEN HE FOLLOWS UP on one of these — "what you got it?", "which one?", "which\n'
     + 'approval?", a bare correction seconds after answering you — THE REFERENT IS IN THIS\n'
-    + 'RECORD: the most recent line above is the thing he means. Name that item by its quoted\n'
+    + 'RECORD, and the list above is NEWEST FIRST: its TOP line is the most recent thing\n'
+    + 'between you and the default reading of what he means. Name that item by its quoted\n'
     + 'title. A REFUSED line is the answer to "why isn\'t it closed" — report its recorded\n'
     + 'reason, in your own words. Never offer other items from elsewhere in your context\n'
     + 'while a line here matches the moment: offering unrelated items when the referent is\n'

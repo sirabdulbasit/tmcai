@@ -144,22 +144,75 @@ describe('DEF-293 — DEF-199 and DEF-085 disciplines hold', () => {
     state.promptReadThrows = true;      // throws before any promise exists — DEF-274's exact gap
     state.transitionReadThrows = true;
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toContain('could not be read');
+    // ↻ iteration 72: both records unreadable → ONE honest sentence, and
+    // never the empty-fact wording that would read as a true zero.
+    expect(out).toContain('neither record could be read');
     expect(out).not.toContain('you asked him nothing');
-    expect(out).not.toContain('no item status changes attempted');
+    expect(out).not.toContain('attempted no status change');
   });
 
   it('genuinely empty windows are stated as facts, not omitted', async () => {
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toContain('you asked him nothing in the last 36h');
-    expect(out).toContain('no item status changes attempted in the last 36h');
+    expect(out).toContain('you asked him nothing and attempted no status change in the last 36h');
+  });
+});
+
+describe('↻ DEF-293 (iteration 72) — one time-ordered list: "most recent" is true by construction', () => {
+  it('a newer transition renders ABOVE an older answered prompt — Codex LOW finding 2', async () => {
+    // The reviewer's failure scenario, verbatim: "a refusal at 10:02 and a
+    // prompt-answer at 10:05 both render at the top of their own block; a bare
+    // \"which one?\" could resolve to the refusal if the model reads 'above'
+    // positionally." One merged list makes position and recency the same
+    // thing. Mutation: restoring per-type sub-blocks dies here.
+    state.prompts = [{
+      question: 'Did you attend the kickoff?', openItemId: 'a1',
+      sentAt: T(30), answeredAt: T(20), answerText: 'done', state: 'answered',
+    }];
+    state.transitions = [{
+      openItemId: 'b2', fromStatus: 'new', toStatus: 'closed',
+      outcome: 'rejected', reason: 'approval', createdAt: T(5),
+    }];
+    state.items = [{ id: 'a1', title: 'Kickoff' }, { id: 'b2', title: 'Budget sign-off' }];
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    const refusalAt = out.indexOf('"Budget sign-off": new → closed REFUSED');
+    const promptAt = out.indexOf('"Kickoff"');
+    expect(refusalAt).toBeGreaterThan(-1);
+    expect(promptAt).toBeGreaterThan(-1);
+    expect(refusalAt).toBeLessThan(promptAt);   // newest (5 min ago) on top
+  });
+
+  it('an answered prompt sorts by its ANSWER time — the newest fact on the exchange', async () => {
+    // Asked long ago, answered seconds ago: after "done", "what you got it?"
+    // means THAT exchange, so it must outrank a transition from an hour ago.
+    state.prompts = [{
+      question: 'Did you attend?', openItemId: 'a1',
+      sentAt: T(600), answeredAt: T(1), answerText: 'done', state: 'answered',
+    }];
+    state.transitions = [{
+      openItemId: 'b2', fromStatus: 'new', toStatus: 'closed',
+      outcome: 'accepted', reason: null, createdAt: T(60),
+    }];
+    state.items = [{ id: 'a1', title: 'Kickoff' }, { id: 'b2', title: 'Budget sign-off' }];
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(out.indexOf('"Kickoff"')).toBeLessThan(out.indexOf('"Budget sign-off"'));
+  });
+
+  it('one readable + one unreadable record: the rows render AND the unreadable half is NAMED', async () => {
+    state.transitionReadThrows = true;
+    state.prompts = [{
+      question: 'Did you attend?', openItemId: null,
+      sentAt: T(5), answeredAt: null, answerText: null, state: 'sent',
+    }];
+    const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
+    expect(out).toContain('Did you attend?');
+    expect(out).toContain('the item-status-change record could not be read');
   });
 });
 
 describe('DEF-293 — the referent rule sits beside the referents', () => {
   it('licenses "the most recent line is what he means" and forbids offering unrelated items', async () => {
     const out = await buildDispatchLedgerBlock(2, 'TMC-0001');
-    expect(out).toMatch(/THE REFERENT IS IN THIS\s*RECORD: the most recent line above is the thing he means/);
+    expect(out).toMatch(/THE REFERENT IS IN THIS\s*RECORD, and the list above is NEWEST FIRST: its TOP line is the most recent thing/);
     expect(out).toMatch(/A REFUSED line is the answer to "why isn't it closed"/);
     expect(out).toMatch(/Never offer other items from elsewhere in your context\s*while a line here matches the moment/);
   });

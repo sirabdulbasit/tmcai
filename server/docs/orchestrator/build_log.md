@@ -2665,3 +2665,97 @@ connected source. What would prove me wrong: the 08:36 answer having been compos
 from a path that does not receive the capability block (an intercepted or
 prompt-queue reply) — if Codex traces that, the inventory needs that path too, and
 this fix still stands for the composed paths.
+
+## Iteration 72 — 2026-09-03
+
+**Files named early and changed:**
+`server/src/services/knowledge/dispatchLedgerService.ts` + suites
+`def293JustActedReferent.test.ts` / `def301LedgerLinesAreReadable.test.ts`.
+
+**THE MANDATE'S PREMISE DISSOLVED BEFORE THE TURN STARTED, and here is the
+evidence:** the harness said one commit (`c990693`, DEF-288) stood undeployed — but
+HEAD at turn start was `651880b`, the **D-94 deploy marker**, `state/deployed-sha`
+reads `8f4d4ca`, and `git merge-base --is-ancestor` confirms `c990693`, `de1572c`,
+`f701eba` and `57a5ffa` are ALL ancestors of the deployed SHA. **Zero Brain-code
+commits are undeployed; the six-DEF stack (288/297/298/299/300/302) shipped in
+D-94.** With no deploy debt and the analyst declaring "no net-new build target
+exists this pass," the newest review's directive is the turn's work.
+
+**Directive taken — the Iteration-67 review (SOUND, on DEF-293), directive #5 and
+its LOW finding 2:** *"the most recent line above spans two separately-sorted
+sub-blocks (prompts `id desc`, transitions `createdAt desc`) … a bare 'which one?'
+could resolve to the refusal if the model reads 'above' positionally … merge both
+into one time-ordered list to make 'most recent' unambiguous by construction."*
+Directives #1–3 are explicitly orchestrator-owned (dead benchmark — THIRD zero-score
+iteration; non-atomic deploys; the self-contradictory target line) and #4 is gated
+on the benchmark scoring, so #5 is the one builder-actionable item.
+
+**What changed, by file:line — recency is now a construction, not a comparison:**
+- `dispatchLedgerService.ts` (~:406-470) — prompts and transitions merge into ONE
+  list, newest first, under one heading that states the ordering. An answered
+  prompt sorts by its ANSWER time — after "done", "what you got it?" means the
+  exchange, not the moment the question was queued. The referent rule now says the
+  construction: "the list above is NEWEST FIRST: its TOP line is the most recent
+  thing between you." Softened per the review's LOW finding 3 from an absolute to
+  "the default reading of what he means" — the model still decides.
+- DEF-085 discipline extended to the mixed state the old per-section rendering
+  handled implicitly: one readable + one unreadable record renders the readable
+  rows AND names the unreadable half; both unreadable is one honest sentence; both
+  empty is one empty-fact sentence. Never a false zero.
+- DEF-301's rules preserved intact (never-borrow stated once in the header; the
+  three-way nameOf untouched).
+
+**Verification (from `server/`, re-run AFTER the last edit):**
+- `env -u GEMINI_API_KEY npx tsc --noEmit` → exit **0**
+- `env -u GEMINI_API_KEY npx vitest run` → **3428 passed | 0 failed** (291 files
+  passed, 1 skipped; 7 expected fail | 21 skipped | 1 todo, of 3457). The two
+  touched suites: **20 passed | 0 failed**, including the reviewer's verbatim
+  failure scenario as a test (a newer refusal renders ABOVE an older answered
+  prompt — restoring per-type sub-blocks dies there), answer-time ordering, and
+  the mixed readable/unreadable state.
+- `git diff --check` → exit 0 · `npm run build` NOT run — dist immutable (CLAUDE.md).
+- Tenant/fail-closed audit: no query touched (same three reads as reviewed, same
+  scoping); render-only change; every failure mode still renders a named
+  fail-closed line.
+
+**Governing docs (rule 5): progressing** — a first-occurrence refinement of a
+mechanism ruled SOUND, prescribed by the reviewer, not a recurrence. DEF-293 row
+carries the ↻ continuation with numbers.
+
+**CAPABILITY:** Memory (the reviewer's own attribution for this mechanism; declared
+divergence from the campaign's Self-Pruning: no undeployed work existed, directive
+#4 gates Self-Pruning on the benchmark scoring, and directive #5 was the one
+builder-actionable item — the deck's `capability-fabrication` tag has every recent
+member fixed in D-94 and awaits live acceptance, not code).
+**PREDICTED:** +0 — removes an ambiguity the model previously had to resolve by
+comparing timestamps; measured only when a live follow-up exercises it.
+**MECHANISM:** one time-ordered list makes position and recency the same fact.
+**FALSIFIER:** any rendered block where a chronologically newer interaction sits
+below an older one; or a "which one?" resolving against the top line's referent.
+
+**Symptom tag:** none closed — said plainly. The deck's one open tag
+(`capability-fabrication`) had all its recent members (DEF-297/298/299) fixed and
+DEPLOYED in D-94 this afternoon; what it awaits is live acceptance, which a builder
+cannot manufacture. This turn instead closed the open review finding on the
+already-shipped DEF-293.
+
+**ATTEMPT-20 OBSTACLE STATEMENT (required):** the deploy pipe is now FAST (D-94
+shipped a six-DEF stack within minutes of the last fix landing) — the binding
+constraints are the reviewer's own #1: the benchmark has scored ZERO for three
+consecutive reviewed iterations, so every capability claim including the campaign's
+exit condition is unfalsifiable; and live-acceptance lag — two judgement-shaped
+fixes (DEF-288, DEF-300/302) plus this turn's rule need real owner turns to verify.
+
+**What I did NOT do, named:** the benchmark env fix (orchestrator's, directive #1);
+deploy-atomicity and tree litter (directive #2); the harness target-line
+contradiction (directive #3); Self-Pruning increment 3 (gated by directive #4); the
+review's LOW finding 1 (three per-turn reads — reviewer: "not a correctness bug";
+a gating optimisation would add a decision point the governance ruling warns
+against, left with this note).
+
+**Honest prediction:** the reviewer accepts the finding as closed by construction —
+the test encodes their own failure scenario verbatim. What would prove me wrong:
+prompts whose `sentAt` is null sorting to the bottom when they are genuinely the
+newest exchange (null-at sorts last by design; named here — if a null-sentAt prompt
+can be the newest real interaction, the sort key needs queuedAt as a fallback,
+which the select does not currently fetch).
