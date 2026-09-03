@@ -437,15 +437,10 @@ const fetchWhatsAppThread: BrainToolDefinition = {
     // Resolve to chat identifier(s) via entity_person → metadata.phone
     let chatPhones: string[] = phone ? [phone] : [];
     if (!chatPhones.length && email) {
-      const contact = await prisma.$queryRawUnsafe<Array<{ phone: string }>>(
-        `SELECT regexp_replace(coalesce(metadata->>'phone',''), '[^0-9+]','','g') AS phone
-           FROM wiki_pages
-          WHERE client_number = $1 AND page_type='entity_person'
-            AND lower(metadata->>'email') = $2
-            AND status NOT IN ('archived','inactive','deleted','contradicted')`,
-        clientNumber, email,
-      ).catch(() => [] as any[]);
-      chatPhones = contact.map((c) => c.phone).filter(Boolean);
+      // DEF-040 — same accessor. This limb had the identical missing scope predicate, so a
+      // colleague's email resolved to their private phone number.
+      const { findScopedContactPhonesByEmail } = await import('./scopedContacts');
+      chatPhones = await findScopedContactPhonesByEmail({ clientNumber, userId, email });
     }
     if (!chatPhones.length) return `# WhatsApp thread with ${needle}\n(no WhatsApp number on file for this contact)`;
     const msgs = await prisma.$queryRawUnsafe<Array<{
@@ -540,35 +535,18 @@ const fetchContactFull: BrainToolDefinition = {
   handler: async ({ contact_email_or_phone_or_id }, { userId, clientNumber }) => {
     const needle = String(contact_email_or_phone_or_id ?? '').trim();
     if (!needle) return '# Contact lookup — missing identifier';
-    let row: any = null;
-    if (needle.startsWith('person:') || needle.startsWith('cm')) {
-      row = await prisma.wikiPage.findFirst({
-        where: { id: needle, clientNumber, pageType: 'entity_person' } as any,
-        select: { id: true, title: true, userId: true, status: true, metadata: true, createdAt: true, lastUpdatedAt: true },
-      }).catch(() => null);
-    } else if (needle.includes('@')) {
-      const email = needle.toLowerCase();
-      const rows = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT id, title, user_id AS "userId", status, metadata, created_at AS "createdAt", last_updated_at AS "lastUpdatedAt"
-           FROM wiki_pages
-          WHERE client_number = $1 AND page_type='entity_person'
-            AND lower(metadata->>'email') = $2
-          LIMIT 1`,
-        clientNumber, email,
-      ).catch(() => [] as any[]);
-      row = rows[0] ?? null;
-    } else {
-      const phone = normalisePhone(needle);
-      const rows = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT id, title, user_id AS "userId", status, metadata, created_at AS "createdAt", last_updated_at AS "lastUpdatedAt"
-           FROM wiki_pages
-          WHERE client_number = $1 AND page_type='entity_person'
-            AND regexp_replace(coalesce(metadata->>'phone',''), '[^0-9+]','','g') = $2
-          LIMIT 1`,
-        clientNumber, phone,
-      ).catch(() => [] as any[]);
-      row = rows[0] ?? null;
-    }
+    // DEF-040 — every limb goes through the one scoped accessor. Previously all three filtered on
+    // `client_number` alone, which is a TENANT boundary and never was a user boundary: user 2
+    // could read all 351 of user 3's private contacts, and the renderer below even detected the
+    // foreign owner and printed the email and phone regardless.
+    const { findScopedContactPage } = await import('./scopedContacts');
+    const row: any = await findScopedContactPage(
+      needle.startsWith('person:') || needle.startsWith('cm')
+        ? { clientNumber, userId, byId: needle }
+        : needle.includes('@')
+          ? { clientNumber, userId, byEmail: needle }
+          : { clientNumber, userId, byPhone: normalisePhone(needle) },
+    );
     if (!row) return `# Contact lookup: ${needle}\n(no contact found with that identifier)`;
     const md = row.metadata ?? {};
     const ownerLabel = row.userId === userId ? 'you' : `another user (id ${row.userId})`;
