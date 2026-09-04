@@ -139,6 +139,18 @@ describe('DEF-320 — the synthetic never survives into an outbound message', ()
     expect(out).not.toContain('125408817238041');
   });
 
+  it('collapses the duplicate name Brain\'s own phrasing creates', async () => {
+    // DEF-298's real output was `+239324201222348 (Samra Bank Islami BTL)` — Brain writes the
+    // pair. Naive substitution yields "Samra Bank Islami BTL (Samra Bank Islami BTL)", which is
+    // what the deployed artifact produced before this. Mutation: remove the collapse and this
+    // dies with the doubled name.
+    rows.conns = [];
+    rows.ents = [{ wa_lid: '239324201222348', name: 'Samra Bank Islami BTL', phone: null }];
+    const out = await scrubSyntheticIdentities(
+      'Was it +239324201222348 (Samra Bank Islami BTL) you meant?', 'TMC-0001');
+    expect(out).toBe('Was it Samra Bank Islami BTL you meant?');
+  });
+
   it('emits NO digits at all for an unidentified sender', async () => {
     // DEF-298 verbatim: "+109526195949711 (Mubarak Jharna Mahandri)" reached him in a reply.
     rows.conns = []; rows.ents = [];

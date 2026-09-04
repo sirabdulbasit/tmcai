@@ -227,6 +227,12 @@ export async function scrubSyntheticIdentities(
         replacement = 'a WhatsApp sender whose number WhatsApp did not share';
       }
       out = out.split(token).join(replacement);
+      // Brain writes the pair, not the bare token — DEF-298's actual output was
+      // `+239324201222348 (Samra Bank Islami BTL)`. Substituting the name then leaves
+      // "Samra Bank Islami BTL (Samra Bank Islami BTL)", so an exact duplicate parenthetical
+      // that this substitution just created is collapsed. Bounded to the replacement string
+      // itself — nothing else in his message is touched.
+      if (id?.name) out = out.split(`${id.name} (${id.name})`).join(id.name);
     }
     return out;
   } catch {
