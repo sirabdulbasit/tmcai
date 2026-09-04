@@ -74,8 +74,13 @@ describe('DEF-318 — an unidentified lid is never rendered as a number', () => 
     rows.conns = []; rows.ents = [];
     const key = '+239487846228094';
     const r = await resolveDisplayIdentities('TMC-0001', [key]);
+    // OWNER RULING 2026-09-04 — the id is no longer the VALUE. "for me it is useless, if u
+    // still want to show, then always show with real number"; there is no real number here, so
+    // the id is demoted to a 4-char reference that keeps two unknown senders distinguishable.
+    // The full id stays in the raw column, the API field and the cell's hover title.
     expect(r.get(key)!.number).toBeNull();
-    expect(r.get(key)!.label).toBe('WhatsApp ID 239487846228094 — number not shared');
+    expect(r.get(key)!.label).toBe('Unknown WhatsApp sender — number not shared (ref 8094)');
+    expect(r.get(key)!.label).not.toContain('239487846228094');
     expect(r.get(key)!.label.startsWith('+')).toBe(false);
   });
 
@@ -92,7 +97,75 @@ describe('DEF-318 — an unidentified lid is never rendered as a number', () => 
 
 describe('DEF-318 — unknownLidLabel', () => {
   it('accepts a raw @lid id and a synthetic alike', () => {
-    expect(unknownLidLabel('239487846228094@lid')).toBe('WhatsApp ID 239487846228094 — number not shared');
-    expect(unknownLidLabel('+239487846228094')).toBe('WhatsApp ID 239487846228094 — number not shared');
+    const expected = 'Unknown WhatsApp sender — number not shared (ref 8094)';
+    expect(unknownLidLabel('239487846228094@lid')).toBe(expected);
+    expect(unknownLidLabel('+239487846228094')).toBe(expected);
+    // The full id must not survive into what he reads, in either input form.
+    expect(unknownLidLabel('239487846228094@lid')).not.toContain('239487846228094');
+  });
+});
+
+/**
+ * DEF-320 — the owner's ruling extended to what Brain SAYS.
+ *
+ * *"+173555350261799 this is totaly usless for me, don't show me i want to see real number only
+ * anywher on UI and communication"* and *"u can synthetic at your end or references ... if u
+ * still want to show, then always show with real number"*.
+ */
+import { scrubSyntheticIdentities } from '../src/services/whatsapp/displayIdentity';
+
+describe('DEF-320 — the synthetic never survives into an outbound message', () => {
+  it('replaces the owner\'s alias with his REAL number', async () => {
+    rows.conns = [{ phone_number: OWNER_ALIAS, display_name: 'Basit (LID alias 1799)', contact_number: OWNER_REAL, user_name: 'Basit Ahmed' }];
+    rows.ents = [];
+    const out = await scrubSyntheticIdentities(
+      `The most recent reply was from ${OWNER_ALIAS} this morning.`, 'TMC-0001');
+    // Asserted EXACTLY, not with toContain. `toContain(OWNER_REAL)` passed even with the
+    // real-number branch disabled, because the tier-2 label also contains the number — a
+    // mutation that survived, which is the same vacuous-assertion trap DEF-104 recorded.
+    expect(out).toBe(`The most recent reply was from ${OWNER_REAL} this morning.`);
+    expect(out).not.toContain(OWNER_ALIAS);
+  });
+
+  it('uses the NAME when the number is one WhatsApp withholds', async () => {
+    rows.conns = [];
+    rows.ents = [{ wa_lid: '125408817238041', name: 'Saba Warid', phone: null }];
+    const out = await scrubSyntheticIdentities('Message from +125408817238041.', 'TMC-0001');
+    expect(out).toContain('Saba Warid');
+    expect(out).not.toContain('125408817238041');
+  });
+
+  it('emits NO digits at all for an unidentified sender', async () => {
+    // DEF-298 verbatim: "+109526195949711 (Mubarak Jharna Mahandri)" reached him in a reply.
+    rows.conns = []; rows.ents = [];
+    const out = await scrubSyntheticIdentities('Was it +239324201222348 you meant?', 'TMC-0001');
+    expect(out).toBe('Was it a WhatsApp sender whose number WhatsApp did not share you meant?');
+    expect(out).not.toMatch(/\d{13,}/);
+  });
+
+  it('leaves a REAL number untouched', async () => {
+    // The scrub must never damage the thing it exists to protect.
+    rows.conns = []; rows.ents = [];
+    const out = await scrubSyntheticIdentities(`Call him on ${OWNER_REAL}.`, 'TMC-0001');
+    expect(out).toBe(`Call him on ${OWNER_REAL}.`);
+  });
+
+  it('leaves a bare digit run alone — only a leading + is a number', async () => {
+    // Order ids, references and amounts must survive. Mutation: drop the `\\+` from the pattern
+    // and this dies, taking every long reference number in his messages with it.
+    rows.conns = []; rows.ents = [];
+    const out = await scrubSyntheticIdentities('Invoice 1735553502617990 is due.', 'TMC-0001');
+    expect(out).toBe('Invoice 1735553502617990 is due.');
+  });
+
+  it('returns the ORIGINAL text if resolution throws', async () => {
+    // A scrubber that fails must never cost him the message it was cleaning.
+    rows.conns = null as any; rows.ents = null as any;
+    const text = `From ${OWNER_ALIAS}.`;
+    expect(await scrubSyntheticIdentities(text, 'TMC-0001')).toBe(text);
+  });
+
+  it('is a no-op on text with nothing to scrub', async () => {
+    expect(await scrubSyntheticIdentities('Hi Sir.', 'TMC-0001')).toBe('Hi Sir.');
   });
 });

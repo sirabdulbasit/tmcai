@@ -10,7 +10,18 @@ import { fitToTransport } from '../knowledge/transportBudget';
  * visible conversation. message.reply() preserves WhatsApp's own routing
  * context and quoted-message identity.
  */
-export async function sendInboundTextReply(message: any, text: string): Promise<SendResult> {
+export async function sendInboundTextReply(
+  message: any, text: string, clientNumber?: string,
+): Promise<SendResult> {
+  // OWNER RULING 2026-09-04 (DEF-320) — the `@lid` synthetic must never reach him "anywher on UI
+  // and communication". Scrubbed HERE, beside `fitToTransport`, for the same reason that policy
+  // lives here: this is the one place every conversational reply passes, and the `@lid` class
+  // reached five occurrences by being closed one surface at a time.
+  //
+  // BEFORE the transport fit, deliberately: replacing a 15-digit token with a name changes the
+  // length, so fitting first would budget against text that is not what gets sent.
+  const { scrubSyntheticIdentities } = await import('./displayIdentity');
+  text = await scrubSyntheticIdentities(text, clientNumber);
   // DEF-196 (Codex iteration-2 MEDIUM) — this is a WhatsApp wire path too, and
   // my DEF-195 invariant could not see it: it only recognised
   // `client.sendMessage(target, text)` and the Meta body shape, so

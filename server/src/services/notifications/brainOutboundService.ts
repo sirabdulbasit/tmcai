@@ -877,6 +877,16 @@ async function dispatchChannel(
   phone: string,
   req: BrainContactRequest,
 ): Promise<DispatchResult> {
+  // OWNER RULING 2026-09-04 (DEF-320) — *"i want to see real number only anywher on UI and
+  // communication"*. Every channel below reads `req.body`, so the scrub happens ONCE here rather
+  // than at each `send*` call: the `@lid` class reached five occurrences by being closed one
+  // surface at a time, and a per-channel scrub would be the sixth version of the same guard.
+  //
+  // Mutates the local `req` only — the audit row was already written from the pre-scrub body by
+  // `record()` above, which is correct: the ledger should hold what the system produced, and he
+  // should receive what he can act on.
+  const { scrubSyntheticIdentities } = await import('../whatsapp/displayIdentity');
+  if (req.body) req = { ...req, body: await scrubSyntheticIdentities(req.body, clientNumber) };
   switch (ch) {
     case 'text': {
       return await sendTenantWhatsAppText(clientNumber, phone, req.body, req.userId);

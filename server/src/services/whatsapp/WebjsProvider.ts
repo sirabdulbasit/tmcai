@@ -1230,13 +1230,13 @@ export class WebjsProvider implements IWhatsAppProvider {
                   const media = new MessageMedia('audio/ogg; codecs=opus', audioBuffer.toString('base64'));
                   await chat.sendMessage(media, { sendAudioAsVoice: true });
                   // Also send text version (for readability)
-                  return await sendInboundTextReply(message, text);
+                  return await sendInboundTextReply(message, text, clientNumber);
                 }
               } catch (e: any) {
                 log.error('Voice reply failed, sending text only', { error: e.message });
               }
             }
-            return await sendInboundTextReply(message, text);
+            return await sendInboundTextReply(message, text, clientNumber);
           },
           typingFn: async () => {
             await activity?.pulse();

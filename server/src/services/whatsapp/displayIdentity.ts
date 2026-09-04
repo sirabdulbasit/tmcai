@@ -148,8 +148,73 @@ export async function resolveDisplayIdentities(
 /** What to render for an `@lid` sender nobody has identified. Never a `+`-prefixed string: the
  *  leading plus is what makes a synthetic read as a phone number in the first place. */
 export function unknownLidLabel(rawId: string): string {
-  // The leading '+' is stripped deliberately: it is the single character that makes a routing
-  // key read as a dialable number, which is the whole of what the owner reported.
+  // OWNER RULING, 2026-09-04: *"for me it is useless, if u still want to show, then always show
+  // with real number"*. So when there is no real number the id STOPS BEING THE VALUE. It is
+  // demoted to a short reference — his own words, *"u can synthetic at your end or references"* —
+  // which keeps two unknown senders distinguishable without putting a fake number in front of
+  // him. The full id stays available where it belongs: the raw column, the API field, and the
+  // cell's hover title.
+  //
+  // The leading '+' never survives: it is the single character that makes a routing key read as
+  // dialable, and it is the whole of what he reported.
   const id = rawId.replace(/@.*$/, '').replace(/^\+/, '');
-  return `WhatsApp ID ${id} — number not shared`;
+  return `Unknown WhatsApp sender — number not shared (ref ${id.slice(-4)})`;
+}
+
+/**
+ * OWNER RULING, 2026-09-04 — the synthetic must never reach him, in any channel:
+ * *"+173555350261799 this is totaly usless for me, don't show me i want to see real number only
+ * anywher on UI and communication"*, and *"u can synthetic at your end or references ... if u
+ * still want to show, then always show with real number"*.
+ *
+ * The panel was only one surface. This is the other one he named: what Brain SAYS. The `@lid`
+ * class has now reached five occurrences precisely because it was closed surface by surface —
+ * DEF-121, DEF-269, DEF-272, DEF-298, DEF-318 — so this is applied at the transport chokepoints
+ * every outbound message already passes through, not at the places that happen to be known today.
+ *
+ * WHAT IT MATCHES, and why it is safe. Only `+` followed by 13 or more digits. Grounded in the
+ * live table: every real number stored for this tenant is **12 digits (404 rows)** and every
+ * synthetic is **15 (368 rows)**, with known `@lid`s running 13-15. A bare digit run without the
+ * `+` is deliberately NOT matched — order numbers, references and amounts must survive untouched,
+ * and it is the `+` that makes a string read as dialable in the first place.
+ *
+ * Replacement follows the same three tiers as the panel, so one rule governs both surfaces:
+ * the real number when we hold it, the person's name when we hold that, and otherwise a plain
+ * admission with no digits at all.
+ *
+ * Failure is silent and returns the ORIGINAL text: a scrubber that throws must never cost him
+ * the message it was cleaning.
+ */
+export async function scrubSyntheticIdentities(
+  text: string,
+  clientNumber?: string,
+): Promise<string> {
+  if (!text || !/\+\d{13,}/.test(text)) return text;
+  try {
+    const found = [...new Set(text.match(/\+\d{13,}/g) ?? [])];
+    if (!found.length) return text;
+    const ids = clientNumber
+      ? await resolveDisplayIdentities(clientNumber, found)
+      : new Map<string, DisplayIdentity>();
+    let out = text;
+    for (const token of found) {
+      const id = ids.get(token);
+      let replacement: string;
+      if (id?.number) {
+        // Tier 1 — we hold the real number. This is the "always show with real number" case.
+        replacement = id.number;
+      } else if (id && !/^Unknown WhatsApp sender/.test(id.label)) {
+        // Tier 2 — a known person whose number WhatsApp withholds: the NAME, never the id.
+        replacement = id.label;
+      } else {
+        // Tier 3 — nothing known. No digits reach him at all; DEF-121's rule, that a
+        // fabricated-looking identifier reads as actionable and is worse than an admitted gap.
+        replacement = 'a WhatsApp sender whose number WhatsApp did not share';
+      }
+      out = out.split(token).join(replacement);
+    }
+    return out;
+  } catch {
+    return text;
+  }
 }
